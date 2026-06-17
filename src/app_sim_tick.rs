@@ -7,7 +7,6 @@
 //! - Part of the app layer — may depend on everything.
 
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use crate::app::AppState;
@@ -148,6 +147,81 @@ pub(crate) fn update_elapsed_ms(state: &mut AppState, now: Instant) -> u64 {
     elapsed_ms
 }
 
+/// Front-end session mode, as the modal pump reads it to decide whether the
+/// simulation advances behind an open modal dialog. Mirrors gamemd's `g_GameMode`
+/// discriminator; the values are writer-proofed — the active engine only ever
+/// writes 0/3/4/5, so any other raw value is a legacy (modem/serial) or
+/// uninitialized mode the pump treats conservatively as non-advancing. This type
+/// is read ONLY by the app loop, never by `sim/` (the layering rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMode {
+    /// Campaign / single-player. The modal pump freezes the world.
+    Campaign,
+    /// LAN / IPX network. The modal pump keeps the world advancing.
+    Lan,
+    /// WOL / Internet network. The modal pump keeps the world advancing.
+    Wol,
+    /// Offline skirmish. The modal pump freezes the world.
+    Skirmish,
+    /// Any raw value the active engine never writes (legacy modem/serial, or
+    /// uninitialized). Treated as non-advancing.
+    Other,
+}
+
+impl SessionMode {
+    /// Map gamemd's raw `g_GameMode` int to a session mode. Writer-proofed:
+    /// 0=Campaign, 3=Lan, 4=Wol, 5=Skirmish; every other value is `Other`.
+    pub fn from_game_mode(raw: i32) -> Self {
+        match raw {
+            0 => SessionMode::Campaign,
+            3 => SessionMode::Lan,
+            4 => SessionMode::Wol,
+            5 => SessionMode::Skirmish,
+            _ => SessionMode::Other,
+        }
+    }
+
+    /// Whether this is a network session (LAN/WOL). Only network sessions keep the
+    /// simulation advancing behind an open modal; offline modes freeze it.
+    pub fn is_network(self) -> bool {
+        matches!(self, SessionMode::Lan | SessionMode::Wol)
+    }
+}
+
+/// Pure modal-pump decision: should the fixed simulation advance one step while a
+/// modal dialog is open? Mirrors gamemd's pump body — advance only on the network
+/// branch (LAN/WOL), and only when no fixed tick is already in progress (the native
+/// reentrancy guard). Offline campaign/skirmish freeze the world; message, input,
+/// and repaint still run in the surrounding loop. Pure and total, so it is
+/// unit-tested without an `AppState`. The live app-layer consumer is
+/// `service_tick_should_advance_sim`, which reads the running session mode and
+/// gates `advance_fixed_simulation` inside `advance_in_game_runtime`.
+pub fn modal_pump_should_advance_sim(mode: SessionMode, reentrancy_in_progress: bool) -> bool {
+    mode.is_network() && !reentrancy_in_progress
+}
+
+/// Live front-end session mode for the running client. This build is offline
+/// only, and offline campaign and skirmish freeze the world identically behind a
+/// modal, so it reports `Skirmish`. When networking lands, this reads the live
+/// game-mode discriminator and maps it via `SessionMode::from_game_mode`.
+fn current_session_mode(_state: &AppState) -> SessionMode {
+    SessionMode::Skirmish
+}
+
+/// App-layer modal-pump service decision: should the fixed simulation advance
+/// this frame? While the in-game Options modal is open (`state.paused` is the
+/// 0xBBB modal in this port), the verified pump contract decides — offline
+/// campaign/skirmish freeze, network LAN/WOL advance. With no modal open the
+/// world always runs. Re-entrancy is always clear here: the single-threaded
+/// frame loop never re-enters a fixed tick mid-advance.
+fn service_tick_should_advance_sim(state: &AppState) -> bool {
+    if state.paused {
+        modal_pump_should_advance_sim(current_session_mode(state), false)
+    } else {
+        true
+    }
+}
+
 pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
     // Frame-step: when paused, advance exactly one tick on request.
     let frame_stepping = state.debug_frame_step_requested;
@@ -155,7 +229,10 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
         state.debug_frame_step_requested = false;
         true
     } else {
-        !state.paused
+        // Modal-pump contract: while the in-game Options modal is open
+        // (`state.paused`), offline freezes and network advances; otherwise run.
+        // Offline-identical to the prior `!state.paused`.
+        service_tick_should_advance_sim(state)
     };
 
     // When frame-stepping, inject exactly one tick instead of using wall-clock elapsed time.
@@ -166,19 +243,16 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
     };
 
     if run_sim {
-        if let Some(deadline) = state.mission_announcement_deadline {
-            if Instant::now() >= deadline {
-                state.mission_announcement = None;
-                state.mission_announcement_deadline = None;
-            }
-        }
-
-        let garrison_flash_start_tick = state.simulation.as_ref().map(|sim| sim.tick).unwrap_or(0);
+        let garrison_flash_start_tick = state
+            .simulation
+            .as_ref()
+            .map(|sim| sim.session.tick)
+            .unwrap_or(0);
         advance_fixed_simulation(state, sim_elapsed);
         let garrison_flash_elapsed_ticks = state
             .simulation
             .as_ref()
-            .map(|sim| sim.tick.saturating_sub(garrison_flash_start_tick))
+            .map(|sim| sim.session.tick.saturating_sub(garrison_flash_start_tick))
             .unwrap_or(0);
         crate::app_building_anim::drain_sound_events(state);
         // Drain bale events into building anim overlays + particle bursts before
@@ -213,9 +287,15 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
         );
     }
 
+    // Refresh the radiation green glow after the sim steps (stepwise; a no-op
+    // when no radiation site crossed a step boundary this frame).
+    refresh_radiation_glow(state);
+
     crate::app_building_anim::update_radar_state(state, SIM_TICK_MS as f32);
     crate::app_building_anim::update_power_bar_anim(state);
     crate::app_sidebar_gadgets::update_sidebar_gadget_state(state);
+    // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
+    crate::app_gadget_input::idle_tick(state);
     if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
         player.update(assets);
     }
@@ -260,8 +340,10 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
             sim.replay_log = Some(ReplayLog::new(ReplayHeader {
                 version: 1,
                 tick_hz: SIM_TICK_HZ,
-                seed: sim.seed,
-                map_name: state.theater_name.clone(),
+                seed: sim.session.seed,
+                // Scenario identity is session state — the header derives
+                // from the sim, not from app-resident view fields.
+                map_name: sim.session.map_name.clone(),
                 rules_hash: state.rules.as_ref().map(rules_hash).unwrap_or(0),
             }));
         }
@@ -293,12 +375,8 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 SIM_TICK_MS,
             );
             let (ents, interner) = sim.entities_mut_and_interner();
-            let death_finished = animation::tick_animations(
-                ents,
-                &state.animation_sequences,
-                SIM_TICK_MS,
-                interner,
-            );
+            let death_finished =
+                animation::tick_animations(ents, &state.animation_sequences, SIM_TICK_MS, interner);
             // Despawn entities whose death animation has completed.
             for dead_id in &death_finished {
                 // Remove from occupancy before despawning.
@@ -320,7 +398,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
             animation::tick_harvest_overlays(sim.entities_mut(), SIM_TICK_MS);
             // Pre-merge fog visibility for local owner so render queries are O(1).
             if let Some(owner) = &local_owner_for_fog {
-                if sim.tick == 1 {
+                if sim.session.tick == 1 {
                     log::info!("Fog merged for local owner: '{}'", owner);
                 }
                 if let Some(owner_id) = sim.interner.get(owner) {
@@ -801,6 +879,43 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
     }
 }
 
+/// Per-frame radiation-glow refresh. Rebuilds the lighting grid only when the
+/// radiation light epoch changes (a site crossed a `RadLightDelay` step boundary,
+/// or a site appeared/disappeared) — i.e. stepwise, matching the original. Idle
+/// matches (no sites) pay one epoch hash per frame and never rebuild. Render-only:
+/// never touches sim state or the deterministic hash.
+fn refresh_radiation_glow(state: &mut AppState) {
+    let epoch = match (state.simulation.as_ref(), state.rules.as_ref()) {
+        (Some(sim), Some(rules)) => {
+            crate::app_radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation)
+        }
+        _ => return,
+    };
+    if epoch == state.last_radiation_light_epoch {
+        return;
+    }
+    // Recompute in an inner scope so the shared borrows of `state` drop before
+    // the mutable assignment to `state.lighting_grid`. Terrain is sourced from
+    // `state.resolved_terrain` to match the existing building-placement caller
+    // (the same grid the building lamps light off).
+    let new_grid = {
+        let (Some(sim), Some(rules)) = (state.simulation.as_ref(), state.rules.as_ref()) else {
+            return;
+        };
+        let Some(terrain) = state.resolved_terrain.as_ref() else {
+            return;
+        };
+        crate::app_init::rebuild_lighting_grid_from_sim(
+            terrain,
+            &state.map_lighting_config,
+            Some(sim),
+            Some(rules),
+        )
+    };
+    state.last_radiation_light_epoch = epoch;
+    state.lighting_grid = new_grid;
+}
+
 fn schedule_fixed_steps(accumulator_ms: u64, elapsed_ms: u64, max_steps: u32) -> FixedStepSchedule {
     // Scale the delta cap proportionally to the max steps allowed, so high-speed
     // modes don't get clamped to the base 250ms cap.
@@ -844,9 +959,10 @@ fn apply_trigger_effects(state: &mut AppState, effects: &[TriggerEffect]) {
                 immediate: _,
             } => center_camera_on_waypoint(state, *waypoint),
             TriggerEffect::MissionAnnouncement { text } => {
-                state.mission_announcement = Some(text.clone());
-                state.mission_announcement_deadline =
-                    Some(Instant::now() + std::time::Duration::from_secs(4));
+                // gamemd routes trigger text through the message list
+                // (contract lane §4.5: the native trigger-text path is a
+                // message-list producer).
+                crate::app_messages::post_system_message(state, text);
             }
             TriggerEffect::MissionResult { title, detail } => {
                 state.screen = GameScreen::MissionResult {
@@ -1354,12 +1470,12 @@ pub(crate) fn clamp_cell_to_grid(
 }
 
 pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    rules.infantry_ids.hash(&mut hasher);
-    rules.vehicle_ids.hash(&mut hasher);
-    rules.aircraft_ids.hash(&mut hasher);
-    rules.building_ids.hash(&mut hasher);
-    hasher.finish()
+    // The source-INI hash covers the whole merged rules set — type-registry
+    // lists AND every scalar value, including a map's value overrides. The
+    // former registry-only hash missed those, so a map that overrode e.g.
+    // [General]/[CombatDamage] values produced an identical hash and a replay
+    // recorded under it could play back against base rules undetected.
+    rules.source_ini_hash()
 }
 
 #[cfg(test)]
@@ -1628,5 +1744,98 @@ mod tests {
             world_point_to_cell(-500.0, -500.0, &height_map, None),
             (0, 0)
         );
+    }
+}
+
+#[cfg(test)]
+mod modal_pump_tests {
+    use super::{SessionMode, modal_pump_should_advance_sim};
+
+    #[test]
+    fn session_mode_maps_writer_proofed_game_mode_values() {
+        assert_eq!(SessionMode::from_game_mode(0), SessionMode::Campaign);
+        assert_eq!(SessionMode::from_game_mode(3), SessionMode::Lan);
+        assert_eq!(SessionMode::from_game_mode(4), SessionMode::Wol);
+        assert_eq!(SessionMode::from_game_mode(5), SessionMode::Skirmish);
+        // Legacy modem/serial (1/2) and any unrecognized value -> Other. The active
+        // engine never writes these, so the pump treats them as non-advancing.
+        assert_eq!(SessionMode::from_game_mode(1), SessionMode::Other);
+        assert_eq!(SessionMode::from_game_mode(2), SessionMode::Other);
+        assert_eq!(SessionMode::from_game_mode(-1), SessionMode::Other);
+        assert_eq!(SessionMode::from_game_mode(99), SessionMode::Other);
+    }
+
+    #[test]
+    fn only_network_modes_advance_behind_a_modal() {
+        // {3 LAN, 4 WOL} advance; {0 campaign, 5 skirmish} + Other freeze.
+        assert!(modal_pump_should_advance_sim(SessionMode::Lan, false));
+        assert!(modal_pump_should_advance_sim(SessionMode::Wol, false));
+        assert!(!modal_pump_should_advance_sim(SessionMode::Campaign, false));
+        assert!(!modal_pump_should_advance_sim(SessionMode::Skirmish, false));
+        assert!(!modal_pump_should_advance_sim(SessionMode::Other, false));
+    }
+
+    #[test]
+    fn reentrancy_guard_blocks_advance_even_on_network() {
+        // The native reentrancy guard: a fixed tick already in progress means the
+        // pump skips advancing, even on the network branch.
+        assert!(!modal_pump_should_advance_sim(SessionMode::Lan, true));
+        assert!(!modal_pump_should_advance_sim(SessionMode::Wol, true));
+    }
+
+    #[test]
+    fn pumped_tick_delta_is_zero_offline_and_n_on_network() {
+        // C2 acceptance at the decision level: the pump decision drives whether the
+        // world's fixed tick advances per pumped frame. `tick` stands in for
+        // `sim.session.tick`; the full headless-World assertion (incl. "no
+        // battlefield recomposite offline") lands with the live `service_tick` swap.
+        const FRAMES: u64 = 7;
+        let pumped = |mode: SessionMode| -> u64 {
+            let mut tick = 0u64;
+            for _ in 0..FRAMES {
+                if modal_pump_should_advance_sim(mode, false) {
+                    tick += 1; // one fixed step advanced this pumped frame
+                }
+            }
+            tick
+        };
+        // Offline freezes: zero advance over N pumped frames.
+        assert_eq!(pumped(SessionMode::Skirmish), 0);
+        assert_eq!(pumped(SessionMode::Campaign), 0);
+        // Network advances once per pumped frame.
+        assert_eq!(pumped(SessionMode::Lan), FRAMES);
+        assert_eq!(pumped(SessionMode::Wol), FRAMES);
+    }
+
+    #[test]
+    fn pumped_world_tick_freezes_offline_and_advances_on_network() {
+        use crate::sim::world::Simulation;
+        use std::collections::BTreeMap;
+
+        // C2 acceptance with a real headless World: drive `advance_tick` exactly
+        // when the pump decision is true, and assert `session.tick` motion.
+        // `advance_tick` commits one tick per call (no entities/rules needed).
+        const FRAMES: u64 = 7;
+        let pumped_world_delta = |mode: SessionMode| -> u64 {
+            let mut sim = Simulation::new();
+            let start = sim.session.tick;
+            let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+            for _ in 0..FRAMES {
+                if modal_pump_should_advance_sim(mode, false) {
+                    // `tick_ms` does not affect the asserted tick delta; a literal
+                    // matches the sim-test style and avoids the const dependency.
+                    sim.advance_tick(&[], None, &height_map, None, None, 33);
+                }
+            }
+            sim.session.tick - start
+        };
+
+        // Offline modes freeze the world behind the modal: zero tick advance.
+        assert_eq!(pumped_world_delta(SessionMode::Skirmish), 0);
+        assert_eq!(pumped_world_delta(SessionMode::Campaign), 0);
+        // Network modes advance one fixed tick per pumped frame (dead code this
+        // build; proves the contract for when multiplayer lands).
+        assert_eq!(pumped_world_delta(SessionMode::Lan), FRAMES);
+        assert_eq!(pumped_world_delta(SessionMode::Wol), FRAMES);
     }
 }

@@ -186,7 +186,7 @@ pub struct CellRectOccupancyContext<'a> {
 /// entirely in `cell_in_playfield_diamond`. All five are signed map-coord values. The `off_*` field
 /// names are legacy (named after their source struct offsets) and kept to avoid a rename churn across
 /// the tests and the diamond fn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlayfieldBounds {
     /// `[Map] Size=` width (3rd value).
     pub base: i32,

@@ -167,6 +167,7 @@ impl Simulation {
                 ge.regular_crusher = obj.crusher;
                 ge.drive_accelerates = obj.accelerates;
                 ge.omni_crush_resistant = obj.omni_crush_resistant;
+                ge.immune_to_radiation = obj.immune_to_radiation;
                 if map_ent.category == EntityCategory::Structure && obj.gate {
                     ge.building_gate =
                         Some(crate::sim::game_entity::BuildingGateRuntime::default());
@@ -337,6 +338,7 @@ impl Simulation {
         ge.regular_crusher = obj.crusher;
         ge.drive_accelerates = obj.accelerates;
         ge.omni_crush_resistant = obj.omni_crush_resistant;
+        ge.immune_to_radiation = obj.immune_to_radiation;
         if category == EntityCategory::Structure && obj.gate {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
         }
@@ -474,6 +476,7 @@ impl Simulation {
         ge.regular_crusher = obj.crusher;
         ge.drive_accelerates = obj.accelerates;
         ge.omni_crush_resistant = obj.omni_crush_resistant;
+        ge.immune_to_radiation = obj.immune_to_radiation;
         if category == EntityCategory::Structure && obj.gate {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
         }
@@ -825,7 +828,7 @@ impl Simulation {
     }
 
     fn construction_yard_redeploy_core_gate(&self, entity: &GameEntity) -> bool {
-        if !self.game_options.mcv_redeploy || !entity.radio_contacts.is_empty() {
+        if !self.session.game_options.mcv_redeploy || !entity.radio_contacts.is_empty() {
             return false;
         }
         self.houses

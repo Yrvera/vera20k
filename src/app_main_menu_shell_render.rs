@@ -17,7 +17,6 @@ use crate::render::shell_text::ShellAlign;
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::ui::main_menu_shell::{
     MainMenuControlId, MainMenuShellLayout, RectPx, compute_layout, csf_key_for_control,
-    tooltip_csf_key_for_control,
 };
 
 /// Screen-size thresholds above which the centered 800x600 shell is letterboxed
@@ -106,7 +105,7 @@ fn main_menu_paint_labels<'a>(
     state: &'a AppState,
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
-    hovered_button: Option<MainMenuControlId>,
+    _hovered_button: Option<MainMenuControlId>,
     version_text: &'a str,
 ) -> Vec<PaintLabel<'a>> {
     use crate::render::shell_text::ShellAlign;
@@ -152,9 +151,16 @@ fn main_menu_paint_labels<'a>(
         align: ShellAlign::H_CENTER,
         rgb: SHELL_TEXT_RGB_ENABLED,
     });
-    if let Some(id) = hovered_button {
+    // Tooltip text now comes from the shared service (study S1): it appears
+    // only after the 1000 ms hover delay, hides on move, and is killed by any
+    // button press — replacing the immediate-on-hover emission (D-B2).
+    if let Some(tip) = state
+        .tooltips
+        .active()
+        .filter(|t| (t.id & crate::app_tooltips::SHELL_TIP_NAMESPACE) != 0)
+    {
         out.push(PaintLabel {
-            text: resolve_csf(state, tooltip_csf_key_for_control(id)),
+            text: &tip.text,
             rect: layout.tooltip_line,
             align: ShellAlign::H_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,

@@ -26,6 +26,9 @@ const NEUTRAL: u8 = 0x7F;
 /// ABuffer black value — 0x00 = fully shrouded.
 const BLACK: u8 = 0x00;
 
+/// ABuffer half-bright value (~0.5 * NEUTRAL) — friendly gap generator fog.
+const FOG_HALF: u8 = 0x3F;
+
 /// SHP transparent pixel marker — skip (don't overwrite buffer).
 const TRANSPARENT: u8 = 0xFE;
 const SHROUD_CELL_PAD: i32 = 8;
@@ -351,8 +354,17 @@ impl ShroudBuffer {
                     continue;
                 }
 
-                if !fog.is_cell_revealed(owner, rx, ry) {
+                // Unexplored OR under a hostile gap generator -> full black.
+                if !fog.is_cell_revealed(owner, rx, ry)
+                    || fog.is_cell_gap_covered(owner, rx, ry)
+                {
                     self.blit_dark_diamond(vx, vy, vp_w, vp_h);
+                    continue;
+                }
+
+                // Friendly (own/allied) gap generator -> half-bright fog.
+                if fog.is_cell_gap_fog(owner, rx, ry) {
+                    self.blit_diamond(vx, vy, vp_w, vp_h, FOG_HALF);
                     continue;
                 }
 

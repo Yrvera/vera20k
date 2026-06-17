@@ -1,18 +1,23 @@
 //! Runtime per-cell speed modifiers applied during movement execution.
 //!
 //! The original engine applies terrain speed as a runtime modifier (not an
-//! A* cost weight). Three multiplicative factors are combined each tick:
+//! A* cost weight). Two multiplicative factors are combined each tick:
 //!
 //! 1. **Terrain type** — from rules.ini land-type sections ([Clear] Foot=100%, etc.)
-//! 2. **Slope** — uphill slows, downhill speeds up (SlopeClimb / SlopeDescend)
-//! 3. **Crowd density** — units slow when many neighbors occupy nearby cells
+//! 2. **Slope** — vehicles moving up/down a grade, chosen by SpeedType (Track vs
+//!    other) and travel direction. Vanilla: uphill ×1.0 (no change), downhill
+//!    ×1.2 (faster).
 //!
-//! Depends on: `ResolvedTerrainGrid` (cell height + land type), `OccupancyGrid`
-//! (nearby unit count), `SpeedCostProfile` (INI-parsed terrain percentages).
+//! The original engine has no crowd/density speed term: congestion is resolved by
+//! blocking and re-pathing, never by scaling a mover's speed. A former synthetic
+//! crowd-jam factor (radius-2 occupancy scan → 0.7×) was removed — it had no
+//! source in the original engine and no INI key driving it (invented behavior).
+//!
+//! Depends on: `ResolvedTerrainGrid` (cell height + land type),
+//! `SpeedCostProfile` (INI-parsed terrain percentages).
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
-use crate::sim::occupancy::OccupancyGrid;
 use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SimFixed};
 
 // --- Constants from the original engine ---
@@ -30,46 +35,49 @@ const COMBINED_MAX: SimFixed = SimFixed::lit("1.2");
 /// Minimum combined speed modifier — prevents near-zero crawl.
 const COMBINED_MIN: SimFixed = SimFixed::lit("0.3");
 
-/// Number of occupied cells within scan radius before crowd jam kicks in.
-const DEFAULT_CROWD_DENSITY_THRESHOLD: u8 = 3;
-
-/// Speed multiplier applied when crowd density exceeds the threshold.
-const DEFAULT_CROWD_JAM_FACTOR: SimFixed = SimFixed::lit("0.7");
-
-/// Cell radius around the unit scanned for crowd density.
-const CROWD_SCAN_RADIUS: i32 = 2;
-
-/// Configuration for terrain speed modifiers, parsed from [General] in rules.ini.
+/// Cliff/slope speed coefficients from `[General]` in rules.ini.
+///
+/// The original engine keeps four: tracked vs wheeled vehicles, each with an
+/// uphill and a downhill coefficient, selected by the mover's SpeedType (Track
+/// uses the tracked pair, every other SpeedType uses the wheeled pair) and by
+/// travel direction. Vanilla values are 1.0 uphill / 1.2 downhill for both.
 #[derive(Debug, Clone)]
 pub struct TerrainSpeedConfig {
-    /// Speed multiplier when moving uphill (next cell higher than current).
-    pub slope_climb: SimFixed,
-    /// Speed multiplier when moving downhill (next cell lower than current).
-    pub slope_descend: SimFixed,
-    /// Occupied-cell count before crowd slowdown activates.
-    pub crowd_density_threshold: u8,
-    /// Speed multiplier when crowd density exceeds the threshold.
-    pub crowd_jam_factor: SimFixed,
+    /// Tracked vehicle moving uphill (`TrackedUphill=`; vanilla 1.0).
+    pub tracked_uphill: SimFixed,
+    /// Tracked vehicle moving downhill (`TrackedDownhill=`; vanilla 1.2).
+    pub tracked_downhill: SimFixed,
+    /// Non-tracked (wheeled and other) vehicle moving uphill (`WheeledUphill=`; vanilla 1.0).
+    pub wheeled_uphill: SimFixed,
+    /// Non-tracked vehicle moving downhill (`WheeledDownhill=`; vanilla 1.2).
+    pub wheeled_downhill: SimFixed,
 }
 
 impl Default for TerrainSpeedConfig {
     fn default() -> Self {
+        // Vanilla rulesmd.ini [General]: 1.0 uphill / 1.2 downhill for both pairs.
         Self {
-            slope_climb: SimFixed::lit("0.6"),
-            slope_descend: SimFixed::lit("1.2"),
-            crowd_density_threshold: DEFAULT_CROWD_DENSITY_THRESHOLD,
-            crowd_jam_factor: DEFAULT_CROWD_JAM_FACTOR,
+            tracked_uphill: SIM_ONE,
+            tracked_downhill: SimFixed::lit("1.2"),
+            wheeled_uphill: SIM_ONE,
+            wheeled_downhill: SimFixed::lit("1.2"),
         }
     }
 }
 
 impl TerrainSpeedConfig {
-    /// Build config from parsed GeneralRules.
-    pub fn from_general(slope_climb: SimFixed, slope_descend: SimFixed) -> Self {
+    /// Build config from the four parsed `[General]` slope coefficients.
+    pub fn from_general(
+        tracked_uphill: SimFixed,
+        tracked_downhill: SimFixed,
+        wheeled_uphill: SimFixed,
+        wheeled_downhill: SimFixed,
+    ) -> Self {
         Self {
-            slope_climb,
-            slope_descend,
-            ..Self::default()
+            tracked_uphill,
+            tracked_downhill,
+            wheeled_uphill,
+            wheeled_downhill,
         }
     }
 }
@@ -84,14 +92,19 @@ pub fn compute_cell_speed_modifier(
     current_cell: (u16, u16),
     next_cell: (u16, u16),
     terrain: &ResolvedTerrainGrid,
-    occupancy: &OccupancyGrid,
     config: &TerrainSpeedConfig,
 ) -> SimFixed {
     let terrain_factor = terrain_speed_factor(speed_type, next_cell, terrain);
-    let slope_factor = slope_speed_factor(locomotor_kind, current_cell, next_cell, terrain, config);
-    let crowd_factor = crowd_speed_factor(current_cell, occupancy, config);
+    let slope_factor = slope_speed_factor(
+        speed_type,
+        locomotor_kind,
+        current_cell,
+        next_cell,
+        terrain,
+        config,
+    );
 
-    let combined = terrain_factor * slope_factor * crowd_factor;
+    let combined = terrain_factor * slope_factor;
     combined.clamp(COMBINED_MIN, COMBINED_MAX)
 }
 
@@ -111,11 +124,13 @@ fn terrain_speed_factor(
     multiplier.clamp(TERRAIN_SPEED_MIN, TERRAIN_SPEED_MAX)
 }
 
-/// Factor 2: slope-based speed penalty/bonus from cell height differences.
+/// Factor 2: slope speed coefficient from the current→next cell grade.
 ///
-/// Only applies to ground locomotors that interact with terrain grade.
-/// Hover/Fly/Jumpjet/Rocket float above the surface and ignore slopes.
+/// Only ground movers interact with terrain grade — Hover/Fly/Jumpjet/Rocket
+/// float above the surface and ignore slopes. The coefficient is picked by
+/// SpeedType and direction in [`slope_factor_for`].
 fn slope_speed_factor(
+    speed_type: SpeedType,
     locomotor_kind: LocomotorKind,
     current_cell: (u16, u16),
     next_cell: (u16, u16),
@@ -136,45 +151,36 @@ fn slope_speed_factor(
         .map(|c| c.level)
         .unwrap_or(0);
 
-    if next_level > cur_level {
-        config.slope_climb
-    } else if next_level < cur_level {
-        config.slope_descend
-    } else {
-        SIM_ONE
-    }
+    slope_factor_for(speed_type, cur_level, next_level, config)
 }
 
-/// Factor 3: crowd density slowdown when many units occupy nearby cells.
+/// Pick the slope coefficient for a mover stepping from `cur_level` to `next_level`.
 ///
-/// Counts occupied cells within a small radius. If the count exceeds a
-/// threshold, a jam factor is applied to simulate traffic congestion.
-fn crowd_speed_factor(
-    current_cell: (u16, u16),
-    occupancy: &OccupancyGrid,
+/// Destination higher than current = uphill; lower = downhill; equal = no change.
+/// Track SpeedType uses the tracked pair, every other SpeedType the wheeled pair —
+/// matching the original engine's `SpeedType == Track` test (infantry are handled
+/// by a separate precomputed-foot mechanism and don't reach this vehicle path).
+fn slope_factor_for(
+    speed_type: SpeedType,
+    cur_level: u8,
+    next_level: u8,
     config: &TerrainSpeedConfig,
 ) -> SimFixed {
-    let (cx, cy) = (current_cell.0 as i32, current_cell.1 as i32);
-    let mut occupied_count: u8 = 0;
-
-    for dy in -CROWD_SCAN_RADIUS..=CROWD_SCAN_RADIUS {
-        for dx in -CROWD_SCAN_RADIUS..=CROWD_SCAN_RADIUS {
-            if dx == 0 && dy == 0 {
-                continue; // don't count the unit's own cell
-            }
-            let nx = cx + dx;
-            let ny = cy + dy;
-            if nx < 0 || ny < 0 {
-                continue;
-            }
-            if occupancy.get(nx as u16, ny as u16).is_some() {
-                occupied_count = occupied_count.saturating_add(1);
-            }
+    let tracked = speed_type == SpeedType::Track;
+    if next_level > cur_level {
+        // Uphill.
+        if tracked {
+            config.tracked_uphill
+        } else {
+            config.wheeled_uphill
         }
-    }
-
-    if occupied_count > config.crowd_density_threshold {
-        config.crowd_jam_factor
+    } else if next_level < cur_level {
+        // Downhill.
+        if tracked {
+            config.tracked_downhill
+        } else {
+            config.wheeled_downhill
+        }
     } else {
         SIM_ONE
     }
@@ -233,19 +239,81 @@ mod tests {
         assert_eq!(profile.speed_multiplier_for(SpeedType::Foot), SIM_ONE);
     }
 
+    /// RC-7 / AT-13: percentages above 100 clamp to full speed (1.0); a sub-100
+    /// percentage passes through as its fraction. The original never lets a
+    /// terrain speed bonus push a unit faster than its base speed.
     #[test]
-    fn crowd_below_threshold_no_slowdown() {
-        let config = TerrainSpeedConfig::default();
-        let occupancy = OccupancyGrid::new();
-        let factor = crowd_speed_factor((5, 5), &occupancy, &config);
-        assert_eq!(factor, SIM_ONE);
+    fn speed_multiplier_clamps_at_one() {
+        let fast = SpeedCostProfile {
+            foot: Some(120),
+            ..Default::default()
+        };
+        assert_eq!(fast.speed_multiplier_for(SpeedType::Foot), SIM_ONE);
+
+        // 80% is below the cap, so it passes through as the fraction 80/100
+        // (no clamp). Compare against the same fixed-point division the
+        // implementation performs — a `lit("0.8")` literal differs by 1 ULP
+        // because 0.8 is not exactly representable in binary fixed-point.
+        let slow = SpeedCostProfile {
+            foot: Some(80),
+            ..Default::default()
+        };
+        let pass_through = SimFixed::from_num(80u8) / SimFixed::from_num(100u8);
+        assert_eq!(slow.speed_multiplier_for(SpeedType::Foot), pass_through);
+        assert!(pass_through < SIM_ONE, "80% must stay below the 1.0 cap");
     }
 
     #[test]
     fn default_config_values() {
         let config = TerrainSpeedConfig::default();
-        assert_eq!(config.slope_climb, SimFixed::lit("0.6"));
-        assert_eq!(config.slope_descend, SimFixed::lit("1.2"));
-        assert_eq!(config.crowd_density_threshold, 3);
+        assert_eq!(config.tracked_uphill, SIM_ONE);
+        assert_eq!(config.tracked_downhill, SimFixed::lit("1.2"));
+        assert_eq!(config.wheeled_uphill, SIM_ONE);
+        assert_eq!(config.wheeled_downhill, SimFixed::lit("1.2"));
+    }
+
+    #[test]
+    fn slope_uphill_no_change_downhill_boost() {
+        let config = TerrainSpeedConfig::default();
+        // Uphill (next higher) → 1.0; downhill → 1.2; flat → 1.0. Track and Wheel
+        // share vanilla values but exercise both selection arms.
+        for st in [SpeedType::Track, SpeedType::Wheel] {
+            assert_eq!(
+                slope_factor_for(st, 0, 1, &config),
+                SIM_ONE,
+                "uphill {st:?}"
+            );
+            let down = slope_factor_for(st, 1, 0, &config);
+            assert_eq!(down, SimFixed::lit("1.2"), "downhill {st:?}");
+            assert_eq!(slope_factor_for(st, 2, 2, &config), SIM_ONE, "flat {st:?}");
+        }
+    }
+
+    #[test]
+    fn slope_selects_tracked_vs_wheeled_pair() {
+        // Distinct values per pair to prove the SpeedType arm is honoured.
+        let config = TerrainSpeedConfig {
+            tracked_uphill: SimFixed::lit("0.5"),
+            tracked_downhill: SimFixed::lit("1.5"),
+            wheeled_uphill: SimFixed::lit("0.7"),
+            wheeled_downhill: SimFixed::lit("1.1"),
+        };
+        assert_eq!(
+            slope_factor_for(SpeedType::Track, 0, 1, &config),
+            SimFixed::lit("0.5")
+        );
+        assert_eq!(
+            slope_factor_for(SpeedType::Track, 1, 0, &config),
+            SimFixed::lit("1.5")
+        );
+        // Foot and Wheel both take the wheeled (non-Track) pair.
+        assert_eq!(
+            slope_factor_for(SpeedType::Wheel, 0, 1, &config),
+            SimFixed::lit("0.7")
+        );
+        assert_eq!(
+            slope_factor_for(SpeedType::Foot, 1, 0, &config),
+            SimFixed::lit("1.1")
+        );
     }
 }

@@ -34,7 +34,41 @@ use crate::sim::world::Simulation;
 // `remaining_base_frames` no longer exists (derived from `progress` at sidebar-view time,
 // not hashed). bincode layout changes (the `queues_by_owner` field is gone, the registry
 // gains fields), so the version MUST bump.
-const SNAPSHOT_VERSION: u32 = 19;
+// Bumped 19 -> 20: S2 — `mission.current`/`substate` authority moves to dispatch time for
+// scoped move units (arrival tick hashes Move) and load trusts the serialized MissionCom
+// (post-load re-derive deleted). Layout is unchanged, but a pre-S2 save replayed on S2
+// logic diverges on arrival ticks, so cross-version restores must be refused.
+// Bumped 20 -> 21: per-cell radiation field (substrate Slice 7). `Simulation` gains the
+// serialized `radiation` state (cell levels + site registry, both state-hashed) and
+// `GameEntity` gains `immune_to_radiation`; RadLevel>0 detonations now deal periodic
+// foot-unit damage, so a pre-21 save replayed on 21 logic diverges.
+// Bumped 21 -> 22: ScenarioSession (SC-2) — `seed`/frame-clock/`GameOptions` move under
+// `Simulation.session` and the session identity fields (map name, theater, bounds, MP
+// start waypoints, slot->house) are serialized; bincode layout changes. The move itself
+// is hash-neutral (golden baseline unshifted); the identity fields fold into the hash in
+// the same slice (documented on the golden-harness constant).
+// Bumped 22 -> 23: S3 — Unit barrel destinations are read per-object pre-death (kill-tick
+// aim hold changes hashed FacingClass values on kill ticks) and idle machine-less Units
+// hash mission Guard(5) instead of the legacy None placeholder. Layout unchanged, but a
+// pre-S3 save replayed on S3 logic diverges on the first idle-unit tick, so cross-version
+// restores must be refused. (21 and 22 were taken by the parallel radiation and
+// ScenarioSession slices; the concurrent bumps merged as 22 -> 23.)
+// Bumped 23 -> 24: S4a authoritative flip (Option B) — each live non-miner Unit's
+// mission (+0xC4 tick_counter + derived_mission) is now committed at the per-object
+// AI host (pre-movement, LogicVector order) instead of in movement_tick (scoped
+// movers) / the Phase-9 tail (idle). Commit timing is the gamemd-faithful per-object
+// point: a unit that retasks mid-tick (e.g. an idle Guard unit that opportunity-
+// acquires a target during combat) now hashes the host-committed mission, not the
+// end-of-tick re-derivation. Layout unchanged and the committed goldens are unshifted
+// (those scenarios don't exercise mid-tick non-miner retasking), but a pre-S4a save
+// replayed on S4a logic diverges on the first such tick, so cross-version restores
+// must be refused.
+// S4b: GameEntity gains the hashed `damage_particle_live_until` (`+0x308`-
+// equivalent) field, folded into the state hash, so 24→25 re-baselines. The new
+// field is zero for every entity in stock YR (the AI_Update spark gate is
+// Cyborg-only, with no stock users), so the only hash shift is the extra per-
+// entity zero in the fold — no behavior change to any committed golden scenario.
+const SNAPSHOT_VERSION: u32 = 25;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -113,7 +147,7 @@ impl GameSnapshot {
             version: SNAPSHOT_VERSION,
             map_hash,
             rules_hash,
-            tick: sim.tick,
+            tick: sim.session.tick,
             save_timestamp,
             map_name: map_name.to_string(),
             sim,
@@ -380,13 +414,15 @@ mod tests {
         assert!(result.is_err(), "mismatched version should fail");
     }
 
-    /// P5d retires `queues_by_owner`/`BuildQueueItem` into the registry (`Factory.queue`
-    /// of `QueueEntry` + `active_total_base_frames`); the bincode layout + hash shape
-    /// change, so the version bumped 18 -> 19. This pins it so a later accidental bump is
-    /// caught.
+    /// Concurrent-slice ladder: radiation took 20 -> 21, ScenarioSession (SC-2)
+    /// took 21 -> 22, S3 (per-object pre-death facing read + idle-Guard authority)
+    /// took 22 -> 23, the S4a authoritative flip (per-object mission commit
+    /// relocated to the AI host) took 23 -> 24, and S4b (the hashed
+    /// `damage_particle_live_until` `+0x308`-equivalent field) took 24 -> 25. This
+    /// pins it so a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_19() {
-        assert_eq!(super::SNAPSHOT_VERSION, 19);
+    fn snapshot_version_is_25() {
+        assert_eq!(super::SNAPSHOT_VERSION, 25);
     }
 
     /// `AttackTarget::for_cell` survives serialize → deserialize as the same
@@ -898,5 +934,74 @@ mod tests {
                 target_ry: 200
             }
         ));
+    }
+
+    /// Substrate Slice 5 (#8) re-entry case: when an entity LEAVES a cell and
+    /// re-enters it, it takes a fresh (newest) enter order while keeping its
+    /// (lowest) stable id — the one ordering the base
+    /// `saveload_occupancy_list_order_matches_incremental` fixture cannot
+    /// produce. The post-load rebuild must reproduce the re-entered list
+    /// exactly and deterministically.
+    #[test]
+    fn saveload_occupancy_list_order_survives_reentry() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::occupancy::OccupancyGrid;
+
+        let mut sim = Simulation::new();
+        for id in 1u64..=3 {
+            let mut e = GameEntity::test_default(id, "E1", "Americans", 5, 5);
+            e.category = EntityCategory::Infantry;
+            sim.substrate.entities.insert(e);
+            sim.add_entity_occupancy(id);
+        }
+        // Re-entry: pop entity 1 out and back in. Its enter order is now the
+        // NEWEST while its stable id stays the LOWEST — an id-sorted rebuild
+        // would produce a different list, so this discriminates the
+        // (enter_order, id) contract from a naive id sort.
+        sim.remove_entity_occupancy(1);
+        sim.add_entity_occupancy(1);
+
+        let live: Vec<(u64, MovementLayer)> = sim
+            .substrate
+            .occupancy
+            .get(5, 5)
+            .expect("occupied cell")
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| (o.entity_id, o.layer))
+            .collect();
+        // Non-buildings PREPEND, so after the re-entry the live list is
+        // [1 (re-entered, newest), 3, 2].
+        assert_eq!(
+            live.iter().map(|(id, _)| *id).collect::<Vec<u64>>(),
+            vec![1, 3, 2],
+            "incremental list order (prepend + re-entry) is the fixture premise"
+        );
+
+        // Serde round trip (the snapshot path), then the post-load rebuild
+        // (`rebuild_caches_after_load` delegates occupancy to exactly this).
+        let bytes = bincode::serialize(&sim).expect("sim serializes");
+        let restored: Simulation = bincode::deserialize(&bytes).expect("sim deserializes");
+        let rebuilt = OccupancyGrid::rebuild(&restored.substrate.entities);
+        let rebuilt_list: Vec<(u64, MovementLayer)> = rebuilt
+            .get(5, 5)
+            .expect("rebuilt cell")
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| (o.entity_id, o.layer))
+            .collect();
+        assert_eq!(
+            rebuilt_list, live,
+            "post-load rebuild must reproduce the incremental occupant list exactly"
+        );
+
+        // Determinism: a second rebuild from the same store is identical.
+        let rebuilt_again = OccupancyGrid::rebuild(&restored.substrate.entities);
+        let rebuilt_again_list: Vec<(u64, MovementLayer)> = rebuilt_again
+            .get(5, 5)
+            .expect("rebuilt cell")
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| (o.entity_id, o.layer))
+            .collect();
+        assert_eq!(rebuilt_again_list, rebuilt_list, "rebuild is deterministic");
     }
 }

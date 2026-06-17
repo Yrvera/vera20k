@@ -22,8 +22,12 @@ const FLAG_REVEALED: u8 = 0x01;
 /// Bit flag: cell is currently in line of sight (rebuilt each tick).
 const FLAG_VISIBLE: u8 = 0x02;
 /// Bit flag: cell is covered by an enemy gap generator (rebuilt each tick).
-/// Entities on gap-covered cells are hidden from the local player.
+/// Entities on gap-covered cells are hidden from the local player; terrain
+/// renders black (treated as unrevealed).
 const FLAG_GAP_COVERED: u8 = 0x04;
+/// Bit flag: cell is covered by a friendly (own/allied) gap generator (rebuilt
+/// each tick). Terrain renders half-bright fog rather than black.
+const FLAG_GAP_FOG: u8 = 0x08;
 
 /// RA2 hard-caps effective sight at 10 cells. Going past 10 was a crash
 /// in the original engine — we clamp to this limit for compatibility.
@@ -89,6 +93,12 @@ impl OwnerVisibility {
             .map_or(false, |i| self.cells[i] & FLAG_GAP_COVERED != 0)
     }
 
+    /// Returns true if the cell is covered by a friendly gap generator this tick.
+    pub fn is_gap_fog(&self, rx: u16, ry: u16) -> bool {
+        self.index(rx, ry)
+            .map_or(false, |i| self.cells[i] & FLAG_GAP_FOG != 0)
+    }
+
     /// Mark a cell as both visible and revealed.
     pub fn mark_visible(&mut self, rx: u16, ry: u16) {
         if let Some(i) = self.index(rx, ry) {
@@ -101,7 +111,7 @@ impl OwnerVisibility {
     /// grids can be reused without reallocation.
     pub fn clear_all_visible(&mut self) {
         for cell in &mut self.cells {
-            *cell &= !(FLAG_VISIBLE | FLAG_GAP_COVERED);
+            *cell &= !(FLAG_VISIBLE | FLAG_GAP_COVERED | FLAG_GAP_FOG);
         }
     }
 
@@ -270,6 +280,16 @@ impl FogState {
         self.by_owner
             .get(&owner)
             .is_some_and(|s| s.is_gap_covered(rx, ry))
+    }
+
+    /// Returns true if the cell is covered by a friendly gap generator for this owner.
+    pub fn is_cell_gap_fog(&self, owner: InternedId, rx: u16, ry: u16) -> bool {
+        if let Some(vis) = self.merged_vis(owner) {
+            return vis.is_gap_fog(rx, ry);
+        }
+        self.by_owner
+            .get(&owner)
+            .is_some_and(|s| s.is_gap_fog(rx, ry))
     }
 
     /// Returns true if two owners should be treated as friendly.
@@ -461,7 +481,14 @@ pub fn recompute_owner_visibility_in_place(
     height_grid: Option<&[u8]>,
     _interner: &crate::sim::intern::StringInterner,
 ) {
-    let (width, height) = resolve_bounds(entities, path_grid);
+    // Construction-seeded session bounds are authoritative; the lazy
+    // derivation stays only as the fallback for fixture sims built without a
+    // descriptor (zero-dim fog).
+    let (width, height) = if fog.width > 0 && fog.height > 0 {
+        (fog.width, fog.height)
+    } else {
+        resolve_bounds(entities, path_grid)
+    };
     if width == 0 || height == 0 {
         *fog = FogState::default();
         return;
@@ -558,6 +585,19 @@ fn resolve_bounds(entities: &EntityStore, path_grid: Option<&PathGrid>) -> (u16,
 /// For sight 0-9, iterates the pre-built (dx, dy) offsets matching the original
 /// spiral iteration. For sight 10, falls back to the spiral entries for sight 9
 /// plus a sqrt-based check for the outer ring.
+///
+/// ## Elevation Z-shift
+/// The spiral is centered on the unit's *screen* cell, not its raw foot cell.
+/// An elevated unit's sprite renders ~15px upward (toward isometric north) per
+/// height level, so the original engine shifts the reveal center by `-z_level/2`
+/// on each axis to keep the revealed footprint under the sprite. Without this an
+/// elevated unit would over-reveal toward isometric south. The shift is applied
+/// unconditionally (independent of `reveal_by_height`).
+///
+/// The height-LOS obstruction check is *not* affected by the shift: in the
+/// original engine the shift cancels out of the obstruction-cell math, leaving it
+/// relative to the raw foot cell. We reproduce that by adding `z_shift` back when
+/// computing the obstruction cell below.
 fn reveal_radius_into(
     vis: &mut OwnerVisibility,
     center_rx: u16,
@@ -569,8 +609,14 @@ fn reveal_radius_into(
     width: u16,
     height: u16,
 ) {
-    let cx = i32::from(center_rx);
-    let cy = i32::from(center_ry);
+    // Z-shift the spiral center toward isometric north by z_level/2 cells. Rust's
+    // `position.z` is the integer height level, so this is the exact integer form
+    // of the original's screen-projection shift (each level is a multiple of 15
+    // leptons, so the float rounding fixups never change the cell result).
+    let viewer_level = viewer_z as i32;
+    let z_shift = viewer_level / 2;
+    let cx = i32::from(center_rx) - z_shift;
+    let cy = i32::from(center_ry) - z_shift;
     let w = i32::from(width);
     let h = i32::from(height);
 
@@ -585,21 +631,24 @@ fn reveal_radius_into(
         REVEAL_RING_SIZES[9]
     };
 
-    let viewer_level = viewer_z as i32;
-
     for i in 0..spiral_end {
         let (dx, dy) = REVEAL_SPIRAL[i];
         let rx = cx + dx as i32;
         let ry = cy + dy as i32;
         if rx >= 0 && rx < w && ry >= 0 && ry < h {
-            // Height-based LOS: check if terrain at the midpoint cell blocks sight.
-            // The mirror table gives a one-cell offset from the target back toward
-            // the viewer. If that cell's Level > viewer_level + 3, LOS is blocked.
+            // Height-based LOS: check whether terrain at the obstruction cell
+            // blocks sight. The original engine samples the cell at
+            // `foot_target + mirror[i] + (2, 2)` — the per-entry mirror steps one
+            // cell back toward the viewer, plus a fixed +2 on each axis baked into
+            // the original's obstruction math. The obstruction is relative to the
+            // raw foot cell, so we add `z_shift` back to undo the spiral's Z-shift
+            // (in the original this cancellation is implicit). If that cell's Level
+            // exceeds viewer_level + 3, the target is not revealed (LOS blocked).
             if reveal_by_height {
                 if let Some(hg) = height_grid {
                     let (mdx, mdy) = REVEAL_MIRROR[i];
-                    let obs_x = rx + mdx as i32;
-                    let obs_y = ry + mdy as i32;
+                    let obs_x = rx + mdx as i32 + 2 + z_shift;
+                    let obs_y = ry + mdy as i32 + 2 + z_shift;
                     if obs_x >= 0 && obs_x < w && obs_y >= 0 && obs_y < h {
                         let obs_level = hg[(obs_y * w + obs_x) as usize] as i32;
                         if viewer_level + 3 < obs_level {
@@ -784,15 +833,19 @@ pub fn apply_spy_sat(
     }
 }
 
-/// Apply Gap Generator suppression: for each gap generator, clear FLAG_VISIBLE
-/// on all enemy owners' cells within `gap_radius`. This turns Visible → Revealed
-/// (fogged) for enemies in the gap field. Call AFTER spy_sat so gap wins.
+/// Apply Gap Generator coverage for one tick. Each generator carries its own
+/// `GapRadiusInCells`. For every cell in the strict circular footprint
+/// `dx*dx + dy*dy < (radius+1)*(radius+1)`:
+///   - enemy viewers: clear FLAG_VISIBLE and set FLAG_GAP_COVERED — the cell is
+///     hidden and its terrain renders black (treated as unrevealed);
+///   - friendly viewers (owner + allies): set FLAG_GAP_FOG — the cell renders
+///     half-bright fog while keeping the owner's own vision.
+/// Call AFTER spy_sat so gap wins in contested areas.
 ///
-/// Takes a list of (owner_name, rx, ry) for each gap generator building/unit.
+/// Takes a list of (owner_name, rx, ry, radius) for each gap generator.
 pub fn apply_gap_generators(
     fog: &mut FogState,
-    gap_generators: &[(InternedId, u16, u16)],
-    gap_radius: i32,
+    gap_generators: &[(InternedId, u16, u16, i32)],
     interner: &StringInterner,
 ) {
     let width = fog.width;
@@ -800,33 +853,37 @@ pub fn apply_gap_generators(
     if width == 0 || height == 0 {
         return;
     }
-    let rr = gap_radius;
-    for &(gap_owner_id, center_rx, center_ry) in gap_generators {
+    for &(gap_owner_id, center_rx, center_ry, radius) in gap_generators {
+        if radius <= 0 {
+            continue;
+        }
         let gap_owner = interner.resolve(gap_owner_id);
         let cx = i32::from(center_rx);
         let cy = i32::from(center_ry);
-        let min_x = (cx - rr).max(0);
-        let max_x = (cx + rr).min(i32::from(width) - 1);
-        let min_y = (cy - rr).max(0);
-        let max_y = (cy + rr).min(i32::from(height) - 1);
-        let radius_sq = rr * rr;
+        // Strict native footprint: accept a cell when dx*dx + dy*dy < (radius+1)^2.
+        let threshold = (radius + 1) * (radius + 1);
+        let min_x = (cx - radius).max(0);
+        let max_x = (cx + radius).min(i32::from(width) - 1);
+        let min_y = (cy - radius).max(0);
+        let max_y = (cy + radius).min(i32::from(height) - 1);
 
-        // Clear visibility for all enemy owners in the gap radius.
         for (viewer_id, vis) in fog.by_owner.iter_mut() {
             let viewer = interner.resolve(*viewer_id);
-            if are_houses_friendly(&fog.alliances, gap_owner, viewer) {
-                continue; // Don't suppress friendly vision.
-            }
+            let friendly = are_houses_friendly(&fog.alliances, gap_owner, viewer);
             for y in min_y..=max_y {
                 for x in min_x..=max_x {
                     let dx = x - cx;
                     let dy = y - cy;
-                    if dx * dx + dy * dy > radius_sq {
+                    if dx * dx + dy * dy >= threshold {
                         continue;
                     }
                     if let Some(i) = vis.index(x as u16, y as u16) {
-                        vis.cells[i] &= !FLAG_VISIBLE;
-                        vis.cells[i] |= FLAG_GAP_COVERED;
+                        if friendly {
+                            vis.cells[i] |= FLAG_GAP_FOG;
+                        } else {
+                            vis.cells[i] &= !FLAG_VISIBLE;
+                            vis.cells[i] |= FLAG_GAP_COVERED;
+                        }
                     }
                 }
             }

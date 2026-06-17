@@ -11,7 +11,7 @@
 //!    state to poll. See the plan's Scope note.)
 //!
 //! Flash period is exactly 10 game-logic ticks. The orchestrator advances
-//! `GadgetFlash::tick` by `sim.tick - last_sim_tick` per call so the period
+//! `GadgetFlash::tick` by `sim.session.tick - last_sim_tick` per call so the period
 //! is measured in sim ticks (not render frames), matching the binary.
 //!
 //! ## Dependency rules
@@ -44,7 +44,7 @@ pub(crate) fn update_sidebar_gadget_state(state: &mut AppState) {
     // Mirrors StripClass::AI 006a8e52..006a8e9b. extra_delay always lands the
     // first toggle on the second-next 10-tick boundary; parity bit phase-aligns
     // concurrent flashes started in the same 10-tick window.
-    let frame = sim.tick;
+    let frame = sim.session.tick;
     let extra_delay: u32 =
         (FLASH_PERIOD_TICKS - (frame as u32 % FLASH_PERIOD_TICKS)) % FLASH_PERIOD_TICKS;
     let next_boundary = (extra_delay as u64 + frame) / FLASH_PERIOD_TICKS as u64;
@@ -87,7 +87,7 @@ fn has_charged_sw_for_owner(
     rules: &crate::rules::ruleset::RuleSet,
     owner: &str,
 ) -> bool {
-    if !sim.game_options.super_weapons {
+    if !sim.session.game_options.super_weapons {
         return false;
     }
     let owner_iid = sim.interner.get(owner).unwrap_or_default();

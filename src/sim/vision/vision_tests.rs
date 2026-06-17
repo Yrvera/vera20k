@@ -266,9 +266,11 @@ fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
         &config,
         &ti(),
     );
-    // Effective = 5 + 1 = 6. Cell at distance 6 visible, 7 not.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 16, 10));
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 17, 10));
+    // Effective = 5 + 1 = 6. The z=8 unit also shifts its reveal center by
+    // z/2 = 4 cells toward iso-north, so the foot cell (10,10) reveals around
+    // (6,6). Cell at distance 6 east of the shifted center (12,6) is visible; 7 (13,6) not.
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 12, 6));
+    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 13, 6));
 }
 
 #[test]
@@ -344,9 +346,11 @@ fn test_elevation_sight_bonus_disabled_when_zero() {
         &config,
         &ti(),
     );
-    // Effective = 5 only. Cell at 5 visible, 6 not.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 15, 10));
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 16, 10));
+    // Effective = 5 only (elevation sight bonus disabled). The z=16 unit still
+    // shifts its reveal center by z/2 = 8 cells, so (10,10) reveals around (2,2).
+    // Cell at distance 5 east of the shifted center (7,2) is visible; 6 (8,2) not.
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 7, 2));
+    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 8, 2));
 }
 
 #[test]
@@ -501,7 +505,7 @@ fn test_gap_generator_suppresses_enemy_visibility() {
     // Allied gap generator at (12, 10) with radius 5.
     let americans_id = intern::test_intern("Americans");
     let interner = ti();
-    apply_gap_generators(&mut fog, &[(americans_id, 12, 10)], 5, &interner);
+    apply_gap_generators(&mut fog, &[(americans_id, 12, 10, 5)], &interner);
 
     // Soviet's vision within gap radius should be suppressed.
     // (13, 10) is distance 1 from gap center (12,10) — inside gap.
@@ -523,7 +527,7 @@ fn test_gap_generator_does_not_suppress_friendly() {
     // Gap generator owned by Americans — should NOT suppress American vision.
     let americans_id = intern::test_intern("Americans");
     let interner = ti();
-    apply_gap_generators(&mut fog, &[(americans_id, 10, 10)], 5, &interner);
+    apply_gap_generators(&mut fog, &[(americans_id, 10, 10, 5)], &interner);
     assert!(fog.is_cell_visible(intern::test_intern("Americans"), 10, 10));
 }
 
@@ -671,7 +675,7 @@ fn test_gap_generator_sets_gap_covered_flag() {
     // American gap generator at (12, 10) with radius 5.
     let americans_id = intern::test_intern("Americans");
     let interner = ti();
-    apply_gap_generators(&mut fog, &[(americans_id, 12, 10)], 5, &interner);
+    apply_gap_generators(&mut fog, &[(americans_id, 12, 10, 5)], &interner);
     fog.build_merged_for(intern::test_intern("Soviet"), &ti());
 
     // Cell should now be gap-covered AND not visible for Soviet.
@@ -693,7 +697,7 @@ fn test_gap_covered_not_set_for_friendly() {
     // Gap owned by Americans — should NOT gap-cover American cells.
     let americans_id = intern::test_intern("Americans");
     let interner = ti();
-    apply_gap_generators(&mut fog, &[(americans_id, 10, 10)], 5, &interner);
+    apply_gap_generators(&mut fog, &[(americans_id, 10, 10, 5)], &interner);
     fog.build_merged_for(intern::test_intern("Americans"), &ti());
 
     assert!(!fog.is_cell_gap_covered(intern::test_intern("Americans"), 10, 10));
@@ -720,40 +724,104 @@ fn test_gap_covered_cleared_each_tick() {
 
 #[test]
 fn test_height_los_blocks_sight_behind_cliff() {
-    // Unit at (5,5) height 0, sight 5.
-    // Cliff at (7,5) height 5 should block sight to (8,5).
+    // Unit at (5,5) height 0, sight 5. Target (8,5) = spiral offset (3,0); its
+    // mirror is (-1,0), so the original engine samples the obstruction cell at
+    // target + mirror + (2,2) = (8,5) + (-1,0) + (2,2) = (9,7). A tall cliff there
+    // (level 5 > viewer_level 0 + 3) blocks sight to (8,5).
     let mut vis = OwnerVisibility::new(20, 20);
     let width: u16 = 20;
     let height: u16 = 20;
     let mut hg = vec![0u8; width as usize * height as usize];
-    // Place a cliff at (7,5) — 5 levels high (> viewer_level 0 + 3).
-    hg[5 * width as usize + 7] = 5;
+    hg[7 * width as usize + 9] = 5; // obstruction cell (9,7)
 
     reveal_radius_into(&mut vis, 5, 5, 5, 0, true, Some(&hg), width, height);
 
-    // (6,5) is before the cliff — should be visible.
+    // (6,5)'s obstruction is (7,7) (no cliff) — visible.
     assert!(vis.is_visible(6, 5));
-    // (7,5) is the cliff cell itself — the mirror check for this cell looks at
-    // (7+mirror_dx, 5+mirror_dy). Whether it's blocked depends on the mirror table.
-    // (8,5) is behind the cliff — its mirror offset points back toward (7,5),
-    // which has level 5. Since 0 + 3 < 5, sight is blocked.
+    // (8,5)'s obstruction (9,7) is the cliff — blocked.
     assert!(!vis.is_visible(8, 5));
 }
 
 #[test]
-fn test_height_los_high_viewer_sees_past_cliff() {
-    // Unit at (5,5) height 4, sight 5.
-    // Cliff at (7,5) height 5 — viewer_level + 3 = 7, NOT < 5, so LOS passes.
+fn test_height_los_plus_two_obstruction_offset() {
+    // Pins the +2 obstruction offset. For target (8,5) the obstruction is
+    // target + mirror(-1,0) + (2,2) = (9,7), NOT the naive target + mirror = (7,5).
+    let width: u16 = 20;
+    let height: u16 = 20;
+
+    // Cliff at the naive (no-+2) location (7,5) must NOT block (8,5).
     let mut vis = OwnerVisibility::new(20, 20);
+    let mut hg = vec![0u8; width as usize * height as usize];
+    hg[5 * width as usize + 7] = 5; // (7,5) — the pre-fix obstruction guess
+    reveal_radius_into(&mut vis, 5, 5, 5, 0, true, Some(&hg), width, height);
+    assert!(vis.is_visible(8, 5), "naive (7,5) cliff must not block with the +2 offset");
+
+    // Cliff at the +2 location (9,7) must block (8,5).
+    let mut vis2 = OwnerVisibility::new(20, 20);
+    let mut hg2 = vec![0u8; width as usize * height as usize];
+    hg2[7 * width as usize + 9] = 5; // (9,7) — the actual obstruction cell
+    reveal_radius_into(&mut vis2, 5, 5, 5, 0, true, Some(&hg2), width, height);
+    assert!(!vis2.is_visible(8, 5), "+2 obstruction cell (9,7) must block");
+}
+
+#[test]
+fn test_height_los_high_viewer_sees_past_cliff() {
+    // Viewer at (5,5), sight 5. A cliff (level 5) sits at obstruction cell (9,7),
+    // which gates spiral index 29 (offset (3,0), mirror (-1,0)). The obstruction is
+    // relative to the raw foot cell: (5,5) + (3,0) + (-1,0) + (2,2) = (9,7),
+    // independent of the elevation Z-shift.
     let width: u16 = 20;
     let height: u16 = 20;
     let mut hg = vec![0u8; width as usize * height as usize];
-    hg[5 * width as usize + 7] = 5;
+    hg[7 * width as usize + 9] = 5;
 
-    reveal_radius_into(&mut vis, 5, 5, 5, 4, true, Some(&hg), width, height);
+    // Low viewer (z=0, no shift): index-29 reveal cell is (8,5); 0+3 < 5 → blocked.
+    let mut low = OwnerVisibility::new(width, height);
+    reveal_radius_into(&mut low, 5, 5, 5, 0, true, Some(&hg), width, height);
+    assert!(!low.is_visible(8, 5), "low viewer is blocked by the cliff");
 
-    // High viewer (level 4 + 3 = 7 >= 5) sees past the cliff.
-    assert!(vis.is_visible(8, 5));
+    // High viewer (z=4, shift=2): index-29 reveal cell shifts to (6,3); the SAME
+    // obstruction (9,7) is checked, but 4+3 = 7 >= 5 → LOS passes.
+    let mut high = OwnerVisibility::new(width, height);
+    reveal_radius_into(&mut high, 5, 5, 5, 4, true, Some(&hg), width, height);
+    assert!(
+        high.is_visible(6, 3),
+        "high viewer sees past the cliff (reveal cell shifted to (6,3))"
+    );
+}
+
+#[test]
+fn test_reveal_center_z_shift() {
+    // An elevated unit reveals around its *screen* cell, not its raw foot cell:
+    // the spiral center is shifted -z_level/2 on each axis (toward isometric
+    // north). z=4 → shift 2 cells. Pins the elevation reveal-center fix.
+    let width: u16 = 20;
+    let height: u16 = 20;
+
+    // Ground unit (z=0): center stays at the foot cell (10,10).
+    let mut ground = OwnerVisibility::new(width, height);
+    reveal_radius_into(&mut ground, 10, 10, 1, 0, false, None, width, height);
+    assert!(
+        ground.is_visible(10, 10),
+        "ground unit centers on its foot cell"
+    );
+    assert!(
+        !ground.is_visible(8, 8),
+        "ground reveal does not reach (8,8)"
+    );
+
+    // Elevated unit (z=4): center shifts to (8,8). The raw foot cell (10,10) is
+    // offset (2,2) from the shifted center → outside the sight-1 footprint.
+    let mut elevated = OwnerVisibility::new(width, height);
+    reveal_radius_into(&mut elevated, 10, 10, 1, 4, false, None, width, height);
+    assert!(
+        elevated.is_visible(8, 8),
+        "elevated reveal centers on the Z-shifted cell (8,8)"
+    );
+    assert!(
+        !elevated.is_visible(10, 10),
+        "raw foot cell (10,10) is no longer the reveal center"
+    );
 }
 
 #[test]
@@ -782,4 +850,72 @@ fn test_height_los_none_grid_disables_check() {
 
     // Without a height grid, all cells in range are visible.
     assert!(vis.is_visible(8, 5));
+}
+
+// -- Gap Generator footprint + hostile/friendly branches --
+
+#[test]
+fn gap_radius_uses_strict_radius_plus_one_squared() {
+    // radius 10 -> threshold (10+1)^2 = 121. A cell at d^2 = 120 is covered,
+    // d^2 = 121 is not. Pins the native strict `< (r+1)^2` footprint.
+    let enemy = intern::test_intern("Soviet");
+    let gapper = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 64,
+        height: 64,
+        ..Default::default()
+    };
+    // Pre-reveal a cell so suppression is observable (also creates the enemy grid).
+    fog.mark_visible_for_owner(enemy, 30, 40);
+    // No alliance entries => enemy is hostile to gapper.
+    apply_gap_generators(&mut fog, &[(gapper, 30, 30, 10)], &interner);
+
+    assert!(fog.is_cell_gap_covered(enemy, 32, 40)); // dx=2,dy=10 -> 104 < 121
+    assert!(!fog.is_cell_gap_covered(enemy, 30, 41)); // dx=0,dy=11 -> 121 not < 121
+    assert!(fog.is_cell_gap_covered(enemy, 30, 40)); // dx=0,dy=10 -> 100 < 121
+    assert!(!fog.is_cell_visible(enemy, 30, 40)); // hostile gap clears visibility
+}
+
+#[test]
+fn gap_marks_friendly_viewer_as_fog_not_covered() {
+    // A gap generator over its own/allied territory fogs (half-bright), it does
+    // not black out or suppress the owner's vision.
+    let gapper = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 64,
+        height: 64,
+        ..Default::default()
+    };
+    fog.mark_visible_for_owner(gapper, 30, 35);
+    apply_gap_generators(&mut fog, &[(gapper, 30, 30, 10)], &interner);
+
+    assert!(fog.is_cell_gap_fog(gapper, 30, 35)); // friendly => fog
+    assert!(!fog.is_cell_gap_covered(gapper, 30, 35)); // not black
+    assert!(fog.is_cell_visible(gapper, 30, 35)); // own vision NOT suppressed
+}
+
+#[test]
+fn gap_coverage_clears_when_no_generator_present() {
+    // dev recomputes coverage each tick (no reference counter): once the
+    // generator is gone, the next tick's clear + empty apply restores the cell.
+    let enemy = intern::test_intern("Soviet");
+    let gapper = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 64,
+        height: 64,
+        ..Default::default()
+    };
+    fog.mark_visible_for_owner(enemy, 30, 35);
+    apply_gap_generators(&mut fog, &[(gapper, 30, 30, 10)], &interner);
+    assert!(fog.is_cell_gap_covered(enemy, 30, 35));
+
+    // New tick: clear_all_visible drops the gap flags; no generator => stays clear.
+    if let Some(vis) = fog.by_owner.get_mut(&enemy) {
+        vis.clear_all_visible();
+    }
+    apply_gap_generators(&mut fog, &[], &interner);
+    assert!(!fog.is_cell_gap_covered(enemy, 30, 35));
 }

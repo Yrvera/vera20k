@@ -262,21 +262,21 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
     let config = MinerConfig::default();
     let grid = PathGrid::new(64, 64);
     for _ in 0..n {
-        sim.total_sim_ms = sim.total_sim_ms.saturating_add(67);
-        sim.binary_frame = ((sim.total_sim_ms * 15) / 1000) as u32;
+        sim.session.total_sim_ms = sim.session.total_sim_ms.saturating_add(67);
+        sim.session.binary_frame = ((sim.session.total_sim_ms * 15) / 1000) as u32;
         crate::sim::movement::teleport_movement::tick_teleport_movement(
             &mut sim.substrate.entities,
             &mut OccupancyGrid::new(),
             &[],
             67,
-            sim.tick,
+            sim.session.tick,
             None,
         );
         super::miner_system::tick_miners(sim, rules, &config, Some(&grid));
         // Also tick movement so issue_direct_move targets are consumed
         // (Linked/Departing wait for movement_target to be None).
         crate::sim::movement::tick_movement(&mut sim.substrate.entities, 67, &mut sim.interner);
-        sim.tick += 1;
+        sim.session.tick += 1;
     }
 }
 
@@ -474,7 +474,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
         &mut OccupancyGrid::new(),
         &[],
         67,
-        sim.tick,
+        sim.session.tick,
         None,
     );
 
@@ -1791,7 +1791,7 @@ fn wait_no_ore_rescans_after_cooldown() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     spawn_refinery(&mut sim, 2, 10, 10);
 
-    let now = sim.binary_frame;
+    let now = sim.session.binary_frame;
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
@@ -2633,10 +2633,10 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             &mut occupancy,
             &mut rng,
             67,
-            sim.tick,
+            sim.session.tick,
             &mut sim.interner,
         );
-        sim.tick += 1;
+        sim.session.tick += 1;
 
         let miner = sim
             .substrate.entities
@@ -2676,10 +2676,10 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             &mut occupancy,
             &mut rng,
             67,
-            sim.tick,
+            sim.session.tick,
             &mut sim.interner,
         );
-        sim.tick += 1;
+        sim.session.tick += 1;
     }
 
     let entity = sim.substrate.entities.get(miner_id).expect("harvester still alive");
@@ -2790,10 +2790,10 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
             &mut occupancy,
             &mut rng,
             67,
-            sim.tick,
+            sim.session.tick,
             &mut sim.interner,
         );
-        sim.tick += 1;
+        sim.session.tick += 1;
     }
 
     let refinery = sim.substrate.entities.get(refinery_id).expect("refinery still alive");
@@ -4104,7 +4104,7 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
         );
         assert!(m.unload_active, "unload-active latch should be set");
         assert_eq!(m.unload_accumulator, 0);
-        assert_eq!(m.unload_cluster_timer.start_frame, sim.binary_frame);
+        assert_eq!(m.unload_cluster_timer.start_frame, sim.session.binary_frame);
         assert_eq!(m.unload_cluster_timer.duration, 1);
         assert_eq!(m.unload_cluster_repeat, 1);
         assert_eq!(m.unload_accumulator_step, 1);
@@ -4191,7 +4191,7 @@ fn pivoting_phase_smoothly_rotates_to_east() {
         assert_eq!(entity.facing_target, Some(0x40));
         assert!(m.dock_pivot_facing.is_some());
         assert_eq!(m.mission_deploy_timer.duration, 5);
-        assert_eq!(m.mission_deploy_timer.start_frame, sim.binary_frame);
+        assert_eq!(m.mission_deploy_timer.start_frame, sim.session.binary_frame);
         assert_eq!(
             sim.scenario_rng.state(),
             rng_before,
@@ -5070,7 +5070,7 @@ fn ai_brutal_gets_virtual_purifier_bonus() {
         owner_id,
         HouseState::new(owner_id, 0, None, false, 0, 10), // is_human=false
     );
-    sim.game_options.ai_difficulty = 0; // Brutal (top of AIVirtualPurifiers)
+    sim.session.game_options.ai_difficulty = 0; // Brutal (top of AIVirtualPurifiers)
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
@@ -5116,7 +5116,7 @@ fn human_player_does_not_get_ai_virtual_bonus() {
         owner_id,
         HouseState::new(owner_id, 0, None, true, 0, 10), // is_human=true
     );
-    sim.game_options.ai_difficulty = 0;
+    sim.session.game_options.ai_difficulty = 0;
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);

@@ -73,8 +73,17 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// hash for every entity at its default — a hash-composition change, not a
 /// behavior drift. Re-baselined for Slice 7b, then Slice 8 (MissionCom folded
 /// into state_hash — every entity now contributes its default mission bytes;
-/// composition change, not a behavior drift).
-const SLICE6_BASELINE_HASH: u64 = 11204055998814135587;
+/// composition change, not a behavior drift). Re-baselined for S3 idle→Guard:
+/// idle machine-less Units hash mission Guard(5) instead of the legacy None
+/// placeholder (hashed-representation fidelity fix; the retask behavior under
+/// test is unchanged). Re-baselined for SC-2 (session identity — seed, map
+/// name, theater, bounds, MP start table — folded into the hash; composition
+/// change, not a behavior drift). Re-measured at the S3 × SC-2 merge (both
+/// deltas combined; value from the merged tree's green run). Re-baselined for S4b
+/// (the hashed `damage_particle_live_until` `+0x308`-equivalent field — every
+/// entity now folds an extra 0; composition change, NOT a behavior drift, proven
+/// by the baseline holding unchanged with the fold line disabled).
+const SLICE6_BASELINE_HASH: u64 = 5265402922015073596;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -94,7 +103,7 @@ fn replay_hash_stable_through_slice6() {
         &heights,
     );
 
-    // (execute_tick, command) — apply_due_commands fires each when self.tick+1 == tick.
+    // (execute_tick, command) — apply_due_commands fires each when self.session.tick+1 == tick.
     let script: &[(u64, Command)] = &[
         (
             1,

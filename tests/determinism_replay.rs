@@ -66,7 +66,7 @@ fn run_with_frame_profile(total_ms: u32, frame_ms: u32) -> (u64, Vec<u64>, Repla
 
         while acc_ms >= TICK_MS as u64 {
             acc_ms -= TICK_MS as u64;
-            let execute_tick = sim.tick + 1;
+            let execute_tick = sim.session.tick + 1;
             let mut due: Vec<CommandEnvelope> = Vec::new();
             pending.retain(|cmd| {
                 if cmd.execute_tick <= execute_tick {
@@ -104,6 +104,89 @@ fn determinism_repeatability_same_inputs() {
     assert_eq!(
         timeline_a, timeline_b,
         "Per-tick hash timeline should be identical"
+    );
+}
+
+/// AT-2: playback is constructed FROM the recorded header seed and reproduces
+/// the live timeline; a corrupted header seed (consistently applied) fails to
+/// reproduce it. Proves the recorded seed is the playback authority.
+#[test]
+fn replay_reapplies_header_seed() {
+    use vera20k::sim::scenario_session::ScenarioDescriptor;
+
+    fn sim_with_unit(desc: &ScenarioDescriptor) -> Simulation {
+        let mut sim = Simulation::from_descriptor(desc);
+        let entity = MapEntity {
+            owner: "Americans".to_string(),
+            type_id: "MTNK".to_string(),
+            health: 256,
+            cell_x: 2,
+            cell_y: 2,
+            facing: 64,
+            category: EntityCategory::Unit,
+            sub_cell: 0,
+            veterancy: 0,
+            high: false,
+        };
+        let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        sim.spawn_from_map(&[entity], None, &heights);
+        sim
+    }
+
+    // Record under a descriptor seed. The map name is hashed session state,
+    // so the fixture sets it on the descriptor exactly like the real launch
+    // path does — the header then derives both fields from the session.
+    let desc = ScenarioDescriptor {
+        seed: 0x00A1_1CE5,
+        map_name: "seed_roundtrip".to_string(),
+        ..Default::default()
+    };
+    let mut sim = sim_with_unit(&desc);
+    let grid = PathGrid::new(32, 32);
+    let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut replay = ReplayLog::new(ReplayHeader {
+        version: 1,
+        tick_hz: 30,
+        // The descriptor seed/map name are what the sim was constructed from;
+        // recording them is exactly what the live header path does.
+        seed: u64::from(desc.seed),
+        map_name: desc.map_name.clone(),
+        rules_hash: 0,
+    });
+    let mut live: Vec<u64> = Vec::new();
+    let mut pending = vec![make_move_command()];
+    for _ in 0..40 {
+        let execute_tick = sim.session.tick + 1;
+        let mut due: Vec<CommandEnvelope> = Vec::new();
+        pending.retain(|cmd| {
+            if cmd.execute_tick <= execute_tick {
+                due.push(cmd.clone());
+                false
+            } else {
+                true
+            }
+        });
+        let r = sim.advance_tick(&due, None, &heights, Some(&grid), None, TICK_MS);
+        replay.record_tick(r.tick, due, r.state_hash);
+        live.push(r.state_hash);
+    }
+
+    // Playback constructed FROM the header — the descriptor contract.
+    let mut playback = sim_with_unit(&ScenarioDescriptor::from_replay_header(&replay.header));
+    let replayed = ReplayRunner::run(&mut playback, &replay, None, &heights, Some(&grid), TICK_MS);
+    assert_eq!(
+        live, replayed,
+        "playback from header.seed must match the recorded timeline"
+    );
+
+    // Corrupt the header: a consistent-but-wrong seed must diverge.
+    let mut corrupted = replay.clone();
+    corrupted.header.seed ^= 1;
+    let mut wrong = sim_with_unit(&ScenarioDescriptor::from_replay_header(&corrupted.header));
+    let diverged = ReplayRunner::run(&mut wrong, &corrupted, None, &heights, Some(&grid), TICK_MS);
+    assert_ne!(
+        live, diverged,
+        "a corrupted header seed must not reproduce the timeline"
     );
 }
 

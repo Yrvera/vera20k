@@ -222,3 +222,142 @@ fn test_get_percent() {
     assert!(section.get_percent("Bad").is_none());
     assert!(section.get_percent("Missing").is_none());
 }
+
+/// RC-1: map rules overrides merge only into sections the rules already
+/// declare, with last-definition-wins per key; map-only sections never
+/// allocate.
+#[test]
+fn map_overrides_merge_only_existing_value_sections() {
+    let mut rules = IniFile::from_str(
+        "[General]\nBuildSpeed=.7\nFlightLevel=1500\n[CombatDamage]\nC4Delay=.03\n",
+    );
+    let map = IniFile::from_str(
+        "[General]\nBuildSpeed=2\n[CombatDamage]\nC4Delay=.06\n\
+         [Basic]\nName=TestMap\n[Waypoints]\n0=45035\n",
+    );
+    let applied = rules.merge_rules_overrides(&map);
+    assert_eq!(applied, 2);
+    assert_eq!(rules.section("General").unwrap().get("BuildSpeed"), Some("2"));
+    assert_eq!(
+        rules.section("General").unwrap().get("FlightLevel"),
+        Some("1500")
+    );
+    assert_eq!(
+        rules.section("CombatDamage").unwrap().get("C4Delay"),
+        Some(".06")
+    );
+    assert!(
+        rules.section("Basic").is_none(),
+        "map-only sections must not allocate"
+    );
+    assert!(rules.section("Waypoints").is_none());
+}
+
+/// RC-1: type-registry lists are never merged from a map — by exclusion list
+/// AND by the all-numeric-keys guard.
+#[test]
+fn map_overrides_skip_type_registries_and_numbered_lists() {
+    let mut rules = IniFile::from_str("[VehicleTypes]\n0=MTNK\n[Animations]\n0=RING1\n");
+    let map = IniFile::from_str("[VehicleTypes]\n0=EVILTANK\n[Animations]\n0=EVILANIM\n");
+    let applied = rules.merge_rules_overrides(&map);
+    assert_eq!(applied, 0);
+    assert_eq!(rules.section("VehicleTypes").unwrap().get("0"), Some("MTNK"));
+    assert_eq!(rules.section("Animations").unwrap().get("0"), Some("RING1"));
+}
+
+/// RC-1: the numeric-keys guard also covers a numbered list NOT on the
+/// exclusion list (future registries stay safe by shape).
+#[test]
+fn map_overrides_numeric_guard_covers_unlisted_registries() {
+    let mut rules = IniFile::from_str("[FutureTypes]\n0=KEEP\n");
+    let map = IniFile::from_str("[FutureTypes]\n0=EVIL\n");
+    assert_eq!(rules.merge_rules_overrides(&map), 0);
+    assert_eq!(rules.section("FutureTypes").unwrap().get("0"), Some("KEEP"));
+}
+
+/// RC-1: a map with no rules-shaped sections is a byte-level no-op.
+#[test]
+fn map_overrides_no_op_without_rules_shaped_sections() {
+    let mut rules = IniFile::from_str("[General]\nBuildSpeed=.7\n");
+    let map = IniFile::from_str("[Basic]\nName=Clean\n[IsoMapPack5]\n1=AAAA\n");
+    assert_eq!(rules.merge_rules_overrides(&map), 0);
+    assert_eq!(rules.section("General").unwrap().get("BuildSpeed"), Some(".7"));
+}
+
+/// RC-1 hardening: a registry section with MIXED keys (one stray named key
+/// beside the numbered list) must still be excluded — by the explicit list,
+/// not the all-numeric guard it would otherwise slip past.
+#[test]
+fn map_overrides_skip_mixed_key_particle_registries() {
+    let mut rules =
+        IniFile::from_str("[Particles]\n30=FireStream\n[ParticleSystems]\n10=GasCloudSys\n");
+    let map = IniFile::from_str(
+        "[Particles]\n30=EvilFire\nName=oops\n[ParticleSystems]\n10=EvilSys\nStray=1\n",
+    );
+    assert_eq!(rules.merge_rules_overrides(&map), 0);
+    assert_eq!(rules.section("Particles").unwrap().get("30"), Some("FireStream"));
+    assert_eq!(
+        rules.section("ParticleSystems").unwrap().get("10"),
+        Some("GasCloudSys")
+    );
+}
+
+/// RC-1 empty-value semantics: a map line `BuildSpeed=` with no value is
+/// "key absent" in the original (its INI writer gates out empty/NULL values
+/// and never stores an entry, so the readers keep the value already on the
+/// field). It must NOT clobber the merged rules+rulesmd value — clobbering it
+/// with `""` would reset the field to the hardcoded Rust default at parse time.
+#[test]
+fn map_overrides_skip_empty_valued_keys() {
+    let mut rules = IniFile::from_str(
+        "[General]\nBuildSpeed=.7\nFlightLevel=1500\n[CombatDamage]\nC4Delay=.03\n",
+    );
+    let map = IniFile::from_str("[General]\nBuildSpeed=\n[CombatDamage]\nC4Delay=.06\n");
+    let applied = rules.merge_rules_overrides(&map);
+    assert_eq!(applied, 1, "the empty BuildSpeed= must not count as an override");
+    assert_eq!(
+        rules.section("General").unwrap().get("BuildSpeed"),
+        Some(".7"),
+        "empty map value must leave the merged value intact"
+    );
+    assert_eq!(
+        rules.section("CombatDamage").unwrap().get("C4Delay"),
+        Some(".06")
+    );
+}
+
+/// RC-1 hardening: [Colors] keys are iterated as a registry (one scheme per
+/// key), so a map may override an EXISTING color's value but a new key would
+/// allocate a record — allocation from maps stays off.
+#[test]
+fn map_colors_overrides_existing_but_never_allocates() {
+    let mut rules = IniFile::from_str("[Colors]\nGold=42,252,252\nDarkRed=0,151,239\n");
+    let map = IniFile::from_str("[Colors]\nGold=1,2,3\nNeonPink=12,200,255\n");
+    let applied = rules.merge_rules_overrides(&map);
+    assert_eq!(applied, 1, "only the existing key may merge");
+    assert_eq!(rules.section("Colors").unwrap().get("Gold"), Some("1,2,3"));
+    assert!(
+        rules.section("Colors").unwrap().get("NeonPink").is_none(),
+        "a new [Colors] key would allocate a scheme — must be skipped"
+    );
+}
+
+/// `content_hash` is deterministic and sensitive to every value — a scalar
+/// override changes it (the gap that left a registry-only rules hash blind to
+/// map value overrides), while comment/whitespace-only differences do not.
+#[test]
+fn content_hash_is_deterministic_and_value_sensitive() {
+    let a = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
+    // Same content parsed twice → identical hash (no HashMap-order drift).
+    let a2 = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
+    assert_eq!(a.content_hash(), a2.content_hash());
+
+    // One scalar value differs → hash differs.
+    let b = IniFile::from_str("[General]\nBuildSpeed=.58\nFlightLevel=1500\n");
+    assert_ne!(a.content_hash(), b.content_hash());
+
+    // Comments and surrounding whitespace are stripped at parse → no effect.
+    let c =
+        IniFile::from_str("; header\n[General]\nBuildSpeed = .7   ; speed\nFlightLevel=1500\n");
+    assert_eq!(a.content_hash(), c.content_hash());
+}

@@ -163,7 +163,7 @@ pub fn superweapon_views_for_owner(
         views.push(SuperWeaponView {
             type_id: inst.type_id,
             display_name: type_id_str.to_string(),
-            progress: inst.charge_progress(sim.tick),
+            progress: inst.charge_progress(sim.session.tick),
             is_ready: inst.is_ready,
             is_online: !inst.is_suspended,
             sidebar_image: sw_type.sidebar_image.clone(),
@@ -176,7 +176,7 @@ pub fn superweapon_views_for_owner(
 /// Tick all superweapon instances: advance charge timers, handle power
 /// suspend/resume, and process active lightning storm.
 pub fn tick_superweapons(sim: &mut Simulation, rules: &RuleSet) {
-    let current_tick = sim.tick;
+    let current_tick = sim.session.tick;
 
     // One-time initialization: scan all owners' buildings for SW grants.
     // Handles map-pre-placed buildings that bypass production placement hooks.
@@ -294,7 +294,7 @@ pub fn refresh_super_weapons_for_owner(sim: &mut Simulation, rules: &RuleSet, ow
                 .super_weapon(&sw_str)
                 .map_or(4500, |sw| sw.recharge_time_frames);
             let mut inst = SuperWeaponInstance::new(sw_iid, owner);
-            inst.activate(recharge, sim.tick);
+            inst.activate(recharge, sim.session.tick);
             log::info!("SuperWeapon '{}' granted to '{}'", sw_str, owner_str);
             weapons.insert(sw_iid, inst);
         }

@@ -6,6 +6,7 @@
 mod chrome;
 mod controls;
 mod draw_order;
+mod in_game_options;
 mod modals;
 mod preview;
 mod text;
@@ -419,6 +420,153 @@ pub(crate) fn render_skirmish_shell(
         },
         ShellRenderMode::Visible,
     )
+}
+
+/// Render the active in-game Options (`0xBBB`) overlay over the frozen
+/// battlefield. Composites with `LoadOp::Load` (no clear) so the dialog chrome
+/// draws on top of the already-rendered game frame, mirroring `render_skirmish_shell`'s
+/// take-atlas pattern. Render-only (5a-ii) — no input. `sidebar_view` supplies the
+/// in-game sidebar geometry the button column Y binds to (KD-4).
+pub(crate) fn render_in_game_options_overlay(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    sidebar_view: Option<&crate::sidebar::SidebarView>,
+) -> anyhow::Result<()> {
+    let chrome = state.skirmish_shell_chrome.take();
+    let result = render_in_game_options_overlay_with_atlas(
+        state,
+        encoder,
+        target,
+        chrome.as_ref(),
+        sidebar_view,
+    );
+    state.skirmish_shell_chrome = chrome;
+    result
+}
+
+fn render_in_game_options_overlay_with_atlas(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    atlas: Option<&SkirmishShellChromeAtlas>,
+    sidebar_view: Option<&crate::sidebar::SidebarView>,
+) -> anyhow::Result<()> {
+    let Some(atlas) = atlas else {
+        return Ok(());
+    };
+    let screen_w = state.render_width() as i32;
+    let screen_h = state.render_height() as i32;
+    let chrome = atlas.control_chrome();
+    let anchor = in_game_options::in_game_options_anchor(atlas, sidebar_view);
+    // Cache the anchor the render computed so the paused mouse handler hit-tests
+    // the exact rects that were drawn (the sidebar-anchored button Y is only known
+    // here; see KD-6).
+    state.in_game_options_anchor = Some(anchor);
+    let mut instances = in_game_options::build_in_game_options_instances(
+        &chrome,
+        screen_w,
+        screen_h,
+        anchor,
+        &state.in_game_options,
+    );
+    // Visible text statics (title/captions/value-labels/footer) as BitFont glyphs.
+    // They sample the BitFont atlas (a different texture from the owner-draw chrome
+    // atlas), so they ride their own buffer + draw call below.
+    let mut text_instances = in_game_options::build_in_game_options_text_instances(
+        &state.bit_font,
+        state.csf.as_ref(),
+        screen_w,
+        screen_h,
+        anchor,
+        &state.in_game_options,
+    );
+    // The world camera buffer (shared, uploaded once per tick) still drives the
+    // game pass recorded into this same encoder, so we must NOT re-point it at
+    // screen space. Instead draw through the zoom-independent UI camera and
+    // pre-offset every instance by the rounded camera scroll the shader
+    // subtracts, netting the intended screen pixels — the in-game sidebar/cursor
+    // convention.
+    let cam_dx = state.camera_x.round();
+    let cam_dy = state.camera_y.round();
+    let mut cursor_instances: Vec<SpriteInstance> =
+        shell_cursor_instance(state).into_iter().collect();
+    for inst in instances
+        .iter_mut()
+        .chain(text_instances.iter_mut())
+        .chain(cursor_instances.iter_mut())
+    {
+        inst.position[0] += cam_dx;
+        inst.position[1] += cam_dy;
+    }
+
+    let control_buffer = state
+        .batch_renderer
+        .create_instance_buffer(&state.gpu, &instances);
+    let text_buffer = state
+        .batch_renderer
+        .create_instance_buffer(&state.gpu, &text_instances);
+    let cursor_buffer = state
+        .batch_renderer
+        .create_instance_buffer(&state.gpu, &cursor_instances);
+    let cursor_texture = state
+        .software_cursor
+        .as_ref()
+        .and_then(|cursor| cursor.get(crate::app_types::CursorId::Default))
+        .and_then(|sequence| sequence.frames.first())
+        .map(|frame| &frame.texture);
+    let depth = state.depth_view.clone();
+
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("In-Game Options Overlay"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                // Compose over the frozen battlefield — do NOT clear.
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            // Passthrough never tests/writes depth, but the pipeline declares a
+            // depth target, so a compatible attachment must be present.
+            view: &depth,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Clear(1.0),
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    if let Some((buffer, count)) = control_buffer.as_ref() {
+        state.batch_renderer.draw_with_buffer_ui_passthrough(
+            &mut pass,
+            &atlas.texture,
+            buffer,
+            *count,
+        );
+    }
+    // Text statics on top of the chrome, sampling the BitFont atlas.
+    if let Some((buffer, count)) = text_buffer.as_ref() {
+        state.batch_renderer.draw_with_buffer_ui_passthrough(
+            &mut pass,
+            state.bit_font.atlas(),
+            buffer,
+            *count,
+        );
+    }
+    // Default cursor on top of the chrome (the game cursor underneath is covered).
+    if let (Some((buffer, count)), Some(texture)) = (cursor_buffer.as_ref(), cursor_texture) {
+        state
+            .batch_renderer
+            .draw_with_buffer_ui_passthrough(&mut pass, texture, buffer, *count);
+    }
+    drop(pass);
+    Ok(())
 }
 
 /// Build the software-cursor sprite for the skirmish shell.

@@ -5,6 +5,7 @@
 //! layers; this module does not depend on assets or wgpu.
 
 mod layout;
+mod scroll;
 mod state;
 pub mod static_reveal;
 

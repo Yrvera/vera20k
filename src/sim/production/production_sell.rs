@@ -732,7 +732,7 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
         sim.fog.reset_explored_for_owner(owner_id);
     }
     // Refresh superweapon grants — sold building may have been providing a SW.
-    if sim.game_options.super_weapons {
+    if sim.session.game_options.super_weapons {
         crate::sim::superweapon::refresh_super_weapons_for_owner(sim, rules, owner_id);
     }
     if refund > 0 {

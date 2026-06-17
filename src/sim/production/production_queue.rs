@@ -217,7 +217,7 @@ pub fn build_options_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -
 
     // Diagnostic: log reason breakdown when nothing is buildable.
     let enabled_count = strict.iter().filter(|o| o.enabled).count();
-    if enabled_count == 0 && sim.tick % 90 == 0 {
+    if enabled_count == 0 && sim.session.tick % 90 == 0 {
         let mut reason_counts: BTreeMap<&str, usize> = BTreeMap::new();
         for opt in &strict {
             let key = match &opt.reason {
@@ -238,7 +238,7 @@ pub fn build_options_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -
         log::warn!(
             "[BUILD-DIAG] owner='{}' tick={} total_items={} reasons={:?}",
             owner,
-            sim.tick,
+            sim.session.tick,
             strict.len(),
             reason_counts
         );

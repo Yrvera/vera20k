@@ -178,11 +178,12 @@ impl MissionType {
 /// queued/suspended interrupt stack, a sub-phase byte, the dispatch deferral
 /// timer, and a per-entity refresh counter.
 ///
-/// The Slice-6 verb API writes this component in parallel with the legacy
-/// `Option<T>` machines (which stay authoritative); `current`/`substate` are also
-/// re-derived from those machines each tick. It round-trips via serde but is NOT
-/// yet folded into `world_hash`, so it cannot perturb the lockstep hash. A later
-/// slice hashes it and retires the redundant `Option<T>` selectors.
+/// Canonical hashed lockstep state (Slice 8): folded into `world_hash` and fully
+/// serde round-tripped — load trusts it verbatim (no post-load re-derivation).
+/// `current`/`substate` are written by the tail projection for most units and,
+/// as of S2, at host/dispatch time for scoped move units (where the dispatch-time
+/// value is authoritative — e.g. an arrival tick hashes `Move`). The verb API
+/// owns `queued`/`suspended`/`timer`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
 )]

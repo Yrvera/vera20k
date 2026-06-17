@@ -60,7 +60,7 @@ fn smoke_animation_state_advances_over_ticks() {
     // image_frame_count=21 (odd) → denom = (1+1) + 4 = 6.
     for _ in 0..30 {
         tick_particle_systems(&mut sim, &rules);
-        sim.tick += 1;
+        sim.session.tick += 1;
     }
 
     // The system was fed `_sys_id`, but tick_particle_systems uses

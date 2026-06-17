@@ -33,11 +33,54 @@ use std::collections::BTreeMap;
 const HARNESS_SEED: u64 = 0xC0FFEE_1234;
 const HARNESS_TICKS: u64 = 600;
 const HARNESS_TICK_MS: u32 = 67;
+/// AT-8: ticks at which the per-stream RNG cursors are compared record-vs-replay
+/// (after the tick at this index executes).
+const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
+
+/// AT-8 proper: ABSOLUTE committed per-stream fingerprints at the final
+/// checkpoint (tick 599). Record-vs-replay equality alone cannot catch a
+/// deterministic cross-stream misroute — both passes run the same code, so a
+/// misrouted draw appears identically in both. Only committed values detect
+/// it, and when a legitimate change shifts the total hash, these localize
+/// WHICH stream moved. Same re-baseline ceremony as GLOBAL_HARNESS_FINAL_HASH
+/// (one documented re-baseline per behavior-bearing change; paste the failing
+/// `left` values).
+/// Baselined at SC-2 review hardening. scenario == main here: this scripted
+/// scenario consumes ZERO draws from either gameplay stream (they stay at the
+/// identical post-seed state), and mapgen holds the unseeded zero-state
+/// fingerprint — so ANY future draw in this scenario shifts exactly one
+/// component loudly.
+const FINAL_STREAM_STATES: (u64, u64, u64) = (
+    4175722561206807420,
+    4175722561206807420,
+    11005532682475009861,
+);
 
 /// Committed final-hash baseline. Captured from the first green run. Re-baselines
 /// at most once per behavior-bearing change, with a one-line documented reason.
 /// Baselined for Slice 8 (initial commit of the global parity harness).
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 669004916847079430;
+/// S2 (dispatch-time mission authority) left this UNSHIFTED — verified empirically:
+/// this scenario's movers are engaged or miners (never pure-Move scoped) on their
+/// divergence ticks, so tail authority still wrote every hashed mission value. The
+/// S2 hash delta is exercised by the arrival-tick tests in techno_ai.rs instead.
+/// S3 facing flip (per-object pre-death barrel read) ALSO left this unshifted —
+/// no Unit kill/retarget tick changes a barrel destination in this scenario.
+/// Re-baselined ONCE for S3 idle→Guard: every idle machine-less Unit now hashes
+/// mission Guard(5) instead of the legacy None placeholder (the gamemd idle
+/// selector for ground vehicles) — a hashed-representation fidelity fix, not a
+/// behavior drift; movement/combat outputs are byte-identical.
+/// Re-baselined for SC-2: session identity (seed, map name, theater, bounds,
+/// MP start table, slot->house) folded into the state hash — every absolute
+/// hash shifts once by composition; the tick-by-tick rec-vs-replay equality
+/// and the per-stream cursor pins prove no behavioral movement.
+/// Re-measured at the S3 × SC-2 merge (both deltas combined; value from the
+/// merged tree's green run — neither side's pre-merge value can be correct).
+/// Re-baselined for S4b: the hashed `damage_particle_live_until` `+0x308`-
+/// equivalent field folds an extra 0 per entity — a composition shift, NOT a
+/// behavior drift. Proven: with the fold line disabled this baseline held its
+/// prior value (so S4b moved zero RNG and changed no committed scenario), and
+/// the tick-by-tick rec-vs-replay equality below still passes.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 7853494236029787366;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -152,6 +195,11 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     // coverage. This guards that miner-component creation + the acquisition
     // path stay wired and contribute to the hash.)
     let mut miner_engaged = false;
+    // AT-8 stream pins: per-stream cursor fingerprints captured at checkpoint
+    // ticks during record, re-asserted in replay. Total-hash equality can mask
+    // a draw routed to the wrong stream when a compensating error exists;
+    // per-stream checkpoints catch misrouting directly.
+    let mut recorded_streams: Vec<(u64, u64, u64, u64)> = Vec::new();
     for tick in 0..HARNESS_TICKS {
         let due = due_commands(&rec, &script, tick);
         let result = rec.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
@@ -165,6 +213,14 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             miner_engaged = true;
         }
         log.record_tick(tick, due, result.state_hash);
+        if STREAM_CHECKPOINT_TICKS.contains(&tick) {
+            recorded_streams.push((
+                tick,
+                rec.scenario_rng.state(),
+                rec.main_rng.state(),
+                rec.mapgen_rng.state(),
+            ));
+        }
     }
     assert!(
         miner_engaged,
@@ -172,11 +228,58 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
          else miner-component creation or the SearchOre path regressed"
     );
 
-    // ---- Replay pass: fresh sim, real ReplayRunner::run, assert tick-by-tick. ----
+    // ---- Replay pass: fresh sim, real ReplayRunner::run, assert tick-by-tick.
+    // The replay is fed through the SAME ReplayRunner::run path the live game
+    // uses, chunked at the stream checkpoints so the per-stream cursors can be
+    // pinned between chunks (chunking preserves the exact advance_tick call
+    // sequence; ReplayRunner::run is a plain fold over entries). ----
     let mut rep = Simulation::with_seed(HARNESS_SEED);
     seed_scenario(&mut rep, &rules, &heights);
-    let replayed =
-        ReplayRunner::run(&mut rep, &log, Some(&rules), &heights, Some(&grid), HARNESS_TICK_MS);
+    let mut replayed: Vec<u64> = Vec::with_capacity(log.ticks.len());
+    let mut replayed_streams: Vec<(u64, u64, u64, u64)> = Vec::new();
+    let mut chunk_start = 0usize;
+    for &checkpoint in STREAM_CHECKPOINT_TICKS {
+        let chunk_end = (checkpoint as usize + 1).min(log.ticks.len());
+        let chunk = ReplayLog {
+            header: log.header.clone(),
+            ticks: log.ticks[chunk_start..chunk_end].to_vec(),
+        };
+        replayed.extend(ReplayRunner::run(
+            &mut rep, &chunk, Some(&rules), &heights, Some(&grid), HARNESS_TICK_MS,
+        ));
+        replayed_streams.push((
+            checkpoint,
+            rep.scenario_rng.state(),
+            rep.main_rng.state(),
+            rep.mapgen_rng.state(),
+        ));
+        chunk_start = chunk_end;
+    }
+    if chunk_start < log.ticks.len() {
+        let tail = ReplayLog {
+            header: log.header.clone(),
+            ticks: log.ticks[chunk_start..].to_vec(),
+        };
+        replayed.extend(ReplayRunner::run(
+            &mut rep, &tail, Some(&rules), &heights, Some(&grid), HARNESS_TICK_MS,
+        ));
+    }
+    assert_eq!(
+        recorded_streams, replayed_streams,
+        "per-stream cursor consistency: a nondeterminism moved streams between record and replay"
+    );
+    let (_, final_scen, final_main, final_mapgen) =
+        *recorded_streams.last().expect("final checkpoint recorded");
+    assert_eq!(
+        (final_scen, final_main, final_mapgen),
+        FINAL_STREAM_STATES,
+        "AT-8 absolute per-stream pin at tick 599: a stream's committed \
+         fingerprint moved. If a real behavior change shifted it, re-baseline \
+         ONCE with a one-line documented reason (paste this `left` tuple into \
+         FINAL_STREAM_STATES); the shifted component tells you WHICH stream \
+         consumed differently — a lone shift in one stream with an unchanged \
+         total-hash baseline is a misroute, never a re-baseline."
+    );
 
     assert_eq!(
         replayed.len(),
@@ -259,8 +362,17 @@ const DENSE_ROWS: u16 = 10;
 /// combat-driven churn (Move→Attack on target acquisition) is NOT measured by this test.
 /// Quantifying engagement churn needs a fixture that reliably forces combat (explicit
 /// Attack orders + LOS/positioning); deferred to the S2 design phase.
-#[test]
-fn dispatch_churn_measurement_dense_converging_battle() {
+/// Shared construction for the dense converging-battle fixture (20 tanks, two
+/// facing columns converging on x=25; per-owner Move script due on tick 2).
+/// Used by the churn measurement and the S2 position fingerprint below.
+#[allow(clippy::type_complexity)]
+fn dense_converging_setup() -> (
+    Simulation,
+    RuleSet,
+    BTreeMap<(u16, u16), u8>,
+    PathGrid,
+    Vec<(u64, crate::sim::intern::InternedId, Command)>,
+) {
     let rules = harness_rules();
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let grid = PathGrid::new(64, 64);
@@ -287,6 +399,12 @@ fn dispatch_churn_measurement_dense_converging_battle() {
         script.push((2, allied, Command::Move { entity_id: 1 + i, target_rx: 25, target_ry: y, queue: false, group_id: None }));
         script.push((2, soviet, Command::Move { entity_id: 11 + i, target_rx: 25, target_ry: y, queue: false, group_id: None }));
     }
+    (sim, rules, heights, grid, script)
+}
+
+#[test]
+fn dispatch_churn_measurement_dense_converging_battle() {
+    let (mut sim, rules, heights, grid, script) = dense_converging_setup();
 
     let mut hist = [0u32; 8]; // per-tick churn buckets; index = churn count clamped to 7
     let mut total_churn: u64 = 0;
@@ -324,5 +442,35 @@ fn dispatch_churn_measurement_dense_converging_battle() {
     assert!(
         total_churn >= 1,
         "a 20-tank converging battle must produce churn (arrivals + target acquisition)"
+    );
+}
+
+/// S2 movement-neutrality tripwire: per-tick position fingerprint of the dense
+/// converging scenario, captured PRE-flip (T2). The S2 dispatch flip changes
+/// only `mission.current`/`tick_counter` write points — if this fingerprint
+/// shifts, the flip moved someone: that is a bug, never a re-baseline.
+const POSITION_FINGERPRINT: u64 = 12834935063109785345; // captured pre-flip (S2 T2)
+
+#[test]
+fn s2_dense_scenario_position_fingerprint_stable() {
+    use std::hash::{Hash, Hasher};
+    let (mut sim, rules, heights, grid, script) = dense_converging_setup();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for tick in 0..DENSE_TICKS {
+        let due: Vec<CommandEnvelope> = script
+            .iter()
+            .filter(|(t, _, _)| *t == tick + 1)
+            .map(|(t, owner, c)| CommandEnvelope::new(*owner, *t, c.clone()))
+            .collect();
+        let _ =
+            sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
+        for (id, e) in sim.substrate.entities.iter_sorted() {
+            (id, e.position.rx, e.position.ry, e.position.sub_x, e.position.sub_y).hash(&mut h);
+        }
+    }
+    assert_eq!(
+        h.finish(),
+        POSITION_FINGERPRINT,
+        "S2 must not change any position sequence (captured pre-flip in T2)"
     );
 }

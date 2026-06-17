@@ -255,7 +255,7 @@ fn capability_cursor_for_hover(
                 hovered_entity.is_some_and(|e| {
                     crate::sim::superweapon::invulnerability::is_invulnerable(
                         e.invulnerability.as_ref(),
-                        sim.tick as u32,
+                        sim.session.tick as u32,
                     )
                 }),
             );
@@ -265,7 +265,7 @@ fn capability_cursor_for_hover(
                 && !hovered_entity.is_some_and(|e| {
                     crate::sim::superweapon::invulnerability::is_invulnerable(
                         e.invulnerability.as_ref(),
-                        sim.tick as u32,
+                        sim.session.tick as u32,
                     )
                 })
             {

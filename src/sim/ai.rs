@@ -69,7 +69,7 @@ pub fn tick_ai(
     height_map: &BTreeMap<(u16, u16), u8>,
 ) -> Vec<CommandEnvelope> {
     let mut commands: Vec<CommandEnvelope> = Vec::new();
-    let execute_tick = sim.tick.saturating_add(1);
+    let execute_tick = sim.session.tick.saturating_add(1);
 
     for ai in ai_players.iter_mut() {
         // A house defeated this tick issues no commands at all (not even ready-
@@ -84,7 +84,7 @@ pub fn tick_ai(
 
         let owner_str = sim.interner.resolve(ai.owner);
         // Only think every N ticks to avoid spamming.
-        if !sim.tick.is_multiple_of(AI_THINK_INTERVAL_TICKS) {
+        if !sim.session.tick.is_multiple_of(AI_THINK_INTERVAL_TICKS) {
             // Still check for building placement every tick.
             place_ready_buildings(
                 sim,
@@ -136,12 +136,12 @@ pub fn tick_ai(
         );
 
         // 5. Send attack waves.
-        if sim.tick >= AI_FIRST_ATTACK_TICK
-            && sim.tick.saturating_sub(ai.last_attack_tick) >= AI_ATTACK_INTERVAL_TICKS
+        if sim.session.tick >= AI_FIRST_ATTACK_TICK
+            && sim.session.tick.saturating_sub(ai.last_attack_tick) >= AI_ATTACK_INTERVAL_TICKS
         {
             let attack_cmds = send_attack_wave(sim, owner_str, rules, execute_tick);
             if !attack_cmds.is_empty() {
-                ai.last_attack_tick = sim.tick;
+                ai.last_attack_tick = sim.session.tick;
                 commands.extend(attack_cmds);
             }
         }

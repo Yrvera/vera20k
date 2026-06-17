@@ -151,6 +151,10 @@ pub struct ObjectType {
     pub category: ObjectCategory,
     /// Display name (CSF string table key or raw text). None if not specified.
     pub name: Option<String>,
+    /// Localized display-name CSF key from `UIName=` (e.g. "Name:MTNK").
+    /// None if not specified. Tooltip text resolves this through the CSF
+    /// table; `name` (English `Name=`) is the fallback.
+    pub ui_name: Option<String>,
     /// Credit cost to produce this object.
     pub cost: i32,
     /// Hit points (health). 0 = invincible or not applicable.
@@ -300,6 +304,13 @@ pub struct ObjectType {
     /// high-flying targets. Read from `AirRangeBonus=` in the unit section.
     /// None means no bonus.
     pub air_range_bonus: Option<SimFixed>,
+    /// `OpportunityFire=` — when true, the unit runs the passive target
+    /// scanner while on an ordinary Move / Harvest / Guard mission and can
+    /// acquire a target without an explicit attack order. Default no.
+    pub opportunity_fire: bool,
+    /// `CanRetaliate=` — when false, the unit does not fire back when hit
+    /// (suppresses the damage-triggered retaliation acquisition). Default yes.
+    pub can_retaliate: bool,
     /// Whether this unit fires a warhead at its own position on death (e.g.,
     /// Apocalypse Tank explosion damages nearby units).
     pub explodes: bool,
@@ -497,6 +508,11 @@ pub struct ObjectType {
     /// Whether this unit is immune to ALL crush types including OmniCrusher.
     /// Default: false. Parsed from `OmniCrushResistant=` in rules.ini.
     pub omni_crush_resistant: bool,
+    /// Whether this unit ignores per-cell radiation damage (Desolator, Chrono
+    /// Ivan, etc.). Default: false. Parsed from `ImmuneToRadiation=` in
+    /// rules.ini. Also selects the deployed self-irradiate mission behaviour
+    /// for deploy-fire units whose deploy weapon emits radiation.
+    pub immune_to_radiation: bool,
 
     /// What type of objects this building can produce (Factory= in rules.ini).
     /// None for non-factory buildings/units. Data-driven replacement for
@@ -761,6 +777,14 @@ pub struct ObjectType {
     /// `DamageParticleSystems=` CSV list — spawned periodically while the
     /// object is damaged.
     pub damage_particle_systems: Vec<String>,
+    /// `Cyborg=` bool — gamemd's TechnoTypeClass `+0xC8F` "emits damage sparks"
+    /// flag that `AI_Update` gates the per-tick damage-Spark prob-roll on.
+    /// Verified: only `InfantryTypeClass::ReadINI` writes `+0xC8F` (from `Cyborg=`);
+    /// every other leaf (vehicle/building/aircraft) keeps the ctor default 0. So
+    /// the AI_Update spark draw fires only for `Cyborg=yes` INFANTRY — a TS legacy
+    /// with **no stock-YR users** (the effect is dormant in stock). Default false.
+    /// See [`ObjectType::emits_damage_spark`].
+    pub cyborg: bool,
     /// `DestroyParticleSystems=` CSV list. Parsed for completeness;
     /// no live consumer in retail YR.
     pub destroy_particle_systems: Vec<String>,
@@ -803,6 +827,15 @@ fn native_minutes_to_ticks(value: f32) -> u32 {
 }
 
 impl ObjectType {
+    /// gamemd's TechnoTypeClass `+0xC8F` — whether `AI_Update` runs the per-tick
+    /// damage-Spark prob-roll for this type. Only `InfantryTypeClass::ReadINI`
+    /// sets `+0xC8F` (from `Cyborg=`); all other leaves keep the ctor default 0,
+    /// so a non-infantry type never emits AI_Update sparks even if `Cyborg=yes` is
+    /// (nonsensically) set on it. Dormant in stock YR (no `Cyborg=yes` units).
+    pub fn emits_damage_spark(&self) -> bool {
+        self.cyborg && self.category == ObjectCategory::Infantry
+    }
+
     /// Whether this type participates in selected factory rally-line visuals.
     pub fn has_rally_line(&self) -> bool {
         matches!(
@@ -864,6 +897,7 @@ impl ObjectType {
             id: id.to_string(),
             category,
             name: section.get("Name").map(|s| s.to_string()),
+            ui_name: section.get("UIName").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
             strength: section.get_i32("Strength").unwrap_or(0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
@@ -953,6 +987,10 @@ impl ObjectType {
             turret_anim_z_adjust: section.get_i32("TurretAnimZAdjust").unwrap_or(0),
             guard_range: section.get_f32("GuardRange").map(sim_from_f32),
             air_range_bonus: section.get_f32("AirRangeBonus").map(sim_from_f32),
+            // Default no (passive acquisition off unless the type opts in).
+            opportunity_fire: section.get_bool("OpportunityFire").unwrap_or(false),
+            // Default yes (retaliation allowed unless the type opts out).
+            can_retaliate: section.get_bool("CanRetaliate").unwrap_or(true),
             explodes: section.get_bool("Explodes").unwrap_or(false),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
             super_weapon: section.get("SuperWeapon").map(|s| s.to_string()),
@@ -1049,6 +1087,7 @@ impl ObjectType {
             no_force_shield: section.get_bool("NoForceShield").unwrap_or(false),
             omni_crusher: section.get_bool("OmniCrusher").unwrap_or(false),
             omni_crush_resistant: section.get_bool("OmniCrushResistant").unwrap_or(false),
+            immune_to_radiation: section.get_bool("ImmuneToRadiation").unwrap_or(false),
 
             deploys_into: section.get("DeploysInto").map(|s| s.to_string()),
             undeploys_into: section.get("UndeploysInto").map(|s| s.to_string()),
@@ -1178,6 +1217,7 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             damage_particle_systems: parse_csv_string_list(section.get("DamageParticleSystems")),
+            cyborg: section.get_bool("Cyborg").unwrap_or(false),
             destroy_particle_systems: parse_csv_string_list(section.get("DestroyParticleSystems")),
             damage_smoke_offset: section
                 .get("DamageSmokeOffset")
@@ -1324,6 +1364,36 @@ mod tests {
         assert!(obj.base_normal);
         assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
+    }
+
+    #[test]
+    fn parses_ui_name_key() {
+        let ini: IniFile =
+            IniFile::from_str("[MTNK]\nName=Grizzly Tank\nUIName=Name:MTNK\nCost=700\n");
+        let parsed = ObjectType::from_ini_section(
+            "MTNK",
+            ini.section("MTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(parsed.ui_name, Some("Name:MTNK".to_string()));
+
+        // Absent UIName yields None.
+        let absent_ini = IniFile::from_str("[HTNK]\nName=Rhino Tank\n");
+        let absent = ObjectType::from_ini_section(
+            "HTNK",
+            absent_ini.section("HTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(absent.ui_name, None);
+
+        // Empty UIName= also yields None.
+        let empty_ini = IniFile::from_str("[E1]\nUIName=\n");
+        let empty = ObjectType::from_ini_section(
+            "E1",
+            empty_ini.section("E1").unwrap(),
+            ObjectCategory::Infantry,
+        );
+        assert_eq!(empty.ui_name, None);
     }
 
     #[test]
@@ -1963,6 +2033,51 @@ mod tests {
             obj.destroy_particle_systems,
             vec!["DebrisSmokeSys".to_string()]
         );
+    }
+
+    #[test]
+    fn emits_damage_spark_only_for_cyborg_infantry() {
+        // Type+0xC8F = Cyborg, written ONLY by InfantryTypeClass::ReadINI; other
+        // leaves keep the ctor default 0. So `emits_damage_spark` is true iff the
+        // type is `Cyborg=yes` AND infantry.
+        let ini = IniFile::from_str("[X]\nCyborg=yes\n");
+        let s = ini.section("X").unwrap();
+        assert!(ObjectType::from_ini_section("X", s, ObjectCategory::Infantry).emits_damage_spark());
+        // A Cyborg=yes vehicle/building/aircraft never emits (category gate).
+        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Vehicle).emits_damage_spark());
+        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Building).emits_damage_spark());
+        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Aircraft).emits_damage_spark());
+        // Default (no Cyborg key) → false even for infantry (dormant in stock YR).
+        let plain = IniFile::from_str("[E1]\n");
+        let ps = plain.section("E1").unwrap();
+        let plain_inf = ObjectType::from_ini_section("E1", ps, ObjectCategory::Infantry);
+        assert!(!plain_inf.cyborg);
+        assert!(!plain_inf.emits_damage_spark());
+    }
+
+    #[test]
+    fn techno_type_opportunity_fire_and_can_retaliate_defaults() {
+        // Absent keys: OpportunityFire defaults off, CanRetaliate defaults on
+        // (the gamemd TechnoType defaults — passive acquire opt-in, retaliate
+        // opt-out).
+        let ini: IniFile = IniFile::from_str("[E1]\n");
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert!(!obj.opportunity_fire, "OpportunityFire defaults to no");
+        assert!(obj.can_retaliate, "CanRetaliate defaults to yes");
+    }
+
+    #[test]
+    fn techno_type_parses_opportunity_fire_and_can_retaliate() {
+        let ini: IniFile = IniFile::from_str(
+            "[MTNK]\n\
+             OpportunityFire=yes\n\
+             CanRetaliate=no\n",
+        );
+        let section = ini.section("MTNK").unwrap();
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert!(obj.opportunity_fire, "OpportunityFire=yes parses true");
+        assert!(!obj.can_retaliate, "CanRetaliate=no parses false");
     }
 
     #[test]

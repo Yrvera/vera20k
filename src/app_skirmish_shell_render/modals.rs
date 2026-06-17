@@ -17,7 +17,7 @@ use super::chrome::{
     push_entry_native, push_ownerdraw_two_pixel_bevel_frame, push_rect_outline,
     push_right_panel_button_shp, push_solid_rect,
 };
-use super::controls::push_dropdown_scrollbar_instances;
+use super::controls::{ControlPaint, paint_control};
 use super::{
     OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
     OWNERDRAW_SELECTED_RGB_FROM_DAT_00AC4604_PACKED_000000FF,
@@ -74,7 +74,16 @@ pub(super) fn push_choose_map_listbox_instances(
                 SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE,
                 depth - 0.000015,
             );
-            push_dropdown_scrollbar_instances(out, atlas, scrollbar, thumb, None);
+            let chrome = atlas.control_chrome();
+            paint_control(
+                out,
+                &chrome,
+                ControlPaint::ScrollBar {
+                    scrollbar,
+                    thumb,
+                    pressed_part: None,
+                },
+            );
         }
     }
     push_ownerdraw_two_pixel_bevel_frame(out, atlas, list, depth - 0.00002);

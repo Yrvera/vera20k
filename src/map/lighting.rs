@@ -568,6 +568,31 @@ pub fn point_light_from_object(
     })
 }
 
+/// Build a radiation-glow point light at a cell center.
+///
+/// `intensity` and `tint` are already in `1000 == 1.0` units (the radiation
+/// light math is done by the caller). Detail is forced on: radiation is never
+/// culled by the detail level, unlike ordinary lamps.
+pub fn radiation_point_light(
+    rx: u16,
+    ry: u16,
+    radius_leptons: i32,
+    intensity: i32,
+    tint: [i32; 3],
+) -> PointLight {
+    PointLight {
+        rx,
+        ry,
+        center_x: i32::from(rx) * LEPTONS_PER_CELL + HALF_CELL_LEPTONS,
+        center_y: i32::from(ry) * LEPTONS_PER_CELL + HALF_CELL_LEPTONS,
+        radius_leptons: radius_leptons.max(0),
+        intensity,
+        tint,
+        active: true,
+        detail: true,
+    }
+}
+
 /// Accumulate point light contributions into an existing CellLightGrid.
 ///
 /// Contributions are signed and summed before one final clamp per channel.
@@ -944,6 +969,21 @@ mod tests {
         let grid = CellLightGrid::new();
         assert_eq!(grid.tint_or_default((99, 99)), DEFAULT_TINT);
         assert_eq!(grid.profiles().default_profile_id(), LightProfileId(0));
+    }
+
+    #[test]
+    fn test_radiation_point_light_center_and_flags() {
+        // spread 10 -> radius 10*256+128 = 2688; center cell (100,100).
+        let light = radiation_point_light(100, 100, 2688, 50, [0, 1000, 0]);
+        assert_eq!(light.center_x, 100 * 256 + 128);
+        assert_eq!(light.center_y, 100 * 256 + 128);
+        assert_eq!(light.radius_leptons, 2688);
+        assert_eq!(light.intensity, 50);
+        assert_eq!(light.tint, [0, 1000, 0]);
+        assert!(
+            light.active && light.detail,
+            "radiation light is active and detail-forced"
+        );
     }
 
     #[test]

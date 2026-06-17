@@ -180,7 +180,14 @@ pub(crate) fn rebuild_lighting_grid_from_sim(
             .map(|cell| ((cell.rx, cell.ry), cell.level)),
         lighting_config,
     );
-    let point_lights = collect_live_building_lights(simulation, rules);
+    let mut point_lights = collect_live_building_lights(simulation, rules);
+    // Radiation green glow: one green point light per live radiation site,
+    // accumulated additively alongside building lamps (render-only).
+    if let (Some(sim), Some(rules)) = (simulation, rules) {
+        point_lights.extend(crate::app_radiation_light::collect_radiation_lights(
+            sim, rules,
+        ));
+    }
     lighting::accumulate_point_lights(&mut lighting_grid, &point_lights);
     lighting_grid
 }
@@ -415,7 +422,7 @@ pub(crate) fn load_map_from_initial(
 
     // Load rules.ini and art.ini before building resolved terrain so overlay
     // semantics and art-foundation data are available to the pipeline.
-    let mut rules: Option<RuleSet> = load_rules_ini(&asset_manager);
+    let mut rules: Option<RuleSet> = load_rules_ini(&asset_manager, Some(&map_data.ini));
     let art_result: Option<(ArtRegistry, IniFile)> = load_art_ini(&asset_manager);
     let (mut art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
         Some((reg, ini)) => (Some(reg), Some(ini)),
@@ -570,6 +577,35 @@ pub(crate) fn load_map_from_initial(
             }
         });
 
+    // One negotiated per-match seed, fixed before the sim exists and before
+    // any setup-phase draw (random country/color resolution included). Logged
+    // as the repro handle until replay save/load UI exists. Identity, bounds,
+    // and the MP start table come from the map file — never hardcoded.
+    let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
+        seed: crate::app_init_helpers::generate_match_seed(),
+        map_name: skirmish_launch_session
+            .and_then(|s| s.selected_map_file.clone())
+            .or_else(|| map_data.basic.name.clone())
+            .unwrap_or_default(),
+        theater: map_data.header.theater.clone(),
+        // CANONICAL CELL-ARRAY FRAME, not [Map] Size=. Sim cell coordinates
+        // (entities, waypoints, vision) live in the iso array whose extent is
+        // ~(SizeW+SizeH); seeding bounds from Size= verbatim leaves most of
+        // the diamond — including start waypoints — outside the fog window.
+        // The raw Size= width stays available on `Simulation.playfield_bounds`.
+        map_width: resolved_terrain.width(),
+        map_height: resolved_terrain.height(),
+        local_left: map_data.header.local_left as u16,
+        local_top: map_data.header.local_top as u16,
+        local_width: map_data.header.local_width as u16,
+        local_height: map_data.header.local_height as u16,
+        mp_start_waypoints: waypoints::multiplayer_start_waypoints(&map_data.waypoints)
+            .into_iter()
+            .map(|wp| (wp.index, (wp.rx, wp.ry)))
+            .collect(),
+    };
+    log::info!("Match seed: 0x{:08X}", scenario_descriptor.seed);
+
     let (simulation, mut unit_atlas, mut sprite_atlas, mut palette_set) = spawn_entities(
         &map_data,
         &resolved_terrain,
@@ -586,6 +622,7 @@ pub(crate) fn load_map_from_initial(
         &infantry_sequences,
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
+        &scenario_descriptor,
     );
     // Terrain/tiberium + units/infantry/buildings created from the map
     // (gamemd terrain/units/objects/buildings milestones).
@@ -610,8 +647,8 @@ pub(crate) fn load_map_from_initial(
                         side_idx,
                         country_id,
                         is_human,
-                        sim.game_options.starting_credits,
-                        sim.game_options.tech_level,
+                        sim.session.game_options.starting_credits,
+                        sim.session.game_options.tech_level,
                     ),
                 );
             }
@@ -920,7 +957,7 @@ pub(crate) fn load_map_from_initial(
                     map_data.basic.tiberium_growth_enabled.unwrap_or(true),
                     general_rules.tiberium_spreads
                         && map_data.special_flags.tiberium_spreads.unwrap_or(true),
-                    sim.binary_frame,
+                    sim.session.binary_frame,
                 );
             log::info!(
                 "Native tiberium queues rebuilt: {} growth entries, {} spread entries",
@@ -930,7 +967,7 @@ pub(crate) fn load_map_from_initial(
         } else {
             sim.production
                 .ore_growth_state
-                .reset_native_tiberium_classes(0, sim.binary_frame);
+                .reset_native_tiberium_classes(0, sim.session.binary_frame);
         }
     }
 

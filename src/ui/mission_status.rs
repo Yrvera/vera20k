@@ -1,33 +1,7 @@
-//! Small egui helpers for mission announcements and mission result screens.
+//! Small egui helpers for mission result screens. (Mission/trigger
+//! announcements route through the in-game message list — `app_messages`.)
 
 use crate::ui::client_theme;
-
-/// Draw a transient mission announcement banner near the top-center.
-pub fn draw_mission_banner(ctx: &egui::Context, text: &str) {
-    let palette = client_theme::apply_client_theme(ctx);
-    egui::Area::new("mission_banner".into())
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 24.0))
-        .interactable(false)
-        .show(ctx, |ui| {
-            client_theme::card_frame(
-                egui::Color32::from_rgba_unmultiplied(
-                    palette.panel.r(),
-                    palette.panel.g(),
-                    palette.panel.b(),
-                    230,
-                ),
-                palette.accent,
-            )
-            .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(text)
-                        .size(22.0)
-                        .strong()
-                        .color(palette.accent),
-                );
-            });
-        });
-}
 
 /// Draw the mission result screen. Returns `true` when the user wants to
 /// leave the result screen and return to the main menu.

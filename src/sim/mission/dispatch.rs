@@ -42,8 +42,10 @@ pub enum DispatchSlot {
 
 /// Route a mission to its Unit handler family. Total over all 32 dispatched missions plus
 /// the `None` idle sentinel; pure; no panics. The reachable-Unit set
-/// `{Move, Attack, Enter, Harvest, Guard, None}` maps to live families; everything else is
-/// `Skip` (AttackMove) or `OtherInert`.
+/// `{Move, Attack, Enter, Harvest, Guard}` maps to live families (since S3 an idle
+/// machine-less Unit derives `Guard`, the gamemd idle mission; `None` survives only for
+/// non-Unit categories and in-transport passengers and still routes to the Sleep family);
+/// everything else is `Skip` (AttackMove) or `OtherInert`.
 #[inline]
 pub fn unit_dispatch_family(mission: MissionType) -> DispatchSlot {
     use MissionType as M;

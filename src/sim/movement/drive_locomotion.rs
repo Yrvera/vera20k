@@ -9,7 +9,6 @@ use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
 use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, NavTargetRef};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
-use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::terrain_speed::{self, TerrainSpeedConfig};
 use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 
@@ -80,7 +79,6 @@ pub(super) fn compute_drive_target_speed_fraction(
     current_cell: (u16, u16),
     next_cell: (u16, u16),
     terrain: &ResolvedTerrainGrid,
-    occupancy: &OccupancyGrid,
     config: &TerrainSpeedConfig,
 ) -> SimFixed {
     terrain_speed::compute_cell_speed_modifier(
@@ -89,7 +87,6 @@ pub(super) fn compute_drive_target_speed_fraction(
         current_cell,
         next_cell,
         terrain,
-        occupancy,
         config,
     )
 }
@@ -222,7 +219,6 @@ mod tests {
             (0, 0),
             (1, 0),
             &terrain,
-            &OccupancyGrid::new(),
             &TerrainSpeedConfig::default(),
         );
 

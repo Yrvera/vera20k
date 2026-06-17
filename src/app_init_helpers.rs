@@ -244,7 +244,14 @@ pub(crate) fn theater_ext_for(theater_name: &str) -> &'static str {
 /// the changes/additions that Yuri's Revenge makes. We must load rules.ini
 /// first as the base, then merge rulesmd.ini on top. Without this merge,
 /// buildings are missing key properties like Foundation sizes.
-pub(crate) fn load_rules_ini(asset_manager: &AssetManager) -> Option<RuleSet> {
+///
+/// `map_rules_overrides` is the selected map's parsed INI: maps may override
+/// rules *values* on top of the merged result (the original re-reads its
+/// rules from the map file). Pass `None` on pre-map paths (startup shell).
+pub(crate) fn load_rules_ini(
+    asset_manager: &AssetManager,
+    map_rules_overrides: Option<&IniFile>,
+) -> Option<RuleSet> {
     // Step 1: Load base rules.ini.
     let mut ini: IniFile = if let Some((data, source)) = asset_manager.get_with_source("rules.ini")
     {
@@ -273,6 +280,17 @@ pub(crate) fn load_rules_ini(asset_manager: &AssetManager) -> Option<RuleSet> {
                 "Merged {} rulesmd.ini sections on top of rules.ini",
                 patch_sections
             );
+        }
+    }
+
+    // Step 3: map rules overrides — the original re-reads its rules from the
+    // map file after the main load, so maps may override value sections
+    // ([General], [CombatDamage], per-type sections, ...). Registry lists are
+    // excluded until allocation-from-map semantics are verified.
+    if let Some(map_ini) = map_rules_overrides {
+        let applied = ini.merge_rules_overrides(map_ini);
+        if applied > 0 {
+            log::info!("Applied {} map rules-override key(s)", applied);
         }
     }
 
@@ -384,6 +402,18 @@ pub(crate) fn load_art_ini(asset_manager: &AssetManager) -> Option<(ArtRegistry,
     Some((reg, ini))
 }
 
+/// Draw one fresh per-match seed. The SP analog of the original fixing its
+/// global RNG seed once per game before any setup-phase draw; we are bound to
+/// reaching one shared u32 seed, not to the original's entropy source. MP
+/// will hand the host's seed over the wire through the same descriptor.
+pub(crate) fn generate_match_seed() -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    now.subsec_nanos() ^ (now.as_secs() as u32).rotate_left(16)
+}
+
 /// Spawn map entities into ECS world and build voxel + SHP sprite atlases.
 pub(crate) fn spawn_entities(
     map_data: &MapFile,
@@ -401,14 +431,52 @@ pub(crate) fn spawn_entities(
     infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
+    descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
 ) -> (
     Option<Simulation>,
     Option<UnitAtlas>,
     Option<SpriteAtlas>,
     Option<crate::render::palette_textures::PaletteSet>,
 ) {
-    let mut sim: Simulation = Simulation::new();
+    let mut sim: Simulation = Simulation::from_descriptor(descriptor);
+    // Frame tripwire: every MP start waypoint must sit inside the session
+    // bounds (= the fog window, cell-array frame). A start outside means the
+    // descriptor was fed wrong-frame bounds (e.g. raw [Map] Size=) and the
+    // player's own base would be permanently shrouded.
+    for (idx, (rx, ry)) in &descriptor.mp_start_waypoints {
+        if *rx >= descriptor.map_width || *ry >= descriptor.map_height {
+            log::error!(
+                "MP start waypoint {idx} at ({rx},{ry}) lies outside session bounds {}x{} — wrong coordinate frame?",
+                descriptor.map_width,
+                descriptor.map_height
+            );
+            debug_assert!(
+                false,
+                "start waypoint outside session bounds (coordinate-frame mismatch)"
+            );
+        }
+    }
     sim.resolved_terrain = Some(resolved_terrain.clone());
+    // Wire the cliff/slope coefficients from [General] into the live World config;
+    // it otherwise holds compiled vanilla defaults and never sees a modded INI.
+    if let Some(rules) = rules {
+        sim.terrain_speed_config =
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::from_general(
+                rules.general.tracked_uphill,
+                rules.general.tracked_downhill,
+                rules.general.wheeled_uphill,
+                rules.general.wheeled_downhill,
+            );
+    }
+    // The playfield diamond: [Map] Size width + the raw LocalSize rect, stored
+    // verbatim — the isometric transform lives in the validator's diamond test.
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: map_data.header.width as i32,
+        off_fc: map_data.header.local_left as i32,
+        off_100: map_data.header.local_top as i32,
+        off_104: map_data.header.local_width as i32,
+        off_108: map_data.header.local_height as i32,
+    });
     let bridge_destroyable = map_data
         .special_flags
         .effective_destroyable_bridges(bridge_destroyability_mode);
@@ -572,4 +640,164 @@ pub(crate) fn build_entity_atlases(
             crate::render::palette_textures::PaletteSet::new(gpu, pal, house_ramps, &active)
         });
     (unit_atlas, shp_atlas, palette_set)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+
+    const RULES_BASE: &str = "[InfantryTypes]\n0=E1\n[E1]\nStrength=125\n\
+        [General]\nBuildSpeed=.7\n[CombatDamage]\nC4Delay=.03\n";
+
+    /// AT-9: a map embedding [General]/[CombatDamage] overrides lands those
+    /// values in RuleSet, including a sim-consumed path (C4 delay ticks).
+    #[test]
+    fn map_ini_overrides_rules_values() {
+        let mut ini = IniFile::from_str(RULES_BASE);
+        let map = IniFile::from_str(
+            "[Basic]\nName=Fixture\n[General]\nBuildSpeed=1\n[CombatDamage]\nC4Delay=.06\n",
+        );
+        ini.merge_rules_overrides(&map);
+        let rules = RuleSet::from_ini(&ini).expect("triple-merged rules parse");
+        // C4Delay is minutes: ticks = minutes * 60 * 15 => .06 -> 54.
+        assert_eq!(rules.c4_delay_ticks, 54);
+        // BuildSpeed consumer — assert the deterministic x1000 field, not the
+        // f32 mirror: map override 1 -> 1000 (base .7 would be 700).
+        assert_eq!(rules.production.build_speed_x1000, 1000);
+    }
+
+    /// AT-9 inverse: a map with no rules-shaped sections changes nothing.
+    #[test]
+    fn map_without_overrides_leaves_rules_unchanged() {
+        let mut with_map = IniFile::from_str(RULES_BASE);
+        let map = IniFile::from_str("[Basic]\nName=Clean\n[Waypoints]\n0=45035\n");
+        with_map.merge_rules_overrides(&map);
+        let a = RuleSet::from_ini(&with_map).expect("parse");
+        let b = RuleSet::from_ini(&IniFile::from_str(RULES_BASE)).expect("parse");
+        assert_eq!(a.c4_delay_ticks, b.c4_delay_ticks);
+        assert_eq!(a.production.build_speed_x1000, b.production.build_speed_x1000);
+        assert_eq!(
+            a.object("E1").map(|o| o.strength),
+            b.object("E1").map(|o| o.strength)
+        );
+    }
+
+    /// AT-10: a key present in both rules.ini and rulesmd.ini resolves to the
+    /// rulesmd value through the same merge `load_rules_ini` performs; a
+    /// rules.ini-only key survives.
+    #[test]
+    fn rulesmd_overrides_rules_base() {
+        let mut ini = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
+        let patch = IniFile::from_str("[General]\nBuildSpeed=.58\n");
+        ini.merge(&patch);
+        assert_eq!(ini.section("General").unwrap().get("BuildSpeed"), Some(".58"));
+        assert_eq!(
+            ini.section("General").unwrap().get("FlightLevel"),
+            Some("1500")
+        );
+        let rules = RuleSet::from_ini(&ini).expect("merged rules parse");
+        assert_eq!(rules.production.build_speed_x1000, 580);
+    }
+
+    /// AT-12 (RC-4): type/weapon/warhead resolution reproduces the engine's
+    /// outcomes for the three awkward cases.
+    /// - **Forward reference:** the [HTNK] object names `Primary=120mm`, that
+    ///   weapon names `Warhead=AP`, and both sections appear LATER in the file.
+    ///   The engine resolves from a fully-parsed section table, so order is
+    ///   irrelevant — both must resolve.
+    /// - **Case-duplicate name:** [HTNK] is redefined as [htnk] further down.
+    ///   One record per case-insensitive name, last definition wins
+    ///   (Strength 200, not 100), and lookup is case-insensitive.
+    /// - **Sectionless registry entry:** GHOST is listed in [VehicleTypes] but
+    ///   has no [GHOST] section — silently skipped, no record.
+    #[test]
+    fn resolution_order_matches_engine() {
+        let ini = IniFile::from_str(
+            "[General]\nBuildSpeed=.7\n\
+             [VehicleTypes]\n0=HTNK\n1=GHOST\n\
+             [HTNK]\nStrength=100\nPrimary=120mm\n\
+             [120mm]\nDamage=50\nWarhead=AP\n\
+             [AP]\nVerses=100%,100%,100%\n\
+             [htnk]\nStrength=200\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("fixture rules parse");
+
+        // Forward-referenced weapon + its warhead both resolved.
+        assert!(rules.weapon("120mm").is_some(), "forward-referenced weapon");
+        assert!(rules.warhead("AP").is_some(), "forward-referenced warhead");
+
+        // Case-duplicate collapses to one record; last definition wins; the
+        // lookup is case-insensitive.
+        assert!(rules.object("htnk").is_some());
+        assert_eq!(rules.object("HTNK").map(|o| o.strength), Some(200));
+
+        // Registry entry with no section produced no record.
+        assert!(rules.object("GHOST").is_none());
+    }
+
+    /// AT-11 (RC-3): every ported scalar default that maps to a verified
+    /// RulesClass constructor default falls back to THAT value when the key is
+    /// absent from the INI. Constructor defaults verified from the binary
+    /// (immediate stores inside the RulesClass ctor; doubles cross-checked
+    /// against RULESCLASS_CONSTRUCTOR_DEFAULTS.csv): FlightLevel=500,
+    /// GrowthRate=2.0 min, RepairStep=5, RepairPercent=25%, BuildSpeed=1.0,
+    /// ParachuteMaxFallRate=-3, ParadropRadius=1024, URepairRate=.016 min
+    /// (→14 ticks), C4Delay=.03 min (→27 ticks).
+    ///
+    /// Retail rulesmd.ini always supplies its own value for each, so these
+    /// fallbacks fire only for a non-retail INI missing the key — matching the
+    /// ctor default is behaviour-neutral in real play and faithful to gamemd's
+    /// key-absent path.
+    ///
+    /// EXCLUDED: `VeteranSight` (an `i32` field reading a `double` INI key —
+    /// retail "0.0" fails the i32 parse, so its fallback already fires in
+    /// normal play; that is a pre-existing representation bug, not a
+    /// fallback-only default) and `GapRadius` (no RulesClass ctor field in the
+    /// verified offset map to flip to).
+    #[test]
+    fn ported_defaults_match_ctor_csv() {
+        // Sections present but empty: every key below is absent, so each field
+        // takes its fallback default (the realistic "key missing" path).
+        let rules = RuleSet::from_ini(&IniFile::from_str("[General]\n[CombatDamage]\n"))
+            .expect("empty-section rules parse");
+
+        // [General] scalar fallbacks == ctor defaults.
+        assert_eq!(rules.general.flight_level, 500, "FlightLevel");
+        assert_eq!(rules.general.parachute_max_fall_rate, -3, "ParachuteMaxFallRate");
+        assert_eq!(rules.general.paradrop_radius, 1024, "ParadropRadius");
+        assert_eq!(rules.general.repair_step, 5, "RepairStep");
+        assert_eq!(rules.general.repair_percent, 25, "RepairPercent (25%)");
+        assert_eq!(
+            rules.general.unit_repair_rate_ticks, 14,
+            "URepairRate .016 min -> 14 ticks"
+        );
+        assert_eq!(rules.general.growth_rate_minutes, 2.0, "GrowthRate");
+
+        // [General] BuildSpeed -> deterministic x1000 field (1.0 -> 1000).
+        assert_eq!(rules.production.build_speed_x1000, 1000, "BuildSpeed 1.0");
+
+        // [CombatDamage] C4Delay .03 min -> 27 ticks.
+        assert_eq!(rules.c4_delay_ticks, 27, "C4Delay .03 min -> 27 ticks");
+    }
+
+    /// The rules hash (RuleSet::source_ini_hash, stamped into replay/snapshot
+    /// headers) is sensitive to a map's *value* overrides — closing the gap
+    /// where a registry-only hash let a map override [General]/[CombatDamage]
+    /// values without changing the hash, so a replay/snapshot recorded under
+    /// the map could play back against base rules undetected.
+    #[test]
+    fn rules_hash_reflects_map_value_overrides() {
+        let no_override = RuleSet::from_ini(&IniFile::from_str(RULES_BASE)).expect("parse");
+
+        let mut with_override = IniFile::from_str(RULES_BASE);
+        with_override.merge_rules_overrides(&IniFile::from_str("[General]\nBuildSpeed=2\n"));
+        let overridden = RuleSet::from_ini(&with_override).expect("parse");
+
+        assert_ne!(
+            no_override.source_ini_hash(),
+            overridden.source_ini_hash(),
+            "a map BuildSpeed override must change the rules hash"
+        );
+    }
 }

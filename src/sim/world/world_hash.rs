@@ -63,9 +63,9 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
-        self.tick.hash(&mut hasher);
-        self.total_sim_ms.hash(&mut hasher);
-        self.binary_frame.hash(&mut hasher);
+        self.session.tick.hash(&mut hasher);
+        self.session.total_sim_ms.hash(&mut hasher);
+        self.session.binary_frame.hash(&mut hasher);
         // Hash ALL THREE RNG streams in a fixed order. Order is part of the hash
         // contract and must never change. Hashing only some streams would let a
         // divergence in another produce identical hashes on two desynced clients
@@ -93,11 +93,37 @@ impl Simulation {
         self.hash_bridge_state(&mut hasher);
         self.hash_overlay_grid(&mut hasher);
         self.hash_smudge_grid(&mut hasher);
+        self.hash_radiation(&mut hasher);
         self.hash_super_weapons(&mut hasher);
         self.hash_entities(&mut hasher);
         self.hash_particle_systems(&mut hasher);
+        self.hash_session_identity(&mut hasher);
 
         hasher.finish()
+    }
+
+    /// Session identity/bounds/waypoints — appended AFTER the legacy folds so
+    /// the pre-session hash prefix order is preserved (SC-2). The clock and
+    /// game options keep their original fold positions above; this fold adds
+    /// only the fields new to the session aggregate. Order is part of the
+    /// hash contract and must never change.
+    fn hash_session_identity(&self, hasher: &mut impl Hasher) {
+        let s = &self.session;
+        s.seed.hash(hasher);
+        s.map_name.hash(hasher);
+        s.theater.hash(hasher);
+        (s.map_width, s.map_height).hash(hasher);
+        (s.local_left, s.local_top, s.local_width, s.local_height).hash(hasher);
+        s.mp_start_waypoints.len().hash(hasher);
+        for (idx, cell) in &s.mp_start_waypoints {
+            idx.hash(hasher);
+            cell.hash(hasher);
+        }
+        s.start_slot_houses.len().hash(hasher);
+        for (idx, owner) in &s.start_slot_houses {
+            idx.hash(hasher);
+            owner.hash(hasher);
+        }
     }
 
     /// Hash all particle systems in stable-id order (BTreeMap iteration).
@@ -131,7 +157,7 @@ impl Simulation {
 
     /// Hash per-match game options for lockstep verification.
     fn hash_game_options(&self, hasher: &mut impl Hasher) {
-        let opts = &self.game_options;
+        let opts = &self.session.game_options;
         opts.short_game.hash(hasher);
         opts.bases.hash(hasher);
         opts.bridges_destroyable.hash(hasher);
@@ -421,6 +447,27 @@ impl Simulation {
         }
     }
 
+    /// Hash the radiation field (cell levels as raw f64 bits — the levels are
+    /// products of deterministic IEEE ops, so the bits are lockstep-stable)
+    /// and the site registry. Both maps iterate in sorted key order.
+    fn hash_radiation(&self, hasher: &mut impl Hasher) {
+        for (&(rx, ry), level) in self.radiation.iter_cells() {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            level.to_bits().hash(hasher);
+        }
+        for site in self.radiation.sites() {
+            site.center.hash(hasher);
+            site.spread.hash(hasher);
+            site.level.hash(hasher);
+            site.level_steps.hash(hasher);
+            site.duration.hash(hasher);
+            site.remaining.hash(hasher);
+            site.level_timer_start.hash(hasher);
+            site.level_timer_duration.hash(hasher);
+        }
+    }
+
     /// Hash per-house superweapon state and active lightning storm.
     fn hash_super_weapons(&self, hasher: &mut impl Hasher) {
         for (owner, weapons) in &self.super_weapons {
@@ -705,6 +752,10 @@ impl Simulation {
             // Mission substrate — folded as of Slice 8 (MissionCom is now
             // canonical hashed state, not an unhashed shadow).
             hash_mission_com(&entity.mission, hasher);
+            // S4b damage-Spark `+0x308`-equivalent live-system gate. Hashed because
+            // it gates future scenario_rng draws (a divergence here desyncs the
+            // stream). Zero for every entity in stock YR (the gate is Cyborg-only).
+            entity.damage_particle_live_until.hash(hasher);
         }
     }
 }
@@ -1273,8 +1324,8 @@ mod binary_frame_tests {
         for _ in 0..45 {
             sim.advance_tick(&[], None, &height_map, None, None, 22);
         }
-        assert_eq!(sim.total_sim_ms, 990);
-        assert_eq!(sim.binary_frame, 14);
+        assert_eq!(sim.session.total_sim_ms, 990);
+        assert_eq!(sim.session.binary_frame, 14);
     }
 
     #[test]
@@ -1284,11 +1335,11 @@ mod binary_frame_tests {
         // Three 67ms ticks should each advance binary_frame by 1
         // (67ms * 15 / 1000 = 1.005, floor = 1 per tick).
         sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.binary_frame, 1);
+        assert_eq!(sim.session.binary_frame, 1);
         sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.binary_frame, 2);
+        assert_eq!(sim.session.binary_frame, 2);
         sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.binary_frame, 3);
+        assert_eq!(sim.session.binary_frame, 3);
     }
 
     #[test]

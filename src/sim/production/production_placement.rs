@@ -229,7 +229,7 @@ pub fn place_ready_building(
     maybe_spawn_refinery_harvester(sim, rules, owner, type_id, rx, ry, path_grid, height_map);
 
     // Refresh superweapon grants — newly placed building may provide a SW.
-    if sim.game_options.super_weapons {
+    if sim.session.game_options.super_weapons {
         crate::sim::superweapon::refresh_super_weapons_for_owner(sim, rules, owner_id);
     }
 
@@ -463,7 +463,7 @@ fn is_within_build_area(
             if !existing.base_normal {
                 continue;
             }
-        } else if !(sim.game_options.build_off_ally
+        } else if !(sim.session.game_options.build_off_ally
             && existing.eligibile_for_ally_building
             && are_houses_friendly(&sim.house_alliances, provider_owner, owner))
         {

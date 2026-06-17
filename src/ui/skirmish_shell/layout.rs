@@ -1,5 +1,6 @@
 //! Dialog 0x102 shell layout recovered from gamemd.exe.
 
+use super::scroll::ScrollModel;
 pub use crate::ui::shell::geom::{RectPx, RightPanelRects};
 use crate::ui::shell::geom::{
     center_offset, dlu_rect, right_panel_rects, snap_button_biased_truncate,
@@ -601,7 +602,7 @@ pub const fn choose_map_listbox_rect(
 }
 
 pub fn choose_map_listbox_visible_row_count(rect: RectPx) -> usize {
-    (rect.h / CHOOSE_MAP_LISTBOX_ROW_H).max(0) as usize
+    ScrollModel::listbox().visible_rows(0, rect.h)
 }
 
 pub fn choose_map_listbox_needs_scrollbar(row_count: usize, rect: RectPx) -> bool {
@@ -642,7 +643,7 @@ pub fn choose_map_listbox_row_rect(content: RectPx, visible_row: usize) -> RectP
 }
 
 pub fn choose_map_listbox_max_top_index(row_count: usize, rect: RectPx) -> usize {
-    row_count.saturating_sub(choose_map_listbox_visible_row_count(rect))
+    ScrollModel::listbox().max_top_index(row_count, choose_map_listbox_visible_row_count(rect))
 }
 
 pub fn choose_map_listbox_scroll_thumb_rect(
@@ -652,22 +653,10 @@ pub fn choose_map_listbox_scroll_thumb_rect(
 ) -> Option<RectPx> {
     let scrollbar = choose_map_listbox_scrollbar_rect(row_count, rect)?;
     let visible_rows = choose_map_listbox_visible_row_count(rect);
-    if row_count == 0 || visible_rows == 0 {
-        return None;
-    }
-    let track_h = (scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H * 2).max(1);
-    let thumb_h = ((track_h * visible_rows as i32) / row_count as i32)
-        .max(COMBO_DROPDOWN_SCROLLBAR_MIN_THUMB_H)
-        .min(track_h);
+    let model = ScrollModel::listbox();
+    let thumb_h = model.thumb_height(visible_rows, row_count, scrollbar.h)?;
     let max_top = choose_map_listbox_max_top_index(row_count, rect);
-    let track_span = (track_h - thumb_h).max(1);
-    let thumb_y = scrollbar.y
-        + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H
-        + if max_top == 0 {
-            0
-        } else {
-            (track_span * top_index.min(max_top) as i32) / max_top as i32
-        };
+    let thumb_y = model.thumb_y(scrollbar, thumb_h, top_index, max_top);
     Some(RectPx::new(scrollbar.x, thumb_y, scrollbar.w, thumb_h))
 }
 
@@ -680,16 +669,8 @@ pub fn choose_map_listbox_top_index_from_track_click(
     let scrollbar = choose_map_listbox_scrollbar_rect(row_count, rect)?;
     let thumb = choose_map_listbox_scroll_thumb_rect(row_count, top_index, rect)?;
     let max_top = choose_map_listbox_max_top_index(row_count, rect);
-    if max_top == 0 {
-        return Some(0);
-    }
-    let track_span = (scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H * 2 - thumb.h).max(1);
-    let thumb_top = (mouse_y - thumb.h / 2).clamp(
-        scrollbar.y + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H,
-        scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H - thumb.h,
-    );
-    let local = thumb_top - scrollbar.y - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H;
-    Some(((local * max_top as i32 + track_span / 2) / track_span) as usize)
+    let model = ScrollModel::listbox();
+    Some(model.top_index_from_thumb_top(scrollbar, thumb.h, max_top, mouse_y - thumb.h / 2))
 }
 
 pub fn choose_map_modal_button_at(

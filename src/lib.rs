@@ -49,6 +49,7 @@ pub mod app_list_maps;
 pub mod app_loading;
 pub mod app_main_menu_shell_render;
 pub mod app_quit_cascade;
+pub mod app_radiation_light;
 pub mod app_shell_transition;
 pub mod app_single_player_shell_render;
 pub mod app_skirmish;
@@ -71,6 +72,11 @@ pub mod app_render;
 // Extracted from app_render.rs to keep files under 400 lines.
 pub mod app_input;
 
+// Paused in-game Options (0xBBB) overlay mouse routing + the close/apply/persist
+// path (Slice 5a-iii interaction).
+pub mod app_in_game_options_input;
+pub mod app_options_persist;
+
 // Context-sensitive order resolution — click-to-command decision tree.
 // Extracted from app_input.rs to separate order logic from raw input handling.
 pub mod app_context_order;
@@ -89,6 +95,16 @@ pub mod app_sidebar_build;
 
 // Per-sim-tick orchestrator for sidebar gadget flash + Repair/Sell mode state.
 pub mod app_sidebar_gadgets;
+
+// In-game gadget substrate driver: retained sidebar button list, mouse-edge +
+// idle ticks, fired-ID application, pressed-bit publication.
+pub mod app_gadget_input;
+
+// Tooltip service driver: wall clock, event feeds, region sync, draw build.
+pub mod app_tooltips;
+
+// Chat/system message surface driver: posts, expiry, draw build.
+pub mod app_messages;
 
 // Build/production commands and owner management.
 // Extracted from app_render.rs.

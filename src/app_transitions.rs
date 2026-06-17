@@ -163,8 +163,18 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.building_placement_preview = None;
     state.active_sidebar_tab = SidebarTab::default_active_tab();
     state.sidebar_scroll_rows = 0;
-    state.mission_announcement = None;
-    state.mission_announcement_deadline = None;
+    // Re-init the message surface per scenario (the native list is
+    // re-initialized at scenario start): drops stale rows from the previous
+    // game and any dangling pause span, so a pause→quit→new-map sequence
+    // never folds the menu dwell into the new game's frozen-deadline clock.
+    // Anchors mirror the AppState ctor; x/width re-sync on first use.
+    state.message_list = crate::ui::messages::MessageList::new(
+        3,
+        0,
+        crate::ui::messages::MESSAGE_MAX_VISIBLE_RETAIL,
+        0,
+    );
+    state.message_clock = crate::ui::messages::PauseAwareClock::default();
     let map_title: &str = state.map_basic.name.as_deref().unwrap_or("Unknown Map");
     state.window.set_title(&format!("RA2 - {}", map_title));
     state

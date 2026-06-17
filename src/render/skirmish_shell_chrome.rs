@@ -59,6 +59,11 @@ pub struct SkirmishShellChromeAtlas {
     pub modal_button_mnbttn_frame0: Option<SkirmishShellChromeEntry>,
     pub modal_button_mnbttn_frame1: Option<SkirmishShellChromeEntry>,
     pub modal_button_mnbttn_frame2: Option<SkirmishShellChromeEntry>,
+    /// SIDEBTTN.SHP frames for the active in-game Options (0xBBB) owner-draw
+    /// buttons (type 2): 0 released, 1 pressed, 2 flash/checked. 125x25 native.
+    pub options_button_sidebttn_frame0: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame1: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame2: Option<SkirmishShellChromeEntry>,
     pub checkbox_unchecked_cue_i: Option<SkirmishShellChromeEntry>,
     pub checkbox_checked_cce_i: Option<SkirmishShellChromeEntry>,
     pub trackbar_thumb_trakgrip: Option<SkirmishShellChromeEntry>,
@@ -85,6 +90,77 @@ pub struct SkirmishShellChromeAtlas {
     pub start_marker: Option<SkirmishShellChromeEntry>,
     pub assigned_player_marker_mmpb: Option<SkirmishShellChromeEntry>,
     pub flags: Vec<(String, SkirmishShellChromeEntry)>,
+}
+
+/// Default-able subset of the chrome atlas carrying ONLY owner-draw control glyph
+/// entries — NO GPU `texture` (that live field is why the full atlas can't derive
+/// Default). The Slice 4 paint seam (`paint_control`) takes this so it resolves
+/// chrome inside the emitter yet stays unit-testable via
+/// `ControlChrome { trackbar_rail: Some(e), ..Default::default() }`. Grows one
+/// control family per sub-step (4B trackbar; 4C combo; 4D scrollbar).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ControlChrome {
+    pub checkbox_unchecked_cue_i: Option<SkirmishShellChromeEntry>,
+    pub checkbox_checked_cce_i: Option<SkirmishShellChromeEntry>,
+    pub trackbar_rail: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plaque_left_trofl: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plaque_mid_trofm: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plaque_right_trofr: Option<SkirmishShellChromeEntry>,
+    pub trackbar_thumb_trakgrip: Option<SkirmishShellChromeEntry>,
+    pub white_pixel: Option<SkirmishShellChromeEntry>,
+    pub combo_face_150: Option<SkirmishShellChromeEntry>,
+    pub combo_face_117: Option<SkirmishShellChromeEntry>,
+    pub combo_face_44: Option<SkirmishShellChromeEntry>,
+    pub combo_face_38: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_released: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_pressed: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_gray_released: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_gray_pressed: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_up_released: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_up_pressed: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_down_released: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_down_pressed: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_thumb_top: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_thumb_mid: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_thumb_bottom: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame0: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame1: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame2: Option<SkirmishShellChromeEntry>,
+}
+
+impl SkirmishShellChromeAtlas {
+    /// Snapshot the control glyph entries into a Default-able, texture-free subset
+    /// the paint seam can take (and tests can build by hand). Entries are `Copy`.
+    pub fn control_chrome(&self) -> ControlChrome {
+        ControlChrome {
+            checkbox_unchecked_cue_i: self.checkbox_unchecked_cue_i,
+            checkbox_checked_cce_i: self.checkbox_checked_cce_i,
+            trackbar_rail: self.trackbar_rail,
+            trackbar_plaque_left_trofl: self.trackbar_plaque_left_trofl,
+            trackbar_plaque_mid_trofm: self.trackbar_plaque_mid_trofm,
+            trackbar_plaque_right_trofr: self.trackbar_plaque_right_trofr,
+            trackbar_thumb_trakgrip: self.trackbar_thumb_trakgrip,
+            white_pixel: self.white_pixel,
+            combo_face_150: self.combo_face_150,
+            combo_face_117: self.combo_face_117,
+            combo_face_44: self.combo_face_44,
+            combo_face_38: self.combo_face_38,
+            combo_arrow_down_released: self.combo_arrow_down_released,
+            combo_arrow_down_pressed: self.combo_arrow_down_pressed,
+            combo_arrow_down_gray_released: self.combo_arrow_down_gray_released,
+            combo_arrow_down_gray_pressed: self.combo_arrow_down_gray_pressed,
+            scrollbar_arrow_up_released: self.scrollbar_arrow_up_released,
+            scrollbar_arrow_up_pressed: self.scrollbar_arrow_up_pressed,
+            scrollbar_arrow_down_released: self.scrollbar_arrow_down_released,
+            scrollbar_arrow_down_pressed: self.scrollbar_arrow_down_pressed,
+            scrollbar_thumb_top: self.scrollbar_thumb_top,
+            scrollbar_thumb_mid: self.scrollbar_thumb_mid,
+            scrollbar_thumb_bottom: self.scrollbar_thumb_bottom,
+            options_button_sidebttn_frame0: self.options_button_sidebttn_frame0,
+            options_button_sidebttn_frame1: self.options_button_sidebttn_frame1,
+            options_button_sidebttn_frame2: self.options_button_sidebttn_frame2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +247,31 @@ pub fn build_skirmish_shell_chrome_atlas(
     }
     if sdbtnanm_palette.is_none() {
         log::warn!("Missing optional Skirmish shell palette SDBTNANM.PAL");
+    }
+    let sidebar_palette = load_named_palette(assets, "SIDEBAR.PAL");
+    if let Some(sidebar_palette) = sidebar_palette.as_ref() {
+        // SIDEBTTN.SHP — active in-game Options (0xBBB) owner-draw buttons (type 2):
+        // 125x25 canvas, 3 frames (0 released / 1 pressed / 2 flash/checked), drawn
+        // through SIDEBAR.PAL (idx0 = magenta key). Distinct art from SDBTNANM (the
+        // front-end shell button); only the in-game Options dialog uses it.
+        for frame in [0usize, 1, 2] {
+            match render_shp_entry_labeled(
+                assets,
+                "SIDEBTTN.SHP",
+                &format!("sidebttn.shp#{frame}"),
+                sidebar_palette,
+                frame,
+            ) {
+                Some(entry) => rendered.push(entry),
+                None => log::warn!(
+                    "Missing in-game Options button asset SIDEBTTN.SHP frame {frame}; Options buttons will not render"
+                ),
+            }
+        }
+    } else {
+        log::warn!(
+            "Skipping in-game Options button art SIDEBTTN.SHP because SIDEBAR.PAL is missing or invalid"
+        );
     }
     if let Some(main_button_palette) = main_button_palette.as_ref() {
         for frame in [0usize, 1, 2] {
@@ -374,6 +475,9 @@ pub fn build_skirmish_shell_chrome_atlas(
         modal_button_mnbttn_frame0: by_label.get("mnbttn.shp#0").copied(),
         modal_button_mnbttn_frame1: by_label.get("mnbttn.shp#1").copied(),
         modal_button_mnbttn_frame2: by_label.get("mnbttn.shp#2").copied(),
+        options_button_sidebttn_frame0: by_label.get("sidebttn.shp#0").copied(),
+        options_button_sidebttn_frame1: by_label.get("sidebttn.shp#1").copied(),
+        options_button_sidebttn_frame2: by_label.get("sidebttn.shp#2").copied(),
         checkbox_unchecked_cue_i: by_label.get("cue_i.pcx").copied(),
         checkbox_checked_cce_i: by_label.get("cce_i.pcx").copied(),
         trackbar_thumb_trakgrip: by_label.get("trakgrip.pcx").copied(),
@@ -462,7 +566,9 @@ fn classify_shell_asset(name: &str) -> ShellAssetRole {
         "bue_li30.pcx" | "bue_mi30.pcx" | "bue_ri30.pcx" | "bde_li30.pcx" | "bde_mi30.pcx"
         | "bde_ri30.pcx" | "cue_i.pcx" | "cce_i.pcx" | "trakgrip.pcx" | "trofl.pcx"
         | "trofm.pcx" | "trofr.pcx" | "dnarrowr.pcx" | "dnarrowp.pcx" | "gdnarrowr.pcx"
-        | "gdnarrowp.pcx" | "mnbttn.shp" => ShellAssetRole::VerifiedOwnerDrawButton,
+        | "gdnarrowp.pcx" | "mnbttn.shp" | "sidebttn.shp" => {
+            ShellAssetRole::VerifiedOwnerDrawButton
+        }
         "pudlgbgn.shp" => ShellAssetRole::VerifiedModalDialogBackground,
         "usai.pcx" | "japi.pcx" | "frai.pcx" | "geri.pcx" | "gbri.pcx" | "djbi.pcx"
         | "arbi.pcx" | "lati.pcx" | "rusi.pcx" | "yrii.pcx" | "obsi.pcx" | "rani.pcx" => {
@@ -921,6 +1027,10 @@ mod tests {
         );
         assert_ne!(
             classify_shell_asset("sidebar.pal"),
+            ShellAssetRole::VerifiedOwnerDrawButton
+        );
+        assert_eq!(
+            classify_shell_asset("SIDEBTTN.SHP"),
             ShellAssetRole::VerifiedOwnerDrawButton
         );
     }

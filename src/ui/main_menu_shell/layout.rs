@@ -153,6 +153,7 @@ fn button_ctrl(
         tooltip_key: Some(tooltip_key),
         group: 0,
         enabled: true,
+        visible: true,
     }
 }
 
@@ -194,6 +195,7 @@ fn dialog_descriptor() -> DialogDescriptor {
                 tooltip_key: None,
                 group: 0,
                 enabled: true,
+                visible: true,
             },
             // 0x71b Yuri-website static: plain right-anchor.
             ControlDescriptor {
@@ -205,6 +207,7 @@ fn dialog_descriptor() -> DialogDescriptor {
                 tooltip_key: Some("STT:MainButtonYuriWebSite"),
                 group: 0,
                 enabled: true,
+                visible: true,
             },
         ],
     }

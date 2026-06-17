@@ -31,22 +31,60 @@ use crate::sim::selection::{DragTransition, SelectAction};
 pub(crate) const CLICK_SELECT_RADIUS: f32 = 30.0;
 
 /// Handle mouse button press/release for selection and move commands.
+///
+/// The in-game gadget walk runs FIRST (study G22/A8): chrome buttons + cameos
+/// fire/consume there; the full-tactical catcher and the minimap region decide
+/// WHICH body runs (the regions are sticky, so a drag stays bound to its region
+/// across the sidebar boundary). Middle-mouse pan is never a gadget event and is
+/// handled directly. A `NotConsumed` click hits no live gadget — only the legacy
+/// dev/pause/producer press path runs; empty-sidebar / off-window clicks do
+/// nothing (gamemd's sidebar-body gadget swallows them, A6). Right-press is owned
+/// by the tactical catcher (viewport-only), so right-clicking dead sidebar chrome
+/// no longer deselects — matching gamemd.
 pub(crate) fn handle_mouse_input(
     state: &mut AppState,
     button: MouseButton,
     btn_state: ElementState,
 ) {
-    if btn_state.is_pressed() {
-        if handle_sidebar_mouse_input(state, button) {
-            return;
-        }
+    use crate::app_gadget_input::GadgetConsume;
+    let pressed = btn_state.is_pressed();
+    // Paused in-game Options overlay owns the mouse: route press/release/checkbox/
+    // Back here and CONSUME the click so it never reaches the tactical viewport or
+    // a gadget (no unit orders behind the overlay). KD-6.
+    if state.paused {
+        crate::app_in_game_options_input::in_game_options_mouse(state, button, pressed);
+        return;
     }
+    // Middle-mouse pan: not a gadget event, handle directly.
+    if button == MouseButton::Middle {
+        if pressed {
+            state.middle_mouse_panning = true;
+            state.middle_mouse_anchor_x = state.cursor_x;
+            state.middle_mouse_anchor_y = state.cursor_y;
+        } else {
+            state.middle_mouse_panning = false;
+        }
+        return;
+    }
+    match crate::app_gadget_input::handle_mouse_button_event(state, button, pressed) {
+        GadgetConsume::Tactical => tactical_mouse(state, button, btn_state),
+        GadgetConsume::Minimap => minimap_mouse(state, button, btn_state),
+        // Consumed (chrome/cameo/control button) → handled by the gadget.
+        // NotConsumed → the click hit no live gadget; nothing to do (every
+        // in-game surface is now on the retained list — R7 complete).
+        GadgetConsume::Consumed | GadgetConsume::NotConsumed => {}
+    }
+}
+
+/// Tactical-viewport mouse body (routed here when the full-tactical ClickRegion
+/// consumes the edge — i.e. a click in the play area, or a captured drag/release
+/// that started there). Logic is the legacy handler's tactical path, unchanged;
+/// the minimap-drag-end and minimap-begin checks moved to `minimap_mouse`, and
+/// middle-pan moved to the dispatcher.
+pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_state: ElementState) {
     match button {
         MouseButton::Left => {
             if btn_state.is_pressed() {
-                if crate::app_sidebar_render::try_begin_minimap_drag(state) {
-                    return;
-                }
                 if state.targeting_mode.is_some() {
                     return; // suppress selection drag while either targeting mode is active
                 }
@@ -54,10 +92,6 @@ pub(crate) fn handle_mouse_input(
                     .selection_state
                     .begin_drag(state.cursor_x, state.cursor_y);
             } else {
-                if state.minimap_dragging {
-                    state.minimap_dragging = false;
-                    return;
-                }
                 if let Some(section) = state.armed_super_weapon_type().map(str::to_owned) {
                     crate::app_commands::launch_super_weapon_at_cursor(state, &section);
                     return;
@@ -138,15 +172,6 @@ pub(crate) fn handle_mouse_input(
                 }
             }
         }
-        MouseButton::Middle => {
-            if btn_state.is_pressed() {
-                state.middle_mouse_panning = true;
-                state.middle_mouse_anchor_x = state.cursor_x;
-                state.middle_mouse_anchor_y = state.cursor_y;
-            } else {
-                state.middle_mouse_panning = false;
-            }
-        }
         MouseButton::Right if btn_state.is_pressed() => {
             // Right-click = cancel / deselect only.
             if state.targeting_mode.is_some() {
@@ -161,17 +186,54 @@ pub(crate) fn handle_mouse_input(
     }
 }
 
+/// Minimap mouse body (routed here when the minimap ClickRegion consumes the
+/// edge). gamemd (decompile 0x006539D0) centers the tactical view on press
+/// edges (left OR right) and IGNORES held motion — there is no continuous
+/// camera-follow (the held branch is dropped in `handle_cursor_moved_in_game`).
+pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state: ElementState) {
+    match button {
+        MouseButton::Left => {
+            if btn_state.is_pressed() {
+                crate::app_sidebar_render::try_begin_minimap_drag(state);
+            } else if state.minimap_dragging {
+                state.minimap_dragging = false;
+            }
+        }
+        MouseButton::Right => {
+            // A right-press centers the view on the clicked cell (no command);
+            // right-release just releases the gadget's sticky capture.
+            if btn_state.is_pressed()
+                && crate::app_sidebar_render::is_cursor_over_minimap(state)
+            {
+                crate::app_sidebar_render::update_camera_from_minimap_cursor(state);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Handle cursor-move behavior while in-game.
 ///
-/// If minimap-dragging is active, camera follows the cursor on the minimap.
-/// Otherwise this updates unit-selection drag rectangle.
+/// While a minimap press is held the camera does NOT follow (gamemd ignores
+/// held minimap motion); the move is swallowed so it can't start a selection
+/// drag. Otherwise this updates the unit-selection drag rectangle.
 /// Speed multiplier for middle-mouse camera panning. Each pixel of mouse movement
 /// translates to this many pixels of camera scroll, making it feel fast and responsive.
 const MIDDLE_MOUSE_PAN_SPEED: f32 = 3.0;
 
 pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
+    // Paused in-game Options overlay: drive a live slider drag (visual/stored only —
+    // cadence applies on close, KD-8) and swallow the move so it can't begin a
+    // selection drag or camera pan behind the overlay.
+    if state.paused {
+        crate::app_in_game_options_input::in_game_options_drag(state);
+        return;
+    }
+    // Minimap: gamemd re-centers only on press edges and ignores held motion
+    // (decompile 0x006539D0: `param_1 & 0x22` early-out). While a minimap press
+    // is held we do NOT follow the cursor — but still swallow the move so it
+    // doesn't begin a unit selection-drag.
     if state.minimap_dragging {
-        crate::app_sidebar_render::update_camera_from_minimap_cursor(state);
         return;
     }
     if state.middle_mouse_panning {
@@ -224,20 +286,8 @@ pub(crate) fn try_sidebar_scroll(state: &mut AppState, delta_lines: f32) -> bool
     true
 }
 
-fn handle_sidebar_mouse_input(state: &mut AppState, button: MouseButton) -> bool {
-    let Some(view) = current_sidebar_view(state) else {
-        return false;
-    };
-    let right_click = button == MouseButton::Right;
-    let action = sidebar::hit_test(&view, state.cursor_x, state.cursor_y, right_click);
-    if action == SidebarAction::None {
-        return false;
-    }
-    apply_sidebar_action(state, action);
-    true
-}
 
-fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
+pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
     match action {
         SidebarAction::None => {}
         SidebarAction::SelectTab(tab) => {
@@ -402,6 +452,10 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                 state.building_placement_preview = None;
             } else {
                 state.paused = true;
+                // Opening the in-game Options overlay: reset the transient
+                // interaction flags so the drag-gated value-label quirk (stale
+                // "Faster" until the slider is first dragged) resets each open.
+                state.in_game_options.on_open();
                 // Show OS cursor for egui interaction.
                 if state.software_cursor.is_some() {
                     state.window.set_cursor_visible(true);
@@ -563,12 +617,12 @@ fn quicksave(state: &mut AppState) {
         log::error!("Quicksave: failed to create saves dir: {e}");
         return;
     }
-    let filename = format!("save_tick{}_{}.bin", sim.tick, now);
+    let filename = format!("save_tick{}_{}.bin", sim.session.tick, now);
     let path = format!("{SAVES_DIR}/{filename}");
     match std::fs::write(&path, &bytes) {
         Ok(()) => {
             log::info!("Quicksave: saved {} bytes to {}", bytes.len(), path);
-            state.last_save_tick = Some(sim.tick);
+            state.last_save_tick = Some(sim.session.tick);
             state.last_save_instant = Some(std::time::Instant::now());
             state.save_list_cache.invalidate();
         }
@@ -608,12 +662,12 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         log::error!("Save As: failed to create saves dir: {e}");
         return;
     }
-    let filename = format!("save_{sanitized}_tick{}_{}.bin", sim.tick, now);
+    let filename = format!("save_{sanitized}_tick{}_{}.bin", sim.session.tick, now);
     let path = format!("{SAVES_DIR}/{filename}");
     match std::fs::write(&path, &bytes) {
         Ok(()) => {
             log::info!("Save As: saved {} bytes to {}", bytes.len(), path);
-            state.last_save_tick = Some(sim.tick);
+            state.last_save_tick = Some(sim.session.tick);
             state.last_save_instant = Some(std::time::Instant::now());
             state.save_list_cache.invalidate();
         }
@@ -728,6 +782,21 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
             return;
         }
     };
+
+    // Surface a rules mismatch (a different mod, or a map with value overrides,
+    // than the save was made under). Warn rather than reject — the state is
+    // valid to load, but continued play may diverge. 0 = hash not stamped.
+    if let Some(rules) = state.rules.as_ref() {
+        let current = crate::app_sim_tick::rules_hash(rules);
+        if snapshot.rules_hash != 0 && snapshot.rules_hash != current {
+            log::warn!(
+                "Load: rules_hash mismatch (save {:#018x} vs current {:#018x}) — \
+                 save was made with a different rules set; play may diverge",
+                snapshot.rules_hash,
+                current
+            );
+        }
+    }
 
     // Grab cache data from the current sim (these fields are #[serde(skip)]
     // and must be restored after deserialization).

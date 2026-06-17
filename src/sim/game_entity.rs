@@ -395,6 +395,9 @@ pub struct GameEntity {
     pub drive_accelerates: bool,
     /// Whether this entity is immune to ALL crush types (OmniCrushResistant= in rules.ini).
     pub omni_crush_resistant: bool,
+    /// Whether this entity ignores per-cell radiation damage (ImmuneToRadiation= in rules.ini).
+    #[serde(default)]
+    pub immune_to_radiation: bool,
     /// Render-only depth bias used when this entity is under or near a bridge.
     pub zfudge_bridge: i32,
     /// Prevents the unit from taking under-bridge water routes.
@@ -495,6 +498,18 @@ pub struct GameEntity {
     /// affecting the lockstep hash. `#[serde(default)]` lets pre-Slice-6 saves load.
     #[serde(default)]
     pub mission: MissionCom,
+    /// Sim-side model of gamemd's TechnoClass `+0x308` (`DamageSparkSystem`): the
+    /// `session.tick` at which the live AI_Update damage-Spark particle system
+    /// expires and the object may roll again. `0` = no live system (may roll;
+    /// matches `+0x308 == NULL`); `u64::MAX` = a system whose `Lifetime <= 0`
+    /// holds indefinitely; otherwise the system is live while `session.tick <
+    /// live_until`. Set on a successful spark roll to `spawn_tick + sparkType.Lifetime`
+    /// (matching the spawned `ParticleSystemClass` decrementing once per tick), so
+    /// the per-object draw cadence stays bit-aligned with gamemd. Hashed (it gates
+    /// future `scenario_rng` draws). Dormant in stock YR — see
+    /// [`crate::rules::object_type::ObjectType::emits_damage_spark`].
+    #[serde(default)]
+    pub damage_particle_live_until: u64,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -551,6 +566,17 @@ impl GameEntity {
         }
         if self.movement_target.is_some() {
             return (MissionType::Move, 0);
+        }
+        // S3: gamemd has no "None" mission — an idle ground vehicle sits in
+        // Guard(5), dispatched at [Guard] Rate (and the passive-acquire gate
+        // covers missions {Move, Harvest, Guard} only, so idle Units must be
+        // Guard for the later acquisition slice to ever fire). Units only this
+        // slice: infantry is S6, aircraft already maps idle via
+        // aircraft_mission, buildings are S8. In-transport passengers keep the
+        // legacy None placeholder until the enter-transport mission commit is
+        // traced.
+        if self.category == EntityCategory::Unit && !self.passenger_role.is_inside_transport() {
+            return (MissionType::Guard, 0);
         }
         (MissionType::None, 0)
     }
@@ -658,6 +684,7 @@ impl GameEntity {
             regular_crusher: false,
             drive_accelerates: true,
             omni_crush_resistant: false,
+            immune_to_radiation: false,
             zfudge_bridge: 7,
             too_big_to_fit_under_bridge: false,
             dying: false,
@@ -681,6 +708,7 @@ impl GameEntity {
             },
             rocking: None,
             mission: MissionCom::idle(),
+            damage_particle_live_until: 0,
             debug_log: None,
         }
     }
@@ -1073,7 +1101,28 @@ mod mission_shadow_tests {
 
     #[test]
     fn derived_mission_idle_when_no_machine_active() {
-        let e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        // S3: an idle machine-less Unit sits in Guard (the gamemd idle mission
+        // for ground vehicles); other categories keep the legacy None
+        // placeholder until their slices land (infantry S6, buildings S8).
+        let e = GameEntity::test_default(1, "E1", "Americans", 3, 3); // Unit
+        assert_eq!(e.derived_mission(), (MissionType::Guard, 0));
+
+        let mut s = GameEntity::test_default(2, "GAPILE", "Americans", 3, 3);
+        s.category = crate::map::entities::EntityCategory::Structure;
+        assert_eq!(s.derived_mission(), (MissionType::None, 0));
+
+        let mut i = GameEntity::test_default(3, "E1", "Americans", 3, 3);
+        i.category = crate::map::entities::EntityCategory::Infantry;
+        assert_eq!(i.derived_mission(), (MissionType::None, 0));
+    }
+
+    #[test]
+    fn passenger_derive_unchanged_placeholder() {
+        // In-transport passengers keep the legacy None placeholder: the
+        // mission a passenger holds inside a transport is untraced (do NOT
+        // guess Sleep/Guard); this pin flips with the traced value later.
+        let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        e.passenger_role = crate::sim::passenger::PassengerRole::Inside { transport_id: 99 };
         assert_eq!(e.derived_mission(), (MissionType::None, 0));
     }
 

@@ -1035,6 +1035,11 @@ pub fn tick_movement_with_grids(
             let Some(entity) = entities.get_mut(entity_id) else {
                 continue;
             };
+            // S4a (Option B): the per-object mission dispatch (`+0xC4` tick
+            // counter + `derived_mission` commit) was relocated to the object-AI
+            // host stage (pre-movement, LogicVector order), so it no longer
+            // happens here. The arrival-tick value is preserved: the host commits
+            // `Move` before this loop clears the target on arrival.
             active_layer = entity.movement_layer_or_ground();
             let Some(ref mut target) = entity.movement_target else {
                 continue;
@@ -1106,7 +1111,7 @@ pub fn tick_movement_with_grids(
                 }
             }
 
-            // Per-cell terrain speed modifier: terrain type + slope + crowd density.
+            // Per-cell terrain speed modifier: terrain type + slope.
             // Computed from the unit's current cell and next path step. Applied to
             // both drive-track and straight-line movement below.
             let cell_speed_mod: SimFixed = {
@@ -1124,7 +1129,6 @@ pub fn tick_movement_with_grids(
                             (entity.position.rx, entity.position.ry),
                             nc,
                             terrain,
-                            occupancy,
                             terrain_speed_config,
                         )
                     }

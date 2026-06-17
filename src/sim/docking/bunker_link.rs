@@ -43,7 +43,7 @@ pub fn install_bunker_link(sim: &mut Simulation, building_id: u64, unit_id: u64)
             rt.installing_unit = None;
         }
     }
-    let now = sim.binary_frame;
+    let now = sim.session.binary_frame;
     if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
         u.bunker_link = BunkerLink::Installed(building_id);
         // Clear any pending navigation/turn so the hidden unit holds no stale
@@ -111,7 +111,7 @@ pub fn release_normal(
         reset_bunker_idle(sim, building_id);
         return;
     };
-    let now = sim.binary_frame;
+    let now = sim.session.binary_frame;
     if let Some((rx, ry)) = cell {
         if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
             u.position.rx = rx;
@@ -225,7 +225,7 @@ fn bunker_exit_cell(
             g,
             Some(&sim.substrate.occupancy),
             BUNKER_EXIT_SEARCH_MAX_RADIUS,
-            sim.binary_frame as u64,
+            sim.session.binary_frame as u64,
         ),
         None if ax >= 0 && ay >= 0 => Some((ax as u16, ay as u16)),
         None => Some((b.position.rx, b.position.ry)),

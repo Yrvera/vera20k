@@ -217,6 +217,22 @@ pub(crate) struct AppState {
     /// `app_sidebar_gadgets::update_sidebar_gadget_state` once per sim tick;
     /// read each frame by the sidebar view builder to pick SHP frame indices.
     pub(crate) sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState,
+    /// In-game gadget substrate (study §6.1): retained sidebar button list +
+    /// capture/focus state + reusable tick output + the mouse-held record.
+    pub(crate) in_game_gadgets: crate::app_gadget_input::InGameGadgets,
+    /// Shared tooltip service (study S1) — the model is clock-injected; only
+    /// `app_tooltips` reads the wall clock.
+    pub(crate) tooltips: crate::ui::tooltips::TooltipService,
+    /// Epoch for the tooltip/message wall-clock (`now_ms` = elapsed since
+    /// app construction).
+    pub(crate) tooltip_epoch: Instant,
+    /// In-game chat/system message surface (study §3.1) — re-anchored to the
+    /// tactical viewport per frame by `app_messages`.
+    pub(crate) message_list: crate::ui::messages::MessageList,
+    /// Pause-adjusted clock for message deadlines (contract §4.2 step 8 /
+    /// §4.3: the native composite timer freezes during pause). Fed pause
+    /// edges by `app_messages::update`.
+    pub(crate) message_clock: crate::ui::messages::PauseAwareClock,
     /// Smoothly animated credits display per owner — ticks toward actual balance
     /// each frame (step = |diff| / 8, clamped to [1, 143]).
     pub(crate) displayed_credits: HashMap<String, i32>,
@@ -268,6 +284,10 @@ pub(crate) struct AppState {
         BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
     /// Cell (rx, ry) -> map lighting bundle. Render paths look up compatibility tints per-frame.
     pub(crate) lighting_grid: CellLightGrid,
+    /// Last radiation-glow light epoch applied to `lighting_grid`. The glow is
+    /// rebuilt only when this changes (a site stepped on `RadLightDelay`, or the
+    /// site set changed). App view-state only — never serialized or hashed.
+    pub(crate) last_radiation_light_epoch: u64,
     /// Parsed map [Lighting] config used to rebuild transient app lighting after load.
     pub(crate) map_lighting_config: LightingConfig,
     /// Active map theater name (e.g., DESERT).
@@ -312,10 +332,6 @@ pub(crate) struct AppState {
     pub(crate) ui_scale: f32,
     /// Scroll offset for the current sidebar tab's item list.
     pub(crate) sidebar_scroll_rows: usize,
-    /// Transient mission/script announcement shown in-game.
-    pub(crate) mission_announcement: Option<String>,
-    /// Absolute deadline for clearing the announcement banner.
-    pub(crate) mission_announcement_deadline: Option<Instant>,
     /// Asset manager — kept alive for music track lookups.
     pub(crate) asset_manager: Option<AssetManager>,
     /// Background music player (rodio).
@@ -354,6 +370,15 @@ pub(crate) struct AppState {
     /// Effective simulation ticks per second — controls game speed.
     /// Default follows retail/YR skirmish stored game speed 1.
     pub(crate) sim_speed_tps: u32,
+    /// Client-side in-game Options (0xBBB) state: the six [Options] values plus
+    /// transient interaction flags. `game_speed` is the single source of truth for
+    /// `sim_speed_tps` (derived on game start and on Options close). App/ui-level.
+    pub(crate) in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState,
+    /// Laid-out 0xBBB anchor cached by the overlay render pass each frame it draws,
+    /// so the paused mouse handler hit-tests the exact rects that were rendered
+    /// (the sidebar-anchored button Y is render-derived; see KD-6). None until the
+    /// overlay first renders.
+    pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
     /// Hold the loading splash on screen briefly before showing the client UI.
     pub(crate) startup_splash_until: Option<Instant>,
     /// Global elapsed time for looping IdleAnim overlays (flags, smokestacks, etc.).
@@ -1020,54 +1045,16 @@ impl App {
             modal.pressed_button = Some(button);
             Self::play_main_menu_button_sound(state);
             return true;
-        } else {
-            let mode_row_count = modal.mode_row_count(&state.skirmish_modes);
-            let map_row_count = modal.map_row_count();
-            if Self::handle_choose_map_listbox_scrollbar_mouse_down(
-                modal,
-                crate::ui::skirmish_shell::ChooseMapListboxId::Mode0x6eb,
-                layout.mode_list,
-                mode_row_count,
-                x,
-                y,
-            ) {
-                return true;
-            } else if Self::handle_choose_map_listbox_scrollbar_mouse_down(
-                modal,
-                crate::ui::skirmish_shell::ChooseMapListboxId::Map0x553,
-                layout.map_list,
-                map_row_count,
-                x,
-                y,
-            ) {
-                return true;
-            } else if let Some(mode_idx) = crate::ui::skirmish_shell::choose_map_listbox_row_at(
-                layout.mode_list,
-                mode_row_count,
-                modal.mode_top_index,
-                x,
-                y,
-            ) {
-                if let Some(mode) = state.skirmish_modes.get(mode_idx) {
-                    modal.select_mode(
-                        mode.id,
-                        &state.skirmish_modes,
-                        &state.skirmish_scenario_records,
-                    );
-                }
-                return true;
-            } else if let Some(filtered_idx) = crate::ui::skirmish_shell::choose_map_listbox_row_at(
-                layout.map_list,
-                map_row_count,
-                modal.map_top_index,
-                x,
-                y,
-            ) {
-                modal.select_map_filtered_row(filtered_idx);
-                return true;
-            }
         }
-
+        if modal.handle_listbox_mouse_down(
+            &layout,
+            &state.skirmish_modes,
+            &state.skirmish_scenario_records,
+            x,
+            y,
+        ) {
+            return true;
+        }
         layout.dialog.contains(x, y)
     }
 
@@ -1110,88 +1097,14 @@ impl App {
         true
     }
 
-    fn handle_choose_map_listbox_scrollbar_mouse_down(
-        modal: &mut crate::ui::skirmish_shell::ChooseMapModalState,
-        id: crate::ui::skirmish_shell::ChooseMapListboxId,
-        list: crate::ui::skirmish_shell::RectPx,
-        row_count: usize,
-        x: i32,
-        y: i32,
-    ) -> bool {
-        let Some(scrollbar) =
-            crate::ui::skirmish_shell::choose_map_listbox_scrollbar_rect(row_count, list)
-        else {
-            return false;
-        };
-        if !scrollbar.contains(x, y) {
-            return false;
-        }
-
-        let visible_rows = crate::ui::skirmish_shell::choose_map_listbox_visible_row_count(list);
-        if y < scrollbar.y + crate::ui::skirmish_shell::COMBO_DROPDOWN_SCROLLBAR_BUTTON_H {
-            modal.scroll_listbox_by_rows(id, row_count, visible_rows, -1);
-            return true;
-        }
-        if y >= scrollbar.y + scrollbar.h
-            - crate::ui::skirmish_shell::COMBO_DROPDOWN_SCROLLBAR_BUTTON_H
-        {
-            modal.scroll_listbox_by_rows(id, row_count, visible_rows, 1);
-            return true;
-        }
-        if let Some(thumb) = crate::ui::skirmish_shell::choose_map_listbox_scroll_thumb_rect(
-            row_count,
-            modal.top_index(id),
-            list,
-        ) {
-            if thumb.contains(x, y) {
-                return true;
-            }
-            if let Some(top_index) =
-                crate::ui::skirmish_shell::choose_map_listbox_top_index_from_track_click(
-                    row_count,
-                    modal.top_index(id),
-                    list,
-                    y,
-                )
-            {
-                modal.set_top_index_clamped(id, row_count, visible_rows, top_index);
-            }
-        }
-        true
-    }
-
     fn handle_choose_map_modal_mouse_wheel(state: &mut AppState, lines: f32) -> bool {
         let layout = Self::skirmish_choose_map_layout(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        let id = if layout.map_list.contains(x, y) {
-            crate::ui::skirmish_shell::ChooseMapListboxId::Map0x553
-        } else if layout.mode_list.contains(x, y) {
-            crate::ui::skirmish_shell::ChooseMapListboxId::Mode0x6eb
-        } else {
-            return true;
-        };
-        if lines == 0.0 {
-            return true;
-        }
-        let rows = if lines > 0.0 {
-            -(lines.abs().ceil().max(1.0) as i32)
-        } else {
-            lines.abs().ceil().max(1.0) as i32
-        };
-        let list = crate::ui::skirmish_shell::choose_map_listbox_rect(&layout, id);
-        let visible_rows = crate::ui::skirmish_shell::choose_map_listbox_visible_row_count(list);
         let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
             return false;
         };
-        let row_count = match id {
-            crate::ui::skirmish_shell::ChooseMapListboxId::Mode0x6eb => {
-                modal.mode_row_count(&state.skirmish_modes)
-            }
-            crate::ui::skirmish_shell::ChooseMapListboxId::Map0x553 => modal.map_row_count(),
-        };
-        modal.scroll_listbox_by_rows(id, row_count, visible_rows, rows);
-        true
+        modal.handle_listbox_wheel(&layout, &state.skirmish_modes, x, y, lines)
     }
 
     fn sync_player_name_edit_scroll(state: &mut AppState) {
@@ -1693,9 +1606,9 @@ impl App {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        state
-            .shell_controller
-            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        if state.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+            return;
+        }
         state.shell_controller.on_pointer_down(x, y, &feed);
     }
 
@@ -1703,9 +1616,9 @@ impl App {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        state
-            .shell_controller
-            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        if state.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+            return;
+        }
         let activated = state.shell_controller.on_pointer_up(x, y, &feed);
         match activated {
             // OK -> quit (result 0). Persist settings to RA2MD.INI BEFORE teardown
@@ -1714,12 +1627,13 @@ impl App {
             // immediately. The screen fade-to-black is sub-step 4b-ii-b.
             Some(id) if id == crate::ui::shell::modal::control::OK => {
                 Self::persist_settings_on_quit(state);
-                state.exit_confirm_modal = None;
+                Self::close_exit_confirm_modal_from_controller(state);
                 Self::start_quit_cascade(state);
             }
-            // Cancel (control 2) -> stay; close the modal.
+            // Cancel (control 2) -> stay; close the modal via the controller
+            // pop (D-B3) so mouse and Esc converge on the same teardown.
             Some(id) if id == crate::ui::shell::modal::control::CANCEL => {
-                Self::close_main_menu_dialogs(state);
+                Self::close_exit_confirm_modal_from_controller(state);
                 state.window.request_redraw();
             }
             _ => {}
@@ -1792,6 +1706,18 @@ impl App {
             .rules
             .as_ref()
             .and_then(|rules| rules.general.gui_main_button_sound.as_deref())
+            .map(str::to_string);
+        Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
+    }
+
+    /// Play the shell first-paint slide-in cue ([AudioVisual] GUIMoveInSound,
+    /// stock `MenuSlideIn`), once at the start of each allow-listed shell
+    /// dialog's controls-reveal slide. A no-op when the key is empty/unset.
+    pub(crate) fn play_shell_slide_in_sound(state: &mut AppState) {
+        let sound_id = state
+            .rules
+            .as_ref()
+            .and_then(|rules| rules.general.gui_move_in_sound.as_deref())
             .map(str::to_string);
         Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
     }
@@ -1932,11 +1858,15 @@ impl App {
         // The SHP modal sources PUDLGBGN/MNBTTN from the skirmish chrome atlas; load
         // it on demand so the quit-confirm renders straight from the main menu.
         Self::ensure_skirmish_shell_chrome(state);
-        // Host the modal on the shared shell controller stack (0x120 over the menu's
-        // 0xE2) so its OK/Cancel buttons own the press-must-match-release gesture.
-        state
-            .shell_controller
-            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        // Host the modal as a TRUE LIFO push over the active shell (D-B3):
+        // teardown pops back to it with focus restored. (ensure_active would
+        // reset_to-clobber the stack — the prior "0x120 over 0xE2" comment
+        // described behavior that never happened.)
+        if state.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+            state
+                .shell_controller
+                .push(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        }
         state.exit_confirm_modal = Some(modal);
     }
 
@@ -1946,12 +1876,37 @@ impl App {
         state.main_menu_dialog_open()
     }
 
-    /// Close every open main-menu modal dialog (e.g. on ESC).
+    /// Close the egui-only main-menu dialogs (options/movies/campaign — never on
+    /// the controller stack). The exit-confirm modal closes through
+    /// close_exit_confirm_modal_from_controller (D-B3).
     pub(crate) fn close_main_menu_dialogs(state: &mut AppState) {
         state.exit_confirm_modal = None;
         state.options_dialog = None;
         state.movies_credits_dialog = None;
         state.campaign_select = None;
+    }
+
+    /// Controller-routed exit-confirm teardown (D-B3): dismiss the modal UI
+    /// state, then LIFO-pop its 0x120 instance so focus returns to the shell
+    /// beneath. Mirrors `close_validation_modal_from_controller` — every Esc
+    /// and mouse close path converges here.
+    fn close_exit_confirm_modal_from_controller(state: &mut AppState) {
+        state.exit_confirm_modal = None;
+        if state.shell_controller.top_id() == Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+            state.shell_controller.pop();
+        }
+    }
+
+    fn route_exit_confirm_modal_key(state: &mut AppState, key: ShellKey) -> bool {
+        if state.exit_confirm_modal.is_none() {
+            return false;
+        }
+        if !state.shell_controller.on_key(key) {
+            return false;
+        }
+        Self::close_exit_confirm_modal_from_controller(state);
+        state.window.request_redraw();
+        true
     }
 
     /// Draw whichever main-menu modal dialog is open in the current egui frame
@@ -2103,10 +2058,22 @@ impl ApplicationHandler for App {
                     // A main-menu modal dialog (exit confirm, options, movies,
                     // campaign select) takes ESC first: close it and stay,
                     // never propagating to the shell-close handlers below.
+                    // The exit-confirm modal routes through the controller
+                    // (on_key → LIFO pop, D-B3); the egui-only dialogs are
+                    // not on the stack and keep the direct close.
                     if Self::main_menu_dialog_open(state) {
                         if is_escape {
-                            Self::close_main_menu_dialogs(state);
-                            state.window.request_redraw();
+                            if state.exit_confirm_modal.is_some() {
+                                if !Self::route_exit_confirm_modal_key(state, ShellKey::Escape) {
+                                    // Defensive: on_key only fails with an
+                                    // empty route — still close consistently.
+                                    Self::close_exit_confirm_modal_from_controller(state);
+                                    state.window.request_redraw();
+                                }
+                            } else {
+                                Self::close_main_menu_dialogs(state);
+                                state.window.request_redraw();
+                            }
                         }
                         return;
                     }
@@ -2177,6 +2144,9 @@ impl ApplicationHandler for App {
                 if state.use_software_cursor() {
                     state.window.set_cursor_visible(false);
                 }
+                // Shared tooltip service: every move restarts the show delay
+                // and hides a visible tip (study S1).
+                crate::app_tooltips::on_mouse_move(state);
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
@@ -2215,6 +2185,9 @@ impl ApplicationHandler for App {
                 if state.use_software_cursor() {
                     state.window.set_cursor_visible(false);
                 }
+                // Any button press/release kills a visible tooltip + pending
+                // timer (all buttons incl. middle — study S1).
+                crate::app_tooltips::on_button_event(state);
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
@@ -2373,7 +2346,8 @@ impl App {
         let startup_asset_manager = Self::build_startup_asset_manager(game_config.as_ref());
         let startup_rules = startup_asset_manager
             .as_ref()
-            .and_then(crate::app_init_helpers::load_rules_ini);
+            // Startup shell: no map selected yet, so no map rules overrides.
+            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None));
         let startup_csf = startup_asset_manager
             .as_ref()
             .and_then(crate::app_init::load_csf);
@@ -2568,6 +2542,16 @@ impl App {
             radar_anim: None,
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
             sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
+            in_game_gadgets: crate::app_gadget_input::InGameGadgets::new(),
+            tooltips: crate::ui::tooltips::TooltipService::new(),
+            tooltip_epoch: Instant::now(),
+            message_list: crate::ui::messages::MessageList::new(
+                3,
+                0,
+                crate::ui::messages::MESSAGE_MAX_VISIBLE_RETAIL,
+                0,
+            ),
+            message_clock: crate::ui::messages::PauseAwareClock::default(),
             radar_content_insets: None,
             has_radar: false,
             selection_overlay: None,
@@ -2589,6 +2573,7 @@ impl App {
             bridge_height_map: BTreeMap::new(),
             tactical_bridge_inverse_map: BTreeMap::new(),
             lighting_grid: CellLightGrid::new(),
+            last_radiation_light_epoch: 0,
             map_lighting_config: LightingConfig::default(),
             theater_name: "TEMPERATE".to_string(),
             theater_ext: "tem".to_string(),
@@ -2609,8 +2594,6 @@ impl App {
             sidebar_layout_spec_base: base_sidebar_layout_spec,
             ui_scale,
             sidebar_scroll_rows: 0,
-            mission_announcement: None,
-            mission_announcement_deadline: None,
             asset_manager: startup_asset_manager,
             music_player: MusicPlayer::new(),
             sfx_player: SfxPlayer::new(),
@@ -2625,7 +2608,19 @@ impl App {
             parachute_anims: Vec::new(),
             paused: false,
             debug_frame_step_requested: false,
-            sim_speed_tps: crate::app_types::default_yr_skirmish_tps(),
+            // KD-3: unify the two game-speed sources. `in_game_options.game_speed`
+            // is the single source of truth; seed it from the skirmish-setup speed
+            // (internal 1) and derive `sim_speed_tps` from the same value, so the
+            // Options slider reflects the current pace. The resulting tps is
+            // unchanged from the prior `default_yr_skirmish_tps()` (= GS1 -> 63).
+            sim_speed_tps: crate::app_types::tps_for_game_speed(
+                crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+            ),
+            in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
+                game_speed: crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+                ..Default::default()
+            },
+            in_game_options_anchor: None,
             startup_splash_until: None,
             idle_anim_elapsed_ms: 0,
             debug_show_pathgrid: false,
@@ -2677,6 +2672,13 @@ impl App {
     /// Dispatch rendering based on current GameScreen state.
     fn render_frame(state: &mut AppState, event_loop: &ActiveEventLoop) -> Result<()> {
         state.frame_timer.sample(Instant::now());
+        let main_menu_shell_live = state.screen == GameScreen::MainMenu
+            && !state.main_menu_shell_failed
+            && !state.main_menu_show_skirmish_setup
+            && !Self::single_player_shell_active(state)
+            && !Self::native_skirmish_shell_active(state);
+        crate::app_tooltips::update(state, main_menu_shell_live);
+        crate::app_messages::update(state);
         if let Some(until) = state.startup_splash_until {
             if Instant::now() < until {
                 let output: wgpu::SurfaceTexture = state
@@ -2913,6 +2915,18 @@ impl App {
                 } else {
                     app_render::render_game(state, &mut encoder, &view)?
                 };
+                // Paused: draw the native in-game Options (0xBBB) overlay over the
+                // frozen battlefield before egui. The egui pause card is retired;
+                // egui below now only carries the sidebar text + dev overlay.
+                if state.paused {
+                    Self::ensure_skirmish_shell_chrome(state);
+                    crate::app_skirmish_shell_render::render_in_game_options_overlay(
+                        state,
+                        &mut encoder,
+                        &view,
+                        sidebar_view.as_ref(),
+                    )?;
+                }
                 // Always run egui in-game for sidebar text overlay (Ready labels, credits).
                 state.egui.begin_frame(&state.window);
                 if let Some(ref sv) = sidebar_view {
@@ -2921,9 +2935,6 @@ impl App {
                         sv,
                         state.ui_scale,
                     );
-                }
-                if let Some(text) = state.mission_announcement.as_deref() {
-                    crate::ui::mission_status::draw_mission_banner(&state.egui.ctx, text);
                 }
                 // Debug panels use a light/.NET theme — push light visuals
                 // before rendering, then restore the original after.
@@ -2951,10 +2962,9 @@ impl App {
                     Self::handle_save_load_panel(state);
                 }
                 if state.paused {
-                    Self::handle_pause_menu(state);
-                    // Dev overlay rides along with the pause menu — push its
-                    // own light visuals so the panel chrome matches debug
-                    // panels rather than the pause menu's client theme.
+                    // The native 0xBBB overlay (drawn above) replaces the egui
+                    // pause card. The dev overlay rides along — push its own light
+                    // visuals so its chrome matches the debug panels.
                     let prev = crate::app_debug_panel::push_debug_light_visuals(&state.egui.ctx);
                     Self::handle_dev_overlay(state);
                     crate::app_debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
@@ -3037,7 +3047,29 @@ impl App {
         Ok(())
     }
 
+    /// Temporary non-chrome quit-to-menu (design §8 Q1): the native `0xBBB`
+    /// dialog has no quit button and the egui pause card is retired, so
+    /// quit-to-menu survives as a dev-overlay shortcut until the native
+    /// Abort-Mission dialog is built (a later 5a step).
+    fn return_to_main_menu(state: &mut AppState) {
+        state.paused = false;
+        if let Some(ref mut player) = state.music_player {
+            player.stop();
+        }
+        state.screen = GameScreen::MainMenu;
+        Self::enter_shell_window_mode(state);
+        state.zoom_level = 1.0;
+        state.zoom_target = 1.0;
+        state.window.set_cursor_visible(true);
+        log::info!("Returned to main menu");
+    }
+
     /// Draw the pause menu and handle its actions.
+    ///
+    /// Retired from the in-game paint path in 5a-ii (the native `0xBBB` overlay
+    /// replaces the egui card); kept compiled for reference until 5a-iii wires the
+    /// native control input. Quit-to-menu now lives on `return_to_main_menu`.
+    #[allow(dead_code)]
     fn handle_pause_menu(state: &mut AppState) {
         use crate::ui::pause_menu::{self, PauseMenuAction, PauseMenuInfo};
 
@@ -3062,16 +3094,7 @@ impl App {
                 log::info!("Game resumed");
             }
             PauseMenuAction::ReturnToMenu => {
-                state.paused = false;
-                if let Some(ref mut player) = state.music_player {
-                    player.stop();
-                }
-                state.screen = GameScreen::MainMenu;
-                Self::enter_shell_window_mode(state);
-                state.zoom_level = 1.0;
-                state.zoom_target = 1.0;
-                state.window.set_cursor_visible(true);
-                log::info!("Returned to main menu");
+                Self::return_to_main_menu(state);
             }
             PauseMenuAction::NextTrack => {
                 if let (Some(player), Some(assets)) =
@@ -3209,6 +3232,11 @@ impl App {
 
         match action {
             DevOverlayAction::None => {}
+            // Developer-only direct-tps override (fine-grained 1..200, for
+            // debugging). It deliberately BYPASSES the 0..6 Options model (KD-3):
+            // it writes `sim_speed_tps` without touching `in_game_options.game_speed`,
+            // so the next native Options close reasserts the Options speed. The
+            // 0..6 bucket model cannot represent these arbitrary tps values.
             DevOverlayAction::SetGameSpeed(tps) => {
                 state.sim_speed_tps = tps.max(1);
                 log::info!("Game speed: {} tps", state.sim_speed_tps);
@@ -3229,6 +3257,9 @@ impl App {
             }
             DevOverlayAction::TogglePause => {
                 app_input::toggle_debug_pause(state);
+            }
+            DevOverlayAction::ReturnToMenu => {
+                Self::return_to_main_menu(state);
             }
             DevOverlayAction::StepOneTick => {
                 if state.paused {

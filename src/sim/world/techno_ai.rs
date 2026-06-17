@@ -14,6 +14,8 @@
 
 use super::Simulation;
 use crate::map::entities::EntityCategory;
+use crate::rules::particle_system_type::ParticleSystemBehavesLike;
+use crate::rules::ruleset::RuleSet;
 // `DispatchSlot` types the always-defined `UnitDispatchRecord`, so its import is non-gated.
 use crate::sim::mission::dispatch::DispatchSlot;
 // `unit_dispatch_family` is consumed only by the gated record pass + proof below.
@@ -48,21 +50,27 @@ pub(crate) struct UnitDispatchRecord {
 pub(crate) type UnitDispatchTrace = Vec<UnitDispatchRecord>;
 
 impl Simulation {
-    /// Object-AI stage (Slice S0: instrumented no-op).
+    /// Object-AI stage (S4a: AUTHORITATIVE per-object mission commit).
     ///
     /// Walks the live LogicVector order via `for_each_live_object` — the same
-    /// re-read contract the native scheduler uses — and dispatches each live,
-    /// present, non-dying object through the no-op `techno_ai_shell`. The shell
-    /// does nothing behavior-bearing this slice; the stage exists to pin the
-    /// dispatch + ordering scaffold and prove hash-neutrality.
+    /// re-read contract the native scheduler uses — and runs each live, present,
+    /// non-dying object through `techno_ai_shell`. A live non-miner Unit's mission
+    /// (`+0xC4` tick_counter + `derived_mission`) is committed HERE, at the
+    /// gamemd-faithful per-object AI point (pre-movement); its id is inserted into
+    /// `committed` so the Phase-9 tail projection skips it (no double-commit). The
+    /// other arms are still no-ops (their slices land later).
     ///
     /// `record` is true only in debug builds, where the recorded visit trace is
     /// asserted to equal the live (present, non-dying) order — the first
     /// tripwire for any future arm that mutates live membership mid-pass.
     /// Release builds pass `false`, so the trace `Vec` is never pushed to and
     /// never allocates (no per-tick hot-path cost).
-    pub(crate) fn object_ai_stage(&mut self) -> UnitDispatchTrace {
-        let visited = self.object_ai_walk(cfg!(debug_assertions));
+    pub(crate) fn object_ai_stage(
+        &mut self,
+        rules: Option<&RuleSet>,
+        committed: &mut std::collections::BTreeSet<u64>,
+    ) -> UnitDispatchTrace {
+        let visited = self.object_ai_walk(cfg!(debug_assertions), rules, committed);
 
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -134,7 +142,7 @@ impl Simulation {
                 rec.family,
                 unit_dispatch_family(rec.host_mission),
                 "dispatch: tick {} unit {}: recorded family must equal the router output",
-                self.tick,
+                self.session.tick,
                 rec.id,
             );
             // (2) a Unit is never on AttackMove (derived_mission cannot yield it).
@@ -142,13 +150,13 @@ impl Simulation {
                 rec.host_mission,
                 MissionType::AttackMove,
                 "dispatch: tick {} unit {}: a Unit must never derive AttackMove",
-                self.tick,
+                self.session.tick,
                 rec.id,
             );
             debug_assert!(
                 !matches!(rec.family, DispatchSlot::Skip),
                 "dispatch: tick {} unit {}: a live Unit must never route to Skip",
-                self.tick,
+                self.session.tick,
                 rec.id,
             );
             // (3) churn metric: compare host-time family to a fresh tail re-derivation.
@@ -161,7 +169,7 @@ impl Simulation {
                         churn += 1;
                         log::debug!(
                             "dispatch churn: tick {} unit {}: host {:?} -> tail {:?}",
-                            self.tick,
+                            self.session.tick,
                             rec.id,
                             rec.host_mission,
                             tail_mission,
@@ -203,28 +211,87 @@ impl Simulation {
                 log::debug!(
                     "dispatch coverage drift: tick {} unit {} touched by a legacy phase but \
                      absent from live order",
-                    self.tick,
+                    self.session.tick,
                     id,
                 );
             }
         }
     }
 
+    /// Slice S4c — passive/opportunity-acquire eligibility SHADOW (read-only,
+    /// hash-neutral). For each live Unit, counts whether it would reach the
+    /// passive-acquire scanner this pass, per the verified gamemd gate
+    /// `TechnoClass::PassiveAcquireGate` (decompiled 0x00709290) inside the
+    /// mission-{Move(2),Guard(5),Harvest(10)} block: base can-acquire
+    /// (`TechnoClass::CanAcquireTarget` 0x007091d0) AND (`OpportunityFire` OR
+    /// (Guard AND weapon)). A Guard-mission unit auto-acquires regardless of
+    /// `OpportunityFire`.
+    ///
+    /// VERA models the CONFIRMED core via `s4c_passive_acquire_eligible`: mission
+    /// in {Move,Guard,Harvest}, the type carries a weapon, and (`opportunity_fire`
+    /// OR mission==Guard). The base-can-acquire sub-conditions (not-disabled,
+    /// capture-managed, player-gated, the `Type+0xd99` flag) are UNCHECKED
+    /// refinements deferred to the S5 authoritative flip — which runs the actual
+    /// scanner and sets the target. This pass mutates nothing and is never
+    /// hashed; it returns the eligible count (the cadence/eligibility metric).
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn debug_s4c_passive_acquire_shadow(
+        &self,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+    ) -> u32 {
+        let Some(rules) = rules else {
+            return 0;
+        };
+        let mut eligible = 0u32;
+        for id in self.live_object_order_snapshot() {
+            let Some(e) = self.substrate.entities.get(id) else {
+                continue;
+            };
+            if e.dying || e.category != EntityCategory::Unit {
+                continue;
+            }
+            let mission = e.derived_mission().0;
+            let Some(obj) = rules.object(self.interner.resolve(e.type_ref)) else {
+                continue;
+            };
+            // CanAcquireTarget weapon-equipped proxy: the type has a Primary or
+            // Secondary weapon (the runtime vtable+0x2ac equip check is UNCHECKED).
+            let has_weapon = obj.primary.is_some() || obj.secondary.is_some();
+            if s4c_passive_acquire_eligible(mission, has_weapon, obj.opportunity_fire) {
+                eligible += 1;
+                log::trace!(
+                    "S4c passive-acquire eligible: tick {} unit {} mission {:?} (opp_fire {})",
+                    self.session.tick,
+                    id,
+                    mission,
+                    obj.opportunity_fire,
+                );
+            }
+        }
+        eligible
+    }
+
     /// The walk: dispatch every live, present, non-dying object once, in live
     /// order, through the no-op shell. When `record`, return the dispatched ids
     /// in order (debug/test observation); otherwise the returned `Vec` is empty
     /// and unallocated. Reads only — touches no hashed state, consumes no RNG.
-    fn object_ai_walk(&mut self, record: bool) -> Vec<u64> {
+    fn object_ai_walk(
+        &mut self,
+        record: bool,
+        rules: Option<&RuleSet>,
+        committed: &mut std::collections::BTreeSet<u64>,
+    ) -> Vec<u64> {
         let mut visited: Vec<u64> = Vec::new();
         self.for_each_live_object(|sim, id| {
-            // Tolerate an absent id (the loop's documented contract). In S0 the
-            // stage runs AFTER the end-of-tick flush_pending_delete drain, so the
-            // order should not reference a freed slot — but inherit the guard.
+            // Tolerate an absent id (the loop's documented contract). The stage
+            // runs AFTER the end-of-tick flush_pending_delete drain, so the order
+            // should not reference a freed slot — but inherit the guard.
             let Some(entity) = sim.substrate.entities.get(id) else {
                 return;
             };
             // A dying object is mid death-teardown and is not dispatched (the
-            // closest live `IsActive` analogue today).
+            // closest live `IsActive` analogue today). Dying units are off the
+            // LogicVector anyway and fall to the tail projection.
             if entity.dying {
                 return;
             }
@@ -232,7 +299,11 @@ impl Simulation {
             if record {
                 visited.push(id);
             }
-            techno_ai_shell(sim, id, category);
+            // A non-miner live Unit commits its mission in the bracket; record it
+            // so the tail projection skips it (no double-commit / double-count).
+            if techno_ai_shell(sim, id, category, rules) {
+                committed.insert(id);
+            }
         });
         visited
     }
@@ -257,14 +328,242 @@ impl Simulation {
 /// changing this signature. The match is exhaustive over the four real
 /// variants (no `_` arm), so a future `EntityCategory` addition is a compile
 /// error, intentionally.
-#[allow(unused_variables)]
-fn techno_ai_shell(sim: &mut Simulation, id: u64, category: EntityCategory) {
+/// Returns `true` iff this object authoritatively committed its mission this
+/// pass (a non-miner live Unit) — the walk adds those ids to the tail skip-set.
+fn techno_ai_shell(
+    sim: &mut Simulation,
+    id: u64,
+    category: EntityCategory,
+    rules: Option<&RuleSet>,
+) -> bool {
     match category {
-        EntityCategory::Unit => {}      // S1+: absorb movement/turret/combat/mission dispatch
-        EntityCategory::Infantry => {}  // S6: absorb fear / sequence / self-removal
-        EntityCategory::Structure => {} // S8 absorb bracket; P3 oracle probe is factory_oracle_step_trace
-        EntityCategory::Aircraft => {}  // S7: absorb per-object aircraft dispatch
+        // S4a: run the AUTHORITATIVE TechnoClass common bracket; a non-miner live
+        // Unit commits its mission here (the host owns it; the tail skips it).
+        EntityCategory::Unit => {
+            matches!(unit_techno_bracket(sim, id, rules), BracketReach::Committed)
+        }
+        EntityCategory::Infantry => false, // S6: absorb fear / sequence / self-removal
+        EntityCategory::Structure => false, // S8 absorb bracket; P3 oracle probe is factory_oracle_step_trace
+        EntityCategory::Aircraft => false, // S7: absorb per-object aircraft dispatch
     }
+}
+
+// ===== Slice S4a — TechnoClass common-body bracket (shadow shell) =====
+//
+// Per live Unit, gamemd's `TechnoClass::AI_Update` body is one contiguous
+// bracket: pre-mission block -> +0xC4 -> Mission_Dispatch -> post-mission block,
+// with two IsAlive early-returns (after the pre-block, after dispatch). THIS
+// SLICE the bracket is a SHADOW SHELL: `techno_common_pre`/`techno_common_post`
+// are no-op stubs and the authoritative `+0xC4`/mission-commit stays in
+// `movement_tick` (only a dispatch MARKER sits between the guards here). The
+// shell runs every tick in the live-object walk and is hash-neutral (stubs do
+// nothing; the guards are read-only). The authoritative flip — relocating the
+// `+0xC4`/commit out of `movement_tick` into this dispatch point and filling the
+// stubs — is the next step, gated on the body decode (U6) + a hash re-baseline.
+// Design: docs/plans/2026-06-10-s4a-common-bracket-design.md.
+
+/// S4a pre-mission common block (the `TechnoClass::AI_Update` head: one-shot
+/// flag clear, turret-anim loop sound, cloak tick, health smoothing, target
+/// validation, …). No-op stub this slice — the verified body lands at the
+/// authoritative flip. Present so the bracket order is real code, not a comment.
+#[allow(unused_variables)]
+fn techno_common_pre(sim: &mut Simulation, id: u64) {}
+
+/// `damage_particle_live_until` sentinel for a spawned spark system whose
+/// `Lifetime <= 0`: gamemd's `ParticleSystemClass::AI` removal counter (set from
+/// `Type+0x2b8`) only fires on `--counter == 0`, so a non-positive lifetime never
+/// reaches 0 going down → the system (and thus `+0x308`) holds for the whole
+/// match. Distinct from a real finite `spawn_tick + lifetime` (always `>= 1` for
+/// `lifetime > 0`, and `tick` won't reach `u64::MAX` in any real match).
+const DAMAGE_PARTICLE_LIVE_FOREVER: u64 = u64::MAX;
+
+/// Largest `roll` value the gamemd damage-Spark prob-roll yields
+/// (`RandomRanged(0, 0x7ffffffe)`).
+const DAMAGE_SPARK_ROLL_MAX: u32 = 0x7fff_fffe;
+
+/// S4a post-mission common block (the steps after `Mission_Dispatch`: passive
+/// acquire (S4c), the damage-particle RNG (S4b), the timer accumulator, EMP
+/// recovery).
+///
+/// S4b — the AI_Update damage-Spark `scenario_rng` consumption, modelled exactly
+/// from the verified gamemd block. Per object, per tick:
+///   - Outer gate: `emits_damage_spark` (TechnoTypeClass `+0xC8F` = `Cyborg`,
+///     infantry-only) AND `HealthRatio < ConditionYellow` (STRICT) AND
+///     not-in-special-damage-state (`vtable+0x1c8() > -10`, unmodelled → pass).
+///   - Build the Spark sublist of `DamageParticleSystems` (`BehavesLike == Spark`).
+///     No RNG.
+///   - Inner gate: no live spark system (`+0x308`-equivalent empty) AND Spark
+///     count > 0.
+///   - Draw #1 (always, on inner-gate pass): the prob-roll on `scenario_rng`;
+///     succeed iff `roll < threshold` (red band if `HealthRatio < ConditionRed`,
+///     else yellow). On success → Draw #2: the list-pick `n(0, count-1)` (consumes
+///     no draw when count == 1, matching gamemd `RandomRanged(min == max)`), and
+///     arm the live-system hold to `tick + sparkType.Lifetime`.
+///
+/// Draw truth table (`scenario_rng`): 0 (outer gate fail / live system / no
+/// Spark) — 1 (roll fails) — 2 (roll succeeds, count >= 2) — 1 (roll succeeds,
+/// count == 1). The spawn/offset/ctor draw NOTHING. The visual is render-side;
+/// this consumes the draws and tracks the gate only.
+///
+/// Dormant in stock YR: `emits_damage_spark` is false for every stock type (no
+/// `Cyborg=yes` units, and `techno_common_post` runs only for the vehicle arm),
+/// so the early-out fires before any allocation or draw — zero `scenario_rng`
+/// movement. Modelled exactly so the stream stays aligned if a mod ever enables it.
+fn techno_common_post(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
+    let Some(rules) = rules else {
+        return;
+    };
+
+    // Read the entity facts we need, then resolve the type. `obj` borrows `rules`
+    // (external), not `sim`, so the later &mut sim draws/writes don't alias it.
+    let Some(entity) = sim.substrate.entities.get(id) else {
+        return;
+    };
+    let cur = entity.health.current as i64;
+    let max = entity.health.max as i64;
+    let type_ref = entity.type_ref;
+    let live_until_in = entity.damage_particle_live_until;
+    let Some(obj) = rules.object(sim.interner.resolve(type_ref)) else {
+        return;
+    };
+
+    // Outer gate. Check the cheap, near-always-false `emits_damage_spark` first so
+    // the common path (every stock vehicle) exits before building the Spark list.
+    // `HealthRatio < ConditionYellow` reproduced as the project's integer
+    // cross-multiply (`GetHealthRatio` is current/max; STRICT `<` per the binary).
+    // The `vtable+0x1c8() > -10` special-state term is unmodelled here → pass.
+    let below_yellow = cur * 1000 < max * rules.general.condition_yellow_x1000;
+    if !(obj.emits_damage_spark() && below_yellow) {
+        return;
+    }
+
+    // Spark sublist: `DamageParticleSystems` entries resolving to a
+    // `BehavesLike == Spark` particle system, in list order. Collect each one's
+    // Lifetime for the `+0x308` hold; the list-pick indexes into this sublist.
+    let mut spark_lifetimes: Vec<i32> = Vec::new();
+    for name in &obj.damage_particle_systems {
+        if let Some(ps_id) = rules.ps_type_id_by_name(name) {
+            let pst = rules.particle_system_type(ps_id);
+            if pst.behaves_like == ParticleSystemBehavesLike::Spark {
+                spark_lifetimes.push(pst.lifetime);
+            }
+        }
+    }
+    let spark_count = spark_lifetimes.len() as u32;
+    // Band select needs ConditionRed; bind once (both gate and draw read it).
+    let below_red = cur * 1000 < max * rules.general.condition_red_x1000;
+
+    // `+0x308`-equivalent live-system gate. Resolve expiry lazily here (the only
+    // observable effect of the hold is gating draws, which only happen under this
+    // gate, so lazy expiry yields the same draw sequence as gamemd's eager null).
+    let tick = sim.session.tick;
+    let mut live_until = live_until_in;
+    if live_until != 0 && live_until != DAMAGE_PARTICLE_LIVE_FOREVER && tick >= live_until {
+        live_until = 0; // system expired → `+0x308` nulls; may roll again this tick
+    }
+    let system_live = live_until != 0;
+
+    // Inner gate: no live system AND at least one Spark system.
+    if !system_live && spark_count > 0 {
+        // Draw #1 — prob-roll on Scen->Random (always, on inner-gate pass).
+        let roll = sim
+            .scenario_rng
+            .next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX);
+        let threshold = if below_red {
+            rules.general.condition_red_spark_threshold
+        } else {
+            rules.general.condition_yellow_spark_threshold
+        };
+        if roll < threshold {
+            // Draw #2 — list-pick (no draw when spark_count == 1: n(0,0)).
+            let idx = sim
+                .scenario_rng
+                .next_range_u32_inclusive(0, spark_count - 1) as usize;
+            let lifetime = spark_lifetimes[idx];
+            live_until = if lifetime > 0 {
+                tick.saturating_add(lifetime as u64)
+            } else {
+                DAMAGE_PARTICLE_LIVE_FOREVER
+            };
+        }
+    }
+
+    // Commit the (possibly cleared or freshly-armed) live-system state.
+    if live_until != live_until_in {
+        if let Some(entity) = sim.substrate.entities.get_mut(id) {
+            entity.damage_particle_live_until = live_until;
+        }
+    }
+}
+
+/// Outcome of the S4a bracket for one Unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BracketReach {
+    /// Died after the pre-block (health 0); no mission commit.
+    DiedInPre,
+    /// Non-miner live Unit: committed (`+0xC4` tick_counter + `derived_mission`)
+    /// authoritatively at the host.
+    Committed,
+    /// Miner Unit: the host runs the bracket but does NOT commit — the miner
+    /// session / tail projection owns the miner mission (deferred, as before S4a).
+    MinerDeferred,
+}
+
+/// S4a per-Unit TechnoClass common bracket (AUTHORITATIVE — Option B flip).
+/// Runs the contiguous `pre -> [IsAlive B] -> +0xC4/Mission_Dispatch ->
+/// [IsAlive E] -> post` structure and commits the Unit's mission HERE, at the
+/// gamemd-faithful per-object AI point (pre-movement, LogicVector order), rather
+/// than in `movement_tick` (scoped movers) or the Phase-9 tail (idle) as before.
+/// Miners stay tail-owned. Returns the outcome; the walk collects `Committed`
+/// ids as the tail's skip-set.
+fn unit_techno_bracket(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) -> BracketReach {
+    techno_common_pre(sim, id);
+    // Guard B (post-pre IsAlive): a health-0 Unit makes no commit. No lethal
+    // pre-block step exists yet, so this fires only for an already-dead Unit.
+    if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
+        return BracketReach::DiedInPre;
+    }
+    // Miners are deferred to the tail projection (the miner session owns that
+    // path); the host runs the bracket but skips the authoritative commit, so a
+    // miner is NOT added to the skip-set and the tail commits it.
+    if sim.substrate.entities.get(id).is_some_and(|e| e.miner.is_some()) {
+        techno_common_post(sim, id, rules);
+        return BracketReach::MinerDeferred;
+    }
+    // `+0xC4` AI-tick counter + `Mission_Dispatch` (AUTHORITATIVE commit): the
+    // mission is a deterministic projection of the unit's machines, committed at
+    // this per-object AI point. `current`/`substate` mirror `derived_mission`;
+    // the verbs own `queued`/`suspended`/`timer`.
+    if let Some(e) = sim.substrate.entities.get_mut(id) {
+        e.mission.tick_counter = e.mission.tick_counter.wrapping_add(1);
+        let (current, substate) = e.derived_mission();
+        e.mission.current = current;
+        e.mission.substate = substate;
+    }
+    // Guard E (post-dispatch IsAlive): a mission commit cannot kill the Unit, so
+    // this cannot fire yet; the structure is preserved for the S5 dispatch
+    // handlers that can self-destruct. The Unit is committed regardless.
+    techno_common_post(sim, id, rules);
+    BracketReach::Committed
+}
+
+/// S4c passive-acquire gate predicate (pure; the testable core of
+/// `debug_s4c_passive_acquire_shadow`). A Unit reaches the passive-acquire
+/// scanner iff its mission is in {Move(2), Guard(5), Harvest(10)}, it carries a
+/// weapon, AND (`OpportunityFire` OR mission == Guard). The Guard term is the
+/// verified gamemd behavior: a Guard-mission unit auto-acquires regardless of
+/// `OpportunityFire` (decompiled `TechnoClass::PassiveAcquireGate` 0x00709290).
+#[cfg(any(test, debug_assertions))]
+fn s4c_passive_acquire_eligible(
+    mission: MissionType,
+    has_weapon: bool,
+    opportunity_fire: bool,
+) -> bool {
+    matches!(
+        mission,
+        MissionType::Move | MissionType::Guard | MissionType::Harvest
+    ) && has_weapon
+        && (opportunity_fire || mission == MissionType::Guard)
 }
 
 // ===== Slice S1 — first behavior-bearing ordering (shadow) =====
@@ -281,8 +580,10 @@ fn techno_ai_shell(sim: &mut Simulation, id: u64, category: EntityCategory) {
 /// Requiring a drive locomotor narrows the scope to the units the dispatch→
 /// process ordering proof targets and makes the `is_drive` marker exact —
 /// avoiding a false agreement-assert on a non-drive mover (ship / hover).
+/// Consumed only by the S1 dispatch-before-Process shadow in this module (the
+/// in-loop movement_tick consumer was retired by the S4a host-commit flip).
 #[cfg(any(test, debug_assertions))]
-fn is_s1_scoped_move_unit(e: &GameEntity) -> bool {
+pub(crate) fn is_s1_scoped_move_unit(e: &GameEntity) -> bool {
     e.category == EntityCategory::Unit
         && e.movement_target.is_some()
         && e.drive_locomotion.is_some()
@@ -322,9 +623,13 @@ fn unit_ai_shadow_step(sim: &Simulation, id: u64, seq: &mut u32) -> Option<Shell
     if !is_s1_scoped_move_unit(entity) {
         return None;
     }
-    // Mission dispatch (decision) FIRST. `mission.current` was refreshed by
-    // refresh_mission_shadow this tick; reading it is the "decision ran" marker.
-    let mission = entity.mission.current;
+    // Mission dispatch (decision) FIRST — the fresh per-object decision marker.
+    // S4a: read `derived_mission` (the decision), NOT the committed `mission.current`:
+    // post-flip the latter is the host's Phase-0 commit, which legitimately goes
+    // stale when a unit retasks mid-tick (e.g. Attack at the host, move-scoped by
+    // the Phase-9 read). The S1 proof is dispatch-decision-before-Process; the
+    // decision for an in-scope move unit is `Move` by the scope predicate.
+    let mission = entity.derived_mission().0;
     let dispatch_seq = *seq;
     *seq += 1;
     // Locomotor Process SECOND — the read-only drive presence marker.
@@ -357,7 +662,7 @@ impl Simulation {
             debug_assert!(
                 trace.dispatch_seq < trace.process_seq,
                 "S1: tick {} unit {}: dispatch_seq {} must precede process_seq {}",
-                self.tick,
+                self.session.tick,
                 id,
                 trace.dispatch_seq,
                 trace.process_seq,
@@ -366,14 +671,14 @@ impl Simulation {
                 trace.mission,
                 MissionType::Move,
                 "S1: tick {} unit {}: in-scope unit must derive Move, observed {:?}",
-                self.tick,
+                self.session.tick,
                 id,
                 trace.mission,
             );
             debug_assert!(
                 trace.is_drive,
                 "S1: tick {} unit {}: in-scope unit must be a drive mover",
-                self.tick,
+                self.session.tick,
                 id,
             );
         }
@@ -450,7 +755,7 @@ impl Simulation {
             debug_assert!(
                 w[0].visit_seq < w[1].visit_seq,
                 "P2: tick {}: factory shell trace visit_seq must strictly increase",
-                self.tick,
+                self.session.tick,
             );
         }
         for t in &traces {
@@ -460,7 +765,7 @@ impl Simulation {
                     .get(t.structure_id)
                     .is_some_and(|e| !e.dying && e.category == EntityCategory::Structure),
                 "P2: tick {}: factory shell trace id {} must resolve to a live Structure",
-                self.tick,
+                self.session.tick,
                 t.structure_id,
             );
         }
@@ -557,10 +862,10 @@ mod tests {
     }
 
     #[test]
-    fn techno_ai_shell_is_passthrough_no_hash_change() {
-        // Mirrors `mission_shadow_does_not_change_state_hash`: the no-op stage,
-        // walking live order and dispatching all four category arms, must leave
-        // the lockstep hash bit-identical.
+    fn object_ai_stage_commits_live_unit_mission() {
+        // S4a (Option B): the stage AUTHORITATIVELY commits each live non-miner
+        // Unit's mission (+0xC4 tick_counter + derived_mission); non-Units are
+        // untouched here (the Phase-9 tail projects them).
         let mut sim = Simulation::new();
         sim.substrate
             .entities
@@ -576,13 +881,22 @@ mod tests {
             .insert(entity_of(4, EntityCategory::Aircraft));
         sim.set_logic_order_for_test(vec![1, 2, 3, 4]);
 
-        let before = sim.state_hash();
-        sim.object_ai_stage();
-        let after = sim.state_hash();
-        assert_eq!(
-            before, after,
-            "object_ai_stage (S0 no-op) must not perturb the state hash"
-        );
+        let mut committed = std::collections::BTreeSet::new();
+        sim.object_ai_stage(None, &mut committed);
+
+        // The idle non-miner Unit committed Guard and ticked its counter once.
+        assert_eq!(committed.iter().copied().collect::<Vec<_>>(), vec![1]);
+        let u = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(u.mission.current, MissionType::Guard);
+        assert_eq!(u.mission.tick_counter, 1);
+        // Non-Units are not committed by the host (tail owns them): counter at 0.
+        for id in [2u64, 3, 4] {
+            assert_eq!(
+                sim.substrate.entities.get(id).unwrap().mission.tick_counter,
+                0,
+                "non-Unit {id} must not be committed by the host"
+            );
+        }
     }
 
     #[test]
@@ -601,7 +915,7 @@ mod tests {
         // verbatim (no sort).
         sim.set_logic_order_for_test(vec![3, 1, 2]);
 
-        let visited = sim.object_ai_walk(true);
+        let visited = sim.object_ai_walk(true, None, &mut std::collections::BTreeSet::new());
         assert_eq!(
             visited,
             sim.live_object_order_snapshot(),
@@ -615,10 +929,10 @@ mod tests {
         // The stage is wired into advance_tick (called every tick, before
         // refresh_mission_shadow). Identical fixtures must produce identical
         // per-tick state_hash sequences — the stage introduces no nondeterminism
-        // and no panic. Together with the hash-neutrality proof
-        // (techno_ai_shell_is_passthrough_no_hash_change, which exercises the
-        // entity walk directly) this shows the new stage perturbs no phase and
-        // no surrounding ordering. The fixture is intentionally entity-free:
+        // and no panic. Together with the commit proof
+        // (object_ai_stage_commits_live_unit_mission, which exercises the entity
+        // walk directly) this shows the stage perturbs no phase and no surrounding
+        // ordering beyond its own mission commit. The fixture is intentionally entity-free:
         // raw test_default entities carry interned ids that advance_tick's
         // entity systems would resolve against an empty interner (a fixture
         // concern unrelated to the stage); the stage still runs each tick over
@@ -655,7 +969,7 @@ mod tests {
         // in the live order.
         sim.substrate.entities.get_mut(2).unwrap().dying = true;
 
-        let visited = sim.object_ai_walk(true);
+        let visited = sim.object_ai_walk(true, None, &mut std::collections::BTreeSet::new());
         assert_eq!(
             visited,
             vec![1],
@@ -663,7 +977,7 @@ mod tests {
         );
         // The internal order-proof assert filters dying members, so the stage
         // must not panic even with a dying member in the live order.
-        sim.object_ai_stage();
+        sim.object_ai_stage(None, &mut std::collections::BTreeSet::new());
     }
 
     #[test]
@@ -681,14 +995,105 @@ mod tests {
             .logic
             .set_order_for_test(vec![absent_id, live_id]);
 
-        let visited = sim.object_ai_walk(true);
+        let visited = sim.object_ai_walk(true, None, &mut std::collections::BTreeSet::new());
         assert_eq!(
             visited,
             vec![live_id],
             "absent id skipped without panic; live id still visited"
         );
         // Stage must not panic on the absent member either.
-        sim.object_ai_stage();
+        sim.object_ai_stage(None, &mut std::collections::BTreeSet::new());
+    }
+
+    // ===== Slice S4a — TechnoClass common bracket (authoritative, Option B) =====
+
+    #[test]
+    fn s4a_bracket_commits_live_non_miner_unit() {
+        let mut sim = Simulation::new();
+        sim.substrate
+            .entities
+            .insert(entity_of(1, EntityCategory::Unit));
+        // A live non-miner Unit reaches the dispatch point and commits: +0xC4
+        // tick_counter + derived_mission (idle -> Guard).
+        assert_eq!(unit_techno_bracket(&mut sim, 1, None), BracketReach::Committed);
+        let u = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(u.mission.tick_counter, 1);
+        assert_eq!(u.mission.current, MissionType::Guard);
+    }
+
+    #[test]
+    fn s4a_bracket_pre_guard_short_circuits_dead_unit() {
+        let mut sim = Simulation::new();
+        let mut e = entity_of(1, EntityCategory::Unit);
+        e.health.current = 0; // not alive
+        sim.substrate.entities.insert(e);
+        // Guard B fires after the (empty) pre-block: a health-0 Unit makes no
+        // commit (counter stays 0) and never reaches the dispatch point.
+        assert_eq!(unit_techno_bracket(&mut sim, 1, None), BracketReach::DiedInPre);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 0);
+    }
+
+    #[test]
+    fn s4a_bracket_defers_miner_to_tail() {
+        let mut sim = Simulation::new();
+        let mut miner = entity_of(1, EntityCategory::Unit);
+        miner.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
+        sim.substrate.entities.insert(miner);
+        // A miner runs the bracket but the host does NOT commit it — the miner
+        // session / tail projection owns the miner mission (counter stays 0).
+        assert_eq!(unit_techno_bracket(&mut sim, 1, None), BracketReach::MinerDeferred);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 0);
+    }
+
+    // ===== Slice S4c — passive-acquire eligibility gate (shadow) =====
+
+    #[test]
+    fn s4c_gate_move_with_opportunity_fire_and_weapon_eligible() {
+        assert!(s4c_passive_acquire_eligible(MissionType::Move, true, true));
+    }
+
+    #[test]
+    fn s4c_gate_guard_with_weapon_eligible_without_opportunity_fire() {
+        // Guard units auto-acquire regardless of OpportunityFire (verified gate).
+        assert!(s4c_passive_acquire_eligible(MissionType::Guard, true, false));
+    }
+
+    #[test]
+    fn s4c_gate_harvest_with_opportunity_fire_eligible() {
+        assert!(s4c_passive_acquire_eligible(MissionType::Harvest, true, true));
+    }
+
+    #[test]
+    fn s4c_gate_move_without_opportunity_fire_not_eligible() {
+        assert!(!s4c_passive_acquire_eligible(MissionType::Move, true, false));
+    }
+
+    #[test]
+    fn s4c_gate_no_weapon_not_eligible_even_on_guard() {
+        // The weapon (CanAcquireTarget equip) gate applies to ALL paths, incl Guard.
+        assert!(!s4c_passive_acquire_eligible(MissionType::Guard, false, true));
+        assert!(!s4c_passive_acquire_eligible(MissionType::Move, false, true));
+    }
+
+    #[test]
+    fn s4c_gate_off_mission_not_eligible() {
+        // Missions outside {Move,Guard,Harvest} never reach the passive-acquire block.
+        assert!(!s4c_passive_acquire_eligible(MissionType::Attack, true, true));
+        assert!(!s4c_passive_acquire_eligible(MissionType::Sleep, true, true));
+    }
+
+    #[test]
+    fn s4c_shadow_is_hash_neutral() {
+        // The shadow is read-only; calling it must not move the lockstep hash.
+        let mut sim = Simulation::new();
+        sim.substrate
+            .entities
+            .insert(entity_of(1, EntityCategory::Unit));
+        sim.set_logic_order_for_test(vec![1]);
+        let before = sim.state_hash();
+        let _ = sim.debug_s4c_passive_acquire_shadow(None);
+        let after = sim.state_hash();
+        assert_eq!(before, after, "S4c shadow must not perturb the state hash");
     }
 
     // ===== Slice S1 — dispatch-before-locomotor shadow =====
@@ -721,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn unit_move_dispatch_then_process_shadow_agrees() {
+    fn unit_move_dispatch_then_process_shadow_reads_fresh_decision() {
         let mut sim = Simulation::new();
         sim.substrate.entities.insert(scoped_move_unit(1));
         sim.substrate.entities.insert(scoped_move_unit(2));
@@ -732,16 +1137,18 @@ mod tests {
         // process, so the shadow pass asserts cleanly (no divergence, no panic).
         sim.debug_assert_s1_shadow();
 
-        // Divergence is SURFACED, not equalized: force an in-scope unit's mission
-        // to a non-Move value after the refresh; the step returns the OBSERVED
-        // mission (Guard), it does not rewrite it to Move.
+        // S4a: the shadow reads the FRESH per-object decision (`derived_mission`),
+        // NOT the committed `mission.current`. Post-flip the committed value is the
+        // host's Phase-0 commit and can go stale (a unit retasked mid-tick), so a
+        // stale committed value must NOT change what the shadow observes: an
+        // in-scope move unit's decision is `Move` regardless of the stale commit.
         sim.substrate.entities.get_mut(1).unwrap().mission.current = MissionType::Guard;
         let mut seq = 0u32;
         let trace = unit_ai_shadow_step(&sim, 1, &mut seq).expect("still in scope");
         assert_eq!(
             trace.mission,
-            MissionType::Guard,
-            "shadow surfaces the observed mission, never silently equalizes to Move"
+            MissionType::Move,
+            "shadow reads the fresh decision (Move), not the stale committed mission"
         );
     }
 
@@ -853,14 +1260,14 @@ mod tests {
         let mut sim = Simulation::new();
         sim.substrate.entities.insert(scoped_move_unit(1)); // Move
         let mut idle = scoped_move_unit(2);
-        idle.movement_target = None; // None -> Sleep family
+        idle.movement_target = None; // S3: idle Unit derives Guard -> Guard family
         sim.substrate.entities.insert(idle);
         sim.set_logic_order_for_test(vec![1, 2]);
 
         let trace = sim.unit_dispatch_record_pass();
         sim.debug_assert_unit_dispatch_shadow(&trace); // no panic
         assert_eq!(trace[0].family, DispatchSlot::Move);
-        assert_eq!(trace[1].family, DispatchSlot::Sleep);
+        assert_eq!(trace[1].family, DispatchSlot::Guard);
     }
 
     #[test]
@@ -888,21 +1295,22 @@ mod tests {
     }
 
     #[test]
-    fn unit_dispatch_host_is_hash_neutral() {
+    fn unit_dispatch_host_commits_scoped_mover() {
+        // S4a: the host commits the scoped mover's mission (Move) authoritatively
+        // and reports it in the skip-set; the read-only proofs must not panic.
         let mut sim = Simulation::new();
         sim.substrate.entities.insert(scoped_move_unit(1));
         sim.set_logic_order_for_test(vec![1]);
-        sim.refresh_mission_shadow();
 
-        let before = sim.state_hash();
-        let trace = sim.object_ai_stage(); // host pass (returns the trace)
-        sim.debug_assert_unit_dispatch_shadow(&trace); // read-only proof
+        let mut committed = std::collections::BTreeSet::new();
+        let trace = sim.object_ai_stage(None, &mut committed); // host pass (commits id 1)
+        sim.debug_assert_unit_dispatch_shadow(&trace); // read-only proof (no panic)
         sim.debug_check_dispatch_live_set_coverage(); // read-only coverage
-        let after = sim.state_hash();
-        assert_eq!(
-            before, after,
-            "the Unit dispatch host + proofs must not perturb the hash"
-        );
+
+        assert!(committed.contains(&1), "the scoped mover is committed by the host");
+        let u = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(u.mission.current, MissionType::Move);
+        assert_eq!(u.mission.tick_counter, 1);
     }
 
     #[test]
@@ -938,5 +1346,365 @@ mod tests {
         sim.substrate.entities.get_mut(1).unwrap().movement_target = None;
         let churn = sim.debug_assert_unit_dispatch_shadow(&trace);
         assert_eq!(churn, 1, "a host Move that became tail Sleep must count as one churn");
+    }
+
+    // ===== Slice S2 — in-loop dispatch authority =====
+
+    /// Like `scoped_move_unit`, but interned through the SIM's interner so the
+    /// unit survives a real `advance_tick` (test_intern ids don't exist in
+    /// `sim.interner`, and tick-path resolves would panic).
+    fn insert_s2_scoped_move_unit(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("TEST");
+        let mut e = GameEntity::new(
+            id,
+            rx,
+            ry,
+            0, // z = ground level
+            0, // facing = north
+            owner,
+            crate::sim::components::Health { current: 100, max: 100 },
+            type_ref,
+            EntityCategory::Unit,
+            0, // veterancy = rookie
+            5, // vision_range = 5 cells
+            true,
+        );
+        e.movement_target = Some(MovementTarget::default());
+        e.drive_locomotion = Some(DriveLocomotionRuntime::default());
+        sim.substrate.entities.insert(e);
+    }
+
+    /// S2: the arrival tick hashes the dispatch-time mission (`Move`); the
+    /// transition away happens on the NEXT tick (gamemd-faithful). S3: the
+    /// post-arrival idle mission is `Guard` — the gamemd Move→Guard sequence.
+    #[test]
+    fn arrival_tick_mission_is_move_not_sleep() {
+        let mut sim = Simulation::new();
+        insert_s2_scoped_move_unit(&mut sim, 1, 5, 5); // default target: arrives tick 1
+        sim.set_logic_order_for_test(vec![1]);
+        let heights = std::collections::BTreeMap::new();
+
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert!(e.movement_target.is_none(), "fixture must arrive on tick 1");
+        assert_eq!(e.mission.current, MissionType::Move, "arrival tick keeps Move");
+
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
+        let e = sim.substrate.entities.get(1).unwrap();
+        // S3 idle→Guard: a machine-less idle Unit derives Guard (gamemd's
+        // post-arrival idle mission), not the legacy None placeholder.
+        assert_eq!(e.mission.current, MissionType::Guard, "post-arrival tick → Guard");
+    }
+
+    /// S3 (G5 pin): the tail projection treats dying Units uniformly — a dying
+    /// machine-less Unit also projects Guard. Corpse-mission freeze (gamemd
+    /// does not re-derive a corpse's mission) is deferred to the
+    /// deferred-delete substrate. Scope of the divergence window (review-
+    /// corrected): voxel-death corpses are freed by flush_pending_delete
+    /// BEFORE the tail projection and hash, so they never hit this path; only
+    /// SHP-art Units with death animations linger, for the duration of the
+    /// death anim (app-driven despawn). Pre-S3 the same unfiltered projection
+    /// rewrote those corpses to None each tick — S3 changes the value, not
+    /// the window. Pinned here so the choice is intentional, not accidental.
+    #[test]
+    fn dying_unit_projection_uniform() {
+        let mut sim = Simulation::new();
+        insert_s2_scoped_move_unit(&mut sim, 1, 5, 5);
+        sim.substrate.entities.get_mut(1).unwrap().movement_target = None; // idle
+        sim.substrate.entities.get_mut(1).unwrap().dying = true;
+        sim.refresh_mission_shadow();
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.current,
+            MissionType::Guard,
+            "dying machine-less Unit projects Guard (uniform tail projection)"
+        );
+    }
+
+    /// S2: exactly one tick_counter increment per unit-tick — in-loop for a
+    /// dispatched mover, tail for an idle (never-collected) unit. Double or
+    /// zero count is permanent lockstep drift.
+    #[test]
+    fn s2_tick_counter_increments_exactly_once() {
+        let mut sim = Simulation::new();
+        insert_s2_scoped_move_unit(&mut sim, 1, 5, 5); // dispatched on tick 1
+        insert_s2_scoped_move_unit(&mut sim, 2, 8, 8);
+        // never collected; never scoped
+        sim.substrate.entities.get_mut(2).unwrap().movement_target = None;
+        sim.set_logic_order_for_test(vec![1, 2]);
+        let heights = std::collections::BTreeMap::new();
+
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 1);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().mission.tick_counter, 1);
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 2);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().mission.tick_counter, 2);
+    }
+
+    /// S2 P1 guard: a save taken on the arrival tick (current=Move while a fresh
+    /// derivation says None) must restore an IDENTICAL state hash. Guards the
+    /// deleted post-load re-derive against reintroduction.
+    #[test]
+    fn save_load_round_trip_on_arrival_tick() {
+        use crate::sim::snapshot::GameSnapshot;
+        let mut sim = Simulation::new();
+        insert_s2_scoped_move_unit(&mut sim, 1, 5, 5);
+        sim.set_logic_order_for_test(vec![1]);
+        let heights = std::collections::BTreeMap::new();
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67); // arrival tick
+
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(e.mission.current, MissionType::Move, "precondition: divergent window");
+        assert!(e.movement_target.is_none());
+        let hash_before = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("load").sim;
+        restored.rebuild_logic_membership(); // the real post-deserialize step
+        assert_eq!(
+            restored.state_hash(),
+            hash_before,
+            "load must trust serialized MissionCom"
+        );
+        assert_eq!(
+            restored.substrate.entities.get(1).unwrap().mission.current,
+            MissionType::Move,
+        );
+    }
+
+    // ===== Slice S4b — AI_Update damage-Spark scenario_rng consumption =====
+
+    /// Two Spark systems, each `Lifetime=5`, so the list-pick (count==2) consumes
+    /// a draw and the armed hold is `tick+5` regardless of the picked index.
+    const TWO_SPARK_SYSTEMS: &str = "[ParticleSystems]\n\
+1=SparkA\n2=SparkB\n\n[SparkA]\nBehavesLike=Spark\nLifetime=5\n\n[SparkB]\nBehavesLike=Spark\nLifetime=5\n";
+
+    /// One Spark (`Lifetime=5`) plus one Smoke — exercises the Spark filter and the
+    /// single-Spark list-pick (count==1 → no draw, matching `n(0,0)`).
+    const ONE_SPARK_ONE_SMOKE_SYSTEMS: &str = "[ParticleSystems]\n\
+1=SparkA\n2=SmokeA\n\n[SparkA]\nBehavesLike=Spark\nLifetime=5\n\n[SmokeA]\nBehavesLike=Smoke\n";
+
+    /// A Smoke-only damage particle system — no Spark, so the inner gate never
+    /// passes (zero draws even below ConditionRed).
+    const SMOKE_ONLY_SYSTEMS: &str = "[ParticleSystems]\n1=SmokeA\n\n[SmokeA]\nBehavesLike=Smoke\n";
+
+    /// Minimal RuleSet with one `Cyborg=yes` infantry "CYB" (so `emits_damage_spark`
+    /// is true), `DamageParticleSystems=dps`, the named particle `systems`, and the
+    /// two damage-Spark probabilities. prob "1.0" → always-succeed threshold; "0.0"
+    /// → always-fail — so the draw outcome is deterministic regardless of the seed's
+    /// actual roll value.
+    fn cyborg_rules(red_prob: &str, yellow_prob: &str, dps: &str, systems: &str) -> RuleSet {
+        use crate::rules::ini_parser::IniFile;
+        let text = format!(
+            "[General]\n\
+BuildSpeed=0.75\nMultipleFactory=0.7\nLowPowerPenaltyModifier=1.25\n\
+MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\
+ConditionRedSparkingProbability={red_prob}\nConditionYellowSparkingProbability={yellow_prob}\n\n\
+[InfantryTypes]\n1=CYB\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\n\
+[CYB]\nCyborg=yes\nDamageParticleSystems={dps}\n\n{systems}\n"
+        );
+        RuleSet::from_ini(&IniFile::from_str(&text)).expect("cyborg test rules parse")
+    }
+
+    /// Insert a unit whose type resolves to the Cyborg infantry "CYB". The entity
+    /// category is `Unit` (the only arm hosting `techno_common_post` today); the
+    /// gate keys off the TYPE's `emits_damage_spark`, so this exercises the draw
+    /// path. `current`/`max` set the health band.
+    fn insert_cyborg_unit(sim: &mut Simulation, id: u64, current: u16, max: u16) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("CYB");
+        let e = GameEntity::new(
+            id,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health { current, max },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        sim.substrate.entities.insert(e);
+    }
+
+    fn live_until(sim: &Simulation, id: u64) -> u64 {
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .damage_particle_live_until
+    }
+
+    #[test]
+    fn s4b_no_draw_above_condition_yellow() {
+        // 60/100 = above ConditionYellow (0.5): the outer gate fails → zero draws.
+        let rules = cyborg_rules("1.0", "1.0", "SparkA,SparkB", TWO_SPARK_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 60, 100);
+        let scen = sim.scenario_rng.state();
+        let main = sim.main_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        assert_eq!(sim.scenario_rng.state(), scen, "no scenario draw above ConditionYellow");
+        assert_eq!(sim.main_rng.state(), main);
+        assert_eq!(live_until(&sim, 1), 0);
+    }
+
+    #[test]
+    fn s4b_one_draw_when_roll_fails() {
+        // Below ConditionRed, prob 0.0 → threshold 0 → roll always fails: exactly
+        // one draw (the prob-roll), no list-pick, no live system armed.
+        let rules = cyborg_rules("0.0", "0.0", "SparkA,SparkB", TWO_SPARK_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100); // below red
+        let mut expect = sim.scenario_rng.clone();
+        let main = sim.main_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX);
+        assert_eq!(sim.scenario_rng.state(), expect.state(), "exactly one prob-roll draw");
+        assert_eq!(sim.main_rng.state(), main, "scenario stream only, never main");
+        assert_eq!(live_until(&sim, 1), 0, "roll failed → no live system");
+    }
+
+    #[test]
+    fn s4b_two_draws_when_roll_succeeds() {
+        // prob 1.0 → threshold MAX → roll always succeeds; 2 Spark systems → the
+        // list-pick (n(0,1)) consumes a second draw, and the hold arms to tick+5.
+        let rules = cyborg_rules("1.0", "1.0", "SparkA,SparkB", TWO_SPARK_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        let tick = sim.session.tick;
+        let mut expect = sim.scenario_rng.clone();
+        let main = sim.main_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX); // roll
+        expect.next_range_u32_inclusive(0, 1); // list-pick over 2 sparks
+        assert_eq!(sim.scenario_rng.state(), expect.state(), "roll + list-pick = two draws");
+        assert_eq!(sim.main_rng.state(), main);
+        assert_eq!(live_until(&sim, 1), tick + 5, "armed to spawn_tick + Lifetime");
+    }
+
+    #[test]
+    fn s4b_one_draw_when_single_spark_succeeds() {
+        // Single Spark system: on success the list-pick is n(0,0) → consumes NO
+        // draw (gamemd RandomRanged min==max), so a successful roll is ONE draw.
+        let rules = cyborg_rules("1.0", "1.0", "SparkA,SmokeA", ONE_SPARK_ONE_SMOKE_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        let tick = sim.session.tick;
+        let mut expect = sim.scenario_rng.clone();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX); // roll only
+        assert_eq!(sim.scenario_rng.state(), expect.state(), "single-spark success = one draw");
+        assert_eq!(live_until(&sim, 1), tick + 5, "armed despite the no-draw list-pick");
+    }
+
+    #[test]
+    fn s4b_no_draw_while_system_live() {
+        // After a successful spawn (live_until = 5 at tick 0), a same-tick re-entry
+        // sees the live system (+0x308 != 0) and makes zero draws; advancing past
+        // live_until expires it and rolling resumes.
+        let rules = cyborg_rules("1.0", "1.0", "SparkA,SparkB", TWO_SPARK_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        techno_common_post(&mut sim, 1, Some(&rules)); // spawn → live_until = 5
+        assert_eq!(live_until(&sim, 1), 5);
+
+        let frozen = sim.scenario_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules)); // still tick 0 < 5 → no draw
+        assert_eq!(sim.scenario_rng.state(), frozen, "live system blocks the draw");
+        assert_eq!(live_until(&sim, 1), 5, "hold unchanged while live");
+
+        // At tick 5 the system has expired: clears and re-rolls (2 draws, re-armed).
+        sim.session.tick = 5;
+        let mut expect = sim.scenario_rng.clone();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX);
+        expect.next_range_u32_inclusive(0, 1);
+        assert_eq!(sim.scenario_rng.state(), expect.state(), "expiry resumes rolling");
+        assert_eq!(live_until(&sim, 1), 10, "re-armed to 5 + Lifetime");
+    }
+
+    #[test]
+    fn s4b_zero_draw_without_spark_systems() {
+        // Below ConditionRed but DamageParticleSystems has no Spark entry: the
+        // inner gate (Spark count > 0) fails → zero draws, even at prob 1.0.
+        let rules = cyborg_rules("1.0", "1.0", "SmokeA", SMOKE_ONLY_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        let scen = sim.scenario_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        assert_eq!(sim.scenario_rng.state(), scen, "no Spark system → no draw");
+        assert_eq!(live_until(&sim, 1), 0);
+    }
+
+    #[test]
+    fn s4b_dormant_for_non_cyborg_type() {
+        // The slice's faithfulness claim: a non-Cyborg type makes zero draws even
+        // below ConditionRed with Spark systems, because emits_damage_spark
+        // (Type+0xC8F) is false. Here a VEHICLE with `Cyborg=yes` (nonsensical, but
+        // it proves the category gate) — gamemd only honours Cyborg on infantry, so
+        // its +0xC8F stays 0 and it never sparks. Build rules inline registering the
+        // type under [VehicleTypes].
+        use crate::rules::ini_parser::IniFile;
+        let text = format!(
+            "[General]\n\
+BuildSpeed=0.75\nMultipleFactory=0.7\nLowPowerPenaltyModifier=1.25\n\
+MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\
+ConditionRedSparkingProbability=1.0\nConditionYellowSparkingProbability=1.0\n\n\
+[InfantryTypes]\n[VehicleTypes]\n1=VEHCYB\n[AircraftTypes]\n[BuildingTypes]\n\n\
+[VEHCYB]\nCyborg=yes\nDamageParticleSystems=SparkA,SparkB\n\n{TWO_SPARK_SYSTEMS}\n"
+        );
+        let rules = RuleSet::from_ini(&IniFile::from_str(&text)).expect("veh rules parse");
+        // Sanity: the type parsed as a Cyborg vehicle that nonetheless does NOT emit.
+        let obj = rules.object("VEHCYB").expect("VEHCYB present");
+        assert!(obj.cyborg, "Cyborg= parsed");
+        assert!(!obj.emits_damage_spark(), "a vehicle never emits AI_Update sparks");
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("VEHCYB");
+        let e = GameEntity::new(
+            1,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health { current: 20, max: 100 },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        sim.substrate.entities.insert(e);
+        let scen = sim.scenario_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        assert_eq!(sim.scenario_rng.state(), scen, "non-Cyborg-infantry type makes zero draws");
+        assert_eq!(live_until(&sim, 1), 0);
+    }
+
+    #[test]
+    fn s4b_permanent_hold_blocks_draw() {
+        // A spawned spark whose Lifetime <= 0 holds +0x308 indefinitely: live_until
+        // = u64::MAX never expires, so the object never rolls again.
+        let rules = cyborg_rules(
+            "1.0",
+            "1.0",
+            "SparkA",
+            "[ParticleSystems]\n1=SparkA\n\n[SparkA]\nBehavesLike=Spark\nLifetime=-1\n",
+        );
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        techno_common_post(&mut sim, 1, Some(&rules)); // success → permanent hold
+        assert_eq!(live_until(&sim, 1), u64::MAX, "Lifetime<=0 → indefinite hold");
+        sim.session.tick = 1_000_000;
+        let frozen = sim.scenario_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        assert_eq!(sim.scenario_rng.state(), frozen, "permanent hold never re-rolls");
     }
 }

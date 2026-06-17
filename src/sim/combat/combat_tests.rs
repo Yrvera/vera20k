@@ -557,6 +557,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         100,
         0u32,
         &[],
+        None,
     );
     assert!(
         result.bridge_damage_events.is_empty(),
@@ -600,6 +601,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         100,
         0u32,
         &[],
+        None,
     );
     assert_eq!(
         wall_result.bridge_damage_events,
@@ -1117,6 +1119,7 @@ fn garrison_fire_keeps_occupant_anim_and_sound_path() {
         100,
         0,
         &[],
+        None,
     );
 
     assert_eq!(result.fire_events.len(), 1);
@@ -1295,6 +1298,7 @@ fn test_tick_combat_visibility_blocks_fire() {
         100,
         0u32,
         &[],
+        None,
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -1334,6 +1338,7 @@ fn test_tick_combat_retargets_by_distance_then_stable_id() {
         100,
         0u32,
         &[],
+        None,
     );
 
     let attack = store
@@ -1383,6 +1388,7 @@ fn test_tick_combat_retargets_prefers_threat_class_when_distance_equal() {
         100,
         0u32,
         &[],
+        None,
     );
 
     let attack = store
@@ -1461,6 +1467,7 @@ fn test_weapon_fire_destroys_ore_in_spread() {
         100,
         0u32,
         &[],
+        None,
     );
 
     // Combat emits TiberiumReductionRequests (applied later by World via the
@@ -1528,6 +1535,7 @@ fn test_direct_hit_weapon_destroys_center_ore() {
         100,
         0u32,
         &[],
+        None,
     );
 
     // Combat emits a TiberiumReductionRequest (applied later by World). 105mm
@@ -1587,6 +1595,7 @@ fn test_weak_weapon_partial_ore_reduction() {
         100,
         0u32,
         &[],
+        None,
     );
 
     // Combat emits a TiberiumReductionRequest (applied later by World). M60
@@ -2338,6 +2347,7 @@ fn combat_resolves_in_live_object_order_not_stable_id() {
             100,
             0u32,
             &[2, 1],
+            None,
         );
         assert_eq!(
             result.fire_events[0].attacker_id, 2,
@@ -2370,6 +2380,7 @@ fn combat_resolves_in_live_object_order_not_stable_id() {
             100,
             0u32,
             &[],
+            None,
         );
         assert_eq!(
             result.fire_events[0].attacker_id, 1,
@@ -2467,4 +2478,204 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
         vc.last_attacker_id, None,
         "retaliation against a live attacker clears last_attacker_id",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Radiation field (substrate Slice 7): periodic foot-unit damage through the
+// [Radiation] RadSiteWarhead, building exemption, and the deployed
+// self-irradiator (Desolator) re-fire loop.
+// ---------------------------------------------------------------------------
+
+/// Desolator-shaped rules: a deployable radiation infantry, a soft infantry
+/// victim, a heavy-armor vehicle victim, and a building.
+fn radiation_rules() -> RuleSet {
+    let ini: IniFile = IniFile::from_str(
+        "\
+[InfantryTypes]\n0=DESO\n1=E2\n\n\
+[VehicleTypes]\n0=MTNK\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n0=GAPOWR\n\n\
+[DESO]\nStrength=200\nArmor=plate\nSpeed=4\nPrimary=RadBeamWeapon\nSecondary=RadEruptionWeapon\nDeployer=yes\nDeployFire=yes\nImmuneToRadiation=yes\n\n\
+[E2]\nStrength=300\nArmor=none\nSpeed=4\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\n\
+[GAPOWR]\nStrength=750\nArmor=wood\n\n\
+[RadBeamWeapon]\nDamage=25\nROF=70\nRange=6\nWarhead=RadSite\n\n\
+[RadEruptionWeapon]\nDamage=1\nROF=60\nRange=4\nAreaFire=yes\nWarhead=RadEruptionWarhead\nRadLevel=500\nReport=DesolatorDeploy\n\n\
+[RadEruptionWarhead]\nVerses=100%,100%,100%,20%,10%,10%,0%,0%,0%,100%,100%\nInfDeath=7\nRadiation=yes\nCellSpread=10\n\n\
+[RadSite]\nVerses=100%,100%,100%,50%,10%,10%,0%,0%,0%,100%,100%\nInfDeath=7\nRadiation=yes\n\n\
+[Radiation]\nRadDurationMultiple=1\nRadApplicationDelay=16\nRadLevelMax=500\nRadLevelDelay=90\nRadLevelFactor=.2\nRadSiteWarhead=RadSite\n",
+    );
+    RuleSet::from_ini(&ini).expect("radiation rules should parse")
+}
+
+/// One combat tick with the radiation field threaded through.
+fn rad_combat_tick(
+    sim: &mut crate::sim::world::Simulation,
+    rules: &RuleSet,
+    binary_frame: u32,
+) -> CombatTickResult {
+    let mut radiation = std::mem::take(&mut sim.radiation);
+    let result = tick_combat_with_fog(
+        &mut sim.substrate.entities,
+        &mut sim.substrate.occupancy,
+        rules,
+        &mut sim.interner,
+        None,
+        &BTreeMap::new(),
+        None,
+        &mut BTreeMap::new(),
+        None,
+        None,
+        None,
+        0,
+        100,
+        binary_frame,
+        &[],
+        Some(&mut radiation),
+    );
+    sim.radiation = radiation;
+    result
+}
+
+/// Radiation damage applies only on `frame % RadApplicationDelay == 0`
+/// boundaries, scaled by the RadSiteWarhead Verses per armor class:
+/// trunc(min(500, 500) × 0.2) = 100 base → 100 vs none, 10 vs heavy.
+#[test]
+fn rad_damage_fires_on_application_delay_boundary_only() {
+    let rules = radiation_rules();
+    let mut sim = crate::sim::world::Simulation::new();
+    let heights = BTreeMap::new();
+    let inf = sim
+        .spawn_object("E2", "Americans", 5, 5, 0, &rules, &heights)
+        .expect("infantry spawns");
+    let tank = sim
+        .spawn_object("MTNK", "Americans", 6, 5, 0, &rules, &heights)
+        .expect("tank spawns");
+    sim.radiation.apply_detonation(
+        crate::sim::radiation::RadDetonation {
+            rx: 5,
+            ry: 5,
+            rad_level: 500,
+            spread: 2,
+        },
+        0,
+        &rules.radiation,
+        None,
+    );
+
+    // Frame 15: not an application boundary — nobody takes damage.
+    rad_combat_tick(&mut sim, &rules, 15);
+    assert_eq!(sim.substrate.entities.get(inf).unwrap().health.current, 300);
+    assert_eq!(sim.substrate.entities.get(tank).unwrap().health.current, 300);
+
+    // Frame 16: boundary. E2 stands on the center cell (level 500, clamped
+    // 500): trunc(500 × 0.2) = 100, Verses none = 100% → 100 damage. The
+    // tank is one cell out (falloff (640−256)/640 × 500 = 300): trunc(300 ×
+    // 0.2) = 60, Verses heavy = 10% → 6 damage.
+    rad_combat_tick(&mut sim, &rules, 16);
+    let inf_hp = sim.substrate.entities.get(inf).unwrap().health.current;
+    let tank_hp = sim.substrate.entities.get(tank).unwrap().health.current;
+    assert_eq!(inf_hp, 200, "100 rad damage vs armor none");
+    assert_eq!(tank_hp, 294, "6 rad damage vs heavy armor (10% Verses)");
+    // Sourceless damage must not arm retaliation.
+    assert_eq!(
+        sim.substrate.entities.get(inf).unwrap().last_attacker_id,
+        None
+    );
+
+    // Frame 17: off-boundary again.
+    rad_combat_tick(&mut sim, &rules, 17);
+    assert_eq!(sim.substrate.entities.get(inf).unwrap().health.current, 200);
+}
+
+/// Buildings never take radiation damage; an ImmuneToRadiation unit on the
+/// same cell is also exempt.
+#[test]
+fn buildings_take_no_rad_damage() {
+    let rules = radiation_rules();
+    let mut sim = crate::sim::world::Simulation::new();
+    let heights = BTreeMap::new();
+    let building = sim
+        .spawn_object("GAPOWR", "Americans", 5, 5, 0, &rules, &heights)
+        .expect("building spawns");
+    let deso = sim
+        .spawn_object("DESO", "Americans", 6, 5, 0, &rules, &heights)
+        .expect("desolator spawns");
+    sim.radiation.apply_detonation(
+        crate::sim::radiation::RadDetonation {
+            rx: 5,
+            ry: 5,
+            rad_level: 500,
+            spread: 2,
+        },
+        0,
+        &rules.radiation,
+        None,
+    );
+
+    rad_combat_tick(&mut sim, &rules, 16);
+    assert_eq!(
+        sim.substrate.entities.get(building).unwrap().health.current,
+        750,
+        "buildings are exempt from radiation damage"
+    );
+    assert_eq!(
+        sim.substrate.entities.get(deso).unwrap().health.current,
+        200,
+        "ImmuneToRadiation units are exempt"
+    );
+}
+
+/// A deployed Desolator force-fires its deploy weapon at its own cell when no
+/// site exists there, arming a full-level site; while the site's effective
+/// level stays at or above a third of the weapon's RadLevel the gate is
+/// closed and it does not fire again.
+#[test]
+fn deployed_desolator_self_irradiates_and_refires_below_third() {
+    let rules = radiation_rules();
+    let mut sim = crate::sim::world::Simulation::new();
+    let heights = BTreeMap::new();
+    let deso = sim
+        .spawn_object("DESO", "Americans", 10, 10, 0, &rules, &heights)
+        .expect("desolator spawns");
+    sim.substrate.entities.get_mut(deso).unwrap().deploy_state =
+        Some(crate::sim::deploy::DeployPhase::Deployed);
+
+    // Tick 1: gate open (no site) → self-targeted deploy-weapon shot.
+    let result = rad_combat_tick(&mut sim, &rules, 1);
+    assert_eq!(result.fire_events.len(), 1, "deployed self-irradiate fires");
+    assert_eq!(
+        sim.interner.resolve(result.fire_events[0].weapon_id),
+        "RadEruptionWeapon"
+    );
+    assert_eq!(result.fire_events[0].target, TargetKind::Cell(10, 10));
+    let site = sim
+        .radiation
+        .site_at((10, 10))
+        .expect("detonation armed a site at the desolator's cell");
+    assert_eq!(site.level, 500);
+    assert_eq!(sim.radiation.cell_level((10, 10)), 500.0);
+
+    // Tick 2: gate closed (effective 500 ≥ 500/3) → no fire, self-target
+    // cleared.
+    let result = rad_combat_tick(&mut sim, &rules, 2);
+    assert_eq!(result.fire_events.len(), 0, "gate closed after re-arm");
+    assert!(
+        sim.substrate.entities.get(deso).unwrap().attack_target.is_none(),
+        "synthesized self-target is cleared once the gate closes"
+    );
+
+    // Decay the site below RadLevel/3 (= 166): effective = remaining×500/500
+    // drops below 166 once remaining < 167.
+    for frame in 3..=340 {
+        sim.radiation.tick_decay(frame, &rules.radiation, None);
+    }
+    let site = sim.radiation.site_at((10, 10)).expect("site still alive");
+    assert!(crate::sim::radiation::RadiationState::current_site_level(site) < 500 / 3);
+
+    // Gate reopens → fires again and merges the site back up.
+    let result = rad_combat_tick(&mut sim, &rules, 341);
+    assert_eq!(result.fire_events.len(), 1, "gate reopens below one third");
+    let site = sim.radiation.site_at((10, 10)).expect("merged site");
+    assert!(site.level > 500, "re-detonation merged effective + added");
 }

@@ -1378,6 +1378,29 @@ impl BatchRenderer {
         render_pass.draw(0..6, 0..count);
     }
 
+    /// Draw with depth bypassed AND the UI camera (zoom=1.0, screen-fixed).
+    /// Same as `draw_with_buffer_passthrough` but binds the UI camera so the
+    /// instances stay at fixed screen positions regardless of game zoom — used by
+    /// the in-game Options overlay, whose instance positions are pre-offset by the
+    /// camera scroll (so the UI camera nets the intended screen pixels) and which
+    /// must NOT re-upload the world camera mid-frame.
+    pub fn draw_with_buffer_ui_passthrough<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        texture: &'a BatchTexture,
+        buffer: &'a wgpu::Buffer,
+        count: u32,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.overlay_passthrough_pipeline);
+        render_pass.set_bind_group(0, &self.ui_camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &texture.bind_group, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..6, 0..count);
+    }
+
     /// Draw a sub-range of sprites with depth test bypassed (Always compare).
     /// Used for the multi-way merge of Y-sorted VXL + SHP draw groups.
     pub fn draw_passthrough_range<'a>(

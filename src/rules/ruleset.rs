@@ -131,7 +131,7 @@ fn f32_to_ppm(val: f32, min: f32) -> u64 {
 impl Default for ProductionRules {
     fn default() -> Self {
         Self {
-            build_speed: 0.05,
+            build_speed: 1.0,
             multiple_factory: 0.8,
             low_power_penalty_modifier: 1.0,
             min_low_power_production_speed: 0.5,
@@ -140,7 +140,7 @@ impl Default for ProductionRules {
             low_power_penalty_modifier_ppm: f32_to_ppm(1.0, 0.0),
             min_low_power_production_speed_ppm: f32_to_ppm(0.5, 0.0),
             max_low_power_production_speed_ppm: f32_to_ppm(0.9, 0.0),
-            build_speed_x1000: (0.05f64 * 1000.0) as u64,
+            build_speed_x1000: (1.0f64 * 1000.0) as u64,
             wall_build_speed_coefficient: 1.0,
         }
     }
@@ -216,7 +216,9 @@ pub struct GeneralRules {
     /// The parser fallback for a missing key remains 1.0.
     pub missile_rot_var: SimFixed,
     /// Default cruise altitude for Fly-locomotor aircraft (FlightLevel= in [General]).
-    /// Default 1500 leptons. Per-type override possible but not yet implemented.
+    /// Fallback 500 leptons matches the engine constructor default; retail
+    /// rulesmd.ini always supplies its own (1500), so the fallback only fires
+    /// for a non-retail INI missing the key. Per-type override not yet implemented.
     pub flight_level: i32,
     /// Descent rate cap for parachuted units, in leptons/tick (signed).
     /// Per gamemd, the rate field accumulates by `-1` per tick and clamps
@@ -258,7 +260,9 @@ pub struct GeneralRules {
     /// Default true. Can be overridden per-map in [SpecialFlags].
     pub tiberium_spreads: bool,
     /// Minutes per full map growth scan cycle (GrowthRate= in [General]).
-    /// Default 5.0 minutes. Controls how fast ore regenerates.
+    /// Fallback 2.0 minutes matches the engine constructor default; retail
+    /// rulesmd.ini always supplies its own (5), so the fallback only fires for
+    /// a non-retail INI missing the key. Controls how fast ore regenerates.
     pub growth_rate_minutes: f32,
     /// Animation played when a unit warps in (WarpIn= in [General]).
     pub warp_in: AnimRef,
@@ -287,6 +291,26 @@ pub struct GeneralRules {
     /// `condition_red` pre-scaled to integer ×1000 for deterministic sim comparisons.
     /// Computed once at parse time: `(condition_red * 1000.0) as i64`.
     pub condition_red_x1000: i64,
+    /// `ConditionRedSparkingProbability=` ([General]) — per-tick probability that
+    /// the `AI_Update` damage-Spark particle system spawns while health is below
+    /// ConditionRed. Default **0.02** (verified `RulesClass__Constructor`; stock INI
+    /// does NOT set this key). Stored as **f64** because gamemd reads it with
+    /// `ReadDouble` and compares it as a double; the f32-vs-f64 rounding shifts the
+    /// integer roll threshold by 1 (→ desync). Consumed via `condition_red_spark_threshold`.
+    pub condition_red_sparking_probability: f64,
+    /// `ConditionYellowSparkingProbability=` ([General]) — per-tick spawn probability
+    /// in the yellow band (ConditionRed <= ratio < ConditionYellow). Default **0.01**
+    /// (verified `RulesClass__Constructor`). f64 for the same reason as the red band.
+    pub condition_yellow_sparking_probability: f64,
+    /// Integer roll threshold for the red-band damage-Spark prob-roll, precomputed
+    /// from `condition_red_sparking_probability` at parse time: the per-tick test
+    /// becomes the pure-integer `roll < threshold` (no float in the sim hot path).
+    /// `roll = scenario_rng.next_range_u32_inclusive(0, 0x7ffffffe)`. See
+    /// [`damage_spark_spawn_threshold`]. Default 42_949_673 (band 0.02).
+    pub condition_red_spark_threshold: u32,
+    /// Integer roll threshold for the yellow-band damage-Spark prob-roll.
+    /// Default 21_474_837 (band 0.01).
+    pub condition_yellow_spark_threshold: u32,
     /// SFX played when the first occupant enters a CanBeOccupied building.
     /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
@@ -297,10 +321,25 @@ pub struct GeneralRules {
     pub chute_sound: Option<String>,
     /// Sound event for shell main-menu buttons from [AudioVisual] GUIMainButtonSound.
     pub gui_main_button_sound: Option<String>,
+    /// Shell first-paint controls-reveal slide-in cue from [AudioVisual]
+    /// GUIMoveInSound (stock `MenuSlideIn`). Played once at the start of each
+    /// allow-listed shell dialog's slide. None = no sound configured.
+    pub gui_move_in_sound: Option<String>,
     /// Generic shell click sound from [AudioVisual] GenericClick.
     pub generic_click_sound: Option<String>,
     /// Sound event for shell checkboxes from [AudioVisual] GUICheckboxSound.
     pub gui_checkbox_sound: Option<String>,
+    /// Sidebar tab click sound from [AudioVisual] GUITabSound (retail
+    /// `MenuTab`). The key→tab-click mapping is name-inferred — flagged for a
+    /// Ghidra spot-check of the tab-ID consumer before parity sign-off.
+    pub gui_tab_sound: Option<String>,
+    /// Message-insert sound from [AudioVisual] IncomingMessage (retail
+    /// `MessageText`). Plays on every non-silent message-list insert.
+    pub incoming_message_sound: Option<String>,
+    /// Chat/system message lifetime in MINUTES from [AudioVisual]
+    /// MessageDelay (retail `.6`). The exact native minutes→ticks binding is
+    /// untraced (plan deferred item); the driver converts minutes→ms.
+    pub message_delay_minutes: f32,
     /// Sound event for opening shell combo boxes from [AudioVisual] GUIComboOpenSound.
     pub gui_combo_open_sound: Option<String>,
     /// Sound event for closing shell combo boxes from [AudioVisual] GUIComboCloseSound.
@@ -430,14 +469,15 @@ pub struct GeneralRules {
     /// YR addition. Default 750.
     pub third_survivor_divisor: i32,
 
-    // -- Terrain movement modifiers --
-    /// Speed multiplier when moving uphill (SlopeClimb= in [General]).
-    /// Applied per-cell during movement when next cell is higher than current.
-    /// Not present in vanilla rulesmd.ini; uses compiled default from the original engine.
-    pub slope_climb: SimFixed,
-    /// Speed multiplier when moving downhill (SlopeDescend= in [General]).
-    /// Applied per-cell during movement when next cell is lower than current.
-    pub slope_descend: SimFixed,
+    // -- Cliff/slope movement coefficients ([General]) --
+    /// Tracked vehicle uphill coefficient (`TrackedUphill=`; vanilla 1.0 = no change).
+    pub tracked_uphill: SimFixed,
+    /// Tracked vehicle downhill coefficient (`TrackedDownhill=`; vanilla 1.2 = faster).
+    pub tracked_downhill: SimFixed,
+    /// Non-tracked (wheeled and other) vehicle uphill coefficient (`WheeledUphill=`; vanilla 1.0).
+    pub wheeled_uphill: SimFixed,
+    /// Non-tracked vehicle downhill coefficient (`WheeledDownhill=`; vanilla 1.2).
+    pub wheeled_downhill: SimFixed,
 
     // -- Entity ambient glow on dark maps --
     /// Additive brightness boost for unit sprites (ExtraUnitLight= in [General]).
@@ -457,10 +497,12 @@ pub struct GeneralRules {
     /// Ticks between applying RepairStep HP when a unit is on a repair depot.
     /// Derived from URepairRate= in [General] (minutes). Default 0.016 min ≈ 14 ticks at 15 Hz.
     pub unit_repair_rate_ticks: u32,
-    /// HP healed per repair step on a service depot (RepairStep= in [General]). Default 8.
+    /// HP healed per repair step on a service depot (RepairStep= in [General]).
+    /// Fallback 5 matches the engine constructor default; retail rulesmd sets 8.
     pub repair_step: u16,
     /// Percent of build cost charged for a full unit repair (RepairPercent= in [General]).
-    /// Default 15 (meaning 15%). Total cost = cost * repair_percent / 100.
+    /// Fallback 25 (25%) matches the engine constructor default; retail rulesmd
+    /// sets 15%. Total cost = cost * repair_percent / 100.
     pub repair_percent: u16,
 
     // -- Aircraft ammo reload --
@@ -537,6 +579,57 @@ pub struct GeneralRules {
     pub metallic_debris: Vec<String>,
 }
 
+/// Count of representable `roll` values for the damage-Spark prob-roll, i.e.
+/// `RandomRanged(0, 0x7ffffffe)` yields `[0, 0x7ffffffe]`, so 0x7fffffff values.
+/// A band of >= 1.0 lets every roll pass.
+const DAMAGE_SPARK_ROLL_COUNT: u32 = 0x7fff_ffff;
+
+/// Compute the integer spawn threshold for a damage-Spark probability `band`:
+/// the number of `roll` values in `[0, 0x7ffffffe]` for which gamemd's roll
+/// SUCCEEDS, so the per-tick test reduces to the pure-integer `roll < threshold`
+/// (no float in the sim hot path; `roll` from `next_range_u32_inclusive(0,
+/// 0x7ffffffe)`).
+///
+/// gamemd compares `(double)roll * SCALE < band` with `SCALE` the exact double
+/// `0x3E00000000400000` = `(2^30 + 1)·2^-61`, evaluated in x87 80-bit. Because
+/// `roll·(2^30 + 1) <= 2^61 - 2` fits the 64-bit x87 mantissa, that product is
+/// the EXACT real value, and `band` is an exact f64 — so the boundary is the
+/// exact-rational comparison `roll·(2^30+1)·2^-61 < band`, computed here with
+/// integer arithmetic (machine-independent; no float, no x87 dependency, no
+/// multiply-vs-divide rounding hazard). A 1-off here flips the draw count on a
+/// boundary tick → desync, so the two stock thresholds are pinned by test.
+pub(crate) fn damage_spark_spawn_threshold(band: f64) -> u32 {
+    // band <= 0 (or NaN): no roll passes. band >= 1: every roll passes.
+    if !(band > 0.0) {
+        return 0;
+    }
+    if band >= 1.0 {
+        return DAMAGE_SPARK_ROLL_COUNT;
+    }
+    // Decompose band = mant · 2^exp (normalized double carries the implicit 53rd
+    // bit): value = (2^52 + frac) · 2^(exp_field - 1075).
+    let bits = band.to_bits();
+    let exp_field = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & ((1u64 << 52) - 1);
+    let (mant, exp) = if exp_field == 0 {
+        (frac, -1074) // subnormal
+    } else {
+        ((1u64 << 52) | frac, exp_field - 1075)
+    };
+    // roll·SCALE >= band  <=>  roll·(2^30+1) >= mant·2^(exp+61).
+    // threshold = smallest qualifying roll = ceil(mant·2^(exp+61) / (2^30+1)).
+    const D: u128 = (1u128 << 30) + 1;
+    let k = exp + 61;
+    let threshold: u128 = if k >= 0 {
+        ((mant as u128) << (k as u32)).div_ceil(D)
+    } else {
+        // mant·2^(exp+61) is fractional; scale the divisor instead:
+        // roll >= ceil(mant / ((2^30+1) << -k)).
+        (mant as u128).div_ceil(D << ((-k) as u32))
+    };
+    threshold.min(DAMAGE_SPARK_ROLL_COUNT as u128) as u32
+}
+
 /// Default animation rate when art.ini section is missing.
 /// Matches gamemd constructor default: 1 game frame at 60fps ≈ 17ms.
 const DEFAULT_ANIM_RATE_MS: u32 = 17;
@@ -587,7 +680,7 @@ impl Default for GeneralRules {
             reveal_by_height: true,
             tunnel_speed: sim_from_f32(6.0),
             missile_rot_var: sim_from_f32(1.0),
-            flight_level: 1500,
+            flight_level: 500,
             parachute_max_fall_rate: -3,
             paradrop_radius: 1024,
             paradrop_aircraft_type: "PDPLANE".to_string(),
@@ -600,7 +693,7 @@ impl Default for GeneralRules {
             base_unit_types: vec!["AMCV".to_string(), "SMCV".to_string(), "PCV".to_string()],
             tiberium_grows: true,
             tiberium_spreads: true,
-            growth_rate_minutes: 5.0,
+            growth_rate_minutes: 2.0,
             warp_in: AnimRef {
                 name: "WARPIN".to_string(),
                 rate_ms: 120,
@@ -627,11 +720,19 @@ impl Default for GeneralRules {
             condition_yellow_x1000: 500,
             condition_red: 0.25,
             condition_red_x1000: 250,
+            condition_red_sparking_probability: 0.02,
+            condition_yellow_sparking_probability: 0.01,
+            condition_red_spark_threshold: damage_spark_spawn_threshold(0.02),
+            condition_yellow_spark_threshold: damage_spark_spawn_threshold(0.01),
             building_garrisoned_sound: None,
             chute_sound: None,
             gui_main_button_sound: None,
+            gui_move_in_sound: None,
             generic_click_sound: None,
             gui_checkbox_sound: None,
+            gui_tab_sound: None,
+            incoming_message_sound: None,
+            message_delay_minutes: 0.6,
             gui_combo_open_sound: None,
             gui_combo_close_sound: None,
             bunker_walls_down_sound: None,
@@ -666,10 +767,12 @@ impl Default for GeneralRules {
             allied_survivor_divisor: 500,
             soviet_survivor_divisor: 250,
             third_survivor_divisor: 750,
-            // Compiled defaults from the original engine.
-            // Not present in vanilla rulesmd.ini — mods can override via [General].
-            slope_climb: SimFixed::lit("0.6"),
-            slope_descend: SimFixed::lit("1.2"),
+            // Vanilla rulesmd.ini [General]: 1.0 uphill (no change) / 1.2 downhill (faster),
+            // same for tracked and wheeled. Mods can override via [General].
+            tracked_uphill: SimFixed::lit("1.0"),
+            tracked_downhill: SimFixed::lit("1.2"),
+            wheeled_uphill: SimFixed::lit("1.0"),
+            wheeled_downhill: SimFixed::lit("1.2"),
             extra_unit_light: 0.2,
             extra_infantry_light: 0.2,
             extra_aircraft_light: 0.2,
@@ -677,8 +780,8 @@ impl Default for GeneralRules {
             close_enough: SimFixed::from_num(576),
             // URepairRate=.016 min = 0.96 sec ≈ 14 ticks at 15 Hz.
             unit_repair_rate_ticks: 14,
-            repair_step: 8,
-            repair_percent: 15,
+            repair_step: 5,
+            repair_percent: 25,
             // ReloadRate=.3 min = 18 sec = 270 ticks at 15 Hz.
             reload_rate_ticks: 270,
             // PathDelay=.01 min = 0.6 sec = 9 ticks at 15 Hz.
@@ -847,6 +950,103 @@ impl BridgeRules {
     }
 }
 
+/// Global radiation-field constants parsed from the `[Radiation]` section.
+/// Consumed by the per-cell radiation service (`sim::radiation`) and the
+/// per-foot-unit damage step. Render-only keys (light/tint/color) are parsed
+/// here so the render layer can pick them up later.
+#[derive(Debug, Clone)]
+pub struct RadiationRules {
+    /// Frames a site lasts per point of radiation level (`RadDurationMultiple`).
+    /// Site duration = level × this.
+    pub duration_multiple: i32,
+    /// Frames between radiation damage applications to units (`RadApplicationDelay`).
+    pub application_delay: i32,
+    /// Cap on the level a cell damages as, not on storage (`RadLevelMax`).
+    pub level_max: i32,
+    /// Frames between per-cell level decrements (`RadLevelDelay`).
+    pub level_delay: i32,
+    /// Frames between light intensity decrements (`RadLightDelay`). Render-only.
+    pub light_delay: i32,
+    /// Damage per point of (clamped) cell level (`RadLevelFactor`).
+    /// Carried as f64 — the damage step truncates `level × factor` toward
+    /// zero, and the original computes that product in doubles (the same
+    /// documented float exception as `combat::damage`). Parsed straight from
+    /// the INI string so the value is bit-identical to a double `atof`.
+    pub level_factor: f64,
+    /// Light intensity per level point (`RadLightFactor`). Render-only.
+    pub light_factor: SimFixed,
+    /// Tint scale for the radiation glow (`RadTintFactor`). Render-only.
+    pub tint_factor: SimFixed,
+    /// Glow color (`RadColor=R,G,B`). Render-only.
+    pub color: (u8, u8, u8),
+    /// Warhead used for radiation damage (`RadSiteWarhead`), uppercased.
+    pub site_warhead: String,
+}
+
+impl Default for RadiationRules {
+    fn default() -> Self {
+        Self {
+            duration_multiple: 1,
+            application_delay: 16,
+            level_max: 500,
+            level_delay: 90,
+            light_delay: 90,
+            level_factor: 0.2,
+            light_factor: sim_from_f32(0.1),
+            tint_factor: sim_from_f32(1.0),
+            color: (0, 255, 0),
+            site_warhead: "RadSite".to_string(),
+        }
+    }
+}
+
+impl RadiationRules {
+    fn from_ini(ini: &IniFile) -> Self {
+        let d = Self::default();
+        let Some(section) = ini.section("Radiation") else {
+            return d;
+        };
+        let get_i32 =
+            |key: &str, default: i32| -> i32 { section.get_i32(key).unwrap_or(default) };
+        Self {
+            duration_multiple: get_i32("RadDurationMultiple", d.duration_multiple),
+            // Delays are used as divisors/modulo periods — clamp to >= 1 so a
+            // degenerate INI value cannot divide by zero.
+            application_delay: get_i32("RadApplicationDelay", d.application_delay).max(1),
+            level_max: get_i32("RadLevelMax", d.level_max),
+            level_delay: get_i32("RadLevelDelay", d.level_delay).max(1),
+            light_delay: get_i32("RadLightDelay", d.light_delay).max(1),
+            level_factor: section
+                .get("RadLevelFactor")
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .unwrap_or(d.level_factor),
+            light_factor: section
+                .get_f32("RadLightFactor")
+                .map(sim_from_f32)
+                .unwrap_or(d.light_factor),
+            tint_factor: section
+                .get_f32("RadTintFactor")
+                .map(sim_from_f32)
+                .unwrap_or(d.tint_factor),
+            color: section
+                .get("RadColor")
+                .and_then(|s| {
+                    let mut it = s.split(',').map(|p| p.trim().parse::<u8>());
+                    match (it.next(), it.next(), it.next()) {
+                        (Some(Ok(r)), Some(Ok(g)), Some(Ok(b))) => Some((r, g, b)),
+                        _ => None,
+                    }
+                })
+                .unwrap_or(d.color),
+            site_warhead: section
+                .get("RadSiteWarhead")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(d.site_warhead),
+        }
+    }
+}
+
 impl GeneralRules {
     fn from_ini(ini: &IniFile) -> Self {
         let Some(general) = ini.section("General") else {
@@ -875,7 +1075,23 @@ impl GeneralRules {
         let condition_red_f32: f32 = audio_visual
             .and_then(|s| s.get_percent("ConditionRed"))
             .unwrap_or(0.25);
+        // [General] damage-Spark spawn probabilities (verified ctor defaults
+        // 0.02/0.01; stock INI omits them). Raw doubles, not percentages. Bound
+        // before `Self` so each band feeds both its stored value and its derived
+        // integer roll threshold (a struct literal can't reference sibling fields).
+        let condition_red_spark_prob: f64 = general
+            .get_f64("ConditionRedSparkingProbability")
+            .unwrap_or(0.02);
+        let condition_yellow_spark_prob: f64 = general
+            .get_f64("ConditionYellowSparkingProbability")
+            .unwrap_or(0.01);
         Self {
+            condition_red_sparking_probability: condition_red_spark_prob,
+            condition_yellow_sparking_probability: condition_yellow_spark_prob,
+            condition_red_spark_threshold: damage_spark_spawn_threshold(condition_red_spark_prob),
+            condition_yellow_spark_threshold: damage_spark_spawn_threshold(
+                condition_yellow_spark_prob,
+            ),
             veteran_sight: general.get_i32("VeteranSight").unwrap_or(0),
             leptons_per_sight_increase: general.get_i32("LeptonsPerSightIncrease").unwrap_or(0),
             gap_radius: general.get_i32("GapRadius").unwrap_or(10),
@@ -888,7 +1104,7 @@ impl GeneralRules {
                 .get_f32("MissileROTVar")
                 .map(sim_from_f32)
                 .unwrap_or(sim_from_f32(1.0)),
-            flight_level: general.get_i32("FlightLevel").unwrap_or(1500),
+            flight_level: general.get_i32("FlightLevel").unwrap_or(500),
             parachute_max_fall_rate: general.get_i32("ParachuteMaxFallRate").unwrap_or(-3),
             paradrop_radius: general.get_i32("ParadropRadius").unwrap_or(1024),
             paradrop_aircraft_type: general
@@ -942,7 +1158,7 @@ impl GeneralRules {
                 .unwrap_or_else(|| defaults.base_unit_types),
             tiberium_grows: general.get_bool("TiberiumGrows").unwrap_or(true),
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
-            growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(5.0),
+            growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(2.0),
             attack_cursor_on_disguise: general.get_bool("AttackCursorOnDisguise").unwrap_or(false),
             tree_targeting: general.get_bool("TreeTargeting").unwrap_or(false),
             condition_yellow: condition_yellow_f32,
@@ -974,6 +1190,11 @@ impl GeneralRules {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            gui_move_in_sound: audio_visual
+                .and_then(|s| s.get("GUIMoveInSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             generic_click_sound: audio_visual
                 .and_then(|s| s.get("GenericClick"))
                 .map(str::trim)
@@ -984,6 +1205,19 @@ impl GeneralRules {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            gui_tab_sound: audio_visual
+                .and_then(|s| s.get("GUITabSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            incoming_message_sound: audio_visual
+                .and_then(|s| s.get("IncomingMessage"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            message_delay_minutes: audio_visual
+                .and_then(|s| s.get_f32("MessageDelay"))
+                .unwrap_or(0.6),
             gui_combo_open_sound: audio_visual
                 .and_then(|s| s.get("GUIComboOpenSound"))
                 .map(str::trim)
@@ -1100,14 +1334,22 @@ impl GeneralRules {
             allied_survivor_divisor: general.get_i32("AlliedSurvivorDivisor").unwrap_or(500),
             soviet_survivor_divisor: general.get_i32("SovietSurvivorDivisor").unwrap_or(250),
             third_survivor_divisor: general.get_i32("ThirdSurvivorDivisor").unwrap_or(750),
-            slope_climb: general
-                .get_f32("SlopeClimb")
+            tracked_uphill: general
+                .get_f32("TrackedUphill")
                 .map(sim_from_f32)
-                .unwrap_or(defaults.slope_climb),
-            slope_descend: general
-                .get_f32("SlopeDescend")
+                .unwrap_or(defaults.tracked_uphill),
+            tracked_downhill: general
+                .get_f32("TrackedDownhill")
                 .map(sim_from_f32)
-                .unwrap_or(defaults.slope_descend),
+                .unwrap_or(defaults.tracked_downhill),
+            wheeled_uphill: general
+                .get_f32("WheeledUphill")
+                .map(sim_from_f32)
+                .unwrap_or(defaults.wheeled_uphill),
+            wheeled_downhill: general
+                .get_f32("WheeledDownhill")
+                .map(sim_from_f32)
+                .unwrap_or(defaults.wheeled_downhill),
             extra_unit_light: general.get_f32("ExtraUnitLight").unwrap_or(0.2),
             extra_infantry_light: general.get_f32("ExtraInfantryLight").unwrap_or(0.2),
             extra_aircraft_light: general.get_f32("ExtraAircraftLight").unwrap_or(0.2),
@@ -1297,7 +1539,10 @@ impl ProductionRules {
             return Self::default();
         };
 
-        let bs = general.get_f32("BuildSpeed").unwrap_or(0.1);
+        // Fallback for an absent key matches the engine's constructor default
+        // (BuildSpeed 1.0). Retail rulesmd.ini always supplies its own value
+        // (.7), so this fallback fires only for a non-retail INI missing the key.
+        let bs = general.get_f32("BuildSpeed").unwrap_or(1.0);
         let mf = general.get_f32("MultipleFactory").unwrap_or(0.8);
         let lpp = general.get_f32("LowPowerPenaltyModifier").unwrap_or(1.0);
         let min_lp = general.get_f32("MinLowPowerProductionSpeed").unwrap_or(0.5);
@@ -1394,6 +1639,8 @@ pub struct RuleSet {
     pub bridge_rules: BridgeRules,
     /// Garrison/bunker/open-topped combat multipliers from [CombatDamage].
     pub garrison_rules: GarrisonRules,
+    /// Per-cell radiation-field constants from [Radiation].
+    pub radiation: RadiationRules,
     /// Radar event visual parameters (ping rectangles on minimap).
     pub radar_event_config: RadarEventConfig,
     /// All superweapon types indexed by ID (e.g., "LightningStormSpecial" → SuperWeaponType).
@@ -1431,6 +1678,12 @@ pub struct RuleSet {
     /// Per-mission behaviour table parsed from the `[<MissionName>]` sections
     /// (Rate/AARate + NoThreat/Zombie/Recruitable/Paralyzed/Retaliate/Scatter).
     pub mission_control: crate::sim::mission::MissionControl,
+    /// Deterministic hash of the merged source INI (rules + rulesmd + the map's
+    /// rules-shaped value overrides) this RuleSet was built from. Unlike a
+    /// registry-only hash it is sensitive to scalar value overrides, so it can
+    /// gate replay/snapshot playback against a mismatched rules set. Lives on
+    /// `RuleSet` (in `rules/`) so `sim/` can read it without an app-layer dep.
+    source_ini_hash: u64,
 }
 
 impl RuleSet {
@@ -1453,6 +1706,7 @@ impl RuleSet {
         let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
+        let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
         let countries = parse_country_rules(ini);
         let color_schemes = crate::rules::color_scheme::parse_color_schemes(ini);
@@ -1533,6 +1787,10 @@ impl RuleSet {
         }
 
         // Step 4: Parse warhead sections.
+        // The radiation-field warhead is referenced by [Radiation], not by any
+        // weapon — pull it into the referenced set explicitly so the periodic
+        // radiation damage can resolve it.
+        warhead_ids.insert(radiation.site_warhead.clone());
         let mut warheads: HashMap<String, WarheadType> = HashMap::new();
         for warhead_id in &warhead_ids {
             if let Some(section) = ini.section(warhead_id) {
@@ -1725,6 +1983,7 @@ impl RuleSet {
             terrain_object_types,
             bridge_rules,
             garrison_rules,
+            radiation,
             radar_event_config,
             super_weapons,
             combat_damage,
@@ -1739,6 +1998,9 @@ impl RuleSet {
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
             mission_control,
+            // Captures the whole merged INI (incl. any map value overrides),
+            // so replay/snapshot headers detect a rules mismatch on playback.
+            source_ini_hash: ini.content_hash(),
         })
     }
 
@@ -1848,6 +2110,14 @@ impl RuleSet {
     /// Look up a projectile by ID (case-insensitive, gamemd parity).
     pub fn projectile(&self, id: &str) -> Option<&ProjectileType> {
         Self::lookup_ci(&self.projectiles, id)
+    }
+
+    /// Deterministic hash of the merged source INI this RuleSet was built from
+    /// (rules + rulesmd + the map's rules-shaped value overrides). Stamped into
+    /// replay/snapshot headers so playback can detect a mismatched rules set —
+    /// sensitive to scalar value overrides, not just the type-registry lists.
+    pub fn source_ini_hash(&self) -> u64 {
+        self.source_ini_hash
     }
 
     /// Whether a country/house type has `MultiplayPassive=true`.
@@ -3252,6 +3522,54 @@ DefaultSparkSystem=SparkSys
     fn ini_with_general(body: &str) -> IniFile {
         let text = format!("[General]\n{}\n", body);
         IniFile::from_str(&text)
+    }
+
+    #[test]
+    fn sparking_probability_defaults_and_override() {
+        // Stock INI omits both keys -> the verified RulesClass ctor defaults
+        // (0.02 red / 0.01 yellow), so the AI_Update Spark effect is on by default.
+        let d = GeneralRules::default();
+        assert_eq!(d.condition_red_sparking_probability, 0.02);
+        assert_eq!(d.condition_yellow_sparking_probability, 0.01);
+        let none = GeneralRules::from_ini(&IniFile::from_str("[Foo]\n"));
+        assert_eq!(none.condition_red_sparking_probability, 0.02);
+        assert_eq!(none.condition_yellow_sparking_probability, 0.01);
+        // A mod overrides them from [General].
+        let g = GeneralRules::from_ini(&ini_with_general(
+            "ConditionRedSparkingProbability=0.05\n\
+             ConditionYellowSparkingProbability=0.03",
+        ));
+        assert_eq!(g.condition_red_sparking_probability, 0.05);
+        assert_eq!(g.condition_yellow_sparking_probability, 0.03);
+    }
+
+    #[test]
+    fn damage_spark_thresholds_match_x87_boundary() {
+        // The stock-default thresholds are the EXACT boundary of gamemd's 80-bit
+        // `(double)roll * 0x3E00000000400000 < band` compare. A 1-off here flips
+        // the per-tick draw count → desync, so pin both bands and the threshold
+        // derived into GeneralRules.
+        assert_eq!(damage_spark_spawn_threshold(0.02), 42_949_673);
+        assert_eq!(damage_spark_spawn_threshold(0.01), 21_474_837);
+        let d = GeneralRules::default();
+        assert_eq!(d.condition_red_spark_threshold, 42_949_673);
+        assert_eq!(d.condition_yellow_spark_threshold, 21_474_837);
+
+        // Verify the boundary directly against the exact f64 product gamemd uses:
+        // roll = threshold-1 must PASS (roll*scale < band), roll = threshold must FAIL.
+        // (roll·(2^30+1) fits the 64-bit x87 mantissa, so this f64 multiply equals
+        // gamemd's 80-bit product exactly at the boundary.)
+        let scale = f64::from_bits(0x3E00_0000_0040_0000);
+        for (band, t) in [(0.02_f64, 42_949_673_u32), (0.01, 21_474_837)] {
+            assert!((t as f64 - 1.0) * scale < band, "roll=t-1 must pass for band {band}");
+            assert!(!((t as f64) * scale < band), "roll=t must fail for band {band}");
+        }
+
+        // Degenerate bands.
+        assert_eq!(damage_spark_spawn_threshold(0.0), 0);
+        assert_eq!(damage_spark_spawn_threshold(-1.0), 0);
+        assert_eq!(damage_spark_spawn_threshold(1.0), DAMAGE_SPARK_ROLL_COUNT);
+        assert_eq!(damage_spark_spawn_threshold(2.0), DAMAGE_SPARK_ROLL_COUNT);
     }
 
     #[test]

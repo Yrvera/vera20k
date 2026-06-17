@@ -78,6 +78,16 @@ impl IniSection {
         self.get(key)?.trim().parse::<f32>().ok()
     }
 
+    /// Get a value parsed as f64 (double precision).
+    ///
+    /// Returns None if the key doesn't exist or the value isn't a valid float.
+    /// Needed where gamemd reads the key with `CCINIClass::ReadDouble` and the
+    /// extra precision is load-bearing (e.g. the damage-Spark spawn probabilities,
+    /// whose f32-vs-f64 rounding shifts the integer roll threshold by 1).
+    pub fn get_f64(&self, key: &str) -> Option<f64> {
+        self.get(key)?.trim().parse::<f64>().ok()
+    }
+
     /// Get a light-related float using the original INI parser shape needed by
     /// LightIntensity/Light*Tint keys.
     ///
@@ -301,6 +311,8 @@ impl IniFile {
     /// In YR, rulesmd.ini / artmd.ini are patches on top of rules.ini / art.ini.
     /// For each section in `patch`: if the section exists in self, merge keys
     /// (patch keys override base keys). If the section is new, add it.
+    /// (Map rules overrides go through [`IniFile::merge_rules_overrides`],
+    /// which never allocates sections.)
     pub fn merge(&mut self, patch: &IniFile) {
         for patch_key in &patch.section_order {
             let patch_section: &IniSection = match patch.sections.get(patch_key) {
@@ -322,7 +334,128 @@ impl IniFile {
             }
         }
     }
+
+    /// Merge a map file's rules-shaped overrides over this (already
+    /// rules+rulesmd-merged) INI: last definition wins, but only for sections
+    /// that already exist here, and never for type-registry lists. Mirrors the
+    /// original engine re-reading its rules from the map file after the main
+    /// load, minus the (unverified) ability to allocate new type records —
+    /// registries use find-or-allocate-by-name semantics there, so merging
+    /// them by numeric key would replace unrelated entries.
+    /// Returns the number of keys applied (0 = the map ships no overrides).
+    pub fn merge_rules_overrides(&mut self, patch: &IniFile) -> usize {
+        let mut applied = 0;
+        for patch_key in &patch.section_order {
+            let Some(patch_section) = patch.sections.get(patch_key) else {
+                continue;
+            };
+            if MAP_OVERRIDE_EXCLUDED_SECTIONS
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(patch_key))
+            {
+                continue;
+            }
+            let Some(base_section) = self.sections.get_mut(patch_key) else {
+                // Value-override only: a section the rules never declared is
+                // map data (or would be an allocation) — skip silently.
+                continue;
+            };
+            // Belt-and-braces: an all-numeric-key section is a registry list
+            // even if it's not on the exclusion list yet.
+            let has_keys = patch_section.keys().next().is_some();
+            let all_numeric =
+                has_keys && patch_section.keys().all(|k| k.parse::<u32>().is_ok());
+            if all_numeric {
+                log::warn!(
+                    "map [{patch_key}] is a numbered list — registry overrides \
+                     from maps are not supported; section skipped"
+                );
+                continue;
+            }
+            let keys_iterated_as_registry = ITERATED_NAME_KEYED_SECTIONS
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(patch_key));
+            for key in patch_section.keys() {
+                if keys_iterated_as_registry && base_section.get(key).is_none() {
+                    log::warn!(
+                        "map [{patch_key}] {key}= would allocate a new registry                          entry — allocation from maps is not supported; key skipped"
+                    );
+                    continue;
+                }
+                if let Some(val) = patch_section.get(key) {
+                    // An empty map value (`Key=`) is "key absent" in the
+                    // original: its INI writer never stores an empty entry, so
+                    // the readers fall through to the value already on the
+                    // field. Skipping here leaves the merged rules+rulesmd
+                    // value intact instead of clobbering it (which would then
+                    // reset the field to the hardcoded Rust default at parse).
+                    if val.trim().is_empty() {
+                        continue;
+                    }
+                    base_section.set(key, val);
+                    applied += 1;
+                }
+            }
+        }
+        applied
+    }
+
+    /// Deterministic content hash of the whole file: section order, then each
+    /// section's keys in insertion order with their values.
+    ///
+    /// Stable across process runs (iterates the `Vec` orders, never a
+    /// `HashMap`, and uses the fixed-seed `DefaultHasher`) and sensitive to
+    /// every section/key/value — so a map's *value* overrides change it,
+    /// unlike a registry-list-only hash. Comments and whitespace are already
+    /// stripped at parse time, so two semantically identical files hash equal.
+    pub fn content_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for section_key in &self.section_order {
+            let Some(section) = self.sections.get(section_key) else {
+                continue;
+            };
+            section_key.hash(&mut hasher);
+            for key in section.keys() {
+                key.hash(&mut hasher);
+                if let Some(value) = section.get(key) {
+                    value.hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish()
+    }
 }
+
+/// Numbered-list registry sections a map rules-override pass must not touch
+/// (see [`IniFile::merge_rules_overrides`]). Whether a map may allocate new
+/// type records at all is unverified; until it is, registry lists from maps
+/// are skipped wholesale.
+const MAP_OVERRIDE_EXCLUDED_SECTIONS: &[&str] = &[
+    "InfantryTypes",
+    "VehicleTypes",
+    "AircraftTypes",
+    "BuildingTypes",
+    "TerrainTypes",
+    "SmudgeTypes",
+    "OverlayTypes",
+    "Tiberiums",
+    "SuperWeaponTypes",
+    "Countries",
+    "Animations",
+    "VoxelAnims",
+    "Warheads",
+    "Projectiles",
+    "Sides",
+    "Particles",
+    "ParticleSystems",
+];
+
+/// Name-keyed sections whose KEYS are themselves iterated as a registry
+/// (one record allocated per key). A map may override an existing entry's
+/// value, but a NEW key would allocate a record — and allocation-from-map is
+/// off until the second Read_INI pass semantics are verified.
+const ITERATED_NAME_KEYED_SECTIONS: &[&str] = &["Colors"];
 
 #[cfg(test)]
 #[path = "ini_parser_tests.rs"]
