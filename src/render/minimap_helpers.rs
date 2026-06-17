@@ -295,6 +295,15 @@ pub(super) fn cell_visibility_color(
     fog: &FogState,
     pixel: &TerrainPixel,
 ) -> Option<[u8; 4]> {
+    // Hostile gap generator: terrain renders black like unexplored shroud.
+    // Checked before fog so black wins over half-bright on overlap (native order).
+    if fog.is_cell_gap_covered(local_owner, pixel.rx, pixel.ry) {
+        return Some(COLOR_SHROUD);
+    }
+    // Friendly (own/allied) gap generator: half-bright fog over the terrain.
+    if fog.is_cell_gap_fog(local_owner, pixel.rx, pixel.ry) {
+        return Some(dim_color(pixel.color, 0.5));
+    }
     if fog.is_cell_revealed(local_owner, pixel.rx, pixel.ry) {
         Some(pixel.color)
     } else {
