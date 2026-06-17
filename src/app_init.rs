@@ -180,7 +180,14 @@ pub(crate) fn rebuild_lighting_grid_from_sim(
             .map(|cell| ((cell.rx, cell.ry), cell.level)),
         lighting_config,
     );
-    let point_lights = collect_live_building_lights(simulation, rules);
+    let mut point_lights = collect_live_building_lights(simulation, rules);
+    // Radiation green glow: one green point light per live radiation site,
+    // accumulated additively alongside building lamps (render-only).
+    if let (Some(sim), Some(rules)) = (simulation, rules) {
+        point_lights.extend(crate::app_radiation_light::collect_radiation_lights(
+            sim, rules,
+        ));
+    }
     lighting::accumulate_point_lights(&mut lighting_grid, &point_lights);
     lighting_grid
 }
