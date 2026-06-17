@@ -1638,7 +1638,7 @@ impl Simulation {
         // Apply SpySat and Gap Generator effects if rules are available.
         if let Some(rules) = rules {
             let mut spy_sat_owners: Vec<InternedId> = Vec::new();
-            let mut gap_generators: Vec<(InternedId, u16, u16)> = Vec::new();
+            let mut gap_generators: Vec<(InternedId, u16, u16, i32)> = Vec::new();
 
             for entity in self.substrate.entities.values() {
                 // A Dying SpySat/GapGen corpse must not reveal the map or shroud
@@ -1660,7 +1660,14 @@ impl Simulation {
                         spy_sat_owners.push(entity.owner);
                     }
                     if obj.gap_generator && active {
-                        gap_generators.push((entity.owner, entity.position.rx, entity.position.ry));
+                        // Native radius source is the building's own GapRadiusInCells
+                        // (TechnoType+0xCD2), not the global [General] GapRadius.
+                        gap_generators.push((
+                            entity.owner,
+                            entity.position.rx,
+                            entity.position.ry,
+                            i32::from(obj.gap_radius_in_cells),
+                        ));
                     }
                 }
             }
@@ -1670,12 +1677,7 @@ impl Simulation {
                 vision::apply_spy_sat(&mut self.fog, &spy_sat_owners, &self.interner);
             }
             if !gap_generators.is_empty() {
-                vision::apply_gap_generators(
-                    &mut self.fog,
-                    &gap_generators,
-                    rules.general.gap_radius,
-                    &self.interner,
-                );
+                vision::apply_gap_generators(&mut self.fog, &gap_generators, &self.interner);
             }
         }
 

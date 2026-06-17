@@ -505,7 +505,7 @@ fn test_gap_generator_suppresses_enemy_visibility() {
     // Allied gap generator at (12, 10) with radius 5.
     let americans_id = intern::test_intern("Americans");
     let interner = ti();
-    apply_gap_generators(&mut fog, &[(americans_id, 12, 10)], 5, &interner);
+    apply_gap_generators(&mut fog, &[(americans_id, 12, 10, 5)], &interner);
 
     // Soviet's vision within gap radius should be suppressed.
     // (13, 10) is distance 1 from gap center (12,10) — inside gap.
@@ -527,7 +527,7 @@ fn test_gap_generator_does_not_suppress_friendly() {
     // Gap generator owned by Americans — should NOT suppress American vision.
     let americans_id = intern::test_intern("Americans");
     let interner = ti();
-    apply_gap_generators(&mut fog, &[(americans_id, 10, 10)], 5, &interner);
+    apply_gap_generators(&mut fog, &[(americans_id, 10, 10, 5)], &interner);
     assert!(fog.is_cell_visible(intern::test_intern("Americans"), 10, 10));
 }
 
@@ -675,7 +675,7 @@ fn test_gap_generator_sets_gap_covered_flag() {
     // American gap generator at (12, 10) with radius 5.
     let americans_id = intern::test_intern("Americans");
     let interner = ti();
-    apply_gap_generators(&mut fog, &[(americans_id, 12, 10)], 5, &interner);
+    apply_gap_generators(&mut fog, &[(americans_id, 12, 10, 5)], &interner);
     fog.build_merged_for(intern::test_intern("Soviet"), &ti());
 
     // Cell should now be gap-covered AND not visible for Soviet.
@@ -697,7 +697,7 @@ fn test_gap_covered_not_set_for_friendly() {
     // Gap owned by Americans — should NOT gap-cover American cells.
     let americans_id = intern::test_intern("Americans");
     let interner = ti();
-    apply_gap_generators(&mut fog, &[(americans_id, 10, 10)], 5, &interner);
+    apply_gap_generators(&mut fog, &[(americans_id, 10, 10, 5)], &interner);
     fog.build_merged_for(intern::test_intern("Americans"), &ti());
 
     assert!(!fog.is_cell_gap_covered(intern::test_intern("Americans"), 10, 10));
@@ -850,4 +850,72 @@ fn test_height_los_none_grid_disables_check() {
 
     // Without a height grid, all cells in range are visible.
     assert!(vis.is_visible(8, 5));
+}
+
+// -- Gap Generator footprint + hostile/friendly branches --
+
+#[test]
+fn gap_radius_uses_strict_radius_plus_one_squared() {
+    // radius 10 -> threshold (10+1)^2 = 121. A cell at d^2 = 120 is covered,
+    // d^2 = 121 is not. Pins the native strict `< (r+1)^2` footprint.
+    let enemy = intern::test_intern("Soviet");
+    let gapper = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 64,
+        height: 64,
+        ..Default::default()
+    };
+    // Pre-reveal a cell so suppression is observable (also creates the enemy grid).
+    fog.mark_visible_for_owner(enemy, 30, 40);
+    // No alliance entries => enemy is hostile to gapper.
+    apply_gap_generators(&mut fog, &[(gapper, 30, 30, 10)], &interner);
+
+    assert!(fog.is_cell_gap_covered(enemy, 32, 40)); // dx=2,dy=10 -> 104 < 121
+    assert!(!fog.is_cell_gap_covered(enemy, 30, 41)); // dx=0,dy=11 -> 121 not < 121
+    assert!(fog.is_cell_gap_covered(enemy, 30, 40)); // dx=0,dy=10 -> 100 < 121
+    assert!(!fog.is_cell_visible(enemy, 30, 40)); // hostile gap clears visibility
+}
+
+#[test]
+fn gap_marks_friendly_viewer_as_fog_not_covered() {
+    // A gap generator over its own/allied territory fogs (half-bright), it does
+    // not black out or suppress the owner's vision.
+    let gapper = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 64,
+        height: 64,
+        ..Default::default()
+    };
+    fog.mark_visible_for_owner(gapper, 30, 35);
+    apply_gap_generators(&mut fog, &[(gapper, 30, 30, 10)], &interner);
+
+    assert!(fog.is_cell_gap_fog(gapper, 30, 35)); // friendly => fog
+    assert!(!fog.is_cell_gap_covered(gapper, 30, 35)); // not black
+    assert!(fog.is_cell_visible(gapper, 30, 35)); // own vision NOT suppressed
+}
+
+#[test]
+fn gap_coverage_clears_when_no_generator_present() {
+    // dev recomputes coverage each tick (no reference counter): once the
+    // generator is gone, the next tick's clear + empty apply restores the cell.
+    let enemy = intern::test_intern("Soviet");
+    let gapper = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 64,
+        height: 64,
+        ..Default::default()
+    };
+    fog.mark_visible_for_owner(enemy, 30, 35);
+    apply_gap_generators(&mut fog, &[(gapper, 30, 30, 10)], &interner);
+    assert!(fog.is_cell_gap_covered(enemy, 30, 35));
+
+    // New tick: clear_all_visible drops the gap flags; no generator => stays clear.
+    if let Some(vis) = fog.by_owner.get_mut(&enemy) {
+        vis.clear_all_visible();
+    }
+    apply_gap_generators(&mut fog, &[], &interner);
+    assert!(!fog.is_cell_gap_covered(enemy, 30, 35));
 }
