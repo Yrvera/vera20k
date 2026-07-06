@@ -1637,12 +1637,13 @@ fn stock_dock_exit_does_not_emit_refinery_exit_sfx() {
 }
 
 /// Variant of `miner_rules()` where CMIN omits the per-unit `ChronoInSound`
-/// and `ChronoOutSound` keys, and `[General]` sets distinctive fallback
+/// and `ChronoOutSound` keys, and `[AudioVisual]` sets distinctive fallback
 /// values. Used by the fallback-path test to prove the resolver reads from
 /// Rules when the per-unit field is absent.
 fn miner_rules_fallback_only() -> RuleSet {
     let ini = IniFile::from_str(
         "[General]\n\
+         [AudioVisual]\n\
          ChronoInSound=FALLBACKIN\n\
          ChronoOutSound=FALLBACKOUT\n\
          [InfantryTypes]\n\
