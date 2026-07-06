@@ -423,12 +423,15 @@ pub struct GeneralRules {
     /// Frames per StepTimer increment during ore gathering (HarvesterLoadRate=).
     /// One bale requires 9 steps, so harvest_interval = rate * 9. Default 2.
     pub harvester_load_rate: i32,
-    /// Tenths-of-a-frame per bale during refinery unloading (HarvesterDumpRate=).
-    /// Pre-computed from INI double: `(rate * 9000.0).round() as u16`.
-    /// Default 144 (from 0.016 × 9000 = 14.4 frames per bale, exact).
-    /// The miner timer counts in tenths so the 0.4-frame fractional component
-    /// at default rate is preserved instead of being truncated to 14.
-    pub harvester_dump_tenths: u16,
+    /// Whole-frame dump gate for refinery unloading (HarvesterDumpRate=).
+    /// The unload accumulator advances one whole frame per unloading tick and a
+    /// slot drains once it reaches this threshold; gamemd's gate is the full
+    /// `HarvesterDumpRate(double) × 900 <= accumulator`. Because the accumulator
+    /// is integer-stepped, the first crossing is exactly `ceil(rate × 900)`, so
+    /// storing the ceiling (not a tenths-quantized value) reproduces gamemd's
+    /// crossing bit-for-bit with no float in the sim gate.
+    /// Default 15 (from ceil(0.016 × 900) = ceil(14.4) = 15 frames per gate).
+    pub harvester_dump_frames: u16,
 
     // -- Chrono warp delay constants --
     /// Post-warp lock duration in game frames (ChronoDelay= in [General]).
@@ -757,7 +760,7 @@ impl Default for GeneralRules {
             harvester_too_far_distance: 5,
             chrono_harv_too_far_distance: 50,
             harvester_load_rate: 2,
-            harvester_dump_tenths: 144,
+            harvester_dump_frames: 15,
             chrono_delay: 60,
             chrono_reinf_delay: 180,
             chrono_distance_factor: 48,
@@ -1302,11 +1305,14 @@ impl GeneralRules {
             harvester_too_far_distance: general.get_i32("HarvesterTooFarDistance").unwrap_or(5),
             chrono_harv_too_far_distance: general.get_i32("ChronoHarvTooFarDistance").unwrap_or(50),
             harvester_load_rate: general.get_i32("HarvesterLoadRate").unwrap_or(2),
-            harvester_dump_tenths: {
-                let rate = general.get_f32("HarvesterDumpRate").unwrap_or(0.016);
-                // Tenths of a frame: 0.016 × 9000 = 144 (= 14.4 frames/bale).
-                // Clamp to u16::MAX (~6553 ticks/bale) to keep the timer wraparound-safe.
-                (rate * 9000.0).clamp(0.0, u16::MAX as f32).round() as u16
+            harvester_dump_frames: {
+                // gamemd reads HarvesterDumpRate with ReadDouble and gates on
+                // `rate × 900 <= accumulator`; the accumulator is integer-stepped,
+                // so the first crossing is ceil(rate × 900). Take the ceiling at
+                // full double precision to match that crossing exactly (no tenths
+                // rounding). Clamp to u16::MAX to keep the frame threshold in range.
+                let rate = general.get_f64("HarvesterDumpRate").unwrap_or(0.016);
+                (rate * 900.0).clamp(0.0, u16::MAX as f64).ceil() as u16
             },
             chrono_delay: general.get_i32("ChronoDelay").unwrap_or(60),
             chrono_reinf_delay: general.get_i32("ChronoReinfDelay").unwrap_or(180),
@@ -3194,6 +3200,24 @@ ChronoOutSound=ChronoMinerTeleport
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.chrono_in_sound, None);
         assert_eq!(general.chrono_out_sound, None);
+    }
+
+    #[test]
+    fn harvester_dump_frames_uses_ceil_of_rate_times_900_not_tenths() {
+        // The dump gate crosses at ceil(HarvesterDumpRate × 900). The old code
+        // quantized to tenths and could cross a frame early for modded rates.
+        let frames = |line: &str| {
+            let ini = IniFile::from_str(&format!("[General]\n{line}\n"));
+            GeneralRules::from_ini(&ini).harvester_dump_frames
+        };
+        // Stock (key absent -> default 0.016): ceil(14.4) = 15, unchanged.
+        assert_eq!(frames(""), 15, "stock 0.016 stays at 15 frames");
+        // Modded 0.0156: ceil(14.04) = 15. Old tenths code crossed at 14 (bug).
+        assert_eq!(frames("HarvesterDumpRate=0.0156"), 15, "0.0156 must ceil to 15, not 14");
+        // Modded 0.02: ceil(18.0) = 18.
+        assert_eq!(frames("HarvesterDumpRate=0.02"), 18, "0.02 -> exactly 18 frames");
+        // Modded 0.0201: ceil(18.09) = 19 (round-to-nearest would give 18).
+        assert_eq!(frames("HarvesterDumpRate=0.0201"), 19, "0.0201 must ceil up to 19");
     }
 
     #[test]

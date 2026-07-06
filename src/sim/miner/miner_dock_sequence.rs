@@ -1096,9 +1096,10 @@ fn phase_unloading(
 ) {
     if !snap.miner.unload_active && !snap.miner.unload_cluster_timer.is_armed() {
         // Compatibility for old saves and tests that entered Unloading before
-        // the byte-field cluster existed.
+        // the byte-field cluster existed. Seed the accumulator at the threshold
+        // so the next gate check passes immediately.
         snap.miner.unload_active = true;
-        snap.miner.unload_accumulator = i32::from(config.unload_tick_interval.div_ceil(10));
+        snap.miner.unload_accumulator = i32::from(config.unload_tick_interval);
         snap.miner.unload_cluster_timer.arm(sim.session.binary_frame, 1);
         snap.miner.unload_cluster_repeat = 1;
     }
@@ -1107,7 +1108,9 @@ fn phase_unloading(
         return;
     }
 
-    if snap.miner.unload_accumulator.saturating_mul(10) < i32::from(config.unload_tick_interval) {
+    // gamemd gate: drain when the whole-frame accumulator reaches the dump
+    // threshold (`HarvesterDumpRate × 900 <= accumulator`, ceil pre-stored).
+    if snap.miner.unload_accumulator < i32::from(config.unload_tick_interval) {
         return;
     }
 

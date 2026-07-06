@@ -6125,7 +6125,7 @@ fn unload_accumulator_sample_before_increment() {
     let rules = miner_rules();
     let config = MinerConfig::default();
     let interval = i32::from(config.unload_tick_interval);
-    let gate_met = |acc: i32| acc.saturating_mul(10) >= interval;
+    let gate_met = |acc: i32| acc >= interval;
 
     spawn_refinery(&mut sim, 2, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);

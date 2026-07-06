@@ -169,12 +169,12 @@ pub struct MinerConfig {
     // -- Timing (in sim ticks at 15Hz = RA2 game frames) --
     /// Ticks between each harvest action (extract one bale).
     pub harvest_tick_interval: u8,
-    /// Tenths-of-a-tick between each unload action (deposit one bale).
-    /// Default 144 = 14.4 ticks/bale, matching gamemd's
-    /// `HarvesterDumpRate(0.016) × 900 = 14.4`. The fractional precision
-    /// is preserved by counting an `unload_timer` in tenths and
-    /// decrementing by 10 per tick — bales deposit on average every 14.4
-    /// ticks instead of an integer-truncated 14.
+    /// Whole-frame dump gate: the unload accumulator advances one frame per
+    /// unloading tick and a resource slot drains once it reaches this value.
+    /// Default 15 = ceil(HarvesterDumpRate(0.016) × 900) = ceil(14.4). Because
+    /// the accumulator is integer-stepped, storing the ceiling reproduces
+    /// gamemd's `rate × 900 <= accumulator` crossing exactly — no float in the
+    /// gate, no tenths-rounding drift for modded rates.
     pub unload_tick_interval: u16,
 
     // -- Search radii --
@@ -205,11 +205,10 @@ impl Default for MinerConfig {
             // HarvesterLoadRate=2 (frames per StepTimer step). One bale requires
             // 9 steps, so interval = 2 * 9 = 18 frames/bale at 15fps (~1.2s).
             harvest_tick_interval: 18,
-            // HarvesterDumpRate=0.016 min/bale × 900 (60s × 15fps) = 14.4 frames/bale.
-            // Stored in tenths so fractional ticks accumulate exactly (no
-            // 0.4-tick-per-bale drift from u8 truncation). War Miner full ore:
-            // 40 × 14.4 = 576 ticks ≈ 38.4s. Chrono Miner: 20 × 14.4 ≈ 19.2s.
-            unload_tick_interval: 144,
+            // HarvesterDumpRate=0.016 × 900 = 14.4 frames/gate; the integer
+            // accumulator crosses at ceil(14.4) = 15. The whole slot drains per
+            // gate (one ore gate + one gem gate, ~15 frames each).
+            unload_tick_interval: 15,
             local_continuation_radius: 6,
             long_scan_radius: 48,
             too_far_threshold_standard: 5,
@@ -230,10 +229,10 @@ impl MinerConfig {
         // HarvesterLoadRate: frames per step. 9 steps per bale.
         let load_rate = general.harvester_load_rate.max(1);
         let harvest_interval = (load_rate * 9).min(255) as u8;
-        // HarvesterDumpRate is a double in gamemd (default 0.016 min/bale).
-        // We store frames × 10 so the 0.4-frame fraction at default rate is
-        // preserved exactly: 0.016 × 9000 = 144 tenths = 14.4 ticks.
-        let unload_interval = general.harvester_dump_tenths.max(1);
+        // HarvesterDumpRate is a double in gamemd (default 0.016). The dump gate
+        // is `rate × 900 <= accumulator`; ruleset already stored ceil(rate × 900)
+        // as a whole-frame threshold, so the gate stays integer-exact here.
+        let unload_interval = general.harvester_dump_frames.max(1);
 
         Self {
             local_continuation_radius: general.tiberium_short_scan.max(1) as u16,
