@@ -972,12 +972,17 @@ fn try_begin_close_return_radio(
 
     snap.miner.state = MinerState::Dock;
     snap.miner.dock_queued = admission != ContactAdmission::Accepted;
-    snap.miner.dock_enter_retry.clear();
-    snap.miner.dock_phase = if admission == ContactAdmission::Accepted {
-        RefineryDockPhase::MissionEnter
+    if admission == ContactAdmission::Accepted {
+        // G5: the accepted close-return HELLO queues Mission_Enter via the
+        // Harvest epilogue; arm the retry so the first CAN_DOCK waits the
+        // ~14-16f cadence (and draws the RandomRanged(0,2) the dispatch
+        // consumes), instead of an always-due next-tick collapse.
+        super::miner_dock_sequence::schedule_enter_retry(sim, rules, snap);
+        snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
     } else {
-        RefineryDockPhase::Approach
-    };
+        snap.miner.dock_enter_retry.clear();
+        snap.miner.dock_phase = RefineryDockPhase::Approach;
+    }
 
     if admission != ContactAdmission::Accepted {
         if let Some(staging) = chrono_return_staging_cell_for_sid(sim, rules, ref_sid, path_grid)

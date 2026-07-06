@@ -811,6 +811,66 @@ fn approach_re_hello_gated_to_one_per_harvest_window() {
     );
 }
 
+/// G5: the accepted HELLO must ARM the Enter cadence (base 14 + RandomRanged
+/// (0,2) jitter), anchored at the accept frame — not clear the retry timer to
+/// always-due, which collapses the first CAN_DOCK to the next tick and skips
+/// the dispatch's RNG draw.
+#[test]
+fn accepted_hello_arms_enter_cadence_not_always_due() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let grid = PathGrid::new(64, 64);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Approach;
+        miner.reserved_refinery = Some(2);
+    }
+
+    // Uncontested single-dock slot: this dispatch accepts the HELLO.
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+    let accept_frame = sim.session.binary_frame;
+
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(
+        miner.dock_phase,
+        RefineryDockPhase::MissionEnter,
+        "accepted HELLO queues Mission_Enter"
+    );
+    // A real cadence, not an always-due clear.
+    assert!(
+        miner.dock_enter_retry.is_armed(),
+        "accepted HELLO must ARM the Enter cadence, not clear it to always-due"
+    );
+    assert_eq!(
+        miner.dock_enter_retry.start_frame, accept_frame,
+        "the cadence is anchored at the accept frame"
+    );
+    let dur = miner.dock_enter_retry.duration;
+    assert!(
+        (14..=16).contains(&dur),
+        "first CAN_DOCK waits base 14 + RandomRanged(0,2) jitter, got {dur}"
+    );
+    // Concretely: NOT next-tick, but due within the 14-16f window.
+    assert!(
+        !miner.dock_enter_retry.due(accept_frame + 1),
+        "first CAN_DOCK must not fire the tick after accept"
+    );
+    assert!(
+        miner.dock_enter_retry.due(accept_frame + 16),
+        "first CAN_DOCK is due within the Enter cadence window"
+    );
+}
+
 // ==========================================================================
 // Test 8: Credits arrive per slot drain (whole-slot dump per timer tick)
 // ==========================================================================
@@ -1225,6 +1285,9 @@ fn chrono_return_within_too_far_threshold_uses_close_radio_path() {
     }
 
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+    // G5: the accepted close-return HELLO now arms the Enter cadence; cross the
+    // ~14-16f window so the deferred CAN_DOCK dispatch becomes due.
+    sim.session.binary_frame += 17;
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
 
     let entity = sim.substrate.entities.get(miner_id).expect("entity");
@@ -1417,6 +1480,9 @@ fn cmin_close_hello_success_defers_can_dock_to_mission_enter() {
         "HELLO success must not issue CAN_DOCK movement in the same tick"
     );
 
+    // G5: the accepted HELLO arms the Enter cadence; cross the ~14-16f window so
+    // the deferred Mission_Enter/CAN_DOCK dispatch is due.
+    sim.session.binary_frame += 17;
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
 
     let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
@@ -1515,6 +1581,9 @@ fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_
             .has_contact_entered(2, waiter)
     );
 
+    // G5: the accepted HELLO arms the Enter cadence; cross the ~14-16f window so
+    // the deferred CAN_DOCK dispatch is due.
+    sim.session.binary_frame += 17;
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
     let waiter_entity = sim.substrate.entities.get(waiter).expect("waiter entity");
     let movement = waiter_entity
@@ -2976,6 +3045,9 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
             &mut sim.interner,
         );
         sim.session.tick += 1;
+        // The dock cadence timers (G5/G6) key on `binary_frame`; advance it so
+        // the deferred CAN_DOCK / deploy dispatches become due across the run.
+        sim.session.binary_frame += 1;
     }
 
     let refinery = sim.substrate.entities.get(refinery_id).expect("refinery still alive");
@@ -3070,6 +3142,9 @@ fn hello_before_mission_enter_then_can_dock_move() {
         "HELLO acceptance must not issue the CAN_DOCK move in the same tick"
     );
 
+    // G5: the accepted HELLO arms the Enter cadence; advance the frame clock
+    // past the ~14-16f window so the next pass's CAN_DOCK dispatch is due.
+    sim.session.total_sim_ms += 1200;
     tick_miners_n(&mut sim, &rules, 1);
 
     let m = get_miner(&sim, miner_id);
@@ -6198,6 +6273,9 @@ fn dock_handshake_hello_enter_over_seam() {
     );
 
     // Next pass: miner 1 advances to the accepted-cell wait, still not entered.
+    // G5: the accepted HELLO arms the Enter cadence; advance the frame clock past
+    // the ~14-16f window so this pass's CAN_DOCK dispatch is due.
+    sim.session.total_sim_ms += 1200;
     tick_miners_n(&mut sim, &rules, 1);
     assert_eq!(
         get_miner(&sim, miner_id).dock_phase,

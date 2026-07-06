@@ -99,7 +99,7 @@ pub(super) fn mission_base_frames(rules: &RuleSet, mission: MissionType, fallbac
     }
 }
 
-fn schedule_enter_retry(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot) {
+pub(super) fn schedule_enter_retry(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot) {
     // gamemd computes the base `ftol(Rate*900)` FIRST, then draws RandomRanged(0,2),
     // then adds — the base lookup consumes no RNG, so the stream order is preserved.
     let base = mission_base_frames(rules, MissionType::Enter, ENTER_RETRY_BASE_FRAMES);
@@ -892,6 +892,10 @@ fn phase_approach(
     snap.miner.dock_queued = admission != ContactAdmission::Accepted;
     if admission == ContactAdmission::Accepted {
         mark_refinery_contact(sim, snap.entity_id, ref_sid);
+        // G5: the accepted HELLO queues Mission_Enter with the mission-epilogue
+        // cadence; the first CAN_DOCK waits ~14-16f (arm), it does not collapse
+        // to an always-due next-tick dispatch.
+        schedule_enter_retry(sim, rules, snap);
         snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
         return;
     }
