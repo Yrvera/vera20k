@@ -258,6 +258,8 @@ pub struct ObjectType {
     pub voice_move: Option<String>,
     /// Sound ID played when this unit is ordered to attack.
     pub voice_attack: Option<String>,
+    /// Sound ID played when a harvester is ordered to harvest a resource cell.
+    pub voice_harvest: Option<String>,
     /// Sound ID played when this entity dies or is destroyed.
     pub die_sound: Option<String>,
     /// Sound ID played while this entity moves (looping engine/footstep).
@@ -964,6 +966,7 @@ impl ObjectType {
             voice_select: section.get("VoiceSelect").map(|s| s.to_string()),
             voice_move: section.get("VoiceMove").map(|s| s.to_string()),
             voice_attack: section.get("VoiceAttack").map(|s| s.to_string()),
+            voice_harvest: section.get("VoiceHarvest").map(|s| s.to_string()),
             die_sound: section.get("DieSound").map(|s| s.to_string()),
             move_sound: section.get("MoveSound").map(|s| s.to_string()),
             voice_feedback: section.get("VoiceFeedback").map(|s| s.to_string()),
@@ -1364,6 +1367,33 @@ mod tests {
         assert!(obj.base_normal);
         assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
+    }
+
+    #[test]
+    fn parses_miner_order_voices() {
+        // Stock [CMIN] harvest ack: VoiceHarvest round-trips into the parsed
+        // type so the order-ack dispatch can play it instead of the generic
+        // move voice.
+        let ini: IniFile = IniFile::from_str(
+            "[CMIN]\nName=Chrono Miner\nVoiceMove=ChronoMinerMove\n\
+             VoiceHarvest=ChronoMinerHarvest\n",
+        );
+        let obj = ObjectType::from_ini_section(
+            "CMIN",
+            ini.section("CMIN").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(obj.voice_move, Some("ChronoMinerMove".to_string()));
+        assert_eq!(obj.voice_harvest, Some("ChronoMinerHarvest".to_string()));
+
+        // Absent key defaults to None (e.g. a plain tank).
+        let none_ini: IniFile = IniFile::from_str("[MTNK]\nName=Grizzly\n");
+        let none_obj = ObjectType::from_ini_section(
+            "MTNK",
+            none_ini.section("MTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(none_obj.voice_harvest, None);
     }
 
     #[test]

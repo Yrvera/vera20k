@@ -1155,7 +1155,9 @@ fn jump_camera_to_base(state: &mut AppState) {
     }
 }
 
-/// Emit a voice sound (VoiceMove or VoiceAttack) for the first selected unit.
+/// Emit an order-acknowledgement voice sound for the first selected unit; the
+/// specific voice (VoiceMove / VoiceAttack / VoiceHarvest / VoiceEnter) is
+/// chosen by `voice_field`.
 pub(crate) fn emit_order_voice(state: &mut AppState, voice_field: &str) {
     let Some(sim) = &state.simulation else { return };
     let Some(rules) = &state.rules else { return };
@@ -1169,6 +1171,7 @@ pub(crate) fn emit_order_voice(state: &mut AppState, voice_field: &str) {
         let voice_id: Option<&String> = match voice_field {
             "VoiceMove" => obj.voice_move.as_ref(),
             "VoiceAttack" => obj.voice_attack.as_ref(),
+            "VoiceHarvest" => obj.voice_harvest.as_ref(),
             _ => None,
         };
         if let Some(id) = voice_id {

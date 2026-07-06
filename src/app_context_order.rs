@@ -56,6 +56,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let mut queued: Vec<CommandEnvelope> = Vec::new();
     let mut attack_voice = false;
     let mut consumed_order_mode = false;
+    // Miner-specific order-ack voice (VoiceHarvest / VoiceEnter); when set it
+    // overrides the generic VoiceMove ack for harvest and manual-return orders.
+    let mut miner_order_voice: Option<&'static str> = None;
 
     if let Some(sim) = &mut state.simulation {
         let execute_tick = sim.session.tick.saturating_add(sim.input_delay_ticks);
@@ -149,6 +152,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     },
                 ));
             }
+            // Harvest order plays VoiceHarvest (e.g. CMIN ChronoMinerHarvest),
+            // not the generic move ack.
+            miner_order_voice = Some("VoiceHarvest");
             // Non-miner units in selection just move to that cell.
             for &stable_id in &selected_units {
                 if !selected_miner_ids.contains(&stable_id) {
@@ -710,7 +716,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     if consumed_order_mode && state.queued_order_mode != OrderMode::Move {
         state.queued_order_mode = OrderMode::Move;
     }
-    if attack_voice {
+    if let Some(miner_voice) = miner_order_voice {
+        emit_order_voice(state, miner_voice);
+    } else if attack_voice {
         emit_order_voice(state, "VoiceAttack");
     } else {
         emit_order_voice(state, "VoiceMove");
