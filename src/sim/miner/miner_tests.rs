@@ -980,6 +980,65 @@ fn accepted_face_sync_handoff_draws_one_scenario_rng() {
     );
 }
 
+/// L10: the Mission_Deploy state-4 exit draws exactly one `RandomRanged(0,2)`
+/// (Scen->Random) and arms the resumed ore search with that jitter, so SearchOre
+/// resumes at `exit_frame + jitter` instead of immediately (0-2f early).
+#[test]
+fn state_four_exit_draws_and_applies_resume_jitter() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let grid = PathGrid::new(64, 64);
+
+    // Miner sitting at the end of the dock sequence (state-4 Departing), cargo
+    // already unloaded so the resumed search is not short-circuited by is_full().
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Departing;
+        miner.reserved_refinery = Some(2);
+    }
+
+    let exit_frame = sim.session.binary_frame;
+    // Probe: the tick draws one RandomRanged(0,2); mirror it to learn the exact
+    // jitter value and the post-draw RNG state.
+    let mut probe = sim.miner_jitter_rng().clone();
+    let jitter = probe.next_range_u32_inclusive(0, 2);
+    let expected_after_one_draw = probe.state();
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(
+        miner.state,
+        MinerState::SearchOre,
+        "state-4 exit hands back to SearchOre"
+    );
+    // Exactly one scenario RNG draw at the exit.
+    assert_eq!(
+        sim.miner_jitter_rng().state(),
+        expected_after_one_draw,
+        "L10: state-4 exit must draw exactly one scenario RandomRanged(0,2)"
+    );
+    // The resume is paced by that draw: harvest cadence armed at the exit frame
+    // for exactly `jitter` frames → SearchOre resumes at exit_frame + jitter.
+    assert_eq!(
+        miner.harvest_timer.start_frame, exit_frame,
+        "resume cadence anchored at the state-4 exit frame"
+    );
+    assert_eq!(
+        miner.harvest_timer.duration, jitter,
+        "resume delayed by exactly the drawn RandomRanged(0,2) jitter"
+    );
+    assert!(
+        (0..=2).contains(&miner.harvest_timer.duration),
+        "resume jitter is in the RandomRanged(0,2) domain"
+    );
+}
+
 // ==========================================================================
 // Test 8: Credits arrive per slot drain (whole-slot dump per timer tick)
 // ==========================================================================
@@ -2997,6 +3056,9 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             &mut sim.interner,
         );
         sim.session.tick += 1;
+        // Advance the frame clock so the L10 post-unload resume jitter (and the
+        // other dock cadence timers) become due across the run.
+        sim.session.binary_frame += 1;
 
         let miner = sim
             .substrate.entities
@@ -3040,6 +3102,7 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             &mut sim.interner,
         );
         sim.session.tick += 1;
+        sim.session.binary_frame += 1;
     }
 
     let entity = sim.substrate.entities.get(miner_id).expect("harvester still alive");

@@ -1343,6 +1343,18 @@ fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnaps
     clear_enter_retry(snap);
     clear_mission_deploy_delay(snap);
     clear_unload_cluster(snap);
+    // L10: gamemd's Mission_Deploy state-4 exit returns through the mission-timer
+    // epilogue — it draws one RandomRanged(0,2) (Scen->Random) and queues
+    // Mission_Harvest with that value as its initial cadence, so the resumed ore
+    // search waits 0-2 frames. Draw + apply the jitter here (arm the harvest
+    // cadence) so both the RNG stream and the resume timing match gamemd
+    // (SearchOre no longer resumes 0-2f early).
+    let resume_jitter = sim
+        .miner_jitter_rng()
+        .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES);
+    snap.miner
+        .harvest_timer
+        .arm(sim.session.binary_frame, resume_jitter);
     // Clear the pending ore target and stale exit cache. Preserve
     // `last_harvest_cell`; the ghost-cell archive survives the dock cycle
     // so the next `SearchOre` can return to the productive patch saved when

@@ -381,6 +381,14 @@ fn handle_search_ore(
         return;
     }
 
+    // L10: the post-unload ore search is paced by the Mission_Harvest epilogue's
+    // RandomRanged(0,2) jitter, armed at the state-4 dock exit. Wait it out so the
+    // search resumes at exit_frame + jitter, not immediately. For every other
+    // entry the harvest timer is long-elapsed (always due), so this is a no-op.
+    if !snap.miner.harvest_timer.due(sim.session.binary_frame) {
+        return;
+    }
+
     // Combined scan filter — zone reachability + cell occupancy.
     // Returns None if zone_grid / anchor is missing; caller falls back to
     // an unfiltered scan that tick.
