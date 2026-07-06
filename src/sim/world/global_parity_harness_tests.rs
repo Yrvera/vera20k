@@ -80,6 +80,15 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// behavior drift. Proven: with the fold line disabled this baseline held its
 /// prior value (so S4b moved zero RNG and changed no committed scenario), and
 /// the tick-by-tick rec-vs-replay equality below still passes.
+/// W1 (mission-cadence: G5/G6/L20 + L9/L10 RandomRanged(0,2) draws) left this
+/// UNSHIFTED — verified empirically (this baseline + the per-stream cursor pins
+/// held their values, and the harness runs deterministically 2×). The harness
+/// harvester (id 3) acquires an ore target but never completes the refinery dock
+/// handshake — the coverage tripwire below only asserts ore-target acquisition,
+/// and the dock/unload cadence paths that carry the new draws are never reached
+/// in this scenario. The W1 cadence + RNG-draw determinism is covered by the
+/// dedicated miner-dock suite (accepted_face_sync_handoff_draws_one_scenario_rng,
+/// state_four_exit_draws_and_applies_resume_jitter, et al.) instead.
 const GLOBAL_HARNESS_FINAL_HASH: u64 = 7853494236029787366;
 
 fn harness_rules() -> RuleSet {
