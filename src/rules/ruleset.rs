@@ -453,9 +453,11 @@ pub struct GeneralRules {
     /// (ChronoRangeMinimum= in [General]). Default 0.
     pub chrono_range_minimum: i32,
 
-    /// Ore Purifier bonus as integer percentage (PurifierBonus= in [General]).
-    /// Stored as `round(float_value * 100)`. 25 = 25% bonus. Default 25.
-    pub purifier_bonus_pct: i32,
+    /// Ore Purifier bonus as a fixed-point fraction in parts-per-million
+    /// (PurifierBonus= in [General]; `INCOME_PPM_SCALE` = 1.0×). Stored at full
+    /// precision so modded fractional percentages (e.g. `.333`) are not quantized
+    /// to whole percent. Stock `.25` -> 250_000 (25%). Default 250_000.
+    pub purifier_bonus_ppm: i64,
     /// AI virtual purifier counts indexed by difficulty
     /// (AIVirtualPurifiers= in [General]). Each entry is added to the AI
     /// player's real purifier count when computing the deposit bonus. INI
@@ -767,7 +769,7 @@ impl Default for GeneralRules {
             chrono_trigger: true,
             chrono_minimum_delay: 16,
             chrono_range_minimum: 0,
-            purifier_bonus_pct: 25,
+            purifier_bonus_ppm: 250_000,
             ai_virtual_purifiers: [4, 2, 0],
             allied_survivor_divisor: 500,
             soviet_survivor_divisor: 250,
@@ -1320,8 +1322,11 @@ impl GeneralRules {
             chrono_trigger: general.get_bool("ChronoTrigger").unwrap_or(true),
             chrono_minimum_delay: general.get_i32("ChronoMinimumDelay").unwrap_or(16),
             chrono_range_minimum: general.get_i32("ChronoRangeMinimum").unwrap_or(0),
-            purifier_bonus_pct: (general.get_percent("PurifierBonus").unwrap_or(0.25) * 100.0)
-                .round() as i32,
+            // Parse-time float -> fixed-point ppm (mirrors the IncomeMult parse); the runtime
+            // bonus math is all integer. Full precision — no whole-percent quantize.
+            purifier_bonus_ppm: (general.get_percent("PurifierBonus").unwrap_or(0.25) as f64
+                * INCOME_PPM_SCALE as f64)
+                .round() as i64,
             ai_virtual_purifiers: {
                 let defaults = [4, 2, 0];
                 general
@@ -3001,7 +3006,7 @@ MutateWarhead=MyMutate\n\
         assert_eq!(rules.general.slave_miner_kick_frame_delay, 200);
         assert_eq!(rules.general.harvester_too_far_distance, 8);
         assert_eq!(rules.general.chrono_harv_too_far_distance, 40);
-        assert_eq!(rules.general.purifier_bonus_pct, 30);
+        assert_eq!(rules.general.purifier_bonus_ppm, 300_000);
     }
 
     #[test]
@@ -3023,7 +3028,27 @@ MutateWarhead=MyMutate\n\
         assert_eq!(rules.general.slave_miner_kick_frame_delay, 150);
         assert_eq!(rules.general.harvester_too_far_distance, 5);
         assert_eq!(rules.general.chrono_harv_too_far_distance, 50);
-        assert_eq!(rules.general.purifier_bonus_pct, 25);
+        assert_eq!(rules.general.purifier_bonus_ppm, 250_000);
+    }
+
+    /// Fractional-percent PurifierBonus survives at full fixed-point precision
+    /// (parts-per-million), NOT quantized to whole percent. `.333` -> 333_000 ppm,
+    /// not 330_000. Stock `.25` stays exactly 250_000 (byte-identical to the old
+    /// integer-percent form).
+    #[test]
+    fn purifier_bonus_keeps_fractional_precision() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [General]\n\
+             PurifierBonus=.333\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("Should parse");
+        assert_eq!(rules.general.purifier_bonus_ppm, 333_000);
+        // The old integer-percent path would have rounded to 33% (330_000) — the drift.
+        assert_ne!(rules.general.purifier_bonus_ppm, 330_000);
     }
 
     #[test]

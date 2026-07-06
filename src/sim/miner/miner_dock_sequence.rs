@@ -1176,11 +1176,11 @@ fn phase_unloading(
         // Purifier bonus applied once per slot drain — the single-truncation credit + the
         // single-truncation HarvestedCredits stat (see the helpers' contracts).
         let purifier_count = effective_purifier_count(sim, rules, &refinery_owner);
-        let bonus_pct = rules.general.purifier_bonus_pct;
+        let bonus_ppm = rules.general.purifier_bonus_ppm;
         let bonus_credits = crate::sim::economy::purifier_bonus_credits(
             slot_value,
             purifier_count,
-            bonus_pct,
+            bonus_ppm,
             income_ppm,
         );
         if bonus_credits > 0 {
@@ -1189,7 +1189,7 @@ fn phase_unloading(
                 *credits = credits.saturating_add(bonus_credits);
             }
             let bonus_stat =
-                crate::sim::economy::purifier_bonus_harvested(slot_bales, purifier_count, bonus_pct);
+                crate::sim::economy::purifier_bonus_harvested(slot_bales, purifier_count, bonus_ppm);
             if let Some(h) =
                 house_state_for_owner_mut(&mut sim.houses, &refinery_owner, &sim.interner)
             {

@@ -343,9 +343,9 @@ fn handle_slave_deposit(
     // houses also receive the AI virtual-purifier bonus. Single-truncation credit + stat
     // (the shared economy helpers), amount = 1 bale.
     let purifier_count = effective_purifier_count(sim, rules, &owner_str);
-    let bonus_pct = rules.general.purifier_bonus_pct;
+    let bonus_ppm = rules.general.purifier_bonus_ppm;
     let bonus_credits =
-        crate::sim::economy::purifier_bonus_credits(value, purifier_count, bonus_pct, income_ppm);
+        crate::sim::economy::purifier_bonus_credits(value, purifier_count, bonus_ppm, income_ppm);
 
     {
         let credits: &mut i32 = credits_entry_for_owner(sim, &owner_str);
@@ -359,7 +359,7 @@ fn handle_slave_deposit(
             .add_harvested_raw(crate::sim::economy::purifier_bonus_harvested(
                 1,
                 purifier_count,
-                bonus_pct,
+                bonus_ppm,
             ));
     }
 
