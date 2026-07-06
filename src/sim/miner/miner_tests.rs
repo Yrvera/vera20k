@@ -928,6 +928,58 @@ fn enter_dock_0x18_gated_to_due_dispatch_not_per_arrived_tick() {
     );
 }
 
+/// L9: the accepted FaceSync->MissionQueued handoff is still a Mission_Enter
+/// dispatch in gamemd and draws exactly one `RandomRanged(0,2)` from the scenario
+/// RNG; Rust previously cleared the timer with no draw, dropping one draw per
+/// dock cycle and desyncing the jitter stream.
+#[test]
+fn accepted_face_sync_handoff_draws_one_scenario_rng() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let grid = PathGrid::new(64, 64);
+
+    // Miner at the accepted dock cell, already facing East (0x40) so the pivot
+    // accepts immediately, arrived, an entered contact, in FaceSync with a
+    // due Enter cadence (default/always-due) so the handoff fires this tick.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+    sim.production.dock_reservations.mark_contact_entered(2, miner_id);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        entity.movement_target = None;
+        entity.facing = 0x40; // East → sync_dock_facing accepts on the first pass
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::FaceSync;
+        miner.reserved_refinery = Some(2);
+    }
+
+    // Probe: cloning the scenario RNG and drawing once gives the exact state a
+    // single RandomRanged(0,2) reaches. No other draw happens on this tick.
+    let mut probe = sim.miner_jitter_rng().clone();
+    let _ = probe.next_range_u32_inclusive(0, 2);
+    let expected_after_one_draw = probe.state();
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    assert_eq!(
+        get_miner(&sim, miner_id).dock_phase,
+        RefineryDockPhase::MissionQueued,
+        "the accepted handoff advances FaceSync -> MissionQueued"
+    );
+    assert_eq!(
+        sim.miner_jitter_rng().state(),
+        expected_after_one_draw,
+        "L9: the accepted FaceSync handoff must draw exactly one scenario RandomRanged(0,2)"
+    );
+}
+
 // ==========================================================================
 // Test 8: Credits arrive per slot drain (whole-slot dump per timer tick)
 // ==========================================================================

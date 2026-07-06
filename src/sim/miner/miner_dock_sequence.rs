@@ -1062,6 +1062,15 @@ fn phase_face_sync(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapsh
     bus_enter_dock(sim, snap.entity_id, ref_sid);
 
     if accepted {
+        // L9: the accepted 0x16->0x15 handoff is still a Mission_Enter dispatch
+        // in gamemd and draws one RandomRanged(0,2) (Scen->Random) in its
+        // epilogue before it hands off to the queued mission. Draw it here to
+        // keep the RNG stream aligned; the value is consumed by the epilogue
+        // (this handoff clears the retry rather than re-arming, so it only
+        // advances the stream by one).
+        let _ = sim
+            .miner_jitter_rng()
+            .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES);
         clear_enter_retry(snap);
         snap.miner.dock_phase = RefineryDockPhase::MissionQueued;
     } else {
