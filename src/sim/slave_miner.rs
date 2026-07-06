@@ -703,7 +703,7 @@ pub fn check_scan_correction(
 
     let short_scan: u16 = rules.general.slave_miner_short_scan.max(1) as u16;
     let correction: u16 = rules.general.slave_miner_scan_correction.max(0) as u16;
-    let cfg = MinerConfig::from_general_rules(&rules.general);
+    let cfg = MinerConfig::from_rules(rules);
 
     let scan_filter = build_slave_scan_filter(sim, path_grid, master_id);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = Some(&*scan_filter);

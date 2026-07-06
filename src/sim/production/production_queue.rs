@@ -411,7 +411,7 @@ pub fn tick_production_with_overlay_registry(
     if tick_ms == 0 {
         return false;
     }
-    let miner_config = crate::sim::miner::MinerConfig::from_general_rules(&rules.general);
+    let miner_config = crate::sim::miner::MinerConfig::from_rules(rules);
     tick_resource_economy(sim, rules, &miner_config, path_grid, overlay_registry);
     // P5d: the registry is the queue-of-record + completion authority. Collect the
     // (owner, category) keys whose active build has completed (progress == 54, object held,

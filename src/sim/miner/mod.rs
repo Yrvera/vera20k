@@ -244,6 +244,39 @@ impl MinerConfig {
             ..Self::default()
         }
     }
+
+    /// Create a `MinerConfig` from a full `RuleSet`, sourcing per-bale credit
+    /// values from the `[Tiberiums]` registry so ore/gem payout tracks the mod's
+    /// `Value=` overrides instead of hardcoded constants.
+    ///
+    /// Ore payout comes from the first `[Tiberiums]` entry (Riparius/ore image)
+    /// and gem payout from the second (Cruentus/gem image), matching the native
+    /// tiberium-type ordering. A registry entry that is absent or non-positive
+    /// keeps the stock default (25 ore / 50 gem), so stock output stays
+    /// byte-identical.
+    pub fn from_rules(rules: &crate::rules::ruleset::RuleSet) -> Self {
+        let defaults = Self::default();
+        let bale_value = |id: crate::rules::tiberium_type::TiberiumTypeId, fallback: u16| -> u16 {
+            rules
+                .tiberium_types
+                .get(id)
+                .map(|t| t.value)
+                .filter(|&v| v > 0)
+                .map(|v| v.min(u16::MAX as i32) as u16)
+                .unwrap_or(fallback)
+        };
+        Self {
+            ore_bale_value: bale_value(
+                crate::rules::tiberium_type::TiberiumTypeId(0),
+                defaults.ore_bale_value,
+            ),
+            gem_bale_value: bale_value(
+                crate::rules::tiberium_type::TiberiumTypeId(1),
+                defaults.gem_bale_value,
+            ),
+            ..Self::from_general_rules(&rules.general)
+        }
+    }
 }
 
 /// ECS component: miner state machine and cargo hold.
@@ -590,6 +623,69 @@ mod tests {
         assert_eq!(cfg.too_far_threshold_standard, 8);
         assert_eq!(cfg.too_far_threshold_chrono, 40);
         // Bale values stay at defaults.
+        assert_eq!(cfg.ore_bale_value, 25);
+        assert_eq!(cfg.gem_bale_value, 50);
+    }
+
+    #[test]
+    fn from_rules_sources_bale_values_from_tiberiums() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+
+        // Full-skeleton ruleset (so from_ini succeeds) with modded ore/gem Value=.
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=HARV\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAREFN\n\
+             [HARV]\n\
+             Name=War Miner\n\
+             Harvester=yes\n\
+             [GAREFN]\n\
+             Name=Ore Refinery\n\
+             Refinery=yes\n\
+             [Tiberiums]\n\
+             0=Riparius\n\
+             1=Cruentus\n\
+             [Riparius]\n\
+             Name=Tiberium Riparius\n\
+             Image=1\n\
+             Value=77\n\
+             [Cruentus]\n\
+             Name=Tiberium Cruentus\n\
+             Image=2\n\
+             Value=88\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let cfg = MinerConfig::from_rules(&rules);
+        assert_eq!(cfg.ore_bale_value, 77, "ore bale value comes from [Riparius] Value=");
+        assert_eq!(cfg.gem_bale_value, 88, "gem bale value comes from [Cruentus] Value=");
+    }
+
+    #[test]
+    fn from_rules_empty_tiberiums_keeps_stock_defaults() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+
+        // No [Tiberiums] section -> stock byte-identical 25/50.
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=HARV\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAREFN\n\
+             [HARV]\n\
+             Name=War Miner\n\
+             Harvester=yes\n\
+             [GAREFN]\n\
+             Name=Ore Refinery\n\
+             Refinery=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let cfg = MinerConfig::from_rules(&rules);
         assert_eq!(cfg.ore_bale_value, 25);
         assert_eq!(cfg.gem_bale_value, 50);
     }

@@ -207,7 +207,7 @@ impl Simulation {
             let miner_kind = miner_obj.and_then(miner_kind_for_object);
             if let Some(kind) = miner_kind {
                 let mcfg: MinerConfig = rules
-                    .map(|r| MinerConfig::from_general_rules(&r.general))
+                    .map(MinerConfig::from_rules)
                     .unwrap_or_default();
                 let storage = miner_obj.map(|o| o.storage.max(0) as u16).unwrap_or(0);
                 ge.miner = Some(Miner::new(kind, &mcfg, storage));
@@ -375,7 +375,7 @@ impl Simulation {
         }
 
         if let Some(kind) = miner_kind_for_object(obj) {
-            let mcfg: MinerConfig = MinerConfig::from_general_rules(&rules.general);
+            let mcfg: MinerConfig = MinerConfig::from_rules(rules);
             let storage = obj.storage.max(0) as u16;
             ge.miner = Some(Miner::new(kind, &mcfg, storage));
             ge.harvest_overlay = Some(HarvestOverlay {
@@ -509,7 +509,7 @@ impl Simulation {
             ge.aircraft_mission = Some(crate::sim::aircraft::AircraftMission::Idle);
         }
         if let Some(kind) = miner_kind_for_object(obj) {
-            let mcfg: MinerConfig = MinerConfig::from_general_rules(&rules.general);
+            let mcfg: MinerConfig = MinerConfig::from_rules(rules);
             let storage = obj.storage.max(0) as u16;
             ge.miner = Some(Miner::new(kind, &mcfg, storage));
             ge.harvest_overlay = Some(HarvestOverlay {
