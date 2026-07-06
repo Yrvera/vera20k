@@ -752,6 +752,65 @@ fn dock_queuing_one_at_a_time() {
     assert!(m2_miner.dock_queued, "denied miner keeps re-probing");
 }
 
+/// G6: a denied waiter's re-HELLO is gated to one dispatch per Harvest mission
+/// cadence (~14-16f), not one per sim tick. Two full War Miners contest a
+/// single-dock refinery; m1 wins the contact and m2 stays in Approach. Over a
+/// contested window m2 re-anchors its `approach_hello_timer` once per Harvest
+/// cadence — distinct anchor frames == HELLO dispatches — which must be far
+/// below the number of contested ticks.
+#[test]
+fn approach_re_hello_gated_to_one_per_harvest_window() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let m1 = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    let m2 = spawn_miner(&mut sim, 3, MinerKind::War, 14, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    for entity_id in [m1, m2] {
+        let entity = sim.substrate.entities.get_mut(entity_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Approach;
+        miner.reserved_refinery = Some(2);
+    }
+
+    let mut hello_arms = std::collections::BTreeSet::new();
+    let mut contested_ticks = 0;
+    for _ in 0..20 {
+        tick_miners_n(&mut sim, &rules, 1);
+        let m2m = get_miner(&sim, m2);
+        if m2m.dock_phase == RefineryDockPhase::Approach {
+            contested_ticks += 1;
+            if m2m.approach_hello_timer.is_armed() {
+                hello_arms.insert(m2m.approach_hello_timer.start_frame);
+            }
+        }
+    }
+
+    // m2 stays denied long enough to span at least one full Harvest window.
+    assert!(
+        contested_ticks >= 14,
+        "m2 should stay contested across at least one cadence window (got {contested_ticks})"
+    );
+    assert!(
+        !hello_arms.is_empty(),
+        "the contested waiter must re-HELLO at least once"
+    );
+    // The gate: one HELLO per ~14-16f window. The pre-gate behavior re-HELLO'd
+    // every tick, which would produce ~contested_ticks distinct anchors.
+    assert!(
+        hello_arms.len() <= 3,
+        "re-HELLO must be gated to the Harvest cadence, not per tick: {} anchors over {} contested ticks",
+        hello_arms.len(),
+        contested_ticks,
+    );
+}
+
 // ==========================================================================
 // Test 8: Credits arrive per slot drain (whole-slot dump per timer tick)
 // ==========================================================================

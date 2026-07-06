@@ -332,6 +332,12 @@ pub struct Miner {
     /// the `dock_enter_retry_start_frame`/`_duration` pair.)
     #[serde(default)]
     pub dock_enter_retry: MissionTimer,
+    /// Approach-phase re-HELLO cadence gate. gamemd's Mission_Harvest state 2
+    /// dispatches HELLO once per `[Harvest] Rate` cadence (~14-16f), not every
+    /// tick; this frame-anchored timer throttles the re-HELLO to one per due
+    /// window so contested-dock admission is decided per dispatch, not per tick.
+    #[serde(default)]
+    pub approach_hello_timer: MissionTimer,
     /// Queued mission 0x10 (`Unload`) deploy-delay timer (was the
     /// `mission_deploy_start_frame`/`_duration` pair).
     #[serde(default)]
@@ -408,6 +414,7 @@ impl Miner {
             dock_phase: RefineryDockPhase::default(),
             dock_pivot_facing: None,
             dock_enter_retry: MissionTimer::default(),
+            approach_hello_timer: MissionTimer::default(),
             mission_deploy_timer: MissionTimer::default(),
             unload_active: false,
             unload_accumulator: 0,

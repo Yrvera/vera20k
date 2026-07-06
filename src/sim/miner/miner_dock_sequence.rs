@@ -53,6 +53,10 @@ const DOCK_FACING_EAST: u8 = 0x40;
 const DOCK_FACING_EAST_DIR: u16 = (DOCK_FACING_EAST as u16) << 8;
 const ENTER_RETRY_BASE_FRAMES: u8 = 14;
 const ENTER_RETRY_JITTER_MAX_FRAMES: u32 = 2;
+/// Keyless-`[Harvest]` fallback for the approach re-HELLO cadence (U5); the
+/// stock `Rate=.016` resolves to 14 from the table, so this is only reached
+/// when a mod strips the section.
+const APPROACH_HELLO_BASE_FRAMES: u8 = 14;
 const MISSION_DEPLOY_FACING_WAIT_FRAMES: u8 = 5;
 const MISSION_DEPLOY_UNLOAD_BASE_FRAMES: u8 = 14;
 const MISSION_DEPLOY_UNLOAD_JITTER_MAX_FRAMES: u32 = 2;
@@ -104,6 +108,19 @@ fn schedule_enter_retry(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerS
         .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES) as u8;
     let duration = u32::from(base.saturating_add(jitter));
     snap.miner.dock_enter_retry.arm(sim.session.binary_frame, duration);
+}
+
+/// Arm the approach re-HELLO gate for one Harvest-mission cadence window
+/// (`ftol([Harvest] Rate*900) + RandomRanged(0,2)`), mirroring the harvest
+/// epilogue. The jitter is the same `Scen->Random` `RandomRanged(0,2)` used by
+/// every mission-cadence epilogue.
+fn schedule_approach_hello(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot) {
+    let base = mission_base_frames(rules, MissionType::Harvest, APPROACH_HELLO_BASE_FRAMES);
+    let jitter = sim
+        .miner_jitter_rng()
+        .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES) as u8;
+    let duration = u32::from(base.saturating_add(jitter));
+    snap.miner.approach_hello_timer.arm(sim.session.binary_frame, duration);
 }
 
 fn enter_retry_due(sim: &Simulation, snap: &MinerSnapshot) -> bool {
@@ -759,7 +776,7 @@ pub(super) fn handle_dock_sequence(
                 }
                 return;
             };
-            phase_approach(sim, path_grid, snap, wait_queue, ref_sid, dock_capacity);
+            phase_approach(sim, rules, path_grid, snap, wait_queue, ref_sid, dock_capacity);
         }
         RefineryDockPhase::MissionEnter => {
             let Some((wait_queue, accepted_cell, _pad, dock_capacity)) =
@@ -832,15 +849,34 @@ pub(super) fn handle_dock_sequence(
 
 fn phase_approach(
     sim: &mut Simulation,
+    rules: &RuleSet,
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
     wait_queue: (u16, u16),
     ref_sid: u64,
     dock_capacity: usize,
 ) {
-    // Mission_Harvest state 2 sends only HELLO(0x02). On ROGER it queues
-    // Mission_Enter for the next tick instead of jumping straight to the
-    // accepted-cell move or unload pivot.
+    // Mission_Harvest state 2 sends only HELLO(0x02), one dispatch per Harvest
+    // mission cadence (~14-16f) — not every sim tick. Gate the re-HELLO on the
+    // per-miner harvest-cadence timer; the drive toward the queue cell stays
+    // ungated (ObjectClass::AI runs every tick before the mission timer).
+    if !snap.miner.approach_hello_timer.due(sim.session.binary_frame) {
+        if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
+            if let Some(grid) = path_grid {
+                issue_move_if_idle(
+                    &mut sim.substrate.entities,
+                    grid,
+                    snap.entity_id,
+                    wait_queue,
+                    snap.speed,
+                );
+            }
+        }
+        return;
+    }
+
+    // On ROGER it queues Mission_Enter for the next dispatch instead of jumping
+    // straight to the accepted-cell move or unload pivot.
     let admission =
         sim.production
             .dock_reservations
@@ -857,11 +893,13 @@ fn phase_approach(
     if admission == ContactAdmission::Accepted {
         mark_refinery_contact(sim, snap.entity_id, ref_sid);
         snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
+        return;
     }
 
-    // Reservation not granted — keep heading toward QueueingCell.
-    if admission != ContactAdmission::Accepted && !is_adjacent_or_at((snap.rx, snap.ry), wait_queue)
-    {
+    // Not accepted: re-arm the Harvest re-HELLO cadence (one HELLO per due
+    // window) and keep heading toward QueueingCell.
+    schedule_approach_hello(sim, rules, snap);
+    if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
         if let Some(grid) = path_grid {
             issue_move_if_idle(
                 &mut sim.substrate.entities,
