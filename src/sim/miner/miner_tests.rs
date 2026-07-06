@@ -1691,6 +1691,94 @@ fn miner_rules_fallback_only() -> RuleSet {
     RuleSet::from_ini(&ini).expect("miner fallback rules")
 }
 
+/// A2/L1: the miner Enter/Unload base cadences are sourced from the parsed
+/// `MissionControl` Rate table (not a hardcode), falling back to the passed
+/// constant only for a keyless mission (U5 guard). Stock `[Enter]/[Unload]/
+/// [Harvest] Rate=.016` all resolve to 14 frames, so wiring the table leaves the
+/// stock cadence byte-identical to the old constant.
+#[test]
+fn mission_base_frames_reads_rate_table_stock_identical() {
+    use crate::sim::mission::MissionType;
+    use crate::sim::miner::miner_dock_sequence::mission_base_frames;
+
+    let ini = IniFile::from_str(
+        "[General]\n\
+         [AudioVisual]\n\
+         ChronoInSound=FALLBACKIN\n\
+         ChronoOutSound=FALLBACKOUT\n\
+         [InfantryTypes]\n\
+         [VehicleTypes]\n\
+         0=HARV\n\
+         1=CMIN\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GAREFN\n\
+         [HARV]\n\
+         Name=War Miner\n\
+         Cost=1400\n\
+         Strength=600\n\
+         Armor=heavy\n\
+         Speed=4\n\
+         ROT=5\n\
+         Sight=5\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Harvester=yes\n\
+         Dock=GAREFN\n\
+         [CMIN]\n\
+         Name=Chrono Miner\n\
+         Cost=1400\n\
+         Strength=400\n\
+         Armor=light\n\
+         Speed=4\n\
+         Sight=5\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Harvester=yes\n\
+         Teleporter=yes\n\
+         Dock=GAREFN\n\
+         [GAREFN]\n\
+         Name=Ore Refinery\n\
+         Cost=2000\n\
+         Strength=900\n\
+         Armor=wood\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Foundation=4x3\n\
+         Refinery=yes\n\
+         FreeUnit=CMIN\n\
+         [Enter]\n\
+         Rate=.016\n\
+         [Unload]\n\
+         Rate=.016\n\
+         [Harvest]\n\
+         Rate=.016\n\
+         [Guard]\n\
+         Rate=.030\n\
+         AARate=.016\n",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("mission-rate rules");
+
+    // U5 guard: the miner missions all carry a non-zero cadence in the table.
+    assert_ne!(rules.mission_control.rate_frames(MissionType::Enter), 0);
+    assert_ne!(rules.mission_control.rate_frames(MissionType::Unload), 0);
+    assert_ne!(rules.mission_control.rate_frames(MissionType::Harvest), 0);
+
+    // Table-sourced base == the stock 14-frame value. A non-14 fallback (99)
+    // proves the value came from the table, not the fallback branch.
+    assert_eq!(mission_base_frames(&rules, MissionType::Enter, 99), 14);
+    assert_eq!(mission_base_frames(&rules, MissionType::Unload, 99), 14);
+    assert_eq!(mission_base_frames(&rules, MissionType::Harvest, 99), 14);
+
+    // Sanity: the table also carries Guard's distinct 27/14 Rate/AARate split.
+    assert_eq!(rules.mission_control.rate_frames(MissionType::Guard), 27);
+
+    // Keyless mission (no [Stop] section) → table is 0 → mission_base_frames
+    // returns the passed fallback constant.
+    assert_eq!(rules.mission_control.rate_frames(MissionType::Stop), 0);
+    assert_eq!(mission_base_frames(&rules, MissionType::Stop, 14), 14);
+}
+
 /// When the per-unit `ChronoInSound=` / `ChronoOutSound=` are absent, the
 /// resolver must fall back to the `[General]` values from Rules. Confirms
 /// the two-level lookup matches the original engine's behavior.

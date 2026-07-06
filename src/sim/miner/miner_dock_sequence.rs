@@ -18,6 +18,7 @@
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BaleDepositEvent;
+use crate::sim::mission::MissionType;
 use crate::sim::miner::{MinerConfig, MinerState, RefineryDockPhase, ResourceType};
 use crate::sim::movement;
 use crate::sim::movement::facing_class::FacingClass;
@@ -80,11 +81,28 @@ fn dock_pivot_rot_byte(sim: &Simulation, rules: &RuleSet, snap: &MinerSnapshot) 
         .unwrap_or(10)
 }
 
-fn schedule_enter_retry(sim: &mut Simulation, snap: &mut MinerSnapshot) {
+/// Base cadence (frames) for a mission's miner-path timer, sourced from the
+/// parsed `[<Mission>] Rate` (ftol frames). Falls back to `fallback` only for a
+/// keyless mission (U5 guard); clamps into the `u8` timer-seed domain. The stock
+/// `[Enter]/[Unload]/[Harvest] Rate=.016` all resolve to 14, so wiring the table
+/// leaves the stock cadence byte-identical.
+pub(super) fn mission_base_frames(rules: &RuleSet, mission: MissionType, fallback: u8) -> u8 {
+    let frames = rules.mission_control.rate_frames(mission);
+    if frames == 0 {
+        fallback
+    } else {
+        frames.min(u8::MAX as u32) as u8
+    }
+}
+
+fn schedule_enter_retry(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot) {
+    // gamemd computes the base `ftol(Rate*900)` FIRST, then draws RandomRanged(0,2),
+    // then adds — the base lookup consumes no RNG, so the stream order is preserved.
+    let base = mission_base_frames(rules, MissionType::Enter, ENTER_RETRY_BASE_FRAMES);
     let jitter = sim
         .miner_jitter_rng()
         .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES) as u8;
-    let duration = u32::from(ENTER_RETRY_BASE_FRAMES.saturating_add(jitter));
+    let duration = u32::from(base.saturating_add(jitter));
     snap.miner.dock_enter_retry.arm(sim.session.binary_frame, duration);
 }
 
@@ -906,7 +924,7 @@ fn phase_mission_enter(
                 );
             }
         }
-        schedule_enter_retry(sim, snap);
+        schedule_enter_retry(sim, rules, snap);
         return;
     }
 
@@ -929,7 +947,7 @@ fn phase_mission_enter(
             sync_dock_facing(sim, rules, snap);
             snap.miner.dock_phase = RefineryDockPhase::FaceSync;
         }
-        schedule_enter_retry(sim, snap);
+        schedule_enter_retry(sim, rules, snap);
         return;
     }
 
@@ -948,7 +966,7 @@ fn phase_mission_enter(
             }
         }
     }
-    schedule_enter_retry(sim, snap);
+    schedule_enter_retry(sim, rules, snap);
     snap.miner.dock_phase = RefineryDockPhase::AwaitingAcceptedCell;
 }
 
@@ -1000,7 +1018,7 @@ fn phase_face_sync(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapsh
         clear_enter_retry(snap);
         snap.miner.dock_phase = RefineryDockPhase::MissionQueued;
     } else {
-        schedule_enter_retry(sim, snap);
+        schedule_enter_retry(sim, rules, snap);
     }
 }
 
@@ -1070,6 +1088,7 @@ fn phase_pivoting(
         // that mission; unload-active effects begin here.
         snap.miner.dock_pivot_facing = None;
         start_unload_deploy(sim, rules, snap);
+        let base = mission_base_frames(rules, MissionType::Unload, MISSION_DEPLOY_UNLOAD_BASE_FRAMES);
         let jitter = sim
             .miner_jitter_rng()
             .next_range_u32_inclusive(0, MISSION_DEPLOY_UNLOAD_JITTER_MAX_FRAMES)
@@ -1077,7 +1096,7 @@ fn phase_pivoting(
         schedule_mission_deploy_delay(
             snap,
             sim.session.binary_frame,
-            MISSION_DEPLOY_UNLOAD_BASE_FRAMES.saturating_add(jitter),
+            base.saturating_add(jitter),
         );
     } else {
         let _ = config;
