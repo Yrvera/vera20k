@@ -871,6 +871,63 @@ fn accepted_hello_arms_enter_cadence_not_always_due() {
     );
 }
 
+/// L20: `EnterDock(0x18)` fires one-per-due-dispatch, not on every arrived tick.
+/// A miner sitting in FaceSync with an un-elapsed Enter cadence must not re-send
+/// 0x18 (which sets the idempotent `dock_entered_with`); only the due dispatch
+/// sends it.
+#[test]
+fn enter_dock_0x18_gated_to_due_dispatch_not_per_arrived_tick() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let grid = PathGrid::new(64, 64);
+
+    // Miner parked at the accepted dock cell (13,11), registered as an entered
+    // contact, sitting in FaceSync with the Enter cadence still counting down.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+    sim.production.dock_reservations.mark_contact_entered(2, miner_id);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        entity.movement_target = None; // arrived
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::FaceSync;
+        miner.reserved_refinery = Some(2);
+        // Arm the Enter cadence so the next arrived ticks are NOT due.
+        miner.dock_enter_retry.arm(sim.session.binary_frame, 14);
+    }
+    // Clear the radio-entered flag so any spurious 0x18 re-send is observable.
+    sim.substrate.entities.get_mut(miner_id).expect("entity").dock_entered_with = None;
+
+    // A not-due arrived tick must NOT re-send EnterDock.
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+    assert_eq!(
+        sim.substrate.entities.get(miner_id).expect("entity").dock_entered_with,
+        None,
+        "L20: EnterDock(0x18) must not fire on a non-due arrived tick"
+    );
+    assert_eq!(
+        get_miner(&sim, miner_id).dock_phase,
+        RefineryDockPhase::FaceSync,
+        "still waiting the Enter cadence"
+    );
+
+    // Cross the cadence: the due Enter dispatch sends exactly one 0x18.
+    sim.session.binary_frame += 15;
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+    assert_eq!(
+        sim.substrate.entities.get(miner_id).expect("entity").dock_entered_with,
+        Some(2),
+        "L20: the due Enter dispatch sends EnterDock(0x18)"
+    );
+}
+
 // ==========================================================================
 // Test 8: Credits arrive per slot drain (whole-slot dump per timer tick)
 // ==========================================================================

@@ -1049,12 +1049,17 @@ fn phase_face_sync(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapsh
     sim.production
         .dock_reservations
         .mark_contact_entered(ref_sid, snap.entity_id);
-    bus_enter_dock(sim, snap.entity_id, ref_sid);
 
     let accepted = sync_dock_facing(sim, rules, snap);
     if !enter_retry_due(sim, snap) {
         return;
     }
+
+    // L20: EnterDock(0x18) is one-per-0x0E-pass — send it only on a due Enter
+    // dispatch, not every arrived tick (which spammed ~14-16 duplicates per
+    // wait window). The per-tick facing interpolation (sync_dock_facing) and
+    // the idempotent contact-entered mark stay ungated above.
+    bus_enter_dock(sim, snap.entity_id, ref_sid);
 
     if accepted {
         clear_enter_retry(snap);
