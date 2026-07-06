@@ -16,13 +16,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Simulation frames per game-minute (15 fps × 60 s). `Rate=`/`AARate=` are
-/// expressed in minutes; multiply by this and round to get integer frames.
+/// expressed in minutes; multiply by this and truncate (ftol) to get integer frames.
 const FRAMES_PER_MINUTE: f64 = 900.0;
 
-/// Convert an INI rate (minutes between processings) to integer frames.
+/// Convert an INI rate (minutes between processings) to integer frames,
+/// modelling gamemd's `Math::ftol(Rate * 900)` truncate-toward-zero (the
+/// per-minute domain is non-negative, so `as u32` == floor == ftol here).
 #[inline]
 fn rate_to_frames(minutes: f64) -> u32 {
-    (minutes * FRAMES_PER_MINUTE).round() as u32
+    (minutes * FRAMES_PER_MINUTE) as u32
 }
 
 #[inline]
@@ -33,7 +35,7 @@ fn parse_minutes(raw: &str) -> Option<f64> {
 /// One mission's processing cadence and behaviour flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MissionControlEntry {
-    /// Frames between normal processings (`Rate=` × 900, rounded).
+    /// Frames between normal processings (`Rate=` × 900, ftol-truncated).
     pub rate_frames: u32,
     /// Frames between anti-aircraft processings (`AARate=`; copies `rate_frames`
     /// when the key is absent or zero).
@@ -154,9 +156,12 @@ mod tests {
     #[test]
     fn rate_to_frames_uses_900_per_minute() {
         assert_eq!(rate_to_frames(1.0), 900);
-        assert_eq!(rate_to_frames(0.016), 14); // 14.4 -> 14
+        assert_eq!(rate_to_frames(0.016), 14); // 14.4 -> ftol 14 (stock, unchanged)
         assert_eq!(rate_to_frames(0.030), 27);
         assert_eq!(rate_to_frames(0.040), 36);
+        // ftol truncates toward zero: a modded rate whose ×900 has a ≥.5
+        // fraction lands one frame below what `.round()` would have produced.
+        assert_eq!(rate_to_frames(0.0206), 18); // 18.54 -> ftol 18 (round would give 19)
     }
 
     #[test]
