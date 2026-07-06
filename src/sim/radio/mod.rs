@@ -120,20 +120,20 @@ fn transmit_break(
 pub enum RadioMessage {
     Hello = 0x02,
     Break = 0x03,
-    DockingComplete = 0x07,
+    DockingComplete = 0x07,    // name inferred
     RequestClearance = 0x08,
     DockApproach = 0x0B,       // name inferred
-    DockArrived = 0x0C,
+    DockArrived = 0x0C,        // name inferred
     AnimStop = 0x0D,
     CanDock = 0x0E,
     CanEnter = 0x0F,
     IsUnitLinked = 0x11,       // name inferred
     MoveToCell = 0x12,
     NeedToMove = 0x13,
-    DockNow = 0x15,
+    DockNow = 0x15,            // name inferred
     TimingSync = 0x16,         // name inferred
-    EnterDock = 0x18,
-    LeaveDock = 0x19,
+    EnterDock = 0x18,          // name inferred
+    LeaveDock = 0x19,          // name inferred
     SecondaryLockSet = 0x1A,   // name inferred
     SecondaryLockClear = 0x1B, // name inferred
     RepairTick = 0x1C,
