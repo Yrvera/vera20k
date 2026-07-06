@@ -1798,7 +1798,7 @@ fn wait_no_ore_rescans_after_cooldown() {
         miner.state = MinerState::WaitNoOre;
         miner
             .rescan_cooldown
-            .arm(now, u32::from(config.rescan_cooldown_ticks) + 1);
+            .arm(now, u32::from(config.rescan_cooldown_ticks));
     }
 
     // rescan_cooldown_ticks = 105 (0x69 frames from original engine).
@@ -1822,6 +1822,40 @@ fn wait_no_ore_rescans_after_cooldown() {
         state != MinerState::WaitNoOre,
         "Should have rescanned and found ore, got {:?}",
         state,
+    );
+}
+
+// ==========================================================================
+// Test 14b (L6): the no-ore retry gate is armed for exactly
+// rescan_cooldown_ticks (0x69 = 105) frames — the production arm site must
+// not add a fencepost. Exercises the real SearchOre->WaitNoOre transition.
+// ==========================================================================
+#[test]
+fn wait_no_ore_retry_gate_is_exactly_105_frames() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    // No ore placed anywhere -> SearchOre finds nothing -> WaitNoOre.
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::SearchOre;
+    }
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(
+        miner.state,
+        MinerState::WaitNoOre,
+        "no reachable ore must drop the miner into WaitNoOre"
+    );
+    assert_eq!(
+        miner.rescan_cooldown.duration,
+        u32::from(config.rescan_cooldown_ticks),
+        "no-ore retry gate must be exactly 0x69=105 frames, not 106"
     );
 }
 

@@ -440,11 +440,13 @@ fn handle_search_ore(
         return;
     }
 
-    // No reachable ore anywhere.
+    // No reachable ore anywhere. Arm the no-ore retry gate for exactly
+    // rescan_cooldown_ticks (0x69) frames — the gate fires inclusively at
+    // start + duration, so the duration IS the frame count (no fencepost).
     snap.miner.state = MinerState::WaitNoOre;
     snap.miner
         .rescan_cooldown
-        .arm(sim.session.binary_frame, u32::from(config.rescan_cooldown_ticks) + 1);
+        .arm(sim.session.binary_frame, u32::from(config.rescan_cooldown_ticks));
 }
 
 fn handle_move_to_ore(
@@ -809,8 +811,8 @@ fn handle_forced_return(
         } else {
             snap.miner.state = MinerState::WaitNoOre;
             snap.miner
-        .rescan_cooldown
-        .arm(sim.session.binary_frame, u32::from(config.rescan_cooldown_ticks) + 1);
+                .rescan_cooldown
+                .arm(sim.session.binary_frame, u32::from(config.rescan_cooldown_ticks));
             return;
         }
     }
