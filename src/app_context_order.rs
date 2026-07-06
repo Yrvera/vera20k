@@ -139,6 +139,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     },
                 ));
             }
+            // Manual return order plays VoiceEnter (e.g. CMIN ChronoMinerReturn),
+            // not the generic move ack.
+            miner_order_voice = Some("VoiceEnter");
         } else if clicked_ore && !selected_miner_ids.is_empty() {
             // Direct miners to harvest the clicked ore cell.
             for &stable_id in &selected_miner_ids {

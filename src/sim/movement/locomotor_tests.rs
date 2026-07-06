@@ -59,6 +59,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         voice_move: None,
         voice_attack: None,
         voice_harvest: None,
+        voice_enter: None,
         die_sound: None,
         move_sound: None,
         voice_feedback: None,

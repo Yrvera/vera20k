@@ -1172,6 +1172,7 @@ pub(crate) fn emit_order_voice(state: &mut AppState, voice_field: &str) {
             "VoiceMove" => obj.voice_move.as_ref(),
             "VoiceAttack" => obj.voice_attack.as_ref(),
             "VoiceHarvest" => obj.voice_harvest.as_ref(),
+            "VoiceEnter" => obj.voice_enter.as_ref(),
             _ => None,
         };
         if let Some(id) = voice_id {

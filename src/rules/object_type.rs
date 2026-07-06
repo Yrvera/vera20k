@@ -260,6 +260,9 @@ pub struct ObjectType {
     pub voice_attack: Option<String>,
     /// Sound ID played when a harvester is ordered to harvest a resource cell.
     pub voice_harvest: Option<String>,
+    /// Sound ID played when a harvester is manually ordered to return to a
+    /// friendly refinery (right-click own refinery).
+    pub voice_enter: Option<String>,
     /// Sound ID played when this entity dies or is destroyed.
     pub die_sound: Option<String>,
     /// Sound ID played while this entity moves (looping engine/footstep).
@@ -967,6 +970,7 @@ impl ObjectType {
             voice_move: section.get("VoiceMove").map(|s| s.to_string()),
             voice_attack: section.get("VoiceAttack").map(|s| s.to_string()),
             voice_harvest: section.get("VoiceHarvest").map(|s| s.to_string()),
+            voice_enter: section.get("VoiceEnter").map(|s| s.to_string()),
             die_sound: section.get("DieSound").map(|s| s.to_string()),
             move_sound: section.get("MoveSound").map(|s| s.to_string()),
             voice_feedback: section.get("VoiceFeedback").map(|s| s.to_string()),
@@ -1376,7 +1380,7 @@ mod tests {
         // move voice.
         let ini: IniFile = IniFile::from_str(
             "[CMIN]\nName=Chrono Miner\nVoiceMove=ChronoMinerMove\n\
-             VoiceHarvest=ChronoMinerHarvest\n",
+             VoiceHarvest=ChronoMinerHarvest\nVoiceEnter=ChronoMinerReturn\n",
         );
         let obj = ObjectType::from_ini_section(
             "CMIN",
@@ -1385,8 +1389,9 @@ mod tests {
         );
         assert_eq!(obj.voice_move, Some("ChronoMinerMove".to_string()));
         assert_eq!(obj.voice_harvest, Some("ChronoMinerHarvest".to_string()));
+        assert_eq!(obj.voice_enter, Some("ChronoMinerReturn".to_string()));
 
-        // Absent key defaults to None (e.g. a plain tank).
+        // Absent keys default to None (e.g. a plain tank).
         let none_ini: IniFile = IniFile::from_str("[MTNK]\nName=Grizzly\n");
         let none_obj = ObjectType::from_ini_section(
             "MTNK",
@@ -1394,6 +1399,7 @@ mod tests {
             ObjectCategory::Vehicle,
         );
         assert_eq!(none_obj.voice_harvest, None);
+        assert_eq!(none_obj.voice_enter, None);
     }
 
     #[test]
