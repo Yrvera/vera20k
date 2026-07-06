@@ -5088,9 +5088,9 @@ fn two_purifiers_stack_the_bonus_linearly() {
 }
 
 /// AI player with `is_human=false` should receive the virtual-purifier
-/// bonus from `rules.general.ai_virtual_purifiers[difficulty]`. With the
-/// default `[4, 2, 0]` and difficulty=0 (Brutal), no real purifiers, and
-/// a 100-credit bale, total credits = 100 + (100 × 4 × 25 / 100) = 200.
+/// bonus from `rules.general.ai_virtual_purifiers[2 - difficulty]`. With the
+/// default `[4, 2, 0]` and lobby difficulty=2 (Hard/Brutal -> table index 0),
+/// no real purifiers, and a 100-credit bale, credits = 100 + (100 × 4 × 25 / 100) = 200.
 #[test]
 fn ai_brutal_gets_virtual_purifier_bonus() {
     use crate::sim::house_state::HouseState;
@@ -5104,7 +5104,7 @@ fn ai_brutal_gets_virtual_purifier_bonus() {
         owner_id,
         HouseState::new(owner_id, 0, None, false, 0, 10), // is_human=false
     );
-    sim.session.game_options.ai_difficulty = 0; // Brutal (top of AIVirtualPurifiers)
+    sim.session.game_options.ai_difficulty = 2; // lobby Hard -> AIVirtualPurifiers index 0 (Brutal)
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
@@ -5176,6 +5176,52 @@ fn human_player_does_not_get_ai_virtual_bonus() {
     assert_eq!(
         delta, 100,
         "human player with no real purifiers gets base credits only (got {} cr)",
+        delta,
+    );
+}
+
+/// Easy AI (lobby difficulty 0) must map to the BOTTOM of the hardest-first
+/// `AIVirtualPurifiers` table (`[4, 2, 0]` -> index 2 = 0), i.e. no virtual
+/// bonus. Regression guard for the lobby-vs-table convention inversion:
+/// pre-fix, Easy(0) wrongly indexed table[0]=4 and got +100%.
+#[test]
+fn ai_easy_gets_no_virtual_purifier_bonus() {
+    use crate::sim::house_state::HouseState;
+
+    let mut sim = Simulation::new();
+    let rules = purifier_rules(25);
+
+    let owner_id = sim.interner.intern("Americans");
+    sim.houses.insert(
+        owner_id,
+        HouseState::new(owner_id, 0, None, false, 0, 10), // is_human=false
+    );
+    sim.session.game_options.ai_difficulty = 0; // lobby Easy -> AIVirtualPurifiers index 2 (=0)
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    let credits_before = credits_for_owner(&sim, "Americans");
+
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 100,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 200);
+
+    let delta = credits_for_owner(&sim, "Americans") - credits_before;
+    assert_eq!(
+        delta, 100,
+        "Easy AI with 0 real purifiers gets base credits only (got {} cr)",
         delta,
     );
 }

@@ -1505,10 +1505,13 @@ pub(crate) fn effective_purifier_count(
     }
     let difficulty = sim.session.game_options.ai_difficulty;
     let table = rules.general.ai_virtual_purifiers;
-    // INI ordering is `[Brutal, Medium, Easy]`. Defensive bounds-check in
-    // case the difficulty index drifts out of range.
-    let virtual_count = if (0..3).contains(&difficulty) {
-        table[difficulty as usize]
+    // `ai_difficulty` uses the lobby/dialog convention (0=Easy, 1=Normal,
+    // 2=Hard), but the AIVirtualPurifiers table is hardest-first (`h,m,e` ->
+    // index 0=Hard). Remap before indexing so a Hard AI gets the top bonus and
+    // an Easy AI the bottom one. The bounds-check guards a drifted index.
+    const DIFFICULTY_SLOTS: i32 = 3;
+    let virtual_count = if (0..DIFFICULTY_SLOTS).contains(&difficulty) {
+        table[(DIFFICULTY_SLOTS - 1 - difficulty) as usize]
     } else {
         0
     };

@@ -48,7 +48,10 @@ pub struct GameOptions {
     pub tech_level: i32,
     /// Game speed (0=fastest, 6=slowest). Rules+0x14A0.
     pub game_speed: i32,
-    /// AI difficulty (0=Easy, 1=Normal, 2=Hard). Rules+0x14A4.
+    /// AI difficulty in lobby/dialog convention (0=Easy, 1=Normal, 2=Hard),
+    /// matching `[MultiplayerDialogSettings] AIDifficulty`. Consumers that
+    /// index the hardest-first `AIVirtualPurifiers` table must remap to
+    /// `2 - ai_difficulty` first. Rules+0x14A4.
     pub ai_difficulty: i32,
     /// Number of AI opponents. Rules+0x14A8.
     pub ai_players: i32,
