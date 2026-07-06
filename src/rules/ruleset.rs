@@ -360,12 +360,14 @@ pub struct GeneralRules {
     /// values keep the body tilted longer between successive impulses. Default 0.1.
     pub fallback_coefficient: SimFixed,
     /// Fallback sound played at the arrival cell of a self-teleport when the
-    /// per-unit `ChronoInSound=` is unset. Parsed from `[General] ChronoInSound=`
-    /// (stock default `ChronoMinerTeleport`). `None` = no sound.
+    /// per-unit `ChronoInSound=` is unset. Parsed from `[AudioVisual]
+    /// ChronoInSound=` (stock ships `ChronoMinerTeleport`). A genuinely-absent
+    /// key yields `None` = no sound, not a fabricated fallback.
     pub chrono_in_sound: Option<String>,
     /// Fallback sound played at the departure cell of a self-teleport when the
-    /// per-unit `ChronoOutSound=` is unset. Parsed from `[General] ChronoOutSound=`
-    /// (stock default `ChronoMinerTeleport`). `None` = no sound.
+    /// per-unit `ChronoOutSound=` is unset. Parsed from `[AudioVisual]
+    /// ChronoOutSound=` (stock ships `ChronoMinerTeleport`). A genuinely-absent
+    /// key yields `None` = no sound, not a fabricated fallback.
     pub chrono_out_sound: Option<String>,
     /// Interval in minutes between low-power degradation damage ticks on Powered=yes buildings.
     /// Parsed from DamageDelay= in [General]. Default 1.0 minute.
@@ -1236,16 +1238,18 @@ impl GeneralRules {
                 .and_then(|s| s.get_f32("FallBackCoefficient"))
                 .map(sim_from_f32)
                 .unwrap_or(SimFixed::lit("0.1")),
-            chrono_in_sound: general
-                .get("ChronoInSound")
+            // ChronoInSound/ChronoOutSound live in [AudioVisual], not [General].
+            // No hardcoded fallback: a genuinely-absent key means no fallback
+            // sound (silence), matching gamemd. Stock ships these keys present
+            // (= ChronoMinerTeleport), so stock audio is unchanged.
+            chrono_in_sound: audio_visual
+                .and_then(|s| s.get("ChronoInSound"))
                 .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .or_else(|| Some("ChronoMinerTeleport".to_string())),
-            chrono_out_sound: general
-                .get("ChronoOutSound")
+                .filter(|s| !s.is_empty()),
+            chrono_out_sound: audio_visual
+                .and_then(|s| s.get("ChronoOutSound"))
                 .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .or_else(|| Some("ChronoMinerTeleport".to_string())),
+                .filter(|s| !s.is_empty()),
             warp_in: AnimRef {
                 name: parse_anim_name("WarpIn", "WARPIN"),
                 rate_ms: defaults.warp_in.rate_ms,
@@ -3160,6 +3164,36 @@ ChuteSound=ParachuteDrop
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.chute_sound.as_deref(), Some("ParachuteDrop"));
+    }
+
+    #[test]
+    fn test_stock_chrono_sounds_parsed_from_audiovisual() {
+        // Stock ships both keys under [AudioVisual] with value ChronoMinerTeleport.
+        let ini_str = "\
+[General]
+[AudioVisual]
+ChronoInSound=ChronoMinerTeleport
+ChronoOutSound=ChronoMinerTeleport
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.chrono_in_sound.as_deref(), Some("ChronoMinerTeleport"));
+        assert_eq!(general.chrono_out_sound.as_deref(), Some("ChronoMinerTeleport"));
+    }
+
+    #[test]
+    fn test_chrono_sounds_absent_yield_none() {
+        // A genuinely-absent key must be silence (None), not a fabricated
+        // fallback. Guards against reading the wrong section or re-adding a
+        // hardcoded default. [General] present so from_ini does not early-return.
+        let ini_str = "\
+[General]
+[AudioVisual]
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.chrono_in_sound, None);
+        assert_eq!(general.chrono_out_sound, None);
     }
 
     #[test]
