@@ -1,4 +1,6 @@
-/target
+**/target/
+**/__pycache__/
+**/*.py[co]
 **/graphify-out/
 
 config.toml

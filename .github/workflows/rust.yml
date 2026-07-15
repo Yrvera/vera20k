@@ -16,3 +16,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - run: cargo check
       - run: cargo test
+  parity-ledger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Test parity ledger
+        run: python -m unittest discover -s tools/parity_ledger/tests -p "test_*.py" -v
+      - name: Validate tracked parity corpus
+        run: python -m tools.parity_ledger check --ci
