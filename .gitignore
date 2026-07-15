@@ -33,7 +33,6 @@ AGENTS.md
 .mcp.json
 /.claude/
 /.agents/
-/.codegraph/
 /todo/
 /logs/
 /saves/
