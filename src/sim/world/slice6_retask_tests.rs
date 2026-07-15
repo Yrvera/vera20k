@@ -82,8 +82,13 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// deltas combined; value from the merged tree's green run). Re-baselined for S4b
 /// (the hashed `damage_particle_live_until` `+0x308`-equivalent field — every
 /// entity now folds an extra 0; composition change, NOT a behavior drift, proven
-/// by the baseline holding unchanged with the fold line disabled).
-const SLICE6_BASELINE_HASH: u64 = 5265402922015073596;
+/// by the baseline holding unchanged with the fold line disabled). Re-baselined
+/// for startup authority: fresh MapGen now uses the verified native Seed(0)
+/// logical state instead of the former synthetic all-zero object. `state_hash`
+/// already folds MapGen and this fixture does not consume it, so this is the
+/// expected corrected initial-state delta, not Slice-6 retask drift. Two no-edit
+/// focused probes reproduced this exact value.
+const SLICE6_BASELINE_HASH: u64 = 10575654478637980762;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

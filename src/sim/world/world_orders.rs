@@ -121,7 +121,8 @@ impl Simulation {
 
         for (stable_id, goal_rx, goal_ry) in resumes {
             let (base_speed, loco_multiplier, is_air) = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(stable_id)
                 .map(|e| {
                     let bs: SimFixed = rules
@@ -185,7 +186,8 @@ impl Simulation {
         let mut any_captured = false;
         // Snapshot engineers with active capture targets.
         let captures: Vec<(u64, u64, InternedId)> = self
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .filter(|e| e.capture_target.is_some() && !e.dying)
             .map(|e| (e.stable_id, e.capture_target.unwrap(), e.owner))
@@ -194,11 +196,11 @@ impl Simulation {
         for (engineer_id, building_id, engineer_owner) in captures {
             // Skip BridgeRepairHut targets — repair tick handles them.
             let target_bridge_hut = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(building_id)
                 .and_then(|b| {
-                    self
-                        .object_type(b.type_ref, rules)
+                    self.object_type(b.type_ref, rules)
                         .map(|t| t.bridge_repair_hut)
                 })
                 .unwrap_or(false);
@@ -208,7 +210,8 @@ impl Simulation {
 
             // Check building still exists and is capturable.
             let building_ok = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(building_id)
                 .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
             if !building_ok {
@@ -221,12 +224,14 @@ impl Simulation {
 
             // Distance check: adjacent = Chebyshev distance <= 1 cell.
             let (eng_rx, eng_ry) = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(engineer_id)
                 .map(|e| (e.position.rx, e.position.ry))
                 .unwrap_or((0, 0));
             let (bld_rx, bld_ry) = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(building_id)
                 .map(|e| (e.position.rx, e.position.ry))
                 .unwrap_or((0, 0));
@@ -291,11 +296,11 @@ impl Simulation {
 
             // Resolve target type; only proceed for BridgeRepairHut=yes.
             let target_bridge_hut = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(building_id)
                 .and_then(|b| {
-                    self
-                        .object_type(b.type_ref, rules)
+                    self.object_type(b.type_ref, rules)
                         .map(|t| t.bridge_repair_hut)
                 })
                 .unwrap_or(false);
@@ -306,7 +311,8 @@ impl Simulation {
 
             // Target alive + still a Structure.
             let target_alive = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(building_id)
                 .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
             if !target_alive {
@@ -320,7 +326,8 @@ impl Simulation {
             // Adjacency only issues the scripted enter move; repair itself
             // waits until the engineer has arrived inside the building cell.
             let Some((erx, ery)) = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(engineer_id)
                 .map(|e| (e.position.rx, e.position.ry))
             else {
@@ -349,7 +356,8 @@ impl Simulation {
             }
 
             let Some((brx, bry)) = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(building_id)
                 .map(|b| (b.position.rx, b.position.ry))
             else {
@@ -384,8 +392,8 @@ impl Simulation {
             {
                 // bridge repair walker-variant pick — gamemd draws g_MapGenRng, not the
                 // scenario stream. Direct field (NOT bridge_rng(); `bs`/`terrain` hold live
-                // disjoint borrows). On a fixed map mapgen_rng is zero-state => variant 0,
-                // and the scenario/main cursors are left untouched.
+                // disjoint borrows). Fresh MapGen is native Seed(0), and the
+                // scenario/main cursors are left untouched.
                 bs.repair_bridge_from_engineer_scan(&scan, &mut self.mapgen_rng, terrain)
             } else {
                 crate::sim::bridge_state::RepairOutcome::default()
@@ -465,7 +473,8 @@ impl Simulation {
         for (attacker_id, target_id) in walkup {
             // Target gone or dying? Clear c4_plant.
             let target_alive = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(target_id)
                 .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
             if !target_alive {
@@ -479,7 +488,8 @@ impl Simulation {
             // to the target building. Normal pathing stops at the blocked
             // footprint boundary, then we issue the one-cell enter move below.
             let attacker_cell = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(attacker_id)
                 .map(|e| (e.position.rx, e.position.ry));
             let target_footprint = self.building_entry_target_footprint(target_id, rules);
@@ -490,7 +500,8 @@ impl Simulation {
 
             // Already claimed by another attacker?
             let already_claimed = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(target_id)
                 .is_some_and(|b| b.pending_c4_detonation.is_some());
             if already_claimed {
@@ -563,7 +574,8 @@ impl Simulation {
 
         for building_id in det_keys {
             let pending = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(building_id)
                 .and_then(|e| e.pending_c4_detonation);
             let Some(pending) = pending else { continue };
@@ -578,7 +590,8 @@ impl Simulation {
             // Normal-building pending state is only cleared by despawn;
             // BridgeRepairHut returns consumed_pending_marker below.
             let dmg: i32 = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(building_id)
                 .map(|b| b.health.current as i32)
                 .unwrap_or(0);
@@ -588,7 +601,8 @@ impl Simulation {
 
             // Resolve kill-credit. Attacker may have despawned — fall back to None.
             let attacker_for_credit: Option<u64> = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(pending.attacker_id)
                 .map(|_| pending.attacker_id);
 
@@ -657,7 +671,8 @@ impl Simulation {
     }
 
     fn infantry_has_active_movement(&self, attacker_id: u64) -> bool {
-        self.substrate.entities
+        self.substrate
+            .entities
             .get(attacker_id)
             .is_some_and(|attacker| attacker.movement_target.is_some())
     }
@@ -682,9 +697,11 @@ impl Simulation {
             .as_ref()
             .map(|info| info.speed)
             .unwrap_or(ra2_speed_to_leptons_per_second(4));
-        if movement::issue_direct_move(&mut self.substrate.entities, attacker_id, entry_cell, speed) {
+        if movement::issue_direct_move(&mut self.substrate.entities, attacker_id, entry_cell, speed)
+        {
             if let Some(target) = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get_mut(attacker_id)
                 .and_then(|attacker| attacker.movement_target.as_mut())
             {
@@ -721,7 +738,8 @@ impl Simulation {
         let (dx, dy) = DIR_DELTAS[dir];
 
         let bld_cell = self
-            .substrate.entities
+            .substrate
+            .entities
             .get(dead_building_id)
             .map(|b| (b.position.rx, b.position.ry));
         let Some((brx, bry)) = bld_cell else { return };
@@ -786,7 +804,8 @@ impl Simulation {
         // segment's, not the hut's. Also the right entry point for a
         // future demo-truck damage path.
         let target_bridge_hut = self
-            .substrate.entities
+            .substrate
+            .entities
             .get(building_id)
             .and_then(|b| {
                 rules
@@ -796,7 +815,8 @@ impl Simulation {
             .unwrap_or(false);
         if target_bridge_hut {
             let bld_center = self
-                .substrate.entities
+                .substrate
+                .entities
                 .get(building_id)
                 .map(|b| (b.position.rx, b.position.ry));
             let bridge_state_changed = match bld_center {
@@ -818,7 +838,8 @@ impl Simulation {
         // Check IC for normal C4 targets. If invulnerable, damage is
         // nullified but pending state stays, so we try again next tick.
         let invuln = self
-            .substrate.entities
+            .substrate
+            .entities
             .get(building_id)
             .and_then(|e| e.invulnerability.clone());
         if crate::sim::superweapon::invulnerability::is_invulnerable(
@@ -981,7 +1002,8 @@ impl Simulation {
                         continue;
                     };
                     let owner_str = self
-                        .substrate.entities
+                        .substrate
+                        .entities
                         .get(entity_id)
                         .map(|e| self.interner.resolve(e.owner).to_string())
                         .unwrap_or_default();

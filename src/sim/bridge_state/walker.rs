@@ -412,8 +412,8 @@ impl BridgeRuntimeState {
     /// Pick the healthy-tile variant for a repaired bridge strip. gamemd draws
     /// `RandomRanged(0, 3)` from the map-gen RNG using the multiply-high (scaled)
     /// shape — the HIGH two bits of one draw, not the low bits — so the variant
-    /// comes from `next_range_u32_inclusive_scaled`. (The map-gen stream is
-    /// unseeded on a fixed map, so in practice this is deterministically 0.)
+    /// comes from `next_range_u32_inclusive_scaled`. Fresh MapGen is the
+    /// verified `Seed(0)` object; later same-process lifecycle is unverified.
     fn repair_variant_offset(rng: &mut SimRng) -> u8 {
         rng.next_range_u32_inclusive_scaled(0, u32::from(REPAIR_VARIANT_LIMIT_INCLUSIVE)) as u8
     }
@@ -2325,15 +2325,14 @@ mod mapgen_variant_tests {
     use crate::sim::rng::SimRng;
 
     #[test]
-    fn repair_variant_is_zero_on_zero_state_stream() {
-        // gamemd's unseeded g_MapGenRng returns 0 forever, so the repaired variant is
-        // always 0 (the base overlay) on a fixed map. Draw many times to prove the
-        // state words stay zero across the index advance/wrap path — note the draw
-        // DOES advance the index counters, so we assert the variant value, not state().
-        let mut rng = SimRng::zeroed();
-        for _ in 0..300 {
-            assert_eq!(BridgeRuntimeState::repair_variant_offset(&mut rng), 0);
-        }
+    fn repair_variants_follow_native_seed_zero_mapgen_stream() {
+        // Fresh native MapGen is the generated Seed(0) object, so these exact
+        // scaled draws pin the healthy-overlay variants consumed by repair.
+        let mut rng = SimRng::new(0);
+        let actual: Vec<u8> = (0..8)
+            .map(|_| BridgeRuntimeState::repair_variant_offset(&mut rng))
+            .collect();
+        assert_eq!(actual, [1, 1, 2, 2, 0, 1, 3, 0]);
     }
 
     #[test]

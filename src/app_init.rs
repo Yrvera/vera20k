@@ -18,9 +18,11 @@ use crate::app_init_helpers::{
 };
 use crate::app_list_maps::{load_map_by_name_or_path_with_assets, try_load_mmx};
 use crate::app_skirmish::{
-    apply_skirmish_launch_session, build_overlay_atlas_from_map,
-    house_color_map_for_launch_session, seed_skirmish_opening_if_needed,
+    apply_explicit_skirmish_launch_session, apply_unverified_legacy_skirmish_launch_session,
+    build_overlay_atlas_from_map, house_color_map_for_launch_session,
+    seed_skirmish_opening_if_needed,
 };
+use crate::match_bootstrap::LoadingStartup;
 
 use crate::assets::asset_manager::AssetManager;
 use crate::map::actions::ActionMap;
@@ -59,10 +61,10 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::trigger_runtime::TriggerRuntime;
 use crate::sim::world::Simulation;
-use crate::skirmish_launch::SkirmishLaunchSession;
 
 /// All data produced by loading a map: terrain, tile atlas, entities, and camera.
 pub struct MapLoadResult {
+    pub(crate) startup: LoadingStartup,
     pub basic: BasicSection,
     pub tile_atlas: Option<TileAtlas>,
     pub terrain_grid: Option<TerrainGrid>,
@@ -380,7 +382,7 @@ pub(crate) fn load_map_from_initial(
     gpu: &GpuContext,
     batch: &BatchRenderer,
     initial: MapLoadInitial,
-    skirmish_launch_session: Option<&SkirmishLaunchSession>,
+    startup: LoadingStartup,
     skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     progress: &mut dyn crate::app_loading::LoadingProgressSink,
@@ -389,6 +391,7 @@ pub(crate) fn load_map_from_initial(
         mut asset_manager,
         map_data,
     } = initial;
+    let skirmish_launch_session = startup.launch_session();
 
     // Load theater INI for tileset lookup, palette, and LAT configuration.
     // Also loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority.
@@ -577,12 +580,11 @@ pub(crate) fn load_map_from_initial(
             }
         });
 
-    // One negotiated per-match seed, fixed before the sim exists and before
-    // any setup-phase draw (random country/color resolution included). Logged
-    // as the repro handle until replay save/load UI exists. Identity, bounds,
-    // and the MP start table come from the map file — never hardcoded.
+    // Accepted startup carries the one pre-loading GetTickCount word unchanged.
+    // Legacy/generic loading retains its explicitly noncertifying SystemTime
+    // fallback. In every case the selected word exists before Simulation.
     let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
-        seed: crate::app_init_helpers::generate_match_seed(),
+        seed: startup.seed_or_else(crate::app_init_helpers::generate_unverified_legacy_match_seed),
         map_name: skirmish_launch_session
             .and_then(|s| s.selected_map_file.clone())
             .or_else(|| map_data.basic.name.clone())
@@ -678,15 +680,27 @@ pub(crate) fn load_map_from_initial(
     if !spawn_pick_pending {
         if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
             let should_rebuild_entity_atlases = if let Some(session) = skirmish_launch_session {
-                let result = apply_skirmish_launch_session(
-                    sim,
-                    &map_data,
-                    &house_roster,
-                    ruleset,
-                    &height_map,
-                    &resolved_terrain,
-                    session,
-                );
+                let result = if startup.is_accepted() {
+                    apply_explicit_skirmish_launch_session(
+                        sim,
+                        &map_data,
+                        &house_roster,
+                        ruleset,
+                        &height_map,
+                        &resolved_terrain,
+                        session,
+                    )
+                } else {
+                    apply_unverified_legacy_skirmish_launch_session(
+                        sim,
+                        &map_data,
+                        &house_roster,
+                        ruleset,
+                        &height_map,
+                        &resolved_terrain,
+                        session,
+                    )
+                };
                 initial_local_owner = result.local_owner;
                 result.spawned_mcvs > 0
             } else {
@@ -1091,6 +1105,7 @@ pub(crate) fn load_map_from_initial(
     // Move fields out of map_data (last use) instead of cloning.
     let theater_name = map_data.header.theater;
     Ok(MapLoadResult {
+        startup,
         basic: map_data.basic,
         tile_atlas,
         terrain_grid: Some(grid),

@@ -7,6 +7,7 @@
 use crate::app::AppState;
 use crate::app_init::{self, MapLoadInitial, MapLoadResult};
 use crate::assets::asset_manager::AssetManager;
+use crate::match_bootstrap::{LoadingStartup, PreparedMatchStartup};
 use crate::render::batch::{BatchRenderer, SpriteInstance};
 use crate::render::gpu::GpuContext;
 use crate::render::loading_screen_chrome::{
@@ -153,23 +154,32 @@ impl LoadingProgressSink for NoopProgressSink {
     fn milestone(&mut self, _percent: u32) {}
 }
 
-#[derive(Clone)]
 pub(crate) struct LoadingRequest {
-    selected_map_file: String,
-    launch: LoadingLaunch,
+    /// `None` is an internal terminal-transfer marker only. Every live request
+    /// owns exactly one explicit startup variant.
+    startup: Option<LoadingStartup>,
     presentation: LoadingPresentation,
     fallback_skirmish_settings: SkirmishSettings,
 }
 
 impl LoadingRequest {
-    pub(crate) fn native_selected_skirmish(
-        selected_map_file: String,
+    pub(crate) fn accepted_skirmish(
+        startup: PreparedMatchStartup,
+        fallback_skirmish_settings: SkirmishSettings,
+    ) -> Self {
+        Self {
+            startup: Some(LoadingStartup::Accepted(startup)),
+            presentation: LoadingPresentation::NativeSelectedSkirmish,
+            fallback_skirmish_settings,
+        }
+    }
+
+    pub(crate) fn unverified_legacy_skirmish(
         skirmish_launch_session: SkirmishLaunchSession,
         fallback_skirmish_settings: SkirmishSettings,
     ) -> Self {
         Self {
-            selected_map_file,
-            launch: LoadingLaunch::Skirmish(skirmish_launch_session),
+            startup: Some(LoadingStartup::UnverifiedLegacy(skirmish_launch_session)),
             presentation: LoadingPresentation::NativeSelectedSkirmish,
             fallback_skirmish_settings,
         }
@@ -180,29 +190,33 @@ impl LoadingRequest {
         fallback_skirmish_settings: SkirmishSettings,
     ) -> Self {
         Self {
-            selected_map_file: selected_map_file.into(),
-            launch: LoadingLaunch::Generic,
+            startup: Some(LoadingStartup::Generic {
+                selected_map_file: selected_map_file.into(),
+            }),
             presentation: LoadingPresentation::GenericMapLoad,
             fallback_skirmish_settings,
         }
     }
 
     pub(crate) fn selected_map_file(&self) -> &str {
-        &self.selected_map_file
+        self.startup().selected_map_file()
     }
 
     fn skirmish_launch_session(&self) -> Option<&SkirmishLaunchSession> {
-        match &self.launch {
-            LoadingLaunch::Skirmish(session) => Some(session),
-            LoadingLaunch::Generic => None,
-        }
+        self.startup().launch_session()
     }
-}
 
-#[derive(Clone)]
-pub(crate) enum LoadingLaunch {
-    Skirmish(SkirmishLaunchSession),
-    Generic,
+    fn startup(&self) -> &LoadingStartup {
+        self.startup
+            .as_ref()
+            .expect("live loading request must retain startup authority")
+    }
+
+    fn take_startup(&mut self) -> LoadingStartup {
+        self.startup
+            .take()
+            .expect("terminal loading phase transfers startup authority once")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,26 +278,23 @@ pub(crate) struct LoadingSession {
 
 impl LoadingSession {
     fn from_request(request: LoadingRequest) -> Self {
-        let native = match (&request.presentation, &request.launch) {
-            (
-                LoadingPresentation::NativeSelectedSkirmish,
-                LoadingLaunch::Skirmish(skirmish_launch_session),
-            ) => {
+        let native = match (&request.presentation, request.skirmish_launch_session()) {
+            (LoadingPresentation::NativeSelectedSkirmish, Some(skirmish_launch_session)) => {
                 let variant =
                     loading_art_variant_from_launch_country(skirmish_launch_session.local.country);
                 // `local.color_index` is the gamemd color priority; resolve to a
                 // `[Colors]` entry index (priority LUT + /2).
-                let color_index = HouseColorIndex(
-                    scheme_entry_for_priority(skirmish_launch_session.local.color_index as i32) as u8,
-                );
+                let color_index = HouseColorIndex(scheme_entry_for_priority(
+                    skirmish_launch_session.local.color_index as i32,
+                ) as u8);
                 Some(NativeLoadingScreenState::standard_skirmish(
                     variant,
                     color_index,
                 ))
             }
-            (LoadingPresentation::GenericMapLoad, LoadingLaunch::Generic) => None,
-            (LoadingPresentation::NativeSelectedSkirmish, LoadingLaunch::Generic)
-            | (LoadingPresentation::GenericMapLoad, LoadingLaunch::Skirmish(_)) => {
+            (LoadingPresentation::GenericMapLoad, None) => None,
+            (LoadingPresentation::NativeSelectedSkirmish, None)
+            | (LoadingPresentation::GenericMapLoad, Some(_)) => {
                 debug_assert!(
                     false,
                     "LoadingRequest constructor created mismatched launch/presentation modes"
@@ -334,6 +345,16 @@ impl LoadingJob {
 }
 
 pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
+    let next_active = request
+        .startup()
+        .accepted()
+        .map(|startup| startup.correlation);
+    replace_match_startup_slots(
+        &mut state.active_loading_correlation,
+        &mut state.loaded_startup,
+        &mut state.rust_l0_receipt,
+        next_active,
+    );
     clear_loading_state(state);
     let mut session = LoadingSession::from_request(request);
     // Resolve the backing fill from the live rules `[Colors]` schemes now that
@@ -356,6 +377,28 @@ pub(crate) fn clear_loading_state(state: &mut AppState) {
     state.loading_session = None;
     state.loading_screen_atlas = None;
     state.loading_progress = LoadingProgressState::standard_skirmish();
+}
+
+/// Close any prior/in-flight match startup without resetting the process-wide
+/// monotonically increasing correlation allocator.
+pub(crate) fn clear_match_startup_state(state: &mut AppState) {
+    replace_match_startup_slots(
+        &mut state.active_loading_correlation,
+        &mut state.loaded_startup,
+        &mut state.rust_l0_receipt,
+        None,
+    );
+}
+
+fn replace_match_startup_slots(
+    active: &mut Option<crate::match_bootstrap::MatchCorrelationId>,
+    loaded: &mut Option<crate::match_bootstrap::PreparedMatchStartup>,
+    receipt: &mut Option<crate::match_bootstrap::RustL0Receipt>,
+    next_active: Option<crate::match_bootstrap::MatchCorrelationId>,
+) {
+    *active = next_active;
+    *loaded = None;
+    *receipt = None;
 }
 
 pub(crate) fn is_native_loading_session(state: &AppState) -> bool {
@@ -434,6 +477,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
             let render_width = state.gpu.config.width;
             // `session.native` and `session.request` are disjoint fields, so the
             // launch-session/settings borrows below coexist with the native split.
+            let startup = session.request.take_startup();
             let load_result = match session.native.as_mut() {
                 // Only repaint when the atlas is present; without it the bar
                 // cannot draw, so fall back to the gate-only sink.
@@ -455,7 +499,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         &state.gpu,
                         &state.batch_renderer,
                         initial,
-                        session.request.skirmish_launch_session(),
+                        startup,
                         &session.request.fallback_skirmish_settings,
                         state.vxl_compute.as_mut(),
                         &mut sink,
@@ -469,7 +513,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         &state.gpu,
                         &state.batch_renderer,
                         initial,
-                        session.request.skirmish_launch_session(),
+                        startup,
                         &session.request.fallback_skirmish_settings,
                         state.vxl_compute.as_mut(),
                         &mut sink,
@@ -479,7 +523,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     &state.gpu,
                     &state.batch_renderer,
                     initial,
-                    session.request.skirmish_launch_session(),
+                    startup,
                     &session.request.fallback_skirmish_settings,
                     state.vxl_compute.as_mut(),
                     &mut NoopProgressSink,
@@ -1089,9 +1133,9 @@ mod tests {
                 id: 1,
                 ui_name_key: "GUI:Battle".to_string(),
                 tooltip_key: "STT:ModeBattle".to_string(),
-                override_file: "battlemd.ini".to_string(),
+                override_file: "MPBattleMD.ini".to_string(),
                 map_filter: "standard".to_string(),
-                random_maps_allowed: false,
+                random_maps_allowed: true,
                 allies_allowed: true,
                 must_ally: false,
             },
@@ -1118,10 +1162,53 @@ mod tests {
         }
     }
 
+    struct TestClock(u32);
+
+    impl crate::match_bootstrap::MatchSeedClock for TestClock {
+        fn low_u32(&mut self) -> u32 {
+            self.0
+        }
+
+        fn source(&self) -> crate::match_bootstrap::MatchSeedSource {
+            crate::match_bootstrap::MatchSeedSource::Controlled
+        }
+
+        fn seed_authority_certifying(&self) -> bool {
+            true
+        }
+    }
+
+    fn prepared_startup(next: &mut u64, seed: u32) -> crate::match_bootstrap::PreparedMatchStartup {
+        let launch = test_launch_session(LaunchCountry::America);
+        let accepted = match crate::match_bootstrap::classify_startup_session(&launch) {
+            crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
+                accepted,
+            ) => accepted,
+            other => panic!("fixture was not accepted: {other:?}"),
+        };
+        let correlation = crate::match_bootstrap::allocate_match_correlation(next).unwrap();
+        crate::match_bootstrap::prepare_match_startup(correlation, accepted, &mut TestClock(seed))
+    }
+
+    fn receipt_for(
+        startup: &crate::match_bootstrap::PreparedMatchStartup,
+    ) -> crate::match_bootstrap::RustL0Receipt {
+        let simulation = crate::sim::world::Simulation::with_seed(u64::from(startup.seed.value));
+        crate::match_bootstrap::RustL0Observation {
+            startup,
+            simulation: &simulation,
+            active_correlation: startup.correlation,
+            prior_receipt: None,
+            screen_is_loading: true,
+            spawn_pick_active: false,
+        }
+        .acknowledge()
+        .expect("valid test startup must acknowledge")
+    }
+
     #[test]
     fn loading_side_comes_from_first_launch_node_country() {
-        let session = LoadingSession::from_request(LoadingRequest::native_selected_skirmish(
-            "mp01t4.map".to_string(),
+        let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
             test_launch_session(LaunchCountry::Korea),
             SkirmishSettings::default(),
         ));
@@ -1134,13 +1221,12 @@ mod tests {
 
     #[test]
     fn loading_session_preserves_selected_map_filename() {
-        let session = LoadingSession::from_request(LoadingRequest::native_selected_skirmish(
-            "mp02t2.map".to_string(),
+        let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
             test_launch_session(LaunchCountry::Yuri),
             SkirmishSettings::default(),
         ));
 
-        assert_eq!(session.request.selected_map_file(), "mp02t2.map");
+        assert_eq!(session.request.selected_map_file(), "mp01t4.map");
         assert_eq!(
             session
                 .request
@@ -1164,8 +1250,7 @@ mod tests {
 
     #[test]
     fn loading_session_starts_at_initial_map_selection_phase() {
-        let session = LoadingSession::from_request(LoadingRequest::native_selected_skirmish(
-            "mp01t4.map".to_string(),
+        let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
             test_launch_session(LaunchCountry::America),
             SkirmishSettings::default(),
         ));
@@ -1174,6 +1259,87 @@ mod tests {
             session.job.phase,
             LoadingJobPhase::InitialMapSelection
         ));
+    }
+
+    #[test]
+    fn loading_request_moves_exact_startup_authority_once() {
+        struct Clock;
+        impl crate::match_bootstrap::MatchSeedClock for Clock {
+            fn low_u32(&mut self) -> u32 {
+                0x1234_5678
+            }
+
+            fn source(&self) -> crate::match_bootstrap::MatchSeedSource {
+                crate::match_bootstrap::MatchSeedSource::Controlled
+            }
+
+            fn seed_authority_certifying(&self) -> bool {
+                true
+            }
+        }
+
+        let session = test_launch_session(LaunchCountry::America);
+        let accepted = match crate::match_bootstrap::classify_startup_session(&session) {
+            crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
+                accepted,
+            ) => accepted,
+            other => panic!("fixture was not accepted: {other:?}"),
+        };
+        let mut next = 1;
+        let correlation = crate::match_bootstrap::allocate_match_correlation(&mut next).unwrap();
+        let mut clock = Clock;
+        let prepared =
+            crate::match_bootstrap::prepare_match_startup(correlation, accepted, &mut clock);
+        let mut request =
+            LoadingRequest::accepted_skirmish(prepared.clone(), SkirmishSettings::default());
+
+        assert_eq!(request.startup().accepted(), Some(&prepared));
+        assert_eq!(request.take_startup(), LoadingStartup::Accepted(prepared));
+        assert!(
+            request.startup.is_none(),
+            "authority transfers exactly once"
+        );
+    }
+
+    #[test]
+    fn replacing_loading_startup_clears_prior_loaded_startup_and_receipt_then_registers_new_correlation()
+     {
+        let mut next = 1;
+        let prior = prepared_startup(&mut next, 0x1111_2222);
+        let replacement = prepared_startup(&mut next, 0x3333_4444);
+        let prior_receipt = receipt_for(&prior);
+        let prior_correlation = prior.correlation;
+        let replacement_correlation = replacement.correlation;
+        let mut active = Some(prior_correlation);
+        let mut loaded = Some(prior);
+        let mut receipt = Some(prior_receipt);
+
+        replace_match_startup_slots(
+            &mut active,
+            &mut loaded,
+            &mut receipt,
+            Some(replacement_correlation),
+        );
+
+        assert_eq!(active, Some(replacement_correlation));
+        assert!(loaded.is_none());
+        assert!(receipt.is_none());
+    }
+
+    #[test]
+    fn failed_startup_cleanup_clears_all_three_slots() {
+        let mut next = 1;
+        let prior = prepared_startup(&mut next, 0x5555_6666);
+        let prior_receipt = receipt_for(&prior);
+        let mut active = Some(prior.correlation);
+        let mut loaded = Some(prior);
+        let mut receipt = Some(prior_receipt);
+
+        replace_match_startup_slots(&mut active, &mut loaded, &mut receipt, None);
+
+        assert!(active.is_none());
+        assert!(loaded.is_none());
+        assert!(receipt.is_none());
     }
 
     #[test]

@@ -47,13 +47,16 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// `left` values).
 /// Baselined at SC-2 review hardening. scenario == main here: this scripted
 /// scenario consumes ZERO draws from either gameplay stream (they stay at the
-/// identical post-seed state), and mapgen holds the unseeded zero-state
+/// identical post-seed state), and MapGen holds the fresh native Seed(0)
 /// fingerprint — so ANY future draw in this scenario shifts exactly one
 /// component loudly.
+/// Re-baselined after MapGen was split from the scenario seed. The new MapGen
+/// value was identical in two focused runs with pristine fresh Seed(0) MapGen.
+/// This remains a Rust regression ratchet, not a gamemd parity reference.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
     4175722561206807420,
     4175722561206807420,
-    11005532682475009861,
+    2082941527059030371,
 );
 
 /// Committed final-hash baseline. Captured from the first green run. Re-baselines
@@ -89,7 +92,10 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// in this scenario. The W1 cadence + RNG-draw determinism is covered by the
 /// dedicated miner-dock suite (accepted_face_sync_handoff_draws_one_scenario_rng,
 /// state_four_exit_draws_and_applies_resume_jitter, et al.) instead.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 7853494236029787366;
+/// Re-baselined after MapGen became an independent fresh Seed(0) stream. The
+/// value was identical in two focused runs; this is a Rust regression ratchet,
+/// not a gamemd parity reference.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 7340892273004731329;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -162,11 +168,46 @@ fn seed_scenario(sim: &mut Simulation, rules: &RuleSet, heights: &BTreeMap<(u16,
 /// Scripted commands keyed by `execute_tick` (fires when tick+1 == execute_tick).
 fn harness_script() -> Vec<(u64, Command)> {
     vec![
-        (2, Command::Move { entity_id: 4, target_rx: 24, target_ry: 8, queue: false, group_id: None }),
-        (40, Command::AttackMove { entity_id: 4, target_rx: 38, target_ry: 8, queue: false }),
-        (120, Command::Move { entity_id: 6, target_rx: 28, target_ry: 10, queue: false, group_id: None }),
+        (
+            2,
+            Command::Move {
+                entity_id: 4,
+                target_rx: 24,
+                target_ry: 8,
+                queue: false,
+                group_id: None,
+            },
+        ),
+        (
+            40,
+            Command::AttackMove {
+                entity_id: 4,
+                target_rx: 38,
+                target_ry: 8,
+                queue: false,
+            },
+        ),
+        (
+            120,
+            Command::Move {
+                entity_id: 6,
+                target_rx: 28,
+                target_ry: 10,
+                queue: false,
+                group_id: None,
+            },
+        ),
         (300, Command::Stop { entity_id: 4 }),
-        (320, Command::Move { entity_id: 4, target_rx: 8, target_ry: 8, queue: false, group_id: None }),
+        (
+            320,
+            Command::Move {
+                entity_id: 4,
+                target_rx: 8,
+                target_ry: 8,
+                queue: false,
+                group_id: None,
+            },
+        ),
     ]
 }
 
@@ -211,7 +252,14 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     let mut recorded_streams: Vec<(u64, u64, u64, u64)> = Vec::new();
     for tick in 0..HARNESS_TICKS {
         let due = due_commands(&rec, &script, tick);
-        let result = rec.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
+        let result = rec.advance_tick(
+            &due,
+            Some(&rules),
+            &heights,
+            Some(&grid),
+            None,
+            HARNESS_TICK_MS,
+        );
         if rec
             .substrate
             .entities
@@ -254,7 +302,12 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             ticks: log.ticks[chunk_start..chunk_end].to_vec(),
         };
         replayed.extend(ReplayRunner::run(
-            &mut rep, &chunk, Some(&rules), &heights, Some(&grid), HARNESS_TICK_MS,
+            &mut rep,
+            &chunk,
+            Some(&rules),
+            &heights,
+            Some(&grid),
+            HARNESS_TICK_MS,
         ));
         replayed_streams.push((
             checkpoint,
@@ -270,7 +323,12 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             ticks: log.ticks[chunk_start..].to_vec(),
         };
         replayed.extend(ReplayRunner::run(
-            &mut rep, &tail, Some(&rules), &heights, Some(&grid), HARNESS_TICK_MS,
+            &mut rep,
+            &tail,
+            Some(&rules),
+            &heights,
+            Some(&grid),
+            HARNESS_TICK_MS,
         ));
     }
     assert_eq!(
@@ -279,6 +337,11 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     );
     let (_, final_scen, final_main, final_mapgen) =
         *recorded_streams.last().expect("final checkpoint recorded");
+    let final_hash = *replayed.last().expect("at least one tick recorded");
+    println!(
+        "[global parity] final_hash={final_hash:016X} \
+         streams={final_scen:016X},{final_main:016X},{final_mapgen:016X}"
+    );
     assert_eq!(
         (final_scen, final_main, final_mapgen),
         FINAL_STREAM_STATES,
@@ -302,7 +365,6 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
         );
     }
 
-    let final_hash = *replayed.last().expect("at least one tick recorded");
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,
         "committed global-harness baseline. If this shifts for a real behavior \
@@ -334,8 +396,14 @@ fn dispatch_churn_measurement_over_global_skirmish() {
     let mut iterations: u64 = 0;
     for tick in 0..HARNESS_TICKS {
         let due = due_commands(&sim, &script, tick);
-        let result =
-            sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
+        let result = sim.advance_tick(
+            &due,
+            Some(&rules),
+            &heights,
+            Some(&grid),
+            None,
+            HARNESS_TICK_MS,
+        );
         if result.dispatch_churn > 0 {
             ticks_with_churn += 1;
             total_churn += result.dispatch_churn as u64;
@@ -405,8 +473,28 @@ fn dense_converging_setup() -> (
     let mut script: Vec<(u64, crate::sim::intern::InternedId, Command)> = Vec::new();
     for i in 0..DENSE_ROWS as u64 {
         let y = 5 + i as u16;
-        script.push((2, allied, Command::Move { entity_id: 1 + i, target_rx: 25, target_ry: y, queue: false, group_id: None }));
-        script.push((2, soviet, Command::Move { entity_id: 11 + i, target_rx: 25, target_ry: y, queue: false, group_id: None }));
+        script.push((
+            2,
+            allied,
+            Command::Move {
+                entity_id: 1 + i,
+                target_rx: 25,
+                target_ry: y,
+                queue: false,
+                group_id: None,
+            },
+        ));
+        script.push((
+            2,
+            soviet,
+            Command::Move {
+                entity_id: 11 + i,
+                target_rx: 25,
+                target_ry: y,
+                queue: false,
+                group_id: None,
+            },
+        ));
     }
     (sim, rules, heights, grid, script)
 }
@@ -425,8 +513,14 @@ fn dispatch_churn_measurement_dense_converging_battle() {
             .filter(|(t, _, _)| *t == tick + 1)
             .map(|(t, owner, c)| CommandEnvelope::new(*owner, *t, c.clone()))
             .collect();
-        let result =
-            sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
+        let result = sim.advance_tick(
+            &due,
+            Some(&rules),
+            &heights,
+            Some(&grid),
+            None,
+            HARNESS_TICK_MS,
+        );
         let c = result.dispatch_churn;
         if c > 0 {
             ticks_with_churn += 1;
@@ -471,10 +565,23 @@ fn s2_dense_scenario_position_fingerprint_stable() {
             .filter(|(t, _, _)| *t == tick + 1)
             .map(|(t, owner, c)| CommandEnvelope::new(*owner, *t, c.clone()))
             .collect();
-        let _ =
-            sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
+        let _ = sim.advance_tick(
+            &due,
+            Some(&rules),
+            &heights,
+            Some(&grid),
+            None,
+            HARNESS_TICK_MS,
+        );
         for (id, e) in sim.substrate.entities.iter_sorted() {
-            (id, e.position.rx, e.position.ry, e.position.sub_x, e.position.sub_y).hash(&mut h);
+            (
+                id,
+                e.position.rx,
+                e.position.ry,
+                e.position.sub_x,
+                e.position.sub_y,
+            )
+                .hash(&mut h);
         }
     }
     assert_eq!(

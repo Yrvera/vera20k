@@ -14,7 +14,8 @@ use super::SkirmishShellState;
 /// Map the menu country selection onto a launch country. When the slot is set
 /// to Random this still returns the currently-shown menu country as a
 /// placeholder; the caller flags the slot via `country_random` so the concrete
-/// country is drawn later (see `SkirmishLaunchSession::resolve_random_assignments`).
+/// country is drawn later on the explicitly unverified compatibility path (see
+/// `SkirmishLaunchSession::resolve_unverified_legacy_random_assignments`).
 fn launch_country_from_menu(country: SkirmishCountry) -> LaunchCountry {
     match country {
         SkirmishCountry::America => LaunchCountry::America,

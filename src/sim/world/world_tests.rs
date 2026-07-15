@@ -154,7 +154,12 @@ fn despawn_entity_clears_live_radio_contacts() {
     // the despawned entity stays resolvable-but-Dying until the drain.
     assert!(sim.substrate.entities.get(1).is_some_and(|e| e.dying));
     assert!(
-        sim.substrate.entities.get(2).unwrap().radio_contacts.is_empty()
+        sim.substrate
+            .entities
+            .get(2)
+            .unwrap()
+            .radio_contacts
+            .is_empty()
     );
     sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(1).is_none());
@@ -536,7 +541,11 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
         .spawn_object("GAGATE_A", "Americans", 10, 10, 0, &rules, &heights)
         .expect("spawn gate");
     {
-        let gate = sim.substrate.entities.get_mut(gate_id).expect("gate entity");
+        let gate = sim
+            .substrate
+            .entities
+            .get_mut(gate_id)
+            .expect("gate entity");
         let rt = gate.building_gate.get_or_insert_with(Default::default);
         rt.mission_18_active = true;
         rt.mission_state = BuildingGateMissionState::Setup;
@@ -547,10 +556,14 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
     let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
 
     // Committed late: post-tick frame advanced to 1.
-    assert_eq!(sim.session.binary_frame, 1, "binary_frame committed late to 1");
+    assert_eq!(
+        sim.session.binary_frame, 1,
+        "binary_frame committed late to 1"
+    );
     // The consumer captured the PRE-increment frame 0 during the tick.
     let rt = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(gate_id)
         .expect("gate entity")
         .building_gate
@@ -618,7 +631,11 @@ fn short_game_defeats_when_only_base_unit_is_dying() {
     sim.session.game_options.short_game = true;
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 0);
     insert_test_entity_for_owner(&mut sim, 1, owner, "AMCV", EntityCategory::Unit);
-    sim.substrate.entities.get_mut(1).expect("AMCV inserted").dying = true;
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .expect("AMCV inserted")
+        .dying = true;
 
     sim.check_defeat(Some(&rules));
 
@@ -686,7 +703,12 @@ fn test_spawn_vehicle_has_voxel_marker() {
     let count: u32 = sim.spawn_from_map(&entities, None, &empty_heights());
 
     assert_eq!(count, 1);
-    let voxel_count: usize = sim.substrate.entities.values().filter(|e| e.is_voxel).count();
+    let voxel_count: usize = sim
+        .substrate
+        .entities
+        .values()
+        .filter(|e| e.is_voxel)
+        .count();
     assert_eq!(voxel_count, 1, "Vehicle should have VoxelModel marker");
 }
 
@@ -696,7 +718,12 @@ fn test_spawn_infantry_has_sprite_marker() {
     let entities: Vec<MapEntity> = vec![make_test_entity("E1", EntityCategory::Infantry)];
     sim.spawn_from_map(&entities, None, &empty_heights());
 
-    let sprite_count: usize = sim.substrate.entities.values().filter(|e| !e.is_voxel).count();
+    let sprite_count: usize = sim
+        .substrate
+        .entities
+        .values()
+        .filter(|e| !e.is_voxel)
+        .count();
     assert_eq!(sprite_count, 1, "Infantry should have SpriteModel marker");
 }
 
@@ -1053,7 +1080,11 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
         }],
     );
 
-    let e = sim.substrate.entities.get(1).expect("surviving bridge unit");
+    let e = sim
+        .substrate
+        .entities
+        .get(1)
+        .expect("surviving bridge unit");
     assert_eq!(e.position.z, 1);
     assert!(e.bridge_occupancy.is_none());
     assert!(!e.on_bridge);
@@ -1109,7 +1140,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
     // DropIn correction: unit ALIVE, snapped to ground level=0, OnBridge
     // cleared, locomotor flipped to Ground/Idle.
     let e = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(1)
         .expect("deck unit must SURVIVE collapse over water");
     assert_eq!(
@@ -1168,7 +1200,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
     );
 
     let e = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(1)
         .expect("deck unit must SURVIVE over overlay-blocked ground");
     assert_eq!(e.health.current, e.health.max, "DropIn never harms");
@@ -1221,7 +1254,8 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
     );
 
     let e = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(1)
         .expect("deck unit must SURVIVE over terrain-object-blocked ground");
     assert_eq!(e.health.current, e.health.max, "DropIn never harms");
@@ -1327,12 +1361,16 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
         Some(&resolved),
     );
     let id = sim
-        .substrate.entities
+        .substrate
+        .entities
         .iter_sorted()
         .next()
         .map(|(id, _)| id)
         .expect("ground unit spawned");
-    assert!(!sim.substrate.entities.get(id).unwrap().on_bridge, "ground layer");
+    assert!(
+        !sim.substrate.entities.get(id).unwrap().on_bridge,
+        "ground layer"
+    );
 
     let mut rules = combat_test_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
@@ -1350,7 +1388,8 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
     );
 
     let e = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(id)
         .expect("ground unit still in EntityStore (kill is via dying flag)");
     assert_eq!(e.health.current, 0, "kill_ground_occupants_at zeroed HP");
@@ -1594,7 +1633,7 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
 fn test_bridge_collapse_is_deterministic_under_replay() {
     fn run_one_collapse(seed: u64) -> u64 {
         let mut sim = Simulation::new();
-        sim.reseed_both(seed);
+        sim.reseed_scenario_and_main(seed);
         let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
         sim.resolved_terrain = Some(resolved);
         sim.bridge_state = Some(bridge_state);
@@ -1634,7 +1673,7 @@ fn test_bridge_collapse_is_deterministic_under_replay() {
 fn replay_determinism_with_bridge_collapse_and_rim_refresh() {
     fn run_one(seed: u64) -> u64 {
         let mut sim = Simulation::new();
-        sim.reseed_both(seed);
+        sim.reseed_scenario_and_main(seed);
         let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
         sim.resolved_terrain = Some(resolved);
         sim.bridge_state = Some(bridge_state);
@@ -1740,7 +1779,9 @@ fn test_bridge_snapshot_roundtrip_preserves_state_after_collapse() {
 fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
     let seed = 0xABCD_1234_u64;
     let mut sim = Simulation::new();
-    sim.reseed_both(seed);
+    sim.reseed_scenario_and_main(seed);
+    let main_before = sim.main_rng.logical_state();
+    let mapgen_before = sim.mapgen_rng.logical_state();
     let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
     let bridge_strength = bridge_state.bridge_strength();
     sim.resolved_terrain = Some(resolved);
@@ -1774,9 +1815,19 @@ fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
     );
 
     assert_eq!(
-        sim.scenario_rng.state(),
-        predicted.state(),
+        sim.scenario_rng.logical_state(),
+        predicted.logical_state(),
         "non-IonCannon hit must consume exactly one BridgeStrength gate roll"
+    );
+    assert_eq!(
+        sim.main_rng.logical_state(),
+        main_before,
+        "bridge damage dispatch must not consume Main"
+    );
+    assert_eq!(
+        sim.mapgen_rng.logical_state(),
+        mapgen_before,
+        "bridge damage dispatch must not consume MapGen"
     );
 }
 
@@ -1792,7 +1843,11 @@ fn test_water_mover_lookahead_does_not_attach_bridge_occupancy_under_bridge() {
     let boat_id = sim
         .spawn_object("BOAT", "Americans", 0, 0, 64, &rules, &BTreeMap::new())
         .expect("spawn boat");
-    let boat = sim.substrate.entities.get_mut(boat_id).expect("boat entity");
+    let boat = sim
+        .substrate
+        .entities
+        .get_mut(boat_id)
+        .expect("boat entity");
     boat.movement_target = Some(MovementTarget {
         path: vec![(0, 0), (1, 0)],
         path_layers: vec![MovementLayer::Ground, MovementLayer::Ground],
@@ -1815,7 +1870,11 @@ fn test_water_mover_lookahead_does_not_attach_bridge_occupancy_under_bridge() {
         33,
     );
 
-    let boat = sim.substrate.entities.get(boat_id).expect("boat still exists");
+    let boat = sim
+        .substrate
+        .entities
+        .get(boat_id)
+        .expect("boat still exists");
     assert!(
         boat.bridge_occupancy.is_none(),
         "Ship under a bridge should stay on the water layer"
@@ -1844,7 +1903,11 @@ fn test_too_big_ship_can_move_under_bridge_route() {
     let ship_id = sim
         .spawn_object("DRED", "Americans", 0, 0, 64, &rules, &BTreeMap::new())
         .expect("spawn dreadnought");
-    let ship = sim.substrate.entities.get_mut(ship_id).expect("ship entity");
+    let ship = sim
+        .substrate
+        .entities
+        .get_mut(ship_id)
+        .expect("ship entity");
     ship.movement_target = Some(MovementTarget {
         path: vec![(0, 0), (1, 0)],
         path_layers: vec![MovementLayer::Ground, MovementLayer::Ground],
@@ -1869,7 +1932,11 @@ fn test_too_big_ship_can_move_under_bridge_route() {
         1000,
     );
 
-    let ship = sim.substrate.entities.get(ship_id).expect("ship still exists");
+    let ship = sim
+        .substrate
+        .entities
+        .get(ship_id)
+        .expect("ship still exists");
     assert!(
         ship.movement_target.is_none(),
         "Naval ships should finish a direct move under bridge structural cells in the experimental behavior"
@@ -1887,7 +1954,11 @@ fn test_ship_turn_path_completes_without_drive_track_stall() {
     let boat_id = sim
         .spawn_object("BOAT", "Americans", 0, 0, 64, &rules, &BTreeMap::new())
         .expect("spawn boat");
-    let boat = sim.substrate.entities.get_mut(boat_id).expect("boat entity");
+    let boat = sim
+        .substrate
+        .entities
+        .get_mut(boat_id)
+        .expect("boat entity");
     boat.movement_target = Some(MovementTarget {
         path: vec![(0, 0), (1, 0), (1, 1)],
         path_layers: vec![
@@ -1916,7 +1987,11 @@ fn test_ship_turn_path_completes_without_drive_track_stall() {
         );
     }
 
-    let boat = sim.substrate.entities.get(boat_id).expect("boat still exists");
+    let boat = sim
+        .substrate
+        .entities
+        .get(boat_id)
+        .expect("boat still exists");
     assert_eq!(
         (boat.position.rx, boat.position.ry),
         (1, 1),
@@ -1979,7 +2054,11 @@ fn test_real_ship_locomotor_move_command_crosses_water_cells() {
         );
     }
 
-    let ship = sim.substrate.entities.get(ship_id).expect("ship still exists");
+    let ship = sim
+        .substrate
+        .entities
+        .get(ship_id)
+        .expect("ship still exists");
     assert_eq!(
         (ship.position.rx, ship.position.ry),
         (3, 1),
@@ -2044,7 +2123,11 @@ fn test_real_ship_locomotor_crosses_water_surface_cells_with_non_water_land_type
         );
     }
 
-    let ship = sim.substrate.entities.get(ship_id).expect("ship still exists");
+    let ship = sim
+        .substrate
+        .entities
+        .get(ship_id)
+        .expect("ship still exists");
     assert_eq!(
         (ship.position.rx, ship.position.ry),
         (3, 1),
@@ -2101,7 +2184,8 @@ fn test_real_ship_move_command_can_path_under_bridge_when_too_big() {
         100,
     );
     let initial_path = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(ship_id)
         .and_then(|ship| ship.movement_target.as_ref())
         .map(|mt| mt.path.clone())
@@ -2117,7 +2201,11 @@ fn test_real_ship_move_command_can_path_under_bridge_when_too_big() {
         );
     }
 
-    let ship = sim.substrate.entities.get(ship_id).expect("ship still exists");
+    let ship = sim
+        .substrate
+        .entities
+        .get(ship_id)
+        .expect("ship still exists");
     assert_eq!(
         (ship.position.rx, ship.position.ry),
         (4, 1),
@@ -2162,7 +2250,12 @@ fn test_stable_ids_are_assigned() {
     ];
     sim.spawn_from_map(&entities, None, &empty_heights());
 
-    let mut ids: Vec<u64> = sim.substrate.entities.values().map(|e| e.stable_id).collect();
+    let mut ids: Vec<u64> = sim
+        .substrate
+        .entities
+        .values()
+        .map(|e| e.stable_id)
+        .collect();
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2]);
 }
@@ -2274,13 +2367,17 @@ fn test_deploy_mcv_replaces_vehicle_with_conyard() {
     let cmd = cmd_envelope(&sim, "Americans", 1, Command::DeployMcv { entity_id: mcv });
     let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, None, None, 33);
 
-    assert!(sim.substrate.entities.get(mcv).is_none(), "MCV should be removed");
+    assert!(
+        sim.substrate.entities.get(mcv).is_none(),
+        "MCV should be removed"
+    );
     let gacnst_id = sim
         .interner
         .get("GACNST")
         .expect("GACNST should be interned");
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .values()
             .any(|e| e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21),
         "Construction yard should spawn at gamemd's deploy foundation origin"
@@ -2330,7 +2427,8 @@ fn test_execute_tick_delay_blocks_early_execution() {
         33,
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(1)
             .and_then(|e| e.movement_target.as_ref())
             .is_none()
@@ -2345,7 +2443,8 @@ fn test_execute_tick_delay_blocks_early_execution() {
         33,
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(1)
             .and_then(|e| e.movement_target.as_ref())
             .is_none()
@@ -2353,7 +2452,8 @@ fn test_execute_tick_delay_blocks_early_execution() {
 
     let _ = sim.advance_tick(&[delayed], None, &empty_heights(), Some(&grid), None, 33);
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(1)
             .and_then(|e| e.movement_target.as_ref())
             .is_some()
@@ -2409,7 +2509,8 @@ fn test_move_queue_command_appends_waypoint() {
     let _ = sim.advance_tick(&commands, None, &empty_heights(), Some(&grid), None, 33);
 
     let ge = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(1)
         .expect("entity 1 should exist in EntityStore");
     let movement = ge
@@ -2456,11 +2557,21 @@ fn test_stop_command_clears_move_and_attack_intent() {
     let cmd = cmd_envelope(&sim, "Americans", 1, Command::Stop { entity_id: 1 });
     let _ = sim.advance_tick(&[cmd], None, &empty_heights(), None, None, 33);
     assert!(
-        sim.substrate.entities.get(1).unwrap().movement_target.is_none(),
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .movement_target
+            .is_none(),
         "movement target should be cleared by Stop"
     );
     assert!(
-        sim.substrate.entities.get(1).unwrap().attack_target.is_none(),
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .attack_target
+            .is_none(),
         "AttackTarget should be cleared by Stop command"
     );
 }
@@ -2502,7 +2613,8 @@ fn test_move_command_rejects_non_owned_entity() {
 
     let _ = sim.advance_tick(&[cmd], None, &empty_heights(), Some(&grid), None, 33);
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(1)
             .is_some_and(|e| e.movement_target.is_none())
     );
@@ -2532,14 +2644,16 @@ fn test_move_command_chrono_miner_uses_ground_path() {
 
     let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 33);
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(entity)
             .and_then(|e| e.movement_target.as_ref())
             .is_some(),
         "Chrono Miner should path like a ground unit on normal move orders"
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(entity)
             .and_then(|e| e.teleport_state.as_ref())
             .is_none(),
@@ -2571,14 +2685,16 @@ fn test_move_command_non_harvester_teleporter_uses_teleport() {
 
     let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 33);
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(entity)
             .and_then(|e| e.teleport_state.as_ref())
             .is_some(),
         "Non-harvester teleporters should still use teleport movement"
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(entity)
             .is_some_and(|e| e.movement_target.is_none()),
         "Teleport movement should not attach a ground MovementTarget"
@@ -2608,20 +2724,23 @@ fn test_attack_move_command_chrono_miner_uses_ground_path() {
 
     let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 33);
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(entity)
             .and_then(|e| e.movement_target.as_ref())
             .is_some(),
         "Chrono Miner should path on attack-move instead of teleporting"
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(entity)
             .is_some_and(|e| e.order_intent.is_some()),
         "Attack-move should still set order intent"
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(entity)
             .and_then(|e| e.teleport_state.as_ref())
             .is_none(),
@@ -2678,7 +2797,12 @@ fn test_attack_command_rejects_friendly_target() {
 
     let _ = sim.advance_tick(&[cmd], None, &empty_heights(), None, None, 33);
     assert!(
-        sim.substrate.entities.get(1).unwrap().attack_target.is_none(),
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .attack_target
+            .is_none(),
         "Attack on same-owner target should not issue"
     );
 }
@@ -2739,7 +2863,8 @@ fn test_attack_move_auto_acquires_enemy() {
         100,
     );
     let attack = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(1)
         .unwrap()
         .attack_target
@@ -2749,7 +2874,14 @@ fn test_attack_move_auto_acquires_enemy() {
         attack.target,
         crate::sim::combat::TargetKind::Entity(2)
     ));
-    assert!(sim.substrate.entities.get(1).unwrap().order_intent.is_some());
+    assert!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .order_intent
+            .is_some()
+    );
 }
 
 #[test]
@@ -2812,10 +2944,19 @@ fn test_attack_move_resumes_after_kill() {
         100,
     );
     assert!(
-        sim.substrate.entities.get(1).unwrap().attack_target.is_none(),
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .attack_target
+            .is_none(),
         "target should die and attack should clear"
     );
-    let ge = sim.substrate.entities.get(1).expect("entity 1 should exist");
+    let ge = sim
+        .substrate
+        .entities
+        .get(1)
+        .expect("entity 1 should exist");
     let movement = ge
         .movement_target
         .as_ref()
@@ -2873,7 +3014,11 @@ fn test_guard_returns_to_anchor_when_displaced() {
     }
 
     let _ = sim.advance_tick(&[], Some(&rules), &empty_heights(), Some(&grid), None, 100);
-    let ge = sim.substrate.entities.get(1).expect("entity 1 should exist");
+    let ge = sim
+        .substrate
+        .entities
+        .get(1)
+        .expect("entity 1 should exist");
     let movement = ge
         .movement_target
         .as_ref()
@@ -2946,7 +3091,8 @@ fn test_undeploy_conyard_spawns_mcv() {
 
     // Find the ConYard that was spawned.
     let yard_id: u64 = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .find(|e| sim.interner.resolve(e.type_ref) == "GACNST")
         .map(|e| e.stable_id)
@@ -2973,7 +3119,12 @@ fn test_undeploy_conyard_spawns_mcv() {
         "ConYard should still exist during undeploy animation"
     );
     assert!(
-        sim.substrate.entities.get(yard_id).unwrap().building_down.is_some(),
+        sim.substrate
+            .entities
+            .get(yard_id)
+            .unwrap()
+            .building_down
+            .is_some(),
         "ConYard should have building_down component"
     );
 
@@ -2991,7 +3142,8 @@ fn test_undeploy_conyard_spawns_mcv() {
     // MCV should be spawned at center of old foundation (4x3 → center offset 2,1).
     let amcv_id = sim.interner.get("AMCV").expect("AMCV should be interned");
     let mcvs: Vec<(u16, u16, bool)> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| e.type_ref == amcv_id)
         .map(|e| (e.position.rx, e.position.ry, e.selected))
@@ -3436,7 +3588,10 @@ fn command_death_is_flushed_before_vision_and_power() {
         let mut bld = GameEntity::test_default(id, "GAPOWR", "Americans", rx, ry);
         bld.category = EntityCategory::Structure;
         bld.foundation = "2x2".to_string();
-        bld.health = Health { current: 750, max: 750 };
+        bld.health = Health {
+            current: 750,
+            max: 750,
+        };
         sim.substrate.entities.insert(bld);
         sim.reveal(id);
         sim.add_entity_occupancy(id);
@@ -3454,12 +3609,25 @@ fn command_death_is_flushed_before_vision_and_power() {
     // flushed before P1, so P4 power recomputes counting ONLY the surviving plant 2.
     // Without the command-region flush, the dying plant 1 (health 750) would still be
     // counted at P4 → 200.
-    let sell = CommandEnvelope::new(owner_id, sim.session.tick + 1, Command::SellBuilding { entity_id: 1 });
+    let sell = CommandEnvelope::new(
+        owner_id,
+        sim.session.tick + 1,
+        Command::SellBuilding { entity_id: 1 },
+    );
     sim.advance_tick(&[sell], Some(&rules), &height_map, Some(&grid), None, 100);
 
-    assert!(sim.substrate.entities.get(1).is_none(), "sold plant freed this tick");
-    assert!(sim.substrate.entities.get(2).is_some(), "surviving plant still present");
-    assert!(sim.substrate.pending_delete.is_empty(), "command-death queue drained");
+    assert!(
+        sim.substrate.entities.get(1).is_none(),
+        "sold plant freed this tick"
+    );
+    assert!(
+        sim.substrate.entities.get(2).is_some(),
+        "surviving plant still present"
+    );
+    assert!(
+        sim.substrate.pending_delete.is_empty(),
+        "command-death queue drained"
+    );
     assert_eq!(
         sim.power_states.get(&owner_id).map(|s| s.total_output),
         Some(100),
@@ -3494,12 +3662,18 @@ fn combat_death_not_repaired_then_freed_at_end_of_tick() {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
     let mut atk = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
-    atk.health = Health { current: 300, max: 300 };
+    atk.health = Health {
+        current: 300,
+        max: 300,
+    };
     // Damaged, auto-repairing enemy building MTNK destroys this tick at Phase 5.
     let mut bld = GameEntity::test_default(2, "TARGB", "Russia", 7, 5);
     bld.category = EntityCategory::Structure;
     bld.foundation = "1x1".to_string();
-    bld.health = Health { current: 50, max: 750 };
+    bld.health = Health {
+        current: 50,
+        max: 750,
+    };
     bld.repairing = true;
     sim.interner = crate::sim::intern::test_interner();
     let russia = sim.interner.intern("Russia");
@@ -3518,7 +3692,10 @@ fn combat_death_not_repaired_then_freed_at_end_of_tick() {
         sim.substrate.entities.get(2).is_none(),
         "building destroyed + freed by the end-of-tick drain"
     );
-    assert!(sim.substrate.pending_delete.is_empty(), "end-of-tick drain emptied the queue");
+    assert!(
+        sim.substrate.pending_delete.is_empty(),
+        "end-of-tick drain emptied the queue"
+    );
     assert_eq!(
         sim.houses.get(&russia).map(|h| h.credits),
         Some(1000),

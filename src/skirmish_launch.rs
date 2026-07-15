@@ -246,14 +246,14 @@ impl SkirmishLaunchOptions {
 pub struct SkirmishLocalSlot {
     pub country: LaunchCountry,
     /// When true, `country` is a placeholder to be replaced by a random draw
-    /// during session resolution; see [`SkirmishLaunchSession::resolve_random_assignments`].
+    /// during unverified compatibility resolution; see
+    /// [`SkirmishLaunchSession::resolve_unverified_legacy_random_assignments`].
     pub country_random: bool,
     pub color_index: u8,
     /// When true, `color_index` is a placeholder to be replaced by a random
     /// collision-free color draw during session resolution. The current setup
     /// UI never sets this (color is always picked concretely), so it is dormant
-    /// today — but the resolver models the engine's color draw faithfully for
-    /// when a "random color" option is wired up.
+    /// today. Its native RNG authority/order remains unverified.
     pub color_random: bool,
     pub start_position: LaunchStartPosition,
     pub team: LaunchTeam,
@@ -263,7 +263,8 @@ pub struct SkirmishLocalSlot {
 pub struct SkirmishAiSlot {
     pub country: LaunchCountry,
     /// When true, `country` is a placeholder to be replaced by a random draw
-    /// during session resolution; see [`SkirmishLaunchSession::resolve_random_assignments`].
+    /// during unverified compatibility resolution; see
+    /// [`SkirmishLaunchSession::resolve_unverified_legacy_random_assignments`].
     pub country_random: bool,
     pub color_index: u8,
     /// See [`SkirmishLocalSlot::color_random`]. Dormant in the current UI.
@@ -284,8 +285,8 @@ pub struct SkirmishLaunchSession {
 }
 
 impl SkirmishLaunchSession {
-    /// Resolve every slot left on "random country"/"random color" into concrete
-    /// values by drawing from the supplied scenario RNG, in the engine's order:
+    /// Resolve every slot left on "random country"/"random color" using the
+    /// legacy Scenario-RNG compatibility order:
     /// **all humans first, then all AI slots**, and **within each slot country
     /// before color**. Each random country is one inclusive `(0, 9)` draw; each
     /// random color is one inclusive `(0, 7)` draw repeated until it does not
@@ -293,20 +294,15 @@ impl SkirmishLaunchSession {
     /// Slots that already hold a concrete value are left untouched and consume
     /// no draw, so the stream only advances for the slots that requested random.
     ///
-    /// Drawing from the scenario stream (rather than a side RNG) keeps the
-    /// resolution deterministic for a given game seed and identical across
-    /// lockstep peers. The color branch is dormant under the current UI (no slot
-    /// sets `color_random`), but is modeled so the pre-tick-0 cursor matches the
-    /// engine the moment a "random color" option exists. This is the SP path;
-    /// the MP country draw uses a network callback (no local RNG) and is out of
-    /// scope until a net layer exists.
-    pub fn resolve_random_assignments(&self, rng: &mut SimRng) -> Self {
+    /// This remains deterministic between Rust peers, but native shell RNG
+    /// authority and ordering are unverified. Accepted explicit startup never
+    /// calls this compatibility path.
+    pub fn resolve_unverified_legacy_random_assignments(&self, rng: &mut SimRng) -> Self {
         let mut resolved = self.clone();
 
-        // Colors already in use that a random draw must avoid: every slot
-        // holding a concrete (non-random) color, plus colors assigned earlier in
-        // this same pass. Mirrors the engine's collision scan, which checks both
-        // the already-set slot colors and the running color table.
+        // This Rust compatibility pass avoids every concrete slot color plus
+        // colors assigned earlier in the same pass. Native collision-scan
+        // equivalence remains unverified.
         let mut used_colors: Vec<u8> = Vec::new();
         if !resolved.local.color_random {
             used_colors.push(resolved.local.color_index);
@@ -349,12 +345,12 @@ impl SkirmishLaunchSession {
     }
 }
 
-/// Draw a house color in the inclusive range `(0, 7)` (8 colors), redrawing
-/// while the result collides with an already-assigned color — one
-/// `RandomRanged(0, 7)` per attempt, each a single scenario-cursor advance, as
-/// the engine's color-pick retry loop does. Assumes at most 8 colored slots
-/// (the stock cap); with more random-color slots than free colors this would
-/// loop, exactly as the engine would — revisit if random color is ever exposed
+/// Rust compatibility helper for drawing an unused color in `0..=7`.
+///
+/// Each retry advances the supplied Rust stream once. Native RNG authority,
+/// ordering, and saturation behavior remain unverified, and accepted explicit
+/// startup never calls this helper. More random-color slots than free colors
+/// would loop; revisit that Rust fallback if random color is ever exposed
 /// alongside the >8-player scale target.
 fn draw_collision_free_color(rng: &mut SimRng, used: &[u8]) -> u8 {
     loop {
@@ -520,13 +516,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_random_assignments_is_deterministic_for_a_seed() {
+    fn unverified_legacy_random_assignments_are_deterministic_for_a_seed() {
         let session = random_test_session();
         let mut rng_a = SimRng::new(0xC0FFEE);
         let mut rng_b = SimRng::new(0xC0FFEE);
 
-        let first = session.resolve_random_assignments(&mut rng_a);
-        let second = session.resolve_random_assignments(&mut rng_b);
+        let first = session.resolve_unverified_legacy_random_assignments(&mut rng_a);
+        let second = session.resolve_unverified_legacy_random_assignments(&mut rng_b);
 
         assert_eq!(first, second, "same seed must yield the same assignment");
         assert!(!first.local.country_random);
@@ -534,14 +530,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_random_assignments_only_draws_for_random_slots_in_order() {
+    fn unverified_legacy_random_assignments_only_draw_for_random_slots_in_order() {
         let session = random_test_session();
 
         // Two random slots (local + opponent 0); opponent 1 is concrete and must
         // not consume a draw or change. The draw order is local first, then AI,
         // so resolving by hand in that order must reproduce the same result.
         let mut rng = SimRng::new(7);
-        let resolved = session.resolve_random_assignments(&mut rng);
+        let resolved = session.resolve_unverified_legacy_random_assignments(&mut rng);
 
         let mut expected_rng = SimRng::new(7);
         let expected_local =
@@ -559,21 +555,21 @@ mod tests {
     }
 
     #[test]
-    fn resolve_random_assignments_leaves_concrete_session_untouched() {
+    fn unverified_legacy_random_assignments_leave_concrete_session_untouched() {
         let mut session = random_test_session();
         session.local.country_random = false;
         session.opponents[0].country_random = false;
 
         let before = SimRng::new(42).state();
         let mut rng = SimRng::new(42);
-        let resolved = session.resolve_random_assignments(&mut rng);
+        let resolved = session.resolve_unverified_legacy_random_assignments(&mut rng);
 
         assert_eq!(resolved, session, "no random slots means no change");
         assert_eq!(rng.state(), before, "no random slots means no draws");
     }
 
     #[test]
-    fn resolve_random_assignments_draws_country_then_color_humans_then_ai() {
+    fn unverified_legacy_random_assignments_draw_country_then_color_humans_then_ai() {
         // local + ai0 random country AND random color; ai1 concrete (color 2).
         let mut session = random_test_session();
         session.local.color_random = true;
@@ -581,11 +577,12 @@ mod tests {
         assert!(!session.opponents[1].color_random);
 
         let mut rng = SimRng::new(7);
-        let resolved = session.resolve_random_assignments(&mut rng);
+        let resolved = session.resolve_unverified_legacy_random_assignments(&mut rng);
 
-        // Replay the engine order by hand: ALL humans (country then color), THEN
-        // all AI (country then color). The used-color set seeds with concrete
-        // colors first (here ai1 = 2), then accumulates as colors are assigned.
+        // Replay the Rust compatibility order by hand: ALL humans (country then
+        // color), THEN all AI (country then color). The used-color set seeds
+        // with concrete colors first (here ai1 = 2), then accumulates as colors
+        // are assigned.
         let mut expected_rng = SimRng::new(7);
         let mut used: Vec<u8> = vec![session.opponents[1].color_index];
         let exp_local_country =
@@ -600,16 +597,19 @@ mod tests {
         assert_eq!(resolved.local.color_index, exp_local_color);
         assert_eq!(resolved.opponents[0].country, exp_ai0_country);
         assert_eq!(resolved.opponents[0].color_index, exp_ai0_color);
-        assert_eq!(resolved.opponents[1].color_index, 2, "concrete AI color untouched");
+        assert_eq!(
+            resolved.opponents[1].color_index, 2,
+            "concrete AI color untouched"
+        );
         assert!(!resolved.local.color_random && !resolved.opponents[0].color_random);
-        // The strongest assertion: identical stream state proves the resolver drew
-        // in exactly this order and count (country before color, humans before AI,
-        // collision retries included).
+        // Identical stream state proves this Rust compatibility helper used this
+        // order and count (country before color, humans before AI, collision
+        // retries included).
         assert_eq!(rng.state(), expected_rng.state());
     }
 
     #[test]
-    fn resolve_random_assignments_color_collision_forces_redraw() {
+    fn unverified_legacy_random_assignments_color_collision_forces_redraw() {
         // Pre-occupy the color the seed would draw first, so the resolver must
         // redraw — proving each collision costs an extra scenario-cursor draw.
         let seed = 12345;
@@ -627,7 +627,7 @@ mod tests {
         session.opponents[0].color_random = true;
 
         let mut rng = SimRng::new(seed);
-        let resolved = session.resolve_random_assignments(&mut rng);
+        let resolved = session.resolve_unverified_legacy_random_assignments(&mut rng);
 
         assert_ne!(
             resolved.opponents[0].color_index, first_color,

@@ -223,6 +223,14 @@ fn service_tick_should_advance_sim(state: &AppState) -> bool {
 }
 
 pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
+    if !crate::match_bootstrap::accepted_tick_is_admitted(
+        state.loaded_startup.as_ref(),
+        state.rust_l0_receipt.as_ref(),
+    ) {
+        log::error!("Accepted match tick blocked: matching Rust L0 receipt is absent");
+        return;
+    }
+
     // Frame-step: when paused, advance exactly one tick on request.
     let frame_stepping = state.debug_frame_step_requested;
     let run_sim = if frame_stepping {

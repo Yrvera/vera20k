@@ -402,11 +402,10 @@ pub(crate) fn load_art_ini(asset_manager: &AssetManager) -> Option<(ArtRegistry,
     Some((reg, ini))
 }
 
-/// Draw one fresh per-match seed. The SP analog of the original fixing its
-/// global RNG seed once per game before any setup-phase draw; we are bound to
-/// reaching one shared u32 seed, not to the original's entropy source. MP
-/// will hand the host's seed over the wire through the same descriptor.
-pub(crate) fn generate_match_seed() -> u32 {
+/// Preserve the pre-existing SystemTime mix for explicitly unverified legacy
+/// and generic loads. Accepted ordinary Windows startup never calls this path;
+/// it carries the one stored `GetTickCount` word from `match_bootstrap`.
+pub(crate) fn generate_unverified_legacy_match_seed() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -534,7 +533,11 @@ pub(crate) fn spawn_entities(
             height_map,
             Some(resolved_terrain),
         );
-        let miner_count: usize = sim.entities().values().filter(|e| e.miner.is_some()).count();
+        let miner_count: usize = sim
+            .entities()
+            .values()
+            .filter(|e| e.miner.is_some())
+            .count();
         log::info!("Miner components attached: {}", miner_count);
     }
     let (unit_atlas, shp_atlas, palette_set) = build_entity_atlases(
@@ -629,8 +632,9 @@ pub(crate) fn build_entity_atlases(
     // sprite shader. Active houses are derived from the house_colors map
     // (deduplicated; row 0 of the ramp texture is the no-remap fallback).
     let default_ramps = crate::rules::house_colors::HouseColorRamps::default();
-    let house_ramps: &crate::rules::house_colors::HouseColorRamps =
-        rules.map(|r| &r.house_color_ramps).unwrap_or(&default_ramps);
+    let house_ramps: &crate::rules::house_colors::HouseColorRamps = rules
+        .map(|r| &r.house_color_ramps)
+        .unwrap_or(&default_ramps);
     let palette_set: Option<crate::render::palette_textures::PaletteSet> =
         palette.as_ref().map(|pal| {
             let mut active: Vec<crate::rules::house_colors::HouseColorIndex> =
@@ -676,7 +680,10 @@ mod tests {
         let a = RuleSet::from_ini(&with_map).expect("parse");
         let b = RuleSet::from_ini(&IniFile::from_str(RULES_BASE)).expect("parse");
         assert_eq!(a.c4_delay_ticks, b.c4_delay_ticks);
-        assert_eq!(a.production.build_speed_x1000, b.production.build_speed_x1000);
+        assert_eq!(
+            a.production.build_speed_x1000,
+            b.production.build_speed_x1000
+        );
         assert_eq!(
             a.object("E1").map(|o| o.strength),
             b.object("E1").map(|o| o.strength)
@@ -691,7 +698,10 @@ mod tests {
         let mut ini = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
         let patch = IniFile::from_str("[General]\nBuildSpeed=.58\n");
         ini.merge(&patch);
-        assert_eq!(ini.section("General").unwrap().get("BuildSpeed"), Some(".58"));
+        assert_eq!(
+            ini.section("General").unwrap().get("BuildSpeed"),
+            Some(".58")
+        );
         assert_eq!(
             ini.section("General").unwrap().get("FlightLevel"),
             Some("1500")
@@ -764,7 +774,10 @@ mod tests {
 
         // [General] scalar fallbacks == ctor defaults.
         assert_eq!(rules.general.flight_level, 500, "FlightLevel");
-        assert_eq!(rules.general.parachute_max_fall_rate, -3, "ParachuteMaxFallRate");
+        assert_eq!(
+            rules.general.parachute_max_fall_rate, -3,
+            "ParachuteMaxFallRate"
+        );
         assert_eq!(rules.general.paradrop_radius, 1024, "ParadropRadius");
         assert_eq!(rules.general.repair_step, 5, "RepairStep");
         assert_eq!(rules.general.repair_percent, 25, "RepairPercent (25%)");

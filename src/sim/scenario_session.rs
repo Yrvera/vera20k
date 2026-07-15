@@ -145,8 +145,8 @@ mod tests {
 
     /// AT-1: two sims constructed from the same descriptor seed stay in
     /// per-stream lockstep across 300 ticks of identical commands; a
-    /// different seed diverges. Proves seed injection reaches all three
-    /// streams before the first tick.
+    /// different seed diverges. The descriptor seed reaches Scenario/Main;
+    /// fresh MapGen remains the same verified Seed(0) object.
     #[test]
     fn mp_sibling_rng_state_matches_after_seed_sync() {
         use crate::map::entities::{EntityCategory, MapEntity};
@@ -193,7 +193,8 @@ mod tests {
                     } else {
                         Vec::new()
                     };
-                    sim.advance_tick(&cmds, None, &heights, None, None, 67).state_hash
+                    sim.advance_tick(&cmds, None, &heights, None, None, 67)
+                        .state_hash
                 })
                 .collect()
         }
@@ -216,6 +217,12 @@ mod tests {
             "different descriptor seeds must diverge"
         );
         assert_ne!(a.scenario_rng.state(), c.scenario_rng.state());
+        assert_ne!(a.main_rng.state(), c.main_rng.state());
+        assert_eq!(
+            a.mapgen_rng.state(),
+            c.mapgen_rng.state(),
+            "descriptor seed must not alter fresh MapGen Seed(0) state"
+        );
     }
 
     /// AT-5: authoritative bounds are queryable before any advance_tick — no
@@ -243,7 +250,9 @@ mod tests {
             theater: "SNOW".into(),
             map_width: 100,
             map_height: 100,
-            mp_start_waypoints: [(0u32, (10u16, 12u16)), (1, (88, 90))].into_iter().collect(),
+            mp_start_waypoints: [(0u32, (10u16, 12u16)), (1, (88, 90))]
+                .into_iter()
+                .collect(),
             ..Default::default()
         };
         let sim = Simulation::from_descriptor(&desc);

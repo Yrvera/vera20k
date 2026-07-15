@@ -58,7 +58,7 @@ fn hash_mission_com(mission: &crate::sim::mission::MissionCom, hasher: &mut impl
 impl Simulation {
     /// Deterministic state hash over canonicalized simulation state.
     ///
-    /// Hashes tick, both RNG streams, production, fog, alliances, and all entity
+    /// Hashes clocks, all three RNG streams, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -771,10 +771,12 @@ mod rally_hash_tests {
         let mut sim_a = Simulation::new();
         let mut sim_b = Simulation::new();
         sim_a
-            .substrate.entities
+            .substrate
+            .entities
             .insert(GameEntity::test_default(1, "GAWEAP", "Americans", 10, 10));
         sim_b
-            .substrate.entities
+            .substrate
+            .entities
             .insert(GameEntity::test_default(1, "GAWEAP", "Americans", 10, 10));
 
         sim_b.substrate.entities.get_mut(1).unwrap().rally_target = Some((30, 31));
@@ -1061,7 +1063,14 @@ mod radio_contact_hash_tests {
             sim_b.state_hash(),
             "per-mover live contacts must affect deterministic state hash",
         );
-        assert!(!sim_a.substrate.entities.get(2).unwrap().has_live_contact_with(100));
+        assert!(
+            !sim_a
+                .substrate
+                .entities
+                .get(2)
+                .unwrap()
+                .has_live_contact_with(100)
+        );
     }
 
     #[test]
@@ -1161,7 +1170,8 @@ mod infantry_hash_tests {
         assert_eq!(sim_a.state_hash(), sim_b.state_hash());
 
         sim_a
-            .substrate.entities
+            .substrate
+            .entities
             .get_mut(1)
             .unwrap()
             .attack_target
@@ -1474,7 +1484,11 @@ mod c4_hash_tests {
         assert_ne!(h_initial, h_with_plant, "c4_plant must affect state hash");
 
         // Mutate pending_c4_detonation — hash must change again.
-        sim.substrate.entities.get_mut(id).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .unwrap()
+            .pending_c4_detonation = Some(PendingC4Detonation {
             plant_start_tick: 100,
             attacker_id: 7,
         });
@@ -1523,10 +1537,15 @@ mod homing_state_hash_tests {
     fn homing_state_presence_changes_hash() {
         let mut a = Simulation::new();
         let mut b = Simulation::new();
-        let a_id = a
-            .substrate.entities
-            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
-        b.substrate.entities
+        let a_id = a.substrate.entities.insert(GameEntity::test_default(
+            1,
+            "AAHeatSeeker2",
+            "Allied",
+            5,
+            5,
+        ));
+        b.substrate
+            .entities
             .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
 
         // Hashes match while both bullets lack homing_state.
@@ -1541,12 +1560,20 @@ mod homing_state_hash_tests {
     fn homing_state_yaw_changes_hash() {
         let mut a = Simulation::new();
         let mut b = Simulation::new();
-        let a_id = a
-            .substrate.entities
-            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
-        let b_id = b
-            .substrate.entities
-            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        let a_id = a.substrate.entities.insert(GameEntity::test_default(
+            1,
+            "AAHeatSeeker2",
+            "Allied",
+            5,
+            5,
+        ));
+        let b_id = b.substrate.entities.insert(GameEntity::test_default(
+            1,
+            "AAHeatSeeker2",
+            "Allied",
+            5,
+            5,
+        ));
         a.substrate.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
         b.substrate.entities.get_mut(b_id).unwrap().homing_state = Some(make_homing(0x4000));
         assert_ne!(a.state_hash(), b.state_hash());
@@ -1558,12 +1585,20 @@ mod homing_state_hash_tests {
         // field; mutating it must not change the state hash.
         let mut a = Simulation::new();
         let mut b = Simulation::new();
-        let a_id = a
-            .substrate.entities
-            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
-        let b_id = b
-            .substrate.entities
-            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        let a_id = a.substrate.entities.insert(GameEntity::test_default(
+            1,
+            "AAHeatSeeker2",
+            "Allied",
+            5,
+            5,
+        ));
+        let b_id = b.substrate.entities.insert(GameEntity::test_default(
+            1,
+            "AAHeatSeeker2",
+            "Allied",
+            5,
+            5,
+        ));
         a.substrate.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
         let mut h = make_homing(0);
         h.pitch = 1.234;

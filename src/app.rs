@@ -153,6 +153,14 @@ pub(crate) struct AppState {
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     pub(crate) loading_session: Option<crate::app_loading::LoadingSession>,
+    /// Process-lifetime monotonic identity source; zero is permanently reserved.
+    pub(crate) next_match_correlation: u64,
+    /// Correlation owned by the currently loading accepted attempt.
+    pub(crate) active_loading_correlation: Option<crate::match_bootstrap::MatchCorrelationId>,
+    /// Accepted startup authority retained after successful installation.
+    pub(crate) loaded_startup: Option<crate::match_bootstrap::PreparedMatchStartup>,
+    /// Immutable pre-first-tick evidence for the loaded accepted startup.
+    pub(crate) rust_l0_receipt: Option<crate::match_bootstrap::RustL0Receipt>,
     /// Opt-in research shell path. Defaults off so the egui Skirmish setup is visible.
     pub(crate) dev_skirmish_shell_enabled: bool,
     pub(crate) skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState,
@@ -684,21 +692,44 @@ impl App {
         state: &mut AppState,
         session: crate::skirmish_launch::SkirmishLaunchSession,
     ) {
-        let map_name = session
-            .selected_map_file
-            .clone()
-            .unwrap_or_else(|| "auto".to_string());
+        let request = match crate::match_bootstrap::classify_startup_session(&session) {
+            crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
+                accepted,
+            ) => {
+                let correlation = match crate::match_bootstrap::allocate_match_correlation(
+                    &mut state.next_match_correlation,
+                ) {
+                    Ok(correlation) => correlation,
+                    Err(err) => {
+                        log::error!("Cannot start accepted match: {err}");
+                        return;
+                    }
+                };
+                let mut clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
+                let startup = crate::match_bootstrap::prepare_match_startup(
+                    correlation,
+                    accepted,
+                    &mut clock,
+                );
+                crate::app_loading::LoadingRequest::accepted_skirmish(
+                    startup,
+                    state.skirmish_settings.clone(),
+                )
+            }
+            crate::match_bootstrap::StartupSessionClassification::UnverifiedLegacy(reason) => {
+                log::warn!("Skirmish startup uses unverified compatibility path: {reason:?}");
+                crate::app_loading::LoadingRequest::unverified_legacy_skirmish(
+                    session,
+                    state.skirmish_settings.clone(),
+                )
+            }
+        };
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         state.main_menu_show_single_player_shell = false;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = false;
         state.shell_first_paint_slide = None;
-        let request = crate::app_loading::LoadingRequest::native_selected_skirmish(
-            map_name,
-            session,
-            state.skirmish_settings.clone(),
-        );
         crate::app_loading::begin_loading(state, request);
         Self::enter_game_window_mode(state);
         state.zoom_level = 1.0;
@@ -2112,6 +2143,9 @@ impl ApplicationHandler for App {
 
                     if in_game && (is_escape || !egui_consumed) {
                         if event.state.is_pressed() && !event.repeat {
+                            if code == KeyCode::KeyN {
+                                crate::app_loading::clear_match_startup_state(state);
+                            }
                             app_input::handle_hotkey_pressed(state, code);
                         }
                     }
@@ -2510,6 +2544,10 @@ impl App {
             skirmish_scenario_records,
             skirmish_settings: SkirmishSettings::default(),
             loading_session: None,
+            next_match_correlation: 1,
+            active_loading_correlation: None,
+            loaded_startup: None,
+            rust_l0_receipt: None,
             dev_skirmish_shell_enabled,
             skirmish_shell_state,
             skirmish_shell_last_painted_pressed_button: None,
@@ -2889,6 +2927,7 @@ impl App {
                         app_transitions::clear_screen(&mut encoder, &view);
                         log::warn!("Could not render native loading screen: {err:#}");
                         crate::app_loading::clear_loading_state(state);
+                        crate::app_loading::clear_match_startup_state(state);
                         state.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
@@ -2985,6 +3024,7 @@ impl App {
                     title,
                     detail,
                 ) {
+                    crate::app_loading::clear_match_startup_state(state);
                     state.screen = GameScreen::MainMenu;
                     Self::enter_shell_window_mode(state);
                     state.zoom_level = 1.0;
@@ -3032,6 +3072,7 @@ impl App {
                     log::warn!("Could not load map: {err:#}");
                     if native_loading {
                         crate::app_loading::clear_loading_state(state);
+                        crate::app_loading::clear_match_startup_state(state);
                         state.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
@@ -3053,6 +3094,7 @@ impl App {
     /// Abort-Mission dialog is built (a later 5a step).
     fn return_to_main_menu(state: &mut AppState) {
         state.paused = false;
+        crate::app_loading::clear_match_startup_state(state);
         if let Some(ref mut player) = state.music_player {
             player.stop();
         }
@@ -3129,6 +3171,7 @@ impl App {
 
         match action {
             SaveLoadAction::Load(path) => {
+                crate::app_loading::clear_match_startup_state(state);
                 app_input::load_save_file(state, &path);
             }
             SaveLoadAction::Delete(path) => {
@@ -3296,6 +3339,7 @@ impl App {
             DevOverlayAction::ReloadLastLoad => {
                 if let Some(path) = state.last_loaded_save_path.clone() {
                     if path.exists() {
+                        crate::app_loading::clear_match_startup_state(state);
                         app_input::load_save_file(state, &path);
                     } else {
                         log::warn!(
@@ -3306,6 +3350,7 @@ impl App {
                 }
             }
             DevOverlayAction::LoadSave(path) => {
+                crate::app_loading::clear_match_startup_state(state);
                 app_input::load_save_file(state, &path);
             }
         }

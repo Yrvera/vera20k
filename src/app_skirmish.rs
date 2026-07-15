@@ -163,7 +163,8 @@ pub(crate) fn house_color_map_for_launch_session(
     colors
 }
 
-pub(crate) fn apply_skirmish_launch_session(
+/// Apply an already validated explicit session without placeholder RNG draws.
+pub(crate) fn apply_explicit_skirmish_launch_session(
     sim: &mut Simulation,
     map_data: &MapFile,
     house_roster: &HouseRoster,
@@ -172,11 +173,51 @@ pub(crate) fn apply_skirmish_launch_session(
     resolved_terrain: &ResolvedTerrainGrid,
     session: &SkirmishLaunchSession,
 ) -> SkirmishLaunchApplyResult {
-    // Resolve any "random country" slots into concrete countries before any
-    // house/spawn state is built, drawing from the scenario stream so the
-    // choice is deterministic for the game seed and identical across peers.
-    let resolved_session = session.resolve_random_assignments(sim.random_assignment_rng());
-    let session = &resolved_session;
+    apply_resolved_skirmish_launch_session(
+        sim,
+        map_data,
+        house_roster,
+        rules,
+        height_map,
+        resolved_terrain,
+        session,
+    )
+}
+
+/// Preserve the old post-construction placeholder resolver as an explicitly
+/// unverified compatibility path until native shell draw attribution closes.
+pub(crate) fn apply_unverified_legacy_skirmish_launch_session(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    house_roster: &HouseRoster,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    session: &SkirmishLaunchSession,
+) -> SkirmishLaunchApplyResult {
+    let resolved_session = session.resolve_unverified_legacy_random_assignments(
+        sim.unverified_legacy_random_assignment_rng(),
+    );
+    apply_resolved_skirmish_launch_session(
+        sim,
+        map_data,
+        house_roster,
+        rules,
+        height_map,
+        resolved_terrain,
+        &resolved_session,
+    )
+}
+
+fn apply_resolved_skirmish_launch_session(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    house_roster: &HouseRoster,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    session: &SkirmishLaunchSession,
+) -> SkirmishLaunchApplyResult {
     let slots = normalized_launch_slots(session);
     let ai_difficulty = session
         .opponents
@@ -623,7 +664,12 @@ fn seed_starting_extra_units(
     if unit_count <= 0 {
         return 0;
     }
-    let budget = starting_unit_budget(slots, rules, unit_count, sim.session.game_options.tech_level);
+    let budget = starting_unit_budget(
+        slots,
+        rules,
+        unit_count,
+        sim.session.game_options.tech_level,
+    );
     if budget <= 0 {
         return 0;
     }
@@ -639,8 +685,11 @@ fn seed_starting_extra_units(
         .and_then(|house| house.base_center) else {
             continue;
         };
-        let candidates =
-            starting_unit_candidates_for_country(rules, slot.country, sim.session.game_options.tech_level);
+        let candidates = starting_unit_candidates_for_country(
+            rules,
+            slot.country,
+            sim.session.game_options.tech_level,
+        );
         if candidates.is_empty() {
             continue;
         }
@@ -1267,7 +1316,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_unverified_legacy_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1293,6 +1342,39 @@ mod tests {
     }
 
     #[test]
+    fn explicit_skirmish_application_bypasses_legacy_resolver_even_with_poison_random_flag() {
+        let mut sim = Simulation::new();
+        let mut session = test_session();
+        session.local.country_random = true;
+        session.opponents[0].start_position = LaunchStartPosition::Position(0);
+        session.options.bases = false;
+        session.options.unit_count = 0;
+        let terrain = test_terrain(64, 64);
+        let starts = test_launch_starts();
+        let map = test_map_with_starts(&starts);
+        let rules = test_standard_launch_rules();
+        let scenario_before = sim.rng_state().scenario;
+
+        let result = apply_explicit_skirmish_launch_session(
+            &mut sim,
+            &map,
+            &roster_with_neutral_and_playable(),
+            &rules,
+            &test_height_map(),
+            &terrain,
+            &session,
+        );
+
+        assert_eq!(result.spawned_mcvs, 0);
+        assert_eq!(result.active_slots, 2);
+        assert_eq!(sim.rng_state().scenario, scenario_before);
+        assert!(
+            session.local.country_random,
+            "the borrowed poison fixture must remain marked random"
+        );
+    }
+
+    #[test]
     fn skirmish_bases_off_still_allows_unit_count_extra_units() {
         let mut sim = Simulation::new();
         let mut session = test_session();
@@ -1303,7 +1385,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_starting_unit_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_unverified_legacy_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1330,7 +1412,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_unverified_legacy_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1354,7 +1436,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_unverified_legacy_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1392,7 +1474,7 @@ mod tests {
         )
         .expect("blocker");
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_unverified_legacy_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1459,7 +1541,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_starting_unit_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_unverified_legacy_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),

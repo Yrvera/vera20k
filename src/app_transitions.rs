@@ -30,6 +30,9 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 
 pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
     app_init::MapLoadResult {
+        startup: crate::match_bootstrap::LoadingStartup::Generic {
+            selected_map_file: "fallback".to_string(),
+        },
         basic: BasicSection::default(),
         tile_atlas: None,
         terrain_grid: None,
@@ -82,6 +85,7 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
 }
 
 pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapLoadResult) {
+    let startup = result.startup;
     state.tile_atlas = result.tile_atlas;
     crate::app_loading::clear_loading_state(state);
     state.map_basic = result.basic;
@@ -282,11 +286,59 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     }
 
     if state.spawn_pick_pending {
+        crate::app_loading::clear_match_startup_state(state);
         state.screen = GameScreen::SpawnPick;
         log::info!("Transitioned to SpawnPick — player must choose a start location");
     } else {
-        state.screen = GameScreen::InGame;
-        log::info!("Transitioned to InGame");
+        match startup {
+            crate::match_bootstrap::LoadingStartup::Accepted(prepared) => {
+                let receipt = (|| {
+                    let simulation = state
+                        .simulation
+                        .as_ref()
+                        .ok_or_else(|| "accepted map load produced no Simulation".to_string())?;
+                    let active_correlation = state.active_loading_correlation.ok_or_else(|| {
+                        "accepted map load lost its active correlation".to_string()
+                    })?;
+                    crate::match_bootstrap::RustL0Observation {
+                        startup: &prepared,
+                        simulation,
+                        active_correlation,
+                        prior_receipt: state.rust_l0_receipt.as_ref(),
+                        screen_is_loading: matches!(state.screen, GameScreen::Loading),
+                        spawn_pick_active: state.spawn_pick_pending,
+                    }
+                    .acknowledge()
+                    .map_err(|err| err.to_string())
+                })();
+
+                match receipt {
+                    Ok(receipt) => {
+                        state.loaded_startup = Some(prepared);
+                        state.rust_l0_receipt = Some(receipt);
+                        state.active_loading_correlation = None;
+                        state.screen = GameScreen::InGame;
+                        log::info!("Transitioned to InGame after Rust L0 acknowledgement");
+                    }
+                    Err(err) => {
+                        crate::app_loading::clear_match_startup_state(state);
+                        state.screen = GameScreen::MissionResult {
+                            title: "Startup Rejected".to_string(),
+                            detail: err.clone(),
+                        };
+                        log::error!("Accepted startup failed closed at Rust L0: {err}");
+                    }
+                }
+            }
+            crate::match_bootstrap::LoadingStartup::UnverifiedLegacy(_)
+            | crate::match_bootstrap::LoadingStartup::Generic { .. } => {
+                state.active_loading_correlation = None;
+                state.loaded_startup = None;
+                state.rust_l0_receipt = None;
+                state.screen = GameScreen::InGame;
+                log::info!("Transitioned to InGame on noncertifying startup path");
+            }
+        }
     }
 }
 

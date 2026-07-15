@@ -54,6 +54,7 @@ pub mod app_shell_transition;
 pub mod app_single_player_shell_render;
 pub mod app_skirmish;
 pub mod app_skirmish_shell_render;
+pub mod match_bootstrap;
 
 // App-level skirmish startup contract shared by the menu shell and map loader.
 pub mod skirmish_launch;

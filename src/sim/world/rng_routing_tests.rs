@@ -11,6 +11,32 @@ use crate::sim::snapshot::GameSnapshot;
 use std::collections::BTreeMap;
 
 const RNG_INDEX_B_START: i32 = 0x67;
+const NATIVE_MAPGEN_SEED0_HEX: &str =
+    include_str!("../../../tests/fixtures/rng/mapgen_seed0_native_0x3f4.hex");
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn decode_hex_fixture(text: &str) -> Vec<u8> {
+    let mut nibbles = Vec::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        nibbles.push(hex_nibble(byte).expect("fixture contains non-hex data"));
+    }
+    assert_eq!(nibbles.len() % 2, 0, "fixture has an odd hex digit count");
+    nibbles
+        .chunks_exact(2)
+        .map(|pair| (pair[0] << 4) | pair[1])
+        .collect()
+}
 
 /// Helper: advance a sim by one tick with empty inputs.
 fn tick(sim: &mut Simulation) {
@@ -235,6 +261,34 @@ fn advancing_scenario_only_changes_state_hash() {
     );
 }
 
+#[test]
+fn advancing_mapgen_only_changes_state_hash_without_moving_gameplay_streams() {
+    let mut sim = Simulation::with_seed(99);
+    let before_rng = sim.rng_state();
+    let before_hash = sim.state_hash();
+
+    sim.mapgen_rng.next_u32();
+
+    let after_rng = sim.rng_state();
+    assert_eq!(
+        after_rng.scenario, before_rng.scenario,
+        "advancing MapGen must not move the Scenario stream"
+    );
+    assert_eq!(
+        after_rng.main, before_rng.main,
+        "advancing MapGen must not move the Main stream"
+    );
+    assert_ne!(
+        after_rng.mapgen, before_rng.mapgen,
+        "the MapGen stream must advance"
+    );
+    assert_ne!(
+        sim.state_hash(),
+        before_hash,
+        "advancing MapGen must change the world hash"
+    );
+}
+
 // --- Test 7: snapshot round-trip persists both streams independently (§7.7) ---
 #[test]
 fn snapshot_round_trip_persists_both_streams() {
@@ -301,8 +355,9 @@ fn determinism_both_streams_match_across_ticks() {
 //
 // Mirrors `snapshot_round_trip_persists_both_streams` but advances all THREE
 // streams a DIFFERENT number of draws and proves each restores independently
-// after a save/load cycle. mapgen_rng is reseeded off its zero-state and drawn
-// so the round-trip is meaningful (a dropped/swapped field would diverge).
+// after a save/load cycle. Fresh Seed(0) MapGen is replaced with a distinct
+// seeded stream and drawn so the round-trip is meaningful (a dropped/swapped
+// field would diverge).
 // (`version_mismatch_is_rejected` in snapshot.rs already covers the v13 version
 // guard; not duplicated here.)
 #[test]
@@ -314,7 +369,8 @@ fn snapshot_round_trip_persists_all_three_streams() {
     for _ in 0..7 {
         sim.weapon_spread_rng().next_u32();
     }
-    // Reseed mapgen off zero-state and advance a distinct draw count.
+    // Replace fresh Seed(0) MapGen with a distinct seeded stream and advance a
+    // distinct draw count.
     sim.mapgen_rng = SimRng::new(99);
     for _ in 0..3 {
         sim.mapgen_rng.next_u32();
@@ -355,4 +411,70 @@ fn snapshot_round_trip_persists_all_three_streams() {
         mapgen_before,
         "mapgen stream must round-trip"
     );
+}
+
+#[test]
+fn mapgen_fresh_state_matches_native_seed_zero_full_object() {
+    let sim = Simulation::with_seed(0xDEAD_BEEF);
+    let mapgen = sim.rng_views().mapgen;
+    let raw = decode_hex_fixture(NATIVE_MAPGEN_SEED0_HEX);
+
+    assert_eq!(raw.len(), 0x3F4, "native fixture must be one RNG object");
+    assert_eq!(
+        &raw[1..4],
+        &[0, 0, 0],
+        "zero padding is an observed fact of this native-derived fixture"
+    );
+    assert_eq!(raw[0], mapgen.disabled);
+    assert_eq!(&raw[4..8], &mapgen.index_a.to_le_bytes());
+    assert_eq!(&raw[8..12], &mapgen.index_b.to_le_bytes());
+
+    let native_words = raw[0x0C..0x3F4].chunks_exact(4);
+    assert_eq!(
+        native_words.len(),
+        mapgen.words.len(),
+        "native fixture must contain all 250 logical words"
+    );
+    for (index, (native_word, rust_word)) in native_words.zip(mapgen.words).enumerate() {
+        let native_word = u32::from_le_bytes(
+            native_word
+                .try_into()
+                .expect("chunks_exact(4) yields four bytes"),
+        );
+        assert_eq!(
+            native_word, *rust_word,
+            "fresh MapGen logical word {index} must match the native fixture"
+        );
+    }
+}
+
+#[test]
+fn scenario_main_reseed_does_not_change_mapgen() {
+    let mut sim = Simulation::with_seed(7);
+    for _ in 0..5 {
+        sim.mapgen_rng.next_u32();
+    }
+    let before = sim.mapgen_rng.logical_state();
+    sim.reseed_scenario_and_main(99);
+    assert_eq!(sim.mapgen_rng.logical_state(), before);
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        SimRng::new(99).logical_state()
+    );
+    assert_eq!(
+        sim.main_rng.logical_state(),
+        SimRng::new(99).logical_state()
+    );
+}
+
+#[test]
+fn rng_views_name_all_three_streams() {
+    let mut sim = Simulation::with_seed(5);
+    sim.scatter_rng().next_u32();
+    sim.weapon_spread_rng().next_u32();
+    sim.mapgen_rng.next_u32();
+    let views = sim.rng_views();
+    assert_eq!(views.scenario, sim.scenario_rng.logical_view());
+    assert_eq!(views.main, sim.main_rng.logical_view());
+    assert_eq!(views.mapgen, sim.mapgen_rng.logical_view());
 }

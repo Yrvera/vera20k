@@ -250,7 +250,11 @@ fn considered_aircraft_infantry_is_air_for_projectile_legality() {
         .spawn_object("ROCK", "Soviet", 8, 5, 0, &rules, &heights)
         .expect("Rocketeer should spawn");
 
-    let target_entity = sim.substrate.entities.get(target).expect("target should exist");
+    let target_entity = sim
+        .substrate
+        .entities
+        .get(target)
+        .expect("target should exist");
     assert_eq!(target_entity.category, EntityCategory::Infantry);
     assert!(
         rules
@@ -262,7 +266,13 @@ fn considered_aircraft_infantry_is_air_for_projectile_legality() {
         EntityCategory::Aircraft
     );
 
-    issue_attack_command(&mut sim.substrate.entities, attacker, target, None, &sim.interner);
+    issue_attack_command(
+        &mut sim.substrate.entities,
+        attacker,
+        target,
+        None,
+        &sim.interner,
+    );
     let result = tick_combat(
         &mut sim.substrate.entities,
         &mut sim.substrate.occupancy,
@@ -294,14 +304,24 @@ fn ordinary_infantry_remains_ground_for_projectile_legality() {
         .spawn_object("E1", "Soviet", 8, 5, 0, &rules, &heights)
         .expect("ordinary infantry should spawn");
 
-    let target_entity = sim.substrate.entities.get(target).expect("target should exist");
+    let target_entity = sim
+        .substrate
+        .entities
+        .get(target)
+        .expect("target should exist");
     assert_eq!(target_entity.category, EntityCategory::Infantry);
     assert_eq!(
         combat_target_category(target_entity, &rules, &sim.interner),
         EntityCategory::Infantry
     );
 
-    issue_attack_command(&mut sim.substrate.entities, attacker, target, None, &sim.interner);
+    issue_attack_command(
+        &mut sim.substrate.entities,
+        attacker,
+        target,
+        None,
+        &sim.interner,
+    );
     let result = tick_combat(
         &mut sim.substrate.entities,
         &mut sim.substrate.occupancy,
@@ -1668,7 +1688,8 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
     let (mut sim, rules, registry) = build_minimal_sim_with_gawall(5, 5);
 
     let initial_wall_entities = sim
-        .substrate.entities
+        .substrate
+        .entities
         .iter_sorted()
         .filter(|(_, e)| {
             rules
@@ -1705,7 +1726,8 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
 
     // Wall entity removed.
     let remaining = sim
-        .substrate.entities
+        .substrate
+        .entities
         .iter_sorted()
         .filter(|(_, e)| {
             rules
@@ -1877,7 +1899,7 @@ fn build_minimal_sim_with_gawall_seeded(
     seed: u64,
 ) -> (Simulation, RuleSet, OverlayTypeRegistry) {
     let (mut sim, rules, registry) = build_minimal_sim_with_gawall(rx, ry);
-    sim.reseed_both(seed);
+    sim.reseed_scenario_and_main(seed);
     (sim, rules, registry)
 }
 
@@ -2418,7 +2440,10 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     // Victim: armed MTNK last hit by attacker id 2; idle (no attack_target / order).
     fn victim() -> GameEntity {
         let mut v = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
-        v.health = Health { current: 300, max: 300 };
+        v.health = Health {
+            current: 300,
+            max: 300,
+        };
         v.last_attacker_id = Some(2);
         v
     }
@@ -2444,7 +2469,10 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     let mut store_dying = EntityStore::new();
     store_dying.insert(victim());
     let mut dead = GameEntity::test_default(2, "TARGV", "Russia", 6, 5);
-    dead.health = Health { current: 0, max: 200 };
+    dead.health = Health {
+        current: 0,
+        max: 200,
+    };
     dead.dying = true;
     store_dying.insert(dead);
     tick_retaliation(&mut store_dying, &rules, &interner, &live_order);
@@ -2452,7 +2480,10 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     // Parity: identical victim outcome — no retaliation issued in either case.
     let va = store_absent.get(1).unwrap();
     let vb = store_dying.get(1).unwrap();
-    assert!(va.attack_target.is_none(), "absent-attacker: no retaliation");
+    assert!(
+        va.attack_target.is_none(),
+        "absent-attacker: no retaliation"
+    );
     assert!(vb.attack_target.is_none(), "dying-attacker: no retaliation");
     assert_eq!(
         va.last_attacker_id, vb.last_attacker_id,
@@ -2463,7 +2494,10 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     let mut store_live = EntityStore::new();
     store_live.insert(victim());
     let mut live = GameEntity::test_default(2, "TARGV", "Russia", 6, 5);
-    live.health = Health { current: 200, max: 200 };
+    live.health = Health {
+        current: 200,
+        max: 200,
+    };
     store_live.insert(live);
     tick_retaliation(&mut store_live, &rules, &interner, &live_order);
     let vc = store_live.get(1).unwrap();
@@ -2566,7 +2600,10 @@ fn rad_damage_fires_on_application_delay_boundary_only() {
     // Frame 15: not an application boundary — nobody takes damage.
     rad_combat_tick(&mut sim, &rules, 15);
     assert_eq!(sim.substrate.entities.get(inf).unwrap().health.current, 300);
-    assert_eq!(sim.substrate.entities.get(tank).unwrap().health.current, 300);
+    assert_eq!(
+        sim.substrate.entities.get(tank).unwrap().health.current,
+        300
+    );
 
     // Frame 16: boundary. E2 stands on the center cell (level 500, clamped
     // 500): trunc(500 × 0.2) = 100, Verses none = 100% → 100 damage. The
@@ -2661,7 +2698,12 @@ fn deployed_desolator_self_irradiates_and_refires_below_third() {
     let result = rad_combat_tick(&mut sim, &rules, 2);
     assert_eq!(result.fire_events.len(), 0, "gate closed after re-arm");
     assert!(
-        sim.substrate.entities.get(deso).unwrap().attack_target.is_none(),
+        sim.substrate
+            .entities
+            .get(deso)
+            .unwrap()
+            .attack_target
+            .is_none(),
         "synthesized self-target is cleared once the gate closes"
     );
 

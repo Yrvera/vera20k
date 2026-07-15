@@ -22,8 +22,8 @@ mod world_orders;
 mod world_spawn;
 
 pub(crate) use logic_vector::LogicVector;
-pub(crate) use substrate::ObjectSubstrate;
 pub use substrate::EnterOrderCounter;
+pub(crate) use substrate::ObjectSubstrate;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,7 +72,7 @@ use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
 use crate::sim::replay::ReplayLog;
-use crate::sim::rng::SimRng;
+use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
 use crate::sim::scenario_session::ScenarioSession;
 use crate::sim::trigger_runtime::{TriggerEffect, TriggerRuntime};
 use crate::sim::vision::{self, FogState};
@@ -281,6 +281,22 @@ pub struct SimFireEvent {
     pub occupant_anim: Option<InternedId>,
 }
 
+/// Borrowed names for the three native RNG authorities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimulationRngViews<'a> {
+    pub scenario: SimRngLogicalView<'a>,
+    pub main: SimRngLogicalView<'a>,
+    pub mapgen: SimRngLogicalView<'a>,
+}
+
+/// Owned logical RNG evidence used by the Rust pre-first-tick receipt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimulationRngState {
+    pub scenario: SimRngLogicalState,
+    pub main: SimRngLogicalState,
+    pub mapgen: SimRngLogicalState,
+}
+
 /// The game simulation - owns all authoritative game state.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Simulation {
@@ -301,7 +317,7 @@ pub struct Simulation {
     pub session: ScenarioSession,
     /// Scenario RNG — gamemd `Scenario->Random` (Scen+0x218). Drives in-object-tick
     /// sim draws: scatter, sub-cell placement, smudge/destruction, particles,
-    /// wall/overlay damage, bridge collapse/repair, ore growth/spread, TIBTRE,
+    /// wall/overlay damage, bridge collapse/destruction presentation, ore growth/spread, TIBTRE,
     /// anim scorch/50-50, miner-dock jitter. MUST be serialized + hashed (never
     /// #[serde(skip)]) or a divergence here hides from desync detection.
     pub(crate) scenario_rng: SimRng,
@@ -311,13 +327,10 @@ pub struct Simulation {
     /// today; seeded + hashed regardless so it is already in lockstep when those land.
     /// MUST be serialized + hashed.
     pub(crate) main_rng: SimRng,
-    /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). On a non-random map
-    /// this `RandomClass` is never seeded, so it stays all-zero and returns 0 on
-    /// every draw. The bridge **repair** walker-variant pick consumes this stream;
-    /// on a fixed map it therefore always yields variant 0 (the base overlay), and
-    /// the scenario/main cursors are never advanced by a repair. Constructed via
-    /// `SimRng::zeroed()` (NOT seeded). MUST be serialized + hashed like the other
-    /// two streams. Seeding this for random maps is a deferred (Blocked) follow-up.
+    /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). Fresh construction
+    /// uses the verified native `Random__Seed(0)` logical state. Bridge repair
+    /// consumes this stream; destruction remains Scenario-owned. Later
+    /// same-process native ownership remains unverified.
     pub(crate) mapgen_rng: SimRng,
     /// Deterministic fog/shroud visibility state.
     pub fog: FogState,
@@ -478,6 +491,24 @@ impl Default for Simulation {
 }
 
 impl Simulation {
+    /// Borrow all three logical RNG objects without exposing mutation.
+    pub fn rng_views(&self) -> SimulationRngViews<'_> {
+        SimulationRngViews {
+            scenario: self.scenario_rng.logical_view(),
+            main: self.main_rng.logical_view(),
+            mapgen: self.mapgen_rng.logical_view(),
+        }
+    }
+
+    /// Capture all three complete logical RNG objects as immutable evidence.
+    pub fn rng_state(&self) -> SimulationRngState {
+        SimulationRngState {
+            scenario: self.scenario_rng.logical_state(),
+            main: self.main_rng.logical_state(),
+            mapgen: self.mapgen_rng.logical_state(),
+        }
+    }
+
     /// Create a new empty simulation with the default deterministic seed.
     pub fn new() -> Self {
         Self::with_seed(DEFAULT_SIM_SEED)
@@ -503,9 +534,7 @@ impl Simulation {
     ) -> Option<&'r ObjectType> {
         match self.type_handles.handle_for(type_ref) {
             Some(handle) => Some(rules.object_by_handle(handle)),
-            None if self.type_handles.is_empty() => {
-                rules.object(self.interner.resolve(type_ref))
-            }
+            None if self.type_handles.is_empty() => rules.object(self.interner.resolve(type_ref)),
             None => None,
         }
     }
@@ -515,8 +544,9 @@ impl Simulation {
     /// `session.seed` (pinned harness baselines depend on it) even though the
     /// stream seeder consumes only 32 bits.
     pub fn with_seed(seed: u64) -> Self {
-        let mut session =
-            ScenarioSession::from_descriptor(&crate::sim::scenario_session::ScenarioDescriptor::default());
+        let mut session = ScenarioSession::from_descriptor(
+            &crate::sim::scenario_session::ScenarioDescriptor::default(),
+        );
         session.seed = seed;
         Self::construct(session)
     }
@@ -529,8 +559,7 @@ impl Simulation {
     }
 
     /// Shared constructor body: seed both gameplay streams identically from
-    /// the session seed (divergence comes from consumption only), leave the
-    /// mapgen stream in its unseeded zero-state.
+    /// the session seed and construct fresh MapGen with native Seed(0) state.
     fn construct(session: ScenarioSession) -> Self {
         let seed = session.seed;
         let mut out = Self {
@@ -540,7 +569,7 @@ impl Simulation {
             session,
             scenario_rng: SimRng::new(seed),
             main_rng: SimRng::new(seed),
-            mapgen_rng: SimRng::zeroed(),
+            mapgen_rng: SimRng::new(0),
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
@@ -628,7 +657,7 @@ impl Simulation {
     pub(crate) fn miner_jitter_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // dock-entry retry + unload-deploy frame jitter
-    pub(crate) fn random_assignment_rng(&mut self) -> &mut SimRng {
+    pub(crate) fn unverified_legacy_random_assignment_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // session random country/color resolution at launch handoff
 
@@ -640,15 +669,13 @@ impl Simulation {
         &mut self.main_rng
     } // HouseClass superpower/AI gate roll
 
-    /// Test/replay helper — reseed BOTH streams from one seed (mirrors the dual
-    /// Seed+clone in gamemd Init_Random_Number_System). Replaces test code that
-    /// did `sim.rng = SimRng::new(seed)`.
-    pub(crate) fn reseed_both(&mut self, seed: u64) {
+    /// Test/replay helper for the per-game Scenario/Main pair only.
+    ///
+    /// Same-process MapGen reset/retention is unverified, so reseeding the
+    /// per-game pair must preserve the current MapGen object.
+    pub(crate) fn reseed_scenario_and_main(&mut self, seed: u64) {
         self.scenario_rng = SimRng::new(seed);
         self.main_rng = SimRng::new(seed);
-        // mapgen_rng mirrors gamemd's unseeded g_MapGenRng — reset to zero-state,
-        // never seeded from the gameplay seed.
-        self.mapgen_rng = SimRng::zeroed();
         self.session.seed = seed;
     }
 
@@ -794,7 +821,8 @@ impl Simulation {
 
     pub(crate) fn allocate_stable_id(&mut self) -> u64 {
         let id = self.substrate.next_stable_entity_id;
-        self.substrate.next_stable_entity_id = self.substrate.next_stable_entity_id.saturating_add(1);
+        self.substrate.next_stable_entity_id =
+            self.substrate.next_stable_entity_id.saturating_add(1);
         id
     }
 
@@ -871,7 +899,8 @@ impl Simulation {
         entity.occupancy_enter_order = order;
         let insertion = CellListInsertion::from_category(entity.category);
         for (rx, ry) in cells {
-            self.substrate.occupancy
+            self.substrate
+                .occupancy
                 .add(rx, ry, stable_id, layer, sub_cell, insertion);
         }
     }
@@ -896,7 +925,12 @@ impl Simulation {
         for &id in order {
             debug_assert!(seen.insert(id), "logic order has duplicate id {id}");
         }
-        let flagged = self.substrate.entities.values().filter(|e| e.in_logic_vector).count();
+        let flagged = self
+            .substrate
+            .entities
+            .values()
+            .filter(|e| e.in_logic_vector)
+            .count();
         debug_assert_eq!(
             order.len(),
             flagged,
@@ -1057,7 +1091,7 @@ impl Simulation {
     #[cfg(debug_assertions)]
     pub(crate) fn debug_assert_factory_conservation(&self) {
         use crate::sim::economy::Economy;
-        use crate::sim::production::{StepOutcome, PRODUCTION_STEPS};
+        use crate::sim::production::{PRODUCTION_STEPS, StepOutcome};
         for factory in self.production.factory_shadow.iter_insertion_ordered() {
             if factory.object.is_none() {
                 continue; // queue-only / no active object: nothing to conserve
@@ -1105,7 +1139,9 @@ impl Simulation {
             debug_assert!(
                 f.suspended && f.object.is_some(),
                 "C12: tick {} {:?}/{:?}: completion must suspend with the object attached",
-                self.session.tick, factory.owner, factory.category,
+                self.session.tick,
+                factory.owner,
+                factory.category,
             );
         }
     }
@@ -1132,7 +1168,9 @@ impl Simulation {
                 debug_assert!(
                     f.insertion_seq > p,
                     "P5d (A): tick {}: insertion_seq must be strictly increasing across the sweep ({} after {})",
-                    self.session.tick, f.insertion_seq, p,
+                    self.session.tick,
+                    f.insertion_seq,
+                    p,
                 );
             }
             prev_seq = Some(f.insertion_seq);
@@ -1141,7 +1179,11 @@ impl Simulation {
                 debug_assert!(
                     e.enqueue_order > tail_prev,
                     "P5d (A): tick {} {:?}/{:?}: tail enqueue_order must strictly exceed the active build + prior tail ({} after {})",
-                    self.session.tick, f.owner, f.category, e.enqueue_order, tail_prev,
+                    self.session.tick,
+                    f.owner,
+                    f.category,
+                    e.enqueue_order,
+                    tail_prev,
                 );
                 tail_prev = e.enqueue_order;
             }
@@ -1153,12 +1195,20 @@ impl Simulation {
             debug_assert!(
                 f.progress <= PRODUCTION_STEPS,
                 "P5b (B): tick {} {:?}/{:?}: progress {} exceeds {}",
-                self.session.tick, f.owner, f.category, f.progress, PRODUCTION_STEPS,
+                self.session.tick,
+                f.owner,
+                f.category,
+                f.progress,
+                PRODUCTION_STEPS,
             );
             debug_assert!(
                 f.balance >= 0 && f.balance <= f.original_balance,
                 "P5b (B): tick {} {:?}/{:?}: balance {} out of [0, original {}]",
-                self.session.tick, f.owner, f.category, f.balance, f.original_balance,
+                self.session.tick,
+                f.owner,
+                f.category,
+                f.balance,
+                f.original_balance,
             );
         }
     }
@@ -1576,9 +1626,7 @@ impl Simulation {
         let to_remove: Option<u64> = self.substrate.entities.iter_sorted().find_map(|(id, e)| {
             if e.position.rx == rx
                 && e.position.ry == ry
-                && self
-                    .object_type(e.type_ref, rules)
-                    .is_some_and(|o| o.wall)
+                && self.object_type(e.type_ref, rules).is_some_and(|o| o.wall)
             {
                 Some(id)
             } else {
@@ -2170,7 +2218,8 @@ impl Simulation {
                     .unwrap_or(8);
                 // Collect positions to avoid borrow conflict (read entities, write world_effects).
                 let wake_positions: Vec<(u16, u16, u8)> = self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .keys_sorted()
                     .iter()
                     .filter_map(|id| {
@@ -2251,7 +2300,11 @@ impl Simulation {
 
             // Infantry fear decay and runtime prone transitions happen after
             // deploy state and before combat consumes the prone bit.
-            crate::sim::infantry::tick_fear_for_entities(&mut self.substrate.entities, rules, &self.interner);
+            crate::sim::infantry::tick_fear_for_entities(
+                &mut self.substrate.entities,
+                rules,
+                &self.interner,
+            );
 
             // --- Phase 5: Combat + Turret rotation ---
             // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking).
@@ -2303,8 +2356,11 @@ impl Simulation {
             // Radiation site evolution (lifetime countdown, periodic per-cell
             // decay, self-deletion) runs after the per-object combat work —
             // the native driver updates radiation sites after the object loop.
-            self.radiation
-                .tick_decay(self.session.binary_frame, &rules.radiation, self.resolved_terrain.as_ref());
+            self.radiation.tick_decay(
+                self.session.binary_frame,
+                &rules.radiation,
+                self.resolved_terrain.as_ref(),
+            );
             turret::tick_turret_rotation(
                 &mut self.substrate.entities,
                 rules,
@@ -2329,7 +2385,8 @@ impl Simulation {
                 .despawned_ids
                 .iter()
                 .filter_map(|&dead_id| {
-                    self.substrate.entities
+                    self.substrate
+                        .entities
                         .get(dead_id)
                         .map(|entity| (entity.owner, entity.category))
                 })
@@ -2543,7 +2600,12 @@ impl Simulation {
             // --- Phase 6: Retaliation + Passengers ---
             // DEPENDS ON: combat (sets last_attacker_id read by retaliation).
             let logic_order = self.live_object_order_snapshot();
-            combat::tick_retaliation(&mut self.substrate.entities, rules, &self.interner, &logic_order);
+            combat::tick_retaliation(
+                &mut self.substrate.entities,
+                rules,
+                &self.interner,
+                &logic_order,
+            );
             passenger_ownership_changed = passenger::tick_passenger_system(self, rules);
             self.tick_order_intents_post_combat(path_grid, Some(rules));
             // --- Phase 7: Scatter + Production + Repairs + Docks + Ore ---
@@ -2659,7 +2721,12 @@ impl Simulation {
                 )
                 .with_growth_queue(&mut production.ore_growth_state, self.session.binary_frame)
                 .with_spawning_terrain_cells(&production.tiberium_spawning_terrain_cells)
-                .with_live_object_context(&self.substrate.entities, &self.substrate.occupancy, rules, &self.interner)
+                .with_live_object_context(
+                    &self.substrate.entities,
+                    &self.substrate.occupancy,
+                    rules,
+                    &self.interner,
+                )
                 .with_validation_context(
                     self.resolved_terrain.as_ref(),
                     overlay_registry,
