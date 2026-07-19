@@ -269,6 +269,42 @@ fn decode_ws_compressed_chunk(data: &[u8], out: &mut Vec<i16>) {
 mod tests {
     use super::*;
 
+    /// Golden vectors captured by emulating the original engine's IMA nibble
+    /// decoder (machine-derived; see docs/research/
+    /// ADPCM_NIBBLE_VALUE_CERTIFICATION_GHIDRA_REPORT.md for the capture
+    /// log). Each row: (predictor, step_index) state, input nibble, expected
+    /// 16-bit sample. Covers zero state, mid states, and both saturation
+    /// clamps.
+    #[test]
+    fn adpcm_nibble_matches_original_engine_emulation_vectors() {
+        const VECTORS: &[(i32, i32, u8, i16)] = &[
+            (0, 0, 0x0, 0),
+            (0, 0, 0x3, 4),
+            (0, 0, 0x5, 8),
+            (0, 0, 0x7, 11),
+            (0, 0, 0x8, 0),
+            (0, 0, 0xB, -4),
+            (0, 0, 0xF, -11),
+            (0, 4, 0x7, 19),
+            (0, 4, 0xF, -19),
+            (24, 40, 0x7, 655),
+            (24, 40, 0xA, -186),
+            (36, 64, 0x5, 4609),
+            (36, 64, 0xD, -4537),
+            (60, 84, 0x7, 32767),  // positive clamp
+            (60, 84, 0xF, -32768), // negative clamp
+        ];
+        for &(pred, idx, nibble, expected) in VECTORS {
+            let mut state = ImaAdpcmState::new();
+            state.set_state(pred, idx);
+            assert_eq!(
+                state.decode_nibble(nibble),
+                expected,
+                "state ({pred},{idx}) nibble {nibble:#x}"
+            );
+        }
+    }
+
     #[test]
     fn test_parse_header_too_short() {
         assert!(parse_header(&[0u8; 5]).is_none());

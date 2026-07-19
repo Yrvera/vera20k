@@ -26,6 +26,7 @@
 //! | `certify_pcx_structural` | PCX dims match raw header bounds; pixel buffer matches plane count (271 files) |
 //! | `certify_aud_chunk_walk` | AUD chunk walk lands exactly on EOF; chunk outputs sum to header output_size; decode consumes every input nibble |
 //! | `certify_audio_bag_total` | Every audio.idx entry (3,438 across AUDIOMD/AUDIO.MIX) resolves and decodes |
+//! | `certify_bag_adpcm_block_invariants` | ADPCM decoded SAMPLE VALUES: no retail block has an invalid preamble or unaligned mono payload — the only classes where our decoder and the original's diverge (nibble math certified by emulation vectors in src/assets/aud_file.rs) |
 //! | `certify_pal_roundtrip_bytes` | Both palette scale formulas recomputed from raw bytes match parsed output channel-for-channel; all retail bytes in 6-bit domain |
 //! | `certify_hva_roundtrip_bytes` | Section names and every transform f32 are bit-identical to the raw bytes |
 //! | `certify_vpl_roundtrip_bytes` | Header fields and every lighting page byte-equal the raw file |
@@ -33,13 +34,10 @@
 //!
 //! ## UNVERIFIED-pending-instrument (not covered by any check here)
 //!
-//! Decoder OUTPUT VALUES vs the original engine's decoders for: AUD ADPCM
-//! sample values (bag path; upgrade path: emulation vectors of the native
-//! nibble decoder — see docs/plans/2026-07-05-parity-convergence-strategy.md,
-//! P2 oracles). Also renderer-side, not parser: TMP depth (ZData)
-//! COMPOSITION semantics (native per-pixel z-test at draw vs our pre-merged
-//! depth buffer). The `ratchet_*` digests pin today's output but certify
-//! nothing about it.
+//! Renderer-side, not parser: TMP depth (ZData) COMPOSITION semantics
+//! (native per-pixel z-test at draw vs our pre-merged depth buffer). All
+//! parser decode-VALUE rows are now certified (see below). The `ratchet_*`
+//! digests remain change detectors only.
 //!
 //! Resolved 2026-07-19: SHP pixel values certified by
 //! `certify_shp_rle_row_exactness` (grammar verified from the binary +
@@ -51,8 +49,11 @@
 //! CSF text values certified by `certify_csf_text_values` after implementing
 //! the engine's load-time whitespace normalization (213 retail strings were
 //! affected) — docs/research/CSF_TEXT_VALUE_CERTIFICATION_GHIDRA_REPORT.md.
-//! The trailing sample declared by 4 retail AUDs is unreachable in the
-//! original engine (docs/research/AUD_TRAILING_SAMPLE_UNREACHABLE_GHIDRA_REPORT.md).
+//! ADPCM sample values certified by emulation vectors + table identity +
+//! `certify_bag_adpcm_block_invariants` —
+//! docs/research/ADPCM_NIBBLE_VALUE_CERTIFICATION_GHIDRA_REPORT.md. The
+//! trailing sample declared by 4 retail AUDs is unreachable in the original
+//! engine (docs/research/AUD_TRAILING_SAMPLE_UNREACHABLE_GHIDRA_REPORT.md).
 //!
 //! Run: cargo test --release --test retail_goldens -- --ignored
 //! Regenerate goldens: RETAIL_GOLDENS_WRITE=1 (same invocation; one session at

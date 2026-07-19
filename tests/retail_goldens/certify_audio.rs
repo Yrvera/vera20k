@@ -133,6 +133,100 @@ fn certify_aud_chunk_walk() {
 
 #[test]
 #[ignore] // Requires RA2_DIR (retail game files)
+fn certify_bag_adpcm_block_invariants() {
+    // Value-parity certification for bag IMA-ADPCM decode, block level.
+    // The original engine's block decoder (see docs/research/
+    // ADPCM_NIBBLE_VALUE_CERTIFICATION_GHIDRA_REPORT.md):
+    // - REJECTS a block whose per-channel preamble has step_index > 88 or a
+    //   nonzero reserved byte (our decoder clamps/continues instead) — so
+    //   equivalence needs: no retail preamble is invalid;
+    // - for MONO blocks rounds the nibble payload up to 4-byte groups,
+    //   reading past an unaligned block end (ours decodes exact bytes) — so
+    //   equivalence needs: every mono block payload is 4-byte aligned;
+    // - for STEREO blocks truncates the payload to whole 8-byte L/R groups —
+    //   identical to ours by construction.
+    let Some(root) = ra2_dir() else {
+        println!("SKIP: set RA2_DIR to the retail install");
+        return;
+    };
+    let am = load_corpus(&root);
+    let mut failures: Vec<String> = Vec::new();
+    let mut ima_entries = 0usize;
+    let mut stereo_entries = 0usize;
+    for mix_name in ["AUDIOMD.MIX", "AUDIO.MIX"] {
+        let Some(mix) = am.archive(mix_name) else {
+            continue;
+        };
+        let (Some(idx_data), Some(bag_data)) = (
+            mix.get_by_name("audio.idx"),
+            mix.get_by_name("audio.bag").map(|d| d.to_vec()),
+        ) else {
+            continue;
+        };
+        let Some(index) = AudioIndex::from_idx_bag(idx_data, bag_data) else {
+            continue;
+        };
+        let names: Vec<String> = index
+            .names_with_prefix("")
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        for name in &names {
+            let Some((entry, data)) = index.get(name) else {
+                continue;
+            };
+            if !entry.is_ima_adpcm() {
+                continue;
+            }
+            ima_entries += 1;
+            let channels = entry.channels() as usize;
+            if channels == 2 {
+                stereo_entries += 1;
+            }
+            let preamble = channels * 4;
+            let block_size = if entry.chunk_size > 0 {
+                entry.chunk_size as usize
+            } else {
+                data.len()
+            };
+            let mut pos = 0usize;
+            while pos + preamble <= data.len() {
+                let block_end = (pos + block_size).min(data.len());
+                for ch in 0..channels {
+                    let step = data[pos + ch * 4 + 2];
+                    let reserved = data[pos + ch * 4 + 3];
+                    if step > 0x58 || reserved != 0 {
+                        failures.push(format!(
+                            "{mix_name} '{name}': block at {pos} ch {ch} preamble \
+                             step {step} reserved {reserved} — native would reject"
+                        ));
+                    }
+                }
+                let payload = block_end - pos - preamble;
+                if channels == 1 && payload % 4 != 0 {
+                    failures.push(format!(
+                        "{mix_name} '{name}': mono block at {pos} payload {payload} \
+                         not 4-aligned — native reads past block end"
+                    ));
+                }
+                if block_size == 0 {
+                    break;
+                }
+                pos += block_size;
+            }
+        }
+    }
+    println!("RECORD: IMA-ADPCM bag entries: {ima_entries} ({stereo_entries} stereo)");
+    assert!(
+        failures.is_empty(),
+        "bag ADPCM block invariants: {} violations:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+#[ignore] // Requires RA2_DIR (retail game files)
 fn certify_audio_bag_total() {
     let Some(root) = ra2_dir() else {
         println!("SKIP: set RA2_DIR to the retail install");
