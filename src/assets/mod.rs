@@ -31,6 +31,7 @@ pub mod bink_file;
 pub mod csf_file;
 pub mod error;
 pub mod fnt_file;
+pub mod format_sniff;
 pub mod hva_file;
 pub mod mix_archive;
 pub mod mix_crypto;
