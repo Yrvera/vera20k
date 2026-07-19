@@ -15,6 +15,7 @@
 //! | `certify_corpus_manifest` | Corpus identity: archive set + per-archive (id, size) digests match the committed manifest (drift = install change, not parser failure) |
 //! | `certify_parse_total_zero_failures` | Every sniffed retail file (8,824 on the reference install) parses without error |
 //! | `certify_shp_structural` | SHP frame count matches raw header; every frame's pixel buffer matches its dims; frames lie inside file bounds (2,450 files) |
+//! | `certify_shp_rle_row_exactness` | SHP format-2/3 decoded pixel VALUES: no retail row under-runs, so our length-bound decoder equals the original's width-driven consumer on all retail data (grammar verified from the binary's RLE blitters) |
 //! | `certify_tmp_structural` | TMP tile grid matches raw header; 60x30 tiles; pixel/depth buffers match tile dims (5,536 files) |
 //! | `certify_vxl_structural` | VXL limb/palette counts match header; voxels inside grids; normal indices in-table or exactly 255 (255 only in retail DUMMY placeholder limbs) |
 //! | `certify_hva_structural` | HVA counts match raw header; exact file-size formula holds (220 files) |
@@ -30,12 +31,18 @@
 //!
 //! ## UNVERIFIED-pending-instrument (not covered by any check here)
 //!
-//! Decoder OUTPUT VALUES vs the original engine's decoders: SHP RLE-Zero
-//! pixels, TMP block pixels, AUD ADPCM sample values, CSF text values, and the
-//! trailing sample 4 retail AUDs declare beyond their input nibbles. Upgrade
-//! path: emulation vectors of the native decompressors or pixel goldens (see
+//! Decoder OUTPUT VALUES vs the original engine's decoders for: TMP block
+//! pixels, AUD ADPCM sample values, CSF text values. Upgrade path: emulation
+//! vectors of the native decompressors or pixel goldens (see
 //! docs/plans/2026-07-05-parity-convergence-strategy.md, P2 oracles). The
 //! `ratchet_*` digests pin today's output but certify nothing about it.
+//!
+//! Resolved 2026-07-19: SHP pixel values are certified by
+//! `certify_shp_rle_row_exactness` (grammar verified from the binary +
+//! corpus no-under-run proof; formats 0/1 are byte-copies by construction) —
+//! see docs/research/SHP_RLE_ZERO_VALUE_CERTIFICATION_GHIDRA_REPORT.md. The
+//! trailing sample declared by 4 retail AUDs is unreachable in the original
+//! engine (see docs/research/AUD_TRAILING_SAMPLE_UNREACHABLE_GHIDRA_REPORT.md).
 //!
 //! Run: cargo test --release --test retail_goldens -- --ignored
 //! Regenerate goldens: RETAIL_GOLDENS_WRITE=1 (same invocation; one session at
