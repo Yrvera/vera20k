@@ -100,6 +100,10 @@ pub struct Manifest {
     pub archives: BTreeMap<String, (usize, u64)>,
     /// format tag -> sniffed file count.
     pub format_counts: BTreeMap<String, usize>,
+    /// Entry count across the audio.idx/audio.bag pairs (AUDIOMD.MIX +
+    /// AUDIO.MIX) — separate from format_counts, which is sniffer-derived.
+    #[serde(default)]
+    pub bag_aud: usize,
     /// format tag -> ratchet rollup digest over all decoded outputs.
     pub decode_rollups: BTreeMap<String, u64>,
     /// Curated per-file ratchet rows: (format, filename, decode digest).
