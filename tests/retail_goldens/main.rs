@@ -123,3 +123,15 @@ pub fn write_manifest(m: &Manifest) {
 pub fn write_mode() -> bool {
     std::env::var("RETAIL_GOLDENS_WRITE").is_ok_and(|v| v == "1")
 }
+
+/// Best-effort MIX id -> filename map from the local XCC database, for legible
+/// failure/record output. Empty (ids print as hashes) when the DB is absent.
+pub fn xcc_name_map() -> std::collections::HashMap<i32, String> {
+    let Ok(db) = vera20k::assets::xcc_database::XccDatabase::load_from_disk() else {
+        return Default::default();
+    };
+    db.build_hash_dictionary()
+        .into_iter()
+        .map(|(name, id)| (id, name))
+        .collect()
+}

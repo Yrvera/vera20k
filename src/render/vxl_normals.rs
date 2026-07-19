@@ -21,8 +21,13 @@ const TS_NORMAL_COUNT: usize = 36;
 /// 256 RA2 normal vectors. The original engine ships only 245 distinct
 /// vectors; entries 245–249 are byte-duplicates of entry 244, and entries
 /// 250–255 never appear in the binary's lighting LUT (the original engine
-/// leaves them stale in memory). Padded here with +Z fallback for safety;
-/// retail VXL data should never reference indices >= 250.
+/// leaves them stale in memory). Padded here with +Z fallback for safety.
+/// Retail VXL data DOES reference index 255 — but only inside placeholder
+/// limbs named DUMMY01/DUMMY02 (1,931 voxels across 8 retail files; verified
+/// by tests/retail_goldens certify_vxl_structural). Indices 250–254 never
+/// occur in retail data. What the original engine's stale slot 255 shades
+/// those dummy voxels as is unverified; our fallback may differ if a dummy
+/// limb is ever player-visible.
 #[rustfmt::skip]
 static RA2_NORMALS: [[f32; 3]; RA2_NORMAL_COUNT] = [
     [ 0.526578, -0.359621, -0.770317], [ 0.150482,  0.435984,  0.887284],
