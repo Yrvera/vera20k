@@ -17,6 +17,7 @@
 //! | `certify_shp_structural` | SHP frame count matches raw header; every frame's pixel buffer matches its dims; frames lie inside file bounds (2,450 files) |
 //! | `certify_shp_rle_row_exactness` | SHP format-2/3 decoded pixel VALUES: no retail row under-runs, so our length-bound decoder equals the original's width-driven consumer on all retail data (grammar verified from the binary's RLE blitters) |
 //! | `certify_tmp_structural` | TMP tile grid matches raw header; 60x30 tiles; pixel/depth buffers match tile dims (5,536 files) |
+//! | `certify_tmp_value_layout` | TMP decoded pixel VALUES: stored section offsets/origins equal our sequential layout and extra-vs-diamond composition orders never conflict on retail data (diamond geometry verified against the binary's template) |
 //! | `certify_vxl_structural` | VXL limb/palette counts match header; voxels inside grids; normal indices in-table or exactly 255 (255 only in retail DUMMY placeholder limbs) |
 //! | `certify_hva_structural` | HVA counts match raw header; exact file-size formula holds (220 files) |
 //! | `certify_csf_structural` | CSF parsed entry count equals unique raw label records; raw walk lands exactly on EOF; version 3 |
@@ -31,18 +32,23 @@
 //!
 //! ## UNVERIFIED-pending-instrument (not covered by any check here)
 //!
-//! Decoder OUTPUT VALUES vs the original engine's decoders for: TMP block
-//! pixels, AUD ADPCM sample values, CSF text values. Upgrade path: emulation
-//! vectors of the native decompressors or pixel goldens (see
-//! docs/plans/2026-07-05-parity-convergence-strategy.md, P2 oracles). The
-//! `ratchet_*` digests pin today's output but certify nothing about it.
+//! Decoder OUTPUT VALUES vs the original engine's decoders for: AUD ADPCM
+//! sample values and CSF text values. Upgrade path: emulation vectors of the
+//! native decompressors (see docs/plans/2026-07-05-parity-convergence-strategy.md,
+//! P2 oracles). Also renderer-side, not parser: TMP depth (ZData)
+//! COMPOSITION semantics (native per-pixel z-test at draw vs our pre-merged
+//! depth buffer). The `ratchet_*` digests pin today's output but certify
+//! nothing about it.
 //!
-//! Resolved 2026-07-19: SHP pixel values are certified by
+//! Resolved 2026-07-19: SHP pixel values certified by
 //! `certify_shp_rle_row_exactness` (grammar verified from the binary +
-//! corpus no-under-run proof; formats 0/1 are byte-copies by construction) —
-//! see docs/research/SHP_RLE_ZERO_VALUE_CERTIFICATION_GHIDRA_REPORT.md. The
-//! trailing sample declared by 4 retail AUDs is unreachable in the original
-//! engine (see docs/research/AUD_TRAILING_SAMPLE_UNREACHABLE_GHIDRA_REPORT.md).
+//! corpus no-under-run proof; formats 0/1 byte-copies by construction) — see
+//! docs/research/SHP_RLE_ZERO_VALUE_CERTIFICATION_GHIDRA_REPORT.md. TMP
+//! pixel values certified by `certify_tmp_value_layout` (binary template
+//! geometry + stored-offset/origin equivalence + zero composition
+//! conflicts) — see docs/research/TMP_DIAMOND_VALUE_CERTIFICATION_GHIDRA_REPORT.md.
+//! The trailing sample declared by 4 retail AUDs is unreachable in the
+//! original engine (docs/research/AUD_TRAILING_SAMPLE_UNREACHABLE_GHIDRA_REPORT.md).
 //!
 //! Run: cargo test --release --test retail_goldens -- --ignored
 //! Regenerate goldens: RETAIL_GOLDENS_WRITE=1 (same invocation; one session at

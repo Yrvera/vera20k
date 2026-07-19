@@ -345,6 +345,139 @@ fn certify_tmp_structural() {
 
 #[test]
 #[ignore] // Requires RA2_DIR (retail game files)
+fn certify_tmp_value_layout() {
+    // Value-parity certification for TMP tile pixels.
+    //
+    // The original engine's tile blitter (see docs/research/
+    // TMP_DIAMOND_VALUE_CERTIFICATION_GHIDRA_REPORT.md):
+    // - reads diamond pixels via a binary-embedded 29-row template whose row
+    //   widths (4,8,..,60,..,8,4; 900 bytes) and x-indents ((60-w)/2) are
+    //   bit-identical to our unpack_diamond formula (verified from the
+    //   template bytes), starting at cell offset 52;
+    // - locates ZData / ExtraData / ExtraZData via OFFSETS STORED in the
+    //   cell header (+0x0C / +0x08 / +0x10), where our decoder assumes they
+    //   follow sequentially (52+900, then +900 if ZData, then +w*h);
+    // - anchors the extra rect with the STORED tile origin (+0x00/+0x04),
+    //   where our decoder computes the origin from (col,row);
+    // - draws ExtraData AFTER the diamond, overwriting where extra != 0 —
+    //   our decoder composites extra BEHIND the diamond (only into zeros).
+    //
+    // The three assumptions and the composition order are all corpus
+    // properties: this test proves the stored offsets/origins equal our
+    // assumptions for every retail tile, and that no nonzero extra pixel
+    // ever coincides with a nonzero diamond pixel (making behind-vs-over
+    // composition value-identical on all retail data).
+    let mut tiles_with_extra = 0usize;
+    let mut overlap_conflicts = 0usize;
+    certify_format("tmp", |_, data| {
+        let template_w = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let template_h = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let rd_u32 = |off: usize| -> u32 {
+            u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+        };
+        let rd_i32 = |off: usize| -> i32 { rd_u32(off) as i32 };
+        for i in 0..template_w * template_h {
+            let cell = rd_u32(16 + i * 4) as usize;
+            if cell == 0 {
+                continue;
+            }
+            let col = (i % template_w) as i32;
+            let row = (i / template_w) as i32;
+            let stored_x = rd_i32(cell);
+            let stored_y = rd_i32(cell + 4);
+            let extra_off = rd_u32(cell + 8) as usize;
+            let z_off = rd_u32(cell + 12) as usize;
+            let extra_z_off = rd_u32(cell + 16) as usize;
+            let extra_x = rd_i32(cell + 20);
+            let extra_y = rd_i32(cell + 24);
+            let extra_w = rd_u32(cell + 28) as usize;
+            let extra_h = rd_u32(cell + 32) as usize;
+            let flags = rd_u32(cell + 36);
+            let has_extra = flags & 0x01 != 0;
+            let has_z = flags & 0x02 != 0;
+
+            if stored_x != (col - row) * 30 || stored_y != (col + row) * 15 {
+                return Err(format!(
+                    "cell {i}: stored origin ({stored_x},{stored_y}) != computed \
+                     ({},{}) — extra-rect anchoring would diverge",
+                    (col - row) * 30,
+                    (col + row) * 15
+                ));
+            }
+            if has_z && z_off != 52 + 900 {
+                return Err(format!(
+                    "cell {i}: stored z offset {z_off} != sequential 952"
+                ));
+            }
+            if has_extra {
+                let expected = 52 + 900 + if has_z { 900 } else { 0 };
+                if extra_off != expected {
+                    return Err(format!(
+                        "cell {i}: stored extra offset {extra_off} != sequential {expected}"
+                    ));
+                }
+                if has_z && extra_z_off != extra_off + extra_w * extra_h {
+                    return Err(format!(
+                        "cell {i}: stored extra-z offset {extra_z_off} != extra + {}",
+                        extra_w * extra_h
+                    ));
+                }
+                if cell + extra_off + extra_w * extra_h > data.len() {
+                    return Err(format!("cell {i}: extra data past EOF"));
+                }
+                tiles_with_extra += 1;
+
+                // Overlap conflict scan: unpack the diamond (formula already
+                // certified against the binary template) and test every
+                // nonzero extra pixel that lands inside the 60x30 tile rect.
+                let mut diamond = [0u8; 60 * 30];
+                let mut src = cell + 52;
+                let mut w = 4usize;
+                for j in 0..29 {
+                    let x0 = (60 - w) / 2;
+                    diamond[j * 60 + x0..j * 60 + x0 + w].copy_from_slice(&data[src..src + w]);
+                    src += w;
+                    if j < 14 {
+                        w += 4;
+                    } else {
+                        w -= 4;
+                    }
+                }
+                let rel_x = extra_x - stored_x;
+                let rel_y = extra_y - stored_y;
+                for ey in 0..extra_h {
+                    for ex in 0..extra_w {
+                        let v = data[cell + extra_off + ey * extra_w + ex];
+                        if v == 0 {
+                            continue;
+                        }
+                        let bx = rel_x + ex as i32;
+                        let by = rel_y + ey as i32;
+                        if (0..60).contains(&bx)
+                            && (0..30).contains(&by)
+                            && diamond[by as usize * 60 + bx as usize] != 0
+                        {
+                            overlap_conflicts += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    });
+    println!("RECORD: tiles with extra data: {tiles_with_extra}");
+    println!("RECORD: nonzero-extra-over-nonzero-diamond conflicts: {overlap_conflicts}");
+    // The original draws extra OVER the diamond; we composite it BEHIND.
+    // Zero conflicts on the corpus makes the two orders value-identical.
+    assert_eq!(
+        overlap_conflicts, 0,
+        "extra data overlaps nonzero diamond pixels — behind-vs-over \
+         composition diverges from the original on this corpus"
+    );
+}
+
+#[test]
+#[ignore] // Requires RA2_DIR (retail game files)
 fn certify_vxl_structural() {
     // Normal-table sizes per src/render/vxl_normals.rs: mode 2 = TS table (36
     // entries), mode 4 = RA2 table (250 distinct entries; 250–255 stale).
