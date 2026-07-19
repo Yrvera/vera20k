@@ -445,9 +445,18 @@ pub(crate) fn toggle_debug_pause(state: &mut AppState) {
 }
 
 /// Handle one-shot gameplay hotkeys (called on key press, not held).
+///
+/// Dev/debug functions all live behind the Ctrl+Shift chord (same base keys)
+/// so bare keys stay free for stock game hotkeys. The chord never collides
+/// with stock modifiers: stock uses bare keys, Ctrl+digit (team assign), and
+/// Ctrl/Alt/Ctrl+Shift as CLICK modifiers, not key chords.
 pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
     if let Some(group_idx) = control_group_index(code) {
         handle_control_group_hotkey(state, group_idx);
+        return;
+    }
+    if is_ctrl_held(state) && is_shift_held(state) {
+        handle_dev_hotkey_pressed(state, code);
         return;
     }
     match code {
@@ -483,24 +492,11 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                 log::info!("Game paused");
             }
         }
-        KeyCode::KeyB => {
-            state.queued_order_mode = OrderMode::Move;
-        }
         KeyCode::KeyS => queue_stop_for_selected(state),
         KeyCode::KeyD => queue_deploy_undeploy_for_selected(state),
-        KeyCode::KeyA => {
-            state.queued_order_mode = OrderMode::AttackMove;
-            log::info!("Order mode armed: AttackMove");
-        }
         KeyCode::KeyG => {
             state.queued_order_mode = OrderMode::Guard;
             log::info!("Order mode armed: Guard");
-        }
-        KeyCode::KeyM => {
-            quicksave(state);
-        }
-        KeyCode::KeyN => {
-            quickload(state);
         }
         KeyCode::KeyQ => {
             apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Building))
@@ -511,20 +507,39 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
         }
         KeyCode::KeyR => apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Vehicle)),
         KeyCode::KeyT => select_same_type(state, is_shift_held(state)),
-        KeyCode::Delete => crate::app_commands::sell_selected_buildings(state),
-        KeyCode::KeyL => {
-            state.debug_show_cell_grid = !state.debug_show_cell_grid;
-            log::info!(
-                "Debug cell grid overlay: {}",
-                if state.debug_show_cell_grid {
-                    "ON (blue=terrain, yellow=overlay)"
-                } else {
-                    "OFF"
-                }
-            );
-        }
         KeyCode::F1 => {
             state.show_hotkey_help = !state.show_hotkey_help;
+        }
+        KeyCode::KeyH => {
+            jump_camera_to_base(state);
+        }
+        KeyCode::Space => {
+            // Spacebar cycles through recent radar events and jumps the camera.
+            if let Some(sim) = &mut state.simulation {
+                if let Some((rx, ry)) = sim.radar_events.cycle_event() {
+                    let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                    let sw: f32 = state.render_width() as f32;
+                    let sh: f32 = state.render_height() as f32;
+                    let z = state.zoom_level;
+                    state.camera_x = sx - sw / (2.0 * z);
+                    state.camera_y = sy - sh / (2.0 * z);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Dev/debug hotkeys — all require Ctrl+Shift so the bare keys stay free for
+/// stock game hotkeys (bare X/P/L/K/M/N/B/A/Delete/F5-F12 previously
+/// shadowed stock functions like Scatter and Beacon).
+fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
+    match code {
+        KeyCode::KeyM => {
+            quicksave(state);
+        }
+        KeyCode::KeyN => {
+            quickload(state);
         }
         KeyCode::F5 => {
             state.show_save_load_panel = !state.show_save_load_panel;
@@ -539,8 +554,25 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                 state.window.set_cursor_visible(false);
             }
         }
-        KeyCode::KeyH => {
-            jump_camera_to_base(state);
+        // Interim order-mode arms until the stock click modifiers
+        // (Ctrl+Shift+click attack move, beacon key) are implemented.
+        KeyCode::KeyA => {
+            state.queued_order_mode = OrderMode::AttackMove;
+            log::info!("Order mode armed: AttackMove");
+        }
+        KeyCode::KeyB => {
+            state.queued_order_mode = OrderMode::Move;
+        }
+        KeyCode::KeyL => {
+            state.debug_show_cell_grid = !state.debug_show_cell_grid;
+            log::info!(
+                "Debug cell grid overlay: {}",
+                if state.debug_show_cell_grid {
+                    "ON (blue=terrain, yellow=overlay)"
+                } else {
+                    "OFF"
+                }
+            );
         }
         KeyCode::KeyK => {
             state.debug_show_heightmap = !state.debug_show_heightmap;
@@ -582,19 +614,6 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                     "ON"
                 }
             );
-        }
-        KeyCode::Space => {
-            // Spacebar cycles through recent radar events and jumps the camera.
-            if let Some(sim) = &mut state.simulation {
-                if let Some((rx, ry)) = sim.radar_events.cycle_event() {
-                    let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
-                    let sw: f32 = state.render_width() as f32;
-                    let sh: f32 = state.render_height() as f32;
-                    let z = state.zoom_level;
-                    state.camera_x = sx - sw / (2.0 * z);
-                    state.camera_y = sy - sh / (2.0 * z);
-                }
-            }
         }
         KeyCode::KeyX => {
             toggle_unit_inspector(state);
