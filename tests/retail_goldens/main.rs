@@ -3,18 +3,43 @@
 //! Golden source: the retail install's own file bytes (machine-derived, never
 //! hand-computed). Two evidence tiers, encoded in test names:
 //!
-//! - `certify_*` — the assertion's reference is the retail bytes themselves
-//!   (parse-total, header-consistency, byte round-trip). These are citable
-//!   certification checks under the CLAUDE.md parity bar.
+//! - `certify_*` — the assertion's reference is the retail bytes themselves.
+//!   These are citable certification checks under the project parity bar.
 //! - `ratchet_*` — FNV digests of OUR decode output. Regression ratchets only;
 //!   explicitly NOT parity evidence (Rust-vs-prior-Rust).
 //!
-//! Decoder VALUE parity vs gamemd (RLE/LCW pixels, ADPCM samples, CSF text) is
-//! UNVERIFIED-pending-instrument: it needs gamemd-derived vectors (Ghidra
-//! emulation of the native decompressors) or pixel goldens.
+//! ## What each named check certifies
+//!
+//! | Check | Claim |
+//! |---|---|
+//! | `certify_corpus_manifest` | Corpus identity: archive set + per-archive (id, size) digests match the committed manifest (drift = install change, not parser failure) |
+//! | `certify_parse_total_zero_failures` | Every sniffed retail file (8,824 on the reference install) parses without error |
+//! | `certify_shp_structural` | SHP frame count matches raw header; every frame's pixel buffer matches its dims; frames lie inside file bounds (2,450 files) |
+//! | `certify_tmp_structural` | TMP tile grid matches raw header; 60x30 tiles; pixel/depth buffers match tile dims (5,536 files) |
+//! | `certify_vxl_structural` | VXL limb/palette counts match header; voxels inside grids; normal indices in-table or exactly 255 (255 only in retail DUMMY placeholder limbs) |
+//! | `certify_hva_structural` | HVA counts match raw header; exact file-size formula holds (220 files) |
+//! | `certify_csf_structural` | CSF parsed entry count equals unique raw label records; raw walk lands exactly on EOF; version 3 |
+//! | `certify_fnt_structural` | FNT glyph stride formula; per-glyph RGBA size and width capacity |
+//! | `certify_pcx_structural` | PCX dims match raw header bounds; pixel buffer matches plane count (271 files) |
+//! | `certify_aud_chunk_walk` | AUD chunk walk lands exactly on EOF; chunk outputs sum to header output_size; decode consumes every input nibble |
+//! | `certify_audio_bag_total` | Every audio.idx entry (3,438 across AUDIOMD/AUDIO.MIX) resolves and decodes |
+//! | `certify_pal_roundtrip_bytes` | Both palette scale formulas recomputed from raw bytes match parsed output channel-for-channel; all retail bytes in 6-bit domain |
+//! | `certify_hva_roundtrip_bytes` | Section names and every transform f32 are bit-identical to the raw bytes |
+//! | `certify_vpl_roundtrip_bytes` | Header fields and every lighting page byte-equal the raw file |
+//! | `certify_mix_known_name_resolution` | Our filename CRC resolves known shipped names against Westwood-built MIX indexes |
+//!
+//! ## UNVERIFIED-pending-instrument (not covered by any check here)
+//!
+//! Decoder OUTPUT VALUES vs the original engine's decoders: SHP RLE-Zero
+//! pixels, TMP block pixels, AUD ADPCM sample values, CSF text values, and the
+//! trailing sample 4 retail AUDs declare beyond their input nibbles. Upgrade
+//! path: emulation vectors of the native decompressors or pixel goldens (see
+//! docs/plans/2026-07-05-parity-convergence-strategy.md, P2 oracles). The
+//! `ratchet_*` digests pin today's output but certify nothing about it.
 //!
 //! Run: cargo test --release --test retail_goldens -- --ignored
-//! Regenerate manifest: RETAIL_GOLDENS_WRITE=1 cargo test --release --test retail_goldens -- --ignored certify_corpus_manifest
+//! Regenerate goldens: RETAIL_GOLDENS_WRITE=1 (same invocation; one session at
+//! a time, reason in the commit)
 
 mod certify_audio;
 mod certify_roundtrip;

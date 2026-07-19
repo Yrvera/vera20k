@@ -124,27 +124,29 @@ fn ratchet_decode_digests() {
     let mut rollups: BTreeMap<String, u64> = BTreeMap::new();
     let mut errors: Vec<String> = Vec::new();
     walk_sniffed(&am, |ce, data| {
-        let h = rollups
-            .entry(ce.format.to_string())
-            .or_insert(FNV_OFFSET);
+        let h = rollups.entry(ce.format.to_string()).or_insert(FNV_OFFSET);
         // Fold the entry id first so a same-bytes file moving between ids is
         // visible, then the decoded output.
         *h = fnv1a(&(ce.id as u32).to_le_bytes(), *h);
         match digest_decode(ce.format, data, *h) {
             Ok(next) => *h = next,
-            Err(msg) => errors.push(format!(
-                "{} {:#010X}: {msg}",
-                ce.archive, ce.id as u32
-            )),
+            Err(msg) => errors.push(format!("{} {:#010X}: {msg}", ce.archive, ce.id as u32)),
         }
     });
-    assert!(errors.is_empty(), "decode errors during digest:\n{}", errors.join("\n"));
+    assert!(
+        errors.is_empty(),
+        "decode errors during digest:\n{}",
+        errors.join("\n")
+    );
 
     if write_mode() {
         let mut m = read_manifest().unwrap_or_default();
         m.decode_rollups = rollups;
         write_manifest(&m);
-        println!("manifest updated: decode_rollups ({} formats)", m.decode_rollups.len());
+        println!(
+            "manifest updated: decode_rollups ({} formats)",
+            m.decode_rollups.len()
+        );
         return;
     }
     let m = read_manifest().expect("manifest.json missing — run once with RETAIL_GOLDENS_WRITE=1");

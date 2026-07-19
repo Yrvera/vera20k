@@ -181,7 +181,12 @@ fn certify_audio_bag_total() {
             }
         }
     }
-    assert_eq!(mixes_found, 2, "expected both audio MIXes:\n{}", failures.join("\n"));
+    assert_eq!(
+        mixes_found,
+        2,
+        "expected both audio MIXes:\n{}",
+        failures.join("\n")
+    );
     assert!(
         failures.is_empty(),
         "audio.bag: {} failures across {total_entries} entries:\n{}",

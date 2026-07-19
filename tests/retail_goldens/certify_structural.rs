@@ -47,8 +47,7 @@ fn certify_corpus_manifest() {
         return;
     }
 
-    let m =
-        read_manifest().expect("manifest.json missing — run once with RETAIL_GOLDENS_WRITE=1");
+    let m = read_manifest().expect("manifest.json missing — run once with RETAIL_GOLDENS_WRITE=1");
     assert_eq!(
         m.archives, archives,
         "CORPUS-DRIFT: the install's archive set/index differs from the committed \
@@ -75,15 +74,33 @@ fn certify_parse_total_zero_failures() {
     walk_sniffed(&am, |ce, data| {
         total += 1;
         let outcome: Result<(), String> = match ce.format {
-            "shp" => ShpFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-            "vxl" => VxlFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-            "hva" => HvaFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-            "tmp" => TmpFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-            "pal" => Palette::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-            "csf" => CsfFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-            "vpl" => VplFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-            "fnt" => FntFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-            "pcx" => PcxFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
+            "shp" => ShpFile::from_bytes(data)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            "vxl" => VxlFile::from_bytes(data)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            "hva" => HvaFile::from_bytes(data)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            "tmp" => TmpFile::from_bytes(data)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            "pal" => Palette::from_bytes(data)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            "csf" => CsfFile::from_bytes(data)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            "vpl" => VplFile::from_bytes(data)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            "fnt" => FntFile::from_bytes(data)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            "pcx" => PcxFile::from_bytes(data)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
             "aud" => decode_aud(data)
                 .map(|_| ())
                 .ok_or_else(|| "decode_aud returned None".to_string()),
@@ -346,8 +363,9 @@ fn certify_csf_structural() {
         let mut walked = 0usize;
         let mut pos = 24usize;
         while walked < raw_label_count {
-            let (name, next) = walk_raw_csf_label(data, pos)
-                .map_err(|e| format!("raw label walk failed at record {walked} (offset {pos}): {e}"))?;
+            let (name, next) = walk_raw_csf_label(data, pos).map_err(|e| {
+                format!("raw label walk failed at record {walked} (offset {pos}): {e}")
+            })?;
             names.insert(name);
             pos = next;
             walked += 1;
