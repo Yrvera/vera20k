@@ -119,10 +119,12 @@ fn certify_aud_chunk_walk() {
         failures.len(),
         failures.join("\n")
     );
-    // UNVERIFIED-pending-instrument: what sample value the original engine's
-    // output-driven decoder emits for the declared-but-inputless trailing
-    // sample (it would read one byte past the chunk payload). Our decoder
-    // ends one sample short on these files.
+    // Resolved 2026-07-19 (see docs/research/
+    // AUD_TRAILING_SAMPLE_UNREACHABLE_GHIDRA_REPORT.md): the original engine
+    // never decodes these four files (installer / RA2-era shell leftovers;
+    // its music is WAV and its SFX come from audio.bag), so the declared
+    // trailing sample is unobservable and our input-driven decoder needs no
+    // change. Recorded here so a future consumer of these files knows.
     println!("RECORD: retail AUDs declaring a final trailing sample with no input nibbles:");
     for line in &trailing_sample_files {
         println!("RECORD:   {line}");

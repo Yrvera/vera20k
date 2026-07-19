@@ -18,16 +18,22 @@ const RA2_NORMAL_COUNT: usize = 256;
 /// Number of normals in Tiberian Sun mode (normals_mode = 2).
 const TS_NORMAL_COUNT: usize = 36;
 
-/// 256 RA2 normal vectors. The original engine ships only 245 distinct
-/// vectors; entries 245–249 are byte-duplicates of entry 244, and entries
-/// 250–255 never appear in the binary's lighting LUT (the original engine
-/// leaves them stale in memory). Padded here with +Z fallback for safety.
-/// Retail VXL data DOES reference index 255 — but only inside placeholder
-/// limbs named DUMMY01/DUMMY02 (1,931 voxels across 8 retail files; verified
-/// by tests/retail_goldens certify_vxl_structural). Indices 250–254 never
-/// occur in retail data. What the original engine's stale slot 255 shades
-/// those dummy voxels as is unverified; our fallback may differ if a dummy
-/// limb is ever player-visible.
+/// 256 RA2 normal vectors. The original engine's table has exactly 245
+/// entries and simply ends there (no duplicate tail in the binary; rows
+/// 245–255 here are our own padding). Retail VXL data DOES reference index
+/// 255 — but only inside limbs named DUMMY01/DUMMY02 (1,931 voxels across 8
+/// retail files, incl. the slave-miner refinery turret; verified by
+/// tests/retail_goldens certify_vxl_structural). Indices 245–254 never occur
+/// in retail data.
+///
+/// The original engine shades index 255 deliberately: its lighting
+/// precompute fills the normal→VPL-page LUT only up to the mode's entry
+/// count, then stores the ambient constant page 0x10 into LUT slots
+/// 253/254/255, and the rasterizer indexes the LUT with the raw unclamped
+/// normal byte — so normal 255 always renders with VPL page 16. Our +Z
+/// fallback lights those voxels instead (brighter) — a known drift; the
+/// parity fix is to force pages 253–255 to 0x10 in the page precompute.
+/// Full chain: docs/research/VXL_STALE_NORMAL_255_AMBIENT_PAGE_GHIDRA_REPORT.md.
 #[rustfmt::skip]
 static RA2_NORMALS: [[f32; 3]; RA2_NORMAL_COUNT] = [
     [ 0.526578, -0.359621, -0.770317], [ 0.150482,  0.435984,  0.887284],
