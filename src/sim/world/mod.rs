@@ -1352,6 +1352,15 @@ impl Simulation {
             if should_defeat {
                 if let Some(h) = self.houses.get_mut(&owner) {
                     h.is_defeated = true;
+                    // A house that owns nothing (or, in Short Game, has no base
+                    // left) has lost from its own perspective. gamemd sets HasLost
+                    // via Flag_To_Lose after a borrowed-time delay; we commit the
+                    // end-state directly. NOTE: gamemd does NOT destroy the
+                    // defeated house's remaining objects — it scatters surviving
+                    // units (ScatterAllUnits) and they persist; hard object
+                    // removal only happens under the non-standard SpecialFlags
+                    // 0x800 (HarvesterImmune). So no cleanup/destroy is done here.
+                    h.has_lost = true;
                 }
             }
         }

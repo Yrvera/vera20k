@@ -682,6 +682,28 @@ fn short_game_victory_resolution_uses_new_defeat_state() {
 }
 
 #[test]
+fn defeated_house_is_flagged_has_lost_and_stragglers_survive() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_options.short_game = true;
+    let defeated = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+    let survivor = insert_house_with_counts(&mut sim, "Russians", 1, 0);
+    // A straggler vehicle owned by the losing house.
+    insert_test_entity_for_owner(&mut sim, 1, defeated, "MTNK", EntityCategory::Unit);
+
+    sim.check_defeat(Some(&rules));
+
+    // The loser is flagged both defeated and has_lost; the winner is not.
+    assert!(sim.houses[&defeated].is_defeated);
+    assert!(sim.houses[&defeated].has_lost);
+    assert!(!sim.houses[&survivor].has_lost);
+    assert!(sim.houses[&survivor].has_won);
+    // Parity: gamemd scatters a defeated house's units (ScatterAllUnits); it does
+    // NOT hard-remove them. The straggler must still exist after defeat.
+    assert!(sim.entities().get(1).is_some());
+}
+
+#[test]
 fn short_game_base_unit_survivor_prevents_enemy_victory() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
