@@ -95,7 +95,11 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// Re-baselined after MapGen became an independent fresh Seed(0) stream. The
 /// value was identical in two focused runs; this is a Rust regression ratchet,
 /// not a gamemd parity reference.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 7340892273004731329;
+/// Re-baselined again after the aircraft Mission_Guard RTB fix: a guarding
+/// aircraft with spent ammo and no target now returns to rearm (gamemd default
+/// ReturnFire mode) instead of hovering, shifting a harness aircraft's position
+/// state. FINAL_STREAM_STATES was unchanged (no RNG re-route); total-state only.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 6318917868157055929;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
