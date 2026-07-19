@@ -213,14 +213,57 @@ fn parse_label_entry(data: &[u8], offset: usize) -> Result<(String, String, usiz
     Ok((label_name, value, pos))
 }
 
-/// Decode a CSF-encoded string: bitwise-NOT each byte, then interpret as UTF-16-LE.
+/// Decode a CSF-encoded string: bitwise-NOT each byte, interpret as UTF-16-LE,
+/// then apply the engine's load-time whitespace normalization.
 fn decode_csf_string(encoded: &[u8]) -> String {
     let decoded_bytes: Vec<u8> = encoded.iter().map(|b| !b).collect();
     let u16_values: Vec<u16> = decoded_bytes
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
-    String::from_utf16_lossy(&u16_values)
+    String::from_utf16_lossy(&normalize_whitespace(&u16_values))
+}
+
+/// The original engine normalizes whitespace in every CSF string at load
+/// time; retail files rely on it (213 retail strings — briefings, tooltips —
+/// carry padding spaces around line breaks that the game never displays).
+/// Rules, applied over UTF-16 code units:
+/// - a space is dropped when it follows another space, starts the string, or
+///   starts a line (i.e. follows a newline/tab);
+/// - a space immediately before a newline or tab is dropped;
+/// - one trailing space is trimmed.
+fn normalize_whitespace(units: &[u16]) -> Vec<u16> {
+    const SPACE: u16 = 0x20;
+    const NEWLINE: u16 = 0x0A;
+    const TAB: u16 = 0x09;
+    let mut out: Vec<u16> = Vec::with_capacity(units.len());
+    let mut prev: u16 = 0;
+    let mut at_line_start = true;
+    for &c in units {
+        if c == SPACE {
+            if prev != SPACE && !at_line_start {
+                out.push(c);
+                at_line_start = false;
+                prev = c;
+            }
+            // Skipped spaces leave prev/at_line_start untouched.
+        } else if c == NEWLINE || c == TAB {
+            if prev == SPACE {
+                out.pop();
+            }
+            out.push(c);
+            at_line_start = true;
+            prev = c;
+        } else {
+            out.push(c);
+            at_line_start = false;
+            prev = c;
+        }
+    }
+    if prev == SPACE {
+        out.pop();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -302,6 +345,25 @@ mod tests {
     fn reject_truncated_header() {
         let data: Vec<u8> = vec![0x20, 0x46, 0x53, 0x43]; // just the magic, no rest
         assert!(CsfFile::from_bytes(&data).is_err());
+    }
+
+    #[test]
+    fn load_time_whitespace_normalization_matches_engine() {
+        // Space-padded line breaks (the retail briefing/tooltip pattern):
+        // spaces before AND after a newline are dropped.
+        let data: Vec<u8> = build_test_csf("Tip:X", "Click to show \n advanced commands");
+        let csf: CsfFile = CsfFile::from_bytes(&data).expect("should parse");
+        assert_eq!(csf.get("Tip:X"), Some("Click to show\nadvanced commands"));
+
+        // Consecutive spaces collapse; leading skipped; one trailing trimmed.
+        let data: Vec<u8> = build_test_csf("A", "  double  space inside ");
+        let csf: CsfFile = CsfFile::from_bytes(&data).expect("should parse");
+        assert_eq!(csf.get("A"), Some("double space inside"));
+
+        // Space before a tab is dropped and the tab restarts a line.
+        let data: Vec<u8> = build_test_csf("B", "col \t next");
+        let csf: CsfFile = CsfFile::from_bytes(&data).expect("should parse");
+        assert_eq!(csf.get("B"), Some("col\tnext"));
     }
 
     #[test]

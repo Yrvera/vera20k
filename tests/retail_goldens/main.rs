@@ -21,6 +21,7 @@
 //! | `certify_vxl_structural` | VXL limb/palette counts match header; voxels inside grids; normal indices in-table or exactly 255 (255 only in retail DUMMY placeholder limbs) |
 //! | `certify_hva_structural` | HVA counts match raw header; exact file-size formula holds (220 files) |
 //! | `certify_csf_structural` | CSF parsed entry count equals unique raw label records; raw walk lands exactly on EOF; version 3 |
+//! | `certify_csf_text_values` | CSF display-text VALUES: parser output equals independently-restated NOT-decode + the engine's load-time whitespace normalization for every retail label (9,687) |
 //! | `certify_fnt_structural` | FNT glyph stride formula; per-glyph RGBA size and width capacity |
 //! | `certify_pcx_structural` | PCX dims match raw header bounds; pixel buffer matches plane count (271 files) |
 //! | `certify_aud_chunk_walk` | AUD chunk walk lands exactly on EOF; chunk outputs sum to header output_size; decode consumes every input nibble |
@@ -33,8 +34,8 @@
 //! ## UNVERIFIED-pending-instrument (not covered by any check here)
 //!
 //! Decoder OUTPUT VALUES vs the original engine's decoders for: AUD ADPCM
-//! sample values and CSF text values. Upgrade path: emulation vectors of the
-//! native decompressors (see docs/plans/2026-07-05-parity-convergence-strategy.md,
+//! sample values (bag path; upgrade path: emulation vectors of the native
+//! nibble decoder — see docs/plans/2026-07-05-parity-convergence-strategy.md,
 //! P2 oracles). Also renderer-side, not parser: TMP depth (ZData)
 //! COMPOSITION semantics (native per-pixel z-test at draw vs our pre-merged
 //! depth buffer). The `ratchet_*` digests pin today's output but certify
@@ -46,7 +47,10 @@
 //! docs/research/SHP_RLE_ZERO_VALUE_CERTIFICATION_GHIDRA_REPORT.md. TMP
 //! pixel values certified by `certify_tmp_value_layout` (binary template
 //! geometry + stored-offset/origin equivalence + zero composition
-//! conflicts) — see docs/research/TMP_DIAMOND_VALUE_CERTIFICATION_GHIDRA_REPORT.md.
+//! conflicts) — docs/research/TMP_DIAMOND_VALUE_CERTIFICATION_GHIDRA_REPORT.md.
+//! CSF text values certified by `certify_csf_text_values` after implementing
+//! the engine's load-time whitespace normalization (213 retail strings were
+//! affected) — docs/research/CSF_TEXT_VALUE_CERTIFICATION_GHIDRA_REPORT.md.
 //! The trailing sample declared by 4 retail AUDs is unreachable in the
 //! original engine (docs/research/AUD_TRAILING_SAMPLE_UNREACHABLE_GHIDRA_REPORT.md).
 //!

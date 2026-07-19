@@ -624,6 +624,136 @@ fn certify_csf_structural() {
     println!("RECORD: retail CSF language field values: {languages:?}");
 }
 
+#[test]
+#[ignore] // Requires RA2_DIR (retail game files)
+fn certify_csf_text_values() {
+    // Value-parity certification for CSF display text. The original engine
+    // NOT-decodes each UTF-16 string and applies load-time whitespace
+    // normalization (verified from the binary — see docs/research/
+    // CSF_TEXT_VALUE_CERTIFICATION_GHIDRA_REPORT.md; 213 retail strings —
+    // briefings, tooltips — are changed by it). This test independently
+    // restates decode + normalization from the raw bytes and asserts our
+    // parser's stored value matches for every label of both retail CSFs.
+    let mut total = 0usize;
+    certify_format("csf", |_, data| {
+        let csf = CsfFile::from_bytes(data).map_err(|e| e.to_string())?;
+        let raw_label_count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+        // Later duplicate labels overwrite earlier ones in both the raw
+        // expectation map and the parser's HashMap insert order.
+        let mut expected: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut pos = 24usize;
+        for _ in 0..raw_label_count {
+            let (name, values, next) = walk_raw_csf_label_with_text(data, pos)?;
+            // The parser keeps the first pair's value per label record.
+            let value = values.into_iter().next().unwrap_or_default();
+            expected.insert(name.to_ascii_uppercase(), native_csf_normalize(&value));
+            pos = next;
+        }
+        for (name, want) in &expected {
+            total += 1;
+            match csf.get(name) {
+                Some(got) if got == want => {}
+                Some(got) => {
+                    return Err(format!(
+                        "{name}: parser {got:?} != native-normalized raw {want:?}"
+                    ));
+                }
+                None => return Err(format!("{name}: missing from parsed table")),
+            }
+        }
+        Ok(())
+    });
+    println!("RECORD: {total} CSF strings certified against native decode+normalization");
+}
+
+/// The original engine's load-time whitespace normalization, restated over
+/// UTF-16 code units exactly as the binary implements it.
+fn native_csf_normalize(text: &str) -> String {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let mut out: Vec<u16> = Vec::with_capacity(units.len());
+    let mut prev: u16 = 0;
+    let mut at_start = true;
+    for &c in &units {
+        if c == 0x20 {
+            if prev != 0x20 && !at_start {
+                out.push(c);
+                at_start = false;
+                prev = c;
+            }
+            // else: skipped; prev/at_start unchanged (matches the binary).
+        } else if c == 0x0A || c == 0x09 {
+            if prev == 0x20 {
+                out.pop();
+            }
+            out.push(c);
+            at_start = true;
+            prev = c;
+        } else {
+            out.push(c);
+            at_start = false;
+            prev = c;
+        }
+    }
+    if prev == 0x20 {
+        out.pop();
+    }
+    String::from_utf16_lossy(&out)
+}
+
+/// Like walk_raw_csf_label, but also decodes every string value (bitwise-NOT
+/// UTF-16-LE) for text-level checks.
+fn walk_raw_csf_label_with_text(
+    data: &[u8],
+    offset: usize,
+) -> Result<(String, Vec<String>, usize), String> {
+    let rd = |off: usize| -> Result<u32, String> {
+        data.get(off..off + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .ok_or_else(|| format!("read past EOF at {off}"))
+    };
+    let magic = rd(offset)?;
+    if magic != 0x4C42_4C20 && magic != 0x204C_424C {
+        return Err(format!("bad label magic {magic:#010X}"));
+    }
+    let pair_count = rd(offset + 4)?;
+    let name_len = rd(offset + 8)? as usize;
+    let name_start = offset + 12;
+    let name = data
+        .get(name_start..name_start + name_len)
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .ok_or("name past EOF")?;
+    let mut pos = name_start + name_len;
+    let mut values = Vec::new();
+    for _ in 0..pair_count {
+        let str_magic = rd(pos)?;
+        let has_extra = str_magic == 0x5752_5453 || str_magic == 0x5354_5257;
+        let is_plain =
+            str_magic == 0x5354_5220 || str_magic == 0x5254_5320 || str_magic == 0x2052_5453;
+        if !is_plain && !has_extra {
+            return Err(format!("bad string magic {str_magic:#010X} at {pos}"));
+        }
+        let char_count = rd(pos + 4)? as usize;
+        let bytes = data
+            .get(pos + 8..pos + 8 + char_count * 2)
+            .ok_or("string data past EOF")?;
+        let decoded: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|p| u16::from_le_bytes([!p[0], !p[1]]))
+            .collect();
+        values.push(String::from_utf16_lossy(&decoded));
+        pos += 8 + char_count * 2;
+        if has_extra {
+            let extra_len = rd(pos)? as usize;
+            pos += 4 + extra_len;
+            if pos > data.len() {
+                return Err(format!("extra data past EOF at {pos}"));
+            }
+        }
+    }
+    Ok((name, values, pos))
+}
+
 /// Walk one raw CSF label record. Returns (uppercased name, next offset).
 /// Mirrors the on-disk format: " LBL" magic, u32 pair count, u32 name length,
 /// name bytes, then per pair a string record (magic, u32 char count, chars×2
