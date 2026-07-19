@@ -200,6 +200,66 @@ pub(crate) fn sell_selected_buildings(state: &mut AppState) {
     }
 }
 
+/// Stable id of the local player's own building under the given world point, if
+/// any. Shared by the repair/sell cursor feedback (`app_cursor`) and the
+/// repair/sell click handler below so the two can never disagree about what is
+/// an eligible target. Only OWN structures qualify — allied buildings are not
+/// repairable/sellable by the local player (the sim `ToggleRepair` /
+/// `SellBuilding` handlers also enforce ownership).
+pub(crate) fn own_building_under_point(
+    state: &AppState,
+    world_x: f32,
+    world_y: f32,
+) -> Option<u64> {
+    let sim = state.simulation.as_ref()?;
+    let owner = preferred_local_owner(state)?;
+    let hover = crate::app_entity_pick::hover_target_at_point(
+        sim,
+        world_x,
+        world_y,
+        &owner,
+        state.sandbox_full_visibility,
+        state.rules.as_ref(),
+        &state.height_map,
+        Some(&state.tactical_bridge_inverse_map),
+    )?;
+    let entity = sim.entities().get(hover.stable_id)?;
+    (entity.category == EntityCategory::Structure
+        && sim
+            .interner
+            .resolve(entity.owner)
+            .eq_ignore_ascii_case(&owner))
+    .then_some(hover.stable_id)
+}
+
+/// Handle a tactical left-click while the sidebar Repair or Sell cursor mode is
+/// active. Issues `ToggleRepair` / `SellBuilding` on the own building under the
+/// cursor. The mode stays active afterwards — gamemd repair/sell modes are
+/// sticky: the player keeps repairing/selling until right-click, Esc, or a
+/// second click on the sidebar button clears the mode. Returns `true` when a
+/// repair/sell mode was active (the click is consumed by the mode regardless of
+/// whether it landed on a building), `false` when neither mode is on.
+pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
+    let repair = state.sidebar_gadget_state.repair_mode_on;
+    let sell = state.sidebar_gadget_state.sell_mode_on;
+    if !repair && !sell {
+        return false;
+    }
+    let (world_x, world_y) =
+        crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+    if let Some(entity_id) = own_building_under_point(state, world_x, world_y) {
+        let owner: String =
+            preferred_local_owner(state).unwrap_or_else(|| DEFAULT_OWNER.to_string());
+        let payload = if repair {
+            Command::ToggleRepair { entity_id }
+        } else {
+            Command::SellBuilding { entity_id }
+        };
+        schedule_command(state, &owner, payload);
+    }
+    true
+}
+
 pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str) {
     let owner: String = resolve_owner(state);
     // Use the preview's stored (rx, ry) so the placed building exactly matches

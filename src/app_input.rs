@@ -85,13 +85,22 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
     match button {
         MouseButton::Left => {
             if btn_state.is_pressed() {
-                if state.targeting_mode.is_some() {
-                    return; // suppress selection drag while either targeting mode is active
+                if state.targeting_mode.is_some()
+                    || state.sidebar_gadget_state.repair_mode_on
+                    || state.sidebar_gadget_state.sell_mode_on
+                {
+                    return; // suppress selection drag while a targeting / repair / sell mode is active
                 }
                 state
                     .selection_state
                     .begin_drag(state.cursor_x, state.cursor_y);
             } else {
+                // Repair / Sell cursor modes consume the click — toggle repair or
+                // sell the own building under the cursor. The mode stays active
+                // (sticky) so the player can act on several buildings in a row.
+                if crate::app_commands::try_repair_sell_mode_click(state) {
+                    return;
+                }
                 if let Some(section) = state.armed_super_weapon_type().map(str::to_owned) {
                     crate::app_commands::launch_super_weapon_at_cursor(state, &section);
                     return;
@@ -179,6 +188,15 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 state.building_placement_preview = None;
                 return;
             }
+            // Right-click first dismisses an active repair/sell cursor mode
+            // (matches gamemd — the special cursor is cancelled before any
+            // deselect), leaving the current selection intact.
+            if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on
+            {
+                state.sidebar_gadget_state.repair_mode_on = false;
+                state.sidebar_gadget_state.sell_mode_on = false;
+                return;
+            }
             // Clear the current selection.
             queue_selection_snapshot_command(state, Vec::new(), false);
         }
@@ -202,9 +220,7 @@ pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state
         MouseButton::Right => {
             // A right-press centers the view on the clicked cell (no command);
             // right-release just releases the gadget's sticky capture.
-            if btn_state.is_pressed()
-                && crate::app_sidebar_render::is_cursor_over_minimap(state)
-            {
+            if btn_state.is_pressed() && crate::app_sidebar_render::is_cursor_over_minimap(state) {
                 crate::app_sidebar_render::update_camera_from_minimap_cursor(state);
             }
         }
@@ -285,7 +301,6 @@ pub(crate) fn try_sidebar_scroll(state: &mut AppState, delta_lines: f32) -> bool
     }
     true
 }
-
 
 pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
     match action {
@@ -450,6 +465,11 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             } else if state.targeting_mode.is_some() {
                 state.targeting_mode = None;
                 state.building_placement_preview = None;
+            } else if state.sidebar_gadget_state.repair_mode_on
+                || state.sidebar_gadget_state.sell_mode_on
+            {
+                state.sidebar_gadget_state.repair_mode_on = false;
+                state.sidebar_gadget_state.sell_mode_on = false;
             } else {
                 state.paused = true;
                 // Opening the in-game Options overlay: reset the transient
