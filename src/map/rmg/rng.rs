@@ -8,6 +8,8 @@
 //! Verified against golden vectors in `tools/rmg_oracle/vectors/rng.json`,
 //! which were produced by running the original routines under emulation.
 
+use super::x87::TruncF64;
+
 /// Number of state words in the generator buffer.
 const STATE_LEN: usize = 250;
 /// Distance between the two cursors; also the second cursor's start position.
@@ -106,21 +108,34 @@ impl RmgRng {
     }
 
     /// Convert a draw to `[0, 1)` using the original's exact constant.
+    ///
+    /// The multiply truncates: the original loads the draw as an integer and
+    /// multiplies under round-toward-zero, so an ordinary `f64` product rounds
+    /// the wrong way and drifts by an ulp on some draws.
     pub fn next_unit(&mut self) -> f64 {
-        f64::from_bits(RANGE_K_BITS) * f64::from(self.next_u32())
+        let draw = TruncF64::from_f64(f64::from(self.next_u32()));
+        draw.mul(TruncF64::from_f64(f64::from_bits(RANGE_K_BITS)))
+            .to_f64()
     }
 
     /// Inclusive uniform integer in `[min, max]`.
+    ///
+    /// Operand order matters and is not the obvious one: the original computes
+    /// `draw * span * K + min`, scaling by the span *before* converting to a
+    /// unit interval. Doing `next_unit() * span` instead rounds differently.
     ///
     /// The rejection loop is part of the behaviour, not a safety net: when the
     /// scaled value lands above `max` the original re-draws, consuming another
     /// word. Anything that reproduces the draw *stream* has to re-draw too.
     pub fn uniform(&mut self, min: i32, max: i32) -> i32 {
         debug_assert!(min <= max, "uniform range must be non-empty");
-        let span = f64::from(max - min + 1);
+        let span = TruncF64::from_f64(f64::from(max - min + 1));
+        let scale = TruncF64::from_f64(f64::from_bits(RANGE_K_BITS));
+        let floor = TruncF64::from_f64(f64::from(min));
         loop {
-            // Truncation toward zero, matching the original's float-to-int.
-            let value = (self.next_unit() * span + f64::from(min)) as i32;
+            let draw = TruncF64::from_f64(f64::from(self.next_u32()));
+            let scaled = draw.mul(span).mul(scale).add(floor);
+            let value = super::x87::ftol(scaled.to_f64());
             if value <= max {
                 return value;
             }

@@ -9,11 +9,13 @@ pub mod options;
 pub mod rng;
 pub mod scratch;
 pub mod settings;
+pub mod x87;
 
 pub use options::RmgOptions;
 pub use rng::RmgRng;
 pub use scratch::RmgScratch;
 pub use settings::RmgSettings;
+pub use x87::{Gaussian, TruncF64};
 
 use anyhow::Result;
 
