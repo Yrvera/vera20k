@@ -9,7 +9,8 @@
 ///
 /// Field names map to the original record's documented offsets: coordinate at
 /// +0x00, height +0x08, velocity +0x10, rough probability +0x18, green +0x20,
-/// sand +0x28, region id +0x38, stamp +0x3C, water lock +0x45, visited +0x47.
+/// sand +0x28, region id +0x38, stamp +0x3C, shore-mask cache +0x40, water
+/// lock +0x45, visited +0x47, shore enable +0x4A, water/region flag +0x4B.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScratchCell {
     pub x: i16,
@@ -21,15 +22,26 @@ pub struct ScratchCell {
     pub p_rough: f64,
     pub p_green: f64,
     pub p_sand: f64,
-    /// Owning region, or -1 when unassigned.
+    /// Owning region / committed blob id. Starts 0 ("free") — the water
+    /// stage's convention; the region stage explicitly resets it to -1
+    /// before partitioning.
     pub region: i32,
-    /// Per-pass marker (patch id, BFS stamp); -1 when unset.
+    /// Per-pass marker (blob candidate, patch id, BFS stamp). Starts 0 like
+    /// the region field; the region stage resets it to -1.
     pub stamp: i32,
+    /// Cached shore neighbor-water mask; -1 = invalid (recompute).
+    pub shore_mask: i32,
     /// Set on cells that are water or water-adjacent. Locks them against
     /// height changes and patch placement.
     pub water_lock: bool,
     /// Visited marker for the tree-region walk.
     pub visited: bool,
+    /// Shore-tiler per-cell enable; defaults on. Cleared nowhere in the
+    /// paths ported so far, but the flag is real and gates mask computation.
+    pub shore_enable: bool,
+    /// Water/region propagation flag written during water seeding, consumed
+    /// by the region water pass, cleared on blob rollback.
+    pub water_region: bool,
 }
 
 impl Default for ScratchCell {
@@ -42,10 +54,13 @@ impl Default for ScratchCell {
             p_rough: 0.0,
             p_green: 0.0,
             p_sand: 0.0,
-            region: -1,
-            stamp: -1,
+            region: 0,
+            stamp: 0,
+            shore_mask: -1,
             water_lock: false,
             visited: false,
+            shore_enable: true,
+            water_region: false,
         }
     }
 }
@@ -61,15 +76,24 @@ pub struct RmgScratch {
 
 impl RmgScratch {
     /// Build a `width` x `width` grid bounded by the given diamond limits.
+    ///
+    /// Records start zeroed; only diamond-valid cells get their coordinate
+    /// stamped (the original's post-alloc iterator loop), so an untouched
+    /// record still reads (0, 0) — the "unused slot" convention.
     pub fn new(width: usize, diamond_min: i32, diamond_max: i32) -> Self {
         let mut cells = vec![ScratchCell::default(); width * width];
-        // Every record carries its own coordinate; phases read it back rather
-        // than recomputing from the index.
         for y in 0..width {
             for x in 0..width {
-                let cell = &mut cells[y * width + x];
-                cell.x = x as i16;
-                cell.y = y as i16;
+                let (xi, yi) = (x as i32, y as i32);
+                if diamond_min < xi + yi
+                    && xi - yi < diamond_min
+                    && yi - xi < diamond_min
+                    && xi + yi <= diamond_max
+                {
+                    let cell = &mut cells[y * width + x];
+                    cell.x = x as i16;
+                    cell.y = y as i16;
+                }
             }
         }
         Self {
@@ -122,14 +146,28 @@ impl RmgScratch {
             && x + y <= self.diamond_max
     }
 
-    /// Clear region ownership and pass markers between phases.
+    /// The region stage's explicit reset: ownership and stamps to -1.
     ///
-    /// Deliberately leaves `water_lock` alone: it is established once by the
-    /// water pass and every later phase depends on it surviving.
+    /// Deliberately leaves `water_lock`/`water_region` alone: they are
+    /// established by the water pass and later phases depend on them.
     pub fn reset_region_ids(&mut self) {
         for cell in &mut self.cells {
             cell.region = -1;
             cell.stamp = -1;
+        }
+    }
+
+    /// The water/shape stages' stamp clear (`+0x3C = 0` map-wide).
+    pub fn clear_stamps(&mut self) {
+        for cell in &mut self.cells {
+            cell.stamp = 0;
+        }
+    }
+
+    /// Invalidate every cached shore mask (the tiler's reset pass).
+    pub fn invalidate_shore_masks(&mut self) {
+        for cell in &mut self.cells {
+            cell.shore_mask = -1;
         }
     }
 }
@@ -141,19 +179,31 @@ mod tests {
     #[test]
     fn defaults_match_the_original_initial_state() {
         let cell = ScratchCell::default();
-        assert_eq!(cell.region, -1, "region starts unassigned");
-        assert_eq!(cell.stamp, -1);
+        assert_eq!(cell.region, 0, "water-stage convention: 0 = free");
+        assert_eq!(cell.stamp, 0);
+        assert_eq!(cell.shore_mask, -1, "mask cache starts invalid");
+        assert!(cell.shore_enable, "shore enable defaults on");
         assert!(!cell.water_lock);
+        assert!(!cell.water_region);
         assert!(!cell.visited);
         assert_eq!(cell.height, 0.0);
         assert_eq!(cell.velocity, 0.0);
     }
 
     #[test]
-    fn cells_carry_their_own_coordinates() {
-        let scratch = RmgScratch::new(8, 0, 100);
-        assert_eq!((scratch.get(3, 5).x, scratch.get(3, 5).y), (3, 5));
-        assert_eq!((scratch.get(0, 0).x, scratch.get(0, 0).y), (0, 0));
+    fn only_valid_cells_carry_coordinates() {
+        let scratch = RmgScratch::new(16, 4, 12);
+        assert_eq!((scratch.get(3, 2).x, scratch.get(3, 2).y), (3, 2));
+        assert_eq!(
+            (scratch.get(0, 0).x, scratch.get(0, 0).y),
+            (0, 0),
+            "out-of-band records stay (0,0) — the unused-slot convention"
+        );
+        assert_eq!(
+            (scratch.get(2, 2).x, scratch.get(2, 2).y),
+            (0, 0),
+            "sum == min is outside the band"
+        );
     }
 
     #[test]
@@ -176,29 +226,49 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_region_and_stamp_but_keeps_water_lock() {
-        let mut scratch = RmgScratch::new(4, 0, 100);
-        let cell = scratch.get_mut(1, 1);
+    fn region_reset_sets_minus_one_and_keeps_water_flags() {
+        let mut scratch = RmgScratch::new(8, 2, 10);
+        let cell = scratch.get_mut(1, 2);
         cell.region = 5;
         cell.stamp = 9;
         cell.water_lock = true;
+        cell.water_region = true;
         cell.height = 2.5;
 
         scratch.reset_region_ids();
 
-        let cell = scratch.get(1, 1);
+        let cell = scratch.get(1, 2);
         assert_eq!(cell.region, -1);
         assert_eq!(cell.stamp, -1);
         assert!(
             cell.water_lock,
             "the water lock must survive a region reset"
         );
+        assert!(cell.water_region);
         assert_eq!(cell.height, 2.5, "heights survive a region reset");
     }
 
     #[test]
+    fn stamp_clear_zeroes_only_stamps() {
+        let mut scratch = RmgScratch::new(8, 2, 10);
+        scratch.get_mut(1, 2).stamp = 7;
+        scratch.get_mut(1, 2).region = 3;
+        scratch.clear_stamps();
+        assert_eq!(scratch.get(1, 2).stamp, 0);
+        assert_eq!(scratch.get(1, 2).region, 3, "region ids survive");
+    }
+
+    #[test]
+    fn shore_mask_invalidation() {
+        let mut scratch = RmgScratch::new(8, 2, 10);
+        scratch.get_mut(1, 2).shore_mask = 0x42;
+        scratch.invalidate_shore_masks();
+        assert_eq!(scratch.get(1, 2).shore_mask, -1);
+    }
+
+    #[test]
     fn index_is_row_major() {
-        let scratch = RmgScratch::new(10, 0, 100);
+        let scratch = RmgScratch::new(10, 2, 16);
         assert_eq!(scratch.index(0, 0), 0);
         assert_eq!(scratch.index(3, 0), 3);
         assert_eq!(scratch.index(0, 1), 10);
