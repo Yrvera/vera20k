@@ -11,11 +11,6 @@ use crate::rules::ini_parser::IniFile;
 
 use super::options::RmgOptions;
 
-/// The width/height options scale by a third before being turned into cell
-/// counts, and every map type except the two island types caps that scale.
-const DIMENSION_SCALE: f32 = 0.333_333_34;
-const DIMENSION_SCALE_CAP: f32 = 1.2;
-
 /// The full map is the generated interior plus a fixed margin, and the
 /// playable area is inset from the top-left corner.
 const SIZE_PAD_X: u32 = 4;
@@ -34,19 +29,6 @@ pub fn theater_name(theater: i32) -> &'static str {
         3 => "DESERT",
         4 => "NEWURBAN",
         _ => "TEMPERATE",
-    }
-}
-
-/// Scale factor applied to a width/height option.
-///
-/// Island map types are exempt from the cap, which is how they get to be
-/// larger than any other type at the same option value.
-pub fn dimension_scale(option: i32, map_type: i32) -> f32 {
-    let scale = option as f32 * DIMENSION_SCALE;
-    if !matches!(map_type, 3 | 4) && scale >= DIMENSION_SCALE_CAP {
-        DIMENSION_SCALE_CAP
-    } else {
-        scale
     }
 }
 
@@ -116,19 +98,6 @@ mod tests {
         assert_eq!(map.header.local_left, 2);
         assert_eq!(map.header.local_top, 5, "playable area starts at row 5");
         assert_eq!((map.header.local_width, map.header.local_height), (60, 60));
-    }
-
-    #[test]
-    fn dimension_scale_caps_every_type_except_the_islands() {
-        // option 3 -> exactly 1.0, under the cap for every type
-        assert!((dimension_scale(3, 1) - 1.0).abs() < 1e-6);
-        // island types are exempt
-        assert!(dimension_scale(9, 3) > 1.2, "map type 3 is uncapped");
-        assert!(dimension_scale(9, 4) > 1.2, "map type 4 is uncapped");
-        // everything else saturates
-        assert!((dimension_scale(9, 0) - 1.2).abs() < 1e-6);
-        assert!((dimension_scale(9, 1) - 1.2).abs() < 1e-6);
-        assert!((dimension_scale(9, 2) - 1.2).abs() < 1e-6);
     }
 
     #[test]

@@ -13,7 +13,7 @@ pub mod settings;
 pub mod tiles;
 pub mod x87;
 
-pub use grid::{DiamondScan, GridCell, RmgGrid, DIRECTION_OFFSETS};
+pub use grid::{DIRECTION_OFFSETS, DiamondScan, GridCell, RmgGrid};
 pub use options::RmgOptions;
 pub use rng::RmgRng;
 pub use scratch::RmgScratch;
@@ -72,8 +72,94 @@ pub const STAGE_ORDER: &[Stage] = &[
     Stage::Emit,
 ];
 
-/// Interior dimensions used until the map-prep stage computes real ones.
-const PLACEHOLDER_INTERIOR: u32 = 60;
+/// Interior-dimension lerp endpoints, indexed by `num_players - 2`.
+const DIM_MIN: [i32; 7] = [70, 70, 70, 80, 90, 100, 100];
+const DIM_MAX: [i32; 7] = [80, 80, 80, 90, 100, 110, 120];
+/// Single-precision one-third: the width/height option scale factor.
+const THIRD_F32_BITS: u32 = 0x3EAA_AAAB;
+/// Scale cap for non-island map types. With options clamped 0..3 the scale
+/// tops out near 1.0, so this branch is unreachable on the live path — it is
+/// kept because the original computes it, and options are checked pre-clamp
+/// nowhere else.
+const DIMENSION_SCALE_CAP: f64 = 1.2;
+
+/// The map geometry every phase and the emitter share.
+///
+/// The generated interior is `gen_w x gen_h`; the full map pads that by
+/// (4, 12); the diamond bounds and the linear scratch stride follow from the
+/// padded size. The `d` that seeds the native cell scan is the padded width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapGeometry {
+    pub gen_w: i32,
+    pub gen_h: i32,
+    pub map_w: i32,
+    pub map_h: i32,
+    pub diamond_min: i32,
+    pub diamond_max: i32,
+    /// Linear grid stride: `map_w + map_h + 1`.
+    pub stride: usize,
+}
+
+impl MapGeometry {
+    pub fn from_options(options: &RmgOptions) -> Self {
+        let (gen_w, gen_h) = generated_dimensions(options);
+        let map_w = gen_w + 4;
+        let map_h = gen_h + 12;
+        Self {
+            gen_w,
+            gen_h,
+            map_w,
+            map_h,
+            diamond_min: map_w,
+            diamond_max: map_w + 2 * map_h,
+            stride: (map_w + map_h + 1) as usize,
+        }
+    }
+}
+
+/// Interior dimensions: a lerp between per-player-count endpoints, with the
+/// width/height option scaled by a single-precision third.
+///
+/// The arithmetic is deliberately odd and matches the original instruction
+/// stream: the scale is computed at 53-bit truncating precision, narrowed to
+/// a 4-byte float slot, and the lerp mixes integer-loaded endpoints with that
+/// narrowed scale — `min*(1-s) + max*s`, truncated to int at the end. The cap
+/// asymmetry (width re-narrowed, height kept wide) is preserved even though
+/// clamped options never reach it.
+pub fn generated_dimensions(options: &RmgOptions) -> (i32, i32) {
+    let players = options.num_players.clamp(2, 8);
+    let index = (players - 2) as usize;
+
+    let third = x87::TruncF64::from_f64(f64::from(f32::from_bits(THIRD_F32_BITS)));
+    let scale =
+        |option: i32| x87::narrow_to_f32(x87::TruncF64::from_f64(f64::from(option)).mul(third));
+    let mut scale_w = scale(options.width);
+    let mut scale_h = scale(options.height);
+
+    if !matches!(options.map_type, 3 | 4) {
+        let cap = x87::TruncF64::from_f64(DIMENSION_SCALE_CAP);
+        if !scale_w.lt(cap) {
+            // The width cap round-trips through the 4-byte slot; the height
+            // cap stays on the FP stack at full width.
+            scale_w = x87::narrow_to_f32(cap);
+        }
+        if !scale_h.lt(cap) {
+            scale_h = cap;
+        }
+    }
+
+    let one = x87::TruncF64::from_f64(f64::from(1.0f32));
+    let lerp = |min: i32, max: i32, s: x87::TruncF64| {
+        let low = x87::TruncF64::from_f64(f64::from(min)).mul(one.sub(s));
+        let high = x87::TruncF64::from_f64(f64::from(max)).mul(s);
+        x87::ftol(low.add(high).to_f64())
+    };
+
+    (
+        lerp(DIM_MIN[index], DIM_MAX[index], scale_w),
+        lerp(DIM_MIN[index], DIM_MAX[index], scale_h),
+    )
+}
 
 /// Whether a selected map name refers to a random-map seed rather than a map
 /// file. Such selections are generated in memory instead of loaded from disk.
@@ -107,8 +193,11 @@ pub fn generate(
     let mut options = options.clone();
     options.normalize();
 
+    let geometry = MapGeometry::from_options(&options);
     let mut rng = RmgRng::new(options.seed_u16());
-    let _ = (&settings, &mut rng);
+    let mut scratch = RmgScratch::new(geometry.stride, geometry.diamond_min, geometry.diamond_max);
+    let mut grid = grid::RmgGrid::new(geometry.stride);
+    let _ = (&settings, &mut rng, &mut scratch, &mut grid);
 
     let mut stages_run = Vec::with_capacity(STAGE_ORDER.len());
     for stage in STAGE_ORDER {
@@ -120,7 +209,7 @@ pub fn generate(
     }
 
     Ok(GeneratedMap {
-        map_file: emit::empty_map_file(&options, PLACEHOLDER_INTERIOR, PLACEHOLDER_INTERIOR),
+        map_file: emit::empty_map_file(&options, geometry.gen_w as u32, geometry.gen_h as u32),
         start_waypoints: Vec::new(),
         stages_run,
     })
@@ -191,6 +280,71 @@ mod tests {
                 "map type {map_type} must run the island passes"
             );
         }
+    }
+
+    /// Hand-walked from the dimension formula: `s(0)=0`, `s(1)=0.33333334f`,
+    /// `s(2)=0.66666669f`, `s(3)` narrows back to exactly 1.0, so option 0
+    /// hits the Min endpoint and option 3 the Max endpoint exactly.
+    #[test]
+    fn dimensions_lerp_between_the_player_count_endpoints() {
+        let dims = |players: i32, size: i32| {
+            generated_dimensions(&RmgOptions {
+                num_players: players,
+                width: size,
+                height: size,
+                ..Default::default()
+            })
+        };
+        assert_eq!(dims(2, 0), (70, 70));
+        assert_eq!(dims(2, 1), (73, 73));
+        assert_eq!(dims(2, 2), (76, 76));
+        assert_eq!(dims(2, 3), (80, 80));
+        assert_eq!(dims(8, 0), (100, 100));
+        assert_eq!(dims(8, 1), (106, 106));
+        assert_eq!(dims(8, 2), (113, 113));
+        assert_eq!(dims(8, 3), (120, 120));
+        assert_eq!(dims(5, 0), (80, 80), "endpoint table shifts at 5 players");
+    }
+
+    #[test]
+    fn width_and_height_options_are_independent() {
+        let dims = generated_dimensions(&RmgOptions {
+            num_players: 4,
+            width: 0,
+            height: 3,
+            ..Default::default()
+        });
+        assert_eq!(dims, (70, 80));
+    }
+
+    #[test]
+    fn geometry_derives_from_the_padded_size() {
+        let options = RmgOptions {
+            num_players: 4,
+            width: 0,
+            height: 0,
+            ..Default::default()
+        };
+        let geometry = MapGeometry::from_options(&options);
+        assert_eq!((geometry.gen_w, geometry.gen_h), (70, 70));
+        assert_eq!((geometry.map_w, geometry.map_h), (74, 82));
+        assert_eq!(geometry.diamond_min, 74);
+        assert_eq!(geometry.diamond_max, 74 + 2 * 82);
+        assert_eq!(geometry.stride, 74 + 82 + 1);
+    }
+
+    #[test]
+    fn generated_header_uses_the_real_dimensions() {
+        let options = RmgOptions {
+            num_players: 8,
+            width: 3,
+            height: 3,
+            ..Default::default()
+        };
+        let generated = generate(&options, &RmgSettings::default(), None).unwrap();
+        assert_eq!(generated.map_file.header.width, 124, "120 interior + 4");
+        assert_eq!(generated.map_file.header.height, 132, "120 interior + 12");
+        assert_eq!(generated.map_file.header.local_width, 120);
     }
 
     #[test]

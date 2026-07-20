@@ -202,6 +202,14 @@ impl TruncF64 {
     }
 }
 
+/// Narrow to single precision (truncating) and widen back, as a value.
+///
+/// Models a store to a 4-byte float slot followed by a reload — the pattern
+/// the map-prep dimension math uses for its scale factors.
+pub fn narrow_to_f32(value: TruncF64) -> TruncF64 {
+    TruncF64::from_f64(f64::from(f32::from_bits(narrow_to_f32_bits(value))))
+}
+
 /// Narrow to single precision, truncating toward zero.
 ///
 /// This is the store the approximate square root performs on its input, and it
