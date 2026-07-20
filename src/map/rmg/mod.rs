@@ -6,6 +6,8 @@
 
 pub mod options;
 pub mod rng;
+pub mod settings;
 
 pub use options::RmgOptions;
 pub use rng::RmgRng;
+pub use settings::RmgSettings;
