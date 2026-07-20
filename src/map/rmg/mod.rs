@@ -4,6 +4,7 @@
 //! deterministic float math, and emits an in-memory `map::map_file::MapFile`.
 //! Pre-play map construction only — nothing in `sim/` depends on this module.
 
+pub mod build;
 pub mod emit;
 pub mod grid;
 pub mod options;
