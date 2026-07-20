@@ -331,11 +331,20 @@ pub(crate) fn load_map_initial_with_assets(
     let quickplay_map: Option<String> = std::env::var("RA2_QUICKPLAY")
         .ok()
         .filter(|v| v.ends_with(".map") || v.ends_with(".mpr") || v.ends_with(".mmx"));
+    // `RA2_QUICKPLAY=<name>.sed` forces a random-map generation without going
+    // through the skirmish UI — a dev shortcut for exercising the generator.
+    let quickplay_seed: Option<String> = std::env::var("RA2_QUICKPLAY")
+        .ok()
+        .filter(|v| crate::map::rmg::is_seed_selection(v));
 
     // A `.SED` selection names a random-map seed, not a map file: the map is
     // generated in memory from its options. Handled before the file-loading
     // branches below, which would look for a map file that does not exist.
-    if let Some(seed_name) = requested_map.filter(|name| crate::map::rmg::is_seed_selection(name)) {
+    let seed_selection: Option<String> = requested_map
+        .filter(|name| crate::map::rmg::is_seed_selection(name))
+        .map(str::to_string)
+        .or(quickplay_seed);
+    if let Some(seed_name) = seed_selection.as_deref() {
         // Shadowed as mutable: the theater loader needs &mut, and every borrow
         // has to end before the manager is moved into MapLoadInitial.
         let mut asset_manager = asset_manager;
