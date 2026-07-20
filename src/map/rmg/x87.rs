@@ -274,6 +274,12 @@ pub fn approx_sqrt(value: TruncF64) -> TruncF64 {
     TruncF64::from_f64(f64::from(f32::from_bits(result_bits)))
 }
 
+/// The generator's square root of an integer squared-distance, as the `f32`
+/// the start/tiberium phases store in their priority heaps.
+pub fn approx_sqrt_f32(squared_distance: i32) -> f32 {
+    approx_sqrt(TruncF64::from_f64(f64::from(squared_distance))).to_f64() as f32
+}
+
 /// Natural logarithm.
 ///
 /// The original computes this with `FYL2X` (`ln(2) * log2(x)`). Its low bits
@@ -344,6 +350,51 @@ mod tests {
     use super::*;
 
     const VECTORS: &str = include_str!("../../../tools/rmg_oracle/vectors/x87.json");
+
+    /// Retail entries read from the game binary's 16384-entry square-root
+    /// mantissa table (data section at 0x008650BC). Spot values chosen to pin
+    /// the boundaries: entry 0, the first buckets, a mid-range value, the
+    /// even/odd-exponent seam at 8192, and the final entry. The full table was
+    /// verified byte-for-byte against the retail dump when this port landed;
+    /// these fixed points guard the generator formula without redistributing
+    /// the copyrighted table.
+    const RETAIL_SQRT_SPOT: &[(u32, u32)] = &[
+        (0, 0x0000_0000),
+        (1, 0x0000_01FF),
+        (2, 0x0000_03FF),
+        (7, 0x0000_0DFF),
+        (100, 0x0000_C764),
+        (4096, 0x001C_C470),
+        (8191, 0x0035_0389),
+        (8192, 0x0035_04F3),
+        (8193, 0x0035_07C7),
+        (12000, 0x005B_16CA),
+        (16383, 0x007F_FDFF),
+    ];
+
+    #[test]
+    fn sqrt_table_matches_retail_at_the_pinned_points() {
+        for &(index, retail) in RETAIL_SQRT_SPOT {
+            assert_eq!(sqrt_table_entry(index), retail, "sqrt table entry {index}");
+        }
+    }
+
+    #[test]
+    fn approx_sqrt_f32_is_close_but_not_a_real_root() {
+        assert_eq!(approx_sqrt_f32(0), 0.0);
+        assert_eq!(approx_sqrt_f32(1), 1.0, "entry 0 is exact");
+        assert!((f64::from(approx_sqrt_f32(100)) - 10.0).abs() < 1e-3);
+        // The bucketed table deliberately differs from an exact root: a guard
+        // against anyone swapping in f32::sqrt.
+        assert_ne!(approx_sqrt_f32(1_234_567), 1_234_567.0f32.sqrt());
+        // Monotone over the integer squared-distance ramp the phases feed it.
+        let mut previous = 0.0f32;
+        for squared in 0..2000 {
+            let value = approx_sqrt_f32(squared);
+            assert!(value >= previous, "non-monotone at {squared}");
+            previous = value;
+        }
+    }
 
     #[test]
     fn ftol_truncates_toward_zero() {

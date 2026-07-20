@@ -33,8 +33,12 @@ pub struct RmgRegion {
     pub cells: Vec<(i16, i16)>,
     /// Start slots assigned by the starts phase.
     pub start_quota: i32,
-    /// Tiberium field slots selected by the starts phase.
-    pub field_slots: Vec<(i16, i16)>,
+    /// Tiberium field slots selected by the starts phase. `None` = the
+    /// selector produced no list for this region (its region+0x00 stays null);
+    /// `Some(vec)` = a list (possibly empty after the waypoints were removed).
+    /// The tiberium driver treats the two differently — a `None` region is
+    /// skipped before any RNG, a `Some` region runs the gem-anchor draw.
+    pub field_slots: Option<Vec<(i16, i16)>>,
 }
 
 /// The region registry: creation-ordered objects plus the id counter.
@@ -182,7 +186,7 @@ fn flood_fill(ctx: &mut RegionCtx<'_>, regions: &mut Regions, seed: (i32, i32)) 
         cell_count: 0,
         cells: Vec::new(),
         start_quota: 0,
-        field_slots: Vec::new(),
+        field_slots: None,
     };
     let width = ctx.scratch.width();
     for index in 0..width * width {

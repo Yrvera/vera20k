@@ -321,7 +321,7 @@ mod tests {
             cell_count: cells.len() as i32,
             cells,
             start_quota: quota,
-            field_slots: Vec::new(),
+            field_slots: None,
         });
         regions.id_counter = 1;
         regions

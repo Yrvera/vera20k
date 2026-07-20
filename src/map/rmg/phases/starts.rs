@@ -12,9 +12,8 @@
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
 use crate::map::rmg::scratch::RmgScratch;
-use crate::map::rmg::sqrt_approx::sqrt_approx;
 use crate::map::rmg::tiles::TileIds;
-use crate::map::rmg::x87::{self, TruncF64};
+use crate::map::rmg::x87::{self, TruncF64, approx_sqrt_f32};
 
 use super::blob::MinHeap;
 use super::regions::{Regions, RmgRegion};
@@ -202,7 +201,7 @@ fn rebuild_regions(ctx: &mut StartsCtx<'_>, zones: &ZoneField) {
             cell_count: 0,
             cells: Vec::new(),
             start_quota: 0,
-            field_slots: Vec::new(),
+            field_slots: None,
         };
 
         // LIFO flood: stamp at enqueue, claim + append at pop.
@@ -345,7 +344,7 @@ fn place_region_starts(
     // becomes the region's tiberium field slots.
     let consumed = (quota.max(0) as usize).min(selection.len());
     selection.drain(..consumed);
-    ctx.regions.list[region_index].field_slots = selection;
+    ctx.regions.list[region_index].field_slots = Some(selection);
 }
 
 /// The best-first selector: target count from the tiberium layout, a
@@ -385,7 +384,7 @@ fn select_candidates(
     let dist = |a: (i16, i16), b: (i16, i16)| {
         let dx = i32::from(a.0) - i32::from(b.0);
         let dy = i32::from(a.1) - i32::from(b.1);
-        let base = f64::from(sqrt_approx(f64::from(dy * dy + dx * dx)));
+        let base = f64::from(approx_sqrt_f32(dy * dy + dx * dx));
         if stamp(a) != stamp(b) {
             base + CROSS_REGION_BONUS
         } else {
@@ -483,7 +482,7 @@ fn clearing_floods(ctx: &mut StartsCtx<'_>, args: &StartsArgs, outcome: &StartsO
                     continue;
                 }
                 let (dx, dy) = (nx - seed.0, ny - seed.1);
-                let key = sqrt_approx(f64::from(dx * dx + dy * dy));
+                let key = approx_sqrt_f32(dx * dx + dy * dy);
                 // The stamp is taken even when the heap is full and drops
                 // the node.
                 ctx.scratch.get_mut(nx, ny).stamp = marker;
@@ -707,11 +706,12 @@ mod tests {
         // TiberiumLayout 50 -> target = trunc((50*0.01*12/4 + 2) * 4) = 14,
         // so 4 starts leave 10 field slots (when the gather found enough).
         let region = &regions.list[0];
-        assert!(
-            !region.field_slots.is_empty(),
-            "field slots retained for the tiberium phase"
-        );
-        assert!(region.field_slots.len() <= 10);
+        let slots = region
+            .field_slots
+            .as_ref()
+            .expect("the selector produced a field-slot list");
+        assert!(!slots.is_empty(), "field slots retained for tiberium");
+        assert!(slots.len() <= 10);
     }
 
     #[test]
@@ -738,7 +738,7 @@ mod tests {
             cell_count: 4,
             cells: vec![(30, 30)],
             start_quota: 2,
-            field_slots: Vec::new(),
+            field_slots: None,
         });
         regions.id_counter = 1;
         let ctx = StartsCtx {
@@ -774,7 +774,7 @@ mod tests {
             cell_count: 1,
             cells: vec![(30, 30)],
             start_quota: 0,
-            field_slots: Vec::new(),
+            field_slots: None,
         });
         let ctx = StartsCtx {
             grid: &mut grid,
@@ -803,7 +803,7 @@ mod tests {
         let snapshot = |seed| {
             let (outcome, regions, _, scratch) = run_phase(seed);
             let quotas: Vec<i32> = regions.list.iter().map(|r| r.start_quota).collect();
-            let slots: Vec<Vec<(i16, i16)>> =
+            let slots: Vec<Option<Vec<(i16, i16)>>> =
                 regions.list.iter().map(|r| r.field_slots.clone()).collect();
             let locks = scratch
                 .cells()
