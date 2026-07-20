@@ -357,7 +357,30 @@ pub(crate) fn load_map_initial_with_assets(
         let theater = crate::map::theater::load_theater(&mut asset_manager, theater_name)
             .ok_or_else(|| anyhow::anyhow!("random map: theater {theater_name} unavailable"))?;
 
-        let generated = crate::map::rmg::generate(&options, &settings, Some(&theater))?;
+        // Terrain rules feed the zone classifier's wheel-impassable table. The
+        // table is observably inert during generation (the classifier runs at
+        // start-placement time, before any rock/rough/cliff terrain exists), but
+        // it is resolved faithfully from `rulesmd.ini` when present; a missing
+        // file falls back to the passable defaults.
+        let terrain_rules = asset_manager
+            .get_ref("rulesmd.ini")
+            .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
+            .map(|ini| crate::rules::terrain_rules::TerrainRules::from_ini(&ini))
+            .unwrap_or_default();
+        let resolved =
+            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(&theater, &terrain_rules);
+
+        // Tile-block layouts (sub-cell height/terrain grids) from the theater's
+        // real TMP data — the shore tiler and zone classifier read these.
+        let blocks =
+            crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
+                asset_manager.get(name)
+            });
+
+        // Neutral tech buildings are not resolved yet (no `NeutralTechBuildings`
+        // footprint list), so none are placed.
+        let generated =
+            crate::map::rmg::build::generate_map(&options, &settings, &resolved, &blocks, &[]);
         log::info!(
             "Random map generated: theater={}, {}x{}, seed={}, players={}",
             generated.map_file.header.theater,
