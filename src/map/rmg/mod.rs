@@ -43,6 +43,13 @@ pub enum Stage {
     RecalcAfterTiberium,
     Hills,
     LatPatches,
+    /// The LAT auto-tiling fixup the patch driver runs between painting the
+    /// base patches and scattering trees. It creates the sand-LAT transition
+    /// tiles the rock pass keys off, so it must precede `Trees`/`Rocks`.
+    RecalcAfterPatches,
+    Trees,
+    /// Rock overlays — temperate theater only (skipped at runtime otherwise).
+    Rocks,
     RecalcFinal,
     Emit,
 }
@@ -51,10 +58,12 @@ pub enum Stage {
 ///
 /// This is the contract every phase attaches to: each stage reads what the
 /// previous ones left behind, so reordering changes generated output even when
-/// each individual stage is correct. Two details are easy to get wrong and are
+/// each individual stage is correct. Details that are easy to get wrong and are
 /// therefore spelled out here: the green spread runs *after* region assignment
-/// but *before* the first attribute recalculation, and hills run *after*
-/// tiberium rather than alongside the other terrain shaping.
+/// but *before* the first attribute recalculation; hills run *after* tiberium
+/// rather than alongside the other terrain shaping; and the tail of the LAT
+/// driver runs patches → LAT fixup → trees → rocks in that order (the fixup
+/// creates the sand-LAT tiles the rock pass needs), then a final recalc.
 pub const STAGE_ORDER: &[Stage] = &[
     Stage::Water,
     Stage::WaterFinalize,
@@ -69,6 +78,9 @@ pub const STAGE_ORDER: &[Stage] = &[
     Stage::RecalcAfterTiberium,
     Stage::Hills,
     Stage::LatPatches,
+    Stage::RecalcAfterPatches,
+    Stage::Trees,
+    Stage::Rocks,
     Stage::RecalcFinal,
     Stage::Emit,
 ];
@@ -207,6 +219,11 @@ pub fn generate(
         if *stage == Stage::IslandPasses && !matches!(options.map_type, 3 | 4) {
             continue;
         }
+        // Rock overlays are painted only in the temperate theater; every other
+        // theater's LAT driver runs trees but no rocks.
+        if *stage == Stage::Rocks && options.theater != 0 {
+            continue;
+        }
         stages_run.push(*stage);
     }
 
@@ -255,6 +272,42 @@ mod tests {
     fn starts_precede_everything_that_places_against_them() {
         assert!(position(Stage::Starts) < position(Stage::TechBuildings));
         assert!(position(Stage::Starts) < position(Stage::Tiberium));
+    }
+
+    #[test]
+    fn lat_driver_tail_is_patches_then_fixup_then_trees_then_rocks() {
+        // The native temperate driver order: paint patches, run the LAT fixup
+        // that produces the sand-LAT tiles, scatter trees, then rocks.
+        assert!(position(Stage::LatPatches) < position(Stage::RecalcAfterPatches));
+        assert!(position(Stage::RecalcAfterPatches) < position(Stage::Trees));
+        assert!(position(Stage::Trees) < position(Stage::Rocks));
+        assert!(position(Stage::Rocks) < position(Stage::RecalcFinal));
+        assert!(position(Stage::RecalcFinal) < position(Stage::Emit));
+    }
+
+    #[test]
+    fn rocks_run_only_in_the_temperate_theater() {
+        let settings = RmgSettings::default();
+        // Temperate (theater 0) paints rocks; every other theater skips them,
+        // but still runs trees.
+        let temperate = generate(&RmgOptions::default(), &settings, None).unwrap();
+        assert!(temperate.stages_run.contains(&Stage::Rocks));
+        assert!(temperate.stages_run.contains(&Stage::Trees));
+        for theater in [1, 2, 3, 4] {
+            let options = RmgOptions {
+                theater,
+                ..Default::default()
+            };
+            let generated = generate(&options, &settings, None).unwrap();
+            assert!(
+                !generated.stages_run.contains(&Stage::Rocks),
+                "theater {theater} must not paint rocks"
+            );
+            assert!(
+                generated.stages_run.contains(&Stage::Trees),
+                "theater {theater} still scatters trees"
+            );
+        }
     }
 
     #[test]
