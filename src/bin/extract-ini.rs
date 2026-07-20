@@ -52,6 +52,9 @@ fn main() {
         "missionmd.ini",
         // Multiplayer dialog
         "mpmodesmd.ini",
+        // Random map generator tuning
+        "rmg.ini",
+        "rmgmd.ini",
     ];
 
     let mut found = 0;
