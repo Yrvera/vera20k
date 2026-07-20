@@ -12,9 +12,15 @@ use crate::rules::ini_parser::IniFile;
 use crate::skirmish_modes::SkirmishGameMode;
 
 pub const RANDMAP_SED: &str = "RandMap.Sed";
+/// `[RandomMap] NumPlayers` is clamped to this inclusive range before
+/// generation, so the sentinel has to advertise the same span.
 pub const RANDOM_MAP_MIN_PLAYERS: u8 = 2;
+pub const RANDOM_MAP_MAX_PLAYERS: u8 = 8;
+/// Start slots the generator produces before a `.SED` supplies `NumPlayers`.
+/// This is a *default quota*, not a capacity limit: `RANDOM_MAP_MAX_PLAYERS`
+/// used to alias it, which capped the sentinel at 4 and made 5-8 player random
+/// maps unselectable.
 pub const RANDOM_MAP_GENERATED_START_QUOTA: u8 = 4;
-pub const RANDOM_MAP_MAX_PLAYERS: u8 = RANDOM_MAP_GENERATED_START_QUOTA;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkirmishScenarioSource {
@@ -41,6 +47,7 @@ pub struct SkirmishScenarioRecord {
     pub briefing: BriefingSection,
     pub preview: PreviewSection,
     pub multiplayer_start_waypoints: Vec<Waypoint>,
+    pub player_capacity: i32,
     pub preview_source_bounds: Option<PreviewSourceBounds>,
     pub game_modes: Vec<String>,
     pub min_players: Option<u8>,
@@ -67,6 +74,7 @@ impl SkirmishScenarioRecord {
             briefing: entry.briefing,
             preview: entry.preview,
             multiplayer_start_waypoints: entry.multiplayer_start_waypoints,
+            player_capacity: entry.player_capacity,
             preview_source_bounds: entry.preview_source_bounds,
             game_modes: parse_game_modes(ini),
             min_players: basic
@@ -114,6 +122,7 @@ impl SkirmishScenarioRecord {
             briefing: BriefingSection::default(),
             preview: PreviewSection::default(),
             multiplayer_start_waypoints: Vec::new(),
+            player_capacity: i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
             preview_source_bounds: None,
             game_modes: Vec::new(),
             min_players: Some(RANDOM_MAP_MIN_PLAYERS),
@@ -133,6 +142,7 @@ impl SkirmishScenarioRecord {
             briefing: entry.briefing.clone(),
             preview: entry.preview.clone(),
             multiplayer_start_waypoints: entry.multiplayer_start_waypoints.clone(),
+            player_capacity: entry.player_capacity,
             preview_source_bounds: entry.preview_source_bounds.clone(),
             game_modes: Vec::new(),
             min_players: None,
@@ -150,6 +160,7 @@ impl SkirmishScenarioRecord {
             briefing: self.briefing.clone(),
             preview: self.preview.clone(),
             multiplayer_start_waypoints: self.multiplayer_start_waypoints.clone(),
+            player_capacity: self.player_capacity,
             preview_source_bounds: self.preview_source_bounds.clone(),
         }
     }
@@ -219,6 +230,7 @@ pub fn upsert_random_map_sentinel(
         records[idx].file_name = RANDMAP_SED.to_string();
         records[idx].source = SkirmishScenarioSource::Synthetic;
         records[idx].multiplayer_start_waypoints.clear();
+        records[idx].player_capacity = i32::from(RANDOM_MAP_GENERATED_START_QUOTA);
         records[idx].preview_source_bounds = None;
         records[idx].game_modes.clear();
         records[idx].min_players = Some(RANDOM_MAP_MIN_PLAYERS);
@@ -276,6 +288,7 @@ mod tests {
         assert_eq!(entry.file_name, "Projected.yrm");
         assert_eq!(entry.display_name, "Projected");
         assert_eq!(entry.multiplayer_start_waypoints.len(), 2);
+        assert_eq!(entry.player_capacity, 2);
     }
 
     #[test]
@@ -351,6 +364,21 @@ mod tests {
     }
 
     #[test]
+    fn random_map_sentinel_spans_the_full_player_range() {
+        // Pinned to literals on purpose: the capacity used to alias the
+        // generated-start quota, which silently capped random maps at 4.
+        assert_eq!(RANDOM_MAP_MIN_PLAYERS, 2);
+        assert_eq!(RANDOM_MAP_MAX_PLAYERS, 8, "NumPlayers clamps to 2..8");
+        assert_ne!(
+            RANDOM_MAP_MAX_PLAYERS, RANDOM_MAP_GENERATED_START_QUOTA,
+            "capacity must not be re-aliased to the start quota"
+        );
+
+        let rec = SkirmishScenarioRecord::random_map_sentinel(0, "Random Map");
+        assert_eq!(rec.max_players, Some(8));
+    }
+
+    #[test]
     fn random_map_sentinel_advertises_shell_capacity_without_concrete_starts() {
         let rec = SkirmishScenarioRecord::random_map_sentinel(4, "Random Map");
 
@@ -359,6 +387,10 @@ mod tests {
         assert_eq!(rec.min_players, Some(RANDOM_MAP_MIN_PLAYERS));
         assert_eq!(rec.max_players, Some(RANDOM_MAP_MAX_PLAYERS));
         assert!(rec.official);
+        assert_eq!(
+            rec.player_capacity,
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA)
+        );
         assert_eq!(RANDOM_MAP_GENERATED_START_QUOTA, 4);
         assert!(
             rec.multiplayer_start_waypoints.is_empty(),
@@ -378,6 +410,10 @@ mod tests {
         assert_eq!(records[1].display_name, "Updated Random Map");
         assert_eq!(records[1].min_players, Some(RANDOM_MAP_MIN_PLAYERS));
         assert_eq!(records[1].max_players, Some(RANDOM_MAP_MAX_PLAYERS));
+        assert_eq!(
+            records[1].player_capacity,
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA)
+        );
         assert!(records[1].official);
         assert!(records[1].multiplayer_start_waypoints.is_empty());
     }
