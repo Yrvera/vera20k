@@ -5,6 +5,7 @@
 //! Pre-play map construction only — nothing in `sim/` depends on this module.
 
 pub mod emit;
+pub mod grid;
 pub mod options;
 pub mod rng;
 pub mod scratch;
@@ -12,6 +13,7 @@ pub mod settings;
 pub mod tiles;
 pub mod x87;
 
+pub use grid::{DiamondScan, GridCell, RmgGrid, DIRECTION_OFFSETS};
 pub use options::RmgOptions;
 pub use rng::RmgRng;
 pub use scratch::RmgScratch;
