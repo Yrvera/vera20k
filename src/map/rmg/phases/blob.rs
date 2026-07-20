@@ -188,7 +188,12 @@ fn directed_key(
 }
 
 /// Carve one blob. Returns the pop count, or 0 on failure/rollback.
-pub fn carve(ctx: &mut BlobCtx<'_>, blob_id: i32, params: &BlobParams) -> i32 {
+///
+/// `blob_counter` is the shared blob-id source: the current value tags this
+/// blob, and a successful commit increments it here (the failure-path
+/// increments belong to the shape drivers).
+pub fn carve(ctx: &mut BlobCtx<'_>, blob_counter: &mut i32, params: &BlobParams) -> i32 {
+    let blob_id = *blob_counter;
     let max_cells = params.max_cells.max(400);
     let cap = (max_cells * 8 + 2).max(100) as usize;
 
@@ -346,6 +351,7 @@ pub fn carve(ctx: &mut BlobCtx<'_>, blob_id: i32, params: &BlobParams) -> i32 {
     }
 
     if ok {
+        *blob_counter += 1;
         return pops;
     }
     // Rollback: re-water everything this blob claimed.
@@ -449,7 +455,8 @@ mod tests {
             drift_scale: 0.25,
             directed: false,
         };
-        let pops = carve(&mut ctx, 1, &params);
+        let mut blob = 1;
+        let pops = carve(&mut ctx, &mut blob, &params);
         assert!(pops > 0, "the blob must commit");
 
         let land = grid
@@ -496,7 +503,8 @@ mod tests {
                 drift_scale: 0.75,
                 directed: true,
             };
-            let pops = carve(&mut ctx, 1, &params);
+            let mut blob = 1;
+            let pops = carve(&mut ctx, &mut blob, &params);
             let tiles: Vec<i32> = grid
                 .native_cells()
                 .collect::<Vec<_>>()
@@ -565,7 +573,8 @@ mod tests {
             drift_scale: 0.25,
             directed: false,
         };
-        let pops = carve(&mut ctx, 1, &params);
+        let mut blob = 1;
+        let pops = carve(&mut ctx, &mut blob, &params);
         // Whether committed or rolled back, every cell must be land, water,
         // or unassigned — never a leftover transient shore piece.
         for (x, y) in grid.native_cells().collect::<Vec<_>>() {

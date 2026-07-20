@@ -7,6 +7,7 @@
 pub mod blob;
 pub mod green_spread;
 pub mod shore;
+pub mod water;
 
 /// A cell reference held in a phase's work list.
 ///
