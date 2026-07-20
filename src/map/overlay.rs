@@ -81,6 +81,23 @@ impl OverlayDataPack {
         let idx = ry as usize * OVERLAY_GRID_SIZE + rx as usize;
         self.bytes[idx]
     }
+
+    /// Build a present data pack from per-cell frame values `(rx, ry, frame)`.
+    ///
+    /// Used by the map generator to emit an overlay-density grid alongside the
+    /// overlay list; out-of-grid coordinates are ignored.
+    pub fn from_cells(cells: impl IntoIterator<Item = (u16, u16, u8)>) -> Self {
+        let mut bytes = vec![0u8; OVERLAY_TOTAL_CELLS];
+        for (rx, ry, frame) in cells {
+            if (rx as usize) < OVERLAY_GRID_SIZE && (ry as usize) < OVERLAY_GRID_SIZE {
+                bytes[ry as usize * OVERLAY_GRID_SIZE + rx as usize] = frame;
+            }
+        }
+        Self {
+            bytes,
+            present: true,
+        }
+    }
 }
 
 impl Default for OverlayDataPack {
