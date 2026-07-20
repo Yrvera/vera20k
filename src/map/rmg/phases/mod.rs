@@ -9,6 +9,7 @@ pub mod green_spread;
 pub mod regions;
 pub mod shore;
 pub mod starts;
+pub mod tech_buildings;
 pub mod water;
 pub mod water_finalize;
 pub mod zones;
