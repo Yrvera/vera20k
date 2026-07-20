@@ -8,6 +8,7 @@ pub mod emit;
 pub mod grid;
 pub mod options;
 pub mod phases;
+pub mod pipeline;
 pub mod rng;
 pub mod scratch;
 pub mod settings;
