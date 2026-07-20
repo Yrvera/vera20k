@@ -14,6 +14,8 @@ use crate::map::rmg::tiles::TileIds;
 use crate::map::rmg::x87::{self, Gaussian, TruncF64};
 use crate::map::theater::TheaterCliffRanges;
 
+use super::hills_corners::{self, CornerGrid, Morphable};
+
 /// Height a shore-piece neighbour is seeded to.
 const SHORE_SEED_HEIGHT: f64 = 0.5;
 /// Ruggedness scales: tilt clamp, out-of-diamond velocity, draw window.
@@ -34,6 +36,43 @@ const HALF: f64 = 0.5;
 
 fn t(value: f64) -> TruncF64 {
     TruncF64::from_f64(value)
+}
+
+/// Everything the hills phase borrows.
+pub struct HillsCtx<'a> {
+    pub grid: &'a mut RmgGrid,
+    pub scratch: &'a mut RmgScratch,
+    pub ids: &'a TileIds,
+    pub gauss: &'a mut Gaussian,
+    pub rng: &'a mut RmgRng,
+}
+
+/// Phase inputs.
+#[derive(Debug, Clone, Copy)]
+pub struct HillsArgs {
+    pub ruggedness: i32,
+    pub map_w: i32,
+    pub map_h: i32,
+}
+
+/// Run the whole hills phase: seed, walk, then the deterministic corner morph.
+///
+/// `cliff` classifies obstacle tiles for the water seed; `morphable` reports a
+/// tile's `Morphable=` flag for the corner engine. Neither the build nor the
+/// morph consumes RNG.
+pub fn run(
+    ctx: &mut HillsCtx<'_>,
+    args: &HillsArgs,
+    cliff: &TheaterCliffRanges,
+    morphable: Morphable<'_>,
+) {
+    water_seed(ctx.grid, ctx.scratch, ctx.ids, cliff);
+    walk(ctx.scratch, ctx.gauss, ctx.rng, args.ruggedness);
+    let span = args.map_w + args.map_h - 1;
+    let mut corners = CornerGrid::build(ctx.grid, ctx.scratch, span, ctx.ids, morphable);
+    hills_corners::morph(ctx.grid, ctx.scratch, &mut corners, ctx.ids, morphable);
+    corners.finalize(ctx.grid, ctx.scratch, ctx.ids, morphable);
+    hills_corners::quad_cleanup(ctx.grid);
 }
 
 /// Water-adjacency seed (`0x005A33F0`): each shore-piece cell marks its first
