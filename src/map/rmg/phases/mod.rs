@@ -8,8 +8,10 @@ pub mod blob;
 pub mod green_spread;
 pub mod regions;
 pub mod shore;
+pub mod starts;
 pub mod water;
 pub mod water_finalize;
+pub mod zones;
 
 /// A cell reference held in a phase's work list.
 ///

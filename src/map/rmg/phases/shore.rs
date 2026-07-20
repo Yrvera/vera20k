@@ -89,10 +89,13 @@ const BIT_W: i32 = 0x20;
 const BIT_NW: i32 = 0x40;
 
 /// One sub-tile of a multi-cell tile block; `None` entries are holes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SubTile {
     /// Height byte added to the source cell's level on stamping.
     pub height: u8,
+    /// TMP terrain-type byte (sub-tile header +0x29); the zone classifier
+    /// maps it to a land type. 0 = clear.
+    pub terrain: u8,
 }
 
 /// A tile block's sub-tile grid (row-major, `width * height` entries).
@@ -615,7 +618,7 @@ mod tests {
         UniformBlocks(TileBlock {
             width: 1,
             height: 1,
-            subtiles: vec![Some(SubTile { height: 0 })],
+            subtiles: vec![Some(SubTile { height: 0, terrain: 0 })],
         })
     }
 
@@ -635,6 +638,7 @@ mod tests {
             shore: 400,
             misc_pave: -1,
             paved_roads: -1,
+            paved_road_ends: -1,
             medians: -1,
         }
     }

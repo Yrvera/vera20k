@@ -20,6 +20,7 @@ const LAT_SPAN: i32 = 0x10;
 const SHORE_SPAN: i32 = 42;
 /// Fixed spans of the start-placement 6x6 gate ranges.
 const PAVED_ROADS_SPAN: i32 = 15;
+const PAVED_ROAD_ENDS_SPAN: i32 = 4;
 const MISC_PAVE_SPAN: i32 = 14;
 const PAVE_SPAN: i32 = 16;
 
@@ -40,6 +41,7 @@ pub struct TileIds {
     pub shore: i32,
     pub misc_pave: i32,
     pub paved_roads: i32,
+    pub paved_road_ends: i32,
     pub medians: i32,
 }
 
@@ -68,6 +70,7 @@ impl TileIds {
             shore: flat(keys.shore_pieces),
             misc_pave: flat(keys.misc_pave_tile),
             paved_roads: flat(keys.paved_roads),
+            paved_road_ends: flat(keys.paved_road_ends),
             medians: flat(keys.medians),
         }
     }
@@ -96,6 +99,11 @@ impl TileIds {
     /// Paved-road range used by the start 6x6 passability gate.
     pub fn is_paved_road(&self, tile: i32) -> bool {
         in_span(tile, self.paved_roads, PAVED_ROADS_SPAN)
+    }
+
+    /// Paved-road-ends range used by the start 6x6 passability gate.
+    pub fn is_paved_road_end(&self, tile: i32) -> bool {
+        in_span(tile, self.paved_road_ends, PAVED_ROAD_ENDS_SPAN)
     }
 
     /// Misc-pave range used by the start 6x6 passability gate.
@@ -149,6 +157,7 @@ mod tests {
             water_set: start(21),
             shore_pieces: start(12),
             paved_roads: start(20),
+            paved_road_ends: start(36),
             medians: start(40),
         };
         let ids = TileIds::from_keys(&keys);
@@ -202,6 +211,7 @@ mod tests {
             shore: -1,
             misc_pave: -1,
             paved_roads: -1,
+            paved_road_ends: -1,
             medians: -1,
         };
         // -1 bases must not create a range around -1; and the unassigned
@@ -220,6 +230,8 @@ mod tests {
         assert!(!ids.is_shore_piece(ids.shore + 42));
         assert!(ids.is_paved_road(ids.paved_roads + 14));
         assert!(!ids.is_paved_road(ids.paved_roads + 15));
+        assert!(ids.is_paved_road_end(ids.paved_road_ends + 3));
+        assert!(!ids.is_paved_road_end(ids.paved_road_ends + 4));
         assert!(ids.is_misc_pave(ids.misc_pave + 13));
         assert!(!ids.is_misc_pave(ids.misc_pave + 14));
         assert!(ids.is_pave(ids.pave + 15));

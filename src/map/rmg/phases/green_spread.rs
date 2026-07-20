@@ -106,6 +106,7 @@ mod tests {
             shore: -1,
             misc_pave: -1,
             paved_roads: -1,
+            paved_road_ends: -1,
             medians: -1,
         }
     }

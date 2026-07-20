@@ -227,6 +227,7 @@ pub struct RmgTileKeys {
     pub shore_pieces: Option<u16>,
     pub misc_pave_tile: Option<u16>,
     pub paved_roads: Option<u16>,
+    pub paved_road_ends: Option<u16>,
     pub medians: Option<u16>,
 }
 
@@ -956,6 +957,7 @@ fn resolve_rmg_tile_keys(lookup: &TilesetLookup, ini_text: &str) -> RmgTileKeys 
         shore_pieces: resolve("ShorePieces"),
         misc_pave_tile: resolve("MiscPaveTile"),
         paved_roads: resolve("PavedRoads"),
+        paved_road_ends: resolve("PavedRoadEnds"),
         medians: resolve("Medians"),
     }
 }

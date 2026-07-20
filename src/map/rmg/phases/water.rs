@@ -504,7 +504,7 @@ mod tests {
         OneByOne(TileBlock {
             width: 1,
             height: 1,
-            subtiles: vec![Some(SubTile { height: 0 })],
+            subtiles: vec![Some(SubTile { height: 0, terrain: 0 })],
         })
     }
 
@@ -524,6 +524,7 @@ mod tests {
             shore: 400,
             misc_pave: -1,
             paved_roads: -1,
+            paved_road_ends: -1,
             medians: -1,
         }
     }

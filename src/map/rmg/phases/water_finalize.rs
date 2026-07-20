@@ -109,7 +109,7 @@ mod tests {
         TwoByTwo(TileBlock {
             width: 2,
             height: 2,
-            subtiles: vec![Some(SubTile { height: 0 }); 4],
+            subtiles: vec![Some(SubTile { height: 0, terrain: 0 }); 4],
         })
     }
 
@@ -129,6 +129,7 @@ mod tests {
             shore: 400,
             misc_pave: -1,
             paved_roads: -1,
+            paved_road_ends: -1,
             medians: -1,
         }
     }

@@ -61,26 +61,29 @@ fn water_family(ids: &TileIds, tile: i32) -> bool {
 }
 
 /// 1-indexed binary min-heap on f32 keys with the original's tie rules.
-struct MinHeap {
+///
+/// Shared with the starts phase: the per-start clearing flood uses the same
+/// native heap helpers (including the silent skip-when-full insert).
+pub(crate) struct MinHeap {
     /// Slot 0 unused.
     nodes: Vec<(f32, (i32, i32))>,
     cap: usize,
 }
 
 impl MinHeap {
-    fn new(cap: usize) -> Self {
+    pub(crate) fn new(cap: usize) -> Self {
         Self {
             nodes: vec![(0.0, (0, 0))],
             cap,
         }
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.nodes.len() - 1
     }
 
     /// Insert unless full (`count + 1 >= cap` skips silently).
-    fn push(&mut self, key: f32, coord: (i32, i32)) {
+    pub(crate) fn push(&mut self, key: f32, coord: (i32, i32)) {
         if self.len() + 1 >= self.cap {
             return;
         }
@@ -99,7 +102,7 @@ impl MinHeap {
         self.nodes[i] = (key, coord);
     }
 
-    fn pop(&mut self) -> Option<(f32, (i32, i32))> {
+    pub(crate) fn pop(&mut self) -> Option<(f32, (i32, i32))> {
         if self.len() == 0 {
             return None;
         }
@@ -390,7 +393,7 @@ mod tests {
         OneByOne(TileBlock {
             width: 1,
             height: 1,
-            subtiles: vec![Some(SubTile { height: 0 })],
+            subtiles: vec![Some(SubTile { height: 0, terrain: 0 })],
         })
     }
 
@@ -410,6 +413,7 @@ mod tests {
             shore: 400,
             misc_pave: -1,
             paved_roads: -1,
+            paved_road_ends: -1,
             medians: -1,
         }
     }

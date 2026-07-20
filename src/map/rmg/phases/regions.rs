@@ -358,6 +358,7 @@ mod tests {
             shore: 400,
             misc_pave: -1,
             paved_roads: -1,
+            paved_road_ends: -1,
             medians: -1,
         }
     }

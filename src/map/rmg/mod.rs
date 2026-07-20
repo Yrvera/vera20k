@@ -11,6 +11,7 @@ pub mod phases;
 pub mod rng;
 pub mod scratch;
 pub mod settings;
+pub mod sqrt_approx;
 pub mod tiles;
 pub mod x87;
 
