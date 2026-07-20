@@ -40,10 +40,10 @@ pub enum AnchorRule {
     /// row, flush to the panel right edge at `cell_w`. Uses only the DLU top.
     /// (0xE2 stacked Single Player / WW Online / Network / Movies / Options.)
     OwnerDrawButtonSnap { cell_w: i32 },
-    /// Owner-draw button kept at its raw DLU top (no row snap), flush-right at
-    /// `cell_w`. Uses only the DLU top. (0xE2 Exit, which sits in the gap below
-    /// the stack rather than snapping to a row.)
-    OwnerDrawButtonRawTop { cell_w: i32 },
+    /// Owner-draw button occupying the final complete tile immediately above the
+    /// right-panel bottom cap, flush-right at `cell_w`. The resource top is not
+    /// consumed. (0xE2 Exit.)
+    OwnerDrawButtonBottomRow { cell_w: i32 },
     /// Right-panel child: sidebar-inset, oversized-screen compensated, anchored
     /// to `panel.top.y + dlu_top`. (0xE2 Yuri-website static.) This is the main
     /// menu's convention specifically; single-player and skirmish anchor Y to

@@ -79,15 +79,20 @@ pub struct PreparedMatchStartup {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LoadingStartup {
     Accepted(PreparedMatchStartup),
-    UnverifiedLegacy(SkirmishLaunchSession),
-    Generic { selected_map_file: String },
+    UnverifiedLegacy {
+        session: SkirmishLaunchSession,
+        seed: MatchSeed,
+    },
+    Generic {
+        selected_map_file: String,
+    },
 }
 
 impl LoadingStartup {
     pub fn selected_map_file(&self) -> &str {
         match self {
             Self::Accepted(startup) => startup.session.selected_map_file(),
-            Self::UnverifiedLegacy(session) => {
+            Self::UnverifiedLegacy { session, .. } => {
                 session.selected_map_file.as_deref().unwrap_or("auto")
             }
             Self::Generic { selected_map_file } => selected_map_file,
@@ -97,7 +102,7 @@ impl LoadingStartup {
     pub fn launch_session(&self) -> Option<&SkirmishLaunchSession> {
         match self {
             Self::Accepted(startup) => Some(startup.session.launch_session()),
-            Self::UnverifiedLegacy(session) => Some(session),
+            Self::UnverifiedLegacy { session, .. } => Some(session),
             Self::Generic { .. } => None,
         }
     }
@@ -105,14 +110,15 @@ impl LoadingStartup {
     pub fn accepted(&self) -> Option<&PreparedMatchStartup> {
         match self {
             Self::Accepted(startup) => Some(startup),
-            Self::UnverifiedLegacy(_) | Self::Generic { .. } => None,
+            Self::UnverifiedLegacy { .. } | Self::Generic { .. } => None,
         }
     }
 
     pub fn seed_or_else(&self, unverified_fallback: impl FnOnce() -> u32) -> u32 {
         match self {
             Self::Accepted(startup) => startup.seed.value,
-            Self::UnverifiedLegacy(_) | Self::Generic { .. } => unverified_fallback(),
+            Self::UnverifiedLegacy { seed, .. } => seed.value,
+            Self::Generic { .. } => unverified_fallback(),
         }
     }
 
@@ -270,15 +276,21 @@ pub fn prepare_match_startup(
     session: AcceptedBattleSession,
     clock: &mut impl MatchSeedClock,
 ) -> PreparedMatchStartup {
-    let value = clock.low_u32();
     PreparedMatchStartup {
         correlation,
-        seed: MatchSeed {
-            value,
-            source: clock.source(),
-            seed_authority_certifying: clock.seed_authority_certifying(),
-        },
+        seed: read_match_seed(clock),
         session,
+    }
+}
+
+/// Read one ordinary offline match seed without coupling the caller to the
+/// accepted-startup receipt path. Every successful Skirmish Start uses this
+/// same authority, including sessions that still have noncertifying mechanics.
+pub fn read_match_seed(clock: &mut impl MatchSeedClock) -> MatchSeed {
+    MatchSeed {
+        value: clock.low_u32(),
+        source: clock.source(),
+        seed_authority_certifying: clock.seed_authority_certifying(),
     }
 }
 
@@ -647,8 +659,15 @@ mod tests {
     }
 
     #[test]
-    fn unverified_loading_seed_paths_call_fallback_once() {
-        let legacy = LoadingStartup::UnverifiedLegacy(explicit_session());
+    fn shell_resolved_loading_uses_preselected_seed_while_generic_calls_fallback() {
+        let legacy = LoadingStartup::UnverifiedLegacy {
+            session: explicit_session(),
+            seed: MatchSeed {
+                value: 0x1234_5678,
+                source: MatchSeedSource::Controlled,
+                seed_authority_certifying: true,
+            },
+        };
         let mut legacy_calls = 0;
         assert_eq!(
             legacy.seed_or_else(|| {
@@ -657,7 +676,7 @@ mod tests {
             }),
             0x1234_5678
         );
-        assert_eq!(legacy_calls, 1);
+        assert_eq!(legacy_calls, 0);
 
         let generic = LoadingStartup::Generic {
             selected_map_file: "DeepFrze.map".into(),

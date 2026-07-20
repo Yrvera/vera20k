@@ -573,6 +573,10 @@ pub struct ObjectType {
     /// consumer in retail. Default `false`.
     pub bridge_repair_hut: bool,
 
+    /// Whether this building type uses the LaserFence runtime connectivity
+    /// exclusion in Spark collision (`LaserFence=yes`).
+    pub laser_fence: bool,
+
     /// Maximum number of infantry passengers this vehicle can carry.
     /// Parsed from `Passengers=N` in rules.ini. >0 enables `Enter` cursor
     /// for friendly infantry hovering this transport.
@@ -902,7 +906,10 @@ impl ObjectType {
             id: id.to_string(),
             category,
             name: section.get("Name").map(|s| s.to_string()),
-            ui_name: section.get("UIName").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+            ui_name: section
+                .get("UIName")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
             strength: section.get_i32("Strength").unwrap_or(0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
@@ -1117,6 +1124,7 @@ impl ObjectType {
             can_occupy_fire: section.get_bool("CanOccupyFire").unwrap_or(false),
             show_occupant_pips: section.get_bool("ShowOccupantPips").unwrap_or(true),
             bridge_repair_hut: section.get_bool("BridgeRepairHut").unwrap_or(false),
+            laser_fence: section.get_bool("LaserFence").unwrap_or(false),
             passengers: section.get_i32("Passengers").unwrap_or(0).max(0) as u32,
             size_limit: section.get_i32("SizeLimit").unwrap_or(0).max(0) as u32,
             size: section
@@ -1526,6 +1534,23 @@ mod tests {
         );
         assert!(obj_on.bridge_repair_hut);
         assert!(!obj_off.bridge_repair_hut);
+    }
+
+    #[test]
+    fn parse_laser_fence_flag() {
+        let ini: IniFile = IniFile::from_str("[FENCE]\nLaserFence=yes\n[OTHER]\n");
+        let fence = ObjectType::from_ini_section(
+            "FENCE",
+            ini.section("FENCE").unwrap(),
+            ObjectCategory::Building,
+        );
+        let other = ObjectType::from_ini_section(
+            "OTHER",
+            ini.section("OTHER").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(fence.laser_fence);
+        assert!(!other.laser_fence);
     }
 
     #[test]
@@ -2078,11 +2103,19 @@ mod tests {
         // type is `Cyborg=yes` AND infantry.
         let ini = IniFile::from_str("[X]\nCyborg=yes\n");
         let s = ini.section("X").unwrap();
-        assert!(ObjectType::from_ini_section("X", s, ObjectCategory::Infantry).emits_damage_spark());
+        assert!(
+            ObjectType::from_ini_section("X", s, ObjectCategory::Infantry).emits_damage_spark()
+        );
         // A Cyborg=yes vehicle/building/aircraft never emits (category gate).
-        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Vehicle).emits_damage_spark());
-        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Building).emits_damage_spark());
-        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Aircraft).emits_damage_spark());
+        assert!(
+            !ObjectType::from_ini_section("X", s, ObjectCategory::Vehicle).emits_damage_spark()
+        );
+        assert!(
+            !ObjectType::from_ini_section("X", s, ObjectCategory::Building).emits_damage_spark()
+        );
+        assert!(
+            !ObjectType::from_ini_section("X", s, ObjectCategory::Aircraft).emits_damage_spark()
+        );
         // Default (no Cyborg key) → false even for infantry (dormant in stock YR).
         let plain = IniFile::from_str("[E1]\n");
         let ps = plain.section("E1").unwrap();

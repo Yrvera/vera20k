@@ -21,8 +21,8 @@ use crate::sim::animation::Animation;
 use crate::sim::combat::AttackTarget;
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
-    DamageFireOverlays, DriveLocomotionRuntime, HarvestOverlay, Health, MovementTarget,
-    NavigationState, OrderIntent, PendingC4Detonation, Position, RockingState, VoxelAnimation,
+    DriveLocomotionRuntime, HarvestOverlay, Health, MovementTarget, NavigationState, OrderIntent,
+    PendingC4Detonation, Position, RockingState, VoxelAnimation,
 };
 use crate::sim::debug_event_log::{DebugEventKind, DebugEventLog};
 use crate::sim::deploy::DeployPhase;
@@ -31,7 +31,6 @@ use crate::sim::docking::building_dock::DockState;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
 use crate::sim::mission::{MissionCom, MissionTimer, MissionType};
-use crate::sim::radio::Contacts;
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
 use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
@@ -40,6 +39,7 @@ use crate::sim::movement::teleport_movement::TeleportState;
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::movement::tunnel_movement::TunnelState;
 use crate::sim::passenger::PassengerRole;
+use crate::sim::radio::Contacts;
 use crate::sim::slave_miner::SlaveHarvester;
 use crate::sim::superweapon::invulnerability::InvulnerabilityState;
 
@@ -90,7 +90,9 @@ pub enum BuildingGateMissionState {
 /// The unit side of the tank-bunker reciprocal link (the pre-install approach
 /// state plus the installed link, folded into one hashed field). Distinct from
 /// `PassengerRole` cargo: a bunker is a single reciprocal link, never cargo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum BunkerLink {
     /// Not heading to or inside any bunker.
     #[default]
@@ -204,6 +206,15 @@ pub struct GameEntity {
     /// When `Some`, the entity is rotating in place and should not advance position.
     /// Infantry always turn instantly (RA2 behavior), so this stays `None` for them.
     pub facing_target: Option<u8>,
+    /// Binary-frame body-rotation interpolator, active only while turning in place
+    /// toward `facing_target`. Mirrors gamemd's hull `FacingClass` (the body
+    /// PrimaryFacing turned by the drive locomotor at the unit's rules `ROT=`):
+    /// turn duration is `abs(delta_8bit) / ROT` binary frames, frame-count based —
+    /// NOT millisecond based. `facing` (the u8 above) stays the authoritative
+    /// rendered/logic heading and is refreshed from this each tick; this is
+    /// cleared to `None` whenever no in-place rotation is in progress.
+    #[serde(default)]
+    pub body_facing: Option<crate::sim::movement::FacingClass>,
     /// Owning player/faction name (e.g., "Americans", "Soviet") — interned for zero-cost clones.
     pub owner: InternedId,
     /// Current and maximum hit points.
@@ -302,8 +313,13 @@ pub struct GameEntity {
     /// BuildingClass BState table.
     #[serde(default)]
     pub building_damage_state_active: bool,
-    /// Persistent fire/smoke overlays on damaged buildings (health < ConditionYellow).
-    pub damage_fire_overlays: Option<DamageFireOverlays>,
+    /// Native BuildingClass damage-fire transition cache. Distinct from the
+    /// generic damaged-art state above.
+    #[serde(default)]
+    pub damage_fire_state_active: bool,
+    /// Eight fixed AnimClass ownership slots at Building+0x5C8..+0x5E4.
+    #[serde(default)]
+    pub damage_fire_anim_ids: [Option<crate::sim::anim_class::AnimId>; 8],
     /// Bridge deck occupancy marker.
     pub bridge_occupancy: Option<BridgeOccupancy>,
     /// Persistent bridge layer flag — authoritative source for "is this entity on a bridge?"
@@ -621,6 +637,7 @@ impl GameEntity {
             },
             facing,
             facing_target: None,
+            body_facing: None,
             owner,
             health,
             type_ref,
@@ -647,7 +664,8 @@ impl GameEntity {
             building_down: None,
             building_anim_overlays: None,
             building_damage_state_active: false,
-            damage_fire_overlays: None,
+            damage_fire_state_active: false,
+            damage_fire_anim_ids: [None; 8],
             bridge_occupancy: None,
             on_bridge: false,
             animation: None,
@@ -894,8 +912,8 @@ mod tests {
         // OnBridge byte, NOT the locomotor/path layer. Pin a mismatch — loco.layer
         // = Ground while on_bridge = true — and assert the list layer follows
         // on_bridge (Bridge), the gamemd `Object+0x8C` selector.
-        use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
         use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 
         let mut entity = GameEntity::test_default(1, "HTNK", "Americans", 5, 5);
         let mut loco = LocomotorState::for_test_kind(LocomotorKind::Drive);

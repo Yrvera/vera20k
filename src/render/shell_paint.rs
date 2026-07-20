@@ -48,12 +48,6 @@ pub const SHELL_TEXT_RGB_ENABLED: [f32; 3] = [1.0, 1.0, 0.0];
 pub const SHELL_TEXT_RGB_DISABLED: [f32; 3] = [0x9F as f32 / 255.0, 0.0, 0.0];
 /// Button art alpha when a control is disabled (0x80/255 ≈ 0.502). 0x100 only.
 pub const BUTTON_DISABLED_ALPHA: f32 = 0x80 as f32 / 255.0;
-/// On press, gamemd's 0xE2 owner-draw button sinks the whole button content
-/// down by +2 px in Y (in addition to the +1 px right shift from
-/// `pressed_content_offset_x`). Both the button art and its label move together.
-/// Y+ is downward in this screen-space render path. 0x100 has NO art/text Y sink.
-pub const PRESSED_CONTENT_OFFSET_Y: f32 = 2.0;
-
 /// How a button's SDBTNANM art is fit into its cell rect.
 #[derive(Clone, Copy)]
 pub enum ArtFit {
@@ -72,8 +66,8 @@ pub struct ButtonPolicy {
     pub art_fit: ArtFit,
     /// 0x100 = true (frame-3 ~1 Hz flash); 0xE2 = false (never reaches frame 3).
     pub hover_flash: bool,
-    /// Vertical art sink applied while pressed. 0xE2 = `PRESSED_CONTENT_OFFSET_Y`,
-    /// 0x100 = 0.0. Float because it routes through the art emit path.
+    /// Policy-specific vertical art sink while pressed. The verified 0xE2 and
+    /// 0x100 policies both use 0.0. Float because it routes through art emission.
     pub art_sink_y: f32,
     /// 0x100 = true (alpha 0.502 on disabled art); 0xE2 = false (never disables).
     pub disabled_dim: bool,
@@ -257,11 +251,13 @@ fn select_frame(
         let wave_frame = |i: usize| atlas.button_wave_frames.get(i).copied().flatten();
         return wave_frame(idx).or_else(|| wave_frame(idx.saturating_sub(1)));
     }
-    Some(match steady_frame_choice(b, policy, now, hover_started_at) {
-        SteadyFrame::Default => atlas.button_default,
-        SteadyFrame::Hover => atlas.button_hover,
-        SteadyFrame::Pressed => atlas.button_pressed,
-    })
+    Some(
+        match steady_frame_choice(b, policy, now, hover_started_at) {
+            SteadyFrame::Default => atlas.button_default,
+            SteadyFrame::Hover => atlas.button_hover,
+            SteadyFrame::Pressed => atlas.button_pressed,
+        },
+    )
 }
 
 /// Emit the owner-draw buttons at `BUTTON_DEPTH`, applying the per-shell policy
@@ -535,14 +531,13 @@ mod tests {
     const NATIVE_POLICY: ButtonPolicy = ButtonPolicy {
         art_fit: ArtFit::Native,
         hover_flash: false,
-        art_sink_y: PRESSED_CONTENT_OFFSET_Y,
+        art_sink_y: 0.0,
         disabled_dim: false,
     };
 
-    /// 0xE2 native art: native pixel_size at rect top-left, +2 px Y sink only
-    /// when pressed, no horizontal shift on the art (the +1 px is text-only).
+    /// 0xE2 native art stays at the cell top-left when frame 4 is selected.
     #[test]
-    fn native_art_sinks_two_px_down_when_pressed() {
+    fn native_art_stays_fixed_when_pressed() {
         let frame = fake_entry(156.0, 42.0);
         let rect = RectPx::new(644, 199, 156, 42);
 
@@ -551,16 +546,20 @@ mod tests {
         assert_eq!(pos_up, [644.0, 199.0]);
         assert_eq!(size_up, [156.0, 42.0]);
 
-        // Pressed: same X, +2 px Y, native size.
+        // Pressed: frame selection changes elsewhere; geometry is identical.
         let (pos_dn, size_dn) = native_emit(frame, rect, true);
-        assert_eq!(pos_dn, [644.0, 201.0]);
+        assert_eq!(pos_dn, [644.0, 199.0]);
         assert_eq!(size_dn, [156.0, 42.0]);
-        assert_eq!(pos_dn[1] - pos_up[1], PRESSED_CONTENT_OFFSET_Y);
+        assert_eq!(pos_dn, pos_up);
     }
 
     /// Mirror `paint_buttons`' Native art branch for an entry+rect without an
     /// atlas (the frame is already resolved).
-    fn native_emit(frame: MainMenuShellChromeEntry, rect: RectPx, pressed: bool) -> ([f32; 2], [f32; 2]) {
+    fn native_emit(
+        frame: MainMenuShellChromeEntry,
+        rect: RectPx,
+        pressed: bool,
+    ) -> ([f32; 2], [f32; 2]) {
         let policy = NATIVE_POLICY;
         let sink = if pressed { policy.art_sink_y } else { 0.0 };
         ([rect.x as f32, rect.y as f32 + sink], frame.pixel_size)

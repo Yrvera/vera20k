@@ -519,6 +519,10 @@ fn process_pending_drive_arrivals(
         }
         let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref)));
         let speed_multiplier = loco.speed_multiplier;
+        // Copy out (Copy type) before `loco`'s borrow of `entity` ends: only
+        // Drive-kind movers ride drive-track curve tables below — hover (and
+        // any other straight-line mover) must not pick one up on repath.
+        let loco_kind = loco.kind;
         let speed = (obj
             .map(|o| ra2_speed_to_leptons_per_second(o.speed))
             .unwrap_or(ra2_speed_to_leptons_per_second(4))
@@ -543,36 +547,43 @@ fn process_pending_drive_arrivals(
             final_goal: Some((rx, ry)),
             ..Default::default()
         };
-        if let Some(sel) =
-            super::drive_track::select_drive_track(entity.facing, facing_from_delta(dx, dy), false)
-        {
-            entity.drive_track = super::drive_track::begin_drive_track(
-                sel.raw_track_index,
-                sel.flags,
-                dx,
-                dy,
-                sel.target_facing,
-            );
-            if entity.drive_track.is_some() {
-                entity.facing_target = None;
-            }
-        } else if let Some(fb) = super::drive_track::build_sharp_turn_fallback(entity.facing) {
-            let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity.facing);
-            entity.drive_track = super::drive_track::begin_drive_track(
-                fb.raw_track_index,
-                fb.flags,
-                cdx,
-                cdy,
-                fb.target_facing,
-            );
-            if entity.drive_track.is_some() {
-                movement.next_index += 1;
-                let (move_dir_x, move_dir_y, move_dir_len) =
-                    crate::util::lepton::cell_delta_to_lepton_dir(cdx, cdy);
-                movement.move_dir_x = move_dir_x;
-                movement.move_dir_y = move_dir_y;
-                movement.move_dir_len = move_dir_len;
-                entity.facing_target = None;
+        if matches!(
+            loco_kind,
+            crate::rules::locomotor_type::LocomotorKind::Drive
+        ) {
+            if let Some(sel) = super::drive_track::select_drive_track(
+                entity.facing,
+                facing_from_delta(dx, dy),
+                false,
+            ) {
+                entity.drive_track = super::drive_track::begin_drive_track(
+                    sel.raw_track_index,
+                    sel.flags,
+                    dx,
+                    dy,
+                    sel.target_facing,
+                );
+                if entity.drive_track.is_some() {
+                    entity.facing_target = None;
+                }
+            } else if let Some(fb) = super::drive_track::build_sharp_turn_fallback(entity.facing) {
+                let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity.facing);
+                entity.drive_track = super::drive_track::begin_drive_track(
+                    fb.raw_track_index,
+                    fb.flags,
+                    cdx,
+                    cdy,
+                    fb.target_facing,
+                );
+                if entity.drive_track.is_some() {
+                    movement.next_index += 1;
+                    let (move_dir_x, move_dir_y, move_dir_len) =
+                        crate::util::lepton::cell_delta_to_lepton_dir(cdx, cdy);
+                    movement.move_dir_x = move_dir_x;
+                    movement.move_dir_y = move_dir_y;
+                    movement.move_dir_len = move_dir_len;
+                    entity.facing_target = None;
+                }
             }
         }
         entity.movement_target = Some(movement);
@@ -828,6 +839,7 @@ pub fn tick_movement_with_grids(
     rng: &mut SimRng,
     tick_ms: u32,
     sim_tick: u64,
+    binary_frame: u32,
     zone_grid: Option<&ZoneGrid>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     terrain_speed_config: &TerrainSpeedConfig,
@@ -1090,24 +1102,45 @@ pub fn tick_movement_with_grids(
                 }
             }
 
-            // Vehicles rotate in place before moving (RA2 behavior).
-            // If facing_target is set and not yet reached, rotate toward it and
-            // skip lepton advancement this tick. ROT=0 means instant turn.
+            // Steering / rotation. Hover steers continuously toward the current
+            // waypoint (facing-lagged curves, turn-stall braking) and never
+            // stop-rotates; everything else keeps the rotate-in-place-then-move
+            // behavior. ROT=0 means instant turn in both models.
+            let uses_hover_locomotor = snap.locomotor.as_ref().is_some_and(|loco| {
+                matches!(
+                    loco.kind,
+                    crate::rules::locomotor_type::LocomotorKind::Hover
+                )
+            });
+            let mut hover_stall = false;
             if snap.category != EntityCategory::Infantry {
-                match movement_step::handle_vehicle_rotation(
-                    &mut entity.facing,
-                    &mut entity.facing_target,
-                    &mut entity.position,
-                    &mut entity.locomotor,
-                    snap.rot,
-                    tick_ms,
-                    sim_tick,
-                ) {
-                    movement_step::RotationResult::StillRotating { debug_events: evts } => {
-                        debug_events.extend(evts);
-                        continue;
+                if uses_hover_locomotor {
+                    hover_stall = movement_step::hover_steer(
+                        &mut entity.facing,
+                        &mut entity.facing_target,
+                        &mut entity.body_facing,
+                        &entity.position,
+                        target,
+                        snap.rot,
+                        binary_frame,
+                    );
+                } else {
+                    match movement_step::handle_vehicle_rotation(
+                        &mut entity.facing,
+                        &mut entity.facing_target,
+                        &mut entity.body_facing,
+                        &mut entity.position,
+                        &mut entity.locomotor,
+                        snap.rot,
+                        binary_frame,
+                        sim_tick,
+                    ) {
+                        movement_step::RotationResult::StillRotating { debug_events: evts } => {
+                            debug_events.extend(evts);
+                            continue;
+                        }
+                        movement_step::RotationResult::ReadyToMove => {}
                     }
-                    movement_step::RotationResult::ReadyToMove => {}
                 }
             }
 
@@ -1179,6 +1212,69 @@ pub fn tick_movement_with_grids(
                 } else {
                     target.current_speed = target.speed * cell_speed_mod;
                 }
+            } else if uses_hover_locomotor {
+                // Hover throttle (the hover locomotor's SpeedUpdate model, see
+                // sim/movement/hover.rs): a [0,1] fraction of base Speed ramped
+                // at the HoverAcceleration/HoverBrake minute rates. Request: 0
+                // while turning hard (steering above), 0.5 on arrival slow-in /
+                // departure slow-out (~1 cell of goal / path start), else 1.0.
+                // HoverBoost multiplies the request when the next two queued
+                // steps share a direction; the post-boost clamp to 1.0 makes it
+                // a cruise no-op. Throttle persists on the locomotor across
+                // repaths.
+                let goal = target.final_goal.unwrap_or_else(|| {
+                    target
+                        .path
+                        .last()
+                        .copied()
+                        .unwrap_or((entity.position.rx, entity.position.ry))
+                });
+                let dist_goal = distance_to_goal_leptons(&entity.position, goal);
+                let start = target.path.first().copied().unwrap_or(goal);
+                let dist_start = distance_to_goal_leptons(&entity.position, start);
+                // Straightaway when the step INTO the current waypoint and the
+                // step OUT of it share a direction (the two queued same-facing
+                // path entries of the boost condition).
+                let straightaway = if target.next_index + 1 < target.path.len() {
+                    let a = target.path[target.next_index];
+                    let b = target.path[target.next_index + 1];
+                    let dir_in = facing_from_delta(
+                        a.0 as i32 - entity.position.rx as i32,
+                        a.1 as i32 - entity.position.ry as i32,
+                    );
+                    let dir_out =
+                        facing_from_delta(b.0 as i32 - a.0 as i32, b.1 as i32 - a.1 as i32);
+                    dir_in == dir_out
+                } else {
+                    false
+                };
+                let (accel_min, brake_min, boost) = rules
+                    .map(|r| {
+                        (
+                            r.general.hover_acceleration,
+                            r.general.hover_brake,
+                            r.general.hover_boost,
+                        )
+                    })
+                    .unwrap_or((
+                        super::hover::HOVER_ACCELERATION_DEFAULT_MINUTES,
+                        super::hover::HOVER_BRAKE_DEFAULT_MINUTES,
+                        SimFixed::lit("1.5"),
+                    ));
+                let request = super::hover::hover_speed_request(hover_stall, dist_goal, dist_start);
+                let boost_mult = if straightaway { boost } else { SIM_ONE };
+                let throttle = snap
+                    .locomotor
+                    .as_ref()
+                    .map(|l| l.hover_throttle)
+                    .unwrap_or(SIM_ONE);
+                let new_throttle = super::hover::hover_tick_throttle(
+                    throttle, request, boost_mult, accel_min, brake_min,
+                );
+                if let Some(ref mut loco) = entity.locomotor {
+                    loco.hover_throttle = new_throttle;
+                }
+                target.current_speed = target.speed * new_throttle;
             } else if target.accel_factor > SIM_ZERO || target.decel_factor > SIM_ZERO {
                 let goal = target.final_goal.unwrap_or_else(|| {
                     target
@@ -1233,6 +1329,12 @@ pub fn tick_movement_with_grids(
             };
             if let Some(crawls) = prone_crawls {
                 effective_speed = infantry::apply_prone_speed(effective_speed, crawls);
+            }
+            // Hover turn-stall: hold position while the body swings through a
+            // >45° turn (the throttle keeps braking above). See hover_steer's
+            // doc for why translation is suppressed rather than decayed.
+            if hover_stall {
+                effective_speed = SIM_ZERO;
             }
 
             // Advance sub_x/sub_y toward the next cell — either via drive track
@@ -1679,6 +1781,73 @@ pub fn tick_movement_with_grids(
     finalize_finished_entities(entities, &finished_entities, sim_tick);
     update_locomotor_phases(entities, sim_tick);
 
+    // Hover vertical controller — every hover unit, moving OR parked (idle
+    // units still float at cruise height and bob). Runs after the XY stage so
+    // the per-tick order matches the original locomotor (step, then vertical).
+    let (vh_height, vh_bob, vh_dampen, vh_gravity) = rules
+        .map(|r| {
+            (
+                r.general.hover_height,
+                r.general.hover_bob,
+                r.general.hover_dampen,
+                r.general.gravity,
+            )
+        })
+        .unwrap_or((
+            120,
+            SimFixed::from_num(0.04),
+            SimFixed::from_num(0.4),
+            3, // engine code default; stock [AudioVisual] overrides to 6
+        ));
+    for &entity_id in entity_order {
+        let Some(entity) = entities.get_mut(entity_id) else {
+            continue;
+        };
+        let is_hover = entity
+            .locomotor
+            .as_ref()
+            .is_some_and(|l| matches!(l.kind, crate::rules::locomotor_type::LocomotorKind::Hover));
+        if !is_hover || !entity.is_active() {
+            continue;
+        }
+        let moving = entity.movement_target.is_some();
+        // Climbing: the next path cell's ground is higher than the current
+        // cell's — the height deficit is measured against the uphill slope.
+        let climbing = moving
+            && path_grid.is_some_and(|pg| {
+                entity.movement_target.as_ref().is_some_and(|t| {
+                    t.path.get(t.next_index).is_some_and(|&(nx, ny)| {
+                        match (
+                            pg.cell(nx, ny),
+                            pg.cell(entity.position.rx, entity.position.ry),
+                        ) {
+                            (Some(next), Some(cur)) => next.ground_level > cur.ground_level,
+                            _ => false,
+                        }
+                    })
+                })
+            });
+        if let Some(ref mut loco) = entity.locomotor {
+            // Powered: locomotor EMP/power shutdown is not modeled yet, so
+            // hover units are always lifted; the unpowered-sink branch is
+            // exercised by unit tests until an EMP system exists.
+            let (new_height, new_offset) = super::hover::hover_vertical_tick(
+                loco.altitude,
+                loco.hover_bob_offset,
+                binary_frame,
+                moving,
+                climbing,
+                true,
+                vh_height,
+                vh_bob,
+                vh_dampen,
+                vh_gravity,
+            );
+            loco.altitude = new_height;
+            loco.hover_bob_offset = new_offset;
+        }
+    }
+
     stats
 }
 
@@ -1735,6 +1904,7 @@ fn finalize_finished_entities(entities: &mut EntityStore, finished: &[u64], sim_
             }
             entity.movement_target = None;
             entity.drive_track = None; // clear any active drive track curve
+            entity.body_facing = None; // steering/turn interpolator ends with the move
             // Snap sub-cell leptons to final position. Use the locomotor's
             // subcell_dest if available (set during cell entry), otherwise fall
             // back to computing from sub_cell index. Vehicles snap to center.
@@ -1751,6 +1921,9 @@ fn finalize_finished_entities(entities: &mut EntityStore, finished: &[u64], sim_
                 loco.phase = GroundMovePhase::Idle;
                 loco.infantry_wobble_phase = 0.0;
                 loco.subcell_dest = None;
+                // Full stop zeroes the hover throttle (the hover locomotor's
+                // arrival cleanup) so the next order spins up from rest.
+                loco.hover_throttle = crate::util::fixed_math::SIM_ZERO;
             }
             if let Some(old) = old_phase {
                 if old != GroundMovePhase::Idle {
@@ -1917,7 +2090,10 @@ mod drive_track_chain_tests {
             &interner,
             None,
         );
-        assert!(rebuilt, "stale snapshot must rebuild when generation advances");
+        assert!(
+            rebuilt,
+            "stale snapshot must rebuild when generation advances"
+        );
         assert!(
             !sets[&owner].1.contains_key(MovementLayer::Ground, &(5, 5)),
             "old cell freed"

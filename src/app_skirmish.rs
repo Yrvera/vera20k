@@ -25,7 +25,7 @@ use crate::rules::house_colors::HouseColorIndex;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::AiPlayerState;
-use crate::sim::house_state::HouseState;
+use crate::sim::house_state::{HouseDifficulty, HouseState};
 use crate::sim::world::Simulation;
 use crate::skirmish_launch::{
     LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
@@ -142,6 +142,7 @@ struct NormalizedSkirmishSlot {
     start_position: LaunchStartPosition,
     team: LaunchTeam,
     is_human: bool,
+    difficulty: HouseDifficulty,
 }
 
 pub(crate) fn house_color_map_for_launch_session(
@@ -184,31 +185,6 @@ pub(crate) fn apply_explicit_skirmish_launch_session(
     )
 }
 
-/// Preserve the old post-construction placeholder resolver as an explicitly
-/// unverified compatibility path until native shell draw attribution closes.
-pub(crate) fn apply_unverified_legacy_skirmish_launch_session(
-    sim: &mut Simulation,
-    map_data: &MapFile,
-    house_roster: &HouseRoster,
-    rules: &RuleSet,
-    height_map: &BTreeMap<(u16, u16), u8>,
-    resolved_terrain: &ResolvedTerrainGrid,
-    session: &SkirmishLaunchSession,
-) -> SkirmishLaunchApplyResult {
-    let resolved_session = session.resolve_unverified_legacy_random_assignments(
-        sim.unverified_legacy_random_assignment_rng(),
-    );
-    apply_resolved_skirmish_launch_session(
-        sim,
-        map_data,
-        house_roster,
-        rules,
-        height_map,
-        resolved_terrain,
-        &resolved_session,
-    )
-}
-
 fn apply_resolved_skirmish_launch_session(
     sim: &mut Simulation,
     map_data: &MapFile,
@@ -219,14 +195,9 @@ fn apply_resolved_skirmish_launch_session(
     session: &SkirmishLaunchSession,
 ) -> SkirmishLaunchApplyResult {
     let slots = normalized_launch_slots(session);
-    let ai_difficulty = session
-        .opponents
-        .first()
-        .map(|slot| slot.difficulty)
-        .unwrap_or_default();
     sim.session.game_options = session
         .options
-        .to_game_options(session.opponents.len() as i32, ai_difficulty);
+        .to_game_options(session.opponents.len() as i32);
 
     sim.houses.clear();
     sim.ai_players.clear();
@@ -343,6 +314,7 @@ fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<NormalizedSki
         start_position: session.local.start_position,
         team: session.local.team,
         is_human: true,
+        difficulty: HouseDifficulty::Normal,
     });
     for (idx, opponent) in session.opponents.iter().enumerate() {
         slots.push(NormalizedSkirmishSlot {
@@ -352,6 +324,8 @@ fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<NormalizedSki
             start_position: opponent.start_position,
             team: opponent.team,
             is_human: false,
+            difficulty: HouseDifficulty::from_native(opponent.difficulty.as_i32())
+                .expect("AiDifficulty uses native HouseClass discriminants"),
         });
     }
     slots
@@ -383,17 +357,16 @@ fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot]
     for slot in slots {
         let name_id = sim.interner.intern(&slot.owner_name);
         let country_id = sim.interner.intern(slot.country.country_name());
-        sim.houses.insert(
+        let mut house = HouseState::new(
             name_id,
-            HouseState::new(
-                name_id,
-                slot.country.side_index(),
-                Some(country_id),
-                slot.is_human,
-                sim.session.game_options.starting_credits,
-                sim.session.game_options.tech_level,
-            ),
+            slot.country.side_index(),
+            Some(country_id),
+            slot.is_human,
+            sim.session.game_options.starting_credits,
+            sim.session.game_options.tech_level,
         );
+        house.difficulty = slot.difficulty;
+        sim.houses.insert(name_id, house);
         if !slot.is_human {
             sim.ai_players.push(AiPlayerState::new(name_id));
             log::info!("AI player registered: {}", slot.owner_name);
@@ -839,8 +812,8 @@ mod tests {
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::skirmish_launch::{
-        LaunchStartPosition, LaunchTeam, SkirmishAiSlot, SkirmishLaunchMode, SkirmishLaunchOptions,
-        SkirmishLocalSlot,
+        AiDifficulty, LaunchStartPosition, LaunchTeam, SkirmishAiSlot, SkirmishLaunchMode,
+        SkirmishLaunchOptions, SkirmishLocalSlot,
     };
 
     fn test_session() -> SkirmishLaunchSession {
@@ -1316,7 +1289,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
-        let result = apply_unverified_legacy_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1375,6 +1348,33 @@ mod tests {
     }
 
     #[test]
+    fn launch_population_copies_each_ai_row_difficulty_to_its_house() {
+        let mut session = test_session();
+        let template = session.opponents[0].clone();
+        session.opponents = [AiDifficulty::Hard, AiDifficulty::Normal, AiDifficulty::Easy]
+            .into_iter()
+            .enumerate()
+            .map(|(index, difficulty)| SkirmishAiSlot {
+                color_index: (index + 2) as u8,
+                difficulty,
+                ..template.clone()
+            })
+            .collect();
+
+        let mut sim = Simulation::new();
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session));
+
+        let difficulty = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .map(|house| house.difficulty)
+        };
+        assert_eq!(difficulty("Player"), Some(HouseDifficulty::Normal));
+        assert_eq!(difficulty("Computer1"), Some(HouseDifficulty::Hard));
+        assert_eq!(difficulty("Computer2"), Some(HouseDifficulty::Normal));
+        assert_eq!(difficulty("Computer3"), Some(HouseDifficulty::Easy));
+    }
+
+    #[test]
     fn skirmish_bases_off_still_allows_unit_count_extra_units() {
         let mut sim = Simulation::new();
         let mut session = test_session();
@@ -1385,7 +1385,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_starting_unit_rules();
 
-        let result = apply_unverified_legacy_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1412,7 +1412,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
-        let result = apply_unverified_legacy_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1436,7 +1436,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
-        let result = apply_unverified_legacy_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1474,7 +1474,7 @@ mod tests {
         )
         .expect("blocker");
 
-        let result = apply_unverified_legacy_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1541,7 +1541,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_starting_unit_rules();
 
-        let result = apply_unverified_legacy_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),

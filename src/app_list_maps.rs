@@ -14,7 +14,10 @@ use crate::assets::mix_archive::MixArchive;
 use crate::map::briefing::BriefingSection;
 use crate::map::map_file::{self, MapFile};
 use crate::map::preview::{PreviewSection, PreviewSourceBounds, PreviewStartPoint};
-use crate::map::waypoints::{multiplayer_start_waypoints, parse_waypoints};
+use crate::map::waypoints::{
+    DEFAULT_SKIRMISH_PLAYER_CAPACITY, multiplayer_start_waypoints, parse_waypoints,
+    skirmish_player_capacity,
+};
 use crate::rules::ini_parser::IniFile;
 use crate::skirmish_scenarios::{SkirmishScenarioRecord, SkirmishScenarioSource};
 use crate::util::config::GameConfig;
@@ -295,6 +298,7 @@ pub(crate) fn read_map_menu_entry(path: &Path, file_name: &str) -> MapMenuEntry 
         briefing: BriefingSection::default(),
         preview: PreviewSection::default(),
         multiplayer_start_waypoints: Vec::new(),
+        player_capacity: DEFAULT_SKIRMISH_PLAYER_CAPACITY,
         preview_source_bounds: None,
     };
 
@@ -321,6 +325,7 @@ pub(crate) fn read_map_menu_entry_from_ini(ini: &IniFile, file_name: &str) -> Ma
         briefing: crate::map::briefing::parse_briefing_section(&ini),
         preview: crate::map::preview::parse_preview_section(&ini),
         multiplayer_start_waypoints: multiplayer_start_waypoints(&parse_waypoints(ini)),
+        player_capacity: skirmish_player_capacity(ini),
         preview_source_bounds: preview_source_bounds_from_verified_source(ini),
     }
 }
@@ -483,7 +488,17 @@ mod tests {
         assert_eq!(indices, vec![0, 3, 7]);
         assert_eq!(entry.multiplayer_start_waypoints[0].rx, 11);
         assert_eq!(entry.multiplayer_start_waypoints[0].ry, 100);
+        assert_eq!(entry.player_capacity, 3);
         assert_eq!(entry.preview_source_bounds, None);
+    }
+
+    #[test]
+    fn menu_entry_carries_random_map_capacity_fallback() {
+        let ini = IniFile::from_str("[RandomMap]\nNumPlayers=4\n");
+        let entry = read_map_menu_entry_from_ini(&ini, "RandMap.Sed");
+
+        assert!(entry.multiplayer_start_waypoints.is_empty());
+        assert_eq!(entry.player_capacity, 4);
     }
 
     #[test]

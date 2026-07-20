@@ -53,12 +53,15 @@ pub mod app_radiation_light;
 pub mod app_shell_transition;
 pub mod app_single_player_shell_render;
 pub mod app_skirmish;
+pub mod app_skirmish_session;
 pub mod app_skirmish_shell_render;
 pub mod match_bootstrap;
 
 // App-level skirmish startup contract shared by the menu shell and map loader.
+pub mod skirmish_cooperative;
 pub mod skirmish_launch;
 pub mod skirmish_modes;
+pub mod skirmish_persistence;
 pub mod skirmish_scenarios;
 
 // Shared type definitions and constants used across app_* modules.

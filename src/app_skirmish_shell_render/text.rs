@@ -11,13 +11,14 @@ use crate::render::shell_paint::{self, PaintLabel};
 use crate::render::shell_text::{self, Reveal, ShellAlign, ShellTextDraw, TextRect};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
-    checkbox_text_rect, choose_map_listbox_content_rect, choose_map_listbox_row_rect,
-    choose_map_listbox_visible_row_count, combo_dropdown_content_rect, combo_dropdown_rect,
-    combo_dropdown_visible_row_count, combo_items, combo_text_rect, player_name_edit_text_rect,
-    trackbar_value_text_rect, trackbar_visual_value, ChooseMapModalLayout, OwnerDrawButton, RectPx,
-    SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboItem, SkirmishCountryChoice,
-    SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState, SkirmishTrackbarId,
-    ValidationModalLayout, COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET,
+    COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
+    OwnerDrawButton, RectPx, SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboItem,
+    SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState,
+    SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
+    choose_map_listbox_row_rect, choose_map_listbox_visible_row_count, combo_dropdown_content_rect,
+    combo_dropdown_rect, combo_dropdown_visible_row_count, combo_enabled, combo_items,
+    combo_text_rect, player_name_edit_text_rect, player_row_visible, trackbar_value_text_rect,
+    trackbar_visual_value,
 };
 
 use super::controls::trackbar_rect_for_id;
@@ -53,14 +54,19 @@ pub(super) fn start_position_label(pos: crate::ui::main_menu::StartPosition) -> 
     }
 }
 
-pub(super) fn team_label(team: i32) -> String {
+fn team_label_spec(team: i32) -> (&'static str, &'static str) {
     match team {
-        0 => "A".to_string(),
-        1 => "B".to_string(),
-        2 => "C".to_string(),
-        3 => "D".to_string(),
-        _ => "None".to_string(),
+        0 => ("LETTER_A", "A"),
+        1 => ("LETTER_B", "B"),
+        2 => ("LETTER_C", "C"),
+        3 => ("LETTER_D", "D"),
+        _ => ("GUI:NoneAsSymbols", "None"),
     }
+}
+
+pub(super) fn team_label(state: &AppState, team: i32) -> String {
+    let (key, fallback) = team_label_spec(team);
+    localized_label(state, key, fallback)
 }
 
 pub(super) fn combo_item_label(state: &AppState, item: SkirmishComboItem) -> String {
@@ -75,7 +81,11 @@ pub(super) fn combo_item_label(state: &AppState, item: SkirmishComboItem) -> Str
         SkirmishComboItem::Country(SkirmishCountryChoice::Country(country)) => {
             country.label().to_string()
         }
-        SkirmishComboItem::ColorSentinel(_) => String::new(),
+        SkirmishComboItem::ColorSentinel(_) => {
+            // The source-line immediate `0x20A` is not a string id; the
+            // adjacent load supplies `GUI:RandomAsSymbols` to the color combo.
+            localized_label(state, "GUI:RandomAsSymbols", "Random")
+        }
         SkirmishComboItem::Color(_) => String::new(),
         SkirmishComboItem::Start(start) => match start {
             crate::ui::main_menu::StartPosition::Auto => {
@@ -83,7 +93,7 @@ pub(super) fn combo_item_label(state: &AppState, item: SkirmishComboItem) -> Str
             }
             crate::ui::main_menu::StartPosition::Position(idx) => (idx + 1).to_string(),
         },
-        SkirmishComboItem::Team(team) => team_label(team),
+        SkirmishComboItem::Team(team) => team_label(state, team),
     }
 }
 
@@ -663,6 +673,16 @@ pub(super) fn build_shell_text_draws(
         layout.rows.side_combos[0],
         &covering_overlays,
     );
+    if !shell.player_color_claimed {
+        let random_color = localized_label(state, "GUI:RandomAsSymbols", "Random");
+        push_combo_face_label_draw(
+            &mut shell_draws,
+            state,
+            &random_color,
+            layout.color_combos[0],
+            &covering_overlays,
+        );
+    }
     push_combo_face_label_draw(
         &mut shell_draws,
         state,
@@ -673,7 +693,7 @@ pub(super) fn build_shell_text_draws(
     push_combo_face_label_draw(
         &mut shell_draws,
         state,
-        &team_label(shell.player_team),
+        &team_label(state, shell.player_team),
         layout.rows.team_combos[0],
         &covering_overlays,
     );
@@ -683,6 +703,9 @@ pub(super) fn build_shell_text_draws(
             break;
         }
         let row = idx + 1;
+        if !player_row_visible(shell, maps, row) {
+            continue;
+        }
         let (key, fallback) = row_type_label(opponent.row_type);
         let row_type = localized_label(state, key, fallback);
         push_combo_face_label_draw(
@@ -701,6 +724,17 @@ pub(super) fn build_shell_text_draws(
             sibling_text_color,
             &covering_overlays,
         );
+        if !opponent.color_claimed {
+            let random_color = localized_label(state, "GUI:RandomAsSymbols", "Random");
+            push_combo_face_label_draw_with_color(
+                &mut shell_draws,
+                state,
+                &random_color,
+                layout.color_combos[row],
+                sibling_text_color,
+                &covering_overlays,
+            );
+        }
         push_combo_face_label_draw_with_color(
             &mut shell_draws,
             state,
@@ -712,14 +746,17 @@ pub(super) fn build_shell_text_draws(
         push_combo_face_label_draw_with_color(
             &mut shell_draws,
             state,
-            &team_label(opponent.team),
+            &team_label(state, opponent.team),
             layout.rows.team_combos[row],
             sibling_text_color,
             &covering_overlays,
         );
     }
 
-    if let Some(open) = shell.open_combo_dropdown {
+    if let Some(open) = shell
+        .open_combo_dropdown
+        .filter(|open| combo_enabled(shell, maps, open.id))
+    {
         if let Some(dropdown) = combo_dropdown_rect(shell, layout, maps, open.id) {
             let content =
                 combo_dropdown_content_rect(shell, layout, maps, open.id).unwrap_or(dropdown);
@@ -1009,11 +1046,11 @@ mod tests {
 
     #[test]
     fn team_label_uses_native_sentinel_values() {
-        assert_eq!(team_label(-2), "None");
-        assert_eq!(team_label(0), "A");
-        assert_eq!(team_label(1), "B");
-        assert_eq!(team_label(2), "C");
-        assert_eq!(team_label(3), "D");
+        assert_eq!(team_label_spec(-2), ("GUI:NoneAsSymbols", "None"));
+        assert_eq!(team_label_spec(0), ("LETTER_A", "A"));
+        assert_eq!(team_label_spec(1), ("LETTER_B", "B"));
+        assert_eq!(team_label_spec(2), ("LETTER_C", "C"));
+        assert_eq!(team_label_spec(3), ("LETTER_D", "D"));
     }
 
     #[test]

@@ -11,6 +11,10 @@ use std::time::Instant;
 
 use crate::app::AppState;
 use crate::app_commands::{preferred_local_owner, preferred_local_owner_name};
+
+/// Minimum ticks between under-attack EVA voice lines (~30 s at 67 ms/tick).
+/// The native per-house attack-voice repeat delay is UNVERIFIED-pending-trace.
+const EVA_UNDER_ATTACK_COOLDOWN_TICKS: u64 = 450;
 use crate::app_types::SIM_TICK_HZ;
 use crate::app_types::SIM_TICK_MS;
 use crate::assets::asset_manager::AssetManager;
@@ -33,6 +37,221 @@ use crate::ui::game_screen::GameScreen;
 const MAX_SIM_STEPS_PER_FRAME: u32 = 8;
 /// Cap catch-up after lag spikes/breakpoints.
 const MAX_UPDATE_DELTA_MS: u64 = 250;
+
+/// Directory for flushed replay logs (mirrors the `saves/` convention).
+const REPLAYS_DIR: &str = "replays";
+
+/// Persist the in-memory replay log to disk if one was recorded this match.
+///
+/// The log lives on the sim (`sim.replay_log`) and is appended every tick but
+/// is otherwise dropped when the sim is torn down. Call this on match teardown
+/// (return-to-menu) so every finished match leaves a replayable, deterministic
+/// command+hash log — the prerequisite for diagnosing any future desync. No-op
+/// when there is no active sim or no recorded ticks. Writes
+/// `replays/replay_tick{tick}_{unix_secs}.json`.
+pub(crate) fn flush_replay_log(state: &AppState) {
+    let Some(sim) = state.simulation.as_ref() else {
+        return;
+    };
+    let Some(log) = sim.replay_log.as_ref() else {
+        return;
+    };
+    if log.ticks.is_empty() {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Err(e) = std::fs::create_dir_all(REPLAYS_DIR) {
+        log::error!("Replay flush: failed to create replays dir: {e}");
+        return;
+    }
+    let path = std::path::PathBuf::from(format!(
+        "{REPLAYS_DIR}/replay_tick{}_{}.json",
+        sim.session.tick, now
+    ));
+    match log.save(&path) {
+        Ok(()) => log::info!(
+            "Replay flushed: {} ticks -> {}",
+            log.ticks.len(),
+            path.display()
+        ),
+        Err(e) => log::error!("Replay flush failed: {e}"),
+    }
+}
+
+/// App-side producers for the high-frequency EVA state cues the sim emits no
+/// events for yet: "Low power", "Insufficient funds", "Unit lost".
+///
+/// Each cue is edge-detected against the previous frame's state (the
+/// `AppState.eva_*` trackers) so it fires once per transition; the voice
+/// queue's same-cue dedupe is the repeat suppressor while a cue is already
+/// playing/queued. Native VoxClass priority tiers and re-announce cadence
+/// remain a later parity surface (the queue bridge in `audio/sfx.rs` says the
+/// same) — this wires the producers only.
+fn announce_local_state_evas(state: &mut AppState) {
+    let Some(owner) = crate::app_commands::preferred_local_owner_name(state) else {
+        return;
+    };
+    // Read phase (immutable sim borrow): compute this frame's states and the
+    // newly-dying set; commit to the trackers after the borrow ends.
+    let (low_power, funds_stalled, current_dying, newly_dying) = {
+        let Some(sim) = state.simulation.as_ref() else {
+            return;
+        };
+        let owner_id = sim.interner.get(&owner);
+        let low_power = owner_id
+            .and_then(|id| sim.power_states.get(&id))
+            .is_some_and(|p| p.is_low_power);
+        // Underfunded stall: any local factory holding an active object.
+        let funds_stalled = owner_id.is_some_and(|id| {
+            sim.production
+                .factory_shadow
+                .iter_insertion_ordered()
+                .iter()
+                .any(|f| f.owner == id && f.on_hold && f.object.is_some())
+        });
+        // Local mobile entities currently in their death sequence. Structures
+        // have their own radar/EVA surface (not wired here); instant removals
+        // that never set `dying` (e.g. crush) are a known miss until the sim
+        // emits a death event.
+        let current_dying: Vec<u64> = owner_id
+            .map(|id| {
+                sim.entities()
+                    .values()
+                    .filter(|e| {
+                        e.dying
+                            && e.owner == id
+                            && e.category != crate::map::entities::EntityCategory::Structure
+                    })
+                    .map(|e| e.stable_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let newly_dying: Vec<u64> = current_dying
+            .iter()
+            .copied()
+            .filter(|id| !state.eva_announced_dying.contains(id))
+            .collect();
+        (low_power, funds_stalled, current_dying, newly_dying)
+    };
+
+    let mut cues: Vec<(&'static str, &'static str)> = Vec::new();
+    if low_power && !state.eva_low_power_active {
+        cues.push(("EVA_LowPower", "ceva053"));
+    }
+    state.eva_low_power_active = low_power;
+    if funds_stalled && !state.eva_funds_stalled {
+        cues.push(("EVA_InsufficientFunds", "ceva050"));
+    }
+    state.eva_funds_stalled = funds_stalled;
+    if !newly_dying.is_empty() {
+        cues.push(("EVA_UnitLost", "ceva064"));
+    }
+    // Prune despawned corpses, then record this frame's announcements.
+    state
+        .eva_announced_dying
+        .retain(|id| current_dying.contains(id));
+    state.eva_announced_dying.extend(newly_dying);
+
+    if cues.is_empty() {
+        return;
+    }
+    let faction = crate::app_building_anim::eva_faction_key(&owner, &state.house_roster);
+    let sound_ids: Vec<String> = cues
+        .iter()
+        .map(|(cue, fallback)| {
+            state
+                .eva_registry
+                .get(cue, faction)
+                .unwrap_or(fallback)
+                .to_string()
+        })
+        .collect();
+    let (Some(sfx), Some(assets)) = (&mut state.sfx_player, &state.asset_manager) else {
+        return;
+    };
+    for sound_id in &sound_ids {
+        sfx.queue_eva_sound(
+            sound_id,
+            &state.sound_registry,
+            assets,
+            &state.audio_indices,
+        );
+    }
+}
+
+/// After a sim step, surface a win/loss result screen for the LOCAL player.
+///
+/// `World::check_defeat` sets each house's `has_won` / `is_defeated` / `has_lost`
+/// every tick, but nothing consumed them: a skirmish would keep running
+/// invisibly after the player's base was destroyed, and a win was never
+/// announced. This reads the local player's house and, on the first tick the
+/// outcome is decided, transitions to the existing `GameScreen::MissionResult`
+/// screen. Switching away from `InGame` stops the in-game runtime next frame,
+/// so this fires exactly once. Loss is keyed off `is_defeated` (the flag set
+/// first and unconditionally in `check_defeat`) so it stays correct regardless
+/// of the `has_lost` companion.
+fn check_local_player_match_end(state: &mut AppState) {
+    if !matches!(state.screen, GameScreen::InGame) {
+        return;
+    }
+    let Some(owner) = crate::app_commands::preferred_local_owner_name(state) else {
+        return;
+    };
+    let outcome: Option<(&'static str, &'static str)> = {
+        let Some(sim) = state.simulation.as_ref() else {
+            return;
+        };
+        let Some(house) =
+            crate::sim::house_state::house_state_for_owner(&sim.houses, &owner, &sim.interner)
+        else {
+            return;
+        };
+        // `check_defeat` flags the last house standing as the winner, which in a
+        // single-house sandbox is true from tick 0 — require a real opponent
+        // (>=2 houses) before announcing victory. Loss needs no such guard.
+        if house.has_won && sim.houses.len() > 1 {
+            Some((
+                "You are Victorious!",
+                "All enemy forces have been defeated.",
+            ))
+        } else if house.is_defeated || house.has_lost {
+            Some(("You have Lost", "Your forces have been eliminated."))
+        } else {
+            None
+        }
+    };
+    let Some((title, detail)) = outcome else {
+        return;
+    };
+    log::info!("Match end for local player '{owner}': {title}");
+    state.screen = GameScreen::MissionResult {
+        title: title.to_string(),
+        detail: detail.to_string(),
+    };
+}
+
+fn anim_world_sound_screen(world: crate::sim::anim_class::AnimWorldCoord) -> (f32, f32) {
+    const CELL_LEPTONS: i32 = 256;
+    const HEIGHT_LEVEL_LEPTONS: i32 = 128;
+    let rx = world
+        .x
+        .div_euclid(CELL_LEPTONS)
+        .clamp(0, i32::from(u16::MAX)) as u16;
+    let ry = world
+        .y
+        .div_euclid(CELL_LEPTONS)
+        .clamp(0, i32::from(u16::MAX)) as u16;
+    let sub_x = crate::util::fixed_math::SimFixed::from_num(world.x.rem_euclid(CELL_LEPTONS));
+    let sub_y = crate::util::fixed_math::SimFixed::from_num(world.y.rem_euclid(CELL_LEPTONS));
+    let z = world
+        .z
+        .div_euclid(HEIGHT_LEVEL_LEPTONS)
+        .clamp(0, i32::from(u8::MAX)) as u8;
+    crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FixedStepSchedule {
@@ -257,6 +476,13 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
             .map(|sim| sim.session.tick)
             .unwrap_or(0);
         advance_fixed_simulation(state, sim_elapsed);
+        // After the sim advances, surface a win/loss result screen for the
+        // local player — the sim computes the per-house outcome flags but
+        // nothing else consumes them, so a match would otherwise end invisibly.
+        check_local_player_match_end(state);
+        // High-frequency EVA state cues (low power / insufficient funds /
+        // unit lost) — app-side edge detection over sim state.
+        announce_local_state_evas(state);
         let garrison_flash_elapsed_ticks = state
             .simulation
             .as_ref()
@@ -273,10 +499,6 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
         // Previously this passed SIM_TICK_MS (66ms) per render frame, causing building
         // idle animations to play ~3-4× too fast (60fps × 66ms = 3960ms/sec).
         crate::app_building_anim::tick_crane_animations(
-            state,
-            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
-        );
-        crate::app_building_anim::tick_damage_fire_overlays(
             state,
             sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
         );
@@ -419,6 +641,31 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
             // Convert sim sound events to app-layer sound events for playback.
             for sim_event in sim.sound_events.drain(..) {
                 let app_event: GameSoundEvent = match sim_event {
+                    SimSoundEvent::AnimationStarted {
+                        anim_id,
+                        sound_id,
+                        world,
+                    } => {
+                        let (sx, sy) = anim_world_sound_screen(world);
+                        GameSoundEvent::AnimationStarted {
+                            anim_id,
+                            sound_id: sim.interner.resolve(sound_id).to_string(),
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
+                    SimSoundEvent::AnimationStopped {
+                        anim_id,
+                        stop_sound_id,
+                        world,
+                    } => {
+                        let (sx, sy) = anim_world_sound_screen(world);
+                        GameSoundEvent::AnimationStopped {
+                            anim_id,
+                            stop_sound_id: stop_sound_id
+                                .map(|id| sim.interner.resolve(id).to_string()),
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                     SimSoundEvent::WeaponFired {
                         report_sound_id,
                         rx,
@@ -735,6 +982,45 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             screen_pos,
                             eva_sound_id,
                         }
+                    }
+                    SimSoundEvent::UnderAttack {
+                        owner,
+                        miner,
+                        eva_allowed,
+                        ..
+                    } => {
+                        // Voice for the LOCAL player only; the radar diamond is
+                        // sim-side (owner-scoped) and needs nothing here.
+                        let owner_str = sim.interner.resolve(owner);
+                        let is_local = local_owner_name
+                            .as_deref()
+                            .is_some_and(|l| l.eq_ignore_ascii_case(owner_str));
+                        if !eva_allowed || !is_local {
+                            continue;
+                        }
+                        // Repeat cooldown across both cue kinds (the native
+                        // per-house attack-voice delay is UNVERIFIED — see the
+                        // field doc on AppState).
+                        if sim.session.tick < state.eva_under_attack_block_until_tick {
+                            continue;
+                        }
+                        state.eva_under_attack_block_until_tick =
+                            sim.session.tick + EVA_UNDER_ATTACK_COOLDOWN_TICKS;
+                        let faction = crate::app_building_anim::eva_faction_key(
+                            owner_str,
+                            &state.house_roster,
+                        );
+                        let (cue, fallback) = if miner {
+                            ("EVA_OreMinerUnderAttack", "ceva037")
+                        } else {
+                            ("EVA_OurBaseIsUnderAttack", "ceva054")
+                        };
+                        let eva_sound_id = state
+                            .eva_registry
+                            .get(cue, faction)
+                            .unwrap_or(fallback)
+                            .to_string();
+                        GameSoundEvent::UnderAttackEva { eva_sound_id }
                     }
                     SimSoundEvent::WorldEffectStarted {
                         sound_id,

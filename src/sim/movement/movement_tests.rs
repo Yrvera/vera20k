@@ -762,6 +762,7 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
         &mut stable_order.scenario_rng,
         1000,
         0,
+        0, // binary_frame (test)
         None,
         None,
         &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -786,6 +787,7 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
         &mut live_order.scenario_rng,
         1000,
         0,
+        0, // binary_frame (test)
         None,
         None,
         &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -1625,6 +1627,8 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
         air_progress: SIM_ZERO,
         infantry_wobble_phase: 0.0,
         subcell_dest: None,
+        hover_throttle: crate::util::fixed_math::SIM_ZERO,
+        hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
     }
 }
 
@@ -1744,6 +1748,7 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
         &mut rng,
         1000,
         0,
+        0, // binary_frame (test)
         None,
         Some(&terrain),
         &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -1820,6 +1825,7 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
         &mut rng,
         1000,
         0,
+        0, // binary_frame (test)
         None,
         None,
         &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -1968,7 +1974,6 @@ fn test_queued_drive_reissue_layered_path_avoids_friendly_building_footprint() {
 }
 
 #[test]
-#[ignore = "WIP: segment-exhaustion auto-repath not yet landed"]
 fn test_segment_exhaustion_repath_avoids_friendly_building_footprint() {
     // A long path with a 2x2 friendly building at cell 30 (beyond the first
     // 24-step segment). The initial segment doesn't see the foundation; the
@@ -2002,6 +2007,10 @@ fn test_segment_exhaustion_repath_avoids_friendly_building_footprint() {
 
     let mut mover = GameEntity::test_default(1, "HTNK", "Americans", 1, 2);
     mover.locomotor = Some(make_drive_loco_for_test());
+    // No rules in this harness → accel_factor is 0, so an accelerating drive
+    // fraction would sit at 0 forever. Accelerates=no snaps to full fraction
+    // (real matches always parse a positive acceleration from rules).
+    mover.drive_accelerates = false;
     entities.insert(mover);
 
     // entity_blocks=None at command time → initial path goes straight east,
@@ -2102,6 +2111,8 @@ fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
         air_progress: SIM_ZERO,
         infantry_wobble_phase: 0.0,
         subcell_dest: None,
+        hover_throttle: crate::util::fixed_math::SIM_ZERO,
+        hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
     }
 }
 
@@ -2138,11 +2149,14 @@ fn tick_bridge(
 }
 
 #[test]
-#[ignore = "WIP: high-bridge ramp relink not yet landed"]
 fn ship_high_bridge_ramp_to_body_relinks_after_on_bridge_update() {
+    // Body cells are LANE cells: the certified bridge stamping puts the 0x200
+    // transition flag on Anchor+Forward1 (the crossable deck lane) of every
+    // bridge stamp — transition=false structural cells are the Forward2 edge
+    // lane, which is NOT crossable (see bridge_facts.rs stamp slots).
     let mut grid = PathGrid::new(10, 10);
     grid.set_cell_for_test(1, 1, 4, true, true);
-    grid.set_cell_for_test(2, 1, 0, true, false);
+    grid.set_cell_for_test(2, 1, 0, true, true);
 
     let mut entities = EntityStore::new();
     let mut e = GameEntity::test_default(1, "DEST", "Americans", 1, 1);
@@ -2210,13 +2224,14 @@ fn ship_high_bridge_ramp_to_body_relinks_after_on_bridge_update() {
 }
 
 #[test]
-#[ignore = "WIP: bridge ramp on-bridge state not yet landed"]
 fn on_bridge_fires_at_ramp_to_body_only() {
     // Layout: (1,1) is a ramp/bridgehead at raw h=4 (bridge_walkable, transition=true).
-    // (2,1) is a body cell at raw h=0 (bridge_walkable, no transition). Effective deck = 4.
+    // (2,1) is a body LANE cell at raw h=0. Effective deck = 4. Lane cells carry
+    // the transition flag (Anchor+Forward1 stamping); transition=false structural
+    // cells are the non-crossable Forward2 edge lane.
     let mut grid = PathGrid::new(10, 10);
     grid.set_cell_for_test(1, 1, 4, true, true);
-    grid.set_cell_for_test(2, 1, 0, true, false);
+    grid.set_cell_for_test(2, 1, 0, true, true);
 
     let mut entities = EntityStore::new();
     let mut e = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
@@ -2495,12 +2510,13 @@ fn no_bridge_lookahead_pre_claim() {
 }
 
 #[test]
-#[ignore = "WIP: bridge multi-crossing state not yet landed"]
 fn multi_crossing_preserves_first_bridge_set_update() {
+    // Body cells (2,1)/(3,1) are LANE cells (transition flag on the crossable
+    // deck lane, per the Anchor+Forward1 stamping in bridge_facts.rs).
     let mut grid = PathGrid::new(10, 10);
     grid.set_cell_for_test(1, 1, 4, true, true);
-    grid.set_cell_for_test(2, 1, 0, true, false);
-    grid.set_cell_for_test(3, 1, 0, true, false);
+    grid.set_cell_for_test(2, 1, 0, true, true);
+    grid.set_cell_for_test(3, 1, 0, true, true);
 
     let mut entities = EntityStore::new();
     let mut e = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
@@ -2561,4 +2577,245 @@ fn multi_crossing_preserves_first_bridge_set_update() {
     let cell = occupancy.get(3, 1).expect("final occupancy");
     assert_eq!(cell.count_on(MovementLayer::Bridge), 1);
     assert_eq!(cell.count_on(MovementLayer::Ground), 0);
+}
+
+// --- Hover throttle integration (M2 P2a) ---
+
+/// Minimal hover mover: hover locomotor, straight eastward path, cell-center start.
+fn make_hover_mover(path: Vec<(u16, u16)>, sub_x: i32) -> GameEntity {
+    let goal = *path.last().expect("non-empty path");
+    let mut entity = GameEntity::new(
+        1,
+        path[0].0,
+        path[0].1,
+        0,
+        64,
+        crate::sim::intern::test_intern("Americans"),
+        crate::sim::components::Health {
+            current: 100,
+            max: 100,
+        },
+        crate::sim::intern::test_intern("LCRF"),
+        EntityCategory::Unit,
+        0,
+        5,
+        false,
+    );
+    entity.position.sub_x = SimFixed::from_num(sub_x);
+    entity.position.sub_y = SimFixed::from_num(128);
+    entity.position.refresh_screen_coords();
+    entity.locomotor = Some(
+        crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+            crate::rules::locomotor_type::LocomotorKind::Hover,
+        ),
+    );
+    let path_len = path.len();
+    entity.movement_target = Some(MovementTarget {
+        path,
+        path_layers: vec![MovementLayer::Ground; path_len],
+        next_index: 1,
+        speed: SimFixed::from_num(11),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some(goal),
+        ..Default::default()
+    });
+    entity
+}
+
+/// One movement tick over a bare world (no grids, no rules → stock hover
+/// defaults). `binary_frame` must advance per call — hover steering runs a
+/// binary-frame FacingClass, which never progresses on a constant frame.
+fn tick_hover_world(entities: &mut EntityStore, binary_frame: u32) {
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    let mut occupancy = OccupancyGrid::new();
+    let mut sounds = Vec::new();
+    let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
+    let terrain_costs: std::collections::BTreeMap<
+        crate::rules::locomotor_type::SpeedType,
+        crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
+    > = std::collections::BTreeMap::new();
+    tick_movement_with_grids(
+        entities,
+        &[],
+        None,
+        &terrain_costs,
+        &Default::default(),
+        &mut occupancy,
+        &mut next_occupancy_enter_order,
+        &mut rng,
+        1000,
+        0,
+        binary_frame,
+        None,
+        None,
+        &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+        SIM_ZERO,
+        9,
+        60,
+        &mut interner,
+        None,
+        &mut sounds,
+    );
+}
+
+#[test]
+fn hover_mover_ramps_throttle_from_rest_and_persists_on_locomotor() {
+    use crate::sim::movement::hover;
+    // Far from the goal (4 cells ≈ 1024 leptons > 255): cruise request 1.0,
+    // spin-up from rest at one accel step per tick.
+    let mut entities = EntityStore::new();
+    entities.insert(make_hover_mover(
+        vec![(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)],
+        128,
+    ));
+
+    let step = hover::hover_ramp_step(hover::HOVER_ACCELERATION_DEFAULT_MINUTES);
+
+    tick_hover_world(&mut entities, 0);
+    let e = entities.get(1).expect("mover");
+    let throttle = e.locomotor.as_ref().expect("loco").hover_throttle;
+    assert_eq!(
+        throttle, step,
+        "tick 1: throttle = one accel step from rest"
+    );
+    assert_eq!(
+        e.movement_target.as_ref().expect("target").current_speed,
+        SimFixed::from_num(11) * step,
+        "current_speed = base speed × throttle"
+    );
+
+    tick_hover_world(&mut entities, 1);
+    let e = entities.get(1).expect("mover");
+    let throttle2 = e.locomotor.as_ref().expect("loco").hover_throttle;
+    assert!(
+        throttle2 > throttle,
+        "tick 2: throttle keeps ramping ({throttle2} > {throttle})"
+    );
+}
+
+#[test]
+fn hover_mover_brakes_toward_half_throttle_on_final_approach() {
+    use crate::sim::movement::hover;
+    // Within 255 leptons of the goal (sub_x=200 → 184 leptons to the next cell
+    // center): approach request 0.5, so a full-throttle mover brakes one step.
+    let mut entities = EntityStore::new();
+    let mut mover = make_hover_mover(vec![(0, 0), (1, 0)], 200);
+    mover.locomotor.as_mut().expect("loco").hover_throttle = SIM_ONE;
+    entities.insert(mover);
+
+    tick_hover_world(&mut entities, 0);
+    let e = entities.get(1).expect("mover");
+    let throttle = e.locomotor.as_ref().expect("loco").hover_throttle;
+    assert_eq!(
+        throttle,
+        SIM_ONE - hover::hover_ramp_step(hover::HOVER_BRAKE_DEFAULT_MINUTES),
+        "full-throttle mover on approach brakes by one brake step"
+    );
+}
+
+#[test]
+fn hover_mover_swings_through_corner_braking_not_freezing() {
+    use crate::sim::movement::hover;
+    // Mover at (0,1) facing EAST with its waypoint due NORTH (0,0): a 90° turn.
+    // Contract: while the swing exceeds 45° the throttle BRAKES (request 0) and
+    // the position holds; once the facing converges within 45°, movement
+    // resumes along the (new) hull heading and the mover crosses into (0,0).
+    // The old stop-rotate-go model froze the throttle instead.
+    let mut entities = EntityStore::new();
+    let mut mover = make_hover_mover(vec![(0, 1), (0, 0)], 128);
+    mover.locomotor.as_mut().expect("loco").hover_throttle = SIM_ONE;
+    entities.insert(mover);
+
+    // Tick 1 (frame 0): hard turn → throttle brakes one step, position holds.
+    tick_hover_world(&mut entities, 0);
+    let e = entities.get(1).expect("mover");
+    assert_eq!(
+        e.locomotor.as_ref().expect("loco").hover_throttle,
+        SIM_ONE - hover::hover_ramp_step(hover::HOVER_BRAKE_DEFAULT_MINUTES),
+        "hard turn brakes the throttle (gamemd turn-stall), never freezes it"
+    );
+    assert_eq!(
+        (e.position.rx, e.position.ry),
+        (0, 1),
+        "position held during hard turn"
+    );
+    assert_eq!(
+        e.position.sub_y,
+        SimFixed::from_num(128),
+        "no lepton drift while stalled"
+    );
+
+    // Run the swing + travel out. ROT=5 → 90° swing = 12 binary frames; then
+    // northward travel at ~0.5 throttle crosses into (0,0) well within 40 ticks.
+    for frame in 1..40u32 {
+        tick_hover_world(&mut entities, frame);
+    }
+    let e = entities.get(1).expect("mover");
+    assert_eq!(
+        (e.position.rx, e.position.ry),
+        (0, 0),
+        "mover crossed into the northern cell after the swing"
+    );
+    // Facing-lagged curve: the mover drifts east while the hull swings, then
+    // re-aims at the cell center from the southeast — so the final heading is
+    // northern-half, NOT exactly 0 (exact-north snap was the old stop-rotate
+    // behavior this replaces).
+    assert!(
+        e.facing >= 192 || e.facing <= 64,
+        "hull converged into the northern half-circle, got {}",
+        e.facing
+    );
+    assert_ne!(e.facing, 64, "hull is no longer facing due east");
+}
+
+#[test]
+fn hover_units_float_and_bob_vertically() {
+    // Vertical controller: a MOVING hover unit lifts off toward cruise height,
+    // and a PARKED hover unit (no movement target) floats too — the idle pass
+    // covers every hover unit, not just movers.
+    let mut entities = EntityStore::new();
+    entities.insert(make_hover_mover(
+        vec![(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)],
+        128,
+    ));
+    let mut parked = make_hover_mover(vec![(5, 5), (6, 5)], 128);
+    parked.stable_id = 2;
+    parked.movement_target = None;
+    entities.insert(parked);
+
+    for frame in 0..60u32 {
+        tick_hover_world(&mut entities, frame);
+    }
+
+    let mover_alt = entities
+        .get(1)
+        .expect("mover")
+        .locomotor
+        .as_ref()
+        .expect("loco")
+        .altitude;
+    let parked_alt = entities
+        .get(2)
+        .expect("parked")
+        .locomotor
+        .as_ref()
+        .expect("loco")
+        .altitude;
+    assert!(
+        mover_alt > SIM_ZERO,
+        "moving hover unit lifted off (altitude {mover_alt})"
+    );
+    assert!(
+        parked_alt > SIM_ZERO,
+        "parked hover unit floats too (altitude {parked_alt})"
+    );
+    // Under the rules-None defaults (HoverHeight=120) both should sit somewhere
+    // below the height cap; the spring never runs away.
+    assert!(
+        mover_alt < SimFixed::from_num(200) && parked_alt < SimFixed::from_num(200),
+        "spring settles near cruise, no runaway (mover {mover_alt}, parked {parked_alt})"
+    );
 }

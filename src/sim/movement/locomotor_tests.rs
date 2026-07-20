@@ -162,6 +162,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         can_occupy_fire: false,
         show_occupant_pips: false,
         bridge_repair_hut: false,
+        laser_fence: false,
         passengers: 0,
         size_limit: 0,
         size: 3,
@@ -235,11 +236,13 @@ fn test_drive_locomotor() {
 }
 
 #[test]
-fn test_hover_speed_multiplier() {
+fn test_hover_cruises_at_full_base_speed() {
+    // Hover now cruises at its full base Speed (throttle 1.0), not the old
+    // made-up 0.65x. The accel/brake throttle ramp lives in sim/movement/hover.rs.
     let obj = make_obj(LocomotorKind::Hover, ObjectCategory::Vehicle);
     let state = LocomotorState::from_object_type(&obj, 1500);
     assert_eq!(state.kind, LocomotorKind::Hover);
-    assert_eq!(state.speed_multiplier, HOVER_SPEED_MULTIPLIER);
+    assert_eq!(state.speed_multiplier, SIM_ONE);
     assert!(state.is_ground_mover());
 }
 

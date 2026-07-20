@@ -6,9 +6,8 @@ use std::collections::BTreeMap;
 use super::production_spawn::{find_spawn_selection_for_owner, mark_war_factory_spawn_contact};
 use super::war_factory_exit::tick_war_factory_exit_contacts;
 use super::{
-    ProductionCategory, STARTING_CREDITS, credits_for_owner,
-    find_spawn_cell_for_owner, is_matching_factory, seed_resource_nodes_from_overlays,
-    structure_satisfies_prerequisite,
+    ProductionCategory, STARTING_CREDITS, credits_for_owner, find_spawn_cell_for_owner,
+    is_matching_factory, seed_resource_nodes_from_overlays, structure_satisfies_prerequisite,
 };
 use crate::map::overlay::OverlayEntry;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
@@ -560,8 +559,8 @@ pub(super) fn spawn_structure(
         None,
         CellListInsertion::AppendBuilding,
     );
-    if sim.substrate.next_stable_entity_id <= sid {
-        sim.substrate.next_stable_entity_id = sid + 1;
+    if sim.substrate.next_stable_object_id <= sid {
+        sim.substrate.next_stable_object_id = sid + 1;
     }
 }
 
@@ -749,26 +748,36 @@ fn war_factory_spawn_contact_is_marked_per_produced_mover() {
         produced,
     ));
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(produced)
             .unwrap()
             .has_live_contact_with(10),
         "produced vehicle should be contacted with its factory"
     );
     assert!(
-        !sim.substrate.entities
+        !sim.substrate
+            .entities
             .get(unrelated)
             .unwrap()
             .has_live_contact_with(10),
         "unrelated vehicles must not inherit the war-factory row exception"
     );
     assert_eq!(
-        sim.substrate.entities.get(produced).unwrap().dock_entered_with,
+        sim.substrate
+            .entities
+            .get(produced)
+            .unwrap()
+            .dock_entered_with,
         Some(10),
         "WF exit must set the dock-entered (+0x418) flag toward the factory"
     );
     assert_eq!(
-        sim.substrate.entities.get(unrelated).unwrap().dock_entered_with,
+        sim.substrate
+            .entities
+            .get(unrelated)
+            .unwrap()
+            .dock_entered_with,
         None,
         "unrelated vehicles get no dock-entered flag"
     );
@@ -788,7 +797,9 @@ fn war_factory_exit_contact_held_while_on_footprint() {
     let produced = sim
         .spawn_object("MTNK", "Americans", 20, 20, 64, &rules, &height_map)
         .expect("produced tank should spawn");
-    assert!(mark_war_factory_spawn_contact(&mut sim, &rules, 10, produced));
+    assert!(mark_war_factory_spawn_contact(
+        &mut sim, &rules, 10, produced
+    ));
 
     tick_war_factory_exit_contacts(
         &mut sim.substrate.entities,
@@ -815,7 +826,9 @@ fn war_factory_exit_contact_breaks_when_unit_clears_footprint() {
     let produced = sim
         .spawn_object("MTNK", "Americans", 30, 30, 64, &rules, &height_map)
         .expect("produced tank should spawn");
-    assert!(mark_war_factory_spawn_contact(&mut sim, &rules, 10, produced));
+    assert!(mark_war_factory_spawn_contact(
+        &mut sim, &rules, 10, produced
+    ));
 
     tick_war_factory_exit_contacts(
         &mut sim.substrate.entities,
@@ -1081,7 +1094,8 @@ fn harvester_moves_to_ore_and_back_with_path_grid() {
     for _ in 0..3000 {
         let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
         let pos = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(harvester_sid)
             .map(|e| (e.position.rx, e.position.ry))
             .expect("harvester position");

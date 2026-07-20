@@ -16,9 +16,9 @@ use crate::ui::skirmish_shell::{
     SkirmishShellState, SkirmishTrackbarId, checkbox_icon_rect, combo_arrow_rect,
     combo_dropdown_content_rect, combo_dropdown_needs_scrollbar, combo_dropdown_rect,
     combo_dropdown_scroll_thumb_rect, combo_dropdown_scrollbar_rect,
-    combo_dropdown_visible_row_count, combo_face_rect, combo_items, combo_swatch_rect,
-    player_name_edit_text_rect, selected_combo_item_index, trackbar_pixel_offset,
-    trackbar_plaque_rect, trackbar_thumb_rect, trackbar_visual_value,
+    combo_dropdown_visible_row_count, combo_enabled, combo_face_rect, combo_items,
+    combo_swatch_rect, player_name_edit_text_rect, player_row_visible, selected_combo_item_index,
+    trackbar_pixel_offset, trackbar_plaque_rect, trackbar_thumb_rect, trackbar_visual_value,
 };
 
 use super::chrome::{
@@ -470,6 +470,7 @@ pub(super) fn push_combo_instances(
     color_schemes: &[ColorSchemeEntry],
     layout: &SkirmishShellLayout,
     shell: &SkirmishShellState,
+    maps: &[MapMenuEntry],
 ) {
     // Slice 4C: each collapsed combo face paints through the per-control-kind seam,
     // which resolves the face glyph / swatch white-pixel / arrow variant from the
@@ -497,7 +498,11 @@ pub(super) fn push_combo_instances(
         &chrome,
         ControlPaint::Combo {
             rect: layout.color_combos[0],
-            swatch: swatch_for(Some(shell.player_color_index)),
+            swatch: swatch_for(
+                shell
+                    .player_color_claimed
+                    .then_some(shell.player_color_index),
+            ),
             open: open == Some(SkirmishComboId::Color(0)),
             disabled: false,
         },
@@ -528,6 +533,9 @@ pub(super) fn push_combo_instances(
             break;
         }
         let row = idx + 1;
+        if !player_row_visible(shell, maps, row) {
+            continue;
+        }
         paint_control(
             out,
             &chrome,
@@ -554,7 +562,9 @@ pub(super) fn push_combo_instances(
             &chrome,
             ControlPaint::Combo {
                 rect: layout.color_combos[row],
-                swatch: swatch_for((!sibling_disabled).then_some(opponent.color_index)),
+                swatch: swatch_for(
+                    (!sibling_disabled && opponent.color_claimed).then_some(opponent.color_index),
+                ),
                 open: open == Some(SkirmishComboId::Color(row)),
                 disabled: sibling_disabled,
             },
@@ -593,6 +603,9 @@ pub(super) fn push_dropdown_instances(
     let Some(open) = shell.open_combo_dropdown else {
         return;
     };
+    if !combo_enabled(shell, maps, open.id) {
+        return;
+    }
     let Some(dropdown) = combo_dropdown_rect(shell, layout, maps, open.id) else {
         return;
     };

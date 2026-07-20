@@ -450,7 +450,12 @@ fn is_structural_bridge_deck_height(path_height: u8, cell: &PathCell) -> bool {
     cell.has_structural_bridge() && path_height as i16 == cell.signed_level() + 4
 }
 
-fn needs_bridge_traversal_for_edge(
+/// Whether an edge needs the bridge-traversal legality check at all. The A*
+/// neighbor expansion skips `check_bridge_traversal` for structural→structural
+/// bridge edges with no bridgehead involved (plain deck driving: ramp→body,
+/// body→body); the runtime crossing gate must mirror this or it rejects edges
+/// the plan legally produced.
+pub(crate) fn needs_bridge_traversal_for_edge(
     current_height: u8,
     current_cell: &PathCell,
     neighbor_cell: &PathCell,
@@ -480,7 +485,7 @@ pub(crate) struct BridgeTraversalResult {
     pub force_bridge_list: bool,
 }
 
-fn resolve_parent_for_bridge_traversal<'a>(
+pub(crate) fn resolve_parent_for_bridge_traversal<'a>(
     grid: &'a PathGrid,
     candidate_coord: (u16, u16),
     direction: i8,

@@ -75,7 +75,7 @@ impl Simulation {
         // mapgen_rng (gamemd g_MapGenRng): appended AFTER the two gameplay streams.
         // This order is part of the hash contract and must never change.
         self.mapgen_rng.hash_state(&mut hasher);
-        self.substrate.next_stable_entity_id.hash(&mut hasher);
+        self.substrate.next_stable_object_id.hash(&mut hasher);
         self.substrate.next_occupancy_enter_order.hash(&mut hasher);
 
         // LogicClass active-object order — authoritative (drives reconciliation order).
@@ -96,6 +96,7 @@ impl Simulation {
         self.hash_radiation(&mut hasher);
         self.hash_super_weapons(&mut hasher);
         self.hash_entities(&mut hasher);
+        self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
         self.hash_session_identity(&mut hasher);
 
@@ -151,6 +152,18 @@ impl Simulation {
                 p.translucency.hash(hasher);
                 p.state_advance_counter.hash(hasher);
                 p.marked_for_deletion.hash(hasher);
+                match p.spark {
+                    None => 0_u8.hash(hasher),
+                    Some(spark) => {
+                        1_u8.hash(hasher);
+                        spark.velocity_x.bits().hash(hasher);
+                        spark.velocity_y.bits().hash(hasher);
+                        spark.velocity_z.bits().hash(hasher);
+                        spark.start_rgb.hash(hasher);
+                        spark.color_index.hash(hasher);
+                        spark.color_accumulator.bits().hash(hasher);
+                    }
+                }
             }
         }
     }
@@ -191,6 +204,7 @@ impl Simulation {
             house.economy.purifier_count.hash(hasher);
             house.side_index.hash(hasher);
             house.is_human.hash(hasher);
+            (house.difficulty as i32).hash(hasher);
             house.is_defeated.hash(hasher);
             house.has_won.hash(hasher);
             house.has_lost.hash(hasher);
@@ -518,6 +532,13 @@ impl Simulation {
             entity.position.sub_y.hash(hasher);
             entity.facing.hash(hasher);
             entity.facing_target.hash(hasher);
+            // Body-rotation interpolator (present only while turning in place).
+            if let Some(ref bf) = entity.body_facing {
+                1u8.hash(hasher);
+                bf.hash(hasher);
+            } else {
+                0u8.hash(hasher);
+            }
             entity.owner.hash(hasher);
             entity.health.current.hash(hasher);
             entity.health.max.hash(hasher);
@@ -527,6 +548,8 @@ impl Simulation {
             entity.regular_crusher.hash(hasher);
             entity.drive_accelerates.hash(hasher);
             entity.building_damage_state_active.hash(hasher);
+            entity.damage_fire_state_active.hash(hasher);
+            entity.damage_fire_anim_ids.hash(hasher);
             entity.vision_range.hash(hasher);
 
             if let Some(ref movement) = entity.movement_target {
@@ -568,6 +591,13 @@ impl Simulation {
                 (loco.kind as u8).hash(hasher);
                 (loco.layer as u8).hash(hasher);
                 (loco.phase as u8).hash(hasher);
+                // Hover throttle is authoritative movement state (persists across
+                // repaths); I16F16 has no Hash — fold the raw bits. The vertical
+                // pair (altitude + bob spring state) is likewise authoritative:
+                // altitude feeds combat's effective-Z and the hover float.
+                loco.hover_throttle.to_bits().hash(hasher);
+                loco.hover_bob_offset.to_bits().hash(hasher);
+                loco.altitude.to_bits().hash(hasher);
             } else {
                 0u8.hash(hasher);
             }
@@ -758,6 +788,16 @@ impl Simulation {
             entity.damage_particle_live_until.hash(hasher);
         }
     }
+
+    /// Scheduler-owned ordinary animations in stable-ID order. Render caches and
+    /// transient sound events are deliberately excluded.
+    fn hash_anims(&self, hasher: &mut impl Hasher) {
+        self.substrate.anims.iter().count().hash(hasher);
+        for (id, anim) in self.substrate.anims.iter() {
+            id.hash(hasher);
+            anim.hash(hasher);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -828,14 +868,35 @@ mod rally_hash_tests {
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
+
+    #[test]
+    fn house_difficulty_changes_state_hash() {
+        use crate::sim::house_state::{HouseDifficulty, HouseState};
+
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let owner_a = sim_a.interner.intern("Computer1");
+        let owner_b = sim_b.interner.intern("Computer1");
+        assert_eq!(owner_a, owner_b);
+        sim_a
+            .houses
+            .insert(owner_a, HouseState::new(owner_a, 0, None, false, 0, 10));
+        let mut hard_house = HouseState::new(owner_b, 0, None, false, 0, 10);
+        hard_house.difficulty = HouseDifficulty::Hard;
+        sim_b.houses.insert(owner_b, hard_house);
+
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
 }
 
 #[cfg(test)]
 mod particle_hash_tests {
     use super::Simulation;
     use crate::rules::particle_system_type::ParticleSystemTypeId;
-    use crate::sim::particles::ParticleSystem;
+    use crate::rules::particle_type::ParticleTypeId;
+    use crate::sim::particles::{Particle, ParticleSystem, SparkRuntimeState};
     use crate::util::fixed_math::SimFixed;
+    use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
     use glam::IVec3;
 
     fn fake_system(coords: IVec3) -> ParticleSystem {
@@ -878,9 +939,6 @@ mod particle_hash_tests {
 
     #[test]
     fn state_advance_counter_changes_hash() {
-        use crate::rules::particle_type::ParticleTypeId;
-        use crate::sim::particles::Particle;
-
         let mut sim_a = Simulation::new();
         let mut sim_b = Simulation::new();
         let mut sys_a = fake_system(IVec3::ZERO);
@@ -905,6 +963,7 @@ mod particle_hash_tests {
             current_color: [0; 3],
             color_index: 0,
             color_accumulator: SimFixed::from_num(0),
+            spark: None,
             prev_delta: [SimFixed::from_num(0); 3],
             state_advance_counter: counter,
         };
@@ -917,6 +976,113 @@ mod particle_hash_tests {
             sim_b.state_hash(),
             "state_advance_counter must affect state hash"
         );
+    }
+
+    fn particle_with_spark(spark: Option<SparkRuntimeState>) -> Particle {
+        Particle {
+            type_id: ParticleTypeId(0),
+            coords: IVec3::new(-1, 2, 3),
+            previous_coords: IVec3::ZERO,
+            origin: IVec3::ZERO,
+            direction: [SimFixed::from_num(0); 3],
+            velocity: SimFixed::from_num(0),
+            lifetime_remaining: 9,
+            damage_counter: 0,
+            state_ai_advance: 0,
+            animation_state: 0,
+            translucency: 0,
+            hit_ground: false,
+            marked_for_deletion: false,
+            drift_x: 0,
+            drift_y: 0,
+            drift_z: 0,
+            current_color: [0; 3],
+            color_index: 0,
+            color_accumulator: SimFixed::from_num(0),
+            spark,
+            prev_delta: [SimFixed::from_num(0); 3],
+            state_advance_counter: 0,
+        }
+    }
+
+    fn hash_with_particle(particle: Particle) -> u64 {
+        let mut sim = Simulation::new();
+        let mut system = fake_system(IVec3::ZERO);
+        system.particles.push(particle);
+        sim.particle_systems.insert(system);
+        sim.state_hash()
+    }
+
+    #[test]
+    fn every_raw_spark_field_changes_the_state_hash() {
+        let base = SparkRuntimeState {
+            velocity_x: NativeF32Bits::from_bits(0x0000_0000),
+            velocity_y: NativeF32Bits::from_bits(0x3f80_0000),
+            velocity_z: NativeF32Bits::from_bits(0xc0c0_0000),
+            start_rgb: [80, 255, 255],
+            color_index: 0,
+            color_accumulator: NativeF64Bits::POSITIVE_ZERO,
+        };
+        let base_hash = hash_with_particle(particle_with_spark(Some(base)));
+        let variants = [
+            SparkRuntimeState {
+                velocity_x: NativeF32Bits::NEGATIVE_ZERO,
+                ..base
+            },
+            SparkRuntimeState {
+                velocity_y: NativeF32Bits::from_bits(0x4000_0000),
+                ..base
+            },
+            SparkRuntimeState {
+                velocity_z: NativeF32Bits::from_bits(0xc100_0000),
+                ..base
+            },
+            SparkRuntimeState {
+                start_rgb: [255, 255, 100],
+                ..base
+            },
+            SparkRuntimeState {
+                color_index: -1,
+                ..base
+            },
+            SparkRuntimeState {
+                color_accumulator: NativeF64Bits::NEGATIVE_ZERO,
+                ..base
+            },
+        ];
+        for variant in variants {
+            assert_ne!(
+                base_hash,
+                hash_with_particle(particle_with_spark(Some(variant)))
+            );
+        }
+        assert_ne!(base_hash, hash_with_particle(particle_with_spark(None)));
+    }
+
+    #[test]
+    fn spark_coordinate_lifetime_and_delete_state_remain_hashed() {
+        let state = SparkRuntimeState {
+            velocity_x: NativeF32Bits::POSITIVE_ZERO,
+            velocity_y: NativeF32Bits::POSITIVE_ZERO,
+            velocity_z: NativeF32Bits::POSITIVE_ZERO,
+            start_rgb: [0; 3],
+            color_index: 0,
+            color_accumulator: NativeF64Bits::POSITIVE_ZERO,
+        };
+        let base = particle_with_spark(Some(state));
+        let base_hash = hash_with_particle(base.clone());
+
+        let mut changed = base.clone();
+        changed.coords.x = 0;
+        assert_ne!(base_hash, hash_with_particle(changed));
+
+        let mut changed = base.clone();
+        changed.lifetime_remaining = 8;
+        assert_ne!(base_hash, hash_with_particle(changed));
+
+        let mut changed = base;
+        changed.marked_for_deletion = true;
+        assert_ne!(base_hash, hash_with_particle(changed));
     }
 
     #[test]
@@ -1375,8 +1541,8 @@ mod rocking_hash_tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_id = sim.interner.intern("HTNK");
-        let id = sim.substrate.next_stable_entity_id;
-        sim.substrate.next_stable_entity_id += 1;
+        let id = sim.substrate.next_stable_object_id;
+        sim.substrate.next_stable_object_id += 1;
         let e = GameEntity::new(
             id,
             10,
@@ -1454,8 +1620,8 @@ mod c4_hash_tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_id = sim.interner.intern("GHOST");
-        let id = sim.substrate.next_stable_entity_id;
-        sim.substrate.next_stable_entity_id += 1;
+        let id = sim.substrate.next_stable_object_id;
+        sim.substrate.next_stable_object_id += 1;
         let e = GameEntity::new(
             id,
             10,

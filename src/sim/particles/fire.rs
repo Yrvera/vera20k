@@ -84,6 +84,7 @@ fn make_particle(
         current_color: [0; 3],
         color_index: 0,
         color_accumulator: SimFixed::from_num(0),
+        spark: None,
         prev_delta: [SIM_ZERO; 3],
         state_advance_counter: 0,
     }
@@ -291,7 +292,13 @@ mod tests {
         // Build the particle with a throwaway stream so the jitter draw below is
         // exactly the crafted stream's next draw.
         let mut throwaway = SimRng::new(7);
-        let mut p = make_particle(ParticleTypeId(0), IVec3::ZERO, IVec3::ZERO, pt, &mut throwaway);
+        let mut p = make_particle(
+            ParticleTypeId(0),
+            IVec3::ZERO,
+            IVec3::ZERO,
+            pt,
+            &mut throwaway,
+        );
         p.direction = [SimFixed::from_num(1), SIM_ZERO, SIM_ZERO];
         p.velocity = SimFixed::from_num(100);
 

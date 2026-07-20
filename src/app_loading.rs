@@ -176,10 +176,14 @@ impl LoadingRequest {
 
     pub(crate) fn unverified_legacy_skirmish(
         skirmish_launch_session: SkirmishLaunchSession,
+        seed: crate::match_bootstrap::MatchSeed,
         fallback_skirmish_settings: SkirmishSettings,
     ) -> Self {
         Self {
-            startup: Some(LoadingStartup::UnverifiedLegacy(skirmish_launch_session)),
+            startup: Some(LoadingStartup::UnverifiedLegacy {
+                session: skirmish_launch_session,
+                seed,
+            }),
             presentation: LoadingPresentation::NativeSelectedSkirmish,
             fallback_skirmish_settings,
         }
@@ -1190,6 +1194,14 @@ mod tests {
         crate::match_bootstrap::prepare_match_startup(correlation, accepted, &mut TestClock(seed))
     }
 
+    fn unverified_seed(value: u32) -> crate::match_bootstrap::MatchSeed {
+        crate::match_bootstrap::MatchSeed {
+            value,
+            source: crate::match_bootstrap::MatchSeedSource::Controlled,
+            seed_authority_certifying: false,
+        }
+    }
+
     fn receipt_for(
         startup: &crate::match_bootstrap::PreparedMatchStartup,
     ) -> crate::match_bootstrap::RustL0Receipt {
@@ -1210,6 +1222,7 @@ mod tests {
     fn loading_side_comes_from_first_launch_node_country() {
         let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
             test_launch_session(LaunchCountry::Korea),
+            unverified_seed(1),
             SkirmishSettings::default(),
         ));
 
@@ -1223,6 +1236,7 @@ mod tests {
     fn loading_session_preserves_selected_map_filename() {
         let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
             test_launch_session(LaunchCountry::Yuri),
+            unverified_seed(2),
             SkirmishSettings::default(),
         ));
 
@@ -1252,6 +1266,7 @@ mod tests {
     fn loading_session_starts_at_initial_map_selection_phase() {
         let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
             test_launch_session(LaunchCountry::America),
+            unverified_seed(3),
             SkirmishSettings::default(),
         ));
 

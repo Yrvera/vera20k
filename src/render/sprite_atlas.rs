@@ -774,6 +774,14 @@ pub fn build_sprite_atlas(
                     effect_names.push(fire_ref.name.clone());
                 }
             }
+            for anim_name in r.art_registry.scheduler_anim_types() {
+                if !effect_names
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(anim_name))
+                {
+                    effect_names.push(anim_name.clone());
+                }
+            }
             // Collect explosion animation names from all warhead AnimList= fields.
             for wh in r.warheads_iter() {
                 for anim_name in &wh.anim_list {
@@ -830,11 +838,19 @@ pub fn build_sprite_atlas(
             let candidates: Vec<String> = vec![format!("{}.shp", lower), format!("{}.SHP", name)];
             if let Some(data) = candidates.iter().find_map(|c| asset_manager.get_ref(c)) {
                 if let Ok(shp) = ShpFile::from_bytes(data) {
-                    let real: u16 = (shp.frames.len() as u16) / 2;
-                    let count: u16 = if real > 0 {
+                    let raw_count = shp.frames.len() as u16;
+                    let scheduler_owned = art.is_some_and(|registry| {
+                        registry
+                            .scheduler_anim_types()
+                            .contains(&name.to_ascii_uppercase())
+                    });
+                    let real = raw_count / 2;
+                    let count: u16 = if scheduler_owned {
+                        raw_count
+                    } else if real > 0 {
                         real
                     } else {
-                        shp.frames.len() as u16
+                        raw_count
                     };
                     for f in 0..count {
                         needed.insert(ShpSpriteKey {
@@ -1229,7 +1245,9 @@ fn render_shp_sprite(
         palette
     } else {
         let default_ramps = HouseColorRamps::default();
-        let ramps = rules.map(|r| &r.house_color_ramps).unwrap_or(&default_ramps);
+        let ramps = rules
+            .map(|r| &r.house_color_ramps)
+            .unwrap_or(&default_ramps);
         remapped_pal = palette.with_house_colors(ramps.ramp(key.house_color));
         &remapped_pal
     };

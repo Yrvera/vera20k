@@ -164,6 +164,9 @@ pub(crate) struct AppState {
     /// Opt-in research shell path. Defaults off so the egui Skirmish setup is visible.
     pub(crate) dev_skirmish_shell_enabled: bool,
     pub(crate) skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState,
+    /// Process-lifetime offline shell snapshot, Scenario cursor, and
+    /// Cooperative progress authority.
+    pub(crate) offline_skirmish_runtime: crate::app_skirmish_session::OfflineSkirmishRuntime,
     /// Last owner-draw Skirmish button state observed by the native render path.
     /// Used for the retail GenericClick paint-transition sound.
     pub(crate) skirmish_shell_last_painted_pressed_button:
@@ -314,8 +317,27 @@ pub(crate) struct AppState {
     pub(crate) queued_order_mode: app_render::OrderMode,
     /// Control group slots (0-9) storing stable entity ids.
     pub(crate) control_groups: Vec<Vec<u64>>,
+    /// Match-scoped local player identity, pinned ONCE at match launch
+    /// (skirmish session / spawn-pick) and never rewritten mid-match. All
+    /// command/HUD owner resolution reads this first — selection must never
+    /// repoint the local player (lockstep: each client issues commands as its
+    /// fixed house). `None` only in dev/sandbox flows with no launch identity,
+    /// where the legacy heuristic + debug override below take over.
+    pub(crate) local_player_owner: Option<String>,
     /// Explicit local owner preference for HUD/commands (set by debug actions).
+    /// Only consulted when `local_player_owner` is `None` (sandbox/dev flows).
     pub(crate) local_owner_override: Option<String>,
+    /// EVA edge-detection: local player was in low-power state last frame.
+    pub(crate) eva_low_power_active: bool,
+    /// EVA edge-detection: a local factory was in an underfunded stall last frame.
+    pub(crate) eva_funds_stalled: bool,
+    /// EVA edge-detection: local mobile entities whose death has already been
+    /// announced (pruned as the corpses despawn).
+    pub(crate) eva_announced_dying: std::collections::HashSet<u64>,
+    /// Sim tick until which the under-attack EVA voice is suppressed. The
+    /// native per-house attack-voice repeat delay is UNVERIFIED-pending-trace;
+    /// ~30 s is a conservative interim so sustained fire doesn't spam the line.
+    pub(crate) eva_under_attack_block_until_tick: u64,
     /// Seeded empty-map sandbox keeps full map visibility while still locking control.
     pub(crate) sandbox_full_visibility: bool,
     /// When true, computer-controlled players do nothing (no AI commands issued).
@@ -606,11 +628,130 @@ impl App {
         state.skirmish_shell_state.validation_modal = None;
         state.skirmish_shell_state.open_combo_dropdown = None;
         state.skirmish_shell_state.dropdown_scroll_drag = None;
+        state.skirmish_shell_state.dropdown_scroll_press = None;
         state.skirmish_shell_state.trackbar_drag = None;
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         crate::ui::skirmish_shell::blur_player_name_edit(&mut state.skirmish_shell_state);
         state.skirmish_shell_last_painted_pressed_button = None;
+        state.skirmish_preview_texture = None;
         Self::enter_shell_window_mode(state);
+    }
+
+    fn selected_skirmish_mode_is_cooperative(state: &AppState, mode_id: i32) -> bool {
+        crate::skirmish_modes::mode_by_id(&state.skirmish_modes, mode_id)
+            .is_some_and(|mode| mode.override_file.eq_ignore_ascii_case("MPCoopMD.ini"))
+    }
+
+    fn selected_shell_map_file(state: &AppState) -> Option<String> {
+        state
+            .skirmish_shell_maps
+            .get(state.skirmish_shell_state.selected_map_idx)
+            .map(|map| map.file_name.clone())
+    }
+
+    fn apply_selected_shell_map_file(state: &mut AppState, file_name: &str) -> bool {
+        let Some(map_idx) = state
+            .skirmish_shell_maps
+            .iter()
+            .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+        else {
+            log::warn!("No loadable Skirmish map entry exists for {file_name}");
+            return false;
+        };
+        crate::ui::skirmish_shell::accept_selected_map(
+            &mut state.skirmish_shell_state,
+            &state.skirmish_shell_maps,
+            map_idx,
+        );
+        if let Some(legacy_idx) = state
+            .available_maps
+            .iter()
+            .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+        {
+            state.skirmish_settings.selected_map_idx = legacy_idx;
+        }
+        state.skirmish_preview_texture = None;
+        true
+    }
+
+    fn ensure_active_cooperative_shell_selection(state: &mut AppState) {
+        if !Self::selected_skirmish_mode_is_cooperative(
+            state,
+            state.skirmish_shell_state.selected_mode_id,
+        ) {
+            return;
+        }
+        let Some(file_name) = Self::selected_shell_map_file(state) else {
+            return;
+        };
+        let chosen_map = match state
+            .offline_skirmish_runtime
+            .ensure_cooperative_selection(&file_name, &state.skirmish_shell_maps)
+        {
+            Ok(chosen_map) => chosen_map,
+            Err(err) => {
+                log::warn!("Could not bind Cooperative shell progress: {err}");
+                None
+            }
+        };
+        if let Some(chosen_map) = chosen_map {
+            Self::apply_selected_shell_map_file(state, &chosen_map);
+        }
+    }
+
+    fn ensure_active_cooperative_modal_selection(state: &mut AppState) {
+        let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_ref() else {
+            return;
+        };
+        let mode_id = modal.selected_mode_id;
+        let record_index = modal.selected_record_index();
+        if !Self::selected_skirmish_mode_is_cooperative(state, mode_id) {
+            return;
+        }
+        let Some(file_name) = record_index
+            .and_then(|index| state.skirmish_scenario_records.get(index))
+            .map(|record| record.file_name.clone())
+        else {
+            return;
+        };
+        if let Err(err) = state
+            .offline_skirmish_runtime
+            .ensure_cooperative_selection(&file_name, &state.skirmish_shell_maps)
+        {
+            log::warn!("Could not bind Cooperative Choose Map progress: {err}");
+        }
+    }
+
+    fn sync_legacy_skirmish_settings_from_shell(state: &mut AppState) {
+        let selected_file = Self::selected_shell_map_file(state);
+        let mut settings = crate::ui::skirmish_shell::launch_settings(&state.skirmish_shell_state);
+        settings.selected_map_idx = selected_file
+            .as_deref()
+            .and_then(|file_name| {
+                state
+                    .available_maps
+                    .iter()
+                    .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+            })
+            .unwrap_or(0);
+        state.skirmish_settings = settings;
+    }
+
+    fn teardown_skirmish_shell_for_start(state: &mut AppState) {
+        state.main_menu_show_native_skirmish_shell = false;
+        state.main_menu_show_single_player_shell = false;
+        state.skirmish_shell_return_to_single_player_shell = false;
+        state.shell_first_paint_slide = None;
+        state.skirmish_shell_state.choose_map_modal = None;
+        state.skirmish_shell_state.validation_modal = None;
+        state.skirmish_shell_state.open_combo_dropdown = None;
+        state.skirmish_shell_state.dropdown_scroll_drag = None;
+        state.skirmish_shell_state.dropdown_scroll_press = None;
+        state.skirmish_shell_state.trackbar_drag = None;
+        state.skirmish_shell_state.pressed_owner_draw_button = None;
+        crate::ui::skirmish_shell::blur_player_name_edit(&mut state.skirmish_shell_state);
+        state.skirmish_shell_last_painted_pressed_button = None;
+        state.skirmish_preview_texture = None;
     }
 
     fn refresh_single_player_load_state(state: &mut AppState) {
@@ -645,6 +786,7 @@ impl App {
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         Self::ensure_skirmish_shell_chrome(state);
+        Self::ensure_active_cooperative_shell_selection(state);
         // The skirmish dialog (0x102) slides its controls in on first paint like
         // every shell dialog; the per-frame slide trigger starts that wave once
         // the skirmish shell becomes the showing screen. Clear any stale wave
@@ -660,10 +802,12 @@ impl App {
         state.skirmish_shell_state.validation_modal = None;
         state.skirmish_shell_state.open_combo_dropdown = None;
         state.skirmish_shell_state.dropdown_scroll_drag = None;
+        state.skirmish_shell_state.dropdown_scroll_press = None;
         state.skirmish_shell_state.trackbar_drag = None;
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         crate::ui::skirmish_shell::blur_player_name_edit(&mut state.skirmish_shell_state);
         state.skirmish_shell_last_painted_pressed_button = None;
+        state.skirmish_preview_texture = None;
         Self::open_single_player_shell(state);
     }
 
@@ -718,8 +862,11 @@ impl App {
             }
             crate::match_bootstrap::StartupSessionClassification::UnverifiedLegacy(reason) => {
                 log::warn!("Skirmish startup uses unverified compatibility path: {reason:?}");
+                let mut clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
+                let seed = crate::match_bootstrap::read_match_seed(&mut clock);
                 crate::app_loading::LoadingRequest::unverified_legacy_skirmish(
                     session,
+                    seed,
                     state.skirmish_settings.clone(),
                 )
             }
@@ -730,6 +877,7 @@ impl App {
         state.skirmish_shell_return_to_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = false;
         state.shell_first_paint_slide = None;
+        state.skirmish_preview_texture = None;
         crate::app_loading::begin_loading(state, request);
         Self::enter_game_window_mode(state);
         state.zoom_level = 1.0;
@@ -877,7 +1025,27 @@ impl App {
                     &state.skirmish_shell_maps,
                     &state.skirmish_modes,
                 ) {
-                    Ok(session) => Self::start_skirmish_session(state, session),
+                    Ok(raw_session) => {
+                        match state.offline_skirmish_runtime.close_shell_transaction(
+                            &state.skirmish_shell_state,
+                            &state.skirmish_shell_maps,
+                            &state.skirmish_modes,
+                            &raw_session,
+                        ) {
+                            Ok(resolved_session) => {
+                                Self::sync_legacy_skirmish_settings_from_shell(state);
+                                Self::teardown_skirmish_shell_for_start(state);
+                                state.offline_skirmish_runtime.persist_snapshot();
+                                Self::start_skirmish_session(state, resolved_session);
+                            }
+                            Err(err) => {
+                                log::error!(
+                                    "Could not resolve Cooperative shell assignments: {err}"
+                                );
+                                state.window.request_redraw();
+                            }
+                        }
+                    }
                     Err(err) => {
                         if let Some(modal) = Self::skirmish_validation_modal_for_error(state, &err)
                         {
@@ -890,13 +1058,38 @@ impl App {
                 }
             }
             crate::ui::skirmish_shell::SkirmishShellAction::BackOrExit => {
+                match crate::ui::skirmish_shell::pack_launch_session_without_start_validation(
+                    &state.skirmish_shell_state,
+                    &state.skirmish_shell_maps,
+                    &state.skirmish_modes,
+                ) {
+                    Ok(raw_session) => {
+                        if let Err(err) = state.offline_skirmish_runtime.close_shell_transaction(
+                            &state.skirmish_shell_state,
+                            &state.skirmish_shell_maps,
+                            &state.skirmish_modes,
+                            &raw_session,
+                        ) {
+                            // Invalid Cooperative content has no parity-safe
+                            // retry cap. Keep Back usable, surface the malformed
+                            // data, and retain every draw consumed before error.
+                            log::error!("Could not complete Cooperative Back randomization: {err}");
+                        }
+                    }
+                    Err(err) => {
+                        log::warn!("Could not pack raw Skirmish Back session: {err:?}");
+                    }
+                }
                 if state.skirmish_shell_return_to_single_player_shell {
                     Self::return_from_skirmish_to_single_player_shell(state);
                 } else if Self::native_skirmish_shell_active(state) {
                     Self::close_native_skirmish_shell(state);
                 } else {
+                    state.offline_skirmish_runtime.persist_snapshot();
                     event_loop.exit();
+                    return;
                 }
+                state.offline_skirmish_runtime.persist_snapshot();
             }
             crate::ui::skirmish_shell::SkirmishShellAction::ChooseMap => {
                 Self::open_choose_map_modal(state);
@@ -988,6 +1181,7 @@ impl App {
                 &state.skirmish_modes,
                 &state.skirmish_scenario_records,
             ));
+        Self::ensure_active_cooperative_modal_selection(state);
     }
 
     fn current_choose_map_record_index(state: &AppState) -> Option<usize> {
@@ -1014,23 +1208,40 @@ impl App {
     fn commit_choose_map_selection(
         state: &mut AppState,
         selection: crate::ui::skirmish_shell::ChooseMapSelection,
-    ) {
+    ) -> bool {
         let Some(record_idx) = selection.record_index else {
-            return;
+            return false;
         };
         let Some(record) = state.skirmish_scenario_records.get(record_idx) else {
-            return;
+            return false;
         };
+        let clicked_file_name = record.file_name.clone();
+        let selected_file_name =
+            if Self::selected_skirmish_mode_is_cooperative(state, selection.mode_id) {
+                match state
+                    .offline_skirmish_runtime
+                    .accept_cooperative_selection(&clicked_file_name, &state.skirmish_shell_maps)
+                {
+                    Ok(Some(chosen_map)) => chosen_map,
+                    Ok(None) => clicked_file_name,
+                    Err(err) => {
+                        log::warn!("Could not accept Cooperative campaign selection: {err}");
+                        return false;
+                    }
+                }
+            } else {
+                clicked_file_name
+            };
         let Some(map_idx) = state
             .skirmish_shell_maps
             .iter()
-            .position(|map| map.file_name.eq_ignore_ascii_case(&record.file_name))
+            .position(|map| map.file_name.eq_ignore_ascii_case(&selected_file_name))
         else {
             log::warn!(
                 "Choose Map selected {}, but no loadable map entry exists yet",
-                record.file_name
+                selected_file_name
             );
-            return;
+            return false;
         };
 
         state.skirmish_shell_state.selected_mode_id = selection.mode_id;
@@ -1038,11 +1249,15 @@ impl App {
             &mut state.skirmish_shell_state,
             &state.skirmish_modes,
         );
-        state.skirmish_shell_state.selected_map_idx = map_idx;
+        crate::ui::skirmish_shell::accept_selected_map(
+            &mut state.skirmish_shell_state,
+            &state.skirmish_shell_maps,
+            map_idx,
+        );
         if let Some(legacy_idx) = state
             .available_maps
             .iter()
-            .position(|map| map.file_name.eq_ignore_ascii_case(&record.file_name))
+            .position(|map| map.file_name.eq_ignore_ascii_case(&selected_file_name))
         {
             state.skirmish_settings.selected_map_idx = legacy_idx;
         }
@@ -1063,6 +1278,7 @@ impl App {
             .skirmish_shell_state
             .map_label_reveal
             .start(&map_label, now);
+        true
     }
 
     fn handle_choose_map_modal_mouse_down(state: &mut AppState) -> bool {
@@ -1077,6 +1293,7 @@ impl App {
             Self::play_main_menu_button_sound(state);
             return true;
         }
+        let prior_mode = modal.selected_mode_id;
         if modal.handle_listbox_mouse_down(
             &layout,
             &state.skirmish_modes,
@@ -1084,6 +1301,11 @@ impl App {
             x,
             y,
         ) {
+            let mode_changed = modal.selected_mode_id != prior_mode;
+            let _ = modal;
+            if mode_changed {
+                Self::ensure_active_cooperative_modal_selection(state);
+            }
             return true;
         }
         layout.dialog.contains(x, y)
@@ -1108,7 +1330,6 @@ impl App {
         match released_button.expect("checked equal to pressed button") {
             crate::ui::skirmish_shell::ChooseMapModalButton::UseMap0x6c5 => {
                 selection_to_commit = modal.accept_selection();
-                close_modal = true;
             }
             crate::ui::skirmish_shell::ChooseMapModalButton::Cancel0x5c0 => {
                 close_modal = true;
@@ -1120,7 +1341,7 @@ impl App {
             }
         }
         if let Some(selection) = selection_to_commit {
-            Self::commit_choose_map_selection(state, selection);
+            close_modal = Self::commit_choose_map_selection(state, selection);
         }
         if close_modal {
             Self::close_choose_map_modal(state);
@@ -2069,6 +2290,12 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("Close requested");
+                if Self::native_skirmish_shell_active(state) {
+                    // Pump/quit exits write the last durable snapshot after
+                    // teardown, without a fresh control pack or RNG draw.
+                    Self::teardown_skirmish_shell_for_start(state);
+                    state.offline_skirmish_runtime.persist_snapshot();
+                }
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
@@ -2120,11 +2347,19 @@ impl ApplicationHandler for App {
 
                     if Self::native_skirmish_shell_active(state) && is_escape {
                         if state.skirmish_shell_state.choose_map_modal.is_some() {
+                            // Native chooser `0x6B` has no verified Escape
+                            // dismissal. Consume the key without applying the
+                            // Cancel transaction or changing its selection.
                             state.window.request_redraw();
                             return;
                         }
-                        Self::close_native_skirmish_shell(state);
+                        Self::handle_skirmish_shell_action(
+                            state,
+                            crate::ui::skirmish_shell::SkirmishShellAction::BackOrExit,
+                            event_loop,
+                        );
                         state.window.request_redraw();
+                        return;
                     }
 
                     if Self::single_player_shell_active(state) && is_escape {
@@ -2378,10 +2613,15 @@ impl App {
             );
         }
         let startup_asset_manager = Self::build_startup_asset_manager(game_config.as_ref());
+        // Native process startup seeds Scenario before the MPModes loader. The
+        // Cooperative factory reached by that loader then advances this cursor
+        // before the first shell is shown.
+        let mut frontend_seed_clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
+        let frontend_seed = crate::match_bootstrap::read_match_seed(&mut frontend_seed_clock);
         let startup_rules = startup_asset_manager
             .as_ref()
-            // Startup shell: no map selected yet, so no map rules overrides.
-            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None));
+            // Startup shell: no mode or map selected yet, so no overrides.
+            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
         let startup_csf = startup_asset_manager
             .as_ref()
             .and_then(crate::app_init::load_csf);
@@ -2472,6 +2712,22 @@ impl App {
             let dialog_options = crate::app_init_helpers::load_skirmish_game_options(assets);
             skirmish_shell_state.apply_multiplayer_dialog_values(&dialog_options);
         }
+        let skirmish_defaults =
+            crate::app_skirmish_session::skirmish_global_defaults(&skirmish_shell_state);
+        let offline_skirmish_runtime =
+            crate::app_skirmish_session::OfflineSkirmishRuntime::initialize(
+                frontend_seed.value,
+                game_config
+                    .as_ref()
+                    .map(|config| config.paths.ra2_dir.as_path()),
+                startup_asset_manager.as_ref(),
+                skirmish_defaults,
+            );
+        offline_skirmish_runtime.hydrate_shell(
+            &mut skirmish_shell_state,
+            &skirmish_shell_maps,
+            &skirmish_modes,
+        );
         // Pre-fill the player-name field from the persistent profile name when
         // configured, mirroring the original seeding the field from a profile
         // source rather than always showing a fixed default.
@@ -2486,6 +2742,22 @@ impl App {
             &mut skirmish_shell_state,
             &skirmish_modes,
         );
+        crate::ui::skirmish_shell::initialize_rows_for_selected_map(
+            &mut skirmish_shell_state,
+            &skirmish_shell_maps,
+        );
+        let selected_shell_map = skirmish_shell_maps
+            .get(skirmish_shell_state.selected_map_idx)
+            .map(|map| map.file_name.as_str());
+        let mut skirmish_settings =
+            crate::ui::skirmish_shell::launch_settings(&skirmish_shell_state);
+        skirmish_settings.selected_map_idx = selected_shell_map
+            .and_then(|file_name| {
+                available_maps
+                    .iter()
+                    .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+            })
+            .unwrap_or(0);
 
         // Build the software cursor at startup so the main menu draws the SHP
         // arrow and hides the OS cursor, matching the original which hides the
@@ -2542,7 +2814,7 @@ impl App {
             skirmish_shell_maps,
             skirmish_modes,
             skirmish_scenario_records,
-            skirmish_settings: SkirmishSettings::default(),
+            skirmish_settings,
             loading_session: None,
             next_match_correlation: 1,
             active_loading_correlation: None,
@@ -2550,6 +2822,7 @@ impl App {
             rust_l0_receipt: None,
             dev_skirmish_shell_enabled,
             skirmish_shell_state,
+            offline_skirmish_runtime,
             skirmish_shell_last_painted_pressed_button: None,
             skirmish_shell_chrome,
             skirmish_preview_texture: None,
@@ -2621,7 +2894,12 @@ impl App {
             configured_input_delay_ticks: input_delay_ticks,
             queued_order_mode: app_render::OrderMode::Move,
             control_groups: vec![Vec::new(); 10],
+            local_player_owner: None,
             local_owner_override: None,
+            eva_low_power_active: false,
+            eva_funds_stalled: false,
+            eva_announced_dying: std::collections::HashSet::new(),
+            eva_under_attack_block_until_tick: 0,
             sandbox_full_visibility: false,
             disable_ai: true,
             spawn_pick_pending: false,
@@ -2697,6 +2975,10 @@ impl App {
             player.set_volume(saved_volume);
         }
 
+        if state.dev_skirmish_shell_enabled {
+            Self::ensure_active_cooperative_shell_selection(&mut state);
+        }
+
         if std::env::var("RA2_QUICKPLAY").is_ok() {
             let skirmish_settings = state.skirmish_settings.clone();
             let request =
@@ -2710,12 +2992,7 @@ impl App {
     /// Dispatch rendering based on current GameScreen state.
     fn render_frame(state: &mut AppState, event_loop: &ActiveEventLoop) -> Result<()> {
         state.frame_timer.sample(Instant::now());
-        let main_menu_shell_live = state.screen == GameScreen::MainMenu
-            && !state.main_menu_shell_failed
-            && !state.main_menu_show_skirmish_setup
-            && !Self::single_player_shell_active(state)
-            && !Self::native_skirmish_shell_active(state);
-        crate::app_tooltips::update(state, main_menu_shell_live);
+        crate::app_tooltips::update(state);
         crate::app_messages::update(state);
         if let Some(until) = state.startup_splash_until {
             if Instant::now() < until {
@@ -3024,6 +3301,11 @@ impl App {
                     title,
                     detail,
                 ) {
+                    // Persist the replay before the sim is torn down (symmetric
+                    // with return_to_main_menu) so a match that ended in
+                    // victory/defeat still leaves a replayable log on disk.
+                    crate::app_sim_tick::flush_replay_log(state);
+                    Self::capture_returned_skirmish_rng(state);
                     crate::app_loading::clear_match_startup_state(state);
                     state.screen = GameScreen::MainMenu;
                     Self::enter_shell_window_mode(state);
@@ -3092,8 +3374,26 @@ impl App {
     /// dialog has no quit button and the egui pause card is retired, so
     /// quit-to-menu survives as a dev-overlay shortcut until the native
     /// Abort-Mission dialog is built (a later 5a step).
+    fn capture_returned_skirmish_rng(state: &mut AppState) {
+        let gameplay_rng = state
+            .simulation
+            .as_ref()
+            .map(crate::sim::world::Simulation::clone_scenario_rng);
+        if let Some(gameplay_rng) = gameplay_rng
+            && state
+                .offline_skirmish_runtime
+                .capture_returned_gameplay_rng(gameplay_rng)
+        {
+            log::info!("Returned gameplay Scenario cursor to the offline shell");
+        }
+    }
+
     fn return_to_main_menu(state: &mut AppState) {
         state.paused = false;
+        // Persist the recorded replay before the sim (which owns the log) is
+        // torn down — every finished match leaves a replayable log on disk.
+        crate::app_sim_tick::flush_replay_log(state);
+        Self::capture_returned_skirmish_rng(state);
         crate::app_loading::clear_match_startup_state(state);
         if let Some(ref mut player) = state.music_player {
             player.stop();

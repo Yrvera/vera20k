@@ -77,8 +77,8 @@ fn build_sim_with_c4_damage_state_rules() -> (Simulation, RuleSet, BTreeMap<(u16
 fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry: u16) -> u64 {
     let owner_id = sim.interner.intern(owner);
     let type_id = sim.interner.intern(type_str);
-    let id = sim.substrate.next_stable_entity_id;
-    sim.substrate.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_object_id;
+    sim.substrate.next_stable_object_id += 1;
     let e = GameEntity::new(
         id,
         rx,
@@ -103,8 +103,8 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
 fn spawn_building(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry: u16) -> u64 {
     let owner_id = sim.interner.intern(owner);
     let type_id = sim.interner.intern(type_str);
-    let id = sim.substrate.next_stable_entity_id;
-    sim.substrate.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_object_id;
+    sim.substrate.next_stable_object_id += 1;
     let e = GameEntity::new(
         id,
         rx,
@@ -159,7 +159,8 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
     // sees adjacency and claims.
     step(&mut sim, &rules, &heights);
     let pending = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(bld)
         .unwrap()
         .pending_c4_detonation
@@ -176,7 +177,8 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
     }
 
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(bld)
             .map_or(true, |b| b.dying || b.health.current == 0),
         "building must be destroyed at plant_start + c4_delay (plant_start={plant_start}, sim.session.tick={})",
@@ -197,7 +199,11 @@ fn c4_damage_crossing_condition_yellow_sets_building_damage_state() {
     let (mut sim, rules, heights) = build_sim_with_c4_damage_state_rules();
     let seal = spawn_infantry(&mut sim, "GHOST", "Americans", 10, 11);
     let bld = spawn_building(&mut sim, "GAPILE", "Soviets", 10, 10);
-    sim.substrate.entities.get_mut(bld).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(bld)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -206,7 +212,8 @@ fn c4_damage_crossing_condition_yellow_sets_building_damage_state() {
     for _ in 0..(delay + 2) {
         step(&mut sim, &rules, &heights);
         if sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(bld)
             .is_some_and(|building| building.building_damage_state_active)
         {
@@ -214,7 +221,11 @@ fn c4_damage_crossing_condition_yellow_sets_building_damage_state() {
         }
     }
 
-    let building = sim.substrate.entities.get(bld).expect("building should survive");
+    let building = sim
+        .substrate
+        .entities
+        .get(bld)
+        .expect("building should survive");
     assert_eq!(building.health.current, 300);
     assert!(building.building_damage_state_active);
 }
@@ -232,7 +243,8 @@ fn c4_does_not_claim_from_add_occupy_only_cell() {
     step(&mut sim, &rules, &heights);
 
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(refinery)
             .unwrap()
             .pending_c4_detonation
@@ -240,7 +252,8 @@ fn c4_does_not_claim_from_add_occupy_only_cell() {
         "C4 must not claim from GAREFN AddOccupy-only cell (origin-1, origin)"
     );
     let movement = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(seal)
         .and_then(|seal| seal.movement_target.as_ref())
         .expect("SEAL should be ordered into a real foundation cell");
@@ -264,14 +277,20 @@ fn c4_claims_from_remove_occupy_foundation_cell() {
     step(&mut sim, &rules, &heights);
 
     let pending = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(refinery)
         .unwrap()
         .pending_c4_detonation
         .expect("C4 must claim from base foundation cell removed from hidden occupancy");
     assert_eq!(pending.attacker_id, seal);
     assert!(
-        sim.substrate.entities.get(seal).unwrap().movement_target.is_none(),
+        sim.substrate
+            .entities
+            .get(seal)
+            .unwrap()
+            .movement_target
+            .is_none(),
         "SEAL already standing on the base foundation should not get an enter move"
     );
 }
@@ -285,7 +304,11 @@ fn c4_attacker_death_does_not_abort_detonation() {
     let bld = spawn_building(&mut sim, "GAPILE", "Soviets", 10, 10);
 
     // Manually claim the plant (skip walk-up).
-    sim.substrate.entities.get_mut(bld).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(bld)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -295,7 +318,8 @@ fn c4_attacker_death_does_not_abort_detonation() {
     sim.substrate.entities.get_mut(seal).unwrap().dying = true;
     step(&mut sim, &rules, &heights);
     assert!(
-        sim.substrate.entities.get(seal).is_none() || sim.substrate.entities.get(seal).unwrap().dying,
+        sim.substrate.entities.get(seal).is_none()
+            || sim.substrate.entities.get(seal).unwrap().dying,
         "SEAL must be despawned or dying after kill"
     );
 
@@ -306,7 +330,8 @@ fn c4_attacker_death_does_not_abort_detonation() {
         step(&mut sim, &rules, &heights);
     }
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(bld)
             .map_or(true, |b| b.dying || b.health.current == 0),
         "PARITY (OQ2): detonation must fire even after attacker death"
@@ -324,7 +349,11 @@ fn c4_iron_curtain_blocks_until_expiry_then_kills() {
 
     // Claim the plant, then IC the building. IC duration must outlast
     // C4Delay (27) so the first detonation attempt is nullified.
-    sim.substrate.entities.get_mut(bld).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(bld)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -340,7 +369,8 @@ fn c4_iron_curtain_blocks_until_expiry_then_kills() {
         step(&mut sim, &rules, &heights);
     }
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(bld)
             .is_some_and(|b| !b.dying && b.health.current > 0),
         "IC must block C4 damage while active"
@@ -351,7 +381,8 @@ fn c4_iron_curtain_blocks_until_expiry_then_kills() {
         step(&mut sim, &rules, &heights);
     }
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(bld)
             .map_or(true, |b| b.dying || b.health.current == 0),
         "PARITY: building must die after IC expires (damage retries every tick)"
@@ -379,7 +410,8 @@ fn second_c4_attacker_does_not_overwrite_plant() {
     // First tick: A claims (lower stable_id, sorted order). B sees the claim and hovers.
     step(&mut sim, &rules, &heights);
     let pending = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(bld)
         .unwrap()
         .pending_c4_detonation
@@ -392,7 +424,8 @@ fn second_c4_attacker_does_not_overwrite_plant() {
     // Another tick: pending must NOT have been overwritten by B.
     step(&mut sim, &rules, &heights);
     let pending_after = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(bld)
         .unwrap()
         .pending_c4_detonation
@@ -456,7 +489,8 @@ fn stop_cancels_walkup_but_not_already_claimed_plant() {
         "Stop must clear c4_plant during walk-up"
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(bld)
             .unwrap()
             .pending_c4_detonation
@@ -466,7 +500,11 @@ fn stop_cancels_walkup_but_not_already_claimed_plant() {
 
     // Case B: Stop AFTER plant is claimed does NOT clear pending_c4_detonation.
     let plant_start = sim.session.tick;
-    sim.substrate.entities.get_mut(bld).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(bld)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: plant_start,
         attacker_id: seal,
     });
@@ -477,7 +515,8 @@ fn stop_cancels_walkup_but_not_already_claimed_plant() {
     ));
     step(&mut sim, &rules, &heights);
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(bld)
             .unwrap()
             .pending_c4_detonation
@@ -491,7 +530,8 @@ fn stop_cancels_walkup_but_not_already_claimed_plant() {
         step(&mut sim, &rules, &heights);
     }
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(bld)
             .map_or(true, |b| b.dying || b.health.current == 0),
         "claimed plant detonates on schedule even after Stop on attacker"
@@ -521,7 +561,8 @@ fn cannot_c4_building_rejects_plant_command() {
         "PlantC4 must be silently rejected for CanC4=no buildings"
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(oil)
             .unwrap()
             .pending_c4_detonation
@@ -553,7 +594,8 @@ fn non_c4_unit_rejects_plant_command() {
         "PlantC4 must be silently rejected for non-C4 attackers"
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(bld)
             .unwrap()
             .pending_c4_detonation

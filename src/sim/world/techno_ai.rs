@@ -74,9 +74,13 @@ impl Simulation {
 
         #[cfg(debug_assertions)]
         debug_assert_eq!(
-            visited,
-            self.object_ai_live_order_filtered(),
-            "object_ai_stage visit order diverged from live LogicVector order",
+            visited
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            visited.len(),
+            "object_ai_stage visited one live object more than once",
         );
 
         #[cfg(not(debug_assertions))]
@@ -286,6 +290,15 @@ impl Simulation {
             // Tolerate an absent id (the loop's documented contract). The stage
             // runs AFTER the end-of-tick flush_pending_delete drain, so the order
             // should not reference a freed slot — but inherit the guard.
+            if sim.substrate.anims.contains_key(id) {
+                if record {
+                    visited.push(id);
+                }
+                if let Some(rules) = rules {
+                    sim.visit_anim(id, rules);
+                }
+                return;
+            }
             let Some(entity) = sim.substrate.entities.get(id) else {
                 return;
             };
@@ -306,18 +319,6 @@ impl Simulation {
             }
         });
         visited
-    }
-
-    /// The ids the walk dispatches, derived independently from the post-pass
-    /// live order: present in the store and not dying, in live order. For the
-    /// S0 no-op shell this always equals the recorded visit trace; a future arm
-    /// that removes/reorders a live object mid-pass would break the equality.
-    #[cfg(any(test, debug_assertions))]
-    fn object_ai_live_order_filtered(&self) -> Vec<u64> {
-        self.live_object_order_snapshot()
-            .into_iter()
-            .filter(|&id| self.substrate.entities.get(id).is_some_and(|e| !e.dying))
-            .collect()
     }
 }
 
@@ -343,7 +344,12 @@ fn techno_ai_shell(
             matches!(unit_techno_bracket(sim, id, rules), BracketReach::Committed)
         }
         EntityCategory::Infantry => false, // S6: absorb fear / sequence / self-removal
-        EntityCategory::Structure => false, // S8 absorb bracket; P3 oracle probe is factory_oracle_step_trace
+        EntityCategory::Structure => {
+            if let Some(rules) = rules {
+                sim.update_building_damage_fire(id, rules);
+            }
+            false
+        }
         EntityCategory::Aircraft => false, // S7: absorb per-object aircraft dispatch
     }
 }
@@ -526,7 +532,12 @@ fn unit_techno_bracket(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) -
     // Miners are deferred to the tail projection (the miner session owns that
     // path); the host runs the bracket but skips the authoritative commit, so a
     // miner is NOT added to the skip-set and the tail commits it.
-    if sim.substrate.entities.get(id).is_some_and(|e| e.miner.is_some()) {
+    if sim
+        .substrate
+        .entities
+        .get(id)
+        .is_some_and(|e| e.miner.is_some())
+    {
         techno_common_post(sim, id, rules);
         return BracketReach::MinerDeferred;
     }
@@ -678,8 +689,7 @@ impl Simulation {
             debug_assert!(
                 trace.is_drive,
                 "S1: tick {} unit {}: in-scope unit must be a drive mover",
-                self.session.tick,
-                id,
+                self.session.tick, id,
             );
         }
     }
@@ -921,7 +931,11 @@ mod tests {
             sim.live_object_order_snapshot(),
             "every live object visited exactly once, in live order"
         );
-        assert_eq!(visited, vec![3, 1, 2], "live order preserved verbatim (no sort)");
+        assert_eq!(
+            visited,
+            vec![3, 1, 2],
+            "live order preserved verbatim (no sort)"
+        );
     }
 
     #[test]
@@ -1015,7 +1029,10 @@ mod tests {
             .insert(entity_of(1, EntityCategory::Unit));
         // A live non-miner Unit reaches the dispatch point and commits: +0xC4
         // tick_counter + derived_mission (idle -> Guard).
-        assert_eq!(unit_techno_bracket(&mut sim, 1, None), BracketReach::Committed);
+        assert_eq!(
+            unit_techno_bracket(&mut sim, 1, None),
+            BracketReach::Committed
+        );
         let u = sim.substrate.entities.get(1).unwrap();
         assert_eq!(u.mission.tick_counter, 1);
         assert_eq!(u.mission.current, MissionType::Guard);
@@ -1029,8 +1046,14 @@ mod tests {
         sim.substrate.entities.insert(e);
         // Guard B fires after the (empty) pre-block: a health-0 Unit makes no
         // commit (counter stays 0) and never reaches the dispatch point.
-        assert_eq!(unit_techno_bracket(&mut sim, 1, None), BracketReach::DiedInPre);
-        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 0);
+        assert_eq!(
+            unit_techno_bracket(&mut sim, 1, None),
+            BracketReach::DiedInPre
+        );
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.tick_counter,
+            0
+        );
     }
 
     #[test]
@@ -1041,8 +1064,14 @@ mod tests {
         sim.substrate.entities.insert(miner);
         // A miner runs the bracket but the host does NOT commit it — the miner
         // session / tail projection owns the miner mission (counter stays 0).
-        assert_eq!(unit_techno_bracket(&mut sim, 1, None), BracketReach::MinerDeferred);
-        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 0);
+        assert_eq!(
+            unit_techno_bracket(&mut sim, 1, None),
+            BracketReach::MinerDeferred
+        );
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.tick_counter,
+            0
+        );
     }
 
     // ===== Slice S4c — passive-acquire eligibility gate (shadow) =====
@@ -1055,31 +1084,59 @@ mod tests {
     #[test]
     fn s4c_gate_guard_with_weapon_eligible_without_opportunity_fire() {
         // Guard units auto-acquire regardless of OpportunityFire (verified gate).
-        assert!(s4c_passive_acquire_eligible(MissionType::Guard, true, false));
+        assert!(s4c_passive_acquire_eligible(
+            MissionType::Guard,
+            true,
+            false
+        ));
     }
 
     #[test]
     fn s4c_gate_harvest_with_opportunity_fire_eligible() {
-        assert!(s4c_passive_acquire_eligible(MissionType::Harvest, true, true));
+        assert!(s4c_passive_acquire_eligible(
+            MissionType::Harvest,
+            true,
+            true
+        ));
     }
 
     #[test]
     fn s4c_gate_move_without_opportunity_fire_not_eligible() {
-        assert!(!s4c_passive_acquire_eligible(MissionType::Move, true, false));
+        assert!(!s4c_passive_acquire_eligible(
+            MissionType::Move,
+            true,
+            false
+        ));
     }
 
     #[test]
     fn s4c_gate_no_weapon_not_eligible_even_on_guard() {
         // The weapon (CanAcquireTarget equip) gate applies to ALL paths, incl Guard.
-        assert!(!s4c_passive_acquire_eligible(MissionType::Guard, false, true));
-        assert!(!s4c_passive_acquire_eligible(MissionType::Move, false, true));
+        assert!(!s4c_passive_acquire_eligible(
+            MissionType::Guard,
+            false,
+            true
+        ));
+        assert!(!s4c_passive_acquire_eligible(
+            MissionType::Move,
+            false,
+            true
+        ));
     }
 
     #[test]
     fn s4c_gate_off_mission_not_eligible() {
         // Missions outside {Move,Guard,Harvest} never reach the passive-acquire block.
-        assert!(!s4c_passive_acquire_eligible(MissionType::Attack, true, true));
-        assert!(!s4c_passive_acquire_eligible(MissionType::Sleep, true, true));
+        assert!(!s4c_passive_acquire_eligible(
+            MissionType::Attack,
+            true,
+            true
+        ));
+        assert!(!s4c_passive_acquire_eligible(
+            MissionType::Sleep,
+            true,
+            true
+        ));
     }
 
     #[test]
@@ -1162,7 +1219,10 @@ mod tests {
         let before = sim.state_hash();
         sim.debug_assert_s1_shadow(); // read-only shadow pass
         let after = sim.state_hash();
-        assert_eq!(before, after, "the S1 shadow pass must not perturb the state hash");
+        assert_eq!(
+            before, after,
+            "the S1 shadow pass must not perturb the state hash"
+        );
     }
 
     #[test]
@@ -1307,7 +1367,10 @@ mod tests {
         sim.debug_assert_unit_dispatch_shadow(&trace); // read-only proof (no panic)
         sim.debug_check_dispatch_live_set_coverage(); // read-only coverage
 
-        assert!(committed.contains(&1), "the scoped mover is committed by the host");
+        assert!(
+            committed.contains(&1),
+            "the scoped mover is committed by the host"
+        );
         let u = sim.substrate.entities.get(1).unwrap();
         assert_eq!(u.mission.current, MissionType::Move);
         assert_eq!(u.mission.tick_counter, 1);
@@ -1345,7 +1408,10 @@ mod tests {
         // Simulate the unit's machines changing between host-time and tail.
         sim.substrate.entities.get_mut(1).unwrap().movement_target = None;
         let churn = sim.debug_assert_unit_dispatch_shadow(&trace);
-        assert_eq!(churn, 1, "a host Move that became tail Sleep must count as one churn");
+        assert_eq!(
+            churn, 1,
+            "a host Move that became tail Sleep must count as one churn"
+        );
     }
 
     // ===== Slice S2 — in-loop dispatch authority =====
@@ -1363,7 +1429,10 @@ mod tests {
             0, // z = ground level
             0, // facing = north
             owner,
-            crate::sim::components::Health { current: 100, max: 100 },
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
             type_ref,
             EntityCategory::Unit,
             0, // veterancy = rookie
@@ -1388,13 +1457,21 @@ mod tests {
         let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
         let e = sim.substrate.entities.get(1).unwrap();
         assert!(e.movement_target.is_none(), "fixture must arrive on tick 1");
-        assert_eq!(e.mission.current, MissionType::Move, "arrival tick keeps Move");
+        assert_eq!(
+            e.mission.current,
+            MissionType::Move,
+            "arrival tick keeps Move"
+        );
 
         let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
         let e = sim.substrate.entities.get(1).unwrap();
         // S3 idle→Guard: a machine-less idle Unit derives Guard (gamemd's
         // post-arrival idle mission), not the legacy None placeholder.
-        assert_eq!(e.mission.current, MissionType::Guard, "post-arrival tick → Guard");
+        assert_eq!(
+            e.mission.current,
+            MissionType::Guard,
+            "post-arrival tick → Guard"
+        );
     }
 
     /// S3 (G5 pin): the tail projection treats dying Units uniformly — a dying
@@ -1435,11 +1512,23 @@ mod tests {
         let heights = std::collections::BTreeMap::new();
 
         let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
-        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 1);
-        assert_eq!(sim.substrate.entities.get(2).unwrap().mission.tick_counter, 1);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.tick_counter,
+            1
+        );
+        assert_eq!(
+            sim.substrate.entities.get(2).unwrap().mission.tick_counter,
+            1
+        );
         let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
-        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 2);
-        assert_eq!(sim.substrate.entities.get(2).unwrap().mission.tick_counter, 2);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.tick_counter,
+            2
+        );
+        assert_eq!(
+            sim.substrate.entities.get(2).unwrap().mission.tick_counter,
+            2
+        );
     }
 
     /// S2 P1 guard: a save taken on the arrival tick (current=Move while a fresh
@@ -1455,7 +1544,11 @@ mod tests {
         let _ = sim.advance_tick(&[], None, &heights, None, None, 67); // arrival tick
 
         let e = sim.substrate.entities.get(1).unwrap();
-        assert_eq!(e.mission.current, MissionType::Move, "precondition: divergent window");
+        assert_eq!(
+            e.mission.current,
+            MissionType::Move,
+            "precondition: divergent window"
+        );
         assert!(e.movement_target.is_none());
         let hash_before = sim.state_hash();
 
@@ -1548,7 +1641,11 @@ ConditionRedSparkingProbability={red_prob}\nConditionYellowSparkingProbability={
         let scen = sim.scenario_rng.state();
         let main = sim.main_rng.state();
         techno_common_post(&mut sim, 1, Some(&rules));
-        assert_eq!(sim.scenario_rng.state(), scen, "no scenario draw above ConditionYellow");
+        assert_eq!(
+            sim.scenario_rng.state(),
+            scen,
+            "no scenario draw above ConditionYellow"
+        );
         assert_eq!(sim.main_rng.state(), main);
         assert_eq!(live_until(&sim, 1), 0);
     }
@@ -1564,8 +1661,16 @@ ConditionRedSparkingProbability={red_prob}\nConditionYellowSparkingProbability={
         let main = sim.main_rng.state();
         techno_common_post(&mut sim, 1, Some(&rules));
         expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX);
-        assert_eq!(sim.scenario_rng.state(), expect.state(), "exactly one prob-roll draw");
-        assert_eq!(sim.main_rng.state(), main, "scenario stream only, never main");
+        assert_eq!(
+            sim.scenario_rng.state(),
+            expect.state(),
+            "exactly one prob-roll draw"
+        );
+        assert_eq!(
+            sim.main_rng.state(),
+            main,
+            "scenario stream only, never main"
+        );
         assert_eq!(live_until(&sim, 1), 0, "roll failed → no live system");
     }
 
@@ -1582,9 +1687,17 @@ ConditionRedSparkingProbability={red_prob}\nConditionYellowSparkingProbability={
         techno_common_post(&mut sim, 1, Some(&rules));
         expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX); // roll
         expect.next_range_u32_inclusive(0, 1); // list-pick over 2 sparks
-        assert_eq!(sim.scenario_rng.state(), expect.state(), "roll + list-pick = two draws");
+        assert_eq!(
+            sim.scenario_rng.state(),
+            expect.state(),
+            "roll + list-pick = two draws"
+        );
         assert_eq!(sim.main_rng.state(), main);
-        assert_eq!(live_until(&sim, 1), tick + 5, "armed to spawn_tick + Lifetime");
+        assert_eq!(
+            live_until(&sim, 1),
+            tick + 5,
+            "armed to spawn_tick + Lifetime"
+        );
     }
 
     #[test]
@@ -1598,8 +1711,16 @@ ConditionRedSparkingProbability={red_prob}\nConditionYellowSparkingProbability={
         let mut expect = sim.scenario_rng.clone();
         techno_common_post(&mut sim, 1, Some(&rules));
         expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX); // roll only
-        assert_eq!(sim.scenario_rng.state(), expect.state(), "single-spark success = one draw");
-        assert_eq!(live_until(&sim, 1), tick + 5, "armed despite the no-draw list-pick");
+        assert_eq!(
+            sim.scenario_rng.state(),
+            expect.state(),
+            "single-spark success = one draw"
+        );
+        assert_eq!(
+            live_until(&sim, 1),
+            tick + 5,
+            "armed despite the no-draw list-pick"
+        );
     }
 
     #[test]
@@ -1615,7 +1736,11 @@ ConditionRedSparkingProbability={red_prob}\nConditionYellowSparkingProbability={
 
         let frozen = sim.scenario_rng.state();
         techno_common_post(&mut sim, 1, Some(&rules)); // still tick 0 < 5 → no draw
-        assert_eq!(sim.scenario_rng.state(), frozen, "live system blocks the draw");
+        assert_eq!(
+            sim.scenario_rng.state(),
+            frozen,
+            "live system blocks the draw"
+        );
         assert_eq!(live_until(&sim, 1), 5, "hold unchanged while live");
 
         // At tick 5 the system has expired: clears and re-rolls (2 draws, re-armed).
@@ -1624,7 +1749,11 @@ ConditionRedSparkingProbability={red_prob}\nConditionYellowSparkingProbability={
         techno_common_post(&mut sim, 1, Some(&rules));
         expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX);
         expect.next_range_u32_inclusive(0, 1);
-        assert_eq!(sim.scenario_rng.state(), expect.state(), "expiry resumes rolling");
+        assert_eq!(
+            sim.scenario_rng.state(),
+            expect.state(),
+            "expiry resumes rolling"
+        );
         assert_eq!(live_until(&sim, 1), 10, "re-armed to 5 + Lifetime");
     }
 
@@ -1662,7 +1791,10 @@ ConditionRedSparkingProbability=1.0\nConditionYellowSparkingProbability=1.0\n\n\
         // Sanity: the type parsed as a Cyborg vehicle that nonetheless does NOT emit.
         let obj = rules.object("VEHCYB").expect("VEHCYB present");
         assert!(obj.cyborg, "Cyborg= parsed");
-        assert!(!obj.emits_damage_spark(), "a vehicle never emits AI_Update sparks");
+        assert!(
+            !obj.emits_damage_spark(),
+            "a vehicle never emits AI_Update sparks"
+        );
 
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
@@ -1674,7 +1806,10 @@ ConditionRedSparkingProbability=1.0\nConditionYellowSparkingProbability=1.0\n\n\
             0,
             0,
             owner,
-            crate::sim::components::Health { current: 20, max: 100 },
+            crate::sim::components::Health {
+                current: 20,
+                max: 100,
+            },
             type_ref,
             EntityCategory::Unit,
             0,
@@ -1684,7 +1819,11 @@ ConditionRedSparkingProbability=1.0\nConditionYellowSparkingProbability=1.0\n\n\
         sim.substrate.entities.insert(e);
         let scen = sim.scenario_rng.state();
         techno_common_post(&mut sim, 1, Some(&rules));
-        assert_eq!(sim.scenario_rng.state(), scen, "non-Cyborg-infantry type makes zero draws");
+        assert_eq!(
+            sim.scenario_rng.state(),
+            scen,
+            "non-Cyborg-infantry type makes zero draws"
+        );
         assert_eq!(live_until(&sim, 1), 0);
     }
 
@@ -1701,10 +1840,18 @@ ConditionRedSparkingProbability=1.0\nConditionYellowSparkingProbability=1.0\n\n\
         let mut sim = Simulation::new();
         insert_cyborg_unit(&mut sim, 1, 20, 100);
         techno_common_post(&mut sim, 1, Some(&rules)); // success → permanent hold
-        assert_eq!(live_until(&sim, 1), u64::MAX, "Lifetime<=0 → indefinite hold");
+        assert_eq!(
+            live_until(&sim, 1),
+            u64::MAX,
+            "Lifetime<=0 → indefinite hold"
+        );
         sim.session.tick = 1_000_000;
         let frozen = sim.scenario_rng.state();
         techno_common_post(&mut sim, 1, Some(&rules));
-        assert_eq!(sim.scenario_rng.state(), frozen, "permanent hold never re-rolls");
+        assert_eq!(
+            sim.scenario_rng.state(),
+            frozen,
+            "permanent hold never re-rolls"
+        );
     }
 }

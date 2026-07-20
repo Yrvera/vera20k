@@ -630,7 +630,8 @@ fn find_buildable_refinery(
 }
 
 fn count_refineries(sim: &Simulation, owner: &str, rules: &RuleSet) -> usize {
-    sim.substrate.entities
+    sim.substrate
+        .entities
         .values()
         .filter(|e| {
             !e.dying
@@ -769,8 +770,8 @@ mod tests {
             false,
         );
         sim.substrate.entities.insert(ge);
-        if sim.substrate.next_stable_entity_id <= sid {
-            sim.substrate.next_stable_entity_id = sid + 1;
+        if sim.substrate.next_stable_object_id <= sid {
+            sim.substrate.next_stable_object_id = sid + 1;
         }
     }
 
@@ -1105,7 +1106,8 @@ mod tests {
         ));
 
         let refinery_sid = sim
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .find_map(|e| {
                 (sim.interner
@@ -1118,7 +1120,8 @@ mod tests {
             .expect("placed refinery should exist");
 
         let miner_sid = sim
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .find_map(|e| {
                 (sim.interner
@@ -1158,7 +1161,8 @@ mod tests {
             let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
 
             let miner = sim
-                .substrate.entities
+                .substrate
+                .entities
                 .get(miner_sid)
                 .and_then(|e| e.miner.as_ref())
                 .expect("miner component should exist");
@@ -1194,7 +1198,8 @@ mod tests {
         }
 
         let miner = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(miner_sid)
             .and_then(|e| e.miner.as_ref())
             .expect("miner component should exist");

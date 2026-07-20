@@ -12,8 +12,8 @@ use super::trackbars::{trackbar_ids, trackbar_rect};
 use super::{
     ChooseMapHoverTarget, ChooseMapModalState, OwnerDrawButton, SkirmishAiRowType, SkirmishComboId,
     SkirmishComboItem, SkirmishCountryChoice, SkirmishHoverTarget, SkirmishShellAction,
-    SkirmishShellState, combo_dropdown_content_rect, combo_dropdown_visible_row_count, combo_items,
-    combo_rect,
+    SkirmishShellState, accept_selected_map, combo_dropdown_content_rect,
+    combo_dropdown_visible_row_count, combo_items, combo_rect, player_row_visible,
 };
 
 fn hover_open_combo_item(
@@ -76,6 +76,9 @@ pub fn hovered_shell_control(
         }
     }
     for row in 0..SKIRMISH_PLAYER_SLOT_COUNT {
+        if !player_row_visible(state, maps, row) {
+            continue;
+        }
         for id in [
             SkirmishComboId::Side(row),
             SkirmishComboId::Color(row),
@@ -88,6 +91,9 @@ pub fn hovered_shell_control(
         }
     }
     for row in 0..SKIRMISH_AI_ROW_COUNT {
+        if !player_row_visible(state, maps, row + 1) {
+            continue;
+        }
         let id = SkirmishComboId::AiType(row);
         if combo_rect(layout, id).is_some_and(|rect| combo_face_rect(rect).contains(x, y)) {
             return Some(SkirmishHoverTarget::ComboFace(id));
@@ -97,7 +103,10 @@ pub fn hovered_shell_control(
     // Static (non-interactive) controls are tested last: they do not overlap
     // the interactive widgets above, so order does not change any result, and
     // gamemd does not restrict 0x102 status help to interactive widgets.
-    for flag in &layout.flags {
+    for (row, flag) in layout.flags.iter().enumerate() {
+        if !player_row_visible(state, maps, row) {
+            continue;
+        }
         if flag.contains(x, y) {
             return Some(SkirmishHoverTarget::FlagPicture);
         }
@@ -341,9 +350,7 @@ pub fn apply_action(
         SkirmishShellAction::BackOrExit => SkirmishShellAction::BackOrExit,
         SkirmishShellAction::ChooseMap => SkirmishShellAction::ChooseMap,
         SkirmishShellAction::SelectMap(idx) => {
-            if idx < maps.len() {
-                state.selected_map_idx = idx;
-            }
+            accept_selected_map(state, maps, idx);
             SkirmishShellAction::None
         }
         SkirmishShellAction::SelectColor(target) => {
@@ -352,7 +359,8 @@ pub fn apply_action(
                     state.player_color_index = (state.player_color_index + 1) % 8;
                 }
                 ColorComboId::Ai(idx) => {
-                    if let Some(opponent) = state.opponents.get_mut(idx) {
+                    let visible = player_row_visible(state, maps, idx + 1);
+                    if visible && let Some(opponent) = state.opponents.get_mut(idx) {
                         opponent.color_index = (opponent.color_index + 1) % 8;
                     }
                 }

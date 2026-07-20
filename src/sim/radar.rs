@@ -93,6 +93,11 @@ pub struct RadarEvent {
     pub rotation: f32,
     /// Rotation speed in radians per tick.
     pub rotation_speed: f32,
+    /// Owning house for player-scoped events (BaseUnderAttack /
+    /// MinerUnderAttack): only that player's view renders them. `None` =
+    /// global event (Combat, BridgeRepaired, …), visible to everyone.
+    #[serde(default)]
+    pub owner: Option<crate::sim::intern::InternedId>,
 }
 
 impl RadarEvent {
@@ -151,6 +156,20 @@ impl RadarEventQueue {
     /// Returns `true` when the event was actually enqueued. YR uses this return
     /// value to gate some EVA calls, including `BridgeRepaired`.
     pub fn push(&mut self, event_type: RadarEventType, rx: u16, ry: u16, duration_ms: u32) -> bool {
+        self.push_owned(event_type, rx, ry, duration_ms, None)
+    }
+
+    /// `push` with an owning house for player-scoped events (BaseUnderAttack /
+    /// MinerUnderAttack). Suppression stays type+distance based regardless of
+    /// owner, matching the single shared queue.
+    pub fn push_owned(
+        &mut self,
+        event_type: RadarEventType,
+        rx: u16,
+        ry: u16,
+        duration_ms: u32,
+        owner: Option<crate::sim::intern::InternedId>,
+    ) -> bool {
         // Suppress if a recent event of same type is within suppression distance.
         let dominated: bool = self.events.iter().any(|e| {
             e.event_type == event_type
@@ -169,6 +188,7 @@ impl RadarEventQueue {
             duration_ms,
             rotation: std::f32::consts::FRAC_PI_4,
             rotation_speed: 0.05,
+            owner,
         };
         if self.events.len() >= self.max_events {
             self.events.pop_front();
@@ -340,6 +360,17 @@ mod tests {
         // Different type at same location — NOT suppressed.
         assert!(queue.push(RadarEventType::BaseUnderAttack, 10, 20, 4000));
         assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn push_owned_tags_owner_and_push_stays_global() {
+        let mut queue = RadarEventQueue::default();
+        let owner = crate::sim::intern::test_intern("PlayerA");
+        assert!(queue.push_owned(RadarEventType::BaseUnderAttack, 10, 20, 4000, Some(owner)));
+        assert!(queue.push(RadarEventType::Combat, 40, 40, 4000));
+        let owners: Vec<_> = queue.iter().map(|e| (e.event_type, e.owner)).collect();
+        assert!(owners.contains(&(RadarEventType::BaseUnderAttack, Some(owner))));
+        assert!(owners.contains(&(RadarEventType::Combat, None)));
     }
 
     #[test]

@@ -6,10 +6,10 @@ use crate::ui::shell::descriptor::{
     RepositionPolicy,
 };
 use crate::ui::shell::geom::SDBTNANM_CELL_W_NARROW;
-use crate::ui::shell::layout::{LaidOutControl, layout_pass};
-pub use crate::ui::shell::geom::{RectPx, RightPanelRects};
 pub use crate::ui::shell::geom::{RIGHT_PANEL_TILE_H, RIGHT_PANEL_WIDTH};
+pub use crate::ui::shell::geom::{RectPx, RightPanelRects};
 use crate::ui::shell::geom::{dlu_rect, lower_strip_rect, right_panel_rects};
+use crate::ui::shell::layout::{LaidOutControl, layout_pass};
 
 pub const SHELL_BASE_W: i32 = 800;
 pub const SHELL_BASE_H: i32 = 600;
@@ -53,7 +53,6 @@ pub struct MainMenuShellLayout {
     pub tooltip_line: RectPx,
     pub website_static: RectPx,
     pub buttons: [MainMenuButtonRect; 6],
-    pub pressed_content_offset_x: i32,
     pub right_panel: RightPanelRects,
     pub lower_strip: RectPx,
 }
@@ -171,15 +170,27 @@ fn dialog_descriptor() -> DialogDescriptor {
         slide_eligible: true,
         reposition_policy: RepositionPolicy::IncludeSetReanchor,
         controls: vec![
-            button_ctrl(0x0683, 125, snap, "GUI:SinglePlayer", "STT:MainButtonSinglePlayer"),
+            button_ctrl(
+                0x0683,
+                125,
+                snap,
+                "GUI:SinglePlayer",
+                "STT:MainButtonSinglePlayer",
+            ),
             button_ctrl(0x0684, 152, snap, "GUI:WWOnline", "STT:MainButtonWWOnline"),
             button_ctrl(0x0578, 179, snap, "GUI:Network", "STT:MainButtonNetwork"),
-            button_ctrl(0x0686, 206, snap, "GUI:MoviesAndCredits", "STT:MainButtonMovies"),
+            button_ctrl(
+                0x0686,
+                206,
+                snap,
+                "GUI:MoviesAndCredits",
+                "STT:MainButtonMovies",
+            ),
             button_ctrl(0x055C, 233, snap, "GUI:Options", "STT:MainButtonOptions"),
             button_ctrl(
                 0x03EE,
                 330,
-                AnchorRule::OwnerDrawButtonRawTop {
+                AnchorRule::OwnerDrawButtonBottomRow {
                     cell_w: BUTTON_CELL_W,
                 },
                 "GUI:ExitGame",
@@ -276,7 +287,6 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> MainMenuShellLayout {
                 rect: rect_for(&laid, 0x03EE),
             },
         ],
-        pressed_content_offset_x: 1,
         right_panel,
         lower_strip,
     }
@@ -321,7 +331,6 @@ pub fn compute_responsive_layout(screen_w: u32, screen_h: u32) -> MainMenuShellL
         tooltip_line: scale_rect(base.tooltip_line, scale_x, scale_y),
         website_static: scale_rect(base.website_static, scale_x, scale_y),
         buttons,
-        pressed_content_offset_x: ((1.0 * scale_x).round() as i32).max(1),
         right_panel,
         lower_strip,
     }
@@ -335,12 +344,12 @@ mod tests {
     fn key_rects_match_800x600() {
         // All six buttons are SDBTNANM cells: 156x42, flush-right at x=644
         // (632 panel left + 168 - 156). The five stacked buttons are grid-snapped
-        // Y; Exit is the special case: not snapped, sits lower at y=536.
+        // Y; Exit occupies the final complete tile above the bottom cap.
         let layout = compute_layout(800, 600);
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(0, 0, 632, 570));
         assert_eq!(layout.buttons[0].rect, RectPx::new(644, 199, 156, 42)); // SP
-        assert_eq!(layout.buttons[5].rect, RectPx::new(644, 536, 156, 42)); // Exit
+        assert_eq!(layout.buttons[5].rect, RectPx::new(644, 535, 156, 42)); // Exit
     }
 
     #[test]
@@ -351,9 +360,8 @@ mod tests {
         for (button, y) in layout.buttons[..5].iter().zip(expected_y) {
             assert_eq!(button.rect, RectPx::new(644, y, 156, 42));
         }
-        // Exit (0x3ee): same flush-right cell, but not grid-snapped — sits lower
-        // at the raw DLU-derived Y, in the gap below the stack.
-        assert_eq!(layout.buttons[5].rect, RectPx::new(644, 536, 156, 42));
+        // Exit (0x3ee): same flush-right cell in the final row above SDBTM.
+        assert_eq!(layout.buttons[5].rect, RectPx::new(644, 535, 156, 42));
     }
 
     #[test]
@@ -386,6 +394,7 @@ mod tests {
         let layout = compute_layout(640, 480);
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsS);
         assert_eq!(layout.movie, RectPx::new(0, 0, 472, 450));
+        assert_eq!(layout.buttons[5].rect, RectPx::new(484, 409, 156, 42));
     }
 
     #[test]
@@ -409,8 +418,8 @@ mod tests {
         for (button, y) in layout.buttons[..5].iter().zip(expected_y) {
             assert_eq!(button.rect, RectPx::new(756, y, 156, 42));
         }
-        // Exit: same flush-right cell x=756, not snapped; raw 536 + 84 = 620.
-        assert_eq!(layout.buttons[5].rect, RectPx::new(756, 620, 156, 42));
+        // Exit: same flush-right cell x=756 in the final row above SDBTM.
+        assert_eq!(layout.buttons[5].rect, RectPx::new(756, 619, 156, 42));
     }
 
     #[test]
@@ -420,10 +429,9 @@ mod tests {
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(0, 0, 1264, 855));
         // Base SP cell (644,199,156,42) scaled 2x/1.5x (corner-rounded) ->
-        // (1288,299,312,63); base Exit (644,536,156,42) -> (1288,804,312,63).
+        // (1288,299,312,63); base Exit (644,535,156,42) -> (1288,803,312,63).
         assert_eq!(layout.buttons[0].rect, RectPx::new(1288, 299, 312, 63));
-        assert_eq!(layout.buttons[5].rect, RectPx::new(1288, 804, 312, 63));
-        assert_eq!(layout.pressed_content_offset_x, 2);
+        assert_eq!(layout.buttons[5].rect, RectPx::new(1288, 803, 312, 63));
     }
 
     #[test]

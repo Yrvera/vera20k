@@ -23,7 +23,6 @@ use crate::sim::movement::movement_occupancy::{
     evaluate_runtime_can_enter_cell, naval_terrain_diag, runtime_can_enter_cell_args,
 };
 use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
-use crate::sim::movement::turret::{rot_to_facing_delta, shortest_rotation};
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
@@ -202,6 +201,64 @@ pub(super) fn configure_motion_after_transition(
     }
 }
 
+/// Per-tick hover steering: turn the body facing toward the current one-cell
+/// waypoint through the binary-frame `FacingClass` at the unit's rules ROT, and
+/// point `move_dir` along the resulting hull heading (unit vector, len = 1) so
+/// the shared lepton advancement produces facing-lagged curved motion.
+///
+/// Returns `true` while the required turn exceeds 45° (the turn-stall): the
+/// caller brakes the throttle (request 0) and holds position for the tick.
+/// Holding position during the hard-turn phase is a disclosed approximation —
+/// the original translates along the stale heading while braking, but the
+/// path-directed crossing loop cannot absorb a sideways cell exit; the drift
+/// this suppresses is bounded by the brake-decay tail (see the P2b plan doc).
+///
+/// Hover never uses the stop-rotate-go path (`handle_vehicle_rotation`); any
+/// `facing_target` left by shared path plumbing is cleared here.
+pub(super) fn hover_steer(
+    facing: &mut u8,
+    facing_target: &mut Option<u8>,
+    body_facing: &mut Option<super::facing_class::FacingClass>,
+    position: &Position,
+    target: &mut MovementTarget,
+    rot: i32,
+    binary_frame: u32,
+) -> bool {
+    use crate::util::lepton::CELL_CENTER_LEPTON;
+
+    *facing_target = None;
+    let (wx, wy): (u16, u16) = if target.next_index < target.path.len() {
+        target.path[target.next_index]
+    } else {
+        target.final_goal.unwrap_or((position.rx, position.ry))
+    };
+    let dxl: SimFixed = SimFixed::from_num((wx as i32 - position.rx as i32) * 256)
+        + (CELL_CENTER_LEPTON - position.sub_x);
+    let dyl: SimFixed = SimFixed::from_num((wy as i32 - position.ry as i32) * 256)
+        + (CELL_CENTER_LEPTON - position.sub_y);
+    if dxl == SIM_ZERO && dyl == SIM_ZERO {
+        // Already exactly on the waypoint — nothing to steer toward.
+        *body_facing = None;
+        return false;
+    }
+
+    let desired16: u16 = super::hover::hover_desired_facing16(dxl, dyl);
+    let rot_byte: u8 = rot.clamp(0, 0x7F) as u8;
+    let bf = body_facing.get_or_insert_with(|| {
+        super::facing_class::FacingClass::new((*facing as u16) << 8, rot_byte)
+    });
+    bf.set(desired16, binary_frame);
+    let current16: u16 = bf.current(binary_frame);
+    *facing = (current16 >> 8) as u8;
+
+    let (mx, my) = super::hover::hover_move_dir(current16);
+    target.move_dir_x = mx;
+    target.move_dir_y = my;
+    target.move_dir_len = SIM_ONE;
+
+    super::hover::hover_turning_hard(current16, desired16)
+}
+
 /// Result of vehicle rotation — tells the caller whether to skip this tick.
 pub(super) enum RotationResult {
     /// Still rotating in place — caller should `continue` (skip lepton advancement).
@@ -214,62 +271,77 @@ pub(super) enum RotationResult {
 
 /// Handle vehicle in-place rotation before movement begins.
 ///
-/// Vehicles rotate toward `facing_target` before advancing. If ROT > 0, gradual
-/// rotation is applied; ROT = 0 means instant snap. Infantry are excluded by the
-/// caller (they always turn instantly without this function).
+/// Vehicles rotate toward `facing_target` before advancing. When `ROT > 0` the
+/// hull turns through a binary-frame `FacingClass` at the unit's rules ROT —
+/// gamemd's `DriveLocomotionClass::Do_Turn` on the body PrimaryFacing, whose
+/// turn duration is `abs(delta_8bit) / ROT` binary frames (frame-count based,
+/// NOT millisecond based). `ROT = 0` means instant snap. Infantry are excluded
+/// by the caller (they always turn instantly without this function).
+///
+/// `facing` stays the authoritative rendered/logic heading; each tick it is
+/// refreshed from the interpolator's current value (top byte of the 16-bit
+/// facing). `body_facing` holds the interpolator and lives only while a turn is
+/// in progress — it is cleared as soon as there is no active rotation.
 ///
 /// Takes individual fields to avoid borrow conflicts with `entity.movement_target`.
 pub(super) fn handle_vehicle_rotation(
     facing: &mut u8,
     facing_target: &mut Option<u8>,
+    body_facing: &mut Option<super::facing_class::FacingClass>,
     position: &mut Position,
     locomotor: &mut Option<LocomotorState>,
     rot: i32,
-    tick_ms: u32,
+    binary_frame: u32,
     sim_tick: u64,
 ) -> RotationResult {
     let Some(target_facing) = *facing_target else {
+        // No in-place rotation in progress — drop any stale interpolator so the
+        // next turn starts fresh from the then-current heading.
+        *body_facing = None;
         return RotationResult::ReadyToMove;
     };
-    if rot > 0 {
-        let max_delta: u8 = rot_to_facing_delta(rot, tick_ms);
-        let diff: i16 = shortest_rotation(*facing, target_facing);
-        if diff.unsigned_abs() <= max_delta as u16 {
-            // Close enough — snap to exact facing and start moving.
-            *facing = target_facing;
-            *facing_target = None;
-            RotationResult::ReadyToMove
-        } else {
-            // Still rotating — advance facing but don't move.
-            if diff > 0 {
-                *facing = facing.wrapping_add(max_delta);
-            } else {
-                *facing = facing.wrapping_sub(max_delta);
-            }
-            // Update screen position (entity stays in place but facing changed).
-            position.refresh_screen_coords();
-            // Skip lepton advancement — still rotating in place.
-            let mut debug_events = Vec::new();
-            if let Some(loco) = locomotor {
-                let old_phase = loco.phase;
-                loco.phase = GroundMovePhase::Accelerating;
-                if old_phase != GroundMovePhase::Accelerating {
-                    debug_events.push((
-                        sim_tick as u32,
-                        DebugEventKind::PhaseChange {
-                            from: format!("{:?}", old_phase),
-                            to: "Accelerating".into(),
-                            reason: "movement started".into(),
-                        },
-                    ));
-                }
-            }
-            RotationResult::StillRotating { debug_events }
-        }
-    } else {
+    if rot <= 0 {
         // ROT=0 — instant turn, no gradual rotation.
         *facing = target_facing;
         *facing_target = None;
+        *body_facing = None;
+        return RotationResult::ReadyToMove;
+    }
+
+    // Rules ROT drives the hull FacingClass. `set` is a no-op once already aimed
+    // at the target, so calling it each tick is safe and yields smooth retargets
+    // (it snapshots the live animated value into the rotation origin).
+    let rot_byte = rot.min(0x7F) as u8;
+    let bf = body_facing.get_or_insert_with(|| {
+        super::facing_class::FacingClass::new((*facing as u16) << 8, rot_byte)
+    });
+    bf.set((target_facing as u16) << 8, binary_frame);
+    *facing = (bf.current(binary_frame) >> 8) as u8;
+
+    if bf.is_rotating(binary_frame) {
+        // Still rotating in place — advance facing but don't move.
+        position.refresh_screen_coords();
+        let mut debug_events = Vec::new();
+        if let Some(loco) = locomotor {
+            let old_phase = loco.phase;
+            loco.phase = GroundMovePhase::Accelerating;
+            if old_phase != GroundMovePhase::Accelerating {
+                debug_events.push((
+                    sim_tick as u32,
+                    DebugEventKind::PhaseChange {
+                        from: format!("{:?}", old_phase),
+                        to: "Accelerating".into(),
+                        reason: "movement started".into(),
+                    },
+                ));
+            }
+        }
+        RotationResult::StillRotating { debug_events }
+    } else {
+        // Rotation complete — snap to the exact target and start moving.
+        *facing = target_facing;
+        *facing_target = None;
+        *body_facing = None;
         RotationResult::ReadyToMove
     }
 }
@@ -296,6 +368,74 @@ mod tests {
     use super::*;
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::movement::locomotor::LocomotorState;
+
+    /// Body/hull in-place turn duration = abs(delta_8bit) / ROT binary frames
+    /// (gamemd DriveLocomotionClass::Do_Turn on the hull FacingClass at the
+    /// unit's rules ROT). Verified in
+    /// docs/research/BODY_FACING_DRIVE_LOCOMOTOR_ROT_GHIDRA_REPORT.md: for ROT=5
+    /// a 90° (0x40) turn is 12 frames and a 180° (0x80) turn is 25 frames — the
+    /// values gamemd produces, and the whole point of the frame-based model
+    /// (the old ms-integrated path was tick-rate-dependent and ~2× too fast).
+    #[test]
+    fn test_body_rotation_matches_native_frame_duration() {
+        // Drive the in-place rotation frame by frame, returning the binary-frame
+        // count at which it completes (ReadyToMove with the exact target reached).
+        fn frames_to_turn(from: u8, to: u8, rot: i32) -> u32 {
+            let mut facing = from;
+            let mut facing_target = Some(to);
+            let mut body_facing = None;
+            let mut position = Position {
+                rx: 5,
+                ry: 5,
+                z: 0,
+                sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+                sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
+                screen_x: 0.0,
+                screen_y: 0.0,
+            };
+            let mut locomotor = None;
+            for frame in 0..1000u32 {
+                match handle_vehicle_rotation(
+                    &mut facing,
+                    &mut facing_target,
+                    &mut body_facing,
+                    &mut position,
+                    &mut locomotor,
+                    rot,
+                    frame,
+                    0,
+                ) {
+                    RotationResult::ReadyToMove => {
+                        assert_eq!(facing, to, "rotation must land exactly on the target");
+                        assert!(body_facing.is_none(), "interpolator cleared on completion");
+                        return frame;
+                    }
+                    RotationResult::StillRotating { .. } => {}
+                }
+            }
+            panic!("rotation did not complete within 1000 frames");
+        }
+
+        // ROT=5 (MTNK/AMCV/HTNK/…): 0x40 = 16384/1280 = 12 frames; 0x80 = 25.
+        assert_eq!(
+            frames_to_turn(0x00, 0x40, 5),
+            12,
+            "90° at ROT=5 = 12 frames"
+        );
+        assert_eq!(
+            frames_to_turn(0x00, 0x80, 5),
+            25,
+            "180° at ROT=5 = 25 frames"
+        );
+        // Counter-clockwise 90° (shortest arc) is the same duration.
+        assert_eq!(
+            frames_to_turn(0x40, 0x00, 5),
+            12,
+            "CCW 90° at ROT=5 = 12 frames"
+        );
+        // ROT=0 snaps instantly (no gradual rotation).
+        assert_eq!(frames_to_turn(0x00, 0x40, 0), 0, "ROT=0 turns instantly");
+    }
 
     #[test]
     fn drive_track_completion_retries_new_track_with_residual_only() {

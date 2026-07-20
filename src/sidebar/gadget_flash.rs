@@ -186,19 +186,31 @@ impl SidebarGadgetState {
         let flash = &self.tab_flashes[tab_index];
         let disabled = self.tab_disabled[tab_index];
         // Pressed-look = flash pulse OR live press-hold (study G22).
-        let state = if self.tab_pressed[tab_index] { 1 } else { flash.state };
+        let state = if self.tab_pressed[tab_index] {
+            1
+        } else {
+            flash.state
+        };
         frame_select(disabled, is_active_tab, state)
     }
 
     /// Frame index for the Repair button. Repair has no flash AI — the state
     /// bit is the live press-hold; "stays pressed" comes from `mode_active`.
     pub fn repair_frame(&self) -> u8 {
-        frame_select(self.repair_disabled, self.repair_mode_on, u8::from(self.repair_pressed))
+        frame_select(
+            self.repair_disabled,
+            self.repair_mode_on,
+            u8::from(self.repair_pressed),
+        )
     }
 
     /// Frame index for the Sell button. Same logic as `repair_frame`.
     pub fn sell_frame(&self) -> u8 {
-        frame_select(self.sell_disabled, self.sell_mode_on, u8::from(self.sell_pressed))
+        frame_select(
+            self.sell_disabled,
+            self.sell_mode_on,
+            u8::from(self.sell_pressed),
+        )
     }
 
     /// Frame index for the strip scroll-down (+page) button. No mode bit, no

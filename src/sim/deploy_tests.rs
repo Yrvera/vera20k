@@ -177,8 +177,8 @@ Foundation=2x2
 fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry: u16) -> u64 {
     let owner_id = sim.interner.intern(owner);
     let type_id = sim.interner.intern(type_str);
-    let id = sim.substrate.next_stable_entity_id;
-    sim.substrate.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_object_id;
+    sim.substrate.next_stable_object_id += 1;
     let e = GameEntity::new(
         id,
         rx,
@@ -312,14 +312,18 @@ fn deploy_mcv_uses_gamemd_large_foundation_origin_offset() {
     // Deferred-delete: apply_command enqueues the consumed MCV; the end-of-tick P9
     // flush (here invoked directly) frees it. Until then it lingers resolvable-Dying.
     sim.flush_pending_delete();
-    assert!(sim.substrate.entities.get(mcv).is_none(), "MCV should be consumed");
+    assert!(
+        sim.substrate.entities.get(mcv).is_none(),
+        "MCV should be consumed"
+    );
 
     let gacnst_id = sim
         .interner
         .get("GACNST")
         .expect("GACNST should be interned after deploy");
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .values()
             .any(|e| { e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21 })
     );
@@ -350,14 +354,18 @@ fn deploy_mcv_accepts_mixed_height_clear_foundation() {
     // Deferred-delete: apply_command enqueues the consumed MCV; the end-of-tick P9
     // flush (here invoked directly) frees it. Until then it lingers resolvable-Dying.
     sim.flush_pending_delete();
-    assert!(sim.substrate.entities.get(mcv).is_none(), "MCV should be consumed");
+    assert!(
+        sim.substrate.entities.get(mcv).is_none(),
+        "MCV should be consumed"
+    );
 
     let gacnst_id = sim
         .interner
         .get("GACNST")
         .expect("GACNST should be interned after deploy");
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .values()
             .any(|e| { e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21 }),
         "Construction Yard should spawn at gamemd's deploy foundation origin"
@@ -388,8 +396,14 @@ fn deploy_mcv_rejects_structure_in_rightmost_foundation_column() {
         !applied,
         "structure in the deployed foundation footprint must block MCV deploy"
     );
-    assert!(sim.substrate.entities.get(mcv).is_some(), "MCV should remain");
-    assert!(sim.substrate.entities.get(blocker).is_some(), "blocker should remain");
+    assert!(
+        sim.substrate.entities.get(mcv).is_some(),
+        "MCV should remain"
+    );
+    assert!(
+        sim.substrate.entities.get(blocker).is_some(),
+        "blocker should remain"
+    );
     let americans = sim.interner.intern("Americans");
     assert!(
         sim.sound_events.iter().any(|event| {
@@ -400,7 +414,10 @@ fn deploy_mcv_rejects_structure_in_rightmost_foundation_column() {
 
     if let Some(gacnst_id) = sim.interner.get("GACNST") {
         assert!(
-            !sim.substrate.entities.values().any(|e| e.type_ref == gacnst_id),
+            !sim.substrate
+                .entities
+                .values()
+                .any(|e| e.type_ref == gacnst_id),
             "blocked deploy must not spawn a Construction Yard"
         );
     }
@@ -425,14 +442,16 @@ fn deploy_mcv_waits_for_target_building_deploy_facing() {
     );
     assert!(applied, "misfaced deploy starts the facing turn");
     let entity = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(mcv)
         .expect("MCV should remain while turning");
     assert_eq!(entity.facing, 0x80);
     assert_eq!(entity.facing_target, Some(0x80));
     assert!(
         sim.interner.get("GACNST").map_or(true, |yard| !sim
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .any(|e| e.type_ref == yard)),
         "facing gate must run before ConYard creation"
@@ -477,7 +496,8 @@ DeployFacing=2
     ));
 
     let entity = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(mcv)
         .expect("MCV should remain while turning");
     assert_eq!(entity.facing, 0x40);
@@ -583,7 +603,14 @@ fn conyard_redeploy_runtime_rejects_when_mcv_redeploy_disabled() {
     );
 
     assert!(!applied);
-    assert!(sim.substrate.entities.get(yard).unwrap().building_down.is_none());
+    assert!(
+        sim.substrate
+            .entities
+            .get(yard)
+            .unwrap()
+            .building_down
+            .is_none()
+    );
 }
 
 #[test]
@@ -605,7 +632,14 @@ fn conyard_redeploy_runtime_rejects_non_human_owner() {
     );
 
     assert!(!applied);
-    assert!(sim.substrate.entities.get(yard).unwrap().building_down.is_none());
+    assert!(
+        sim.substrate
+            .entities
+            .get(yard)
+            .unwrap()
+            .building_down
+            .is_none()
+    );
 }
 
 #[test]
@@ -983,7 +1017,14 @@ fn deploy_sound_emits_alongside_state_write() {
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 25, 30);
 
-    assert!(sim.substrate.entities.get(gi).unwrap().deploy_state.is_none());
+    assert!(
+        sim.substrate
+            .entities
+            .get(gi)
+            .unwrap()
+            .deploy_state
+            .is_none()
+    );
     let events_before = sim.sound_events.len();
 
     let applied = apply(
@@ -1095,7 +1136,14 @@ fn non_deploy_fire_infantry_no_op() {
         },
         &rules,
     );
-    assert!(sim.substrate.entities.get(conscript).unwrap().deploy_state.is_none());
+    assert!(
+        sim.substrate
+            .entities
+            .get(conscript)
+            .unwrap()
+            .deploy_state
+            .is_none()
+    );
 }
 
 #[test]
@@ -1166,7 +1214,8 @@ fn combat_fires_during_deployed_attack() {
             fire_frame: 2,
         }),
     });
-    sim.substrate.entities.get_mut(gi).unwrap().animation = Some(Animation::new(SequenceKind::Deployed));
+    sim.substrate.entities.get_mut(gi).unwrap().animation =
+        Some(Animation::new(SequenceKind::Deployed));
 
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     let mut set = SequenceSet::new();
@@ -1198,7 +1247,8 @@ fn combat_fires_during_deployed_attack() {
 
     let _ = tick_animations(&mut sim.substrate.entities, &sequences, 22, &sim.interner);
     assert_eq!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(gi)
             .unwrap()
             .animation

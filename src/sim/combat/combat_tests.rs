@@ -1819,6 +1819,111 @@ fn wall_destruction_routes_through_uninit_no_leak() {
     );
 }
 
+#[test]
+fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
+    // A `Crusher=yes` drive vehicle standing on a wall cell after ground movement
+    // flattens the wall (gamemd movement-side PerCellProcess crush), taking no
+    // damage itself; a non-crusher on the same cell leaves the wall intact.
+    // GAWALL is both a BuildingType (Wall=yes ObjectType) and an OverlayType;
+    // BFRT is a Crusher drive vehicle, MTNK a plain drive vehicle.
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n0=BFRT\n1=MTNK\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n0=GAWALL\n\
+         [OverlayTypes]\n0=GASAND\n1=CYCL\n2=GAWALL\n\
+         [GAWALL]\nStrength=400\nArmor=concrete\nWall=yes\nDamageLevels=4\n\
+         [BFRT]\nCrusher=yes\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n\
+         [MTNK]\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("rules parse");
+    let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+    // Build a sim with a GAWALL (overlay + active wall entity) at (5,5) and one
+    // vehicle of `veh_type` placed on that same cell, its crusher flag +
+    // locomotor derived from the real ObjectType.
+    let build = |veh_type: &str| -> Simulation {
+        let mut sim = Simulation::new();
+        let mut grid = OverlayGrid::new(10, 10);
+        grid.place_overlay(5, 5, 2, 0); // GAWALL overlay_id=2
+        sim.overlay_grid = Some(grid);
+
+        let owner_id = sim.interner.intern("Test");
+        let wall_type = sim.interner.intern("GAWALL");
+        let mut wall = GameEntity::test_default(1, "GAWALL", "Test", 5, 5);
+        wall.owner = owner_id;
+        wall.type_ref = wall_type;
+        wall.category = EntityCategory::Structure;
+        wall.health = Health {
+            current: 400,
+            max: 400,
+        };
+        sim.unlimbo(wall);
+
+        let obj = rules.object(veh_type).expect("veh object");
+        let veh_type_id = sim.interner.intern(veh_type);
+        let mut veh = GameEntity::test_default(2, veh_type, "Test", 5, 5);
+        veh.owner = owner_id;
+        veh.type_ref = veh_type_id;
+        veh.regular_crusher = obj.crusher;
+        veh.omni_crusher = obj.omni_crusher;
+        veh.locomotor =
+            Some(crate::sim::movement::locomotor::LocomotorState::from_object_type(obj, 0));
+        veh.health = Health {
+            current: 300,
+            max: 300,
+        };
+        sim.substrate.entities.insert(veh);
+        sim.substrate.entities.rebuild_owner_index();
+        sim
+    };
+
+    let wall_present = |sim: &Simulation| -> bool {
+        sim.overlay_grid
+            .as_ref()
+            .unwrap()
+            .cell(5, 5)
+            .overlay_id
+            .is_some()
+    };
+
+    // Crusher (BFRT): wall destroyed, crusher unharmed, wall entity despawned.
+    let mut sim = build("BFRT");
+    sim.apply_wall_crush_on_driveover(Some(&rules), Some(&registry));
+    sim.flush_pending_delete();
+    assert!(
+        !wall_present(&sim),
+        "crusher drive-over must remove the wall overlay"
+    );
+    assert!(
+        sim.substrate
+            .entities
+            .get(2)
+            .is_some_and(|e| e.health.current == 300),
+        "crusher takes no damage from crushing the wall"
+    );
+    let walls_left = sim
+        .substrate
+        .entities
+        .iter_sorted()
+        .filter(|(_, e)| {
+            rules
+                .object(sim.interner.resolve(e.type_ref))
+                .is_some_and(|o| o.wall)
+        })
+        .count();
+    assert_eq!(walls_left, 0, "wall entity despawned after crush");
+
+    // Non-crusher (MTNK): wall stays intact.
+    let mut sim = build("MTNK");
+    sim.apply_wall_crush_on_driveover(Some(&rules), Some(&registry));
+    sim.flush_pending_delete();
+    assert!(
+        wall_present(&sim),
+        "a non-crusher drive vehicle must not remove the wall"
+    );
+}
+
 /// Build a Simulation with a row of GAWALL at `(rx_range, ry)`. Each cell gets
 /// both an OverlayCell entry and a matching wall GameEntity.
 fn build_minimal_sim_with_gawall_row(
@@ -2720,4 +2825,81 @@ fn deployed_desolator_self_irradiates_and_refires_below_third() {
     assert_eq!(result.fire_events.len(), 1, "gate reopens below one third");
     let site = sim.radiation.site_at((10, 10)).expect("merged site");
     assert!(site.level > 500, "re-detonation merged effective + added");
+}
+
+#[test]
+fn under_attack_events_fire_for_enemy_hit_structures_and_miners_only() {
+    // The Phase-4 damage-apply producer: an enemy-damaged Structure emits a
+    // base ping, an enemy-damaged harvester a miner ping; same-owner damage
+    // and plain-unit victims emit nothing.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\n\
+         [VehicleTypes]\n0=HARV\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n0=CAGAS\n\n\
+         [CAGAS]\nStrength=800\nArmor=wood\n\n\
+         [HARV]\nStrength=1000\nArmor=heavy\nSpeed=4\nHarvester=yes\n\n\
+         [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
+         [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
+         [SA]\nVerses=100%,100%,100%,90%,70%,25%,100%,25%,25%,0%,0%\n",
+    ))
+    .expect("rules parse");
+
+    let run_attack = |victim: GameEntity| -> CombatTickResult {
+        let mut store = EntityStore::new();
+        store.insert(victim);
+        let mut attacker = make_infantry_entity(1, "E1", 5, 5, 125);
+        attacker.owner = test_intern("Attacker");
+        store.insert(attacker);
+        let mut interner = test_interner();
+        issue_attack_command(&mut store, 1, 10, None, &interner);
+        tick_combat(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            &mut BTreeMap::new(),
+            0,
+            100,
+            0,
+        )
+    };
+
+    // Enemy-owned Structure → one base ping for the VICTIM's owner.
+    let mut building = make_entity_owned(10, "CAGAS", 8, 5, 800, "Defender");
+    building.category = EntityCategory::Structure;
+    let result = run_attack(building);
+    assert_eq!(result.under_attack_events.len(), 1, "structure hit pings");
+    let ev = &result.under_attack_events[0];
+    assert!(!ev.miner);
+    assert_eq!(ev.owner, test_intern("Defender"));
+    assert_eq!((ev.rx, ev.ry), (8, 5));
+
+    // Enemy-owned harvester (Miner component) → miner ping.
+    let mut harv = make_entity_owned(10, "HARV", 8, 5, 1000, "Defender");
+    harv.miner = Some(crate::sim::miner::Miner::new(
+        crate::sim::miner::MinerKind::War,
+        &crate::sim::miner::MinerConfig::default(),
+        7,
+    ));
+    let result = run_attack(harv);
+    assert_eq!(result.under_attack_events.len(), 1, "harvester hit pings");
+    assert!(result.under_attack_events[0].miner);
+
+    // SAME-owner structure damage → no ping (owner-differs hostility gate).
+    let mut friendly = make_entity_owned(10, "CAGAS", 8, 5, 800, "Attacker");
+    friendly.category = EntityCategory::Structure;
+    let result = run_attack(friendly);
+    assert!(
+        result.under_attack_events.is_empty(),
+        "same-owner damage never pings"
+    );
+
+    // Enemy plain unit (no miner, not a structure) → no ping.
+    let plain = make_entity_owned(10, "HARV", 8, 5, 1000, "Defender");
+    let result = run_attack(plain);
+    assert!(
+        result.under_attack_events.is_empty(),
+        "plain unit hits do not ping"
+    );
 }

@@ -41,6 +41,7 @@ fn test_map_entry_with_starts(name: &str, start_count: usize) -> MapMenuEntry {
                 ry: idx as u16,
             })
             .collect(),
+        player_capacity: i32::try_from(start_count).expect("test capacity fits i32"),
         preview_source_bounds: None,
     }
 }
@@ -1017,7 +1018,7 @@ fn default_shell_tracks_native_slot_count() {
     assert_eq!(shell.opponents.len(), SKIRMISH_AI_SLOT_COUNT);
     assert_eq!(shell.opponents.iter().filter(|o| o.is_active()).count(), 1);
     assert_eq!(shell.player_team, -2);
-    assert_eq!(shell.opponents[0].team, -2);
+    assert_eq!(shell.opponents[0].team, 3);
 }
 
 #[test]
@@ -1215,6 +1216,25 @@ fn launch_session_rejects_map_capacity_overflow() {
 }
 
 #[test]
+fn raw_pack_skips_start_only_validation_for_back_transaction() {
+    let mut shell = SkirmishShellState::default();
+    for opponent in &mut shell.opponents {
+        opponent.row_type = SkirmishAiRowType::None;
+    }
+    let maps = [test_map_entry_with_starts("one-player.mmx", 1)];
+    let modes = stock_skirmish_modes();
+
+    assert_eq!(
+        launch_session(&shell, &maps, &modes).unwrap_err(),
+        LaunchValidationError::NoEnabledOpponent
+    );
+    let packed = pack_launch_session_without_start_validation(&shell, &maps, &modes)
+        .expect("Back must pack controls without Start-only gates");
+    assert!(packed.opponents.is_empty());
+    assert_eq!(packed.selected_map_file.as_deref(), Some("one-player.mmx"));
+}
+
+#[test]
 fn launch_session_rejects_no_active_opponents() {
     let mut shell = SkirmishShellState::default();
     for opponent in &mut shell.opponents {
@@ -1360,6 +1380,117 @@ fn default_inactive_ai_rows_use_native_combo_defaults() {
 }
 
 #[test]
+fn accepted_map_shrink_resets_and_hides_complete_opponent_rows_atomically() {
+    let maps = [
+        test_map_entry_with_starts("eight.mmx", 8),
+        test_map_entry_with_starts("two.mmx", 2),
+    ];
+    let mut shell = SkirmishShellState::default();
+    shell.selected_map_idx = 0;
+    for opponent in shell.opponents.iter_mut().take(4) {
+        opponent.row_type = SkirmishAiRowType::Hard;
+        opponent.enabled = true;
+        opponent.country_random = false;
+        opponent.color_claimed = true;
+        opponent.start_position = StartPosition::Position(4);
+        opponent.team = 1;
+    }
+    shell.open_combo_dropdown = Some(OpenComboDropdown {
+        id: SkirmishComboId::Team(3),
+        top_index: 0,
+    });
+
+    assert!(accept_selected_map(&mut shell, &maps, 1));
+
+    assert_eq!(shell.selected_map_idx, 1);
+    assert!(player_row_visible(&shell, &maps, 1));
+    assert!(!player_row_visible(&shell, &maps, 2));
+    assert!(shell.opponents[0].is_active());
+    for opponent in shell.opponents.iter().skip(1) {
+        assert_eq!(opponent.row_type, SkirmishAiRowType::None);
+        assert!(!opponent.enabled);
+        assert!(opponent.country_random);
+        assert!(!opponent.color_claimed);
+        assert_eq!(opponent.start_position, StartPosition::Auto);
+        assert_eq!(opponent.team, 3);
+    }
+    assert!(shell.open_combo_dropdown.is_none());
+}
+
+#[test]
+fn accepted_map_growth_reveals_rows_without_reactivating_hidden_state() {
+    let maps = [
+        test_map_entry_with_starts("two.mmx", 2),
+        test_map_entry_with_starts("eight.mmx", 8),
+    ];
+    let mut shell = SkirmishShellState::default();
+    shell.selected_map_idx = 0;
+    initialize_rows_for_selected_map(&mut shell, &maps);
+
+    assert!(accept_selected_map(&mut shell, &maps, 1));
+
+    assert!(player_row_visible(&shell, &maps, 7));
+    assert!(
+        shell
+            .opponents
+            .iter()
+            .skip(1)
+            .all(|opponent| opponent.row_type == SkirmishAiRowType::None)
+    );
+}
+
+#[test]
+fn accepted_equal_capacity_map_does_not_rewrite_rows() {
+    let maps = [
+        test_map_entry_with_starts("first.mmx", 4),
+        test_map_entry_with_starts("second.mmx", 4),
+    ];
+    let mut shell = SkirmishShellState::default();
+    shell.opponents[2].row_type = SkirmishAiRowType::Normal;
+    shell.opponents[2].enabled = true;
+    shell.opponents[2].team = 2;
+
+    assert!(accept_selected_map(&mut shell, &maps, 1));
+
+    assert_eq!(shell.opponents[2].row_type, SkirmishAiRowType::Normal);
+    assert_eq!(shell.opponents[2].team, 2);
+}
+
+#[test]
+fn hidden_rows_are_excluded_from_combo_and_hover_input() {
+    let maps = [test_map_entry_with_starts("two.mmx", 2)];
+    let mut shell = SkirmishShellState::default();
+    initialize_rows_for_selected_map(&mut shell, &maps);
+    let layout = compute_layout(800, 600);
+    let hidden_ai_type = layout.rows.ai_type_combos[1];
+
+    assert!(!combo_enabled(&shell, &maps, SkirmishComboId::AiType(1)));
+    assert_eq!(
+        hovered_shell_control(&layout, &shell, &maps, hidden_ai_type.x, hidden_ai_type.y),
+        None
+    );
+}
+
+#[test]
+fn negative_native_capacity_hides_every_ai_row_without_eight_player_fallback() {
+    let mut map = test_map_entry_with_starts("negative.mmx", 0);
+    map.player_capacity = -2;
+    let maps = [map];
+    let mut shell = SkirmishShellState::default();
+
+    initialize_rows_for_selected_map(&mut shell, &maps);
+
+    assert!(player_row_visible(&shell, &maps, 0));
+    assert!(!player_row_visible(&shell, &maps, 1));
+    assert!(
+        shell
+            .opponents
+            .iter()
+            .all(|opponent| opponent.row_type == SkirmishAiRowType::None)
+    );
+}
+
+#[test]
 fn ai_type_none_applies_inactive_combo_defaults() {
     let mut shell = SkirmishShellState::default();
     shell.opponents[0].row_type = SkirmishAiRowType::Hard;
@@ -1408,7 +1539,7 @@ fn ai_type_none_uses_ffa_inactive_team_default() {
 }
 
 #[test]
-fn explicit_team_values_survive_mode_repair() {
+fn mode_refresh_reselects_native_local_and_ai_team_defaults() {
     let mut shell = SkirmishShellState {
         selected_mode_id: 9,
         player_team: 1,
@@ -1418,8 +1549,40 @@ fn explicit_team_values_survive_mode_repair() {
 
     repair_teams_for_selected_mode(&mut shell, &stock_skirmish_modes());
 
-    assert_eq!(shell.player_team, 1);
-    assert_eq!(shell.opponents[0].team, 2);
+    assert_eq!(shell.player_team, 0);
+    assert_eq!(shell.opponents[0].team, 3);
+
+    shell.selected_mode_id = 2;
+    shell.player_team = 2;
+    repair_teams_for_selected_mode(&mut shell, &stock_skirmish_modes());
+
+    assert_eq!(shell.player_team, -2);
+    assert_eq!(shell.opponents[0].team, -2);
+}
+
+#[test]
+fn ffa_mode_refresh_defaults_every_ai_team_to_none_without_disabling_team_combo() {
+    let mut shell = SkirmishShellState {
+        selected_mode_id: 2,
+        ..Default::default()
+    };
+    for opponent in &mut shell.opponents {
+        opponent.row_type = SkirmishAiRowType::Easy;
+        opponent.team = 1;
+    }
+    repair_teams_for_selected_mode(&mut shell, &stock_skirmish_modes());
+    let maps = [test_map_entry("ffa.yrm")];
+
+    assert!(shell.opponents.iter().all(|opponent| opponent.team == -2));
+    assert!(combo_enabled(&shell, &maps, SkirmishComboId::Team(1)));
+}
+
+#[test]
+fn battle_default_active_ai_starts_on_team_d() {
+    let shell = SkirmishShellState::default();
+
+    assert!(shell.opponents[0].is_active());
+    assert_eq!(shell.opponents[0].team, 3);
 }
 
 #[test]
@@ -2069,11 +2232,32 @@ fn color_filter_keeps_self_selection_visible_per_row() {
 }
 
 #[test]
-fn launch_session_uses_cached_color_index_when_claim_false() {
-    // After picking the sentinel, color_claimed goes false but color_index
-    // remains as the cached prior selection. launch_session must use that
-    // cached value — gamemd's late-binding random assignment is a separate
-    // concern (deferred follow-up).
+fn random_color_remains_the_selected_visible_sentinel() {
+    let mut shell = SkirmishShellState::default();
+    shell.player_color_index = 3;
+    shell.player_color_claimed = false;
+    shell.opponents[0].color_index = 6;
+    shell.opponents[0].color_claimed = false;
+    let maps = [test_map_entry("map.mmx")];
+
+    assert_eq!(
+        selected_combo_item(&shell, SkirmishComboId::Color(0)),
+        Some(SkirmishComboItem::ColorSentinel(-2))
+    );
+    assert_eq!(
+        selected_combo_item(&shell, SkirmishComboId::Color(1)),
+        Some(SkirmishComboItem::ColorSentinel(-2))
+    );
+    assert_eq!(
+        selected_combo_item_index(&shell, &maps, SkirmishComboId::Color(0)),
+        Some(0)
+    );
+}
+
+#[test]
+fn launch_session_carries_random_color_marker_and_cached_placeholder() {
+    // The shell retains its cached concrete index behind the visible sentinel;
+    // the launch copy carries both that placeholder and the raw Random marker.
     let mut shell = SkirmishShellState::default();
     shell.player_color_index = 3;
     shell.player_color_claimed = false;
@@ -2086,7 +2270,9 @@ fn launch_session_uses_cached_color_index_when_claim_false() {
     let session = launch_session(&shell, &maps, &modes).expect("session");
 
     assert_eq!(session.local.color_index, 3);
+    assert!(session.local.color_random);
     assert_eq!(session.opponents[0].color_index, 6);
+    assert!(session.opponents[0].color_random);
 }
 
 #[test]

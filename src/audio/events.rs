@@ -20,6 +20,23 @@
 /// A sound event produced by the game simulation or UI.
 #[derive(Debug, Clone)]
 pub enum GameSoundEvent {
+    /// Local player's base structure / harvester is under enemy attack — queue
+    /// the EVA voice (no spatial SFX; the radar diamond is sim-side).
+    UnderAttackEva { eva_sound_id: String },
+
+    /// Start/report sound owned by one authoritative animation object.
+    AnimationStarted {
+        anim_id: u64,
+        sound_id: String,
+        screen_pos: Option<(f32, f32)>,
+    },
+
+    /// Release one animation's active handle, then optionally play StopSound.
+    AnimationStopped {
+        anim_id: u64,
+        stop_sound_id: Option<String>,
+        screen_pos: Option<(f32, f32)>,
+    },
     /// A weapon fired — play the weapon's Report= sound.
     WeaponFired {
         /// sound.ini ID from the weapon's Report= field.
@@ -203,6 +220,7 @@ impl GameSoundEvent {
     pub fn sound_id(&self) -> &str {
         match self {
             Self::WeaponFired { sound_id, .. }
+            | Self::AnimationStarted { sound_id, .. }
             | Self::UnitSelected { sound_id }
             | Self::UnitMoveOrder { sound_id }
             | Self::UnitAttackOrder { sound_id }
@@ -224,6 +242,8 @@ impl GameSoundEvent {
             | Self::ChuteSound { sound_id, .. }
             | Self::BridgeRepaired { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
+            Self::AnimationStopped { stop_sound_id, .. } => stop_sound_id.as_deref().unwrap_or(""),
+            Self::UnderAttackEva { eva_sound_id } => eva_sound_id,
         }
     }
 
@@ -231,6 +251,8 @@ impl GameSoundEvent {
     pub fn screen_pos(&self) -> Option<(f32, f32)> {
         match self {
             Self::WeaponFired { screen_pos, .. } => *screen_pos,
+            Self::AnimationStarted { screen_pos, .. }
+            | Self::AnimationStopped { screen_pos, .. } => *screen_pos,
             Self::EntityDestroyed { screen_pos, .. } => *screen_pos,
             Self::EntityCrushed { screen_pos, .. } => *screen_pos,
             Self::EntityDeployed { screen_pos, .. } => *screen_pos,

@@ -95,11 +95,18 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// Re-baselined after MapGen became an independent fresh Seed(0) stream. The
 /// value was identical in two focused runs; this is a Rust regression ratchet,
 /// not a gamemd parity reference.
-/// Re-baselined again after the aircraft Mission_Guard RTB fix: a guarding
-/// aircraft with spent ammo and no target now returns to rearm (gamemd default
-/// ReturnFire mode) instead of hovering, shifting a harness aircraft's position
-/// state. FINAL_STREAM_STATES was unchanged (no RNG re-route); total-state only.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 6318917868157055929;
+/// The later aircraft-RTB rationale was invalid: this fixture contains no
+/// aircraft. A pristine `fafc0ba5` run reproduced the preceding
+/// `7340892273004731329` baseline, proving the committed replacement was captured
+/// from a contaminated worktree.
+/// Re-baselined for lockstep hash completeness: body-facing presence,
+/// damage-fire state/animation IDs, locomotor hover/altitude state, per-house
+/// difficulty, Spark state, and `AnimStore` now join the hash. A current-tree
+/// legacy-schema probe reproduced `7340892273004731329` exactly; record/replay
+/// tick equality and the absolute RNG pins also remained unchanged. This shift
+/// is therefore composition-only and remains a Rust regression ratchet, not
+/// gamemd parity evidence.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 1952953649455887606;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -371,9 +378,9 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
 
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,
-        "committed global-harness baseline. If this shifts for a real behavior \
-         reason, re-baseline once with a one-line documented reason. (paste this \
-         `left` value into GLOBAL_HARNESS_FINAL_HASH)"
+        "committed global-harness baseline drifted. Do not copy the observed value: \
+         first prove whether behavior, RNG routing, or intentional hash composition \
+         changed, and document reproducible baseline provenance"
     );
 }
 

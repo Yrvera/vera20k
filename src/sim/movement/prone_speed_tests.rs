@@ -95,6 +95,7 @@ fn advance_prone_mover(crawls: bool) -> SimFixed {
         &mut rng,
         1000,
         0,
+        0, // binary_frame (test)
         None,
         None,
         &TerrainSpeedConfig::default(),

@@ -20,9 +20,9 @@
 pub(crate) mod cell_spread;
 pub(crate) mod combat_aoe;
 pub(crate) mod combat_fire_gate;
-pub(crate) mod damage;
 pub(crate) mod combat_targeting;
 pub(crate) mod combat_weapon;
+pub(crate) mod damage;
 pub(crate) mod fire_decision;
 pub(crate) mod in_range;
 pub mod smudge_dispatch;
@@ -763,6 +763,22 @@ pub struct CombatTickResult {
     /// post-batch by `unit_post::apply_unit_facing`. Transient — never stored,
     /// serialized, or hashed.
     pub unit_facing: Vec<(u64, u16)>,
+    /// Base-structure / harvester enemy-damage pings produced at the damage
+    /// apply site. Drained by the world into BaseUnderAttack/MinerUnderAttack
+    /// radar events + the local player's EVA dispatch.
+    pub under_attack_events: Vec<UnderAttackEvent>,
+}
+
+/// A "your asset is being shot" ping: a Structure or harvester took damage
+/// from a different house this tick.
+#[derive(Debug, Clone, Copy)]
+pub struct UnderAttackEvent {
+    pub rx: u16,
+    pub ry: u16,
+    /// The VICTIM's owner — the player whose radar/EVA should react.
+    pub owner: InternedId,
+    /// True when the victim is a harvester (miner ping), else a base structure.
+    pub miner: bool,
 }
 
 /// Resolve an attack's impact z (tile-step level units, signed) for the
@@ -1263,6 +1279,7 @@ pub fn tick_combat_with_fog(
             explosion_effects: Vec::new(),
             smudge_spawn_requests: Vec::new(),
             unit_facing: Vec::new(),
+            under_attack_events: Vec::new(),
         };
     }
     // Pre-scan: collect entities blocked from firing by locomotor or power state.
@@ -1780,8 +1797,7 @@ pub fn tick_combat_with_fog(
         for &det in &rad_detonations {
             rad.apply_detonation(det, binary_frame, &rules.radiation, terrain);
         }
-        if !rad.is_empty()
-            && binary_frame.is_multiple_of(rules.radiation.application_delay as u32)
+        if !rad.is_empty() && binary_frame.is_multiple_of(rules.radiation.application_delay as u32)
         {
             if let Some(rad_warhead) = rules.warhead(&rules.radiation.site_warhead) {
                 let wh_iid = interner.intern(&rad_warhead.id);
@@ -1789,9 +1805,8 @@ pub fn tick_combat_with_fog(
                 // per-object AI would have applied this damage), stable-id
                 // fallback for entities absent from the live order.
                 let mut victim_ids: Vec<u64> = keys.clone();
-                victim_ids.sort_by_key(|&id| {
-                    (live_index.get(&id).copied().unwrap_or(usize::MAX), id)
-                });
+                victim_ids
+                    .sort_by_key(|&id| (live_index.get(&id).copied().unwrap_or(usize::MAX), id));
                 for &id in &victim_ids {
                     let Some(entity) = entities.get(id) else {
                         continue;
@@ -1830,8 +1845,11 @@ pub fn tick_combat_with_fog(
                         .object(interner.resolve(entity.type_ref))
                         .map(|o| o.armor.as_str())
                         .unwrap_or("none");
-                    let verses_pct =
-                        rad_warhead.verses.get(armor_index(armor)).copied().unwrap_or(100);
+                    let verses_pct = rad_warhead
+                        .verses
+                        .get(armor_index(armor))
+                        .copied()
+                        .unwrap_or(100);
                     let dmg = base * verses_pct as i32 / 100;
                     if dmg > 0 {
                         damage_events.push((
@@ -1848,7 +1866,15 @@ pub fn tick_combat_with_fog(
 
     // Phase 4: apply damage to targets and track last attacker for retaliation.
     let mut dead_entities: Vec<u64> = Vec::new();
+    let mut under_attack_events: Vec<UnderAttackEvent> = Vec::new();
     for (target_id, damage, attacker_id, _wh_id) in &damage_events {
+        // Attacker owner read before the target's mutable borrow. None for
+        // sourceless damage (radiation) or an already-despawned attacker.
+        let attacker_owner: Option<InternedId> = if *attacker_id != RAD_NO_ATTACKER {
+            entities.get(*attacker_id).map(|a| a.owner)
+        } else {
+            None
+        };
         if let Some(target) = entities.get_mut(*target_id) {
             if crate::sim::superweapon::invulnerability::is_invulnerable(
                 target.invulnerability.as_ref(),
@@ -1875,6 +1901,21 @@ pub fn tick_combat_with_fog(
             }
             if target.health.current == 0 {
                 dead_entities.push(*target_id);
+            }
+            // Under-attack ping: another house damaged a base structure or a
+            // harvester. Owner-differs is the hostility gate — alliances are
+            // not in scope in this pass; allied splash is rare and self-damage
+            // never pings, which matches the observable contract.
+            if *damage > 0 && attacker_owner.is_some_and(|ao| ao != target.owner) {
+                let miner = target.miner.is_some();
+                if miner || target.category == EntityCategory::Structure {
+                    under_attack_events.push(UnderAttackEvent {
+                        rx: target.position.rx,
+                        ry: target.position.ry,
+                        owner: target.owner,
+                        miner,
+                    });
+                }
             }
             // Sourceless damage (radiation field) never arms retaliation and
             // must not overwrite a real attacker recorded this tick.
@@ -1949,6 +1990,7 @@ pub fn tick_combat_with_fog(
         explosion_effects,
         smudge_spawn_requests,
         unit_facing,
+        under_attack_events,
     }
 }
 
@@ -2216,9 +2258,8 @@ pub(crate) fn resolve_attacker_fire(
         }
     }
 
-    let infantry_fire_sync = snap.category == EntityCategory::Infantry
-        && !is_garrison
-        && snap.animation_frame.is_some();
+    let infantry_fire_sync =
+        snap.category == EntityCategory::Infantry && !is_garrison && snap.animation_frame.is_some();
     let mut pending_at_fire_frame = false;
     if infantry_fire_sync {
         if let Some(pending) = snap.pending_infantry_fire {
@@ -2335,8 +2376,7 @@ pub(crate) fn resolve_attacker_fire(
         // Aligned iff destination matches AND no rotation in progress.
         // Both checks needed: destination may match while interpolation
         // is still mid-arc (animated value not yet at destination).
-        let aligned =
-            barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
+        let aligned = barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
         if !aligned {
             if pending_at_fire_frame {
                 out.pending_infantry_updates.push((snap.stable_id, None));
@@ -2403,7 +2443,8 @@ pub(crate) fn resolve_attacker_fire(
         );
         for (target_id, dmg) in aoe_hits {
             let wh_iid = interner.intern(&warhead.id);
-            out.damage_events.push((target_id, dmg, snap.stable_id, wh_iid));
+            out.damage_events
+                .push((target_id, dmg, snap.stable_id, wh_iid));
         }
         if warhead.wall && weapon.damage > 0 {
             let damage_u16 = weapon.damage.max(0) as u16;
@@ -2446,7 +2487,8 @@ pub(crate) fn resolve_attacker_fire(
         if actual_damage > 0 {
             if let TargetKind::Entity(target_id) = snap.target {
                 let wh_iid = interner.intern(&warhead.id);
-                out.damage_events.push((target_id, actual_damage, snap.stable_id, wh_iid));
+                out.damage_events
+                    .push((target_id, actual_damage, snap.stable_id, wh_iid));
             }
         }
         if warhead.wall && weapon.damage > 0 {
@@ -2492,12 +2534,13 @@ pub(crate) fn resolve_attacker_fire(
     // Radiation-emitting detonation: one site request per shot at the impact
     // cell. Spread is the warhead's CellSpread truncated to whole cells.
     if weapon.rad_level > 0 {
-        out.rad_detonations.push(crate::sim::radiation::RadDetonation {
-            rx: target_rx,
-            ry: target_ry,
-            rad_level: weapon.rad_level,
-            spread: warhead.cell_spread.to_num::<i32>(),
-        });
+        out.rad_detonations
+            .push(crate::sim::radiation::RadDetonation {
+                rx: target_rx,
+                ry: target_ry,
+                rad_level: weapon.rad_level,
+                spread: warhead.cell_spread.to_num::<i32>(),
+            });
     }
 
     // Cell-target force-fire on terrain has no entity z; the dispatcher
@@ -2572,7 +2615,8 @@ pub(crate) fn resolve_attacker_fire(
         snap.burst_remaining.saturating_sub(1)
     };
     if current_remaining > 0 {
-        out.burst_updates.push((snap.stable_id, current_remaining, BURST_INTER_SHOT_DELAY, 0));
+        out.burst_updates
+            .push((snap.stable_id, current_remaining, BURST_INTER_SHOT_DELAY, 0));
     } else {
         let mut rof_ticks = rof_to_cooldown_ticks(weapon.rof, tick_ms);
         // Garrison ROF: divide by occupant count, then by multiplier.

@@ -4,10 +4,10 @@
 //!   1. `replay_hash_stable_through_slice6` — the behavior-preserving gate. A
 //!      scripted skirmish drives every retasking command site (Move / Stop /
 //!      Attack / ForceAttack / ForceAttackCell / AttackMove) and asserts the
-//!      end-of-run `state_hash()` equals the pre-slice baseline. The verb API
-//!      writes `MissionCom` in parallel and `MissionCom` is unhashed in this
-//!      slice, so a hash drift means a wrong `DockTeardown` subset or a dropped
-//!      legacy-field clear — exactly what this gate exists to catch.
+//!      end-of-run `state_hash()` equals the committed baseline. At the slice's
+//!      introduction, this exposed wrong `DockTeardown` subsets and dropped
+//!      legacy-field clears. Later hash-schema changes require a separately
+//!      proven composition-only re-baseline.
 //!   2. The verb-write + retaliation-gate tripwires (added below the gate).
 
 use super::*;
@@ -41,7 +41,12 @@ fn slice6_rules() -> RuleSet {
     RuleSet::from_ini(&ini).expect("slice6 test rules should parse")
 }
 
-fn cmd_envelope(sim: &Simulation, owner: &str, execute_tick: u64, payload: Command) -> CommandEnvelope {
+fn cmd_envelope(
+    sim: &Simulation,
+    owner: &str,
+    execute_tick: u64,
+    payload: Command,
+) -> CommandEnvelope {
     let owner_id = sim
         .interner
         .get(owner)
@@ -88,7 +93,12 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// already folds MapGen and this fixture does not consume it, so this is the
 /// expected corrected initial-state delta, not Slice-6 retask drift. Two no-edit
 /// focused probes reproduced this exact value.
-const SLICE6_BASELINE_HASH: u64 = 10575654478637980762;
+/// Re-baselined for lockstep hash completeness: body-facing presence, damage-fire
+/// state/animation IDs, locomotor hover/altitude state, and the empty `AnimStore`
+/// marker now join the hash. A current-tree legacy-schema probe reproduced the
+/// prior `10575654478637980762` value exactly, proving this shift is composition
+/// only rather than retask behavior drift.
+const SLICE6_BASELINE_HASH: u64 = 17461624628486653208;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -166,9 +176,9 @@ fn replay_hash_stable_through_slice6() {
     let hash = sim.state_hash();
     assert_eq!(
         hash, SLICE6_BASELINE_HASH,
-        "Slice 6 is behavior-preserving: the scripted-retask state hash must equal \
-         the pre-slice baseline. A drift means a wrong DockTeardown subset or a \
-         dropped legacy-field clear. (paste this `left` value into SLICE6_BASELINE_HASH)"
+        "Slice 6 scripted-retask state hash drifted. Treat this as behavior drift \
+         unless a documented legacy-schema or equivalent provenance check proves \
+         that an intentional hash-composition change is solely responsible"
     );
 }
 
@@ -217,7 +227,10 @@ fn slice6_move_command_retasks_via_mission_substrate_and_clears_state() {
         MissionType::Move,
         "verb API committed Move to the mission substrate (pre-refresh)"
     );
-    assert!(e.attack_target.is_none(), "Move tore down the attack target");
+    assert!(
+        e.attack_target.is_none(),
+        "Move tore down the attack target"
+    );
     assert!(e.order_intent.is_none(), "Move tore down the order intent");
 }
 
@@ -251,7 +264,12 @@ fn slice6_retaliation_still_suppressed_for_guarding_unit() {
 
     crate::sim::combat::tick_retaliation(&mut sim.substrate.entities, &rules, &sim.interner, &[1]);
     assert!(
-        sim.substrate.entities.get(1).unwrap().attack_target.is_none(),
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .attack_target
+            .is_none(),
         "a guarding unit (order_intent = Guard) must NOT retaliate — the literal \
          order_intent gate suppresses it"
     );
@@ -266,7 +284,12 @@ fn slice6_retaliation_still_suppressed_for_guarding_unit() {
     sim.substrate.entities.get_mut(1).unwrap().order_intent = None;
     crate::sim::combat::tick_retaliation(&mut sim.substrate.entities, &rules, &sim.interner, &[1]);
     assert!(
-        sim.substrate.entities.get(1).unwrap().attack_target.is_some(),
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .attack_target
+            .is_some(),
         "with no order intent the unit retaliates (gate no longer suppresses)"
     );
 }

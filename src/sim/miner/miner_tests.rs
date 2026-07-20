@@ -135,9 +135,9 @@ fn spawn_miner(sim: &mut Simulation, sid: u64, kind: MinerKind, rx: u16, ry: u16
     }
     ge.miner = Some(Miner::new(kind, &MinerConfig::default(), 0));
     sim.substrate.entities.insert(ge);
-    // Update next_stable_entity_id if needed so allocate_stable_entity_id doesn't collide.
-    if sim.substrate.next_stable_entity_id <= sid {
-        sim.substrate.next_stable_entity_id = sid + 1;
+    // Update the shared object allocator if needed so test IDs do not collide.
+    if sim.substrate.next_stable_object_id <= sid {
+        sim.substrate.next_stable_object_id = sid + 1;
     }
     sid
 }
@@ -165,8 +165,8 @@ fn spawn_refinery(sim: &mut Simulation, sid: u64, rx: u16, ry: u16) {
     );
     sim.substrate.entities.insert(ge);
     occupy_structure_cells(sim, sid, rx, ry, 4, 3);
-    if sim.substrate.next_stable_entity_id <= sid {
-        sim.substrate.next_stable_entity_id = sid + 1;
+    if sim.substrate.next_stable_object_id <= sid {
+        sim.substrate.next_stable_object_id = sid + 1;
     }
 }
 
@@ -203,8 +203,8 @@ fn spawn_structure_owned(
     );
     sim.substrate.entities.insert(ge);
     occupy_structure_cells(sim, sid, rx, ry, 1, 1);
-    if sim.substrate.next_stable_entity_id <= sid {
-        sim.substrate.next_stable_entity_id = sid + 1;
+    if sim.substrate.next_stable_object_id <= sid {
+        sim.substrate.next_stable_object_id = sid + 1;
     }
 }
 
@@ -282,7 +282,8 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
 
 /// Read the Miner component from an entity by stable_id.
 fn get_miner(sim: &Simulation, entity_id: u64) -> Miner {
-    sim.substrate.entities
+    sim.substrate
+        .entities
         .get(entity_id)
         .and_then(|e| e.miner.as_ref())
         .cloned()
@@ -304,7 +305,11 @@ fn war_miner_full_ore_payout_is_1000() {
 
     // Pre-load cargo: 40 ore bales.
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..40 {
             miner.cargo.push(CargoBale {
@@ -338,7 +343,11 @@ fn war_miner_full_gem_payout_is_2000() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..40 {
             miner.cargo.push(CargoBale {
@@ -369,7 +378,11 @@ fn chrono_miner_full_ore_payout_is_500() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..20 {
             miner.cargo.push(CargoBale {
@@ -401,7 +414,11 @@ fn chrono_miner_full_gem_payout_is_1000() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..20 {
             miner.cargo.push(CargoBale {
@@ -436,7 +453,11 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -507,7 +528,11 @@ fn chrono_far_return_uses_passable_search_from_queueing_cell() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -539,7 +564,11 @@ fn war_miner_does_not_teleport() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -550,7 +579,12 @@ fn war_miner_does_not_teleport() {
 
     tick_miners_n(&mut sim, &rules, 1);
 
-    let pos = &sim.substrate.entities.get(miner_id).expect("entity").position;
+    let pos = &sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .expect("entity")
+        .position;
     // War miner should NOT have teleported — still at (30, 30).
     assert_eq!((pos.rx, pos.ry), (30, 30), "War Miner should not teleport");
 }
@@ -571,7 +605,11 @@ fn return_close_enough_to_refinery_enters_dock() {
     spawn_refinery(&mut sim, 99, 85, 180);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..20 {
             miner.cargo.push(CargoBale {
@@ -602,7 +640,11 @@ fn chrono_return_close_enough_enters_radio_dock_without_can_dock_move() {
     spawn_refinery(&mut sim, 99, 85, 180);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..20 {
             miner.cargo.push(CargoBale {
@@ -658,7 +700,11 @@ fn chrono_return_exact_dock_cell_enters_dock() {
     spawn_refinery(&mut sim, 99, 85, 180);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -688,7 +734,11 @@ fn dock_queuing_one_at_a_time() {
 
     // Pre-load both with cargo, put in Dock Approach state (poll-and-link).
     for entity_id in [m1, m2] {
-        let entity = sim.substrate.entities.get_mut(entity_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(entity_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -740,8 +790,7 @@ fn dock_queuing_one_at_a_time() {
     // V3: no stored wait-queue. m2 is denied — absent from the refinery's radio
     // contacts — and re-probes HELLO each tick (dock_queued stays set).
     assert!(
-        !sim
-            .substrate
+        !sim.substrate
             .entities
             .get(2)
             .expect("refinery")
@@ -768,7 +817,11 @@ fn approach_re_hello_gated_to_one_per_harvest_window() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     for entity_id in [m1, m2] {
-        let entity = sim.substrate.entities.get_mut(entity_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(entity_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -825,7 +878,11 @@ fn accepted_hello_arms_enter_cadence_not_always_due() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -887,9 +944,15 @@ fn enter_dock_0x18_gated_to_due_dispatch_not_per_arrived_tick() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
-    sim.production.dock_reservations.mark_contact_entered(2, miner_id);
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, miner_id);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.movement_target = None; // arrived
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
@@ -903,12 +966,20 @@ fn enter_dock_0x18_gated_to_due_dispatch_not_per_arrived_tick() {
         miner.dock_enter_retry.arm(sim.session.binary_frame, 14);
     }
     // Clear the radio-entered flag so any spurious 0x18 re-send is observable.
-    sim.substrate.entities.get_mut(miner_id).expect("entity").dock_entered_with = None;
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("entity")
+        .dock_entered_with = None;
 
     // A not-due arrived tick must NOT re-send EnterDock.
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
     assert_eq!(
-        sim.substrate.entities.get(miner_id).expect("entity").dock_entered_with,
+        sim.substrate
+            .entities
+            .get(miner_id)
+            .expect("entity")
+            .dock_entered_with,
         None,
         "L20: EnterDock(0x18) must not fire on a non-due arrived tick"
     );
@@ -922,7 +993,11 @@ fn enter_dock_0x18_gated_to_due_dispatch_not_per_arrived_tick() {
     sim.session.binary_frame += 15;
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
     assert_eq!(
-        sim.substrate.entities.get(miner_id).expect("entity").dock_entered_with,
+        sim.substrate
+            .entities
+            .get(miner_id)
+            .expect("entity")
+            .dock_entered_with,
         Some(2),
         "L20: the due Enter dispatch sends EnterDock(0x18)"
     );
@@ -945,9 +1020,15 @@ fn accepted_face_sync_handoff_draws_one_scenario_rng() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
-    sim.production.dock_reservations.mark_contact_entered(2, miner_id);
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, miner_id);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.movement_target = None;
         entity.facing = 0x40; // East → sync_dock_facing accepts on the first pass
         let miner = entity.miner.as_mut().expect("miner component");
@@ -995,7 +1076,11 @@ fn state_four_exit_draws_and_applies_resume_jitter() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Departing;
@@ -1057,7 +1142,11 @@ fn credits_arrive_per_slot_during_unload() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..10 {
             miner.cargo.push(CargoBale {
@@ -1089,7 +1178,11 @@ fn credits_arrive_per_slot_during_unload() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..10 {
             miner.cargo.push(CargoBale {
@@ -1149,7 +1242,11 @@ fn local_continuation_after_cell_depletes() {
 
     // Put miner in Harvest state at its position.
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
@@ -1375,7 +1472,11 @@ fn home_refinery_rebinds_after_unload() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -1410,7 +1511,11 @@ fn forced_return_chrono_teleports() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::ForcedReturn;
         miner.forced_return = true;
@@ -1443,7 +1548,11 @@ fn chrono_return_within_too_far_threshold_uses_close_radio_path() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -1494,7 +1603,11 @@ fn chrono_return_at_exact_too_far_threshold_uses_close_radio_path() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 60, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -1527,7 +1640,11 @@ fn chrono_return_over_too_far_threshold_uses_queueingcell_teleport() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 61, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -1564,7 +1681,11 @@ fn chrono_close_hello_refused_stages_at_queueingcell_without_receiver_eviction()
     assert!(sim.production.dock_reservations.try_reserve(2, occupant));
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -1583,8 +1704,7 @@ fn chrono_close_hello_refused_stages_at_queueingcell_without_receiver_eviction()
         "refused HELLO must not evict or replace the receiver-side contact"
     );
     assert!(
-        !sim
-            .substrate
+        !sim.substrate
             .entities
             .get(2)
             .expect("refinery")
@@ -1619,7 +1739,11 @@ fn cmin_close_hello_success_defers_can_dock_to_mission_enter() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..miner.capacity_bales {
             miner.cargo.push(CargoBale {
@@ -1689,7 +1813,11 @@ fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_
     sim.production.dock_reservations.link_on_pad(2, occupant);
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         for _ in 0..miner.capacity_bales {
             miner.cargo.push(CargoBale {
@@ -1728,7 +1856,11 @@ fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_
         .dock_reservations
         .release_contact(2, occupant);
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         entity.position.rx = 14;
         entity.position.ry = 11;
         entity.position.refresh_screen_coords();
@@ -1830,7 +1962,11 @@ fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
     spawn_refinery(&mut sim, 2, 10, 10);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -1994,8 +2130,8 @@ fn miner_rules_fallback_only() -> RuleSet {
 /// stock cadence byte-identical to the old constant.
 #[test]
 fn mission_base_frames_reads_rate_table_stock_identical() {
-    use crate::sim::mission::MissionType;
     use crate::sim::miner::miner_dock_sequence::mission_base_frames;
+    use crate::sim::mission::MissionType;
 
     let ini = IniFile::from_str(
         "[General]\n\
@@ -2088,7 +2224,11 @@ fn chrono_teleport_sound_falls_back_to_rules_general() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
     spawn_refinery(&mut sim, 2, 10, 10);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -2126,7 +2266,11 @@ fn chrono_miner_drives_to_ore() {
 
     // Set up: miner knows about ore, state = MoveToOre.
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.target_ore_cell = Some((12, 10));
         miner.state = MinerState::MoveToOre;
@@ -2178,7 +2322,11 @@ fn wait_no_ore_rescans_after_cooldown() {
 
     let now = sim.session.binary_frame;
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::WaitNoOre;
         miner
@@ -2225,7 +2373,11 @@ fn wait_no_ore_retry_gate_is_exactly_105_frames() {
     spawn_refinery(&mut sim, 2, 10, 10);
     // No ore placed anywhere -> SearchOre finds nothing -> WaitNoOre.
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::SearchOre;
     }
@@ -2255,7 +2407,11 @@ fn harvester_uses_dock_list_for_refinery_selection() {
     spawn_structure(&mut sim, 3, "MODPROC", 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -2281,7 +2437,11 @@ fn harvester_waits_when_no_dock_compatible_refinery_exists() {
     spawn_structure(&mut sim, 2, "OTHERPROC", 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -2393,7 +2553,11 @@ fn dock_sequence_progresses_through_phases() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -2437,7 +2601,11 @@ fn dock_wait_grants_reservation_when_free() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -2530,7 +2698,11 @@ fn dock_unloading_phase_awards_credits() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..5 {
             miner.cargo.push(CargoBale {
@@ -2577,7 +2749,11 @@ fn unloading_credits_refinery_owner_under_mind_control() {
     // Mind-control: rewrite the harvester's owner to a different house.
     let mc_owner = sim.interner.intern("Russians");
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.owner = mc_owner;
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..5 {
@@ -2620,7 +2796,11 @@ fn dock_exit_returns_to_search_ore() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -2670,7 +2850,11 @@ fn exit_pad_preserves_archive_on_arrival() {
 
     // Set up the miner mid-Departing with an archive populated (as if a
     // prior State 1 full-path saved a nearby productive patch).
-    let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
     miner.dock_phase = RefineryDockPhase::Departing;
@@ -2725,7 +2909,11 @@ fn exit_pad_blocks_transition_during_teleport() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 14, 11);
 
     // Set up miner at the exit cell, in Departing, with a teleport in progress.
-    let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
     miner.dock_phase = RefineryDockPhase::Departing;
@@ -2796,7 +2984,11 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     // eventually fall back to current position. With the fix the local scan
     // from current position immediately picks (13, 13).
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 14, 11);
-    let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
     miner.dock_phase = RefineryDockPhase::Departing;
@@ -2865,7 +3057,11 @@ fn unreachable_ore_filtered_out() {
 
     // Drive the miner into SearchOre state.
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::SearchOre;
     }
@@ -2913,7 +3109,11 @@ fn reachable_ore_picked_over_closer_unreachable() {
     place_ore(&mut sim, 1, 1, 1200);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::SearchOre;
     }
@@ -2963,7 +3163,11 @@ fn harvester_on_tiberium_falls_back_to_neighbor_zone() {
     place_ore(&mut sim, 10, 8, 1200);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::SearchOre;
     }
@@ -3014,7 +3218,11 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     // Simulates "just finished unloading".
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("harvester entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("harvester entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.clear();
         miner.state = MinerState::Dock;
@@ -3061,7 +3269,8 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
         sim.session.binary_frame += 1;
 
         let miner = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(miner_id)
             .and_then(|e| e.miner.as_ref())
             .expect("miner alive");
@@ -3105,7 +3314,11 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
         sim.session.binary_frame += 1;
     }
 
-    let entity = sim.substrate.entities.get(miner_id).expect("harvester still alive");
+    let entity = sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .expect("harvester still alive");
     let miner = entity.miner.as_ref().expect("miner component");
 
     // Harvester either escaped the foundation south edge, is targeting the
@@ -3155,7 +3368,8 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
     // fields into primitives instead.
     let (rx_before, ry_before, sub_x_before, sub_y_before) = {
         let r = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(refinery_id)
             .expect("refinery just spawned");
         (
@@ -3190,7 +3404,11 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
     // Reservation already held; first tick re-targets the pad and goes Linked.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("harvester entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("harvester entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Approach;
@@ -3222,7 +3440,11 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
         sim.session.binary_frame += 1;
     }
 
-    let refinery = sim.substrate.entities.get(refinery_id).expect("refinery still alive");
+    let refinery = sim
+        .substrate
+        .entities
+        .get(refinery_id)
+        .expect("refinery still alive");
 
     // (1) Refinery position is exactly unchanged.
     assert_eq!(
@@ -3254,7 +3476,11 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
     // at the pad cell or further along the dock sequence — definitely not
     // still at queue (14, 11) which would indicate sub-cell oscillation
     // when crossing into a foundation cell.
-    let harvester = sim.substrate.entities.get(miner_id).expect("harvester still alive");
+    let harvester = sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .expect("harvester still alive");
     assert_ne!(
         (harvester.position.rx, harvester.position.ry),
         (14u16, 11u16),
@@ -3280,7 +3506,11 @@ fn hello_before_mission_enter_then_can_dock_move() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3306,7 +3536,8 @@ fn hello_before_mission_enter_then_can_dock_move() {
         "0x18/+0x418-style contact-entered flag must not be set by HELLO"
     );
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(miner_id)
             .expect("entity")
             .movement_target
@@ -3352,7 +3583,11 @@ fn accepted_cell_arrival_rechecks_can_dock_before_entered_flag() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3401,7 +3636,11 @@ fn waiter_moves_from_queueingcell_to_accepted_cell_before_entered() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3438,7 +3677,11 @@ fn waiter_moves_from_queueingcell_to_accepted_cell_before_entered() {
     );
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         entity.position.rx = 13;
         entity.position.ry = 11;
         entity.position.refresh_screen_coords();
@@ -3480,7 +3723,11 @@ fn occupied_can_dock_defers_without_clearing_waiting_miner_target() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(occupant).expect("occupant entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(occupant)
+            .expect("occupant entity");
         let miner = entity.miner.as_mut().expect("occupant miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3497,7 +3744,11 @@ fn occupied_can_dock_defers_without_clearing_waiting_miner_target() {
     sim.production.dock_reservations.link_on_pad(2, occupant);
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3543,7 +3794,11 @@ fn queued_miner_enters_after_contact_and_pad_are_released() {
     sim.production.dock_reservations.link_on_pad(2, occupant);
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3589,7 +3844,11 @@ fn two_miners_waiter_after_releaser_same_tick_claims_on_own_mission_enter() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(occupant).expect("occupant entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(occupant)
+            .expect("occupant entity");
         let miner = entity.miner.as_mut().expect("occupant miner");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Departing;
@@ -3602,7 +3861,11 @@ fn two_miners_waiter_after_releaser_same_tick_claims_on_own_mission_enter() {
     sim.production.dock_reservations.link_on_pad(2, occupant);
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3643,7 +3906,11 @@ fn two_miners_waiter_after_releaser_same_tick_claims_on_own_mission_enter() {
         "already-there CAN_DOCK sets entered/contact state before pad-arrival handoff"
     );
 
-    let occupant_entity = sim.substrate.entities.get(occupant).expect("occupant entity");
+    let occupant_entity = sim
+        .substrate
+        .entities
+        .get(occupant)
+        .expect("occupant entity");
     assert!(occupant_entity.forced_drive_track.is_none());
     assert!(occupant_entity.movement_target.is_none());
 }
@@ -3659,7 +3926,11 @@ fn two_miners_waiter_after_releaser_approach_hello_only() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(occupant).expect("occupant entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(occupant)
+            .expect("occupant entity");
         let miner = entity.miner.as_mut().expect("occupant miner");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Departing;
@@ -3672,7 +3943,11 @@ fn two_miners_waiter_after_releaser_approach_hello_only() {
     sim.production.dock_reservations.link_on_pad(2, occupant);
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3705,7 +3980,8 @@ fn two_miners_waiter_after_releaser_approach_hello_only() {
     );
     assert!(!sim.production.dock_reservations.is_on_pad(2, waiter));
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(waiter)
             .expect("waiter entity")
             .movement_target
@@ -3734,7 +4010,11 @@ fn two_miners_waiter_before_releaser_not_retroactively_promoted() {
     let occupant = spawn_miner(&mut sim, 3, MinerKind::War, 13, 11);
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3747,7 +4027,11 @@ fn two_miners_waiter_before_releaser_not_retroactively_promoted() {
     }
 
     {
-        let entity = sim.substrate.entities.get_mut(occupant).expect("occupant entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(occupant)
+            .expect("occupant entity");
         let miner = entity.miner.as_mut().expect("occupant miner");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Departing;
@@ -3815,7 +4099,11 @@ fn two_miners_refinery_takeover_uses_live_object_order_not_stable_id() {
     sim.set_logic_order_for_test(vec![occupant, waiter, 2]);
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3828,7 +4116,11 @@ fn two_miners_refinery_takeover_uses_live_object_order_not_stable_id() {
     }
 
     {
-        let entity = sim.substrate.entities.get_mut(occupant).expect("occupant entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(occupant)
+            .expect("occupant entity");
         let miner = entity.miner.as_mut().expect("occupant miner");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Departing;
@@ -3878,7 +4170,11 @@ fn accepted_cell_arrival_sets_contact_entered_then_0x15_starts_unload_fsm() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -3931,7 +4227,11 @@ fn unloading_emits_one_event_per_slot_drain() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..5 {
             miner.cargo.push(CargoBale {
@@ -3960,7 +4260,11 @@ fn unloading_emits_one_event_per_slot_drain() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..5 {
             miner.cargo.push(CargoBale {
@@ -4033,7 +4337,11 @@ fn unloading_applies_per_slot_purifier_bonus() {
     let credits_before = credits_for_owner(&sim, "Americans");
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -4168,7 +4476,11 @@ fn stock_departing_hands_directly_to_search_without_exit_move() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Departing;
@@ -4204,7 +4516,11 @@ fn stock_departing_does_not_start_force_track_0x47() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Departing;
@@ -4235,7 +4551,11 @@ fn stock_departing_does_not_start_explicit_exit_move() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Departing;
@@ -4270,7 +4590,11 @@ fn sell_refinery_interrupts_docked_miner_with_force_track_0x47() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.display_type_override = Some(sim.interner.intern("CMON"));
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..miner.capacity_bales {
@@ -4321,7 +4645,11 @@ fn sell_refinery_cancels_contact_miner_without_force_track_0x47() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 14, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..miner.capacity_bales {
             miner.cargo.push(CargoBale {
@@ -4430,7 +4758,11 @@ fn departing_handoff_releases_dock_and_returns_to_search() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Departing;
@@ -4485,7 +4817,11 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
     // without depending on the precise rot_to_facing_delta value.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.movement_target = None;
         entity.display_type_override = None;
         entity.facing = 0x40;
@@ -4586,7 +4922,11 @@ fn pivoting_phase_smoothly_rotates_to_east() {
     spawn_refinery(&mut sim, 2, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.movement_target = None;
         entity.facing = 0; // North — must rotate 64 facing units clockwise to reach 0x40.
         entity.facing_target = Some(0x40);
@@ -4682,7 +5022,11 @@ fn full_dock_cycle_war_miner() {
     let bale_count: i32 = 10;
     let bale_value: i32 = 25;
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..bale_count {
             miner.cargo.push(CargoBale {
@@ -4908,7 +5252,11 @@ fn harvester_drains_full_cell_in_one_extraction_tick() {
     // ready to fire (harvest_timer == 0).
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
@@ -4944,7 +5292,11 @@ fn harvester_caps_extraction_at_remaining_capacity() {
     // War Miner with 38 of 40 bales already loaded — only 2 free slots.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..38 {
             miner.cargo.push(CargoBale {
@@ -4987,7 +5339,11 @@ fn harvester_continues_to_short_scan_when_partial_then_empty() {
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
@@ -5046,7 +5402,11 @@ fn dock_first_slot_drain_waits_one_unload_interval() {
     // 14.4-frame dump gate timing this test pins lines up cleanly.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.movement_target = None;
         entity.facing = 0x40;
         let miner = entity.miner.as_mut().expect("miner component");
@@ -5118,7 +5478,11 @@ fn empty_unload_gate_releases_dock_on_next_stock_state4_handoff() {
     let unloading_type = sim.interner.intern("HORV");
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.display_type_override = Some(unloading_type);
         let miner = entity.miner.as_mut().expect("miner component");
         // Empty cargo + zero timer → first tick hits the cargo-empty branch.
@@ -5180,7 +5544,11 @@ fn unload_state3_uses_west_cell_building_not_reserved_refinery() {
     spawn_structure_owned(&mut sim, 3, "GAREFN", "Germans", 12, 11);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -5211,7 +5579,11 @@ fn missing_west_cell_building_does_not_credit_or_emit_deposit_event() {
     spawn_refinery(&mut sim, 2, 30, 30);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -5241,7 +5613,11 @@ fn state3_null_lookup_preserves_full_cargo_and_returns_to_refinery_selection() {
     spawn_refinery(&mut sim, 2, 30, 30);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..miner.capacity_bales {
             miner.cargo.push(CargoBale {
@@ -5274,7 +5650,11 @@ fn state3_null_lookup_does_not_clear_unload_display_latch() {
     let unloading_type = sim.interner.intern("HORV");
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.display_type_override = Some(unloading_type);
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
@@ -5308,7 +5688,11 @@ fn reserved_refinery_released_but_not_used_for_unload_credit_identity() {
     spawn_structure_owned(&mut sim, 3, "GAREFN", "Germans", 12, 11);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -5344,7 +5728,11 @@ fn state4_refinery_yes_guard_is_caller_owned() {
     spawn_structure(&mut sim, 3, "GAPOWR", 12, 11);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.clear();
         miner.state = MinerState::Dock;
@@ -5376,7 +5764,11 @@ fn queued_miner_takes_over_immediately_after_empty_gate_handoff() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(occupant).expect("occupant entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(occupant)
+            .expect("occupant entity");
         let miner = entity.miner.as_mut().expect("occupant miner");
         miner.cargo.clear();
         miner.state = MinerState::Dock;
@@ -5390,7 +5782,11 @@ fn queued_miner_takes_over_immediately_after_empty_gate_handoff() {
     sim.production.dock_reservations.link_on_pad(2, occupant);
 
     {
-        let entity = sim.substrate.entities.get_mut(waiter).expect("waiter entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(waiter)
+            .expect("waiter entity");
         let miner = entity.miner.as_mut().expect("waiter miner");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -5459,7 +5855,11 @@ fn two_purifiers_stack_the_bonus_linearly() {
     let credits_before = credits_for_owner(&sim, "Americans");
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -5483,23 +5883,24 @@ fn two_purifiers_stack_the_bonus_linearly() {
 }
 
 /// AI player with `is_human=false` should receive the virtual-purifier
-/// bonus from `rules.general.ai_virtual_purifiers[2 - difficulty]`. With the
-/// default `[4, 2, 0]` and lobby difficulty=2 (Hard/Brutal -> table index 0),
+/// bonus from `rules.general.ai_virtual_purifiers[house.difficulty]`. With the
+/// default `[4, 2, 0]` and per-house Hard difficulty (native index 0),
 /// no real purifiers, and a 100-credit bale, credits = 100 + (100 × 4 × 25 / 100) = 200.
 #[test]
 fn ai_brutal_gets_virtual_purifier_bonus() {
-    use crate::sim::house_state::HouseState;
+    use crate::sim::house_state::{HouseDifficulty, HouseState};
 
     let mut sim = Simulation::new();
     let rules = purifier_rules(25);
 
     // Mark the Americans house as AI, Brutal difficulty.
     let owner_id = sim.interner.intern("Americans");
-    sim.houses.insert(
-        owner_id,
-        HouseState::new(owner_id, 0, None, false, 0, 10), // is_human=false
-    );
-    sim.session.game_options.ai_difficulty = 2; // lobby Hard -> AIVirtualPurifiers index 0 (Brutal)
+    let mut house = HouseState::new(owner_id, 0, None, false, 0, 10);
+    house.difficulty = HouseDifficulty::Hard;
+    sim.houses.insert(owner_id, house);
+    // The retired `2 - global` workaround maps this value to Easy. The
+    // refinery owner's native field must still select the Hard table entry.
+    sim.session.game_options.ai_difficulty = 0;
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
@@ -5508,7 +5909,11 @@ fn ai_brutal_gets_virtual_purifier_bonus() {
     let credits_before = credits_for_owner(&sim, "Americans");
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -5553,7 +5958,11 @@ fn human_player_does_not_get_ai_virtual_bonus() {
     let credits_before = credits_for_owner(&sim, "Americans");
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -5575,23 +5984,24 @@ fn human_player_does_not_get_ai_virtual_bonus() {
     );
 }
 
-/// Easy AI (lobby difficulty 0) must map to the BOTTOM of the hardest-first
-/// `AIVirtualPurifiers` table (`[4, 2, 0]` -> index 2 = 0), i.e. no virtual
-/// bonus. Regression guard for the lobby-vs-table convention inversion:
-/// pre-fix, Easy(0) wrongly indexed table[0]=4 and got +100%.
+/// Easy AI uses native index 2, the bottom of the hardest-first
+/// `AIVirtualPurifiers` table (`[4, 2, 0]` -> 0), i.e. no virtual bonus.
+/// Regression guard for using the legacy global lobby difficulty instead of
+/// the refinery owner's authoritative HouseState field.
 #[test]
 fn ai_easy_gets_no_virtual_purifier_bonus() {
-    use crate::sim::house_state::HouseState;
+    use crate::sim::house_state::{HouseDifficulty, HouseState};
 
     let mut sim = Simulation::new();
     let rules = purifier_rules(25);
 
     let owner_id = sim.interner.intern("Americans");
-    sim.houses.insert(
-        owner_id,
-        HouseState::new(owner_id, 0, None, false, 0, 10), // is_human=false
-    );
-    sim.session.game_options.ai_difficulty = 0; // lobby Easy -> AIVirtualPurifiers index 2 (=0)
+    let mut house = HouseState::new(owner_id, 0, None, false, 0, 10);
+    house.difficulty = HouseDifficulty::Easy;
+    sim.houses.insert(owner_id, house);
+    // The retired `2 - global` workaround maps this value to Hard. It must not
+    // turn the Easy refinery owner into a Hard owner for deposit arithmetic.
+    sim.session.game_options.ai_difficulty = 2;
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
@@ -5599,7 +6009,11 @@ fn ai_easy_gets_no_virtual_purifier_bonus() {
     let credits_before = credits_for_owner(&sim, "Americans");
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.push(CargoBale {
             resource_type: ResourceType::Ore,
@@ -5621,6 +6035,38 @@ fn ai_easy_gets_no_virtual_purifier_bonus() {
     );
 }
 
+#[test]
+fn virtual_purifier_table_is_indexed_per_refinery_owner() {
+    use crate::sim::house_state::{HouseDifficulty, HouseState};
+
+    let mut sim = Simulation::new();
+    let rules = purifier_rules(25);
+
+    for (name, difficulty) in [
+        ("HardOwner", HouseDifficulty::Hard),
+        ("NormalOwner", HouseDifficulty::Normal),
+        ("EasyOwner", HouseDifficulty::Easy),
+    ] {
+        let owner = sim.interner.intern(name);
+        let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+        house.difficulty = difficulty;
+        sim.houses.insert(owner, house);
+    }
+
+    assert_eq!(
+        super::miner_system::effective_purifier_count(&sim, &rules, "HardOwner"),
+        4,
+    );
+    assert_eq!(
+        super::miner_system::effective_purifier_count(&sim, &rules, "NormalOwner"),
+        2,
+    );
+    assert_eq!(
+        super::miner_system::effective_purifier_count(&sim, &rules, "EasyOwner"),
+        0,
+    );
+}
+
 /// Legacy DepositCooldown save states pass straight through to Departing. The
 /// old per-tick `deposit_cooldown_ticks` countdown is retired (Slice 5), so the
 /// phase no longer holds — it advances on the first tick.
@@ -5633,7 +6079,11 @@ fn legacy_deposit_cooldown_passes_through_to_departing() {
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.clear();
         miner.state = MinerState::Dock;
@@ -5672,7 +6122,8 @@ fn dying_occupant_releases_dock_to_queued_miner() {
         "precondition: occupant has refinery contact",
     );
 
-    sim.substrate.entities
+    sim.substrate
+        .entities
         .get_mut(occupant)
         .expect("occupant entity")
         .dying = true;
@@ -5698,7 +6149,11 @@ fn full_miner_losing_dying_refinery_keeps_returning() {
     spawn_refinery(&mut sim, 3, 24, 10);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..miner.capacity_bales {
             miner.cargo.push(CargoBale {
@@ -5761,7 +6216,11 @@ fn dying_refinery_aborts_unload_without_credit_or_stuck_visual() {
     let unloading_type = sim.interner.intern("HORV");
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.display_type_override = Some(unloading_type);
         entity.facing_target = Some(0x40);
         let miner = entity.miner.as_mut().expect("miner component");
@@ -5851,7 +6310,11 @@ fn scan_skips_tree_blocked_ore_cell() {
     place_ore(&mut sim, 12, 10, 1200);
 
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.miner.as_mut().expect("miner").state = MinerState::SearchOre;
     }
 
@@ -6120,7 +6583,11 @@ fn refinery_cycle_over_radio_bus_matches_registry_cadence() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..10 {
             miner.cargo.push(CargoBale {
@@ -6158,8 +6625,13 @@ fn refinery_cycle_over_radio_bus_matches_registry_cadence() {
             .production
             .dock_reservations
             .has_contact_entered(100, miner_id);
-        let bus_entered =
-            sim.substrate.entities.get(miner_id).expect("miner").dock_entered_with == Some(100);
+        let bus_entered = sim
+            .substrate
+            .entities
+            .get(miner_id)
+            .expect("miner")
+            .dock_entered_with
+            == Some(100);
         assert_eq!(
             reg_entered, bus_entered,
             "dock_entered_with must mirror the registry contact-entered flag each tick"
@@ -6186,7 +6658,11 @@ fn refinery_cycle_over_radio_bus_matches_registry_cadence() {
     assert!(!refinery.radio_contacts.contains(miner_id));
     assert!(!sim.production.dock_reservations.has_contact(100, miner_id));
     assert_eq!(
-        sim.substrate.entities.get(miner_id).expect("miner").dock_entered_with,
+        sim.substrate
+            .entities
+            .get(miner_id)
+            .expect("miner")
+            .dock_entered_with,
         None,
     );
 }
@@ -6201,7 +6677,11 @@ fn full_unload_credits_unchanged_over_bus() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..10 {
             miner.cargo.push(CargoBale {
@@ -6248,7 +6728,11 @@ fn harvest_seam_dispatch_matches_direct_process_miner() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..10 {
             miner.cargo.push(CargoBale {
@@ -6265,7 +6749,11 @@ fn harvest_seam_dispatch_matches_direct_process_miner() {
     tick_miners_n(&mut sim, &rules, 400);
 
     // One slot drain → one bale event; full ore payout (10 × 25).
-    assert_eq!(sim.bale_events.len(), 1, "seam: one slot drain → one bale event");
+    assert_eq!(
+        sim.bale_events.len(),
+        1,
+        "seam: one slot drain → one bale event"
+    );
     assert_eq!(
         credits_for_owner(&sim, "Americans") - credits_before,
         250,
@@ -6301,7 +6789,11 @@ fn harvest_seam_derived_mission_is_harvest_each_tick() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..10 {
             miner.cargo.push(CargoBale {
@@ -6339,7 +6831,11 @@ fn harvest_seam_preserves_bus_registry_lockstep() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..10 {
             miner.cargo.push(CargoBale {
@@ -6373,8 +6869,13 @@ fn harvest_seam_preserves_bus_registry_lockstep() {
             .production
             .dock_reservations
             .has_contact_entered(100, miner_id);
-        let bus_entered =
-            sim.substrate.entities.get(miner_id).expect("miner").dock_entered_with == Some(100);
+        let bus_entered = sim
+            .substrate
+            .entities
+            .get(miner_id)
+            .expect("miner")
+            .dock_entered_with
+            == Some(100);
         assert_eq!(
             reg_entered, bus_entered,
             "seam: dock_entered_with must mirror registry contact-entered each tick",
@@ -6384,7 +6885,10 @@ fn harvest_seam_preserves_bus_registry_lockstep() {
         }
     }
 
-    assert!(saw_entered, "seam: the miner must enter the dock during the cycle");
+    assert!(
+        saw_entered,
+        "seam: the miner must enter the dock during the cycle"
+    );
 }
 
 /// Through the seam, the inbound dock handshake follows the verified order —
@@ -6419,17 +6923,27 @@ fn dock_handshake_hello_enter_over_seam() {
 
     // Miner 1: HELLO accepted → MissionEnter, in Contacts[], NOT entered, no
     // same-tick CAN_DOCK move.
-    assert_eq!(get_miner(&sim, miner_id).dock_phase, RefineryDockPhase::MissionEnter);
+    assert_eq!(
+        get_miner(&sim, miner_id).dock_phase,
+        RefineryDockPhase::MissionEnter
+    );
     assert!(
         sim.production.dock_reservations.has_contact(2, miner_id),
         "seam: HELLO/ROGER must populate Contacts[]",
     );
     assert!(
-        !sim.production.dock_reservations.has_contact_entered(2, miner_id),
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id),
         "seam: contact-entered flag must not be set by HELLO",
     );
     assert!(
-        sim.substrate.entities.get(miner_id).expect("entity").movement_target.is_none(),
+        sim.substrate
+            .entities
+            .get(miner_id)
+            .expect("entity")
+            .movement_target
+            .is_none(),
         "seam: HELLO acceptance must not issue the CAN_DOCK move the same tick",
     );
 
@@ -6454,7 +6968,9 @@ fn dock_handshake_hello_enter_over_seam() {
         RefineryDockPhase::AwaitingAcceptedCell,
     );
     assert!(
-        !sim.production.dock_reservations.has_contact_entered(2, miner_id),
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id),
         "seam: not at accepted cell yet — no contact-entered admission",
     );
 }
@@ -6474,7 +6990,11 @@ fn deposit_cadence_14_4_ticks_over_seam() {
     // gate timing lines up cleanly.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.movement_target = None;
         entity.facing = 0x40;
         let miner = entity.miner.as_mut().expect("miner component");
@@ -6492,8 +7012,15 @@ fn deposit_cadence_14_4_ticks_over_seam() {
 
     // Two ticks: MissionQueued → Pivoting → Unloading (no drain yet).
     tick_miners_n(&mut sim, &rules, 2);
-    assert_eq!(get_miner(&sim, miner_id).cargo.len(), 5, "no drain before Unloading");
-    assert_eq!(get_miner(&sim, miner_id).dock_phase, RefineryDockPhase::Unloading);
+    assert_eq!(
+        get_miner(&sim, miner_id).cargo.len(),
+        5,
+        "no drain before Unloading"
+    );
+    assert_eq!(
+        get_miner(&sim, miner_id).dock_phase,
+        RefineryDockPhase::Unloading
+    );
 
     let mut drain_tick = None;
     for elapsed in 1..=20 {
@@ -6528,7 +7055,11 @@ fn unload_accumulator_sample_before_increment() {
     spawn_refinery(&mut sim, 2, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         entity.movement_target = None;
         entity.facing = 0x40;
         let miner = entity.miner.as_mut().expect("miner component");
@@ -6547,7 +7078,10 @@ fn unload_accumulator_sample_before_increment() {
     // Reach Unloading via the real pivot path (seeds the accumulator at 0 and
     // arms the cluster timer — NOT the save-compat fast-seed branch).
     tick_miners_n(&mut sim, &rules, 2);
-    assert_eq!(get_miner(&sim, miner_id).dock_phase, RefineryDockPhase::Unloading);
+    assert_eq!(
+        get_miner(&sim, miner_id).dock_phase,
+        RefineryDockPhase::Unloading
+    );
 
     // accs[i] = accumulator AFTER the i-th unloading tick (i.e. the value the
     // (i+1)-th tick's phase will sample, since the increment is the tick tail).
@@ -6563,7 +7097,10 @@ fn unload_accumulator_sample_before_increment() {
         }
     }
     let d = drain_index.expect("slot must drain within the window");
-    assert!(d >= 2, "need at least two prior ticks to compare gate crossings");
+    assert!(
+        d >= 2,
+        "need at least two prior ticks to compare gate crossings"
+    );
 
     // Value the drain tick's phase sampled = accumulator at the start of tick d
     // = accs[d-1] (previous tick's post-increment value).
@@ -6596,7 +7133,11 @@ fn deposit_slot_order_ore_then_gem_over_seam() {
     spawn_refinery(&mut sim, 2, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
-        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         for _ in 0..5 {
             miner.cargo.push(CargoBale {
@@ -6633,7 +7174,11 @@ fn deposit_slot_order_ore_then_gem_over_seam() {
         m.cargo.iter().all(|b| b.resource_type == ResourceType::Gem),
         "seam: Ore slot drains first — only Gems remain after the first crossing",
     );
-    assert_eq!(sim.bale_events.len(), 1, "seam: one event after the first slot drain");
+    assert_eq!(
+        sim.bale_events.len(),
+        1,
+        "seam: one event after the first slot drain"
+    );
     assert_eq!(
         credits_for_owner(&sim, "Americans") - credits_before,
         5 * 25,
@@ -6650,7 +7195,11 @@ fn deposit_slot_order_ore_then_gem_over_seam() {
         }
     }
     after_second.expect("second slot must drain");
-    assert_eq!(sim.bale_events.len(), 2, "seam: one event per slot (ore, then gem)");
+    assert_eq!(
+        sim.bale_events.len(),
+        2,
+        "seam: one event per slot (ore, then gem)"
+    );
     assert_eq!(
         credits_for_owner(&sim, "Americans") - credits_before,
         5 * 25 + 3 * 50,

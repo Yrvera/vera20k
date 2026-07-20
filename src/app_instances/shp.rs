@@ -8,7 +8,8 @@
 //! - Part of the app layer — may depend on everything.
 
 use super::helpers::{
-    apply_bridge_depth_bias, compute_sprite_depth, in_view, is_entity_visible_for_local_owner,
+    ANIM_DRAW_DEPTH_BIAS_PX, apply_bridge_depth_bias, apply_shape_z_adjust, compute_sprite_depth,
+    effective_anim_z_adjust, in_view, is_entity_visible_for_local_owner,
     is_under_bridge_render_state,
 };
 use crate::app::AppState;
@@ -291,6 +292,11 @@ pub(crate) fn build_shp_instances(
                 // body has transparent pixels, covered where it's opaque.
                 let is_garrisoned = entity.passenger_role.cargo().is_some_and(|c| !c.is_empty());
                 let is_player_owned = !crate::rules::house_colors::is_non_player_house(owner_str);
+                let world_height: f32 = state
+                    .terrain_grid
+                    .as_ref()
+                    .map(|g| g.world_height)
+                    .unwrap_or(1.0);
                 emit_building_anims(
                     paged,
                     atlas,
@@ -308,6 +314,7 @@ pub(crate) fn build_shp_instances(
                     is_garrisoned,
                     is_player_owned,
                     entity.building_damage_state_active,
+                    world_height,
                 );
             }
             // Emit VXL turret on top of building (e.g., SAM site, Prism Tower).
@@ -357,7 +364,7 @@ fn emit_building_turret_vxl(
     tint: [f32; 3],
     anim_x: i32,
     anim_y: i32,
-    _z_adjust: i32,
+    z_adjust: i32,
 ) {
     let unit_atlas = match &state.unit_atlas {
         Some(a) => a,
@@ -374,14 +381,21 @@ fn emit_building_turret_vxl(
         return;
     };
     // Position turret at building cell origin + pixel offset from INI.
-    // ZAdjust affects screen Y position (verified: AnimClass::DrawIt reads it 4 times alongside YDrawOffset).
+    // TurretAnimZAdjust affects depth-sort only, never screen Y (ZAdjust is a
+    // sort bias in the original engine; YDrawOffset is what shifts screen Y).
     let center_x: f32 = building_sx;
     let tx: f32 = center_x + anim_x as f32 + entry.offset_x;
     let ty: f32 = building_sy + anim_y as f32 + entry.offset_y + 3.0;
-    // Turret uses same depth as building body. It draws on top via draw
-    // order (pushed to the instance list after the building body), not via
-    // a depth bias — buildings use single-depth batch shader, not per-pixel Z.
-    let turret_depth: f32 = building_depth;
+    // Turret draws on top of its own body via instance order (pushed after
+    // the building body). TurretAnimZAdjust= additionally biases the sort
+    // depth (negative = toward camera) so the turret orders correctly
+    // against OTHER nearby objects, matching the native signed pixel bias.
+    let world_height: f32 = state
+        .terrain_grid
+        .as_ref()
+        .map(|g| g.world_height)
+        .unwrap_or(1.0);
+    let turret_depth: f32 = apply_shape_z_adjust(building_depth, z_adjust, world_height);
     instances.push(SpriteInstance {
         position: [tx, ty],
         size: entry.pixel_size,
@@ -562,6 +576,7 @@ fn emit_building_anims(
     is_garrisoned: bool,
     is_player_owned: bool,
     building_damage_state_active: bool,
+    world_height: f32,
 ) {
     let rules_image: String = rules
         .and_then(|r| r.object(building_type))
@@ -675,12 +690,20 @@ fn emit_building_anims(
         let ax: f32 = screen_x + anim.x as f32 + anim_entry.offset_x;
         let ay: f32 = screen_y + anim.y as f32 + anim_entry.offset_y;
 
-        // Building anims use the same depth as the building body. In the original
-        // engine, building overlay anims render in terrain pass step 6 (before walls
-        // in step 7). With painter's algorithm, anims are emitted in the same pass as
-        // the building body, so they draw on top via instance order.
-        // YSortAdjust from art.ini affects draw ORDER in the original, not depth.
-        let anim_depth: f32 = building_depth;
+        // Building anims start from the building body's depth (emitted in the
+        // same pass; on-top-of-own-body comes from instance order), then apply
+        // the native ZAdjust sort bias: the per-slot override from the
+        // building's art section (e.g. ActiveAnimZAdjust=) wins when nonzero,
+        // else the anim type's own ZAdjust= applies; anim SHP draws also carry
+        // a constant -2px bias. Negative = toward camera. This orders anims
+        // correctly against OTHER nearby objects.
+        let type_z_adjust: i32 = art_reg
+            .anim_runtime_config(&selected.anim_type)
+            .map(|c| c.z_adjust)
+            .unwrap_or(0);
+        let z_adjust_px: i32 =
+            effective_anim_z_adjust(anim.z_adjust, type_z_adjust) + ANIM_DRAW_DEPTH_BIAS_PX;
+        let anim_depth: f32 = apply_shape_z_adjust(building_depth, z_adjust_px, world_height);
 
         paged[anim_entry.page as usize].push(SpriteInstance {
             position: [ax, ay],

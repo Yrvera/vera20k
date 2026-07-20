@@ -10,13 +10,14 @@ use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
 use crate::render::batch::SpriteInstance;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_paint::{
-    self, ArtFit, ButtonPolicy, PaintButton, PaintLabel, CURSOR_DEPTH, MOVIE_DEPTH,
-    PARENT_BACKGROUND_DEPTH, PRESSED_CONTENT_OFFSET_Y, SHELL_TEXT_RGB_ENABLED,
+    self, ArtFit, ButtonPolicy, CURSOR_DEPTH, MOVIE_DEPTH, PARENT_BACKGROUND_DEPTH, PaintButton,
+    PaintLabel, SHELL_TEXT_RGB_ENABLED,
 };
 use crate::render::shell_text::ShellAlign;
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::ui::main_menu_shell::{
     MainMenuControlId, MainMenuShellLayout, RectPx, compute_layout, csf_key_for_control,
+    tooltip_csf_key_for_control,
 };
 
 /// Screen-size thresholds above which the centered 800x600 shell is letterboxed
@@ -26,15 +27,18 @@ const SHELL_LETTERBOX_H_THRESHOLD: i32 = 767;
 const SHELL_BASE_W: i32 = 800;
 const SHELL_BASE_H: i32 = 600;
 
-/// Dialog 0xE2 owner-draw button policy: native art at the cell top-left, +2 px
-/// Y sink on press, no hover flash, no disabled dim (0xE2 has no disabled
-/// control). The +1 px text X shift on press is applied in the label builder.
+/// Dialog 0xE2 owner-draw button policy: native art remains at the cell top-left
+/// while frame selection changes on press. The dialog has no hover flash or
+/// disabled owner-draw button.
 const MAIN_MENU_BUTTON_POLICY: ButtonPolicy = ButtonPolicy {
     art_fit: ArtFit::Native,
     hover_flash: false,
-    art_sink_y: PRESSED_CONTENT_OFFSET_Y,
+    art_sink_y: 0.0,
     disabled_dim: false,
 };
+
+/// Native static `0x695` is left-aligned and vertically centered.
+const MAIN_MENU_STATUS_ALIGN: ShellAlign = ShellAlign::V_CENTER;
 
 pub(crate) enum MainMenuShellRenderResult {
     Rendered,
@@ -74,8 +78,7 @@ fn main_menu_paint_buttons(
         .iter()
         .enumerate()
         .map(|(slot, button)| {
-            let wave_frame =
-                wave.map(|w| w.sdbtnanm_frame(slot as u32, ButtonGroup::A) as usize);
+            let wave_frame = wave.map(|w| w.sdbtnanm_frame(slot as u32, ButtonGroup::A) as usize);
             PaintButton {
                 rect: button.rect,
                 pressed: pressed_button == Some(button.id),
@@ -95,17 +98,19 @@ fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
         .unwrap_or(key)
 }
 
-/// Build the owner-draw button labels + statics (title / version / tooltip) as
-/// `PaintLabel`s consumed by `shell_paint::paint_labels`. Reproduces the prior
-/// `build_text_draws` exactly: button labels h+v-centered in a rect inset by
-/// top+=1 / right-=2, shifted +x_offset / +2y on press; statics h-centered
-/// top-anchored. 0xE2 text is always #FFFF00 (no disabled control). The `version`
-/// string is owned, so the returned labels borrow from `strings`.
+fn main_menu_status_csf_key(hovered_button: Option<MainMenuControlId>) -> Option<&'static str> {
+    hovered_button.map(tooltip_csf_key_for_control)
+}
+
+/// Build the owner-draw button labels and dialog statics consumed by
+/// `shell_paint::paint_labels`. Button labels use the exact native normal/pressed
+/// clipping rectangles. Status static `0x695` reads the dialog's immediate hover
+/// state rather than the delayed in-game tooltip service.
 fn main_menu_paint_labels<'a>(
     state: &'a AppState,
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
-    _hovered_button: Option<MainMenuControlId>,
+    hovered_button: Option<MainMenuControlId>,
     version_text: &'a str,
 ) -> Vec<PaintLabel<'a>> {
     use crate::render::shell_text::ShellAlign;
@@ -113,27 +118,9 @@ fn main_menu_paint_labels<'a>(
     let button_align = ShellAlign::H_CENTER | ShellAlign::V_CENTER;
     for button in &layout.buttons {
         let pressed = pressed_button == Some(button.id);
-        let x_offset = if pressed {
-            layout.pressed_content_offset_x
-        } else {
-            0
-        };
-        // gamemd sinks the whole button content (art + label) down +2 px on
-        // press. The text Y sink is applied as i32, distinct from the f32 art
-        // sink threaded through ButtonPolicy.
-        let y_offset = if pressed {
-            PRESSED_CONTENT_OFFSET_Y as i32
-        } else {
-            0
-        };
         out.push(PaintLabel {
             text: resolve_csf(state, csf_key_for_control(button.id)),
-            rect: RectPx::new(
-                button.rect.x + x_offset,
-                button.rect.y + 1 + y_offset,
-                (button.rect.w - 2).max(0),
-                (button.rect.h - 1).max(0),
-            ),
+            rect: owner_draw_button_label_rect(button.rect, pressed),
             align: button_align,
             rgb: SHELL_TEXT_RGB_ENABLED,
         });
@@ -151,18 +138,11 @@ fn main_menu_paint_labels<'a>(
         align: ShellAlign::H_CENTER,
         rgb: SHELL_TEXT_RGB_ENABLED,
     });
-    // Tooltip text now comes from the shared service (study S1): it appears
-    // only after the 1000 ms hover delay, hides on move, and is killed by any
-    // button press — replacing the immediate-on-hover emission (D-B2).
-    if let Some(tip) = state
-        .tooltips
-        .active()
-        .filter(|t| (t.id & crate::app_tooltips::SHELL_TIP_NAMESPACE) != 0)
-    {
+    if let Some(key) = main_menu_status_csf_key(hovered_button) {
         out.push(PaintLabel {
-            text: &tip.text,
+            text: resolve_csf(state, key),
             rect: layout.tooltip_line,
-            align: ShellAlign::H_CENTER,
+            align: MAIN_MENU_STATUS_ALIGN,
             rgb: SHELL_TEXT_RGB_ENABLED,
         });
     }
@@ -382,8 +362,12 @@ pub(crate) fn render_main_menu_shell_to_target(
     // 0xE2-only MNSCRN parent background, submitted FIRST (no analog on 0x100).
     let background_instances = build_parent_background_instances(chrome, &layout);
     let movie_instances = build_movie_instances(&layout);
-    let chrome_instances =
-        shell_paint::paint_chrome(chrome, layout.right_panel, Some(layout.lower_strip), layout.screen.w);
+    let chrome_instances = shell_paint::paint_chrome(
+        chrome,
+        layout.right_panel,
+        Some(layout.lower_strip),
+        layout.screen.w,
+    );
     let buttons = main_menu_paint_buttons(
         &layout,
         state.main_menu_shell_state.pressed_owner_draw_button,
@@ -391,8 +375,13 @@ pub(crate) fn render_main_menu_shell_to_target(
     );
     // 0xE2 never flashes, so the hover clock is unused (None) — keep the call
     // shape uniform with 0x100, which threads its hover_started_at.
-    let button_instances =
-        shell_paint::paint_buttons(chrome, &buttons, MAIN_MENU_BUTTON_POLICY, Instant::now(), None);
+    let button_instances = shell_paint::paint_buttons(
+        chrome,
+        &buttons,
+        MAIN_MENU_BUTTON_POLICY,
+        Instant::now(),
+        None,
+    );
     let version_text = format!(
         "{} {}",
         resolve_csf(state, "GUI:Version"),
@@ -441,13 +430,11 @@ pub(crate) fn render_main_menu_shell_to_target(
                 .create_instance_buffer(&state.gpu, &draw.instances)
         })
         .collect();
-    let modal_sprite_buffer = modal_overlay
-        .as_ref()
-        .and_then(|m| {
-            state
-                .batch_renderer
-                .create_instance_buffer(&state.gpu, &m.sprites)
-        });
+    let modal_sprite_buffer = modal_overlay.as_ref().and_then(|m| {
+        state
+            .batch_renderer
+            .create_instance_buffer(&state.gpu, &m.sprites)
+    });
     let modal_text_buffers: Vec<_> = modal_overlay
         .as_ref()
         .map(|m| {
@@ -488,7 +475,10 @@ pub(crate) fn render_main_menu_shell_to_target(
             .and_then(|white| {
                 let quad = [crate::render::batch::SpriteInstance {
                     position: [0.0, 0.0],
-                    size: [state.gpu.config.width as f32, state.gpu.config.height as f32],
+                    size: [
+                        state.gpu.config.width as f32,
+                        state.gpu.config.height as f32,
+                    ],
                     uv_origin: white.uv_origin,
                     uv_size: white.uv_size,
                     // Passthrough compares depth Always and this draws last, so any
@@ -498,7 +488,9 @@ pub(crate) fn render_main_menu_shell_to_target(
                     alpha: fade_alpha,
                     ..Default::default()
                 }];
-                state.batch_renderer.create_instance_buffer(&state.gpu, &quad)
+                state
+                    .batch_renderer
+                    .create_instance_buffer(&state.gpu, &quad)
             })
     } else {
         None
@@ -611,9 +603,12 @@ pub(crate) fn render_main_menu_shell_to_target(
     // Quit-cascade fade-to-black overlay, drawn LAST so it blackens everything
     // including the cursor (the original's palette fade affects the whole frame).
     if let (Some((buffer, count)), Some(sk_chrome)) = (fade_buffer.as_ref(), skirmish_chrome) {
-        state
-            .batch_renderer
-            .draw_with_buffer_passthrough(&mut pass, &sk_chrome.texture, buffer, *count);
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            &sk_chrome.texture,
+            buffer,
+            *count,
+        );
     }
     drop(pass);
 
@@ -673,13 +668,13 @@ fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::Mod
         },
         PaintLabel {
             text: &modal_state.confirm,
-            rect: modal_button_label_rect(layout.ok, ok_pressed),
+            rect: owner_draw_button_label_rect(layout.ok, ok_pressed),
             align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,
         },
         PaintLabel {
             text: &modal_state.cancel,
-            rect: modal_button_label_rect(layout.cancel, cancel_pressed),
+            rect: owner_draw_button_label_rect(layout.cancel, cancel_pressed),
             align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,
         },
@@ -695,15 +690,11 @@ fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::Mod
     ))
 }
 
-/// Owner-draw button label rect with the MNBTTN press sink. Matches the skirmish
-/// validation modal's `button_text_rect`: unpressed `+0x/+1y/-2w/-1h`, pressed
-/// `+2x/+5y/-4w/-5h`.
-fn modal_button_label_rect(
-    rect: crate::ui::shell::geom::RectPx,
-    pressed: bool,
-) -> crate::ui::shell::geom::RectPx {
+/// Exact owner-draw button label clipping rectangle: unpressed
+/// `+0x/+1y/-2w/-1h`, pressed `+2x/+5y/-4w/-5h`.
+fn owner_draw_button_label_rect(rect: RectPx, pressed: bool) -> RectPx {
     let (dx, dy) = if pressed { (2, 5) } else { (0, 1) };
-    crate::ui::shell::geom::RectPx::new(
+    RectPx::new(
         rect.x + dx,
         rect.y + dy,
         (rect.w - 2 - dx).max(0),
@@ -716,8 +707,37 @@ mod tests {
     use super::*;
     use crate::ui::main_menu_shell::compute_layout;
 
-    // The pressed-sink and native-art geometry tests moved to
-    // `render::shell_paint` along with the geometry itself (Slice 3).
+    #[test]
+    fn owner_draw_label_rect_matches_native_boundaries() {
+        let button = RectPx::new(644, 199, 156, 42);
+        assert_eq!(
+            owner_draw_button_label_rect(button, false),
+            RectPx::new(644, 200, 154, 41)
+        );
+        assert_eq!(
+            owner_draw_button_label_rect(button, true),
+            RectPx::new(646, 204, 152, 37)
+        );
+    }
+
+    #[test]
+    fn status_key_follows_immediate_hover_state() {
+        assert_eq!(main_menu_status_csf_key(None), None);
+        assert_eq!(
+            main_menu_status_csf_key(Some(MainMenuControlId::SinglePlayer0x683)),
+            Some("STT:MainButtonSinglePlayer")
+        );
+        assert_eq!(
+            main_menu_status_csf_key(Some(MainMenuControlId::ExitGame0x3ee)),
+            Some("STT:MainButtonExitGamemd")
+        );
+    }
+
+    #[test]
+    fn status_static_is_left_aligned_and_vertically_centered() {
+        assert_eq!(MAIN_MENU_STATUS_ALIGN, ShellAlign::V_CENTER);
+        assert!(!MAIN_MENU_STATUS_ALIGN.contains(ShellAlign::H_CENTER));
+    }
 
     #[test]
     fn movie_instance_uses_layout_movie_rect() {

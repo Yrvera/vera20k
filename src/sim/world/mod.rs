@@ -35,6 +35,7 @@ use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::trigger_graph::TriggerGraph;
 use crate::map::triggers::TriggerMap;
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
@@ -112,6 +113,18 @@ pub struct TickResult {
 /// Pure data — no audio library dependency. Drained by the app layer each frame.
 #[derive(Debug, Clone)]
 pub enum SimSoundEvent {
+    /// Constructor-time animation start/report sound, keyed to object identity.
+    AnimationStarted {
+        anim_id: crate::sim::anim_class::AnimId,
+        sound_id: InternedId,
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
+    /// Animation destruction releases its current handle before optional StopSound.
+    AnimationStopped {
+        anim_id: crate::sim::anim_class::AnimId,
+        stop_sound_id: Option<InternedId>,
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
     /// A weapon fired — play its Report= sound.
     WeaponFired {
         report_sound_id: InternedId,
@@ -164,6 +177,17 @@ pub enum SimSoundEvent {
         sound_id: InternedId,
         rx: u16,
         ry: u16,
+    },
+    /// A base structure / harvester took enemy damage — the radar ping is
+    /// already enqueued sim-side; `eva_allowed` mirrors the queue's dedup
+    /// result (the BridgeRepaired pattern). App gates the EVA voice to the
+    /// local owner.
+    UnderAttack {
+        rx: u16,
+        ry: u16,
+        owner: InternedId,
+        miner: bool,
+        eva_allowed: bool,
     },
     /// A superweapon was launched — play EVA warning.
     SuperWeaponLaunched { owner: InternedId, rx: u16, ry: u16 },
@@ -657,9 +681,12 @@ impl Simulation {
     pub(crate) fn miner_jitter_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // dock-entry retry + unload-deploy frame jitter
-    pub(crate) fn unverified_legacy_random_assignment_rng(&mut self) -> &mut SimRng {
-        &mut self.scenario_rng
-    } // session random country/color resolution at launch handoff
+    /// Capture the process-continuity Scenario cursor when gameplay returns to
+    /// the frontend. The app stores this clone until the next successful Start
+    /// reseeds the gameplay pair.
+    pub(crate) fn clone_scenario_rng(&self) -> SimRng {
+        self.scenario_rng.clone()
+    }
 
     // --- Main stream (gamemd g_MainRng @ 0x00886B88); no sim/ consumer wired yet ---
     pub(crate) fn weapon_spread_rng(&mut self) -> &mut SimRng {
@@ -820,14 +847,26 @@ impl Simulation {
     }
 
     pub(crate) fn allocate_stable_id(&mut self) -> u64 {
-        let id = self.substrate.next_stable_entity_id;
-        self.substrate.next_stable_entity_id =
-            self.substrate.next_stable_entity_id.saturating_add(1);
+        let id = self.substrate.next_stable_object_id;
+        self.substrate.next_stable_object_id =
+            self.substrate.next_stable_object_id.saturating_add(1);
         id
     }
 
     /// Native Reveal's append: +0x98 guard → tail-append → set flag. Idempotent.
     pub(crate) fn register_live_object(&mut self, stable_id: u64) {
+        if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
+            if anim.in_logic_vector {
+                return;
+            }
+            debug_assert!(
+                !self.substrate.entities.contains(stable_id),
+                "object id {stable_id} exists in both entity and animation stores",
+            );
+            anim.in_logic_vector = true;
+            self.substrate.logic.push(stable_id);
+            return;
+        }
         match self.substrate.entities.get_mut(stable_id) {
             Some(e) if !e.in_logic_vector => {
                 // Legal source: the only non-active presence in this slice is
@@ -848,6 +887,14 @@ impl Simulation {
 
     /// Native Conceal's remove: gate on flag → clear flag → compacting remove.
     pub(crate) fn unregister_live_object(&mut self, stable_id: u64) {
+        if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
+            if !anim.in_logic_vector {
+                return;
+            }
+            anim.in_logic_vector = false;
+            self.substrate.logic.remove(stable_id);
+            return;
+        }
         if let Some(e) = self.substrate.entities.get_mut(stable_id) {
             if !e.in_logic_vector {
                 return; // not a member — nothing to remove
@@ -924,17 +971,36 @@ impl Simulation {
         let mut seen = std::collections::BTreeSet::new();
         for &id in order {
             debug_assert!(seen.insert(id), "logic order has duplicate id {id}");
+            debug_assert!(
+                self.substrate
+                    .entities
+                    .get(id)
+                    .is_some_and(|entity| entity.in_logic_vector)
+                    || self
+                        .substrate
+                        .anims
+                        .get(id)
+                        .is_some_and(|anim| anim.in_logic_vector),
+                "logic order id {id} is missing or not membership-flagged",
+            );
         }
-        let flagged = self
+        let flagged_entities = self
             .substrate
             .entities
             .values()
             .filter(|e| e.in_logic_vector)
             .count();
+        let flagged_anims = self
+            .substrate
+            .anims
+            .iter()
+            .filter(|(_, anim)| anim.in_logic_vector)
+            .count();
+        let flagged = flagged_entities + flagged_anims;
         debug_assert_eq!(
             order.len(),
             flagged,
-            "logic order length ({}) != entities flagged in_logic_vector ({})",
+            "logic order length ({}) != objects flagged in_logic_vector ({})",
             order.len(),
             flagged
         );
@@ -1268,6 +1334,7 @@ impl Simulation {
     /// are decremented when dying is first set, not at physical removal).
     /// Also removes the entity from every occupied foundation cell.
     pub(crate) fn uninit(&mut self, stable_id: u64) {
+        self.clear_building_damage_fire_slots(stable_id);
         // Gather entity data before any mutable borrows.
         let entity_info = self.substrate.entities.get(stable_id).map(|e| {
             (
@@ -1325,7 +1392,12 @@ impl Simulation {
         // absent id is a no-op, covering any defensive double-enqueue.
         let queued = std::mem::take(&mut self.substrate.pending_delete);
         for id in queued {
-            self.substrate.entities.remove(id);
+            let entity = self.substrate.entities.remove(id);
+            let anim = self.substrate.anims.remove(id);
+            debug_assert!(
+                !(entity.is_some() && anim.is_some()),
+                "object id {id} was removed from both stores",
+            );
         }
     }
 
@@ -1475,9 +1547,14 @@ impl Simulation {
         for entity in self.substrate.entities.values_mut() {
             entity.in_logic_vector = false;
         }
+        for anim in self.substrate.anims.values_mut() {
+            anim.in_logic_vector = false;
+        }
         for &id in &self.substrate.logic.snapshot() {
             if let Some(entity) = self.substrate.entities.get_mut(id) {
                 entity.in_logic_vector = true;
+            } else if let Some(anim) = self.substrate.anims.get_mut(id) {
+                anim.in_logic_vector = true;
             }
         }
         // Presence is #[serde(skip)] → all-default (Limbo) straight after
@@ -1656,6 +1733,83 @@ impl Simulation {
         } else {
             log::warn!("apply_wall_damage_events: no wall entity at ({rx}, {ry})");
         }
+    }
+
+    /// Movement-side wall crush: a `Crusher=yes` drive vehicle that finishes the
+    /// ground-movement stage standing on a `Wall=yes` overlay cell flattens that
+    /// wall outright. This mirrors gamemd's per-cell-process wall crush — a
+    /// forced, instant overlay removal — which is a SEPARATE path from the
+    /// probabilistic weapon/warhead wall damage (the crush deals no unit damage
+    /// and skips the Strength dice roll).
+    ///
+    /// The gate is exactly the `Crusher=` flag (not `OmniCrusher=`, which governs
+    /// unit-vs-unit crushing) plus a Drive locomotor over a wall cell. In stock
+    /// YR only the Battle Fortress routes *through* walls (`MovementZone=
+    /// CrusherAll`), but any Crusher drive vehicle that ends up on a wall cell
+    /// crushes it. A crusher can only occupy an intact wall cell on the tick it
+    /// enters (walls block non-crushers), and the wall is removed that same tick,
+    /// so this self-limits to one destruction per wall with no per-tick re-fire.
+    ///
+    /// Runs immediately after Phase-1 ground movement, before vision. Reuses the
+    /// shared `apply_wall_damage_events` teardown so overlay clear, cardinal
+    /// neighbor connectivity cleanup, chain reaction, and wall-entity `uninit`
+    /// match the weapon path's downstream behavior exactly.
+    ///
+    /// Parity follow-up: gamemd also plays a Voc cue and adds a small forward
+    /// rocking tilt on the crush; the exact Voc index is unresolved
+    /// (`docs/research/WALL_CRUSH_ON_DRIVEOVER_GHIDRA_REPORT.md` §5), so the sound
+    /// and cosmetic tilt are deferred rather than approximated with a wrong cue.
+    pub(crate) fn apply_wall_crush_on_driveover(
+        &mut self,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        let (Some(rules), Some(registry)) = (rules, overlay_registry) else {
+            return;
+        };
+        let Some(grid) = self.overlay_grid.as_ref() else {
+            return;
+        };
+
+        // Phase 1 (read-only): collect every distinct wall cell currently
+        // occupied by an active Crusher drive vehicle. Sorted entity iteration
+        // keeps this deterministic; the per-cell dedup means two crushers on one
+        // cell emit a single forced-destruction event.
+        let mut events: Vec<WallDamageEvent> = Vec::new();
+        let mut seen: BTreeSet<(u16, u16)> = BTreeSet::new();
+        for (_id, e) in self.substrate.entities.iter_sorted() {
+            if !e.regular_crusher || !e.is_active() {
+                continue;
+            }
+            // Wall crush requires the Drive locomotor (gamemd LocomotorType ==
+            // Drive); check the primary kind so a transient piggyback (e.g. the
+            // chrono-miner's temporary Drive) does not change the gate.
+            if e.locomotor.as_ref().map(|l| l.primary_kind()) != Some(LocomotorKind::Drive) {
+                continue;
+            }
+            let (rx, ry) = (e.position.rx, e.position.ry);
+            let has_wall = grid
+                .cell(rx, ry)
+                .overlay_id
+                .and_then(|oid| registry.flags(oid))
+                .is_some_and(|f| f.wall);
+            if has_wall && seen.insert((rx, ry)) {
+                // damage == u16::MAX = forced instant removal, bypassing the
+                // probabilistic Strength gate the weapon path uses.
+                events.push(WallDamageEvent {
+                    rx,
+                    ry,
+                    damage: u16::MAX,
+                });
+            }
+        }
+
+        if events.is_empty() {
+            return;
+        }
+
+        // Phase 2 (mutating): shared teardown, identical to the combat wall path.
+        self.apply_wall_damage_events(&events, rules, registry);
     }
 
     pub(crate) fn default_vision_range_for_category(category: EntityCategory) -> u16 {
@@ -2095,6 +2249,7 @@ impl Simulation {
             &mut self.scenario_rng,
             tick_ms,
             self.session.tick,
+            self.session.binary_frame,
             self.zone_grid.as_ref(),
             self.resolved_terrain.as_ref(),
             &self.terrain_speed_config,
@@ -2122,6 +2277,11 @@ impl Simulation {
                 &self.interner,
             );
         }
+        // Movement-side wall crush (part of the ground-movement stage): a Crusher
+        // drive vehicle that ended Phase-1 on a wall cell flattens the wall,
+        // separate from the weapon-damage wall path. No-op when no crusher sits
+        // on a wall, so it is hash-neutral for every non-crush scenario.
+        self.apply_wall_crush_on_driveover(rules, overlay_registry);
         // --- Phase 2: Air + special movement ---
         // DEPENDS ON: commands (may set movement targets for air/special units).
         // INDEPENDENT OF: ground movement (air units bypass A* and occupancy).
@@ -2539,6 +2699,30 @@ impl Simulation {
             for ev in &combat_result.reveal_events {
                 self.radar_events
                     .push(RadarEventType::Combat, ev.rx, ev.ry, event_dur);
+            }
+            // Player-asset damage pings: owner-scoped radar diamond + EVA
+            // dispatch (voice gated app-side to the local player; the queue's
+            // dedup result rides along as `eva_allowed`, BridgeRepaired-style).
+            for ev in &combat_result.under_attack_events {
+                let event_type = if ev.miner {
+                    RadarEventType::MinerUnderAttack
+                } else {
+                    RadarEventType::BaseUnderAttack
+                };
+                let eva_allowed = self.radar_events.push_owned(
+                    event_type,
+                    ev.rx,
+                    ev.ry,
+                    event_dur,
+                    Some(ev.owner),
+                );
+                self.sound_events.push(SimSoundEvent::UnderAttack {
+                    rx: ev.rx,
+                    ry: ev.ry,
+                    owner: ev.owner,
+                    miner: ev.miner,
+                    eva_allowed,
+                });
             }
             // Drain combat-emitted smudge spawn requests before any tick stage
             // that reads tiberium density (ore-growth, repairs that touch

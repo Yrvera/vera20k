@@ -165,7 +165,8 @@ pub(crate) fn tick_miners_with_overlay_registry(
     // finishes, but their refinery reservation must release immediately so
     // queued miners can be promoted without waiting through the death anim.
     let alive_sids: BTreeSet<u64> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| !e.dying)
         .map(|e| e.stable_id)
@@ -259,7 +260,8 @@ pub(super) fn process_miner(
     snap: &mut MinerSnapshot,
 ) {
     if sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.entity_id)
         .is_some_and(|entity| entity.forced_drive_track.is_some())
     {
@@ -452,9 +454,10 @@ fn handle_search_ore(
     // rescan_cooldown_ticks (0x69) frames — the gate fires inclusively at
     // start + duration, so the duration IS the frame count (no fencepost).
     snap.miner.state = MinerState::WaitNoOre;
-    snap.miner
-        .rescan_cooldown
-        .arm(sim.session.binary_frame, u32::from(config.rescan_cooldown_ticks));
+    snap.miner.rescan_cooldown.arm(
+        sim.session.binary_frame,
+        u32::from(config.rescan_cooldown_ticks),
+    );
 }
 
 fn handle_move_to_ore(
@@ -487,7 +490,8 @@ fn handle_move_to_ore(
     // (50% translucent). Transitioning to Harvest during delay would skip
     // the warp-in visual.
     let has_teleport = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.entity_id)
         .is_some_and(|e| e.teleport_state.is_some());
     if has_teleport {
@@ -525,16 +529,18 @@ fn handle_move_to_ore(
     if (snap.rx, snap.ry) == target {
         snap.miner.state = MinerState::Harvest;
         // Original requires 9 StepTimer steps before first bale (18 frames at default rate).
-        snap.miner
-            .harvest_timer
-            .arm(sim.session.binary_frame, u32::from(config.harvest_tick_interval) + 1);
+        snap.miner.harvest_timer.arm(
+            sim.session.binary_frame,
+            u32::from(config.harvest_tick_interval) + 1,
+        );
         return;
     }
 
     // Check if entity still has an active movement target (may have just
     // been cleared above on retarget).
     let has_movement = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_some());
     // Adjacent to ore? The passability matrix blocks Tiberium terrain for
@@ -548,7 +554,12 @@ fn handle_move_to_ore(
 
     if dx <= 1 && dy <= 1 {
         if !has_movement {
-            movement::issue_direct_move(&mut sim.substrate.entities, snap.entity_id, target, snap.speed);
+            movement::issue_direct_move(
+                &mut sim.substrate.entities,
+                snap.entity_id,
+                target,
+                snap.speed,
+            );
         }
         return;
     }
@@ -558,7 +569,13 @@ fn handle_move_to_ore(
     // movement tick doesn't block at Tiberium cells along the path.
     // Harvesters must be able to traverse ore fields freely.
     if !has_movement && let Some(grid) = path_grid {
-        issue_move_if_idle(&mut sim.substrate.entities, grid, snap.entity_id, target, snap.speed);
+        issue_move_if_idle(
+            &mut sim.substrate.entities,
+            grid,
+            snap.entity_id,
+            target,
+            snap.speed,
+        );
         // Mark the newly created movement as terrain-cost-exempt.
         if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id)
             && let Some(ref mut mt) = entity.movement_target
@@ -621,9 +638,10 @@ fn handle_harvest(
         // Harvest. If the cell is now empty the next call returns 0 and
         // we fall through to short-scan; if it still has density we wait
         // 18 frames per gamemd's step-counter gate.
-        snap.miner
-            .harvest_timer
-            .arm(sim.session.binary_frame, u32::from(config.harvest_tick_interval) + 1);
+        snap.miner.harvest_timer.arm(
+            sim.session.binary_frame,
+            u32::from(config.harvest_tick_interval) + 1,
+        );
         return;
     }
 
@@ -694,7 +712,8 @@ fn handle_return(
     snap: &mut MinerSnapshot,
 ) {
     let has_teleport = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.entity_id)
         .is_some_and(|e| e.teleport_state.is_some());
     if has_teleport {
@@ -744,7 +763,8 @@ fn handle_return(
     };
 
     let moving = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.entity_id)
         .is_some_and(|entity| entity.movement_target.is_some());
     if !moving && try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, ref_sid)
@@ -763,10 +783,18 @@ fn handle_return(
     let contact = if snap.miner.kind == MinerKind::Chrono {
         at_dock
     } else {
-        let stopped_close_enough = sim.substrate.entities.get(snap.entity_id).is_some_and(|entity| {
-            entity.movement_target.is_none()
-                && is_within_close_enough((snap.rx, snap.ry), dock, rules.general.close_enough)
-        });
+        let stopped_close_enough =
+            sim.substrate
+                .entities
+                .get(snap.entity_id)
+                .is_some_and(|entity| {
+                    entity.movement_target.is_none()
+                        && is_within_close_enough(
+                            (snap.rx, snap.ry),
+                            dock,
+                            rules.general.close_enough,
+                        )
+                });
         is_adjacent_or_at((snap.rx, snap.ry), dock) || stopped_close_enough
     };
 
@@ -778,7 +806,13 @@ fn handle_return(
     }
 
     if let Some(grid) = path_grid {
-        issue_move_if_idle(&mut sim.substrate.entities, grid, snap.entity_id, dock, snap.speed);
+        issue_move_if_idle(
+            &mut sim.substrate.entities,
+            grid,
+            snap.entity_id,
+            dock,
+            snap.speed,
+        );
     }
 }
 
@@ -797,7 +831,8 @@ fn handle_forced_return(
     snap: &mut MinerSnapshot,
 ) {
     let has_teleport = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.entity_id)
         .is_some_and(|e| e.teleport_state.is_some());
     if has_teleport {
@@ -818,9 +853,10 @@ fn handle_forced_return(
             }
         } else {
             snap.miner.state = MinerState::WaitNoOre;
-            snap.miner
-                .rescan_cooldown
-                .arm(sim.session.binary_frame, u32::from(config.rescan_cooldown_ticks));
+            snap.miner.rescan_cooldown.arm(
+                sim.session.binary_frame,
+                u32::from(config.rescan_cooldown_ticks),
+            );
             return;
         }
     }
@@ -997,7 +1033,13 @@ fn try_begin_close_return_radio(
             && !is_adjacent_or_at((snap.rx, snap.ry), staging)
             && let Some(grid) = path_grid
         {
-            issue_move_if_idle(&mut sim.substrate.entities, grid, snap.entity_id, staging, snap.speed);
+            issue_move_if_idle(
+                &mut sim.substrate.entities,
+                grid,
+                snap.entity_id,
+                staging,
+                snap.speed,
+            );
         }
     }
 
@@ -1092,7 +1134,13 @@ fn try_issue_standard_far_return_drive(
         return false;
     };
 
-    issue_move_if_idle(&mut sim.substrate.entities, grid, snap.entity_id, staging, snap.speed);
+    issue_move_if_idle(
+        &mut sim.substrate.entities,
+        grid,
+        snap.entity_id,
+        staging,
+        snap.speed,
+    );
     snap.miner.state = MinerState::ReturnToRefinery;
     true
 }
@@ -1209,8 +1257,7 @@ fn refinery_dock_capacity_for_sid(
     if entity.dying || entity.health.current == 0 {
         return None;
     }
-    sim
-        .object_type(entity.type_ref, rules)
+    sim.object_type(entity.type_ref, rules)
         .map(|o| o.number_of_docks.max(1) as usize)
         .or(Some(1))
 }
@@ -1478,7 +1525,8 @@ pub(crate) fn player_has_purifier(sim: &Simulation, rules: &RuleSet, owner: &str
 /// Miner deposit path. The bonus is `count × PurifierBonus × amount`, so
 /// every real purifier stacks the bonus linearly.
 pub(crate) fn count_purifiers_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> i32 {
-    sim.substrate.entities
+    sim.substrate
+        .entities
         .values()
         .filter(|e| {
             // A Dying purifier corpse (sold/destroyed this tick) must not keep
@@ -1496,9 +1544,14 @@ pub(crate) fn count_purifiers_for_owner(sim: &Simulation, rules: &RuleSet, owner
 /// Effective purifier count used in the deposit bonus formula.
 ///
 /// Returns `real_purifiers + AI_virtual_purifiers`, where the AI term is
-/// `general.ai_virtual_purifiers[difficulty]` for non-human houses in
-/// skirmish/campaign play, and 0 otherwise. Both terms are sourced from
-/// the refinery's owner — credit destination is a separate concern.
+/// `general.ai_virtual_purifiers[refinery_owner.difficulty]` for non-human
+/// houses. Both terms are sourced from the refinery's owner — credit
+/// destination is a separate concern.
+///
+/// Native also gates the virtual term on raw `g_GameMode != 0`. The simulation
+/// does not yet carry that verified raw mode authority, so adding that gate is
+/// an explicit parity follow-up; this function must not infer it from unrelated
+/// session fields.
 pub(crate) fn effective_purifier_count(
     sim: &Simulation,
     rules: &RuleSet,
@@ -1510,23 +1563,15 @@ pub(crate) fn effective_purifier_count(
     // through app init with the correct flag; tests/edge cases that fall
     // through to the credits_entry_for_owner auto-create get is_human=true
     // (the safer default) and therefore skip the AI bonus, as intended.
-    let is_ai =
+    let Some(house) =
         crate::sim::house_state::house_state_for_owner(&sim.houses, refinery_owner, &sim.interner)
-            .is_some_and(|h| !h.is_human);
-    if !is_ai {
+    else {
+        return real;
+    };
+    if house.is_human {
         return real;
     }
-    let difficulty = sim.session.game_options.ai_difficulty;
     let table = rules.general.ai_virtual_purifiers;
-    // `ai_difficulty` uses the lobby/dialog convention (0=Easy, 1=Normal,
-    // 2=Hard), but the AIVirtualPurifiers table is hardest-first (`h,m,e` ->
-    // index 0=Hard). Remap before indexing so a Hard AI gets the top bonus and
-    // an Easy AI the bottom one. The bounds-check guards a drifted index.
-    const DIFFICULTY_SLOTS: i32 = 3;
-    let virtual_count = if (0..DIFFICULTY_SLOTS).contains(&difficulty) {
-        table[(DIFFICULTY_SLOTS - 1 - difficulty) as usize]
-    } else {
-        0
-    };
+    let virtual_count = table[house.difficulty.table_index()];
     real + virtual_count
 }

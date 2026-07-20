@@ -10,7 +10,8 @@
 //! Particles never enter `EntityStore` — they're owned by their parent PSC.
 //!
 //! Tier 2 implements Smoke / Gas / Fire via the existing SHP render pipeline.
-//! Spark / Railgun are parsed but spawn returns None (warn + skip).
+//! Spark compatibility state and pure kernels exist, but public Spark/Railgun
+//! spawn and production dispatch remain unavailable until their activation gates close.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/ and util/ only.
@@ -20,12 +21,16 @@ use crate::rules::particle_system_type::ParticleSystemTypeId;
 use crate::rules::particle_type::ParticleTypeId;
 use crate::sim::intern::InternedId;
 use crate::util::fixed_math::SimFixed;
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
 use glam::IVec3;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod fire;
 pub mod gas;
 pub mod smoke;
+pub mod spark;
+pub mod spark_world;
 pub mod spawn;
 pub mod system_ai;
 pub mod wind;
@@ -48,6 +53,16 @@ pub struct ParticleSystem {
     pub target_coords: IVec3,
     pub owner_house: Option<InternedId>,
     pub done_spawning: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SparkRuntimeState {
+    pub velocity_x: NativeF32Bits,
+    pub velocity_y: NativeF32Bits,
+    pub velocity_z: NativeF32Bits,
+    pub start_rgb: [u8; 3],
+    pub color_index: i32,
+    pub color_accumulator: NativeF64Bits,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +88,10 @@ pub struct Particle {
     pub current_color: [u8; 3],
     pub color_index: u8,
     pub color_accumulator: SimFixed,
+
+    /// Authoritative behavior-3 state. Generic direction/velocity/color fields
+    /// remain authoritative for the existing Smoke/Gas/Fire implementations only.
+    pub spark: Option<SparkRuntimeState>,
 
     /// Fire-only scratch: per-tick velocity delta computed by fire AI and
     /// consumed by `move_fire` (jitter * direction). Zero for smoke/gas.

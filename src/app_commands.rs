@@ -24,13 +24,14 @@ fn intern_in_sim(state: &mut AppState, s: &str) -> InternedId {
         .unwrap_or_default()
 }
 
-/// Resolve the local owner, set the override, and return the owned String.
-/// Centralizes the common pattern of getting the owner + updating the override,
-/// reducing one clone per call site compared to doing it inline.
+/// Resolve the local owner and return the owned String.
+///
+/// Read-only: identity comes from the match-scoped pin (or the sandbox
+/// heuristic when unpinned). Command issue must never REWRITE identity —
+/// the old per-action override write made "who am I" drift with whatever
+/// the heuristic last returned, a lockstep hazard.
 fn resolve_owner(state: &mut AppState) -> String {
-    let owner: String = preferred_local_owner(state).unwrap_or_else(|| DEFAULT_OWNER.to_string());
-    state.local_owner_override = Some(owner.clone());
-    owner
+    preferred_local_owner(state).unwrap_or_else(|| DEFAULT_OWNER.to_string())
 }
 
 pub(crate) fn queue_default_build(state: &mut AppState) {
@@ -618,6 +619,13 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
 }
 
 pub(crate) fn cycle_local_owner(state: &mut AppState) {
+    // Debug-only control: inert whenever a match pinned the local player at
+    // launch — identity must not move mid-match. Cycling remains available in
+    // unpinned sandbox flows (empty-map dev sessions).
+    if state.local_player_owner.is_some() {
+        log::info!("Cycle owner ignored: local player is pinned for this match");
+        return;
+    }
     let mut owners = collect_playable_owners(state);
     if owners.is_empty() {
         return;
@@ -640,8 +648,16 @@ pub(crate) fn preferred_local_owner_name(state: &AppState) -> Option<String> {
 }
 
 pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
+    // Match-scoped pinned identity — set once at launch, never rewritten.
+    // Selection must NEVER repoint the local player: under lockstep each
+    // client issues commands as its fixed house, so identity cannot be a
+    // per-call heuristic. Everything below is the legacy dev/sandbox
+    // fallback, reachable only when no launch flow pinned an owner.
+    if let Some(owner) = &state.local_player_owner {
+        return Some(owner.clone());
+    }
     let sim = state.simulation.as_ref()?;
-    // Prefer owner of selected unit first.
+    // Sandbox fallback: prefer owner of selected unit first.
     for entity in sim.entities().values() {
         let owner_str = sim.interner.resolve(entity.owner);
         if entity.selected && is_playable_house_name(owner_str) {

@@ -17,7 +17,7 @@
 //!   rules/sound_ini (SoundRegistry for ID→filename mapping).
 //! - Does NOT depend on render/, ui/, sidebar/, sim/.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZero;
 
 use rodio::buffer::SamplesBuffer;
@@ -124,6 +124,8 @@ pub struct SfxPlayer {
     _device: MixerDeviceSink,
     /// Active SFX players — oldest first. Capped at MAX_CONCURRENT_SFX.
     active: VecDeque<Player>,
+    /// Active sound handle owned by each authoritative animation ID.
+    animation_active: BTreeMap<u64, Player>,
     /// Dedicated voice player — unit responses cut off the previous voice.
     /// Separate from SFX pool so voices never compete with weapon sounds.
     voice_player: Option<Player>,
@@ -148,6 +150,7 @@ impl SfxPlayer {
         Some(Self {
             _device: device,
             active: VecDeque::new(),
+            animation_active: BTreeMap::new(),
             voice_player: None,
             queued_voice: VecDeque::new(),
             current_voice_id: None,
@@ -230,6 +233,56 @@ impl SfxPlayer {
         }
 
         false
+    }
+
+    /// Start or replace the sound owned by one animation object.
+    pub fn play_animation_sound_with_volume(
+        &mut self,
+        anim_id: u64,
+        sound_id: &str,
+        spatial_volume: f32,
+        registry: &SoundRegistry,
+        assets: &AssetManager,
+        audio_indices: &[crate::assets::audio_bag::AudioIndex],
+    ) -> bool {
+        self.stop_animation_sound(anim_id);
+        let decoded_and_volume = if let Some(entry) = registry.get(sound_id) {
+            if entry.sounds.is_empty() {
+                None
+            } else {
+                self.random_counter = self.random_counter.wrapping_add(1);
+                let filename = &entry.sounds[(self.random_counter as usize) % entry.sounds.len()];
+                load_sfx(filename, assets, audio_indices).map(|decoded| {
+                    let volume = entry.volume as f64 / 100.0;
+                    (decoded, (volume * self.volume) as f32 * spatial_volume)
+                })
+            }
+        } else {
+            load_sfx(sound_id, assets, audio_indices)
+                .map(|decoded| (decoded, self.volume as f32 * spatial_volume))
+        };
+        let Some((decoded, final_volume)) = decoded_and_volume else {
+            return false;
+        };
+        let Some(channels) = NonZero::new(decoded.channels) else {
+            return false;
+        };
+        let Some(sample_rate) = NonZero::new(decoded.sample_rate) else {
+            return false;
+        };
+        let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
+        let player = Player::connect_new(self._device.mixer());
+        player.set_volume(final_volume);
+        player.append(source);
+        self.animation_active.insert(anim_id, player);
+        true
+    }
+
+    /// Release only the handle owned by `anim_id`. Idempotent.
+    pub fn stop_animation_sound(&mut self, anim_id: u64) {
+        if let Some(player) = self.animation_active.remove(&anim_id) {
+            player.stop();
+        }
     }
 
     /// Play a sound as a unit voice response (VoiceSelect, VoiceMove, VoiceAttack).
@@ -454,6 +507,7 @@ impl SfxPlayer {
     /// Remove handles for sounds that have finished playing.
     fn cleanup_finished(&mut self) {
         self.active.retain(|p: &Player| !p.empty());
+        self.animation_active.retain(|_, player| !player.empty());
         self.advance_voice_queue();
     }
 
@@ -469,7 +523,7 @@ impl SfxPlayer {
 
     /// Number of currently active (playing) sound effects.
     pub fn active_count(&self) -> usize {
-        self.active.len()
+        self.active.len() + self.animation_active.len()
     }
 
     /// Number of queued EVA/voice announcements waiting on the voice slot.

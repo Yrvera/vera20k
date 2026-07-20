@@ -13,6 +13,7 @@ use super::{
     DropdownScrollDragState, DropdownScrollbarPart, DropdownScrollbarPressState, OpenComboDropdown,
     SkirmishAiRowType, SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice,
     SkirmishShellOpponent, SkirmishShellState, SkirmishShellUiSound, inactive_ai_team_default,
+    player_row_visible,
 };
 
 pub fn combo_rect(layout: &SkirmishShellLayout, id: SkirmishComboId) -> Option<RectPx> {
@@ -31,6 +32,9 @@ pub fn combo_dropdown_rect(
     maps: &[MapMenuEntry],
     id: SkirmishComboId,
 ) -> Option<RectPx> {
+    if !combo_enabled(state, maps, id) {
+        return None;
+    }
     let rect = combo_rect(layout, id)?;
     let item_count = combo_items(state, maps, id).len() as i32;
     if item_count == 0 {
@@ -258,7 +262,10 @@ pub fn combo_items(
         SkirmishComboId::Start(row) => {
             let capacity = maps
                 .get(state.selected_map_idx)
-                .map(|map| map.multiplayer_start_waypoints.len())
+                .map(|map| {
+                    map.player_capacity
+                        .clamp(0, SKIRMISH_PLAYER_SLOT_COUNT as i32) as usize
+                })
                 .unwrap_or(SKIRMISH_PLAYER_SLOT_COUNT)
                 .min(SKIRMISH_PLAYER_SLOT_COUNT);
             let selected = selected_start_position(state, row);
@@ -310,13 +317,18 @@ pub fn selected_combo_item(
                 SkirmishCountryChoice::Country(opponent.country)
             })
         }),
-        SkirmishComboId::Color(0) => Some(SkirmishComboItem::Color(normal_color_index(
-            state.player_color_index,
-        ))),
-        SkirmishComboId::Color(row) => state
-            .opponents
-            .get(row - 1)
-            .map(|opponent| SkirmishComboItem::Color(normal_color_index(opponent.color_index))),
+        SkirmishComboId::Color(0) => Some(if state.player_color_claimed {
+            SkirmishComboItem::Color(normal_color_index(state.player_color_index))
+        } else {
+            SkirmishComboItem::ColorSentinel(-2)
+        }),
+        SkirmishComboId::Color(row) => state.opponents.get(row - 1).map(|opponent| {
+            if opponent.color_claimed {
+                SkirmishComboItem::Color(normal_color_index(opponent.color_index))
+            } else {
+                SkirmishComboItem::ColorSentinel(-2)
+            }
+        }),
         SkirmishComboId::Start(row) => {
             selected_start_position(state, row).map(SkirmishComboItem::Start)
         }
@@ -339,7 +351,24 @@ pub fn selected_combo_item_index(
         .position(|item| *item == selected)
 }
 
-pub fn combo_enabled(state: &SkirmishShellState, id: SkirmishComboId) -> bool {
+fn combo_player_row(id: SkirmishComboId) -> usize {
+    match id {
+        SkirmishComboId::AiType(idx) => idx + 1,
+        SkirmishComboId::Side(row)
+        | SkirmishComboId::Color(row)
+        | SkirmishComboId::Start(row)
+        | SkirmishComboId::Team(row) => row,
+    }
+}
+
+pub fn combo_enabled(
+    state: &SkirmishShellState,
+    maps: &[MapMenuEntry],
+    id: SkirmishComboId,
+) -> bool {
+    if !player_row_visible(state, maps, combo_player_row(id)) {
+        return false;
+    }
     match id {
         SkirmishComboId::AiType(_) => true,
         SkirmishComboId::Side(0)
@@ -478,11 +507,12 @@ fn combo_hit_order() -> Vec<SkirmishComboId> {
 fn combo_arrow_at(
     state: &SkirmishShellState,
     layout: &SkirmishShellLayout,
+    maps: &[MapMenuEntry],
     x: i32,
     y: i32,
 ) -> Option<SkirmishComboId> {
     combo_hit_order().into_iter().find(|id| {
-        combo_enabled(state, *id)
+        combo_enabled(state, maps, *id)
             && combo_rect(layout, *id)
                 .map(|rect| arrow_hit_rect(rect).contains(x, y))
                 .unwrap_or(false)
@@ -497,11 +527,12 @@ fn combo_arrow_at(
 fn combo_face_at(
     state: &SkirmishShellState,
     layout: &SkirmishShellLayout,
+    maps: &[MapMenuEntry],
     x: i32,
     y: i32,
 ) -> Option<SkirmishComboId> {
     combo_hit_order().into_iter().find(|id| {
-        combo_enabled(state, *id)
+        combo_enabled(state, maps, *id)
             && combo_rect(layout, *id)
                 .map(|rect| combo_face_rect(rect).contains(x, y))
                 .unwrap_or(false)
@@ -678,9 +709,9 @@ pub(super) fn handle_combo_mouse_down(
 
     // A click anywhere on a collapsed combo face plays the open sound. Only a
     // click inside the rightmost arrow zone actually opens the dropdown.
-    if let Some(id) = combo_face_at(state, layout, x, y) {
+    if let Some(id) = combo_face_at(state, layout, maps, x, y) {
         state.push_ui_sound(SkirmishShellUiSound::GuiComboOpenSound);
-        if combo_arrow_at(state, layout, x, y) == Some(id) {
+        if combo_arrow_at(state, layout, maps, x, y) == Some(id) {
             state.open_combo_dropdown = Some(OpenComboDropdown { id, top_index: 0 });
             state.dropdown_scroll_drag = None;
             state.dropdown_scroll_press = None;

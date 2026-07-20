@@ -12,8 +12,8 @@ mod preview;
 mod text;
 
 pub use draw_order::{
-    choose_map_modal_semantic_draw_order, skirmish_shell_semantic_draw_order,
-    validation_modal_semantic_draw_order, SkirmishShellDrawRole,
+    SkirmishShellDrawRole, choose_map_modal_semantic_draw_order,
+    skirmish_shell_semantic_draw_order, validation_modal_semantic_draw_order,
 };
 pub(crate) use preview::SkirmishPreviewTexture;
 pub(crate) use text::skirmish_right_panel_label_strings;
@@ -34,19 +34,19 @@ use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::main_menu::SkirmishCountry;
 #[cfg(test)]
 use crate::ui::skirmish_shell::{
-    combo_dropdown_content_rect, player_name_edit_text_rect, SkirmishComboId, COMBO_DROPDOWN_ROW_H,
+    COMBO_DROPDOWN_ROW_H, SkirmishComboId, combo_dropdown_content_rect, player_name_edit_text_rect,
 };
 use crate::ui::skirmish_shell::{
-    compute_choose_map_modal_layout, compute_layout, compute_validation_modal_layout,
     ChooseMapModalLayout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
-    SkirmishShellState, ValidationModalLayout,
+    SkirmishShellState, ValidationModalLayout, compute_choose_map_modal_layout, compute_layout,
+    compute_validation_modal_layout, player_row_visible,
 };
 
 use self::chrome::*;
 use self::controls::*;
 #[cfg(test)]
 use self::draw_order::{
-    lower_strip_role, parent_background_role, LowerStripRole, ParentBackgroundRole,
+    LowerStripRole, ParentBackgroundRole, lower_strip_role, parent_background_role,
 };
 use self::modals::*;
 use self::preview::*;
@@ -338,7 +338,7 @@ pub fn build_skirmish_shell_instances(
         2,
     );
 
-    push_combo_instances(&mut instances, atlas, color_schemes, layout, shell);
+    push_combo_instances(&mut instances, atlas, color_schemes, layout, shell, maps);
     push_checkbox_instances(&mut instances, atlas, layout, shell);
     push_trackbar_instances(&mut instances, atlas, layout, shell);
 
@@ -349,6 +349,9 @@ pub fn build_skirmish_shell_instances(
         push_flag_entry_native_clipped_centered(&mut instances, flag, layout.flags[0], 0.00057);
     }
     for idx in 1..layout.flags.len() {
+        if !player_row_visible(shell, maps, idx) {
+            continue;
+        }
         let entry = shell
             .opponents
             .get(idx - 1)

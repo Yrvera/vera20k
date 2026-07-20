@@ -19,7 +19,10 @@ use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::WeaponMuzzleFlash;
 use crate::sim::miner::ResourceType;
 
-use super::helpers::{compute_sprite_depth, compute_sprite_depth_params, in_view};
+use super::helpers::{
+    ANIM_DRAW_DEPTH_BIAS_PX, apply_shape_z_adjust, compute_sprite_depth,
+    compute_sprite_depth_params, in_view,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverlayRenderBucket {
@@ -74,8 +77,9 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         ) {
             continue;
         }
+        let shp_name: &str = sim.interner.resolve(fx.shp_name);
         let key = ShpSpriteKey {
-            type_id: sim.interner.resolve(fx.shp_name).to_string(),
+            type_id: shp_name.to_string(),
             facing: 0,
             frame: fx.frame,
             house_color: HouseColorIndex(0),
@@ -84,7 +88,25 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
             continue;
         };
         let depth_y: f32 = center_y + entry.offset_y + entry.pixel_size[1];
-        let depth: f32 = compute_sprite_depth(state, depth_y, fx.z);
+        let base_depth: f32 = compute_sprite_depth(state, depth_y, fx.z);
+        // Anim SHP draws carry the type's ZAdjust= sort bias plus the
+        // constant -2px anim bias (negative = toward camera).
+        let type_z_adjust: i32 = state
+            .art_registry
+            .as_ref()
+            .and_then(|a| a.anim_runtime_config(shp_name))
+            .map(|c| c.z_adjust)
+            .unwrap_or(0);
+        let world_height: f32 = state
+            .terrain_grid
+            .as_ref()
+            .map(|g| g.world_height)
+            .unwrap_or(1.0);
+        let depth: f32 = apply_shape_z_adjust(
+            base_depth,
+            type_z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
+            world_height,
+        );
         let tint: [f32; 3] = state.lighting_grid.anim_tint_at((fx.rx, fx.ry));
         paged[entry.page as usize].push(SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
@@ -99,10 +121,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
     }
 }
 
-/// Build SpriteInstances for damage fire/smoke overlays on buildings below ConditionYellow.
-///
-/// Each fire is positioned at the building's screen origin + pixel offset from art.ini
-/// `DamageFireOffset`. Fire SHPs (FIRE01/02/03) are looked up in the SHP atlas.
+/// Build damage-fire sprites from authoritative sim-owned animation slots.
 pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -116,50 +135,74 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
         state.render_height() as f32 / z2,
     );
     for entity in sim.entities().values() {
-        let overlays = match &entity.damage_fire_overlays {
-            Some(o) => o,
-            None => continue,
-        };
-        let pos = &entity.position;
-        let (bx, by) = (pos.screen_x, pos.screen_y);
-        if !in_view(bx, by, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
-            continue;
-        }
-        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((pos.rx, pos.ry));
-        let center_x: f32 = bx;
-        // Damage fires are building anims — use building anim depth bias so walls
-        // overwrite them, matching the original's terrain pass step 6 ordering.
-        let (origin_y, world_height) = state
-            .terrain_grid
-            .as_ref()
-            .map(|g| (g.origin_y, g.world_height))
-            .unwrap_or((0.0, 1.0));
-        let fire_depth: f32 = compute_sprite_depth_params(origin_y, world_height, by, pos.z);
-
-        for fire in &overlays.fires {
+        for anim_id in entity.damage_fire_anim_ids.iter().flatten() {
+            let Some(anim) = sim.anim(*anim_id).filter(|anim| !anim.runtime.inactive) else {
+                continue;
+            };
+            let Ok(frame) = u16::try_from(anim.runtime.current_frame) else {
+                continue;
+            };
+            let (center_x, center_y, rx, ry, z) = anim_world_render_coords(anim.world_coord);
+            if !in_view(
+                center_x, center_y, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0,
+            ) {
+                continue;
+            }
+            let tint = state.lighting_grid.anim_tint_at((rx, ry));
             let key = ShpSpriteKey {
-                type_id: sim.interner.resolve(fire.shp_name).to_string(),
+                type_id: sim.interner.resolve(anim.type_id).to_string(),
                 facing: 0,
-                frame: fire.frame,
+                frame,
                 house_color: HouseColorIndex(0),
             };
             let Some(entry) = atlas.get(&key) else {
                 continue;
             };
-            let fx: f32 = center_x + fire.pixel_x as f32 + entry.offset_x;
-            let fy: f32 = by + fire.pixel_y as f32 + entry.offset_y;
+            let (origin_y, world_height) = state
+                .terrain_grid
+                .as_ref()
+                .map(|grid| (grid.origin_y, grid.world_height))
+                .unwrap_or((0.0, 1.0));
+            let fire_depth = compute_sprite_depth_params(origin_y, world_height, center_y, z);
             paged[entry.page as usize].push(SpriteInstance {
-                position: [fx, fy],
+                position: [center_x + entry.offset_x, center_y + entry.offset_y],
                 size: entry.pixel_size,
                 uv_origin: entry.uv_origin,
                 uv_size: entry.uv_size,
-                depth: garrison_flash_depth_apply_z_adjust(fire_depth, fire.z_adjust),
+                depth: apply_shape_z_adjust(
+                    fire_depth,
+                    anim.z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
+                    world_height,
+                ),
                 tint,
                 alpha: 1.0,
                 ..Default::default()
             });
         }
     }
+}
+
+fn anim_world_render_coords(
+    world: crate::sim::anim_class::AnimWorldCoord,
+) -> (f32, f32, u16, u16, u8) {
+    const CELL_LEPTONS: i32 = 256;
+    const HEIGHT_LEVEL_LEPTONS: i32 = 128;
+    let rx = world
+        .x
+        .div_euclid(CELL_LEPTONS)
+        .clamp(0, i32::from(u16::MAX)) as u16;
+    let ry = world
+        .y
+        .div_euclid(CELL_LEPTONS)
+        .clamp(0, i32::from(u16::MAX)) as u16;
+    let sub_x = crate::util::fixed_math::SimFixed::from_num(world.x.rem_euclid(CELL_LEPTONS));
+    let sub_y = crate::util::fixed_math::SimFixed::from_num(world.y.rem_euclid(CELL_LEPTONS));
+    let z = world
+        .z
+        .div_euclid(HEIGHT_LEVEL_LEPTONS)
+        .clamp(0, i32::from(u8::MAX)) as u8;
+    let (screen_x, screen_y) = crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z);
+    (screen_x, screen_y, rx, ry, z)
 }
 
 /// Build SpriteInstances for visible overlay objects and terrain objects.
@@ -520,6 +563,8 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
             flash.z,
             flash.z_adjust,
         );
+        // (flash.z_adjust carries the native occupied-building value, e.g. -200,
+        // applied as a toward-camera sort bias inside garrison_flash_depth.)
         paged[entry.page as usize].push(SpriteInstance {
             position: [fx, fy],
             size: entry.pixel_size,
@@ -540,15 +585,13 @@ fn garrison_flash_depth(
     z: u8,
     z_adjust: i32,
 ) -> f32 {
+    // ZAdjust is a signed pixel sort bias with neutral 0; negative pulls the
+    // flash toward the camera (the occupied-building flash uses -200 so it
+    // draws in front of the wall). The 1000-neutral convention belongs to
+    // the per-cell terrain z path, not anim draws. Anim SHP draws also carry
+    // the constant -2px bias.
     let base_depth = compute_sprite_depth_params(origin_y, world_height, screen_y, z);
-    garrison_flash_depth_apply_z_adjust(base_depth, z_adjust)
-}
-
-fn garrison_flash_depth_apply_z_adjust(base_depth: f32, z_adjust: i32) -> f32 {
-    // CC_Draw_Shape treats z_adjust as a sort-depth bias: 1000 is neutral,
-    // lower values push the shape away, and higher values pull it forward.
-    let neutral_delta = 1000 - z_adjust;
-    (base_depth + neutral_delta as f32 * 0.000001).clamp(0.001, 0.999)
+    apply_shape_z_adjust(base_depth, z_adjust + ANIM_DRAW_DEPTH_BIAS_PX, world_height)
 }
 
 fn weapon_muzzle_flash_key(flash: &WeaponMuzzleFlash) -> ShpSpriteKey {
@@ -604,7 +647,21 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
             continue;
         };
         let tint = state.lighting_grid.anim_tint_at((flash.rx, flash.ry));
-        let depth = compute_sprite_depth_params(origin_y, world_height, flash.screen_y, flash.z);
+        // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
+        // ZAdjust= as a sort bias plus the constant -2px anim bias.
+        let type_z_adjust: i32 = state
+            .art_registry
+            .as_ref()
+            .and_then(|a| a.anim_runtime_config(&flash.shp_name))
+            .map(|c| c.z_adjust)
+            .unwrap_or(0);
+        let base_depth =
+            compute_sprite_depth_params(origin_y, world_height, flash.screen_y, flash.z);
+        let depth = apply_shape_z_adjust(
+            base_depth,
+            type_z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
+            world_height,
+        );
         paged[entry.page as usize].push(SpriteInstance {
             position: [
                 flash.screen_x + entry.offset_x,
@@ -800,8 +857,8 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
 #[cfg(test)]
 mod tests {
     use super::{
-        OverlayRenderBucket, classify_overlay_render_bucket, garrison_flash_depth,
-        garrison_flash_depth_apply_z_adjust, weapon_muzzle_flash_key,
+        ANIM_DRAW_DEPTH_BIAS_PX, OverlayRenderBucket, apply_shape_z_adjust,
+        classify_overlay_render_bucket, garrison_flash_depth, weapon_muzzle_flash_key,
     };
     use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash, WeaponMuzzleFlash};
 
@@ -869,16 +926,54 @@ mod tests {
             z_adjust: -200,
         };
 
-        let base = garrison_flash_depth(0.0, 1000.0, flash.screen_y, flash.z, 1000);
-        let biased = garrison_flash_depth(0.0, 1000.0, flash.screen_y, flash.z, flash.z_adjust);
-        assert_eq!(
-            garrison_flash_depth_apply_z_adjust(base, 1000),
-            base,
-            "z_adjust=1000 is neutral"
-        );
+        let world_height: f32 = 1000.0;
+        let neutral = garrison_flash_depth(0.0, world_height, flash.screen_y, flash.z, 0);
+        let biased =
+            garrison_flash_depth(0.0, world_height, flash.screen_y, flash.z, flash.z_adjust);
         assert!(
-            biased > base,
-            "z_adjust=-200 should push the flash away without shifting its screen row"
+            biased < neutral,
+            "z_adjust=-200 must pull the flash toward the camera (smaller depth), \
+             without shifting its screen row"
         );
+        let expected_delta: f32 = -200.0 / world_height;
+        assert!(
+            (biased - neutral - expected_delta).abs() < 1e-6,
+            "bias magnitude must be z_adjust pixels over world_height (got {} vs {})",
+            biased - neutral,
+            expected_delta
+        );
+    }
+
+    #[test]
+    fn apply_shape_z_adjust_is_pixel_exact_with_zero_neutral() {
+        let world_height: f32 = 2000.0;
+        let base: f32 = 0.5;
+        // Neutral is 0, NOT 1000 (the 1000 convention is the per-cell terrain
+        // path, a separate mechanism).
+        assert_eq!(apply_shape_z_adjust(base, 0, world_height), base);
+        // Negative = toward camera (smaller depth), pixel-exact magnitude.
+        let toward = apply_shape_z_adjust(base, -300, world_height);
+        assert!((toward - (base - 300.0 / world_height)).abs() < 1e-6);
+        // Positive = away from camera.
+        let away = apply_shape_z_adjust(base, 40, world_height);
+        assert!(away > base);
+        // Clamped to the valid depth range.
+        assert_eq!(apply_shape_z_adjust(0.002, -100_000, world_height), 0.001);
+        assert_eq!(apply_shape_z_adjust(0.998, 100_000, world_height), 0.999);
+    }
+
+    #[test]
+    fn effective_anim_z_adjust_slot_overrides_type() {
+        use crate::app_instances::helpers::effective_anim_z_adjust;
+        // Nonzero slot override (e.g. ActiveAnimZAdjust=-100) wins.
+        assert_eq!(effective_anim_z_adjust(-100, -300), -100);
+        // Zero slot falls back to the anim type's own ZAdjust=.
+        assert_eq!(effective_anim_z_adjust(0, -300), -300);
+        assert_eq!(effective_anim_z_adjust(0, 0), 0);
+    }
+
+    #[test]
+    fn anim_draw_bias_constant_matches_native() {
+        assert_eq!(ANIM_DRAW_DEPTH_BIAS_PX, -2);
     }
 }

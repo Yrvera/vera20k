@@ -86,6 +86,7 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
 
 pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapLoadResult) {
     let startup = result.startup;
+    let returns_scenario_rng_to_offline_shell = startup.launch_session().is_some();
     state.tile_atlas = result.tile_atlas;
     crate::app_loading::clear_loading_state(state);
     state.map_basic = result.basic;
@@ -262,7 +263,15 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     for group in &mut state.control_groups {
         group.clear();
     }
+    // Pin the match-scoped local player once at launch. When the launch flow
+    // supplies no identity (dev/sandbox), the pin stays None and the legacy
+    // override/heuristic path resolves the owner instead.
+    state.local_player_owner = result.initial_local_owner.clone();
     state.local_owner_override = result.initial_local_owner;
+    // Reset per-match EVA edge-detection trackers.
+    state.eva_low_power_active = false;
+    state.eva_funds_stalled = false;
+    state.eva_announced_dying.clear();
     state.sandbox_full_visibility = result.sandbox_full_visibility;
     state.spawn_pick_pending = result.spawn_pick_pending;
 
@@ -288,6 +297,11 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     if state.spawn_pick_pending {
         crate::app_loading::clear_match_startup_state(state);
         state.screen = GameScreen::SpawnPick;
+        if returns_scenario_rng_to_offline_shell {
+            state
+                .offline_skirmish_runtime
+                .mark_gameplay_rng_return_pending();
+        }
         log::info!("Transitioned to SpawnPick — player must choose a start location");
     } else {
         match startup {
@@ -318,6 +332,9 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
                         state.rust_l0_receipt = Some(receipt);
                         state.active_loading_correlation = None;
                         state.screen = GameScreen::InGame;
+                        state
+                            .offline_skirmish_runtime
+                            .mark_gameplay_rng_return_pending();
                         log::info!("Transitioned to InGame after Rust L0 acknowledgement");
                     }
                     Err(err) => {
@@ -330,12 +347,17 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
                     }
                 }
             }
-            crate::match_bootstrap::LoadingStartup::UnverifiedLegacy(_)
+            crate::match_bootstrap::LoadingStartup::UnverifiedLegacy { .. }
             | crate::match_bootstrap::LoadingStartup::Generic { .. } => {
                 state.active_loading_correlation = None;
                 state.loaded_startup = None;
                 state.rust_l0_receipt = None;
                 state.screen = GameScreen::InGame;
+                if returns_scenario_rng_to_offline_shell {
+                    state
+                        .offline_skirmish_runtime
+                        .mark_gameplay_rng_return_pending();
+                }
                 log::info!("Transitioned to InGame on noncertifying startup path");
             }
         }

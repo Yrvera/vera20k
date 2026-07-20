@@ -104,10 +104,6 @@ const FLY_CRUISE_ALTITUDE: SimFixed = SimFixed::lit("1500");
 /// Rate at which Fly aircraft ascend/descend (leptons per second).
 const FLY_CLIMB_RATE: SimFixed = SimFixed::lit("300");
 
-/// Hover speed multiplier — hover units are ~35% slower than Drive for the
-/// same nominal Speed value (documented in ModEnc and the locomotor report).
-const HOVER_SPEED_MULTIPLIER: SimFixed = SimFixed::lit("0.65");
-
 /// Runtime locomotor state attached to each movable ECS entity.
 ///
 /// Created from `ObjectType` at spawn time. The movement system reads this
@@ -204,6 +200,20 @@ pub struct LocomotorState {
     /// during cell entry. The locomotor walks the infantry toward this point after
     /// the path is exhausted.
     pub subcell_dest: Option<(SimFixed, SimFixed)>,
+    /// Hover throttle `[0, 1]` — the persisted speed fraction of the hover
+    /// locomotor's SpeedUpdate model (see `sim/movement/hover.rs`). Lives on the
+    /// locomotor (not `MovementTarget`) so it survives path recomputes: a hover
+    /// unit re-pathed mid-route keeps its momentum instead of re-spinning up.
+    /// Zero at spawn (units start from rest) and reset to zero on full stop.
+    /// Unused by non-Hover locomotors.
+    #[serde(default)]
+    pub hover_throttle: SimFixed,
+    /// Hover vertical-spring state — the velocity-like bob offset of the
+    /// damped-spring altitude controller (see `hover::hover_vertical_tick`).
+    /// Pairs with `altitude`, which for hover units holds the visible float
+    /// height above ground. Unused by non-Hover locomotors.
+    #[serde(default)]
+    pub hover_bob_offset: SimFixed,
 }
 
 impl LocomotorState {
@@ -220,7 +230,10 @@ impl LocomotorState {
             // Ground family — all use Ground layer
             LocomotorKind::Drive => (MovementLayer::Ground, sim_one),
             LocomotorKind::Walk => (MovementLayer::Ground, sim_one),
-            LocomotorKind::Hover => (MovementLayer::Ground, HOVER_SPEED_MULTIPLIER),
+            // Hover cruises at full base Speed (throttle 1.0 at cruise), NOT the
+            // old made-up 0.65x. The accel/brake throttle ramp + continuous XY
+            // integrator land in later M2 phases (see sim/movement/hover.rs).
+            LocomotorKind::Hover => (MovementLayer::Ground, sim_one),
             LocomotorKind::Mech => (MovementLayer::Ground, sim_one),
             LocomotorKind::Ship => (MovementLayer::Ground, sim_one),
 
@@ -277,6 +290,8 @@ impl LocomotorState {
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
+            hover_throttle: SIM_ZERO,
+            hover_bob_offset: SIM_ZERO,
         }
     }
 
@@ -315,7 +330,7 @@ impl LocomotorState {
             | LocomotorKind::Rocket
             | LocomotorKind::DropPod
             | LocomotorKind::Parachute => (MovementLayer::Air, SimFixed::from_num(1)),
-            LocomotorKind::Hover => (MovementLayer::Ground, HOVER_SPEED_MULTIPLIER),
+            LocomotorKind::Hover => (MovementLayer::Ground, SimFixed::from_num(1)),
             _ => (MovementLayer::Ground, SimFixed::from_num(1)),
         };
 
@@ -348,6 +363,8 @@ impl LocomotorState {
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
+            hover_throttle: SIM_ZERO,
+            hover_bob_offset: SIM_ZERO,
         }
     }
 

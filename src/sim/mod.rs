@@ -21,6 +21,7 @@
 //! - sim/ receives commands but never calls into presentation modules.
 
 // --- Core types: entity storage, components, commands, RNG, interning ---
+pub mod anim_class;
 pub mod command;
 pub mod components;
 pub mod economy; // per-house wallet/storage/statistics value-type (production+economy substrate)

@@ -68,7 +68,12 @@ use crate::sim::world::Simulation;
 // field is zero for every entity in stock YR (the AI_Update spark gate is
 // Cyborg-only, with no stock users), so the only hash shift is the extra per-
 // entity zero in the fold — no behavior change to any committed golden scenario.
-const SNAPSHOT_VERSION: u32 = 25;
+// Bumped 25 -> 26: HouseState gains the serialized + hashed native per-house
+// difficulty field (Hard=0, Normal=1, Easy=2). A pre-26 save lacks the field and
+// cannot preserve mixed-difficulty AI behavior after load.
+// Bumped 26 -> 27: ObjectSubstrate gains the serialized AnimStore and GameEntity
+// gains the authoritative damage-fire transition cache plus eight animation IDs.
+const SNAPSHOT_VERSION: u32 = 27;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -302,7 +307,8 @@ mod tests {
     }
 
     fn cell_order(sim: &Simulation, rx: u16, ry: u16, layer: MovementLayer) -> Vec<u64> {
-        sim.substrate.occupancy
+        sim.substrate
+            .occupancy
             .get(rx, ry)
             .map(|occ| occ.iter_layer(layer).map(|o| o.entity_id).collect())
             .unwrap_or_default()
@@ -418,11 +424,34 @@ mod tests {
     /// took 21 -> 22, S3 (per-object pre-death facing read + idle-Guard authority)
     /// took 22 -> 23, the S4a authoritative flip (per-object mission commit
     /// relocated to the AI host) took 23 -> 24, and S4b (the hashed
-    /// `damage_particle_live_until` `+0x308`-equivalent field) took 24 -> 25. This
-    /// pins it so a later accidental bump is caught.
+    /// `damage_particle_live_until` `+0x308`-equivalent field) took 24 -> 25,
+    /// per-house native AI difficulty took 25 -> 26, and scheduler-owned
+    /// animation persistence took 26 -> 27. This pins it so a later accidental
+    /// bump is caught.
     #[test]
-    fn snapshot_version_is_25() {
-        assert_eq!(super::SNAPSHOT_VERSION, 25);
+    fn snapshot_version_is_27() {
+        assert_eq!(super::SNAPSHOT_VERSION, 27);
+    }
+
+    #[test]
+    fn house_difficulty_round_trips_through_snapshot() {
+        use crate::sim::house_state::{HouseDifficulty, HouseState};
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Computer1");
+        let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+        house.difficulty = HouseDifficulty::Easy;
+        sim.houses.insert(owner, house);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let loaded = GameSnapshot::load(&bytes).expect("load should succeed");
+
+        assert_eq!(
+            loaded.sim.houses.get(&owner).map(|house| house.difficulty),
+            Some(HouseDifficulty::Easy),
+        );
+        assert_eq!(loaded.sim.state_hash(), expected_hash);
     }
 
     /// `AttackTarget::for_cell` survives serialize → deserialize as the same
@@ -441,7 +470,8 @@ mod tests {
         let loaded = GameSnapshot::load(&bytes).expect("load should succeed");
         let restored = loaded
             .sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(1)
             .expect("entity should be restored")
             .attack_target
@@ -457,12 +487,14 @@ mod tests {
         use crate::sim::game_entity::GameEntity;
         let mut sim = Simulation::new();
         // Stored but not revealed: present in the store, absent from the order.
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
         assert!(sim.substrate.entities.contains(1));
         assert!(!sim.live_object_order_snapshot().contains(&1));
         // Reveal both: tail-append in reveal order, not sorted.
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .insert(GameEntity::test_default(2, "MTNK", "Americans", 6, 6));
         sim.register_live_object(2);
         sim.register_live_object(1);
@@ -476,7 +508,8 @@ mod tests {
         use crate::sim::game_entity::GameEntity;
         let mut sim = Simulation::new();
         for id in [10u64, 20, 30] {
-            sim.substrate.entities
+            sim.substrate
+                .entities
                 .insert(GameEntity::test_default(id, "MTNK", "Americans", 5, 5));
             sim.register_live_object(id);
         }
@@ -495,7 +528,8 @@ mod tests {
     fn saveload_restored_member_removes_cleanly() {
         use crate::sim::game_entity::GameEntity;
         let mut sim = Simulation::new();
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
         sim.register_live_object(1);
 
@@ -546,9 +580,18 @@ mod tests {
         sim.conceal(3); // boards: leaves the active order → Limbo
 
         // Pre-save expectations.
-        assert_eq!(sim.substrate.entities.get(1).unwrap().presence, Presence::InCell);
-        assert_eq!(sim.substrate.entities.get(2).unwrap().presence, Presence::Limbo);
-        assert_eq!(sim.substrate.entities.get(3).unwrap().presence, Presence::Limbo);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().presence,
+            Presence::InCell
+        );
+        assert_eq!(
+            sim.substrate.entities.get(2).unwrap().presence,
+            Presence::Limbo
+        );
+        assert_eq!(
+            sim.substrate.entities.get(3).unwrap().presence,
+            Presence::Limbo
+        );
         let hash_before = sim.state_hash();
 
         // Round-trip + the real load-path membership rebuild.
@@ -557,9 +600,18 @@ mod tests {
         restored.rebuild_logic_membership();
 
         // Presence restored identically.
-        assert_eq!(restored.substrate.entities.get(1).unwrap().presence, Presence::InCell);
-        assert_eq!(restored.substrate.entities.get(2).unwrap().presence, Presence::Limbo);
-        assert_eq!(restored.substrate.entities.get(3).unwrap().presence, Presence::Limbo);
+        assert_eq!(
+            restored.substrate.entities.get(1).unwrap().presence,
+            Presence::InCell
+        );
+        assert_eq!(
+            restored.substrate.entities.get(2).unwrap().presence,
+            Presence::Limbo
+        );
+        assert_eq!(
+            restored.substrate.entities.get(3).unwrap().presence,
+            Presence::Limbo
+        );
 
         // Hash is unaffected by presence (serde-skip + not hashed).
         assert_eq!(restored.state_hash(), hash_before);
@@ -682,7 +734,8 @@ mod tests {
     fn reveal_then_conceal_roundtrips_membership() {
         use crate::sim::game_entity::GameEntity;
         let mut sim = Simulation::new();
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
         sim.reveal(1);
         assert!(sim.substrate.entities.get(1).unwrap().in_logic_vector);
@@ -801,7 +854,8 @@ mod tests {
     /// Insert an entity into the store and append it to the active order.
     fn spawn_and_register(sim: &mut Simulation, id: u64) {
         use crate::sim::game_entity::GameEntity;
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .insert(GameEntity::test_default(id, "MTNK", "Americans", 5, 5));
         sim.register_live_object(id);
     }
@@ -815,7 +869,8 @@ mod tests {
         spawn_and_register(&mut sim, 1); // A
         spawn_and_register(&mut sim, 2); // B
         // C exists in the store but is NOT yet in the active order.
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .insert(GameEntity::test_default(3, "MTNK", "Americans", 6, 6));
         assert!(!sim.live_object_order_snapshot().contains(&3));
 
@@ -885,7 +940,8 @@ mod tests {
         let mut sim = Simulation::new();
         spawn_and_register(&mut sim, 1);
         spawn_and_register(&mut sim, 2);
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .insert(GameEntity::test_default(3, "MTNK", "Americans", 6, 6));
         let order = sim.live_object_order_snapshot();
         let mut snapshot_visited = Vec::new();
@@ -901,7 +957,8 @@ mod tests {
         let mut sim2 = Simulation::new();
         spawn_and_register(&mut sim2, 1);
         spawn_and_register(&mut sim2, 2);
-        sim2.substrate.entities
+        sim2.substrate
+            .entities
             .insert(GameEntity::test_default(3, "MTNK", "Americans", 6, 6));
         let mut live_visited = Vec::new();
         sim2.for_each_live_object(|sim, id| {

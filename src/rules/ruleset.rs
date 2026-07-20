@@ -189,8 +189,20 @@ pub struct ParachuteRenderConfig {
 }
 
 /// Global gameplay constants from `[General]` that affect vision, gap generators, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageFireHealthRatio {
+    pub numerator: i32,
+    pub denominator: i32,
+}
+
+/// Global gameplay constants from `[General]` that affect vision, gap generators, etc.
 #[derive(Debug, Clone)]
 pub struct GeneralRules {
+    /// Per-tick Spark gravity AND hover-bob amplitude, from `[AudioVisual]
+    /// Gravity=` (NOT `[General]` — stock rulesmd.ini defines it under
+    /// [AudioVisual], value 6; the engine's code default is 3). Native stores a
+    /// signed integer and converts to f32 at the behavior-3 tick boundary.
+    pub gravity: i32,
     /// Additive sight bonus for veteran+ units (VeteranSight=).
     /// Default 0 in vanilla RA2 (no sight bonus from veterancy).
     pub veteran_sight: i32,
@@ -220,6 +232,25 @@ pub struct GeneralRules {
     /// rulesmd.ini always supplies its own (1500), so the fallback only fires
     /// for a non-retail INI missing the key. Per-type override not yet implemented.
     pub flight_level: i32,
+    /// Hover locomotor cruise altitude in leptons (`[General] HoverHeight=`, default 120).
+    /// The damped-spring vertical controller holds hover units at this height.
+    pub hover_height: i32,
+    /// Hover bob PERIOD in minutes (`[General] HoverBob=`, default 0.04). The visible
+    /// `2·cos` float wobble completes one cycle every `round(HoverBob × 900)` ticks
+    /// (≈36 moving). NOTE: this is the period, not the amplitude (amplitude = `Gravity`).
+    pub hover_bob: SimFixed,
+    /// Hover straightaway speed boost (`[General] HoverBoost=`, default 1.5 / 150%).
+    /// Applied as `SpeedMult` when two same-direction path steps are queued, but the
+    /// throttle target is clamped to 1.0 afterward, so it only bites at approach speed.
+    pub hover_boost: SimFixed,
+    /// Hover acceleration TIME in minutes (`[General] HoverAcceleration=`, default 0.02).
+    /// Per-tick throttle ramp-up = `1 / (HoverAcceleration × 900)` → 18 ticks 0→full.
+    pub hover_acceleration: SimFixed,
+    /// Hover brake TIME in minutes (`[General] HoverBrake=`, default 0.03).
+    /// Per-tick throttle ramp-down = `1 / (HoverBrake × 900)` → 27 ticks full→0.
+    pub hover_brake: SimFixed,
+    /// Hover vertical damped-spring coefficient (`[General] HoverDampen=`, default 0.4 / 40%).
+    pub hover_dampen: SimFixed,
     /// Descent rate cap for parachuted units, in leptons/tick (signed).
     /// Per gamemd, the rate field accumulates by `-1` per tick and clamps
     /// to this value. Default `-3` matches `[General] ParachuteMaxFallRate=-3`.
@@ -291,6 +322,14 @@ pub struct GeneralRules {
     /// `condition_red` pre-scaled to integer ×1000 for deterministic sim comparisons.
     /// Computed once at parse time: `(condition_red * 1000.0) as i64`.
     pub condition_red_x1000: i64,
+    /// Exact integer cutoff used by ordinary-building damage fire after the
+    /// startup validator certifies stock `ConditionYellow=50%`.
+    pub damage_fire_ordinary_ratio: DamageFireHealthRatio,
+    /// Exact integer cutoff used by occupiable-building damage fire after the
+    /// startup validator certifies stock `ConditionRed=25%`.
+    pub damage_fire_occupied_ratio: DamageFireHealthRatio,
+    condition_yellow_native: f64,
+    condition_red_native: f64,
     /// `ConditionRedSparkingProbability=` ([General]) — per-tick probability that
     /// the `AI_Update` damage-Spark particle system spawns while health is below
     /// ConditionRed. Default **0.02** (verified `RulesClass__Constructor`; stock INI
@@ -681,6 +720,7 @@ fn parse_paradrop_list(
 impl Default for GeneralRules {
     fn default() -> Self {
         Self {
+            gravity: 3,
             veteran_sight: 0,
             leptons_per_sight_increase: 0,
             gap_radius: 10,
@@ -688,6 +728,12 @@ impl Default for GeneralRules {
             tunnel_speed: sim_from_f32(6.0),
             missile_rot_var: sim_from_f32(1.0),
             flight_level: 500,
+            hover_height: 120,
+            hover_bob: sim_from_f32(0.04),
+            hover_boost: sim_from_f32(1.5),
+            hover_acceleration: sim_from_f32(0.02),
+            hover_brake: sim_from_f32(0.03),
+            hover_dampen: sim_from_f32(0.4),
             parachute_max_fall_rate: -3,
             paradrop_radius: 1024,
             paradrop_aircraft_type: "PDPLANE".to_string(),
@@ -727,6 +773,16 @@ impl Default for GeneralRules {
             condition_yellow_x1000: 500,
             condition_red: 0.25,
             condition_red_x1000: 250,
+            damage_fire_ordinary_ratio: DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 2,
+            },
+            damage_fire_occupied_ratio: DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 4,
+            },
+            condition_yellow_native: 0.5,
+            condition_red_native: 0.25,
             condition_red_sparking_probability: 0.02,
             condition_yellow_sparking_probability: 0.01,
             condition_red_spark_threshold: damage_spark_spawn_threshold(0.02),
@@ -1013,8 +1069,7 @@ impl RadiationRules {
         let Some(section) = ini.section("Radiation") else {
             return d;
         };
-        let get_i32 =
-            |key: &str, default: i32| -> i32 { section.get_i32(key).unwrap_or(default) };
+        let get_i32 = |key: &str, default: i32| -> i32 { section.get_i32(key).unwrap_or(default) };
         Self {
             duration_multiple: get_i32("RadDurationMultiple", d.duration_multiple),
             // Delays are used as divisors/modulo periods — clamp to >= 1 so a
@@ -1076,12 +1131,14 @@ impl GeneralRules {
                 .to_string()
         };
         let defaults = Self::default();
-        let condition_yellow_f32: f32 = audio_visual
-            .and_then(|s| s.get_percent("ConditionYellow"))
+        let condition_yellow_native = audio_visual
+            .map(|s| s.read_double("ConditionYellow", 0.5))
             .unwrap_or(0.5);
-        let condition_red_f32: f32 = audio_visual
-            .and_then(|s| s.get_percent("ConditionRed"))
+        let condition_red_native = audio_visual
+            .map(|s| s.read_double("ConditionRed", 0.25))
             .unwrap_or(0.25);
+        let condition_yellow_f32 = condition_yellow_native as f32;
+        let condition_red_f32 = condition_red_native as f32;
         // [General] damage-Spark spawn probabilities (verified ctor defaults
         // 0.02/0.01; stock INI omits them). Raw doubles, not percentages. Bound
         // before `Self` so each band feeds both its stored value and its derived
@@ -1099,6 +1156,12 @@ impl GeneralRules {
             condition_yellow_spark_threshold: damage_spark_spawn_threshold(
                 condition_yellow_spark_prob,
             ),
+            // Gravity lives in [AudioVisual] (stock value 6). Reading it from
+            // [General] silently fell back to the code default 3 — half stock
+            // gravity for spark ballistics and the hover bob amplitude.
+            gravity: audio_visual
+                .and_then(|s| s.get_i32("Gravity"))
+                .unwrap_or(defaults.gravity),
             veteran_sight: general.get_i32("VeteranSight").unwrap_or(0),
             leptons_per_sight_increase: general.get_i32("LeptonsPerSightIncrease").unwrap_or(0),
             gap_radius: general.get_i32("GapRadius").unwrap_or(10),
@@ -1112,6 +1175,30 @@ impl GeneralRules {
                 .map(sim_from_f32)
                 .unwrap_or(sim_from_f32(1.0)),
             flight_level: general.get_i32("FlightLevel").unwrap_or(500),
+            // Hover keys. gamemd reads these with the %-aware Get_Double (150% → 1.5),
+            // which `get_percent` matches (it also passes bare floats like `.02` through).
+            // The three time keys (bob/accel/brake) are in MINUTES; ×900 = ticks.
+            hover_height: general.get_i32("HoverHeight").unwrap_or(120),
+            hover_bob: general
+                .get_percent("HoverBob")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(0.04)),
+            hover_boost: general
+                .get_percent("HoverBoost")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(1.5)),
+            hover_acceleration: general
+                .get_percent("HoverAcceleration")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(0.02)),
+            hover_brake: general
+                .get_percent("HoverBrake")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(0.03)),
+            hover_dampen: general
+                .get_percent("HoverDampen")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(0.4)),
             parachute_max_fall_rate: general.get_i32("ParachuteMaxFallRate").unwrap_or(-3),
             paradrop_radius: general.get_i32("ParadropRadius").unwrap_or(1024),
             paradrop_aircraft_type: general
@@ -1172,6 +1259,16 @@ impl GeneralRules {
             condition_yellow_x1000: (condition_yellow_f32 as f64 * 1000.0) as i64,
             condition_red: condition_red_f32,
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
+            damage_fire_ordinary_ratio: DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 2,
+            },
+            damage_fire_occupied_ratio: DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 4,
+            },
+            condition_yellow_native,
+            condition_red_native,
             building_garrisoned_sound: audio_visual
                 .and_then(|s| s.get("BuildingGarrisonedSound"))
                 .map(str::trim)
@@ -1717,6 +1814,22 @@ impl RuleSet {
         let mut building_ids: Vec<String> = Vec::new();
         let production: ProductionRules = ProductionRules::from_ini(ini);
         let general: GeneralRules = GeneralRules::from_ini(ini);
+        if general.condition_yellow_native != 0.5 {
+            return Err(RulesError::InvalidValue {
+                section: "AudioVisual".to_string(),
+                key: "ConditionYellow".to_string(),
+                expected: "50% (the currently certified damage-fire ratio)".to_string(),
+                value: general.condition_yellow_native.to_string(),
+            });
+        }
+        if general.condition_red_native != 0.25 {
+            return Err(RulesError::InvalidValue {
+                section: "AudioVisual".to_string(),
+                key: "ConditionRed".to_string(),
+                expected: "25% (the currently certified damage-fire ratio)".to_string(),
+                value: general.condition_red_native.to_string(),
+            });
+        }
         let terrain_rules: TerrainRules = TerrainRules::from_ini(ini);
         let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
@@ -2462,9 +2575,7 @@ fn parse_country_rules(ini: &IniFile) -> HashMap<String, CountryRules> {
 /// Collect all weapon and warhead IDs referenced by objects.
 ///
 /// Returns (weapon_ids, warhead_ids) as sets (deduplicated).
-fn collect_weapon_refs(
-    objects: &[ObjectType],
-) -> (HashSet<String>, HashSet<String>) {
+fn collect_weapon_refs(objects: &[ObjectType]) -> (HashSet<String>, HashSet<String>) {
     let mut weapon_ids: HashSet<String> = HashSet::new();
     let warhead_ids: HashSet<String> = HashSet::new();
 
@@ -2854,6 +2965,21 @@ MutateWarhead=MyMutate\n\
     }
 
     #[test]
+    fn parse_spark_gravity_preserves_signed_integer_storage() {
+        assert_eq!(GeneralRules::default().gravity, 3);
+        // Gravity lives in [AudioVisual] (stock rulesmd.ini), NOT [General].
+        let stock =
+            GeneralRules::from_ini(&IniFile::from_str("[General]\n[AudioVisual]\nGravity=6\n"));
+        assert_eq!(stock.gravity, 6);
+        let signed =
+            GeneralRules::from_ini(&IniFile::from_str("[General]\n[AudioVisual]\nGravity=-7\n"));
+        assert_eq!(signed.gravity, -7);
+        // A [General] Gravity is ignored (the engine reads it in ReadAudioVisual).
+        let misplaced = GeneralRules::from_ini(&IniFile::from_str("[General]\nGravity=9\n"));
+        assert_eq!(misplaced.gravity, 3);
+    }
+
+    #[test]
     fn parse_rules_rocking_coefficients_explicit() {
         let ini = IniFile::from_str(
             "[General]\n[AudioVisual]\nDirectRockingCoefficient=2.0\nFallBackCoefficient=0.05\n",
@@ -3208,8 +3334,14 @@ ChronoOutSound=ChronoMinerTeleport
 ";
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
-        assert_eq!(general.chrono_in_sound.as_deref(), Some("ChronoMinerTeleport"));
-        assert_eq!(general.chrono_out_sound.as_deref(), Some("ChronoMinerTeleport"));
+        assert_eq!(
+            general.chrono_in_sound.as_deref(),
+            Some("ChronoMinerTeleport")
+        );
+        assert_eq!(
+            general.chrono_out_sound.as_deref(),
+            Some("ChronoMinerTeleport")
+        );
     }
 
     #[test]
@@ -3238,11 +3370,23 @@ ChronoOutSound=ChronoMinerTeleport
         // Stock (key absent -> default 0.016): ceil(14.4) = 15, unchanged.
         assert_eq!(frames(""), 15, "stock 0.016 stays at 15 frames");
         // Modded 0.0156: ceil(14.04) = 15. Old tenths code crossed at 14 (bug).
-        assert_eq!(frames("HarvesterDumpRate=0.0156"), 15, "0.0156 must ceil to 15, not 14");
+        assert_eq!(
+            frames("HarvesterDumpRate=0.0156"),
+            15,
+            "0.0156 must ceil to 15, not 14"
+        );
         // Modded 0.02: ceil(18.0) = 18.
-        assert_eq!(frames("HarvesterDumpRate=0.02"), 18, "0.02 -> exactly 18 frames");
+        assert_eq!(
+            frames("HarvesterDumpRate=0.02"),
+            18,
+            "0.02 -> exactly 18 frames"
+        );
         // Modded 0.0201: ceil(18.09) = 19 (round-to-nearest would give 18).
-        assert_eq!(frames("HarvesterDumpRate=0.0201"), 19, "0.0201 must ceil up to 19");
+        assert_eq!(
+            frames("HarvesterDumpRate=0.0201"),
+            19,
+            "0.0201 must ceil up to 19"
+        );
     }
 
     #[test]
@@ -3592,6 +3736,33 @@ DefaultSparkSystem=SparkSys
     }
 
     #[test]
+    fn damage_fire_thresholds_accept_only_the_certified_stock_ratios() {
+        let stock = IniFile::from_str(
+            "[General]\nDamageFireTypes=FIRE01\n\n[AudioVisual]\nConditionYellow=50%\nConditionRed=25%\n",
+        );
+        let rules = RuleSet::from_ini(&stock).expect("stock thresholds");
+        assert_eq!(
+            rules.general.damage_fire_ordinary_ratio,
+            DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 2,
+            }
+        );
+        assert_eq!(
+            rules.general.damage_fire_occupied_ratio,
+            DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 4,
+            }
+        );
+
+        let unsupported = IniFile::from_str(
+            "[General]\nDamageFireTypes=FIRE01\n\n[AudioVisual]\nConditionYellow=49%\nConditionRed=25%\n",
+        );
+        assert!(RuleSet::from_ini(&unsupported).is_err());
+    }
+
+    #[test]
     fn empty_particles_section_leaves_registries_empty() {
         // Pre-existing rules without [Particles]/[ParticleSystems] still parse.
         let ini = IniFile::from_str(&make_particle_test_rules(""));
@@ -3644,8 +3815,14 @@ DefaultSparkSystem=SparkSys
         // gamemd's 80-bit product exactly at the boundary.)
         let scale = f64::from_bits(0x3E00_0000_0040_0000);
         for (band, t) in [(0.02_f64, 42_949_673_u32), (0.01, 21_474_837)] {
-            assert!((t as f64 - 1.0) * scale < band, "roll=t-1 must pass for band {band}");
-            assert!(!((t as f64) * scale < band), "roll=t must fail for band {band}");
+            assert!(
+                (t as f64 - 1.0) * scale < band,
+                "roll=t-1 must pass for band {band}"
+            );
+            assert!(
+                !((t as f64) * scale < band),
+                "roll=t must fail for band {band}"
+            );
         }
 
         // Degenerate bands.
@@ -3990,7 +4167,11 @@ ZAdjust=-10
         check_ci(&rules.weapons, |k| rules.weapon(k), "weapon");
         check_ci(&rules.warheads, |k| rules.warhead(k), "warhead");
         check_ci(&rules.projectiles, |k| rules.projectile(k), "projectile");
-        check_ci(&rules.super_weapons, |k| rules.super_weapon(k), "super_weapon");
+        check_ci(
+            &rules.super_weapons,
+            |k| rules.super_weapon(k),
+            "super_weapon",
+        );
     }
 
     /// Slice 8 acceptance: the sim TypeHandleTable resolves every interned type id
@@ -4018,7 +4199,10 @@ ZAdjust=-10
             .get("mtnk")
             .expect("MTNK interned case-insensitively");
         assert_eq!(table.handle_for(mtnk_lower), rules.type_handle("MTNK"));
-        assert!(rules.object("mtnk").is_some(), "lowercased object() resolves");
+        assert!(
+            rules.object("mtnk").is_some(),
+            "lowercased object() resolves"
+        );
     }
 
     /// Helper: parse a (rules.ini, art.ini) pair into a merged RuleSet for

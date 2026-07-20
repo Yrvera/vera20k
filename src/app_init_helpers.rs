@@ -245,11 +245,18 @@ pub(crate) fn theater_ext_for(theater_name: &str) -> &'static str {
 /// first as the base, then merge rulesmd.ini on top. Without this merge,
 /// buildings are missing key properties like Foundation sizes.
 ///
+/// `mode_rules_override` is the selected game mode's override INI payload
+/// (e.g. MPUnholyAllianceMD.ini): the original applies it to the rules through
+/// the same processing pass as rulesmd, AFTER rulesmd and BEFORE the map's
+/// overrides — so map values beat mode values. Pass `None` on pre-map paths
+/// and when no mode is selected (dev flows).
+///
 /// `map_rules_overrides` is the selected map's parsed INI: maps may override
 /// rules *values* on top of the merged result (the original re-reads its
 /// rules from the map file). Pass `None` on pre-map paths (startup shell).
 pub(crate) fn load_rules_ini(
     asset_manager: &AssetManager,
+    mode_rules_override: Option<&IniFile>,
     map_rules_overrides: Option<&IniFile>,
 ) -> Option<RuleSet> {
     // Step 1: Load base rules.ini.
@@ -283,7 +290,21 @@ pub(crate) fn load_rules_ini(
         }
     }
 
-    // Step 3: map rules overrides — the original re-reads its rules from the
+    // Step 3: game-mode override INI — the selected mode's payload (from the
+    // MPModes roster row) merges on top of rulesmd through the same full-merge
+    // path as the rulesmd patch itself, because the original routes both files
+    // through one rules-processing pass. Applied before the map so map values
+    // win.
+    if let Some(mode_ini) = mode_rules_override {
+        let mode_sections: usize = mode_ini.section_count();
+        ini.merge(mode_ini);
+        log::info!(
+            "Merged {} game-mode override section(s) into rules",
+            mode_sections
+        );
+    }
+
+    // Step 4: map rules overrides — the original re-reads its rules from the
     // map file after the main load, so maps may override value sections
     // ([General], [CombatDamage], per-type sections, ...). Registry lists are
     // excluded until allocation-from-map semantics are verified.
@@ -708,6 +729,28 @@ mod tests {
         );
         let rules = RuleSet::from_ini(&ini).expect("merged rules parse");
         assert_eq!(rules.production.build_speed_x1000, 580);
+    }
+
+    /// The game-mode override INI merges AFTER rulesmd and BEFORE the map's
+    /// value overrides (the engine routes rulesmd and the mode payload through
+    /// the same rules-processing pass, then re-reads the map) — so a mode value
+    /// beats rulesmd, and a map value beats the mode. Mirrors the exact
+    /// sequence `load_rules_ini` performs.
+    #[test]
+    fn mode_override_merges_after_rulesmd_before_map() {
+        let mut ini = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
+        let rulesmd = IniFile::from_str("[General]\nBuildSpeed=.58\n");
+        ini.merge(&rulesmd);
+        let mode = IniFile::from_str("[General]\nBuildSpeed=1\nFlightLevel=1200\n");
+        ini.merge(&mode);
+        let map = IniFile::from_str("[General]\nFlightLevel=900\n");
+        ini.merge_rules_overrides(&map);
+
+        let general = ini.section("General").unwrap();
+        // Mode beats rulesmd.
+        assert_eq!(general.get("BuildSpeed"), Some("1"));
+        // Map beats mode.
+        assert_eq!(general.get("FlightLevel"), Some("900"));
     }
 
     /// AT-12 (RC-4): type/weapon/warhead resolution reproduces the engine's

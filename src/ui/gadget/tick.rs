@@ -114,9 +114,7 @@ pub(crate) fn clicked_on(
         return 0;
     };
     let masked = raw_flags & g.flags;
-    if !is_sticky_holder
-        && (masked & FLAG_KEYBOARD) == 0
-        && (masked == 0 || !g.rect.contains(x, y))
+    if !is_sticky_holder && (masked & FLAG_KEYBOARD) == 0 && (masked == 0 || !g.rect.contains(x, y))
     {
         return 0;
     }
@@ -194,8 +192,16 @@ pub fn tick(
         _ => 0,
     };
     if key == 0 {
-        flags |= if input.left_held { FLAG_LEFT_HELD } else { FLAG_LEFT_UP };
-        flags |= if input.right_held { FLAG_RIGHT_HELD } else { FLAG_RIGHT_UP };
+        flags |= if input.left_held {
+            FLAG_LEFT_HELD
+        } else {
+            FLAG_LEFT_UP
+        };
+        flags |= if input.right_held {
+            FLAG_RIGHT_HELD
+        } else {
+            FLAG_RIGHT_UP
+        };
     } else if flags == 0 {
         flags = FLAG_KEYBOARD;
     }
@@ -244,7 +250,9 @@ pub fn tick(
         draw_one(list, handle, list_changed, out);
         let disabled = list.get(handle).is_none_or(|g| g.is_disabled);
         if !disabled
-            && clicked_on(list, handle, &mut key, flags, x, y, modifier, live, focus, out) != 0
+            && clicked_on(
+                list, handle, &mut key, flags, x, y, modifier, live, focus, out,
+            ) != 0
         {
             draw_one(list, handle, false, out);
             out.consumed_by = Some(handle);
@@ -269,7 +277,11 @@ mod tests {
         let mut l = GadgetList::new(ListId(1));
         let big = l.add_tail(spec(GadgetRect::new(0, 0, 100, 100), 0xFF));
         let small = l.add_tail(spec(GadgetRect::new(10, 10, 20, 20), 0xFF));
-        assert_eq!(hit_test(&l, 15, 15), Some(small), "smaller wins inside both");
+        assert_eq!(
+            hit_test(&l, 15, 15),
+            Some(small),
+            "smaller wins inside both"
+        );
         assert_eq!(hit_test(&l, 90, 90), Some(big), "only the big one contains");
         assert_eq!(hit_test(&l, 200, 200), None);
     }
@@ -331,7 +343,18 @@ mod tests {
         assert!(out.dispatches.is_empty(), "filtered before dispatch");
         // Masked non-zero but outside the rect → early-out.
         assert_eq!(
-            clicked_on(&mut l, a, &mut key, 0x01, 50, 50, 0, (50, 50), &mut f, &mut out),
+            clicked_on(
+                &mut l,
+                a,
+                &mut key,
+                0x01,
+                50,
+                50,
+                0,
+                (50, 50),
+                &mut f,
+                &mut out
+            ),
             0
         );
         // Masked non-zero and inside → dispatches.
@@ -357,7 +380,18 @@ mod tests {
         let mut key: u16 = 0;
         // Raw held flags mask to 0 against mask 5; the holder is dispatched
         // anyway (masked-0 hover-track path).
-        clicked_on(&mut l, a, &mut key, 0x82, 50, 50, 0, (50, 50), &mut f, &mut out);
+        clicked_on(
+            &mut l,
+            a,
+            &mut key,
+            0x82,
+            50,
+            50,
+            0,
+            (50, 50),
+            &mut f,
+            &mut out,
+        );
         assert_eq!(out.dispatches.len(), 1);
         assert_eq!(out.dispatches[0].masked_flags, 0);
     }
@@ -374,7 +408,18 @@ mod tests {
         let mut key: u16 = 0;
         // Keyboard flag, point far outside → still dispatches.
         assert_eq!(
-            clicked_on(&mut l, a, &mut key, FLAG_KEYBOARD, 500, 500, 0, (500, 500), &mut f, &mut out),
+            clicked_on(
+                &mut l,
+                a,
+                &mut key,
+                FLAG_KEYBOARD,
+                500,
+                500,
+                0,
+                (500, 500),
+                &mut f,
+                &mut out
+            ),
             1
         );
         assert_eq!(key, 0x42 | 0x8000);
@@ -390,7 +435,10 @@ mod tests {
         l.get_mut(a).unwrap().is_to_redraw = true;
         draw_one(&mut l, a, false, &mut out);
         assert_eq!(out.draws.len(), 1);
-        assert!(!l.get(a).unwrap().is_to_redraw, "paint clears the dirty byte");
+        assert!(
+            !l.get(a).unwrap().is_to_redraw,
+            "paint clears the dirty byte"
+        );
         draw_one(&mut l, a, true, &mut out);
         assert_eq!(out.draws.len(), 2, "forced always paints");
     }
@@ -426,7 +474,12 @@ mod tests {
         let mut l1 = GadgetList::new(ListId(1));
         let a = l1.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
         // Press captures on list 1.
-        tick(&mut l1, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        tick(
+            &mut l1,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true),
+            &mut out,
+        );
         assert_eq!(f.sticky, Some(a));
         // Ticking a DIFFERENT list resets capture + keyboard, force-draws all.
         let mut l2 = GadgetList::new(ListId(2));
@@ -494,11 +547,17 @@ mod tests {
         let mut input = idle(5, 5);
         input.left_held = true;
         tick(&mut l, &mut f, &input, &mut out);
-        assert_eq!(out.dispatches[0].masked_flags, FLAG_LEFT_HELD | FLAG_RIGHT_UP);
+        assert_eq!(
+            out.dispatches[0].masked_flags,
+            FLAG_LEFT_HELD | FLAG_RIGHT_UP
+        );
         // Press event tick with left ALSO held: event bit only, NO held bits.
         let input = event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true);
         tick(&mut l, &mut f, &input, &mut out);
-        assert_eq!(out.dispatches[0].masked_flags, FLAG_LEFT_PRESS, "never both");
+        assert_eq!(
+            out.dispatches[0].masked_flags, FLAG_LEFT_PRESS,
+            "never both"
+        );
         // Queued non-mouse key → exactly FLAG_KEYBOARD.
         let input = event(0x1C, 5, 5, false);
         tick(&mut l, &mut f, &input, &mut out);
@@ -534,11 +593,21 @@ mod tests {
         let a = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
         let b = l.add_tail(btn(GadgetRect::new(20, 0, 10, 10), 0x66));
         // Capture a.
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true),
+            &mut out,
+        );
         assert_eq!(f.sticky, Some(a));
         // A press over b while a holds capture goes to a ONLY (tier 1 is
         // exclusive); b is never dispatched.
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 25, 5, true), &mut out);
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 25, 5, true),
+            &mut out,
+        );
         assert_eq!(out.dispatches.len(), 1);
         assert_eq!(out.dispatches[0].handle, a);
         assert_eq!(out.consumed_by, None, "no broadcast walk ran");
@@ -563,7 +632,12 @@ mod tests {
         assert_eq!(out.dispatches[0].handle, a);
         // A MOUSE event does not enter the keyboard tier (falls to broadcast,
         // misses the rect, returns the raw key).
-        let result = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 500, 500, false), &mut out);
+        let result = tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 500, 500, false),
+            &mut out,
+        );
         assert_eq!(result, crate::ui::gadget::KEY_LMB_DOWN);
     }
 
@@ -580,7 +654,12 @@ mod tests {
         // Press inside a+b: the walk visits a (clicked_on consumes — a is
         // FIRST in walk order; note hit-test priority would pick b, but the
         // broadcast walk dispatches in LIST order and a consumes first).
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true),
+            &mut out,
+        );
         assert_eq!(out.consumed_by, Some(a), "walk order, first consumer stops");
         // a got visited-draw + consumer-draw (both dirty-gated); c never
         // visited after the break: dispatch list has exactly one entry.
@@ -595,7 +674,12 @@ mod tests {
         let mut l = GadgetList::new(ListId(1));
         let _a = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
         // Press: consumed, returns 0 (silent).
-        let r = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        let r = tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true),
+            &mut out,
+        );
         assert_eq!(r, 0, "silent press");
         // Idle held tick (sticky re-dispatch, masked-0): nothing fires.
         let mut held = idle(5, 5);
@@ -603,7 +687,12 @@ mod tests {
         let r = tick(&mut l, &mut f, &held, &mut out);
         assert_eq!(r, 0);
         // Release inside: fires ID|0x8000.
-        let r = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_UP, 5, 5, false), &mut out);
+        let r = tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_UP, 5, 5, false),
+            &mut out,
+        );
         assert_eq!(r, 0x65 | 0x8000, "fire on release-inside");
         assert_eq!(f.sticky, None);
     }
@@ -614,7 +703,12 @@ mod tests {
         let mut out = TickOutput::default();
         let mut l = GadgetList::new(ListId(1));
         let _a = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true),
+            &mut out,
+        );
         // Drag off (idle tick, cursor outside).
         let mut held = idle(50, 50);
         held.left_held = true;
@@ -624,7 +718,11 @@ mod tests {
         up.mouse_x = 50;
         up.mouse_y = 50;
         let r = tick(&mut l, &mut f, &up, &mut out);
-        assert_eq!(r, crate::ui::gadget::KEY_LMB_UP, "no result posted — cancelled");
+        assert_eq!(
+            r,
+            crate::ui::gadget::KEY_LMB_UP,
+            "no result posted — cancelled"
+        );
         assert_eq!(f.sticky, None, "capture released");
     }
 
@@ -641,7 +739,12 @@ mod tests {
         // Prime current_list (hover off the cameo).
         tick(&mut l, &mut f, &idle(500, 500), &mut out);
         // Left press inside → fires 1000|0x8000, consumes.
-        let r = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        let r = tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true),
+            &mut out,
+        );
         assert_eq!(r, 1000 | 0x8000);
         assert_eq!(out.consumed_by, Some(a));
         assert_eq!(f.sticky, None, "cameo never captures (not sticky)");
@@ -650,10 +753,23 @@ mod tests {
         let r = tick(&mut l, &mut f, &idle(5, 5), &mut out);
         assert_eq!(r, 0);
         assert_eq!(out.consumed_by, None, "idle-over-cameo does not consume");
-        assert_eq!(f.hovered, Some(a), "but it IS the current hover target (G7)");
+        assert_eq!(
+            f.hovered,
+            Some(a),
+            "but it IS the current hover target (G7)"
+        );
         // Release inside: cameo mask has no LEFTRELEASE → masked 0 → no dispatch.
-        let r = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_UP, 5, 5, false), &mut out);
-        assert_eq!(r, crate::ui::gadget::KEY_LMB_UP, "release not consumed by cameo");
+        let r = tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_UP, 5, 5, false),
+            &mut out,
+        );
+        assert_eq!(
+            r,
+            crate::ui::gadget::KEY_LMB_UP,
+            "release not consumed by cameo"
+        );
         assert_eq!(out.consumed_by, None);
     }
 
@@ -665,10 +781,22 @@ mod tests {
         let mut out = TickOutput::default();
         let mut l = GadgetList::new(ListId(1));
         let button = l.add_tail(btn(GadgetRect::new(0, 0, 20, 20), 0x65));
-        let _catcher = l.add_tail(GadgetSpec::click_region(GadgetRect::new(0, 0, 800, 600), 0x7F));
+        let _catcher = l.add_tail(GadgetSpec::click_region(
+            GadgetRect::new(0, 0, 800, 600),
+            0x7F,
+        ));
         tick(&mut l, &mut f, &idle(500, 500), &mut out); // prime
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
-        assert_eq!(out.consumed_by, Some(button), "button (earlier) consumes, not the catcher");
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true),
+            &mut out,
+        );
+        assert_eq!(
+            out.consumed_by,
+            Some(button),
+            "button (earlier) consumes, not the catcher"
+        );
     }
 
     #[test]
@@ -678,11 +806,23 @@ mod tests {
         let mut f = FocusState::new();
         let mut out = TickOutput::default();
         let mut l = GadgetList::new(ListId(1));
-        let catcher = l.add_tail(GadgetSpec::click_region(GadgetRect::new(0, 0, 1920, 1080), 0x7F));
+        let catcher = l.add_tail(GadgetSpec::click_region(
+            GadgetRect::new(0, 0, 1920, 1080),
+            0x7F,
+        ));
         assert!(1920 * 1080 > crate::ui::gadget::HIT_SEED_AREA);
         tick(&mut l, &mut f, &idle(5000, 5000), &mut out); // prime, hover off
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 100, 100, true), &mut out);
-        assert_eq!(out.consumed_by, Some(catcher), "rect.contains dispatch, seed-independent");
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 100, 100, true),
+            &mut out,
+        );
+        assert_eq!(
+            out.consumed_by,
+            Some(catcher),
+            "rect.contains dispatch, seed-independent"
+        );
         assert_eq!(f.sticky, Some(catcher), "press acquires sticky capture");
     }
 
@@ -693,10 +833,18 @@ mod tests {
         let mut f = FocusState::new();
         let mut out = TickOutput::default();
         let mut l = GadgetList::new(ListId(1));
-        let catcher = l.add_tail(GadgetSpec::click_region(GadgetRect::new(0, 0, 100, 100), 0x7F));
+        let catcher = l.add_tail(GadgetSpec::click_region(
+            GadgetRect::new(0, 0, 100, 100),
+            0x7F,
+        ));
         let _button = l.add_tail(btn(GadgetRect::new(200, 0, 20, 20), 0x65));
         tick(&mut l, &mut f, &idle(500, 500), &mut out);
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true),
+            &mut out,
+        );
         assert_eq!(f.sticky, Some(catcher));
         // Drag onto the button rect: held idle tick goes to the catcher (sticky
         // tier exclusive), the button is never dispatched.
@@ -704,7 +852,10 @@ mod tests {
         held.left_held = true;
         tick(&mut l, &mut f, &held, &mut out);
         assert_eq!(out.dispatches.len(), 1);
-        assert_eq!(out.dispatches[0].handle, catcher, "held drag stays with the catcher");
+        assert_eq!(
+            out.dispatches[0].handle, catcher,
+            "held drag stays with the catcher"
+        );
         // Release over the button still releases the catcher's capture.
         let up = event(crate::ui::gadget::KEY_LMB_UP, 205, 5, false);
         tick(&mut l, &mut f, &up, &mut out);
@@ -725,10 +876,23 @@ mod tests {
             MINIMAP_REGION_FLAGS,
         ));
         tick(&mut l, &mut f, &idle(500, 500), &mut out); // prime, hover off
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_RMB_DOWN, 5, 5, false), &mut out);
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_RMB_DOWN, 5, 5, false),
+            &mut out,
+        );
         assert_eq!(f.sticky, Some(region), "right-press acquires capture");
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_RMB_UP, 5, 5, false), &mut out);
-        assert_eq!(f.sticky, None, "right-release frees capture (0xDF) — no stuck");
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_RMB_UP, 5, 5, false),
+            &mut out,
+        );
+        assert_eq!(
+            f.sticky, None,
+            "right-release frees capture (0xDF) — no stuck"
+        );
     }
 
     #[test]
@@ -739,11 +903,28 @@ mod tests {
         let mut f = FocusState::new();
         let mut out = TickOutput::default();
         let mut l = GadgetList::new(ListId(2));
-        let region = l.add_tail(GadgetSpec::click_region(GadgetRect::new(0, 0, 50, 50), 0x9F));
+        let region = l.add_tail(GadgetSpec::click_region(
+            GadgetRect::new(0, 0, 50, 50),
+            0x9F,
+        ));
         tick(&mut l, &mut f, &idle(500, 500), &mut out);
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_RMB_DOWN, 5, 5, false), &mut out);
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_RMB_DOWN, 5, 5, false),
+            &mut out,
+        );
         assert_eq!(f.sticky, Some(region));
-        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_RMB_UP, 5, 5, false), &mut out);
-        assert_eq!(f.sticky, Some(region), "0x9F leaves capture stuck — hence 0xDF");
+        tick(
+            &mut l,
+            &mut f,
+            &event(crate::ui::gadget::KEY_RMB_UP, 5, 5, false),
+            &mut out,
+        );
+        assert_eq!(
+            f.sticky,
+            Some(region),
+            "0x9F leaves capture stuck — hence 0xDF"
+        );
     }
 }

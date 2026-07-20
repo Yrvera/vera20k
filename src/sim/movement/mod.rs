@@ -61,6 +61,7 @@ pub mod drive_track;
 pub mod droppod_movement;
 pub mod facing_class;
 pub mod group_destination;
+pub mod hover;
 pub mod homing_movement;
 pub mod jumpjet_movement;
 pub mod locomotor;
@@ -298,8 +299,9 @@ pub fn tick_movement_with_grid(
         rng,
         tick_ms,
         sim_tick,
-        None, // No zone grid in legacy wrapper
-        None, // No resolved terrain in legacy wrapper
+        sim_tick as u32, // binary_frame proxy (test-only wrapper: 1 frame/tick)
+        None,            // No zone grid in legacy wrapper
+        None,            // No resolved terrain in legacy wrapper
         &TerrainSpeedConfig::default(),
         SIM_ZERO, // No CloseEnough in legacy wrapper
         9,        // Default PathDelay
