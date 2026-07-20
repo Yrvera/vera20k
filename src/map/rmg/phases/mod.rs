@@ -5,6 +5,7 @@
 //! in `super::generate`.
 
 pub mod green_spread;
+pub mod shore;
 
 /// A cell reference held in a phase's work list.
 ///
