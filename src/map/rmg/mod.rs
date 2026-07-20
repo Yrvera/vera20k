@@ -7,6 +7,7 @@
 pub mod emit;
 pub mod grid;
 pub mod options;
+pub mod phases;
 pub mod rng;
 pub mod scratch;
 pub mod settings;
@@ -196,7 +197,8 @@ pub fn generate(
     let geometry = MapGeometry::from_options(&options);
     let mut rng = RmgRng::new(options.seed_u16());
     let mut scratch = RmgScratch::new(geometry.stride, geometry.diamond_min, geometry.diamond_max);
-    let mut grid = grid::RmgGrid::new(geometry.stride);
+    let mut grid =
+        grid::RmgGrid::new(geometry.stride, geometry.diamond_min, geometry.diamond_max);
     let _ = (&settings, &mut rng, &mut scratch, &mut grid);
 
     let mut stages_run = Vec::with_capacity(STAGE_ORDER.len());
