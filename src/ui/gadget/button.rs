@@ -263,29 +263,46 @@ mod tests {
         assert_eq!(key, 0xC9 | 0x8000, "left release posts ID|0x8000");
         key = 0;
         assert_eq!(control_action(g, 0x40, &mut key, &mut f), 1);
-        assert_eq!(key, 0xC9 | 0xC000, "right release + masked 0x10 posts ID|0xC000");
+        assert_eq!(
+            key,
+            0xC9 | 0xC000,
+            "right release + masked 0x10 posts ID|0xC000"
+        );
         // Mask WITHOUT right press: right-release does not add 0x4000.
         let mut spec2 = GadgetSpec::new(GadgetRect::new(0, 0, 4, 4), 0x45, true);
         spec2.id = 0x65;
         spec2.behavior = GadgetBehavior::Control;
         let (mut l2, b) = one_gadget(spec2);
         key = 0;
-        assert_eq!(control_action(l2.get_mut(b).unwrap(), 0x40, &mut key, &mut f), 1);
+        assert_eq!(
+            control_action(l2.get_mut(b).unwrap(), 0x40, &mut key, &mut f),
+            1
+        );
         assert_eq!(key, 0x65 | 0x8000);
         // id 0 posts 0 on the plain branch.
         let mut spec3 = GadgetSpec::new(GadgetRect::new(0, 0, 4, 4), 0x45, true);
         spec3.behavior = GadgetBehavior::Control;
         let (mut l3, c) = one_gadget(spec3);
         key = 0x1234;
-        assert_eq!(control_action(l3.get_mut(c).unwrap(), 0x04, &mut key, &mut f), 1);
+        assert_eq!(
+            control_action(l3.get_mut(c).unwrap(), 0x04, &mut key, &mut f),
+            1
+        );
         assert_eq!(key, 0, "ID==0 posts 0");
         // masked-0 leaves the key untouched and consumes nothing.
         key = 0x1234;
-        assert_eq!(control_action(l3.get_mut(c).unwrap(), 0, &mut key, &mut f), 0);
+        assert_eq!(
+            control_action(l3.get_mut(c).unwrap(), 0, &mut key, &mut f),
+            0
+        );
         assert_eq!(key, 0x1234);
     }
 
-    fn button(id: u16, kind: ToggleKind, flags: u16) -> (GadgetList, crate::ui::gadget::GadgetHandle) {
+    fn button(
+        id: u16,
+        kind: ToggleKind,
+        flags: u16,
+    ) -> (GadgetList, crate::ui::gadget::GadgetHandle) {
         let spec = GadgetSpec::button(GadgetRect::new(0, 0, 10, 10), id, kind).with_flags(flags);
         one_gadget(spec)
     }
@@ -302,7 +319,9 @@ mod tests {
         assert_eq!(r, 1, "press consumed");
         assert_eq!(key, 0, "silent press forces *key = 0");
         assert_eq!(f.sticky, Some(a), "capture acquired");
-        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else { panic!() };
+        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else {
+            panic!()
+        };
         assert!(b.is_pressed);
         assert!(!b.is_on, "press never toggles");
     }
@@ -315,11 +334,15 @@ mod tests {
         dispatch_action(l.get_mut(a).unwrap(), 0x01, &mut key, INSIDE, &mut f);
         // Drag off: masked-0 re-dispatch with cursor outside pops is_pressed.
         dispatch_action(l.get_mut(a).unwrap(), 0, &mut key, OUTSIDE, &mut f);
-        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else { panic!() };
+        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else {
+            panic!()
+        };
         assert!(!b.is_pressed, "row 2: pop-out");
         // Drag back: pops back in.
         dispatch_action(l.get_mut(a).unwrap(), 0, &mut key, INSIDE, &mut f);
-        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else { panic!() };
+        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else {
+            panic!()
+        };
         assert!(b.is_pressed, "row 3: pop back in");
     }
 
@@ -340,7 +363,9 @@ mod tests {
                 assert_eq!(r, 1);
                 assert_eq!(key, 0xCB | 0x8000, "fire on release-inside (click {click})");
                 assert_eq!(f.sticky, None, "capture released");
-                let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else { panic!() };
+                let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else {
+                    panic!()
+                };
                 assert!(!b.is_pressed);
                 assert_eq!(b.is_on, expect_on, "kind {kind:?} click {click}");
             }
@@ -361,7 +386,9 @@ mod tests {
         assert_eq!(r, 0, "nothing fires");
         assert_eq!(key, 0x801, "key untouched — no result posted");
         assert_eq!(f.sticky, None, "capture still released by step 3");
-        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else { panic!() };
+        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else {
+            panic!()
+        };
         assert!(!b.is_on, "drag-off cancelled the toggle");
     }
 
@@ -376,7 +403,9 @@ mod tests {
         let r = dispatch_action(l.get_mut(a).unwrap(), 0x04, &mut key, OUTSIDE, &mut f);
         assert_eq!(r, 1, "release bits NOT stripped — still fires");
         assert_eq!(key, 0x65 | 0x8000);
-        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else { panic!() };
+        let GadgetBehavior::Button(b) = l.get(a).unwrap().behavior else {
+            panic!()
+        };
         assert!(!b.is_on, "but no toggle (cursor outside)");
     }
 
@@ -400,7 +429,10 @@ mod tests {
         dispatch_action(l2.get_mut(b).unwrap(), 0x01, &mut key2, INSIDE, &mut f2);
         key2 = 0;
         let masked = 0x02u16 & 0x55; // what clicked_on would mask
-        assert_eq!(masked, 0, "0x55 has no held bits ⇒ masked-0 re-dispatch only");
+        assert_eq!(
+            masked, 0,
+            "0x55 has no held bits ⇒ masked-0 re-dispatch only"
+        );
         let r = dispatch_action(l2.get_mut(b).unwrap(), masked, &mut key2, INSIDE, &mut f2);
         assert_eq!(r, 0);
         assert_eq!(key2, 0, "no repeat for the scroll mask");
@@ -415,6 +447,10 @@ mod tests {
         assert_eq!(key, 0, "right press also silent");
         key = 0x802;
         dispatch_action(l.get_mut(a).unwrap(), 0x40, &mut key, INSIDE, &mut f);
-        assert_eq!(key, 0xC9 | 0xC000, "right-release posts ID|0xC000 (mask has 0x10)");
+        assert_eq!(
+            key,
+            0xC9 | 0xC000,
+            "right-release posts ID|0xC000 (mask has 0x10)"
+        );
     }
 }

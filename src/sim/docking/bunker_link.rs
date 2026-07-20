@@ -8,9 +8,9 @@
 use crate::rules::ruleset::RuleSet;
 use crate::sim::docking::bunker_install::{BunkerRuntime, BunkerState};
 use crate::sim::game_entity::BunkerLink;
-use crate::sim::mission::{verb, MissionType};
+use crate::sim::mission::{MissionType, verb};
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::radio::{transmit, RadioMessage, RadioPayload};
+use crate::sim::radio::{RadioMessage, RadioPayload, transmit};
 use crate::sim::world::{SimSoundEvent, Simulation};
 
 /// Exit-search ring limit for the normal release (mirrors the refinery exit).
@@ -245,8 +245,11 @@ pub(crate) fn emit_bunker_wall_anim(
     let Some(b) = sim.substrate.entities.get(building_id) else {
         return;
     };
-    let damaged =
-        at_or_below_condition_red(b.health.current, b.health.max, rules.general.condition_red_x1000);
+    let damaged = at_or_below_condition_red(
+        b.health.current,
+        b.health.max,
+        rules.general.condition_red_x1000,
+    );
     sim.bunker_wall_events
         .push(crate::sim::components::BunkerWallAnimEvent {
             building_id,
@@ -484,10 +487,17 @@ mod tests {
         let mut sim = installed_sim();
         sim.bunker_wall_events.clear();
         release_normal(&mut sim, 2, &rules(), None);
-        assert_eq!(down_anim_events(&sim), 1, "one walls-down anim on normal eject");
+        assert_eq!(
+            down_anim_events(&sim),
+            1,
+            "one walls-down anim on normal eject"
+        );
         let ev = sim.bunker_wall_events.iter().find(|e| !e.up).unwrap();
         assert_eq!(ev.building_id, 2);
-        assert!(!ev.damaged, "full-health bunker uses the non-damaged variant");
+        assert!(
+            !ev.damaged,
+            "full-health bunker uses the non-damaged variant"
+        );
     }
 
     #[test]
@@ -517,7 +527,10 @@ mod tests {
         sim.substrate.entities.get_mut(2).unwrap().health.current = 100;
         release_normal(&mut sim, 2, &rules(), None);
         let ev = sim.bunker_wall_events.iter().find(|e| !e.up).unwrap();
-        assert!(ev.damaged, "below-ConditionRed bunker selects the damaged variant");
+        assert!(
+            ev.damaged,
+            "below-ConditionRed bunker selects the damaged variant"
+        );
     }
 
     #[test]

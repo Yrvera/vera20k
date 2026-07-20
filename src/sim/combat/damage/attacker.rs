@@ -29,9 +29,8 @@ pub(crate) fn fire_damage(weapon_damage: i32, mods: &CombatMods, disabled: bool)
     }
     // FirePower fold: (country * unit) * base, ONE ftol (gamemd: FLD country;
     // FMUL unit; FIMUL base).
-    let mut d = ftol(
-        mods.attacker_country_firepower * mods.attacker_unit_firepower * weapon_damage as f64,
-    );
+    let mut d =
+        ftol(mods.attacker_country_firepower * mods.attacker_unit_firepower * weapon_damage as f64);
     // Each subsequent stage: ftol(d * mult). Caller passes 1.0 when the gate is
     // inactive, so multiplying unconditionally matches the binary exactly.
     d = ftol(d as f64 * mods.attacker_vet_combat); // VeteranCombat (Rules+0x670)
@@ -59,7 +58,10 @@ mod tests {
     #[test]
     fn veteran_combat_multiplies() {
         // VeteranCombat 1.1: ftol(100 * 1.1) = 110.
-        let mods = CombatMods { attacker_vet_combat: 1.1, ..CombatMods::default() };
+        let mods = CombatMods {
+            attacker_vet_combat: 1.1,
+            ..CombatMods::default()
+        };
         assert_eq!(fire_damage(100, &mods, false), 110);
     }
 
@@ -77,21 +79,30 @@ mod tests {
     #[test]
     fn occupy_garrison_multiplies() {
         // Occupy mult (Rules+0xf40): ftol(40 * 2.0) = 80.
-        let mods = CombatMods { attacker_occupy: 2.0, ..CombatMods::default() };
+        let mods = CombatMods {
+            attacker_occupy: 2.0,
+            ..CombatMods::default()
+        };
         assert_eq!(fire_damage(40, &mods, false), 80);
     }
 
     #[test]
     fn tank_bunker_multiplies() {
         // TankBunker mult (Rules+0xf4c): ftol(100 * 1.5) = 150.
-        let mods = CombatMods { attacker_tank_bunker: 1.5, ..CombatMods::default() };
+        let mods = CombatMods {
+            attacker_tank_bunker: 1.5,
+            ..CombatMods::default()
+        };
         assert_eq!(fire_damage(100, &mods, false), 150);
     }
 
     #[test]
     fn open_topped_multiplies() {
         // OpenTopped mult (Rules+0xf58): ftol(100 * 0.75) = 75.
-        let mods = CombatMods { attacker_open_topped: 0.75, ..CombatMods::default() };
+        let mods = CombatMods {
+            attacker_open_topped: 0.75,
+            ..CombatMods::default()
+        };
         assert_eq!(fire_damage(100, &mods, false), 75);
     }
 

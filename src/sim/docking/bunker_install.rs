@@ -462,7 +462,10 @@ mod tests {
         // TurnSouth -> install.
         tick_bunker_install(&mut sim, &rules, None);
         assert_eq!(rt(&sim, 2).state, BunkerState::Occupied);
-        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, Some(1));
+        assert_eq!(
+            sim.substrate.entities.get(2).unwrap().bunker_occupant,
+            Some(1)
+        );
         assert_eq!(
             sim.substrate.entities.get(1).unwrap().bunker_link,
             BunkerLink::Installed(2)
@@ -522,7 +525,12 @@ mod tests {
             "waits while a blocker occupies the footprint"
         );
         assert!(
-            sim.substrate.entities.get(3).unwrap().movement_target.is_some(),
+            sim.substrate
+                .entities
+                .get(3)
+                .unwrap()
+                .movement_target
+                .is_some(),
             "the footprint blocker was scattered"
         );
 

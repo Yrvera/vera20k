@@ -376,7 +376,8 @@ fn tick_boarding_and_garrison_reconciliation_in_order(
         }
 
         if sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(entity_id)
             .is_some_and(|e| matches!(e.passenger_role, PassengerRole::Boarding { .. }))
         {
@@ -393,7 +394,12 @@ fn tick_boarding_and_garrison_reconciliation_in_order(
 }
 
 fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64) {
-    let transport_id = match sim.substrate.entities.get(pax_id).map(|e| &e.passenger_role) {
+    let transport_id = match sim
+        .substrate
+        .entities
+        .get(pax_id)
+        .map(|e| &e.passenger_role)
+    {
         Some(PassengerRole::Boarding {
             target_transport_id,
             ..
@@ -402,7 +408,8 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
     };
 
     let transport_alive = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(transport_id)
         .is_some_and(|t| t.is_alive() && !t.dying);
     if !transport_alive {
@@ -428,12 +435,14 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
     }
 
     let pax_type_str = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(pax_id)
         .map(|e| sim.interner.resolve(e.type_ref).to_string())
         .unwrap_or_default();
     let transport_type_str = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(transport_id)
         .map(|e| sim.interner.resolve(e.type_ref).to_string())
         .unwrap_or_default();
@@ -449,14 +458,16 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
     let entering_owner = sim.substrate.entities.get(pax_id).map(|pax| pax.owner);
 
     let boarded = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get_mut(transport_id)
         .and_then(|t| t.passenger_role.cargo_mut())
         .is_some_and(|cargo| cargo.board(pax_id, pax_size));
 
     if boarded {
         let first_occupant = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(transport_id)
             .and_then(|t| t.passenger_role.cargo())
             .map_or(false, |c| c.count() == 1);
@@ -465,7 +476,9 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
                 .object(&transport_type_str)
                 .map_or(false, |o| o.can_be_occupied)
         {
-            if let (Some(owner), Some(t)) = (entering_owner, sim.substrate.entities.get(transport_id)) {
+            if let (Some(owner), Some(t)) =
+                (entering_owner, sim.substrate.entities.get(transport_id))
+            {
                 let rx = t.position.rx;
                 let ry = t.position.ry;
                 sim.sound_events
@@ -540,21 +553,24 @@ fn reconcile_civilian_garrison_owner_for_building(
     building_id: u64,
 ) -> bool {
     let Some((type_ref, mut current_owner, mut first_passenger, mut cargo_empty, red_hp_occupied)) =
-        sim.substrate.entities.get(building_id).and_then(|building| {
-            let cargo = building.passenger_role.cargo()?;
-            Some((
-                building.type_ref,
-                building.owner,
-                cargo.passengers.first().copied(),
-                cargo.is_empty(),
-                !cargo.is_empty()
-                    && is_at_or_below_red_hp(
-                        building.health.current,
-                        building.health.max,
-                        rules.general.condition_red_x1000,
-                    ),
-            ))
-        })
+        sim.substrate
+            .entities
+            .get(building_id)
+            .and_then(|building| {
+                let cargo = building.passenger_role.cargo()?;
+                Some((
+                    building.type_ref,
+                    building.owner,
+                    cargo.passengers.first().copied(),
+                    cargo.is_empty(),
+                    !cargo.is_empty()
+                        && is_at_or_below_red_hp(
+                            building.health.current,
+                            building.health.max,
+                            rules.general.condition_red_x1000,
+                        ),
+                ))
+            })
     else {
         return false;
     };
@@ -569,8 +585,11 @@ fn reconcile_civilian_garrison_owner_for_building(
 
     if red_hp_occupied {
         crate::sim::production::eject_red_hp_garrison(sim, rules, building_id);
-        let Some((owner_after_eject, first_after_eject, empty_after_eject)) =
-            sim.substrate.entities.get(building_id).and_then(|building| {
+        let Some((owner_after_eject, first_after_eject, empty_after_eject)) = sim
+            .substrate
+            .entities
+            .get(building_id)
+            .and_then(|building| {
                 let cargo = building.passenger_role.cargo()?;
                 Some((
                     building.owner,
@@ -639,7 +658,8 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
     for (pax_id, transport_id) in boarding_snapshot {
         // Check transport still exists and is alive.
         let transport_alive = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(transport_id)
             .is_some_and(|t| t.is_alive() && !t.dying);
         if !transport_alive {
@@ -668,12 +688,14 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
         if dist <= BOARD_DISTANCE {
             // Passenger has arrived — attempt boarding.
             let pax_type_str = sim
-                .substrate.entities
+                .substrate
+                .entities
                 .get(pax_id)
                 .map(|e| sim.interner.resolve(e.type_ref).to_string())
                 .unwrap_or_default();
             let transport_type_str = sim
-                .substrate.entities
+                .substrate
+                .entities
                 .get(transport_id)
                 .map(|e| sim.interner.resolve(e.type_ref).to_string())
                 .unwrap_or_default();
@@ -692,7 +714,8 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
 
             // Try to board.
             let boarded = sim
-                .substrate.entities
+                .substrate
+                .entities
                 .get_mut(transport_id)
                 .and_then(|t| t.passenger_role.cargo_mut())
                 .is_some_and(|cargo| cargo.board(pax_id, pax_size));
@@ -702,7 +725,8 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                 // gamemd AddGarrisonOccupant fires EVA + BuildingGarrisonedSound
                 // when count transitions 0→1; subsequent occupants are silent.
                 let first_occupant = sim
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(transport_id)
                     .and_then(|t| t.passenger_role.cargo())
                     .map_or(false, |c| c.count() == 1);
@@ -711,7 +735,8 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                         .object(&transport_type_str)
                         .map_or(false, |o| o.can_be_occupied)
                 {
-                    if let (Some(owner), Some(t)) = (entering_owner, sim.substrate.entities.get(transport_id))
+                    if let (Some(owner), Some(t)) =
+                        (entering_owner, sim.substrate.entities.get(transport_id))
                     {
                         let rx = t.position.rx;
                         let ry = t.position.ry;
@@ -780,8 +805,7 @@ fn is_can_be_occupied_unloading_transport(
     if !matches!(entity.order_intent, Some(OrderIntent::Unloading)) {
         return false;
     }
-    sim
-        .object_type(entity.type_ref, rules)
+    sim.object_type(entity.type_ref, rules)
         .is_some_and(|obj| obj.can_be_occupied)
 }
 
@@ -822,7 +846,8 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
     };
 
     let pax_id = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get_mut(transport_id)
         .and_then(|t| t.passenger_role.cargo_mut())
         .and_then(|cargo| cargo.unload_first());
@@ -835,14 +860,16 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
     };
 
     let pax_type_str = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(pax_id)
         .map(|e| sim.interner.resolve(e.type_ref).to_string())
         .unwrap_or_default();
     let pax_size = rules.object(&pax_type_str).map(|obj| obj.size).unwrap_or(1);
 
     if let Some(cargo) = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get_mut(transport_id)
         .and_then(|t| t.passenger_role.cargo_mut())
     {
@@ -891,14 +918,20 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
                 .iter()
                 .any(|&(ox, oy)| ox == dest.0 && oy == dest.1);
             if !occupied {
-                movement::issue_direct_move(&mut sim.substrate.entities, pax_id, dest, scatter_speed);
+                movement::issue_direct_move(
+                    &mut sim.substrate.entities,
+                    pax_id,
+                    dest,
+                    scatter_speed,
+                );
                 break;
             }
         }
     }
 
     let cargo_empty = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(transport_id)
         .and_then(|t| t.passenger_role.cargo())
         .is_some_and(|c| c.is_empty());
@@ -971,7 +1004,8 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
 
         // Pop the first passenger from the cargo.
         let pax_id = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get_mut(transport_id)
             .and_then(|t| t.passenger_role.cargo_mut())
             .and_then(|cargo| cargo.unload_first());
@@ -986,7 +1020,8 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
 
         // Get passenger size for total_size bookkeeping.
         let pax_type_str = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(pax_id)
             .map(|e| sim.interner.resolve(e.type_ref).to_string())
             .unwrap_or_default();
@@ -994,7 +1029,8 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
 
         // Adjust total_size on the cargo.
         if let Some(cargo) = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get_mut(transport_id)
             .and_then(|t| t.passenger_role.cargo_mut())
         {
@@ -1046,7 +1082,12 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
                     .iter()
                     .any(|&(ox, oy)| ox == dest.0 && oy == dest.1);
                 if !occupied {
-                    movement::issue_direct_move(&mut sim.substrate.entities, pax_id, dest, scatter_speed);
+                    movement::issue_direct_move(
+                        &mut sim.substrate.entities,
+                        pax_id,
+                        dest,
+                        scatter_speed,
+                    );
                     break;
                 }
             }
@@ -1055,7 +1096,8 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
         // When the transport is empty, clear any passenger-driven weapon override
         // (covers both Gunner=yes IFV swap and open-topped passenger weapon).
         let is_empty = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(transport_id)
             .and_then(|t| t.passenger_role.cargo())
             .is_some_and(|c| c.is_empty());
@@ -1068,7 +1110,8 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
         // If cargo is now empty, clear the unload order. Civilian garrison owner
         // revert is deferred to the building reconciliation turn.
         let cargo_empty = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(transport_id)
             .and_then(|t| t.passenger_role.cargo())
             .is_some_and(|c| c.is_empty());
@@ -1191,8 +1234,16 @@ ConditionYellow=50%
         passenger_id: u64,
         building_id: u64,
     ) -> bool {
-        let passenger = sim.substrate.entities.get(passenger_id).expect("passenger exists");
-        let transport = sim.substrate.entities.get(building_id).expect("building exists");
+        let passenger = sim
+            .substrate
+            .entities
+            .get(passenger_id)
+            .expect("passenger exists");
+        let transport = sim
+            .substrate
+            .entities
+            .get(building_id)
+            .expect("building exists");
         let passenger_obj = rules
             .object(sim.interner.resolve(passenger.type_ref))
             .expect("passenger type exists");
@@ -1214,7 +1265,8 @@ ConditionYellow=50%
     }
 
     fn owner_name(sim: &Simulation, entity_id: u64) -> String {
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(entity_id)
             .map(|entity| sim.interner.resolve(entity.owner).to_string())
             .expect("entity exists")
@@ -1322,7 +1374,11 @@ ConditionYellow=50%
             PassengerRole::Inside { transport_id } if transport_id == bldg
         ));
         assert_eq!(
-            sim.substrate.entities.get(bldg).unwrap().garrison_original_owner,
+            sim.substrate
+                .entities
+                .get(bldg)
+                .unwrap()
+                .garrison_original_owner,
             None,
             "civilian garrison boarding must not save a per-building original owner"
         );
@@ -1450,7 +1506,8 @@ ConditionYellow=50%
         assert_eq!(owner_name(&sim, bldg), "Neutral");
 
         let building = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(bldg)
             .expect("building should remain alive");
         let cargo = building
@@ -1463,7 +1520,11 @@ ConditionYellow=50%
         );
         assert_eq!(cargo.garrison_fire_index, 0);
 
-        let passenger = sim.substrate.entities.get(pax).expect("occupant should still exist");
+        let passenger = sim
+            .substrate
+            .entities
+            .get(pax)
+            .expect("occupant should still exist");
         assert!(matches!(passenger.passenger_role, PassengerRole::None));
         assert!(!passenger.dying);
         assert_eq!((passenger.position.rx, passenger.position.ry), (12, 12));
@@ -1582,7 +1643,11 @@ ConditionYellow=50%
         let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
 
         {
-            let building = sim.substrate.entities.get_mut(bldg).expect("building exists");
+            let building = sim
+                .substrate
+                .entities
+                .get_mut(bldg)
+                .expect("building exists");
             building.health.max = 400;
             building.health.current = 100;
         }
@@ -1631,7 +1696,11 @@ ConditionYellow=50%
         let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
 
         {
-            let building = sim.substrate.entities.get_mut(bldg).expect("building exists");
+            let building = sim
+                .substrate
+                .entities
+                .get_mut(bldg)
+                .expect("building exists");
             let cargo = building.passenger_role.cargo_mut().expect("cargo exists");
             for occupant_id in 1000..1005 {
                 assert!(cargo.board(occupant_id, 1));
@@ -1705,7 +1774,11 @@ ConditionYellow=50%
         let rules = garrison_test_rules();
         let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
         let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
-        sim.substrate.entities.get_mut(bldg).unwrap().mind_controlled = true;
+        sim.substrate
+            .entities
+            .get_mut(bldg)
+            .unwrap()
+            .mind_controlled = true;
 
         assert!(
             !can_enter_garrison_fixture(&sim, &rules, pax, bldg),
@@ -1735,7 +1808,11 @@ ConditionYellow=50%
             let mut sim = Simulation::new();
             let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
             let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
-            let building = sim.substrate.entities.get_mut(bldg).expect("building exists");
+            let building = sim
+                .substrate
+                .entities
+                .get_mut(bldg)
+                .expect("building exists");
             building.building_up = Some(crate::sim::components::BuildingUp {
                 elapsed_ticks: 0,
                 total_ticks: 30,
@@ -1751,9 +1828,18 @@ ConditionYellow=50%
             let mut sim = Simulation::new();
             let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
             let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
-            let owner = sim.substrate.entities.get(bldg).expect("building exists").owner;
+            let owner = sim
+                .substrate
+                .entities
+                .get(bldg)
+                .expect("building exists")
+                .owner;
             let spawn_type = sim.interner.intern("AMCV");
-            let building = sim.substrate.entities.get_mut(bldg).expect("building exists");
+            let building = sim
+                .substrate
+                .entities
+                .get_mut(bldg)
+                .expect("building exists");
             building.building_down = Some(crate::sim::components::BuildingDown {
                 elapsed_ticks: 0,
                 total_ticks: 30,
@@ -1812,11 +1898,13 @@ ConditionYellow=50%
         let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
         let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
 
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get_mut(pax)
             .unwrap()
             .mark_live_contact_with(bldg);
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get_mut(bldg)
             .unwrap()
             .mark_live_contact_with(pax);
@@ -1828,10 +1916,19 @@ ConditionYellow=50%
             PassengerRole::Inside { transport_id } if transport_id == bldg
         ));
         assert!(
-            sim.substrate.entities.get(pax).unwrap().radio_contacts.is_empty()
+            sim.substrate
+                .entities
+                .get(pax)
+                .unwrap()
+                .radio_contacts
+                .is_empty()
         );
         assert!(
-            !sim.substrate.entities.get(bldg).unwrap().has_live_contact_with(pax),
+            !sim.substrate
+                .entities
+                .get(bldg)
+                .unwrap()
+                .has_live_contact_with(pax),
             "boarding hide should clear peer radio contacts to the passenger"
         );
     }
@@ -1919,7 +2016,8 @@ ConditionYellow=50%
 
         // Confirm the revert actually happened (post-revert owner = Neutral).
         let bldg_owner_str = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(bldg)
             .map(|t| sim.interner.resolve(t.owner).to_string())
             .expect("building exists");
@@ -2057,7 +2155,11 @@ ConditionYellow=50%
     /// helper end-to-end without needing a full combat tick + damage events.
     fn eject_via_event(sim: &mut Simulation, rules: &RuleSet, building_id: u64) -> Vec<u64> {
         let event = {
-            let bldg = sim.substrate.entities.get(building_id).expect("building present");
+            let bldg = sim
+                .substrate
+                .entities
+                .get(building_id)
+                .expect("building present");
             let cargo = bldg.passenger_role.cargo().expect("cargo present");
             let obj = rules
                 .object(sim.interner.resolve(bldg.type_ref))

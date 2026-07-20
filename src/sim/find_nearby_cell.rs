@@ -586,12 +586,18 @@ mod tests {
         q.target_cell = Some((7, 4)); // east of the seed (4,4)
         let pick0 = find_nearby_passable_cell((4, 4), &q, 0);
         let pick9 = find_nearby_passable_cell((4, 4), &q, 9);
-        assert_eq!(pick0, pick9, "target selection must ignore the frame counter");
+        assert_eq!(
+            pick0, pick9,
+            "target selection must ignore the frame counter"
+        );
         // On flat terrain the per-ring early-out stops at ring 0 (seed is direct), so
         // the nearest-distance pool is the seed itself; the chosen cell is at/east of
         // the seed and never west of it.
         let pick = pick0.expect("a candidate exists");
-        assert!(pick.0 >= 4, "nearest-to-target should not lean away from the target");
+        assert!(
+            pick.0 >= 4,
+            "nearest-to-target should not lean away from the target"
+        );
     }
 
     /// Slice 3b wiring: with the map's playfield diamond threaded into the query,

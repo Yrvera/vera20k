@@ -129,7 +129,12 @@ mod tests {
     fn economy_default_is_zeroed() {
         let e = Economy::default();
         assert_eq!(
-            (e.credits, e.spent_credits, e.harvested_credits, e.purifier_count),
+            (
+                e.credits,
+                e.spent_credits,
+                e.harvested_credits,
+                e.purifier_count
+            ),
             (0, 0, 0, 0)
         );
     }
@@ -197,14 +202,20 @@ mod tests {
         // Sanity: the buggy double-trunc would have been 44.
         let double_trunc = apply_income_mult((50 * 3 * 25) / 100, 1_200_000);
         assert_eq!(double_trunc, 44, "documents the bug this guards against");
-        assert_ne!(purifier_bonus_credits(50, 3, 250_000, 1_200_000), double_trunc);
+        assert_ne!(
+            purifier_bonus_credits(50, 3, 250_000, 1_200_000),
+            double_trunc
+        );
     }
 
     /// At IncomeMult 1.0 the bonus equals the legacy `slot_value×count×pct/100` (so stock
     /// is hash-neutral), and 0 purifiers -> 0.
     #[test]
     fn purifier_bonus_credits_stock_and_zero() {
-        assert_eq!(purifier_bonus_credits(100, 2, 250_000, INCOME_PPM_SCALE), 50);
+        assert_eq!(
+            purifier_bonus_credits(100, 2, 250_000, INCOME_PPM_SCALE),
+            50
+        );
         assert_eq!(purifier_bonus_credits(100, 0, 250_000, INCOME_PPM_SCALE), 0);
         assert_eq!(purifier_bonus_credits(100, -1, 250_000, 1_200_000), 0);
     }
@@ -235,8 +246,17 @@ mod tests {
     /// player-visible 9-credit gap per deposit. Stock .25 (250_000) stays byte-identical.
     #[test]
     fn purifier_bonus_credits_fractional_ppm_beats_whole_percent() {
-        assert_eq!(purifier_bonus_credits(1000, 3, 333_000, INCOME_PPM_SCALE), 999);
-        assert_eq!(purifier_bonus_credits(1000, 3, 330_000, INCOME_PPM_SCALE), 990);
-        assert_eq!(purifier_bonus_credits(1000, 2, 250_000, INCOME_PPM_SCALE), 500);
+        assert_eq!(
+            purifier_bonus_credits(1000, 3, 333_000, INCOME_PPM_SCALE),
+            999
+        );
+        assert_eq!(
+            purifier_bonus_credits(1000, 3, 330_000, INCOME_PPM_SCALE),
+            990
+        );
+        assert_eq!(
+            purifier_bonus_credits(1000, 2, 250_000, INCOME_PPM_SCALE),
+            500
+        );
     }
 }

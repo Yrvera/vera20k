@@ -853,7 +853,10 @@ mod tests {
             CellListInsertion::PrependNonBuilding,
         );
         grid.remove_on_layer(5, 5, 7, MovementLayer::Bridge);
-        assert!(grid.contains_entity(5, 5, 7), "wrong-layer remove must miss");
+        assert!(
+            grid.contains_entity(5, 5, 7),
+            "wrong-layer remove must miss"
+        );
         grid.remove_on_layer(5, 5, 7, MovementLayer::Ground);
         assert!(grid.get(5, 5).is_none(), "right-layer remove must hit");
     }

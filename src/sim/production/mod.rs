@@ -19,6 +19,11 @@ mod production_types;
 mod war_factory_exit;
 
 // Re-export everything so external code can still use `production::X`.
+pub use self::factory::{
+    BuildEligibility, BuildStepTimeInputs, CancelOutcome, Factory, FactoryRegistry, FactoryView,
+    PRODUCTION_STEPS, PendingObject, STEP_RATE_MAX, STEP_RATE_MIN, SpecialItem, StepOutcome,
+    build_step_time, category_for_object,
+};
 pub use self::production_economy::is_harvester_type;
 pub(crate) use self::production_placement::structure_occupies_cell;
 pub use self::production_placement::{
@@ -45,11 +50,6 @@ pub use self::production_tech::{
     structure_satisfies_prerequisite,
 };
 pub use self::production_types::*;
-pub use self::factory::{
-    build_step_time, category_for_object, BuildEligibility, BuildStepTimeInputs, CancelOutcome,
-    Factory, FactoryRegistry, FactoryView, PendingObject, SpecialItem, StepOutcome,
-    PRODUCTION_STEPS, STEP_RATE_MAX, STEP_RATE_MIN,
-};
 pub use self::war_factory_exit::tick_war_factory_exit_contacts;
 
 // Re-exports for external consumers (files outside production/ that previously

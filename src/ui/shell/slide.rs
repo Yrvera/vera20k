@@ -138,8 +138,7 @@ pub(crate) const RENDERED_SHELL_SLIDES: &[ShellSlideSpec] = &[
 /// (~58 ids, mostly network/WOL setup dialogs that are out of scope here).
 /// Excluded: modal dialogs (`0x120` confirm, `0xCE` body-ok) and the in-game
 /// Options dialog (`0xBBB`), all of which carry `slide_eligible = false`.
-pub(crate) const SHELL_SLIDE_ALLOW_LIST: &[u16] =
-    &[0x00E2, 0x0094, 0x006B, 0x0100, 0x0101, 0x0102];
+pub(crate) const SHELL_SLIDE_ALLOW_LIST: &[u16] = &[0x00E2, 0x0094, 0x006B, 0x0100, 0x0101, 0x0102];
 
 /// Whether a dialog plays the first-paint controls-reveal slide.
 pub(crate) fn is_slide_eligible(id: DialogId) -> bool {

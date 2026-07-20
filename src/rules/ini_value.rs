@@ -249,11 +249,7 @@ fn parse_leading_hex(s: &str) -> i32 {
         any = true;
         acc = acc.wrapping_mul(16).wrapping_add(d);
     }
-    if any {
-        acc as i32
-    } else {
-        0
-    }
+    if any { acc as i32 } else { 0 }
 }
 
 /// C-atoi-equivalent leading-numeric parse (P3): optional leading sign, then
@@ -359,8 +355,9 @@ mod tests {
 
     #[test] // P6/P18
     fn test_read_bool_first_char() {
-        let ini =
-            sec("[S]\nA=yes\nB=Y\nC=T\nD=true\nE=1\nF=no\nG=N\nH=F\nI=false\nJ=0\nK=off\nL=xyz\nM=\n");
+        let ini = sec(
+            "[S]\nA=yes\nB=Y\nC=T\nD=true\nE=1\nF=no\nG=N\nH=F\nI=false\nJ=0\nK=off\nL=xyz\nM=\n",
+        );
         let s = ini.section("S").unwrap();
         for k in ["A", "B", "C", "D", "E"] {
             assert!(s.read_bool(k, false), "{k}");
@@ -417,7 +414,10 @@ mod tests {
     #[test] // P8 partial keeps default component
     fn test_read_3int_partial_keeps_default() {
         let ini = sec("[S]\nA=10,20\n"); // only 2 of 3 fields
-        assert_eq!(ini.section("S").unwrap().read_3int("A", [1, 2, 3]), [10, 20, 3]);
+        assert_eq!(
+            ini.section("S").unwrap().read_3int("A", [1, 2, 3]),
+            [10, 20, 3]
+        );
     }
 
     #[test] // P21

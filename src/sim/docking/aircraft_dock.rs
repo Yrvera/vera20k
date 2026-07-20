@@ -343,7 +343,8 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
     }
 
     let snapshots: Vec<AircraftSnap> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter_map(|e| {
             // A Dying aircraft corpse must not run the dock/ammo state machine
@@ -497,7 +498,8 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                     continue;
                 };
                 let max_slots = sim
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(af_sid)
                     .and_then(|af| sim.object_type(af.type_ref, rules))
                     .map(|obj| obj.number_of_docks.max(1))
@@ -619,7 +621,8 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
         .collect();
     for (id, rx, ry) in air_moves {
         let speed = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(id)
             .and_then(|e| {
                 let obj = sim.object_type(e.type_ref, rules)?;
@@ -665,7 +668,11 @@ mod tests {
         docks.try_reserve(100, 12, 4); // pad 1
         docks.try_reserve(100, 13, 4); // pad 2
         docks.try_reserve(100, 14, 4); // pad 3
-        assert_eq!(docks.try_reserve(100, 15, 4), None, "full — refused, no queue");
+        assert_eq!(
+            docks.try_reserve(100, 15, 4),
+            None,
+            "full — refused, no queue"
+        );
         docks.release(11); // free pad 0
         docks.release(12); // free pad 1
         // No auto-promotion: 15 holds no pad until it re-probes.
@@ -687,8 +694,16 @@ mod tests {
         assert_eq!(docks.try_reserve(100, 15, 4), None);
         assert_eq!(docks.try_reserve(100, 16, 4), None);
         docks.release(13); // free pad 2
-        assert_eq!(docks.try_reserve(100, 16, 4), Some(2), "first re-probe wins");
-        assert_eq!(docks.try_reserve(100, 15, 4), None, "no slot left for later probe");
+        assert_eq!(
+            docks.try_reserve(100, 16, 4),
+            Some(2),
+            "first re-probe wins"
+        );
+        assert_eq!(
+            docks.try_reserve(100, 15, 4),
+            None,
+            "no slot left for later probe"
+        );
     }
 
     #[test]

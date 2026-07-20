@@ -87,7 +87,9 @@ pub fn splash_count_index(cell_spread: SimFixed) -> usize {
     if cell_spread <= SIM_ZERO {
         return 0;
     }
-    (cell_spread + SimFixed::from_num(0.99)).to_num::<i64>().max(0) as usize
+    (cell_spread + SimFixed::from_num(0.99))
+        .to_num::<i64>()
+        .max(0) as usize
 }
 
 /// gamemd splash cell sweep: `offset_table[..count_table[ftol(CS + 0.99)]]`, exact order. The
@@ -115,7 +117,10 @@ mod tests {
     #[test]
     fn count_table_exact_gamemd() {
         // matches gamemd's cell-spread count table
-        assert_eq!(COUNT_TABLE, [1, 9, 21, 37, 61, 89, 121, 161, 205, 253, 309, 369]);
+        assert_eq!(
+            COUNT_TABLE,
+            [1, 9, 21, 37, 61, 89, 121, 161, 205, 253, 309, 369]
+        );
     }
 
     #[test]
@@ -128,7 +133,16 @@ mod tests {
         // NE, N, NW, W, E, SW, S, SE — verified from the initializer body.
         assert_eq!(
             OFFSET_TABLE[1..9],
-            [(1, -1), (0, -1), (-1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
+            [
+                (1, -1),
+                (0, -1),
+                (-1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1)
+            ]
         );
     }
 
@@ -149,7 +163,10 @@ mod tests {
         let t = &OFFSET_TABLE;
         assert_eq!(t[319], (-3, 11));
         assert_eq!(t[322], (-3, 11));
-        assert!(!t.contains(&(3, -11)), "gamemd never writes the (3,-11) mirror");
+        assert!(
+            !t.contains(&(3, -11)),
+            "gamemd never writes the (3,-11) mirror"
+        );
     }
 
     #[test]
@@ -166,7 +183,11 @@ mod tests {
             if i == 319 || i == 322 || (dx == 0 && dy == 0) {
                 continue;
             }
-            assert!(set.contains(&(-dx, -dy)), "idx {i} {:?} missing mirror", (dx, dy));
+            assert!(
+                set.contains(&(-dx, -dy)),
+                "idx {i} {:?} missing mirror",
+                (dx, dy)
+            );
         }
     }
 
@@ -230,12 +251,17 @@ mod tests {
     #[test]
     fn stock_cellspread_values_match_gamemd_float_rule() {
         // Distinct CellSpread= values from ini/rulesmd.ini (inline comments stripped), 2026-06-04.
-        const STOCK_CS: &[f64] =
-            &[0.0, 0.1, 0.3, 0.4, 0.5, 0.9, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 8.0, 10.0];
+        const STOCK_CS: &[f64] = &[
+            0.0, 0.1, 0.3, 0.4, 0.5, 0.9, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 8.0, 10.0,
+        ];
         for &v in STOCK_CS {
             let fx = SimFixed::from_num(v);
             let vf = v as f32 as f64; // gamemd loads the field as f32
-            let gamemd_idx = if v <= 0.0 { 0usize } else { (vf + 0.99) as usize };
+            let gamemd_idx = if v <= 0.0 {
+                0usize
+            } else {
+                (vf + 0.99) as usize
+            };
             let want_count = COUNT_TABLE[gamemd_idx.min(MAX_COUNT_INDEX)] as usize;
             assert_eq!(splash_cells(fx).len(), want_count, "count CS={v}");
             let gamemd_lep = if v <= 0.0 { 0i64 } else { (vf * 256.0) as i64 };

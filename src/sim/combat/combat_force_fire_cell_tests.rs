@@ -123,7 +123,9 @@ fn force_fire_cell_pursuit_then_fire_integration() {
     let rules = ff_rules();
     let mut sim = Simulation::new();
     sim.input_delay_ticks = 0;
-    sim.substrate.entities.insert(make_unit(1, "MTNK", 5, 5, 300));
+    sim.substrate
+        .entities
+        .insert(make_unit(1, "MTNK", 5, 5, 300));
     // Replace sim interner with the test interner so type_ref/owner IDs from
     // GameEntity::test_default resolve correctly.
     sim.interner = crate::sim::intern::test_interner();
@@ -165,7 +167,8 @@ fn force_fire_cell_pursuit_then_fire_integration() {
             break;
         }
         assert!(
-            sim.substrate.entities
+            sim.substrate
+                .entities
                 .get(1)
                 .is_some_and(|e| e.attack_target.is_some()),
             "attack_target dropped mid-pursuit (parity bug)"

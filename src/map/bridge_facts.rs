@@ -469,7 +469,11 @@ mod tests {
                 raw_flags: raw,
                 ..BridgeCellFacts::default()
             };
-            assert_eq!(flags.anchor(), facts.is_anchor_self(), "anchor raw={raw:#x}");
+            assert_eq!(
+                flags.anchor(),
+                facts.is_anchor_self(),
+                "anchor raw={raw:#x}"
+            );
             assert_eq!(
                 flags.structural(),
                 facts.has_structural_bridge(),

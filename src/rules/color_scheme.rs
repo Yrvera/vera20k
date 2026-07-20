@@ -55,7 +55,9 @@ pub fn scheme_entry_for_priority(priority: i32) -> usize {
 /// `[Colors]` entry index for a map `Color=<name>` (case-insensitive). `None` if no entry matches.
 pub fn scheme_entry_by_name(schemes: &[ColorSchemeEntry], name: &str) -> Option<usize> {
     let want = name.trim();
-    schemes.iter().position(|s| s.name.eq_ignore_ascii_case(want))
+    schemes
+        .iter()
+        .position(|s| s.name.eq_ignore_ascii_case(want))
 }
 
 /// H,S,V of a `[Colors]` entry by index.
@@ -102,7 +104,10 @@ fn parse_hsv_triple(value: &str) -> Option<[u8; 3]> {
 /// the schemes "are all doubled"), so runtime scheme index `N` addresses
 /// `[Colors]` list entry `N / 2`; both halves of a pair share the same source
 /// H,S,V. The priority table selects the odd (`2*entry + 1`) half.
-pub fn scheme_for_priority(schemes: &[ColorSchemeEntry], priority: i32) -> Option<&ColorSchemeEntry> {
+pub fn scheme_for_priority(
+    schemes: &[ColorSchemeEntry],
+    priority: i32,
+) -> Option<&ColorSchemeEntry> {
     schemes.get(scheme_index_for_priority(priority) / 2)
 }
 

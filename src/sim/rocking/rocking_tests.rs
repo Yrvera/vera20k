@@ -526,7 +526,8 @@ fn make_test_simulation_with_one_vehicle() -> (Simulation, RuleSet, PathGrid) {
     // Production-side spawn doesn't initialize `rocking` yet (sim-side only
     // path lands with combat in Task 19); flip it on here so the rocking
     // pipeline actually runs against this entity.
-    sim.substrate.entities
+    sim.substrate
+        .entities
         .get_mut(id)
         .expect("spawned entity present")
         .rocking = Some(RockingState::default());
@@ -553,7 +554,12 @@ fn integration_impulse_decays_to_neutral_over_60_ticks() {
     // ±IMPULSE_VEL_CAP envelope, and large enough to actually settle visibly.
     let weight = SimFixed::lit("2.0");
     {
-        let e = sim.substrate.entities.values_mut().next().expect("one entity");
+        let e = sim
+            .substrate
+            .entities
+            .values_mut()
+            .next()
+            .expect("one entity");
         let r = e.rocking.as_mut().expect("rocking present");
         apply_rocker_impulse(r, SimFixed::ONE, weight, SimFixed::ONE, SimFixed::ZERO);
         assert!(

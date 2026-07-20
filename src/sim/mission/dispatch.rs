@@ -74,10 +74,22 @@ mod tests {
     #[test]
     fn reachable_unit_missions_route_to_live_families() {
         assert_eq!(unit_dispatch_family(MissionType::Move), DispatchSlot::Move);
-        assert_eq!(unit_dispatch_family(MissionType::Attack), DispatchSlot::Attack);
-        assert_eq!(unit_dispatch_family(MissionType::Enter), DispatchSlot::Enter);
-        assert_eq!(unit_dispatch_family(MissionType::Harvest), DispatchSlot::Harvest);
-        assert_eq!(unit_dispatch_family(MissionType::Guard), DispatchSlot::Guard);
+        assert_eq!(
+            unit_dispatch_family(MissionType::Attack),
+            DispatchSlot::Attack
+        );
+        assert_eq!(
+            unit_dispatch_family(MissionType::Enter),
+            DispatchSlot::Enter
+        );
+        assert_eq!(
+            unit_dispatch_family(MissionType::Harvest),
+            DispatchSlot::Harvest
+        );
+        assert_eq!(
+            unit_dispatch_family(MissionType::Guard),
+            DispatchSlot::Guard
+        );
         assert_eq!(unit_dispatch_family(MissionType::None), DispatchSlot::Sleep);
         for slot in [
             unit_dispatch_family(MissionType::Move),
@@ -106,10 +118,19 @@ mod tests {
             unit_dispatch_family(MissionType::Sleep)
         );
         // AttackMove is the defensive skip bucket — never a committed Unit mission.
-        assert_eq!(unit_dispatch_family(MissionType::AttackMove), DispatchSlot::Skip);
+        assert_eq!(
+            unit_dispatch_family(MissionType::AttackMove),
+            DispatchSlot::Skip
+        );
         // A representative TS-legacy / non-Unit mission is inert.
-        assert_eq!(unit_dispatch_family(MissionType::Ambush), DispatchSlot::OtherInert);
-        assert_eq!(unit_dispatch_family(MissionType::Capture), DispatchSlot::OtherInert);
+        assert_eq!(
+            unit_dispatch_family(MissionType::Ambush),
+            DispatchSlot::OtherInert
+        );
+        assert_eq!(
+            unit_dispatch_family(MissionType::Capture),
+            DispatchSlot::OtherInert
+        );
     }
 
     #[test]

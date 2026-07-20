@@ -191,7 +191,10 @@ mod tests {
         occ.add(3, 3, structure(100), false);
         occ.add(3, 3, unit(2), false);
         // unit 2 prepended ahead of unit 1; structure 100 stays at the tail.
-        assert_eq!(occ.get(3, 3).unwrap().layer(ListLayer::Ground), &[2, 1, 100]);
+        assert_eq!(
+            occ.get(3, 3).unwrap().layer(ListLayer::Ground),
+            &[2, 1, 100]
+        );
         // Bridge layer untouched.
         assert_eq!(occ.count_on(3, 3, ListLayer::Bridge), 0);
     }
@@ -218,8 +221,12 @@ mod tests {
         occ.add(1, 1, unit(9), /* on_bridge */ false);
 
         occ.cross(
-            1, 1, /* old_on_bridge */ false, // ground at the old cell
-            2, 2, /* new_on_bridge */ true,  // deck at the new cell
+            1,
+            1,
+            /* old_on_bridge */ false, // ground at the old cell
+            2,
+            2,
+            /* new_on_bridge */ true, // deck at the new cell
             unit(9),
         );
 
@@ -238,8 +245,12 @@ mod tests {
         occ.add(4, 4, unit(7), /* on_bridge */ true); // on the deck
 
         occ.cross(
-            4, 4, /* old_on_bridge */ true, // deck at the old cell
-            5, 5, /* new_on_bridge */ false, // ground at the new cell
+            4,
+            4,
+            /* old_on_bridge */ true, // deck at the old cell
+            5,
+            5,
+            /* new_on_bridge */ false, // ground at the new cell
             unit(7),
         );
 

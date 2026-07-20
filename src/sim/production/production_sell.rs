@@ -777,7 +777,8 @@ const REPAIR_HP_PER_TICK: u16 = 4;
 pub fn tick_repairs(sim: &mut Simulation, rules: &RuleSet) {
     // Collect snapshot of repairing structures.
     let actions: Vec<(u64, String, String, u16, u16)> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             // A Dying building corpse (destroyed this tick, awaiting the end-of-
@@ -942,7 +943,8 @@ mod tests {
     }
 
     fn give_walk_locomotor(sim: &mut Simulation, stable_id: u64) {
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get_mut(stable_id)
             .expect("test entity should exist")
             .locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
@@ -986,7 +988,11 @@ mod tests {
 
         tick_repairs(&mut sim, &rules);
 
-        let building = sim.substrate.entities.get(1).expect("building should remain");
+        let building = sim
+            .substrate
+            .entities
+            .get(1)
+            .expect("building should remain");
         assert_eq!(building.health.current, 53);
         assert!(!building.building_damage_state_active);
     }
@@ -1106,7 +1112,9 @@ mod tests {
         assert!(sim.substrate.entities.get(building_id).is_none());
         for cell in [(10, 10), (10, 11), (11, 10), (11, 11)] {
             assert!(
-                !sim.substrate.occupancy.contains_entity(cell.0, cell.1, building_id),
+                !sim.substrate
+                    .occupancy
+                    .contains_entity(cell.0, cell.1, building_id),
                 "sold building should clear foundation cell {cell:?}"
             );
         }
@@ -1114,7 +1122,8 @@ mod tests {
         assert_eq!(credits_for_owner(&sim, "Americans") - before, 200);
 
         let passenger = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(passenger_id)
             .expect("passenger should survive sell eject");
         assert!(matches!(passenger.passenger_role, PassengerRole::None));
@@ -1152,7 +1161,8 @@ mod tests {
         assert_eq!(eject_garrison_occupants(&mut sim, &rules, building_id), 1);
 
         let building = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(building_id)
             .expect("helper should not remove building");
         assert_eq!(
@@ -1173,7 +1183,8 @@ mod tests {
         );
 
         let passenger = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(passenger_id)
             .expect("passenger should remain");
         assert!(matches!(passenger.passenger_role, PassengerRole::None));
@@ -1216,7 +1227,11 @@ mod tests {
         let checks = [(pax3, (12, 12)), (pax2, (12, 12)), (pax1, (12, 12))];
 
         for (pax_id, expected_cell) in checks {
-            let pax = sim.substrate.entities.get(pax_id).expect("passenger should remain");
+            let pax = sim
+                .substrate
+                .entities
+                .get(pax_id)
+                .expect("passenger should remain");
             assert_eq!(
                 (pax.position.rx, pax.position.ry),
                 expected_cell,
@@ -1261,7 +1276,8 @@ mod tests {
         insert_captured_player_owned_garrison(&mut sim, building_id, passenger_id);
         block_all_garrison_exit_cells(&mut sim, 10, 10, 2, 2);
         if let Some(cargo) = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get_mut(building_id)
             .and_then(|building| building.passenger_role.cargo_mut())
         {
@@ -1272,7 +1288,8 @@ mod tests {
         assert_eq!(eject_garrison_occupants(&mut sim, &rules, building_id), 1);
 
         let passenger = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(passenger_id)
             .expect("player-sell no-exit passenger should remain");
         assert_eq!((passenger.position.rx, passenger.position.ry), (11, 11));
@@ -1281,7 +1298,8 @@ mod tests {
         assert_eq!(sim.scenario_rng.state(), rng_before);
 
         let cargo = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(building_id)
             .and_then(|building| building.passenger_role.cargo())
             .expect("building cargo remains present");
@@ -1356,7 +1374,8 @@ mod tests {
         assert_eq!(sim.scenario_rng.state(), rng_before);
 
         let passenger = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(passenger_id)
             .expect("null fallback leaves Rust entity marked dying");
         assert_eq!(passenger.health.current, 0);

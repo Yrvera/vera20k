@@ -10,7 +10,7 @@
 //! also clears the aircraft dock phase), so they cannot be folded into a fixed
 //! teardown without diverging.
 
-use crate::sim::mission::{verb, MissionType};
+use crate::sim::mission::{MissionType, verb};
 use crate::sim::world::Simulation;
 
 /// Which dock-reservation teardown a retasking command performs.

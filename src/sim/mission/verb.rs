@@ -219,9 +219,18 @@ mod tests {
 
     #[test]
     fn slice6_selling_blocks_all_transitions() {
-        assert!(is_transition_blocked(MissionType::Selling, MissionType::Move));
-        assert!(is_transition_blocked(MissionType::Selling, MissionType::Guard));
-        assert!(is_transition_blocked(MissionType::Selling, MissionType::Attack));
+        assert!(is_transition_blocked(
+            MissionType::Selling,
+            MissionType::Move
+        ));
+        assert!(is_transition_blocked(
+            MissionType::Selling,
+            MissionType::Guard
+        ));
+        assert!(is_transition_blocked(
+            MissionType::Selling,
+            MissionType::Attack
+        ));
     }
 
     #[test]
@@ -243,9 +252,15 @@ mod tests {
     #[test]
     fn slice6_queue_and_override_respect_guard() {
         let mut com = com_with(MissionType::Deliberate);
-        assert!(!queue_mission(&mut com, MissionType::Guard), "guard blocked");
+        assert!(
+            !queue_mission(&mut com, MissionType::Guard),
+            "guard blocked"
+        );
         assert_eq!(com.queued, None);
-        assert!(!override_mission(&mut com, MissionType::Guard, 0), "guard blocked");
+        assert!(
+            !override_mission(&mut com, MissionType::Guard, 0),
+            "guard blocked"
+        );
         assert_eq!(com.current, MissionType::Deliberate);
         // A non-Guard target passes the Deliberate guard.
         assert!(queue_mission(&mut com, MissionType::Attack));

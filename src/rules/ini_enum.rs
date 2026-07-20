@@ -40,7 +40,7 @@ pub fn enum_by_name(value: &str, table: &[EnumByName], default_id: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{enum_by_name, EnumByName};
+    use super::{EnumByName, enum_by_name};
 
     const FOUNDATION: &[EnumByName] = &[
         EnumByName { name: "1x1", id: 0 },

@@ -56,10 +56,19 @@ pub fn build_scheme_ramp(hsv: [u8; 3]) -> [Color; RAMP_SIZE] {
     let cos_step = (40.0_f64 / 15.0).to_radians();
     let sin_base = 20.0_f64.to_radians();
     let sin_step = (70.0_f64 / 15.0).to_radians();
-    let mut ramp = [Color { r: 0, g: 0, b: 0, a: 255 }; RAMP_SIZE];
+    let mut ramp = [Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+    }; RAMP_SIZE];
     for (i, slot) in ramp.iter_mut().enumerate() {
         let cos_angle = cos_base + (i as f64) * cos_step;
-        let sin_angle = if i == 0 { PI / 16.0 } else { sin_base + (i as f64) * sin_step };
+        let sin_angle = if i == 0 {
+            PI / 16.0
+        } else {
+            sin_base + (i as f64) * sin_step
+        };
         // gamemd ftol = truncate toward zero, then clamp into a palette byte.
         let mod_v = (cos_angle.cos() * v).trunc().clamp(0.0, 255.0) as u8;
         let mod_s = (sin_angle.sin() * s).trunc().clamp(0.0, 255.0) as u8;
@@ -75,7 +84,12 @@ pub const DEFAULT_SCHEME_ENTRY: usize = 2;
 
 /// Flat fallback ramp used only when the `[Colors]` list is empty (rules not yet loaded); a real
 /// skirmish always has a populated scheme list.
-static FALLBACK_RAMP: [Color; RAMP_SIZE] = [Color { r: 180, g: 180, b: 180, a: 255 }; RAMP_SIZE];
+static FALLBACK_RAMP: [Color; RAMP_SIZE] = [Color {
+    r: 180,
+    g: 180,
+    b: 180,
+    a: 255,
+}; RAMP_SIZE];
 
 /// Runtime per-`[Colors]`-entry house-color ramp table. Index = `[Colors]` entry index =
 /// `HouseColorIndex.0`. Built once at load from the parsed `[Colors]` schemes and held on the
@@ -102,7 +116,9 @@ impl HouseColorRamps {
         {
             return r;
         }
-        self.ramps.get(DEFAULT_SCHEME_ENTRY).unwrap_or(&FALLBACK_RAMP)
+        self.ramps
+            .get(DEFAULT_SCHEME_ENTRY)
+            .unwrap_or(&FALLBACK_RAMP)
     }
 }
 
@@ -116,8 +132,15 @@ mod tests {
         assert_eq!(r.len(), 16);
         assert!(r.iter().all(|c| c.a == 255));
         let lum = |c: &Color| c.r as u32 + c.g as u32 + c.b as u32;
-        assert!(lum(&r[0]) > lum(&r[15]), "shade 0 must be brighter than shade 15");
-        assert!(r[0].b >= r[0].r && r[0].b >= r[0].g, "blue hue preserved: {:?}", r[0]);
+        assert!(
+            lum(&r[0]) > lum(&r[15]),
+            "shade 0 must be brighter than shade 15"
+        );
+        assert!(
+            r[0].b >= r[0].r && r[0].b >= r[0].g,
+            "blue hue preserved: {:?}",
+            r[0]
+        );
     }
 
     #[test]
@@ -132,10 +155,16 @@ mod tests {
             mk("C", [0, 0, 240]),
         ];
         let table = HouseColorRamps::from_schemes(&schemes);
-        assert_eq!(table.ramp(HouseColorIndex(1)), &build_scheme_ramp([153, 214, 212]));
+        assert_eq!(
+            table.ramp(HouseColorIndex(1)),
+            &build_scheme_ramp([153, 214, 212])
+        );
         // NO_REMAP and out-of-range fall back to DEFAULT_SCHEME_ENTRY (2).
         assert_eq!(table.ramp(NO_REMAP), table.ramp(HouseColorIndex(2)));
-        assert_eq!(table.ramp(HouseColorIndex(99)), table.ramp(HouseColorIndex(2)));
+        assert_eq!(
+            table.ramp(HouseColorIndex(99)),
+            table.ramp(HouseColorIndex(2))
+        );
     }
 
     /// Golden per-shade RGB for stock schemes — locks the current `f64` trig output.

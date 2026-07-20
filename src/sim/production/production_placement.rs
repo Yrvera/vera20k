@@ -117,7 +117,9 @@ pub fn toggle_pause_for_owner_category(
     // P5d: pause is a registry flag on the active build (the retired `front.state` Paused
     // bridge). `step_all` skips a `manual` factory without losing progress; unpausing
     // auto-resumes via `set_rate`.
-    sim.production.factory_shadow.toggle_pause(owner_id, category)
+    sim.production
+        .factory_shadow
+        .toggle_pause(owner_id, category)
 }
 
 pub fn cycle_active_producer_for_owner_category(
@@ -292,7 +294,13 @@ fn evaluate_building_placement(
                 obj.water_bound,
             ) {
                 // Distinguish overlap from terrain for the error variant.
-                if structure_occupies_cell(&sim.substrate.entities, rules, cell_x, cell_y, &sim.interner) {
+                if structure_occupies_cell(
+                    &sim.substrate.entities,
+                    rules,
+                    cell_x,
+                    cell_y,
+                    &sim.interner,
+                ) {
                     return Err(BuildingPlacementError::OverlapsStructure);
                 }
                 return Err(BuildingPlacementError::BlockedTerrain);
@@ -303,7 +311,8 @@ fn evaluate_building_placement(
         Ok(())
     } else {
         let providers: Vec<String> = sim
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .filter(|e| {
                 e.category == EntityCategory::Structure

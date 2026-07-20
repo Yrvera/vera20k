@@ -85,7 +85,8 @@ pub enum DropResult {
 
 fn restore_passenger_to_cargo_head(sim: &mut Simulation, aircraft_id: u64, passenger_id: u64) {
     if let Some(cargo) = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get_mut(aircraft_id)
         .and_then(|a| a.passenger_role.cargo_mut())
     {
@@ -113,19 +114,21 @@ pub fn try_drop(
     // Capture the aircraft's full lepton position (cell + sub-cell) so the
     // V-pattern offset can apply at lepton precision. With cell-only math the
     // ±128 lateral offset truncates to 0 and every drop lands on the same cell.
-    let (facing, altitude, aircraft_x_lep, aircraft_y_lep) = match sim.substrate.entities.get(aircraft_id) {
-        Some(a) => {
-            let alt = a.locomotor.as_ref().map(|l| l.altitude).unwrap_or(SIM_ZERO);
-            let x_lep = a.position.rx as i32 * 256 + sim_to_i32(a.position.sub_x);
-            let y_lep = a.position.ry as i32 * 256 + sim_to_i32(a.position.sub_y);
-            (a.facing, alt, x_lep, y_lep)
-        }
-        None => return DropResult::NoCargo,
-    };
+    let (facing, altitude, aircraft_x_lep, aircraft_y_lep) =
+        match sim.substrate.entities.get(aircraft_id) {
+            Some(a) => {
+                let alt = a.locomotor.as_ref().map(|l| l.altitude).unwrap_or(SIM_ZERO);
+                let x_lep = a.position.rx as i32 * 256 + sim_to_i32(a.position.sub_x);
+                let y_lep = a.position.ry as i32 * 256 + sim_to_i32(a.position.sub_y);
+                (a.facing, alt, x_lep, y_lep)
+            }
+            None => return DropResult::NoCargo,
+        };
 
     // 2. Pop FIFO passenger from cargo.
     let passenger_id = match sim
-        .substrate.entities
+        .substrate
+        .entities
         .get_mut(aircraft_id)
         .and_then(|a| a.passenger_role.cargo_mut())
         .and_then(|c| c.unload_first())
@@ -137,7 +140,8 @@ pub fn try_drop(
     // Look up passenger size now (needed to correct cargo.total_size on success).
     // PassengerCargo::unload_first does NOT decrement total_size — caller's job.
     let pax_size: u32 = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(passenger_id)
         .and_then(|p| {
             let type_str = sim.interner.resolve(p.type_ref);
@@ -224,7 +228,9 @@ pub fn try_drop(
     // 6. Attach parachute descent.
     if !begin_parachute_descent(&mut sim.substrate.entities, passenger_id, altitude) {
         // L17 deviation: revert passenger_role and re-insert at cargo HEAD; retry.
-        sim.substrate.occupancy.remove(drop_rx, drop_ry, passenger_id);
+        sim.substrate
+            .occupancy
+            .remove(drop_rx, drop_ry, passenger_id);
         sim.clear_radio_contacts_for(passenger_id);
         if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
             passenger.passenger_role = PassengerRole::Inside {
@@ -248,7 +254,8 @@ pub fn try_drop(
 
     // 8. Decrement cargo.total_size on success (unload_first left it stale).
     if let Some(cargo) = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get_mut(aircraft_id)
         .and_then(|a| a.passenger_role.cargo_mut())
     {
@@ -428,7 +435,11 @@ mod tests {
             1,
             "successful passenger drop should emit exactly one ChuteSound"
         );
-        let passenger = sim.substrate.entities.get(passenger_id).expect("passenger exists");
+        let passenger = sim
+            .substrate
+            .entities
+            .get(passenger_id)
+            .expect("passenger exists");
         assert_eq!((passenger.position.rx, passenger.position.ry), (51, 20));
         let sub_cell = passenger
             .sub_cell
@@ -488,20 +499,27 @@ mod tests {
             "failed placement retry must not emit ChuteSound"
         );
         let cargo = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(aircraft_id)
             .and_then(|a| a.passenger_role.cargo())
             .expect("aircraft cargo restored");
         assert_eq!(cargo.passengers, vec![passenger_id]);
         assert_eq!(cargo.total_size, 1);
-        let passenger = sim.substrate.entities.get(passenger_id).expect("passenger exists");
+        let passenger = sim
+            .substrate
+            .entities
+            .get(passenger_id)
+            .expect("passenger exists");
         assert!(matches!(
             passenger.passenger_role,
             PassengerRole::Inside { transport_id } if transport_id == aircraft_id
         ));
         assert!(passenger.parachute_state.is_none());
         assert!(
-            !sim.substrate.occupancy.contains_entity(51, 20, passenger_id),
+            !sim.substrate
+                .occupancy
+                .contains_entity(51, 20, passenger_id),
             "failed placement must not unlimbo the passenger into occupancy"
         );
     }
@@ -539,13 +557,15 @@ mod tests {
             "attach-failed retry must not emit ChuteSound"
         );
         let cargo = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(aircraft_id)
             .and_then(|a| a.passenger_role.cargo())
             .expect("aircraft cargo restored");
         assert_eq!(cargo.passengers, vec![missing_passenger_id]);
         assert!(
-            !sim.substrate.entities
+            !sim.substrate
+                .entities
                 .get(peer_id)
                 .unwrap()
                 .has_live_contact_with(missing_passenger_id),

@@ -138,7 +138,8 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
     // their depot reservation must release immediately so queued units can
     // be promoted without waiting through the death anim.
     let alive: BTreeSet<u64> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| !e.dying)
         .map(|e| e.stable_id)
@@ -161,7 +162,8 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
     }
 
     let snapshots: Vec<DockSnapshot> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter_map(|e| {
             let ds = e.dock_state.as_ref()?;
@@ -213,19 +215,23 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
         };
 
         // Verify depot still exists and is alive/friendly.
-        let depot_info = sim.substrate.entities.get(snap.dock_building_id).and_then(|depot| {
-            if depot.health.current == 0 || depot.dying {
-                return None;
-            }
-            if depot.owner != snap.owner {
-                return None;
-            }
-            let obj = sim.object_type(depot.type_ref, rules)?;
-            if !obj.unit_repair {
-                return None;
-            }
-            Some((depot.position.rx, depot.position.ry, obj.foundation.clone()))
-        });
+        let depot_info = sim
+            .substrate
+            .entities
+            .get(snap.dock_building_id)
+            .and_then(|depot| {
+                if depot.health.current == 0 || depot.dying {
+                    return None;
+                }
+                if depot.owner != snap.owner {
+                    return None;
+                }
+                let obj = sim.object_type(depot.type_ref, rules)?;
+                if !obj.unit_repair {
+                    return None;
+                }
+                Some((depot.position.rx, depot.position.ry, obj.foundation.clone()))
+            });
 
         let Some((depot_rx, depot_ry, foundation)) = depot_info else {
             // Depot gone or invalid — abort docking.

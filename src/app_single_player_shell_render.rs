@@ -8,7 +8,7 @@ use crate::app::AppState;
 use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
 use crate::render::batch::SpriteInstance;
 use crate::render::shell_paint::{
-    self, ArtFit, ButtonPolicy, PaintButton, PaintLabel, CURSOR_DEPTH, MOVIE_DEPTH,
+    self, ArtFit, ButtonPolicy, CURSOR_DEPTH, MOVIE_DEPTH, PaintButton, PaintLabel,
     SHELL_TEXT_RGB_DISABLED, SHELL_TEXT_RGB_ENABLED,
 };
 use crate::render::shell_transition_pass::ShellRenderTarget;
@@ -67,10 +67,9 @@ fn sp_paint_buttons(
         .iter()
         .enumerate()
         .map(|(slot, button)| {
-            let enabled = button.id != SinglePlayerControlId::LoadSavedGame0x689
-                || load_saved_game_enabled;
-            let wave_frame =
-                wave.map(|w| w.sdbtnanm_frame(slot as u32, ButtonGroup::A) as usize);
+            let enabled =
+                button.id != SinglePlayerControlId::LoadSavedGame0x689 || load_saved_game_enabled;
+            let wave_frame = wave.map(|w| w.sdbtnanm_frame(slot as u32, ButtonGroup::A) as usize);
             PaintButton {
                 rect: button.rect,
                 pressed: enabled && pressed_button == Some(button.id),
@@ -214,8 +213,12 @@ pub(crate) fn render_single_player_shell(
 
     // 0x100 has NO parent background; the movie is submitted first.
     let movie_instances = vec![movie_instance(&layout)];
-    let chrome_instances =
-        shell_paint::paint_chrome(chrome, layout.right_panel, Some(layout.lower_strip), layout.screen.w);
+    let chrome_instances = shell_paint::paint_chrome(
+        chrome,
+        layout.right_panel,
+        Some(layout.lower_strip),
+        layout.screen.w,
+    );
     let buttons = sp_paint_buttons(
         &layout,
         state.single_player_shell_state.pressed_owner_draw_button,
@@ -258,8 +261,7 @@ pub(crate) fn render_single_player_shell(
                 .create_instance_buffer(&state.gpu, &draw.instances)
         })
         .collect();
-    let cursor_instances: Vec<SpriteInstance> =
-        shell_cursor_instance(state).into_iter().collect();
+    let cursor_instances: Vec<SpriteInstance> = shell_cursor_instance(state).into_iter().collect();
     let cursor_buffer = state
         .batch_renderer
         .create_instance_buffer(&state.gpu, &cursor_instances);

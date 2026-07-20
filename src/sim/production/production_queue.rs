@@ -508,7 +508,8 @@ pub fn tick_production_with_overlay_registry(
             // DockedIdle carrying the assigned pad index.
             if let Some(af_id) = helipad_airfield {
                 let max_slots = sim
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(af_id)
                     .and_then(|af| {
                         let af_type = sim.interner.resolve(af.type_ref);
@@ -539,7 +540,8 @@ pub fn tick_production_with_overlay_registry(
                 {
                     let obj = rules.object(&done_type_str);
                     let loco_mult = sim
-                        .substrate.entities
+                        .substrate
+                        .entities
                         .get(stable_id)
                         .and_then(|e| e.locomotor.as_ref())
                         .map(|l| l.speed_multiplier)
@@ -550,7 +552,8 @@ pub fn tick_production_with_overlay_registry(
                     let speed =
                         (speed * loco_mult).max(crate::util::fixed_math::SimFixed::lit("25"));
                     let speed_type = sim
-                        .substrate.entities
+                        .substrate
+                        .entities
                         .get(stable_id)
                         .and_then(|e| e.locomotor.as_ref())
                         .map(|l| l.speed_type);
@@ -630,8 +633,14 @@ pub fn queue_view_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> V
         return Vec::new();
     };
     // (category, stamp, type_id, state, remaining_base_frames, total_base_frames)
-    let mut items: Vec<(ProductionCategory, u64, InternedId, BuildQueueState, u32, u32)> =
-        Vec::new();
+    let mut items: Vec<(
+        ProductionCategory,
+        u64,
+        InternedId,
+        BuildQueueState,
+        u32,
+        u32,
+    )> = Vec::new();
     for f in sim.production.factory_shadow.iter_insertion_ordered() {
         if f.owner != owner_id {
             continue;
@@ -829,8 +838,10 @@ pub fn cancel_by_type_for_owner(
             // next queued entry into the active slot, cost-seeded. This runs in the COMMAND
             // phase (before this tick's `step_all`), so step_delay = 1 keeps the promoted
             // build's first charge on the next tick (the pre-P5d reconcile-at-tail schedule).
-            if let Some(next_type) =
-                sim.production.factory_shadow.peek_next_queued(owner_id, category)
+            if let Some(next_type) = sim
+                .production
+                .factory_shadow
+                .peek_next_queued(owner_id, category)
             {
                 let cost = sim
                     .object_type(next_type, rules)

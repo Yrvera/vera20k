@@ -268,7 +268,11 @@ mod tests {
     fn snap_biased_truncate_reproduces_single_player_0x100_wide_cells() {
         // 0x100 at 800x600: cell_w=168, flush-left x=632, rows 199/241/283.
         let panel = right_panel_rects(800, 600);
-        let dlu = [dlu_rect(425, 122, 108, 23), dlu_rect(425, 149, 108, 23), dlu_rect(425, 176, 108, 23)];
+        let dlu = [
+            dlu_rect(425, 122, 108, 23),
+            dlu_rect(425, 149, 108, 23),
+            dlu_rect(425, 176, 108, 23),
+        ];
         let expected_y = [199, 241, 283];
         for (src, ey) in dlu.iter().zip(expected_y) {
             assert_eq!(
@@ -283,11 +287,23 @@ mod tests {
         // 0x102 at 800x600: cell_w=156, flush-right x=644, start/choose 241/283.
         let panel = right_panel_rects(800, 600);
         assert_eq!(
-            snap_button_biased_truncate(800, 600, dlu_rect(425, 149, 108, 23), panel, SDBTNANM_CELL_W_NARROW),
+            snap_button_biased_truncate(
+                800,
+                600,
+                dlu_rect(425, 149, 108, 23),
+                panel,
+                SDBTNANM_CELL_W_NARROW
+            ),
             RectPx::new(644, 241, 156, 42)
         );
         assert_eq!(
-            snap_button_biased_truncate(800, 600, dlu_rect(425, 176, 108, 23), panel, SDBTNANM_CELL_W_NARROW),
+            snap_button_biased_truncate(
+                800,
+                600,
+                dlu_rect(425, 176, 108, 23),
+                panel,
+                SDBTNANM_CELL_W_NARROW
+            ),
             RectPx::new(644, 283, 156, 42)
         );
     }

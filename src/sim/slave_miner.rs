@@ -18,12 +18,12 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::rules::ruleset::RuleSet;
+use crate::sim::economy::apply_income_mult;
+use crate::sim::house_state::{house_state_for_owner_mut, income_ppm_for_owner};
 use crate::sim::intern::InternedId;
 use crate::sim::miner::miner_system::{effective_purifier_count, is_cell_path_clear_for_scan};
 use crate::sim::miner::{CargoBale, MinerConfig};
 use crate::sim::miner::{extract_bale, search_local_ore};
-use crate::sim::economy::apply_income_mult;
-use crate::sim::house_state::{house_state_for_owner_mut, income_ppm_for_owner};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_entry_for_owner;
 use crate::sim::world::Simulation;
@@ -179,7 +179,12 @@ fn process_slave(
     snap: &mut SlaveSnapshot,
 ) {
     // Check master is still alive.
-    if sim.substrate.entities.get(snap.harvester.master_id).is_none() {
+    if sim
+        .substrate
+        .entities
+        .get(snap.harvester.master_id)
+        .is_none()
+    {
         // Master destroyed — slave becomes idle (in real RA2, freed slaves wander).
         snap.harvester.state = SlaveHarvestState::Idle;
         return;
@@ -207,7 +212,8 @@ fn handle_slave_search(
 
     // Search from the master's position (slaves harvest around their deployed base).
     let master_pos = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.harvester.master_id)
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
@@ -380,7 +386,8 @@ fn handle_slave_idle(
     // Try to find ore every few ticks (reuse search logic).
     let scan_radius: u16 = rules.general.slave_miner_slave_scan.max(1) as u16;
     let master_pos = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.harvester.master_id)
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
@@ -793,7 +800,11 @@ mod tests {
         assert!(sim.production.slave_bindings.get(&yarefn).is_none());
         assert_eq!(sim.production.slave_bindings.get(&smin), Some(&slave_ids));
         for slave_id in slave_ids {
-            let slave = sim.substrate.entities.get(slave_id).expect("slave remains live");
+            let slave = sim
+                .substrate
+                .entities
+                .get(slave_id)
+                .expect("slave remains live");
             assert_eq!(slave.slave_harvester.as_ref().unwrap().master_id, smin);
         }
     }

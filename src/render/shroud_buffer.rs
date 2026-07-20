@@ -355,9 +355,7 @@ impl ShroudBuffer {
                 }
 
                 // Unexplored OR under a hostile gap generator -> full black.
-                if !fog.is_cell_revealed(owner, rx, ry)
-                    || fog.is_cell_gap_covered(owner, rx, ry)
-                {
+                if !fog.is_cell_revealed(owner, rx, ry) || fog.is_cell_gap_covered(owner, rx, ry) {
                     self.blit_dark_diamond(vx, vy, vp_w, vp_h);
                     continue;
                 }

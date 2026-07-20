@@ -36,7 +36,8 @@ pub fn launch(
     // 2. Collect entity IDs in the 3×3 grid (snapshot to avoid borrow conflict).
     let cells: Vec<(u16, u16)> = iter_cells_3x3(target_rx, target_ry).collect();
     let target_ids: Vec<u64> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             cells
@@ -128,7 +129,10 @@ mod tests {
         assert!(launch(&mut sim, &rules, owner, 10, 10));
         let e = sim.substrate.entities.get(1).expect("tank exists");
         assert!(e.invulnerability.is_some());
-        assert!(is_invulnerable(e.invulnerability.as_ref(), sim.session.tick as u32));
+        assert!(is_invulnerable(
+            e.invulnerability.as_ref(),
+            sim.session.tick as u32
+        ));
     }
 
     #[test]
@@ -153,9 +157,30 @@ mod tests {
         spawn(&mut sim, 2, "MTNK", 10, 10, EntityCategory::Unit);
         spawn(&mut sim, 3, "MTNK", 11, 11, EntityCategory::Unit);
         launch(&mut sim, &rules, owner, 10, 10);
-        assert!(sim.substrate.entities.get(1).unwrap().invulnerability.is_some());
-        assert!(sim.substrate.entities.get(2).unwrap().invulnerability.is_some());
-        assert!(sim.substrate.entities.get(3).unwrap().invulnerability.is_some());
+        assert!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .invulnerability
+                .is_some()
+        );
+        assert!(
+            sim.substrate
+                .entities
+                .get(2)
+                .unwrap()
+                .invulnerability
+                .is_some()
+        );
+        assert!(
+            sim.substrate
+                .entities
+                .get(3)
+                .unwrap()
+                .invulnerability
+                .is_some()
+        );
     }
 
     #[test]
@@ -165,7 +190,14 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "MTNK", 15, 15, EntityCategory::Unit);
         launch(&mut sim, &rules, owner, 10, 10);
-        assert!(sim.substrate.entities.get(1).unwrap().invulnerability.is_none());
+        assert!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .invulnerability
+                .is_none()
+        );
     }
 }
 

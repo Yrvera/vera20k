@@ -8,9 +8,9 @@
 //! - Part of sim/ -- may depend on rules/ for data-driven miner detection.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+mod harvest_mission;
 pub mod miner_dock;
 mod miner_dock_sequence;
-mod harvest_mission;
 pub(crate) mod miner_system;
 
 #[cfg(test)]
@@ -667,8 +667,14 @@ mod tests {
         );
         let rules = RuleSet::from_ini(&ini).expect("rules");
         let cfg = MinerConfig::from_rules(&rules);
-        assert_eq!(cfg.ore_bale_value, 77, "ore bale value comes from [Riparius] Value=");
-        assert_eq!(cfg.gem_bale_value, 88, "gem bale value comes from [Cruentus] Value=");
+        assert_eq!(
+            cfg.ore_bale_value, 77,
+            "ore bale value comes from [Riparius] Value="
+        );
+        assert_eq!(
+            cfg.gem_bale_value, 88,
+            "gem bale value comes from [Cruentus] Value="
+        );
     }
 
     #[test]

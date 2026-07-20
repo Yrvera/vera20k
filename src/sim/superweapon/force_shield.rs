@@ -56,7 +56,8 @@ pub fn launch(
     let target_y_leptons: i64 = target_ry as i64 * LEPTONS_PER_CELL + CELL_CENTER_LEPTON;
 
     let target_ids: Vec<u64> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| e.category == EntityCategory::Structure)
         .filter(|e| e.health.current > 0 && !e.dying)
@@ -65,8 +66,7 @@ pub fn launch(
             are_houses_friendly(&sim.house_alliances, &owner_str, other)
         })
         .filter(|e| {
-            sim
-                .object_type(e.type_ref, rules)
+            sim.object_type(e.type_ref, rules)
                 .map(|o| !o.no_force_shield)
                 .unwrap_or(true)
         })

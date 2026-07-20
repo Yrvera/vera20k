@@ -199,14 +199,16 @@ pub fn mark_war_factory_spawn_contact(
     producer_id: u64,
     produced_id: u64,
 ) -> bool {
-    let Some((producer_type, produced_is_vehicle)) = sim.substrate.entities.get(producer_id).and_then(|p| {
-        let producer_type = sim.interner.resolve(p.type_ref).to_string();
-        let produced = sim.substrate.entities.get(produced_id)?;
-        Some((
-            producer_type,
-            produced.category == crate::map::entities::EntityCategory::Unit,
-        ))
-    }) else {
+    let Some((producer_type, produced_is_vehicle)) =
+        sim.substrate.entities.get(producer_id).and_then(|p| {
+            let producer_type = sim.interner.resolve(p.type_ref).to_string();
+            let produced = sim.substrate.entities.get(produced_id)?;
+            Some((
+                producer_type,
+                produced.category == crate::map::entities::EntityCategory::Unit,
+            ))
+        })
+    else {
         return false;
     };
 

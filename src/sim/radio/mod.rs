@@ -12,7 +12,7 @@ pub mod contacts;
 pub mod receive;
 pub use contacts::Contacts;
 pub use receive::{
-    receive_radio, refinery_accepted_cell, REFINERY_ACCEPTED_DX, REFINERY_ACCEPTED_DY,
+    REFINERY_ACCEPTED_DX, REFINERY_ACCEPTED_DY, receive_radio, refinery_accepted_cell,
 };
 
 use crate::map::entities::EntityCategory;
@@ -93,12 +93,7 @@ fn transmit_hello(
 
 /// BREAK sender side (§5.2.5): null EVERY sender slot matching the target, then
 /// forward BREAK so the receiver runs its teardown.
-fn transmit_break(
-    sim: &mut Simulation,
-    sender_sid: u64,
-    target_sid: u64,
-    filtered: Option<u64>,
-) {
+fn transmit_break(sim: &mut Simulation, sender_sid: u64, target_sid: u64, filtered: Option<u64>) {
     if let Some(sender) = sim.substrate.entities.get_mut(sender_sid) {
         while sender.radio_contacts.remove(target_sid).is_some() {}
     }
@@ -120,14 +115,14 @@ fn transmit_break(
 pub enum RadioMessage {
     Hello = 0x02,
     Break = 0x03,
-    DockingComplete = 0x07,    // name inferred
+    DockingComplete = 0x07, // name inferred
     RequestClearance = 0x08,
-    DockApproach = 0x0B,       // name inferred
-    DockArrived = 0x0C,        // name inferred
+    DockApproach = 0x0B, // name inferred
+    DockArrived = 0x0C,  // name inferred
     AnimStop = 0x0D,
     CanDock = 0x0E,
     CanEnter = 0x0F,
-    IsUnitLinked = 0x11,       // name inferred
+    IsUnitLinked = 0x11, // name inferred
     MoveToCell = 0x12,
     NeedToMove = 0x13,
     DockNow = 0x15,            // name inferred
@@ -137,8 +132,8 @@ pub enum RadioMessage {
     SecondaryLockSet = 0x1A,   // name inferred
     SecondaryLockClear = 0x1B, // name inferred
     RepairTick = 0x1C,
-    HelipadReserveAck = 0x1D,  // name inferred
-    DeploySetNav = 0x1E,       // name inferred
+    HelipadReserveAck = 0x1D, // name inferred
+    DeploySetNav = 0x1E,      // name inferred
     LinkPassenger = 0x1F,
     IsRepairing = 0x22,
     IsOccupied = 0x23,

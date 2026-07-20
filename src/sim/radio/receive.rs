@@ -234,7 +234,7 @@ mod tests {
     use crate::map::entities::EntityCategory;
     use crate::sim::components::Health;
     use crate::sim::game_entity::GameEntity;
-    use crate::sim::radio::{transmit, RadioMessage, RadioPayload, RadioResponse};
+    use crate::sim::radio::{RadioMessage, RadioPayload, RadioResponse, transmit};
     use crate::sim::world::Simulation;
 
     fn spawn_refinery(sim: &mut Simulation, sid: u64, owner: &str, capacity: usize) {
@@ -310,7 +310,13 @@ mod tests {
     }
 
     fn hello(sim: &mut Simulation, sender: u64, target: u64) -> RadioResponse {
-        transmit(sim, sender, target, RadioMessage::Hello, RadioPayload::default())
+        transmit(
+            sim,
+            sender,
+            target,
+            RadioMessage::Hello,
+            RadioPayload::default(),
+        )
     }
 
     fn can_enter(sim: &mut Simulation, sender: u64, target: u64) -> RadioResponse {
@@ -359,8 +365,20 @@ mod tests {
         let mut sim = Simulation::new();
         spawn_bunker(&mut sim, 2, "Americans");
         spawn_miner(&mut sim, 1, "Americans");
-        transmit(&mut sim, 1, 2, RadioMessage::DockNow, RadioPayload::default());
-        let rt = sim.substrate.entities.get(2).unwrap().bunker_runtime.unwrap();
+        transmit(
+            &mut sim,
+            1,
+            2,
+            RadioMessage::DockNow,
+            RadioPayload::default(),
+        );
+        let rt = sim
+            .substrate
+            .entities
+            .get(2)
+            .unwrap()
+            .bunker_runtime
+            .unwrap();
         assert_eq!(rt.state, BunkerState::ArriveWait);
         assert_eq!(rt.installing_unit, Some(1));
     }
@@ -397,7 +415,14 @@ mod tests {
 
         // Owner-mismatch ally gate denies the cross-owner HELLO.
         assert_eq!(hello(&mut sim, 1, 2), RadioResponse::Negatory);
-        assert!(!sim.substrate.entities.get(2).unwrap().radio_contacts.contains(1));
+        assert!(
+            !sim.substrate
+                .entities
+                .get(2)
+                .unwrap()
+                .radio_contacts
+                .contains(1)
+        );
     }
 
     #[test]
@@ -408,7 +433,10 @@ mod tests {
 
         assert_eq!(hello(&mut sim, 1, 2), RadioResponse::Roger);
         assert_eq!(hello(&mut sim, 1, 2), RadioResponse::Roger);
-        assert_eq!(sim.substrate.entities.get(2).unwrap().radio_contacts.len(), 1);
+        assert_eq!(
+            sim.substrate.entities.get(2).unwrap().radio_contacts.len(),
+            1
+        );
     }
 
     #[test]
@@ -418,13 +446,39 @@ mod tests {
         spawn_miner(&mut sim, 1, "Americans");
 
         assert_eq!(hello(&mut sim, 1, 2), RadioResponse::Roger);
-        transmit(&mut sim, 1, 2, RadioMessage::EnterDock, RadioPayload::default());
-        assert_eq!(sim.substrate.entities.get(1).unwrap().dock_entered_with, Some(2));
+        transmit(
+            &mut sim,
+            1,
+            2,
+            RadioMessage::EnterDock,
+            RadioPayload::default(),
+        );
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().dock_entered_with,
+            Some(2)
+        );
 
         transmit(&mut sim, 1, 2, RadioMessage::Break, RadioPayload::default());
-        assert_eq!(sim.substrate.entities.get(1).unwrap().dock_entered_with, None);
-        assert!(!sim.substrate.entities.get(2).unwrap().radio_contacts.contains(1));
-        assert!(!sim.substrate.entities.get(1).unwrap().radio_contacts.contains(2));
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().dock_entered_with,
+            None
+        );
+        assert!(
+            !sim.substrate
+                .entities
+                .get(2)
+                .unwrap()
+                .radio_contacts
+                .contains(1)
+        );
+        assert!(
+            !sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .radio_contacts
+                .contains(2)
+        );
     }
 
     #[test]

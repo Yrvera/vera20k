@@ -90,7 +90,8 @@ impl MissionTimer {
         if self.start_frame == SENTINEL {
             0
         } else {
-            self.duration.saturating_sub(now.wrapping_sub(self.start_frame))
+            self.duration
+                .saturating_sub(now.wrapping_sub(self.start_frame))
         }
     }
 }

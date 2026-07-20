@@ -166,9 +166,8 @@ mod tests {
 
     #[test]
     fn aarate_absent_copies_rate_present_overrides() {
-        let mc = MissionControl::from_ini(&ini(
-            "[Move]\nRate=.016\n[Guard]\nRate=.030\nAARate=.016\n",
-        ));
+        let mc =
+            MissionControl::from_ini(&ini("[Move]\nRate=.016\n[Guard]\nRate=.030\nAARate=.016\n"));
         let mv = mc.entry(MissionType::Move).unwrap();
         assert_eq!(mv.rate_frames, 14);
         assert_eq!(mv.aa_rate_frames, 14); // copied from Rate

@@ -497,9 +497,15 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
         screen: RectPx::new(0, 0, screen_w, screen_h),
         right_panel: panel,
         right_panel_text,
-        start_button: snap_button_biased_truncate(screen_w, screen_h, start_base, panel, SDBTNANM_W),
+        start_button: snap_button_biased_truncate(
+            screen_w, screen_h, start_base, panel, SDBTNANM_W,
+        ),
         choose_map_button: snap_button_biased_truncate(
-            screen_w, screen_h, choose_base, panel, SDBTNANM_W,
+            screen_w,
+            screen_h,
+            choose_base,
+            panel,
+            SDBTNANM_W,
         ),
         back_button: back_rect(screen_w, panel),
         map_preview: right_anchor(screen_w, screen_h, preview_base),
@@ -565,7 +571,11 @@ pub fn compute_choose_map_modal_layout(screen_w: u32, screen_h: u32) -> ChooseMa
         mode_list: dlu_rect(77, 78, 130, 211),
         map_list: dlu_rect(225, 78, 130, 211),
         use_map_button: snap_button_biased_truncate(
-            screen_w, screen_h, use_map_base, panel, SDBTNANM_W,
+            screen_w,
+            screen_h,
+            use_map_base,
+            panel,
+            SDBTNANM_W,
         ),
         cancel_button: back_rect(screen_w, panel),
         create_random_map_button: snap_button_biased_truncate(

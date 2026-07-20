@@ -103,16 +103,16 @@ pub(crate) fn current_shell_slide_target(state: &AppState) -> Option<ShellSlideK
     if state.screen != GameScreen::MainMenu {
         return None;
     }
-    let candidate = if state.main_menu_show_native_skirmish_shell || state.dev_skirmish_shell_enabled
-    {
-        ShellSlideKind::Skirmish
-    } else if state.main_menu_show_single_player_shell {
-        ShellSlideKind::SinglePlayer
-    } else if !state.main_menu_shell_failed && !state.main_menu_show_skirmish_setup {
-        ShellSlideKind::MainMenu
-    } else {
-        return None;
-    };
+    let candidate =
+        if state.main_menu_show_native_skirmish_shell || state.dev_skirmish_shell_enabled {
+            ShellSlideKind::Skirmish
+        } else if state.main_menu_show_single_player_shell {
+            ShellSlideKind::SinglePlayer
+        } else if !state.main_menu_shell_failed && !state.main_menu_show_skirmish_setup {
+            ShellSlideKind::MainMenu
+        } else {
+            return None;
+        };
     crate::ui::shell::slide::is_slide_eligible(candidate.dialog_id()).then_some(candidate)
 }
 

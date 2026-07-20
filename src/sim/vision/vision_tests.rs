@@ -754,14 +754,20 @@ fn test_height_los_plus_two_obstruction_offset() {
     let mut hg = vec![0u8; width as usize * height as usize];
     hg[5 * width as usize + 7] = 5; // (7,5) — the pre-fix obstruction guess
     reveal_radius_into(&mut vis, 5, 5, 5, 0, true, Some(&hg), width, height);
-    assert!(vis.is_visible(8, 5), "naive (7,5) cliff must not block with the +2 offset");
+    assert!(
+        vis.is_visible(8, 5),
+        "naive (7,5) cliff must not block with the +2 offset"
+    );
 
     // Cliff at the +2 location (9,7) must block (8,5).
     let mut vis2 = OwnerVisibility::new(20, 20);
     let mut hg2 = vec![0u8; width as usize * height as usize];
     hg2[7 * width as usize + 9] = 5; // (9,7) — the actual obstruction cell
     reveal_radius_into(&mut vis2, 5, 5, 5, 0, true, Some(&hg2), width, height);
-    assert!(!vis2.is_visible(8, 5), "+2 obstruction cell (9,7) must block");
+    assert!(
+        !vis2.is_visible(8, 5),
+        "+2 obstruction cell (9,7) must block"
+    );
 }
 
 #[test]

@@ -146,7 +146,8 @@ fn apply_mutate_explosion(
     for (id, dmg) in &hits {
         // Pre-snapshot category + position + HP BEFORE mutating.
         let snapshot = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(*id)
             .map(|e| (e.category, e.position.rx, e.position.ry, e.health.current));
         let Some((cat, rx, ry, hp)) = snapshot else {
@@ -179,7 +180,8 @@ fn apply_mutate_per_cell(
 
     // Collect infantry IDs + cell positions first (avoid borrow conflict).
     let victims: Vec<(u64, u16, u16)> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| e.category == EntityCategory::Infantry)
         .filter(|e| e.health.current > 0 && !e.dying)

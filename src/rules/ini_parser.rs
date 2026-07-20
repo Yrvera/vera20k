@@ -363,8 +363,7 @@ impl IniFile {
             // Belt-and-braces: an all-numeric-key section is a registry list
             // even if it's not on the exclusion list yet.
             let has_keys = patch_section.keys().next().is_some();
-            let all_numeric =
-                has_keys && patch_section.keys().all(|k| k.parse::<u32>().is_ok());
+            let all_numeric = has_keys && patch_section.keys().all(|k| k.parse::<u32>().is_ok());
             if all_numeric {
                 log::warn!(
                     "map [{patch_key}] is a numbered list — registry overrides \

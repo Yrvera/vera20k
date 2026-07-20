@@ -4,11 +4,10 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use super::{
-    BuildingPlacementError, ProductionCategory,
-    cancel_last_for_owner, credits_for_owner, cycle_active_producer_for_owner_category,
-    find_spawn_cell_for_owner, place_ready_building, placement_preview_for_owner,
-    producer_candidates_for_owner_category, ready_buildings_for_owner, sell_building,
-    tick_production,
+    BuildingPlacementError, ProductionCategory, cancel_last_for_owner, credits_for_owner,
+    cycle_active_producer_for_owner_category, find_spawn_cell_for_owner, place_ready_building,
+    placement_preview_for_owner, producer_candidates_for_owner_category, ready_buildings_for_owner,
+    sell_building, tick_production,
 };
 use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
 use crate::map::resolved_terrain::{RampDirection, ResolvedTerrainCell, ResolvedTerrainGrid};
@@ -180,10 +179,11 @@ fn completed_building_moves_into_ready_placement_pool() {
         100,
         1,
     );
-    assert!(sim
-        .production
-        .factory_shadow
-        .test_arm_ready(americans, ProductionCategory::Building));
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(americans, ProductionCategory::Building)
+    );
 
     let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
     assert!(!spawned, "completed building should wait for placement");
@@ -224,7 +224,8 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
     assert!(ready_buildings_for_owner(&sim, &rules, "Americans").is_empty());
 
     let structures = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner
@@ -361,7 +362,8 @@ fn refinery_placement_spawns_one_starter_harvester() {
     ));
 
     let harvesters: Vec<(u16, u16)> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner
@@ -428,7 +430,8 @@ fn modded_refinery_placement_uses_free_unit_from_rules() {
     ));
 
     let harvesters = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner
@@ -488,7 +491,8 @@ fn refinery_without_free_unit_spawns_nothing() {
     ));
 
     let harvesters = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner
@@ -1320,7 +1324,8 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
     assert_eq!(credits_for_owner(&sim, "Americans"), 1200);
 
     let survivors: Vec<(String, u16, u16)> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner
@@ -1344,7 +1349,11 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
         "sold building should be removed from the store"
     );
     assert!(
-        !sim.substrate.entities.get(99).unwrap().has_live_contact_with(1),
+        !sim.substrate
+            .entities
+            .get(99)
+            .unwrap()
+            .has_live_contact_with(1),
         "selling a building should clear peer radio contacts to it"
     );
 }
@@ -1373,7 +1382,8 @@ fn sell_building_uses_owner_appropriate_survivor_type_and_caps_count() {
     assert_eq!(credits_for_owner(&sim, "Russians"), 1250);
 
     let conscripts = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner
@@ -1428,7 +1438,11 @@ fn sell_captured_civilian_ejects_reverts_and_keeps_building() {
     assert!(sell_building(&mut sim, &rules, 10));
 
     // Building still in store, owner reverted, cargo cleared.
-    let bldg = sim.substrate.entities.get(10).expect("building should still exist");
+    let bldg = sim
+        .substrate
+        .entities
+        .get(10)
+        .expect("building should still exist");
     assert_eq!(sim.interner.resolve(bldg.owner), "Neutral");
     assert!(
         bldg.garrison_original_owner.is_none(),

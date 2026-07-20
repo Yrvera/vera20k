@@ -214,11 +214,27 @@ pub fn build_sidebar_chrome_instances_for_layout(
     );
     let down_frame = scroll_frames[0] as usize;
     if let Some(e) = atlas.scroll_down_frames[down_frame].or(atlas.scroll_down_frames[0]) {
-        push_chrome(&mut inst, e, scroll_down_rect.x, scroll_down_rect.y, btn_depth, camera_offset, s);
+        push_chrome(
+            &mut inst,
+            e,
+            scroll_down_rect.x,
+            scroll_down_rect.y,
+            btn_depth,
+            camera_offset,
+            s,
+        );
     }
     let up_frame = scroll_frames[1] as usize;
     if let Some(e) = atlas.scroll_up_frames[up_frame].or(atlas.scroll_up_frames[0]) {
-        push_chrome(&mut inst, e, scroll_up_rect.x, scroll_up_rect.y, btn_depth, camera_offset, s);
+        push_chrome(
+            &mut inst,
+            e,
+            scroll_up_rect.x,
+            scroll_up_rect.y,
+            btn_depth,
+            camera_offset,
+            s,
+        );
     }
 
     // --- Power bar meter (powerp.shp strips stacked from top) ---

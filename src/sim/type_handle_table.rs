@@ -92,6 +92,9 @@ mod tests {
     #[test]
     fn empty_table_reports_empty() {
         assert!(TypeHandleTable::default().is_empty());
-        assert_eq!(TypeHandleTable::default().handle_for(InternedId::from_index(0)), None);
+        assert_eq!(
+            TypeHandleTable::default().handle_for(InternedId::from_index(0)),
+            None
+        );
     }
 }

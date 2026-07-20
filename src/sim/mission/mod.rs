@@ -24,8 +24,17 @@ pub const MISSION_COUNT: usize = 32;
 /// id; `None = 0xFF` is the idle sentinel. `repr(u16)` so the discriminant folds
 /// stably into the state hash in later slices.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default,
-    serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[repr(u16)]
 pub enum MissionType {
@@ -184,9 +193,7 @@ impl MissionType {
 /// as of S2, at host/dispatch time for scoped move units (where the dispatch-time
 /// value is authoritative — e.g. an arrival tick hashes `Move`). The verb API
 /// owns `queued`/`suspended`/`timer`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct MissionCom {
     /// The committed current mission (`MissionType::None` = idle).
     pub current: MissionType,

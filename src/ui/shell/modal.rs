@@ -334,7 +334,10 @@ mod tests {
         // Native populated-test is a non-null pointer AND a non-null first char, so
         // an empty caption counts as an unpopulated slot.
         assert_eq!(message_box_kind(Some(""), None), ModalKind::BodyOk);
-        assert_eq!(message_box_kind(Some("Cancel"), Some("")), ModalKind::Confirm);
+        assert_eq!(
+            message_box_kind(Some("Cancel"), Some("")),
+            ModalKind::Confirm
+        );
         assert_eq!(message_box_kind(Some(""), Some("")), ModalKind::BodyOk);
     }
 
@@ -398,7 +401,10 @@ mod tests {
         let r = sample_rects();
 
         let body_ok = build_message_box_descriptor(ModalKind::BodyOk, &r);
-        assert_eq!(control_ids(&body_ok), vec![control::BODY_STATIC, control::OK]);
+        assert_eq!(
+            control_ids(&body_ok),
+            vec![control::BODY_STATIC, control::OK]
+        );
         assert_eq!(body_ok.id, DialogId(0x00CE));
         assert_eq!(body_ok.bg_kind, BgKind::ModalShp);
         assert_eq!(body_ok.reposition_policy, RepositionPolicy::ModalCentered);
@@ -414,7 +420,12 @@ mod tests {
         let three = build_message_box_descriptor(ModalKind::ThreeButton, &r);
         assert_eq!(
             control_ids(&three),
-            vec![control::BODY_STATIC, control::OK, control::CANCEL, control::THIRD]
+            vec![
+                control::BODY_STATIC,
+                control::OK,
+                control::CANCEL,
+                control::THIRD
+            ]
         );
         assert_eq!(three.id, DialogId(0x0121));
     }
@@ -432,7 +443,10 @@ mod tests {
     fn quit_confirm_layout_centers_panel_and_places_controls() {
         let l = quit_confirm_layout(800, 600);
         // Panel centered on the live screen (round-half-up, clamped).
-        assert_eq!(l.dialog, RectPx::new(175, 138, MESSAGE_BOX_W, MESSAGE_BOX_H));
+        assert_eq!(
+            l.dialog,
+            RectPx::new(175, 138, MESSAGE_BOX_W, MESSAGE_BOX_H)
+        );
         // Controls at the dialog origin + their template DLU rects.
         let child = |dx, dy, dw, dh| {
             let local = geom::dlu_rect(dx, dy, dw, dh);

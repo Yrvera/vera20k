@@ -73,7 +73,8 @@ pub const BRIDGE_DECK_HEIGHT_LEPTONS: i32 = 2 * LEPTONS_PER_LEVEL as i32;
 /// authoritative const is NOT flipped in this pass (see the TODO-cutover marker in
 /// `aoe_object_layer` below); this shadow const encodes the proven value so the
 /// shadow selector is gamemd-correct and the divergence is testable.
-pub const BRIDGE_DECK_HEIGHT_LEVELS: i32 = (2 * LEPTONS_PER_LEVEL as i32) / LEPTONS_PER_LEVEL as i32;
+pub const BRIDGE_DECK_HEIGHT_LEVELS: i32 =
+    (2 * LEPTONS_PER_LEVEL as i32) / LEPTONS_PER_LEVEL as i32;
 
 /// Width of a tileset window: a concrete- or wood-bridge tileset occupies the
 /// first 16 tiles `[base, base + 0x10)` of its theater set. Gated on base != -1.
@@ -191,7 +192,9 @@ impl CellBridgeView {
     /// concrete-bridge set is loaded (`base == None` / `< 0`).
     #[inline]
     pub fn is_bridge_tileset(&self, base: Option<i32>) -> bool {
-        base.is_some_and(|b| b >= 0 && (b..b + BRIDGE_TILESET_WINDOW).contains(&self.iso_tile_index))
+        base.is_some_and(|b| {
+            b >= 0 && (b..b + BRIDGE_TILESET_WINDOW).contains(&self.iso_tile_index)
+        })
     }
 
     /// Wood-bridge tileset window `[wood_base, wood_base + 0x10)`, gated on
@@ -206,8 +209,9 @@ impl CellBridgeView {
     /// exists for callers that hold only the tile id + base.
     #[inline]
     pub fn is_wood_bridge_tileset(&self, wood_base: Option<i32>) -> bool {
-        wood_base
-            .is_some_and(|b| b >= 0 && (b..b + BRIDGE_TILESET_WINDOW).contains(&self.iso_tile_index))
+        wood_base.is_some_and(|b| {
+            b >= 0 && (b..b + BRIDGE_TILESET_WINDOW).contains(&self.iso_tile_index)
+        })
     }
 
     // --- Low bridge / tube (L5 / C6) -----------------------------------------
@@ -375,10 +379,18 @@ mod tests {
         assert_eq!(raw_level, -2, "0xFE must reinterpret as -2");
 
         let anchor = view(raw_level, BRIDGE_FLAG_ANCHOR_SELF, 0);
-        assert_eq!(anchor.effective_height(), -2 + 4, "anchor adds the deck height");
+        assert_eq!(
+            anchor.effective_height(),
+            -2 + 4,
+            "anchor adds the deck height"
+        );
 
         let non_anchor = view(raw_level, 0, 0);
-        assert_eq!(non_anchor.effective_height(), -2, "non-anchor is the bare level");
+        assert_eq!(
+            non_anchor.effective_height(),
+            -2,
+            "non-anchor is the bare level"
+        );
     }
 
     #[test]
@@ -588,10 +600,12 @@ mod tests {
         };
 
         let via_service: BridgeTraversalResult = bridge_traversal_gate(&grid, input);
-        let via_owner =
-            crate::sim::pathfinding::check_bridge_traversal(&grid, input);
+        let via_owner = crate::sim::pathfinding::check_bridge_traversal(&grid, input);
 
-        assert_eq!(via_service, via_owner, "service handle must equal the owner");
+        assert_eq!(
+            via_service, via_owner,
+            "service handle must equal the owner"
+        );
         assert!(via_service.allowed);
         assert_eq!(via_service.path_height, 6); // signed_level(2) + 4
         assert!(!via_service.force_bridge_list);

@@ -44,7 +44,10 @@ pub(crate) fn receive_damage(
     max_damage: i32,
     condition_red_ratio: f64,
 ) -> DamageOutcome {
-    let unaffected = DamageOutcome { hp_delta: 0, state: DamageState::Unaffected };
+    let unaffected = DamageOutcome {
+        hp_delta: 0,
+        state: DamageState::Unaffected,
+    };
 
     // Positive-only receiver divides. Healing (incoming < 0) bypasses. gamemd
     // runs the divides BEFORE the immunity gates (TypeImmune included), so the
@@ -70,7 +73,10 @@ pub(crate) fn receive_damage(
         DamageGate::Nullified => return unaffected,
         DamageGate::MindControlled => {
             // 0 HP delta, damaged-marker (gamemd returns code 1).
-            return DamageOutcome { hp_delta: 0, state: DamageState::Damaged };
+            return DamageOutcome {
+                hp_delta: 0,
+                state: DamageState::Damaged,
+            };
         }
         DamageGate::Pass => {}
     }
@@ -90,7 +96,10 @@ pub(crate) fn receive_damage(
     // Healing path (delta < 0): caller adds back, clamped to strength elsewhere.
     // Bypasses the building floor + overkill clamp.
     if delta < 0 {
-        return DamageOutcome { hp_delta: delta, state: classify(target, delta, condition_red_ratio) };
+        return DamageOutcome {
+            hp_delta: delta,
+            state: classify(target, delta, condition_red_ratio),
+        };
     }
 
     // Building min-1 (ObjectClass::ReceiveDamage, post-Verses, Building && !CanC4).
@@ -108,7 +117,10 @@ pub(crate) fn receive_damage(
         delta = target.current_hp;
     }
 
-    DamageOutcome { hp_delta: delta, state: classify(target, delta, condition_red_ratio) }
+    DamageOutcome {
+        hp_delta: delta,
+        state: classify(target, delta, condition_red_ratio),
+    }
 }
 
 /// Health-state classification. Yellow uses integer `Strength >> 1` (the state
@@ -147,10 +159,19 @@ mod tests {
     const RED: f64 = 0.25;
 
     fn tgt(strength: i32, hp: i32) -> TargetDamageView {
-        TargetDamageView { armor: ArmorClass(5), strength, current_hp: hp, is_building: false, can_c4: false }
+        TargetDamageView {
+            armor: ArmorClass(5),
+            strength,
+            current_hp: hp,
+            is_building: false,
+            can_c4: false,
+        }
     }
     fn allow() -> ImmunityInputs {
-        ImmunityInputs { affects_allies: true, ..Default::default() }
+        ImmunityInputs {
+            affects_allies: true,
+            ..Default::default()
+        }
     }
     fn verses(v: f64) -> [f64; 11] {
         let mut t = [1.0; 11];
@@ -161,7 +182,19 @@ mod tests {
     #[test]
     fn overkill_clamped_to_remaining_hp() {
         // 500 incoming vs 50-HP target reports 50, not 500.
-        let o = receive_damage(500, 0.0, 1.0, &verses(1.0), &tgt(300, 50), &CombatMods::default(), &allow(), 0, false, MAXD, RED);
+        let o = receive_damage(
+            500,
+            0.0,
+            1.0,
+            &verses(1.0),
+            &tgt(300, 50),
+            &CombatMods::default(),
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 50);
         assert_eq!(o.state, DamageState::Dead);
     }
@@ -170,7 +203,19 @@ mod tests {
     fn yellow_uses_integer_strength_halved() {
         // Strength 100 => yellow at >>1 = 50. Full-HP target, 60 damage:
         // prev=100, post=40, crosses 50 => Yellow (not the 0.25 ratio).
-        let o = receive_damage(60, 0.0, 1.0, &verses(1.0), &tgt(100, 100), &CombatMods::default(), &allow(), 0, false, MAXD, RED);
+        let o = receive_damage(
+            60,
+            0.0,
+            1.0,
+            &verses(1.0),
+            &tgt(100, 100),
+            &CombatMods::default(),
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 60);
         assert_eq!(o.state, DamageState::Yellow);
     }
@@ -179,7 +224,19 @@ mod tests {
     fn red_uses_double_condition_ratio() {
         // Strength 100, red ratio 0.25 => red threshold 25.0 (double, no ftol).
         // Target at 30 HP, 10 damage: post=20; 25<30 && 20<25 => Red.
-        let o = receive_damage(10, 0.0, 1.0, &verses(1.0), &tgt(100, 30), &CombatMods::default(), &allow(), 0, false, MAXD, RED);
+        let o = receive_damage(
+            10,
+            0.0,
+            1.0,
+            &verses(1.0),
+            &tgt(100, 30),
+            &CombatMods::default(),
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 10);
         assert_eq!(o.state, DamageState::Red);
     }
@@ -187,16 +244,46 @@ mod tests {
     #[test]
     fn veteran_armor_divides() {
         // VeteranArmor 1.5: 60 incoming => ftol(60/1.5)=40.
-        let mods = CombatMods { defender_vet_armor: 1.5, ..CombatMods::default() };
-        let o = receive_damage(60, 0.0, 1.0, &verses(1.0), &tgt(300, 300), &mods, &allow(), 0, false, MAXD, RED);
+        let mods = CombatMods {
+            defender_vet_armor: 1.5,
+            ..CombatMods::default()
+        };
+        let o = receive_damage(
+            60,
+            0.0,
+            1.0,
+            &verses(1.0),
+            &tgt(300, 300),
+            &mods,
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 40);
     }
 
     #[test]
     fn country_armor_mult_applies() {
         // Country armor mult 2.0 (tougher): 80 incoming => ftol(80/2)=40.
-        let mods = CombatMods { defender_country_armor: 2.0, ..CombatMods::default() };
-        let o = receive_damage(80, 0.0, 1.0, &verses(1.0), &tgt(300, 300), &mods, &allow(), 0, false, MAXD, RED);
+        let mods = CombatMods {
+            defender_country_armor: 2.0,
+            ..CombatMods::default()
+        };
+        let o = receive_damage(
+            80,
+            0.0,
+            1.0,
+            &verses(1.0),
+            &tgt(300, 300),
+            &mods,
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 40);
     }
 
@@ -204,8 +291,23 @@ mod tests {
     fn min_one_floor_positive() {
         // Country armor mult 100 makes a 50-incoming hit floor to 1 (defender
         // min-1 after the divides), then Verses 1.0 keeps 1.
-        let mods = CombatMods { defender_country_armor: 100.0, ..CombatMods::default() };
-        let o = receive_damage(50, 0.0, 1.0, &verses(1.0), &tgt(300, 300), &mods, &allow(), 0, false, MAXD, RED);
+        let mods = CombatMods {
+            defender_country_armor: 100.0,
+            ..CombatMods::default()
+        };
+        let o = receive_damage(
+            50,
+            0.0,
+            1.0,
+            &verses(1.0),
+            &tgt(300, 300),
+            &mods,
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 1);
     }
 
@@ -213,8 +315,23 @@ mod tests {
     fn building_min_one_after_verses() {
         // Building (no CanC4): tiny Verses collapses the kernel to 0, but the
         // building floor (run BEFORE the zero-check) raises it to 1.
-        let bldg = TargetDamageView { is_building: true, ..tgt(1000, 1000) };
-        let o = receive_damage(10, 0.0, 1.0, &verses(0.0001), &bldg, &CombatMods::default(), &allow(), 0, false, MAXD, RED);
+        let bldg = TargetDamageView {
+            is_building: true,
+            ..tgt(1000, 1000)
+        };
+        let o = receive_damage(
+            10,
+            0.0,
+            1.0,
+            &verses(0.0001),
+            &bldg,
+            &CombatMods::default(),
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 1);
         assert_eq!(o.state, DamageState::Damaged);
     }
@@ -222,15 +339,43 @@ mod tests {
     #[test]
     fn non_building_zero_verses_is_unaffected() {
         // A unit whose Verses collapses to 0 is genuinely unaffected (no floor).
-        let o = receive_damage(10, 0.0, 1.0, &verses(0.0001), &tgt(1000, 1000), &CombatMods::default(), &allow(), 0, false, MAXD, RED);
+        let o = receive_damage(
+            10,
+            0.0,
+            1.0,
+            &verses(0.0001),
+            &tgt(1000, 1000),
+            &CombatMods::default(),
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 0);
         assert_eq!(o.state, DamageState::Unaffected);
     }
 
     #[test]
     fn mindcontrol_applies_zero_hp() {
-        let g = ImmunityInputs { attacker_present: true, psychedelic: true, ..allow() };
-        let o = receive_damage(100, 0.0, 1.0, &verses(1.0), &tgt(300, 300), &CombatMods::default(), &g, 0, false, MAXD, RED);
+        let g = ImmunityInputs {
+            attacker_present: true,
+            psychedelic: true,
+            ..allow()
+        };
+        let o = receive_damage(
+            100,
+            0.0,
+            1.0,
+            &verses(1.0),
+            &tgt(300, 300),
+            &CombatMods::default(),
+            &g,
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 0);
         assert_eq!(o.state, DamageState::Damaged);
     }
@@ -239,8 +384,23 @@ mod tests {
     fn force_shield_matches_old_coarse_nullify() {
         // The receiver reproduces the old coarse is_invulnerable nullify: a
         // force-shielded target takes 0 and stays Unaffected.
-        let g = ImmunityInputs { force_shield: true, ..allow() };
-        let o = receive_damage(100, 0.0, 1.0, &verses(1.0), &tgt(300, 300), &CombatMods::default(), &g, 0, false, MAXD, RED);
+        let g = ImmunityInputs {
+            force_shield: true,
+            ..allow()
+        };
+        let o = receive_damage(
+            100,
+            0.0,
+            1.0,
+            &verses(1.0),
+            &tgt(300, 300),
+            &CombatMods::default(),
+            &g,
+            0,
+            false,
+            MAXD,
+            RED,
+        );
         assert_eq!(o.hp_delta, 0);
         assert_eq!(o.state, DamageState::Unaffected);
     }

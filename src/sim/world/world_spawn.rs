@@ -206,9 +206,7 @@ impl Simulation {
             let miner_obj = rules.and_then(|r| r.object(&map_ent.type_id));
             let miner_kind = miner_obj.and_then(miner_kind_for_object);
             if let Some(kind) = miner_kind {
-                let mcfg: MinerConfig = rules
-                    .map(MinerConfig::from_rules)
-                    .unwrap_or_default();
+                let mcfg: MinerConfig = rules.map(MinerConfig::from_rules).unwrap_or_default();
                 let storage = miner_obj.map(|o| o.storage.max(0) as u16).unwrap_or(0);
                 ge.miner = Some(Miner::new(kind, &mcfg, storage));
                 ge.harvest_overlay = Some(HarvestOverlay {
@@ -343,8 +341,7 @@ impl Simulation {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
         }
         if category == EntityCategory::Structure && obj.bunker {
-            ge.bunker_runtime =
-                Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
+            ge.bunker_runtime = Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
         }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
@@ -481,8 +478,7 @@ impl Simulation {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
         }
         if category == EntityCategory::Structure && obj.bunker {
-            ge.bunker_runtime =
-                Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
+            ge.bunker_runtime = Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
         }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
@@ -672,7 +668,9 @@ impl Simulation {
                 let occupied = self.substrate.entities.values().any(|e| {
                     // A Dying structure corpse (sold/destroyed earlier in this
                     // command batch) no longer blocks an MCV deploy footprint.
-                    if e.dying || e.stable_id == stable_id || e.category != EntityCategory::Structure
+                    if e.dying
+                        || e.stable_id == stable_id
+                        || e.category != EntityCategory::Structure
                     {
                         return false;
                     }

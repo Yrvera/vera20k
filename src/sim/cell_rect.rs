@@ -254,7 +254,9 @@ pub fn check_occupancy_rect(ctx: CellRectOccupancyContext<'_>) -> bool {
                 // first-blocker scan order is reproduced even though both reject the
                 // same way; a cell with only a slope and a cell with only a non-Ground
                 // zone-type each reject independently.
-                let tcell = ctx.resolved_terrain.and_then(|terrain| terrain.cell(rx, ry));
+                let tcell = ctx
+                    .resolved_terrain
+                    .and_then(|terrain| terrain.cell(rx, ry));
                 if tcell.is_some_and(|cell| cell.zone_type != zone_class::GROUND) {
                     return false;
                 }
@@ -439,10 +441,10 @@ fn rect_in_playfield(
     let max_x = rect.x.saturating_add(rect.width).saturating_sub(1);
     let max_y = rect.y.saturating_add(rect.height).saturating_sub(1);
     let corners = [
-        (rect.x, rect.y),   // NW
-        (max_x, rect.y),    // NE
-        (rect.x, max_y),    // SW
-        (max_x, max_y),     // SE
+        (rect.x, rect.y), // NW
+        (max_x, rect.y),  // NE
+        (rect.x, max_y),  // SW
+        (max_x, max_y),   // SE
     ];
 
     if let Some(bounds) = bounds {
@@ -962,20 +964,30 @@ mod tests {
     fn rect_in_playfield_is_isometric_diamond_inclusive_four_corners() {
         // A 1x1 rect on the diamond's INCLUSIVE high edge of the sum band passes:
         // (13,13) has sum 26 == base+HIGH, and both diagonals are inside.
-        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::single(13, 13))));
+        assert!(check_occupancy_rect(occupancy_with_bounds(
+            CellRect::single(13, 13)
+        )));
         // One cell past the high edge (sum 27 > 26) fails — proves the band is a
         // diamond on sx+sy, not a rectangle on raw x/y.
-        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::single(14, 13))));
+        assert!(!check_occupancy_rect(occupancy_with_bounds(
+            CellRect::single(14, 13)
+        )));
 
         // A 2x1 rect whose NW corner (13,13) is inside but whose INCLUSIVE far
         // corner (x+w-1, y) = (14,13) leaves the diamond (sum 27) fails — proves the
         // far corner uses w-1 AND that the corner predicate is the diamond.
-        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::new(13, 13, 2, 1))));
+        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::new(
+            13, 13, 2, 1
+        ))));
 
         // A point inside both diagonals but with sum just above the strict low edge
         // (sum 13 > 12) passes; the same cell pair off the low edge (sum 12) fails.
-        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::single(7, 6))));
-        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::single(6, 6))));
+        assert!(check_occupancy_rect(occupancy_with_bounds(
+            CellRect::single(7, 6)
+        )));
+        assert!(!check_occupancy_rect(occupancy_with_bounds(
+            CellRect::single(6, 6)
+        )));
     }
 
     #[test]
@@ -986,14 +998,20 @@ mod tests {
         //
         // At (13,13) the decremented corners (12,13)/(13,12)/(12,12) have sums
         // 25/25/24 — all inside (12 < sum <= 26) — so the 0-size rect PASSES.
-        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::new(13, 13, 0, 0))));
+        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::new(
+            13, 13, 0, 0
+        ))));
 
         // At (7,6) the NW corner (sum 13) is inside, but the decremented NE corner
         // (6,6) has sum 12, which fails the strict low edge (12 < 12 is false). So the
         // 0-size rect FAILS even though its (undecremented) NW corner is inside —
         // exactly the engine's decremented-corner behavior. The corresponding 1x1
         // rect at (7,6) passes (its corners are all (7,6), sum 13).
-        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::new(7, 6, 0, 0))));
-        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::single(7, 6))));
+        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::new(
+            7, 6, 0, 0
+        ))));
+        assert!(check_occupancy_rect(occupancy_with_bounds(
+            CellRect::single(7, 6)
+        )));
     }
 }
