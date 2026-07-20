@@ -18,9 +18,8 @@ use crate::app_init_helpers::{
 };
 use crate::app_list_maps::{load_map_by_name_or_path_with_assets, try_load_mmx};
 use crate::app_skirmish::{
-    apply_explicit_skirmish_launch_session, apply_unverified_legacy_skirmish_launch_session,
-    build_overlay_atlas_from_map, house_color_map_for_launch_session,
-    seed_skirmish_opening_if_needed,
+    apply_explicit_skirmish_launch_session, build_overlay_atlas_from_map,
+    house_color_map_for_launch_session, seed_skirmish_opening_if_needed,
 };
 use crate::match_bootstrap::LoadingStartup;
 
@@ -313,6 +312,9 @@ pub struct MapMenuEntry {
     pub preview: PreviewSection,
     /// Multiplayer start waypoints 0..=7, sorted by waypoint index.
     pub multiplayer_start_waypoints: Vec<Waypoint>,
+    /// Setup-shell player capacity from native waypoint counting, including
+    /// the `[RandomMap] NumPlayers` / eight-player fallback path.
+    pub player_capacity: i32,
     /// Verified source bounds for projecting starts onto the preview surface.
     pub preview_source_bounds: Option<PreviewSourceBounds>,
 }
@@ -329,6 +331,48 @@ pub(crate) fn load_map_initial_with_assets(
     let quickplay_map: Option<String> = std::env::var("RA2_QUICKPLAY")
         .ok()
         .filter(|v| v.ends_with(".map") || v.ends_with(".mpr") || v.ends_with(".mmx"));
+
+    // A `.SED` selection names a random-map seed, not a map file: the map is
+    // generated in memory from its options. Handled before the file-loading
+    // branches below, which would look for a map file that does not exist.
+    if let Some(seed_name) = requested_map.filter(|name| crate::map::rmg::is_seed_selection(name)) {
+        // Shadowed as mutable: the theater loader needs &mut, and every borrow
+        // has to end before the manager is moved into MapLoadInitial.
+        let mut asset_manager = asset_manager;
+
+        let mut options = crate::map::rmg::RmgOptions::default();
+        match std::fs::read(ra2_dir.join(seed_name)) {
+            Ok(bytes) => match crate::rules::ini_parser::IniFile::from_bytes(&bytes) {
+                Ok(ini) => options.apply_sed(&ini),
+                Err(err) => log::warn!("random map: {seed_name} is not valid INI ({err}); using defaults"),
+            },
+            // Missing seed file is not fatal: the original's options object
+            // keeps its constructor defaults when a key (or the file) is absent.
+            Err(err) => log::warn!("random map: cannot read {seed_name} ({err}); using defaults"),
+        }
+        options.normalize();
+
+        let settings = crate::map::rmg::RmgSettings::load(&asset_manager);
+        let theater_name = crate::map::rmg::emit::theater_name(options.theater);
+        let theater = crate::map::theater::load_theater(&mut asset_manager, theater_name)
+            .ok_or_else(|| anyhow::anyhow!("random map: theater {theater_name} unavailable"))?;
+
+        let generated = crate::map::rmg::generate(&options, &settings, Some(&theater))?;
+        log::info!(
+            "Random map generated: theater={}, {}x{}, seed={}, players={}",
+            generated.map_file.header.theater,
+            generated.map_file.header.width,
+            generated.map_file.header.height,
+            options.seed,
+            options.num_players
+        );
+
+        progress.milestone(8);
+        return Ok(MapLoadInitial {
+            asset_manager,
+            map_data: generated.map_file,
+        });
+    }
 
     let map_data: MapFile =
         if let Some(map_name) = requested_map.filter(|m| !m.eq_ignore_ascii_case("auto")) {
@@ -425,7 +469,41 @@ pub(crate) fn load_map_from_initial(
 
     // Load rules.ini and art.ini before building resolved terrain so overlay
     // semantics and art-foundation data are available to the pipeline.
-    let mut rules: Option<RuleSet> = load_rules_ini(&asset_manager, Some(&map_data.ini));
+    // The selected game mode's override INI (MPModes roster row) applies its
+    // rules payload between rulesmd and the map overrides — without it every
+    // non-Battle mode silently plays with Battle rules.
+    let mode_override_ini: Option<IniFile> = {
+        let override_file = skirmish_launch_session
+            .map(|s| s.mode.override_file.trim())
+            .unwrap_or("");
+        if override_file.is_empty() {
+            None
+        } else {
+            asset_manager
+                .get_with_source(override_file)
+                .and_then(|(data, source)| {
+                    log::info!(
+                        "Loading game-mode rules override {} ({} bytes) from {}",
+                        override_file,
+                        data.len(),
+                        source
+                    );
+                    IniFile::from_bytes(&data)
+                        .map_err(|err| {
+                            log::warn!("Failed to parse game-mode override {override_file}: {err}")
+                        })
+                        .ok()
+                })
+        }
+    };
+    let mut rules: Option<RuleSet> = Some(
+        load_rules_ini(
+            &asset_manager,
+            mode_override_ini.as_ref(),
+            Some(&map_data.ini),
+        )
+        .ok_or_else(|| anyhow::anyhow!("failed to load or validate merged game rules"))?,
+    );
     let art_result: Option<(ArtRegistry, IniFile)> = load_art_ini(&asset_manager);
     let (mut art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
         Some((reg, ini)) => (Some(reg), Some(ini)),
@@ -433,6 +511,18 @@ pub(crate) fn load_map_from_initial(
     };
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
         r.merge_art_data(a);
+        let damage_fire_roots: Vec<String> = r
+            .general
+            .damage_fire_types
+            .iter()
+            .map(|anim| anim.name.clone())
+            .collect();
+        a.bind_scheduler_anim_assets(
+            &damage_fire_roots,
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        )?;
         // Eagerly populate per-anim SHP frame dimensions so the smudge
         // dispatcher can size-filter without falling back to the (30, 30)
         // default that always loses the threshold check.
@@ -580,8 +670,8 @@ pub(crate) fn load_map_from_initial(
             }
         });
 
-    // Accepted startup carries the one pre-loading GetTickCount word unchanged.
-    // Legacy/generic loading retains its explicitly noncertifying SystemTime
+    // Every shell startup carries its one fresh pre-loading seed unchanged.
+    // Generic loading alone retains the explicitly noncertifying SystemTime
     // fallback. In every case the selected word exists before Simulation.
     let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
         seed: startup.seed_or_else(crate::app_init_helpers::generate_unverified_legacy_match_seed),
@@ -680,27 +770,18 @@ pub(crate) fn load_map_from_initial(
     if !spawn_pick_pending {
         if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
             let should_rebuild_entity_atlases = if let Some(session) = skirmish_launch_session {
-                let result = if startup.is_accepted() {
-                    apply_explicit_skirmish_launch_session(
-                        sim,
-                        &map_data,
-                        &house_roster,
-                        ruleset,
-                        &height_map,
-                        &resolved_terrain,
-                        session,
-                    )
-                } else {
-                    apply_unverified_legacy_skirmish_launch_session(
-                        sim,
-                        &map_data,
-                        &house_roster,
-                        ruleset,
-                        &height_map,
-                        &resolved_terrain,
-                        session,
-                    )
-                };
+                // Every shell session is resolved before loading on the app-owned
+                // frontend Scenario cursor. Map loading must never advance the
+                // freshly seeded gameplay stream for lobby assignments.
+                let result = apply_explicit_skirmish_launch_session(
+                    sim,
+                    &map_data,
+                    &house_roster,
+                    ruleset,
+                    &height_map,
+                    &resolved_terrain,
+                    session,
+                );
                 initial_local_owner = result.local_owner;
                 result.spawned_mcvs > 0
             } else {

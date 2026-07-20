@@ -69,6 +69,12 @@ pub const STAGE_ORDER: &[Stage] = &[
 /// Interior dimensions used until the map-prep stage computes real ones.
 const PLACEHOLDER_INTERIOR: u32 = 60;
 
+/// Whether a selected map name refers to a random-map seed rather than a map
+/// file. Such selections are generated in memory instead of loaded from disk.
+pub fn is_seed_selection(map_name: &str) -> bool {
+    map_name.to_ascii_lowercase().ends_with(".sed")
+}
+
 /// A generated map plus the start slots the launch path needs.
 ///
 /// Not `Clone`: `MapFile` isn't, and a generated map is large enough that
@@ -123,6 +129,17 @@ mod tests {
             .iter()
             .position(|candidate| *candidate == stage)
             .expect("stage missing from the pipeline order")
+    }
+
+    #[test]
+    fn seed_selections_are_recognised_regardless_of_case() {
+        assert!(is_seed_selection("RandMap.Sed"));
+        assert!(is_seed_selection("randmap.sed"));
+        assert!(is_seed_selection("RANDMAP.SED"));
+        assert!(!is_seed_selection("bigmap.map"));
+        assert!(!is_seed_selection("dustbowl.mmx"));
+        assert!(!is_seed_selection("sed"), "the extension must be a suffix");
+        assert!(!is_seed_selection(""));
     }
 
     #[test]
@@ -205,10 +222,7 @@ mod tests {
 
         assert_eq!(first.stages_run, second.stages_run);
         assert_eq!(first.start_waypoints, second.start_waypoints);
-        assert_eq!(
-            first.map_file.header.width,
-            second.map_file.header.width
-        );
+        assert_eq!(first.map_file.header.width, second.map_file.header.width);
         assert_eq!(
             first.map_file.header.theater,
             second.map_file.header.theater
