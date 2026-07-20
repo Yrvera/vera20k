@@ -171,6 +171,23 @@ fn cliff_ranges_resolve_ordinals_to_cumulative_tile_starts() {
 }
 
 #[test]
+fn rmg_tile_keys_resolve_ordinals_and_missing_keys_stay_none() {
+    let ini_bytes = b"[General]\nClearTile = 0\nGreenTile = 2\nWaterSet = 1\n\n\
+                [TileSet0000]\nTilesInSet=2\nFileName=clear\nSetName=Clear\n\n\
+                [TileSet0001]\nTilesInSet=3\nFileName=water\nSetName=Water\n\n\
+                [TileSet0002]\nTilesInSet=4\nFileName=green\nSetName=Green\n";
+    let lookup = super::parse_tileset_ini(ini_bytes, "tem").unwrap();
+    let ini_text = String::from_utf8_lossy(ini_bytes);
+    let keys = super::resolve_rmg_tile_keys(&lookup, &ini_text);
+
+    assert_eq!(keys.clear_tile, Some(0));
+    assert_eq!(keys.water_set, Some(2), "set 1 starts at cumulative tile 2");
+    assert_eq!(keys.green_tile, Some(5), "set 2 starts at cumulative tile 5");
+    assert_eq!(keys.sand_tile, None, "absent key must stay None, not 0");
+    assert_eq!(keys.shore_pieces, None);
+}
+
+#[test]
 fn cliff_ranges_match_half_open_boundaries() {
     let ranges = TheaterCliffRanges {
         cliff_set: Some(100),
@@ -309,6 +326,7 @@ fn bridge_railing_slope_starts_use_tileset_bounds() {
         dirt_tunnels: None,
         dirt_track_tunnels: None,
         cliff_ranges: TheaterCliffRanges::default(),
+        rmg_tiles: super::RmgTileKeys::default(),
     };
 
     assert_eq!(td.bridge_railing_slope_starts(), Some((2, 5)));
@@ -347,6 +365,7 @@ fn synthetic_theater_with_bridge_keys(
         dirt_tunnels: None,
         dirt_track_tunnels: None,
         cliff_ranges: TheaterCliffRanges::default(),
+        rmg_tiles: super::RmgTileKeys::default(),
     }
 }
 

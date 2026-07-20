@@ -207,6 +207,29 @@ impl TheaterCliffRanges {
     }
 }
 
+/// Theater `[General]` tile-identity keys the random-map generator resolves
+/// to flat tile ids at load, following the same ordinal→first-tile scheme as
+/// the cliff ranges above. A missing key stays `None` (the original's globals
+/// default to -1, so absence must stay distinguishable from tile 0).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RmgTileKeys {
+    pub clear_tile: Option<u16>,
+    pub ramp_base: Option<u16>,
+    pub rough_tile: Option<u16>,
+    pub sand_tile: Option<u16>,
+    pub green_tile: Option<u16>,
+    pub clear_to_rough_lat: Option<u16>,
+    pub clear_to_sand_lat: Option<u16>,
+    pub clear_to_green_lat: Option<u16>,
+    pub clear_to_pave_lat: Option<u16>,
+    pub pave_tile: Option<u16>,
+    pub water_set: Option<u16>,
+    pub shore_pieces: Option<u16>,
+    pub misc_pave_tile: Option<u16>,
+    pub paved_roads: Option<u16>,
+    pub medians: Option<u16>,
+}
+
 fn in_fixed_range(start: Option<u16>, tile_id: u16, len: u16) -> bool {
     let Some(start) = start else {
         return false;
@@ -536,6 +559,8 @@ pub struct TheaterData {
     pub dirt_track_tunnels: Option<u16>,
     /// Numeric cliff/ramp/waterfall classifiers derived from theater `[General]`.
     pub cliff_ranges: TheaterCliffRanges,
+    /// Tile-identity `[General]` keys consumed by the random-map generator.
+    pub rmg_tiles: RmgTileKeys,
 }
 
 /// Theater-derived 4-NS + 4-EW tile_id table for HIGH bridge anchor variants.
@@ -839,6 +864,7 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     let dirt_tunnels = parse_general_int(&ini_text, "DirtTunnels");
     let dirt_track_tunnels = parse_general_int(&ini_text, "DirtTrackTunnels");
     let mut cliff_ranges = resolve_cliff_ranges(&lookup, &ini_text, bridge_set, wood_bridge_set);
+    let rmg_tiles = resolve_rmg_tile_keys(&lookup, &ini_text);
     apply_lunar_cliff_zeroing(
         theater_name,
         &mut bridge_set,
@@ -897,6 +923,7 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         dirt_tunnels,
         dirt_track_tunnels,
         cliff_ranges,
+        rmg_tiles,
     })
 }
 
@@ -909,6 +936,28 @@ fn resolve_tileset_start(lookup: &TilesetLookup, ordinal: Option<i32>) -> Option
         .bounds()
         .get(ordinal as usize)
         .map(|bounds| bounds.start)
+}
+
+fn resolve_rmg_tile_keys(lookup: &TilesetLookup, ini_text: &str) -> RmgTileKeys {
+    let resolve =
+        |key: &str| resolve_tileset_start(lookup, parse_general_i32(ini_text, key));
+    RmgTileKeys {
+        clear_tile: resolve("ClearTile"),
+        ramp_base: resolve("RampBase"),
+        rough_tile: resolve("RoughTile"),
+        sand_tile: resolve("SandTile"),
+        green_tile: resolve("GreenTile"),
+        clear_to_rough_lat: resolve("ClearToRoughLat"),
+        clear_to_sand_lat: resolve("ClearToSandLat"),
+        clear_to_green_lat: resolve("ClearToGreenLat"),
+        clear_to_pave_lat: resolve("ClearToPaveLat"),
+        pave_tile: resolve("PaveTile"),
+        water_set: resolve("WaterSet"),
+        shore_pieces: resolve("ShorePieces"),
+        misc_pave_tile: resolve("MiscPaveTile"),
+        paved_roads: resolve("PavedRoads"),
+        medians: resolve("Medians"),
+    }
 }
 
 fn resolve_cliff_ranges(

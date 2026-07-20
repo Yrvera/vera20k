@@ -910,9 +910,7 @@ impl ResolvedTerrainGrid {
                     ) {
                         cell.zone_type = zone_class::IMPASSABLE;
                     }
-                    if let Some(rock) =
-                        terrain_rules.and_then(|tr| tr.semantics_for_land_type(7))
-                    {
+                    if let Some(rock) = terrain_rules.and_then(|tr| tr.semantics_for_land_type(7)) {
                         cell.terrain_class = rock.terrain_class;
                         cell.speed_costs = rock.speed_costs;
                         cell.is_water = rock.water;
@@ -1680,6 +1678,7 @@ mod tests {
             dirt_tunnels: None,
             dirt_track_tunnels: None,
             cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
+            rmg_tiles: crate::map::theater::RmgTileKeys::default(),
         }
     }
 
@@ -1709,6 +1708,7 @@ mod tests {
             dirt_tunnels: None,
             dirt_track_tunnels: None,
             cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
+            rmg_tiles: crate::map::theater::RmgTileKeys::default(),
         }
     }
 
