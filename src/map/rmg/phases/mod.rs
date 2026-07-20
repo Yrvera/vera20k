@@ -6,6 +6,7 @@
 
 pub mod blob;
 pub mod green_spread;
+pub mod regions;
 pub mod shore;
 pub mod water;
 pub mod water_finalize;
