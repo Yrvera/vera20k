@@ -283,6 +283,7 @@ mod tests {
             pave: -1,
             water_base: 500,
             shore: 400,
+            water_bridge: -1,
             misc_pave: -1,
             paved_roads: -1,
             paved_road_ends: -1,
