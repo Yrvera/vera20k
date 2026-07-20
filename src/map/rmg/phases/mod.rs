@@ -6,6 +6,7 @@
 
 pub mod blob;
 pub mod green_spread;
+pub mod hills;
 pub mod regions;
 pub mod shore;
 pub mod starts;
