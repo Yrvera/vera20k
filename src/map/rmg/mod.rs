@@ -12,6 +12,7 @@ pub mod pipeline;
 pub mod rng;
 pub mod scratch;
 pub mod settings;
+pub mod theater_blocks;
 pub mod tiles;
 pub mod x87;
 
