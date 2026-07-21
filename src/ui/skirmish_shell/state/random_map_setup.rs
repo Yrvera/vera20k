@@ -194,6 +194,10 @@ pub struct RandomMapSetupModalState {
     /// generate action turns it on unconditionally, as the original does.
     pub saved_seed_buttons_enabled: bool,
     pub open_combo: Option<SetupCombo>,
+    /// Set while the players thumb is grabbed. A press on the rail jumps the
+    /// value once but does not begin tracking, matching the shell's other
+    /// sliders.
+    pub dragging_players_thumb: bool,
     pub pressed_control: Option<RandomMapSetupControl>,
     /// Restored verbatim if the player cancels.
     pub previous_selection: Option<ChooseMapSelection>,
@@ -220,6 +224,7 @@ impl RandomMapSetupModalState {
             generating: false,
             saved_seed_buttons_enabled: saved_seeds_available,
             open_combo: None,
+            dragging_players_thumb: false,
             pressed_control: None,
             previous_selection,
         }
@@ -339,6 +344,7 @@ impl RandomMapSetupModalState {
     pub fn begin_generate(&mut self) {
         self.generating = true;
         self.open_combo = None;
+        self.dragging_players_thumb = false;
     }
 
     /// End the generate block, marking a result available so accept unlocks.

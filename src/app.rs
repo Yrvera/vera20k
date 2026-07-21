@@ -74,6 +74,12 @@ const RANDMAP_SED_FILE: &str = "RandMap.Sed";
 /// becomes the sentinel row's displayed name.
 const RANDOM_MAP_DESCRIPTION_KEY: &str = "TXT_RANDOM_MAP_DESCRIPTION";
 const RANDOM_MAP_DESCRIPTION_FALLBACK: &str = "Random Map";
+/// The players slider is the last of the setup dialog's six option rows, and the
+/// dialog gives it a range of 2..8 with a step of one.
+const SETUP_PLAYERS_ROW: usize = 5;
+const SETUP_PLAYERS_MIN: i32 = 2;
+const SETUP_PLAYERS_MAX: i32 = 8;
+const SETUP_PLAYERS_STEP: i32 = 1;
 
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
 const SHELL_WINDOW_WIDTH: u32 = 800;
@@ -1456,6 +1462,14 @@ impl App {
         }
         if let Some(control) = crate::ui::skirmish_shell::random_map_setup_control_at(&layout, x, y)
         {
+            // The players slider is not a button: it acts on press, not on
+            // release, so it never arms a pressed control.
+            if control == crate::ui::skirmish_shell::RandomMapSetupControl::Players0x3eb {
+                if modal.is_enabled(control) {
+                    Self::press_setup_players_trackbar(modal, &layout, x, y);
+                }
+                return true;
+            }
             // A disabled control swallows the click without arming a press, so
             // releasing over it cannot fire.
             if modal.is_enabled(control) {
@@ -1465,6 +1479,59 @@ impl App {
             return true;
         }
         layout.dialog.contains(x, y)
+    }
+
+    /// Press behaviour for the players slider, mirroring the shell's other
+    /// trackbars: grabbing the thumb starts a tracking drag, while a press on
+    /// the rail jumps the value once and tracks nothing.
+    fn press_setup_players_trackbar(
+        modal: &mut crate::ui::skirmish_shell::RandomMapSetupModalState,
+        layout: &crate::ui::skirmish_shell::RandomMapSetupLayout,
+        x: i32,
+        y: i32,
+    ) {
+        let rect = layout.control_rects[SETUP_PLAYERS_ROW];
+        if !crate::ui::skirmish_shell::trackbar_mouse_allowed_y(rect, y) {
+            return;
+        }
+        let pixel_offset = crate::ui::skirmish_shell::trackbar_pixel_offset(
+            modal.options.num_players,
+            SETUP_PLAYERS_MIN,
+            SETUP_PLAYERS_MAX,
+            SETUP_PLAYERS_STEP,
+            rect,
+        );
+        if crate::ui::skirmish_shell::trackbar_thumb_hit(rect, pixel_offset, x, y) {
+            modal.dragging_players_thumb = true;
+        } else if rect.contains(x, y) {
+            modal.set_num_players(crate::ui::skirmish_shell::trackbar_mouse_value(
+                rect,
+                x,
+                SETUP_PLAYERS_MIN,
+                SETUP_PLAYERS_MAX,
+                SETUP_PLAYERS_STEP,
+            ));
+        }
+    }
+
+    fn handle_random_map_setup_mouse_move(state: &mut AppState) {
+        let layout = Self::skirmish_random_map_setup_layout(state);
+        let x = state.cursor_x.round() as i32;
+        let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
+            return;
+        };
+        if !modal.dragging_players_thumb {
+            return;
+        }
+        let rect = layout.control_rects[SETUP_PLAYERS_ROW];
+        modal.set_num_players(crate::ui::skirmish_shell::trackbar_mouse_value(
+            rect,
+            x,
+            SETUP_PLAYERS_MIN,
+            SETUP_PLAYERS_MAX,
+            SETUP_PLAYERS_STEP,
+        ));
+        state.window.request_redraw();
     }
 
     fn handle_random_map_setup_mouse_up(state: &mut AppState) -> bool {
@@ -1489,6 +1556,10 @@ impl App {
         let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
             return false;
         };
+        if modal.dragging_players_thumb {
+            modal.dragging_players_thumb = false;
+            return true;
+        }
         // Releasing over an open list commits that entry. The press was never
         // armed for list clicks, so this has to run before the pressed check.
         if let Some(combo) = modal.open_combo {
@@ -1883,6 +1954,10 @@ impl App {
     }
 
     fn handle_skirmish_shell_mouse_move(state: &mut AppState) {
+        if state.skirmish_shell_state.random_map_setup_modal.is_some() {
+            Self::handle_random_map_setup_mouse_move(state);
+            return;
+        }
         if state.skirmish_shell_state.choose_map_modal.is_some() {
             let layout = Self::skirmish_choose_map_layout(state);
             let x = state.cursor_x.round() as i32;
