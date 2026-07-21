@@ -10,6 +10,7 @@ pub mod grid;
 pub mod options;
 pub mod phases;
 pub mod pipeline;
+pub mod randomize;
 pub mod rng;
 pub mod scratch;
 pub mod settings;
