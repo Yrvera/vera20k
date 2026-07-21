@@ -259,11 +259,24 @@ pub(super) fn push_random_map_setup_modal_instances(
     // occupies only its face, not the dropdown extent the resource reserves.
     for (row, control) in COMBO_ROW_CONTROLS.iter().enumerate() {
         let rect = layout.control_rects[row];
+        let face = RectPx::new(rect.x, rect.y, rect.w, COMBO_FACE_H);
+        // ControlPaint::Combo emits only the swatch and the arrow -- the shell's
+        // combo faces come from slots baked into the 0x102 background art, which
+        // has none at these positions. Lay a plate down first or the control is
+        // an arrow floating on bare background.
+        push_solid_rect(
+            out,
+            atlas,
+            face,
+            SHELL_MODAL_PANEL_RGB,
+            SHELL_DROPDOWN_DEPTH - 0.00009,
+        );
+        push_ownerdraw_two_pixel_bevel_frame(out, atlas, face, SHELL_DROPDOWN_DEPTH - 0.000095);
         paint_control(
             out,
             &chrome,
             ControlPaint::Combo {
-                rect: RectPx::new(rect.x, rect.y, rect.w, COMBO_FACE_H),
+                rect: face,
                 swatch: None,
                 open: modal.open_combo == Some(*control),
                 disabled: !modal.is_enabled(SETUP_COMBO_CONTROLS[row]),

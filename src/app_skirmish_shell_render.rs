@@ -201,13 +201,17 @@ pub fn build_skirmish_shell_instances(
     let mut instances = Vec::new();
 
     if let Some(choose_map_layout) = choose_map_layout {
-        push_choose_map_modal_instances(&mut instances, atlas, choose_map_layout, shell, modes);
-        // The setup dialog opens over the chooser, so it must stack on top --
-        // and inside this block, which returns before the shell body is drawn.
+        // The setup dialog REPLACES the chooser rather than overlaying it: the
+        // original hides/suspends the chooser while 0x105 is up. Drawing both
+        // collides their listboxes, labels and button captions.
         if let Some(modal) = shell.random_map_setup_modal.as_ref() {
-            let setup_layout =
-                compute_random_map_setup_layout(choose_map_layout.screen.w as u32, choose_map_layout.screen.h as u32);
+            let setup_layout = compute_random_map_setup_layout(
+                choose_map_layout.screen.w as u32,
+                choose_map_layout.screen.h as u32,
+            );
             push_random_map_setup_modal_instances(&mut instances, atlas, &setup_layout, modal);
+        } else {
+            push_choose_map_modal_instances(&mut instances, atlas, choose_map_layout, shell, modes);
         }
         return instances;
     }
@@ -731,18 +735,16 @@ fn render_skirmish_shell_with_atlas(
         )
     };
     if let Some(choose_map_layout) = choose_map_layout.as_ref() {
-        push_choose_map_modal_text_draws(&mut shell_draws, state, choose_map_layout);
-        // The setup dialog sits on top of the chooser, so its text follows.
-        if state
-            .skirmish_shell_state
-            .random_map_setup_modal
-            .is_some()
-        {
+        // Mirrors the sprite pass: the setup dialog replaces the chooser, so
+        // only one of the two contributes text.
+        if state.skirmish_shell_state.random_map_setup_modal.is_some() {
             let setup_layout = compute_random_map_setup_layout(
                 choose_map_layout.screen.w as u32,
                 choose_map_layout.screen.h as u32,
             );
             push_random_map_setup_modal_text_draws(&mut shell_draws, state, &setup_layout);
+        } else {
+            push_choose_map_modal_text_draws(&mut shell_draws, state, choose_map_layout);
         }
     }
     if let Some(validation_layout) = validation_layout.as_ref() {
