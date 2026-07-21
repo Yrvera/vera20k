@@ -14,8 +14,8 @@ pub use layout::{
     CHOOSE_MAP_MODAL_H, CHOOSE_MAP_MODAL_W, COMBO_ARROW_RESERVE_W, COMBO_DROPDOWN_ROW_H,
     COMBO_DROPDOWN_SCROLLBAR_BUTTON_H, COMBO_DROPDOWN_SCROLLBAR_MIN_THUMB_H,
     COMBO_DROPDOWN_SCROLLBAR_W, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapListboxId,
-    ChooseMapModalButton, ChooseMapModalLayout, ColorComboId, RIGHT_PANEL_WIDTH, RectPx,
-    ShellControlId, SkirmishCheckboxId, SkirmishCheckboxRect, SkirmishColumnLabelRects,
+    ChooseMapModalButton, ChooseMapModalLayout, ColorComboId, RIGHT_PANEL_WIDTH, RandomMapSetupControl,
+    RectPx, ShellControlId, SkirmishCheckboxId, SkirmishCheckboxRect, SkirmishColumnLabelRects,
     SkirmishRightPanelTextRects, SkirmishRowRects, SkirmishShellLayout, SkirmishTrackbarId,
     SkirmishTrackbarLabelRects, SkirmishTrackbarRects, ValidationModalLayout, checkbox_icon_rect,
     checkbox_text_rect, choose_map_listbox_content_rect, choose_map_listbox_max_top_index,
@@ -30,7 +30,8 @@ pub use layout::{
     trackbar_pixel_offset, trackbar_plaque_rect, trackbar_thumb_rect, trackbar_value_text_rect,
 };
 pub use state::{
-    ChooseMapHoverTarget, ChooseMapModalState, ChooseMapSelection, DropdownScrollDragState,
+    AcceptOutcome, ChooseMapHoverTarget, ChooseMapModalState, ChooseMapSelection,
+    DropdownScrollDragState, RandomMapSetupModalState, SetupCombo,
     DropdownScrollbarPart, DropdownScrollbarPressState, OpenComboDropdown, OwnerDrawButton,
     PLAYER_NAME_CARET_MARGIN_PX, PLAYER_NAME_DEFAULT, PLAYER_NAME_MAX_CHARS, PlayerNameEditState,
     SkirmishAiRowType, SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice,

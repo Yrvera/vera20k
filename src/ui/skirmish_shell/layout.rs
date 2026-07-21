@@ -163,6 +163,24 @@ pub enum ChooseMapModalButton {
     CreateRandomMap0x583,
 }
 
+/// Every interactive control in the random-map setup dialog `0x105`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RandomMapSetupControl {
+    MapType0x405,
+    Time0x3ea,
+    Theater0x407,
+    Size0x406,
+    Resources0x408,
+    Players0x3eb,
+    Randomize0x621,
+    Generate0x620,
+    Ok0x6c5,
+    Load0x6c2,
+    Save0x6c3,
+    Delete0x6c4,
+    Cancel0x5c0,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChooseMapListboxId {
     Mode0x6eb,
