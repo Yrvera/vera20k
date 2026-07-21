@@ -7,14 +7,15 @@ use crate::render::shell_paint;
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
 use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::skirmish_shell::{
-    ChooseMapModalButton, ChooseMapModalLayout, RectPx, SkirmishShellState, ValidationModalLayout,
-    choose_map_listbox_content_rect, choose_map_listbox_row_rect,
+    COMBO_FACE_H, ChooseMapModalButton, ChooseMapModalLayout, RandomMapSetupControl,
+    RandomMapSetupLayout, RandomMapSetupModalState, RectPx, SetupCombo, SkirmishShellState,
+    ValidationModalLayout, choose_map_listbox_content_rect, choose_map_listbox_row_rect,
     choose_map_listbox_scroll_thumb_rect, choose_map_listbox_scrollbar_rect,
-    choose_map_listbox_visible_row_count,
+    choose_map_listbox_visible_row_count, trackbar_pixel_offset,
 };
 
 use super::chrome::{
-    push_entry_native, push_ownerdraw_two_pixel_bevel_frame, push_rect_outline,
+    push_button_30, push_entry_native, push_ownerdraw_two_pixel_bevel_frame, push_rect_outline,
     push_right_panel_button_shp, push_solid_rect,
 };
 use super::controls::{ControlPaint, paint_control};
@@ -25,6 +26,28 @@ use super::{
     SHELL_MODAL_BG_RGB, SHELL_MODAL_PANEL_RGB, SHELL_PARENT_BACKGROUND_DEPTH,
     SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE,
 };
+
+/// The five combo rows of the random-map setup dialog, in layout row order:
+/// map type, time, theater, size, resources. Row 5 is the players trackbar.
+const COMBO_ROW_CONTROLS: [SetupCombo; 5] = [
+    SetupCombo::MapType,
+    SetupCombo::Time,
+    SetupCombo::Theater,
+    SetupCombo::Size,
+    SetupCombo::Resources,
+];
+/// The same five rows as hit-test controls, for the enabled/disabled lookup.
+const SETUP_COMBO_CONTROLS: [RandomMapSetupControl; 5] = [
+    RandomMapSetupControl::MapType0x405,
+    RandomMapSetupControl::Time0x3ea,
+    RandomMapSetupControl::Theater0x407,
+    RandomMapSetupControl::Size0x406,
+    RandomMapSetupControl::Resources0x408,
+];
+const PLAYERS_ROW: usize = 5;
+/// Player-count trackbar bounds, matching the option normalizer's clamp.
+const PLAYERS_MIN: i32 = 2;
+const PLAYERS_MAX: i32 = 8;
 
 const VALIDATION_MODAL_SPRITE_DEPTHS: shell_paint::ModalDepths = shell_paint::ModalDepths {
     background: SHELL_DROPDOWN_DEPTH - 0.00014,
@@ -182,6 +205,160 @@ pub(super) fn push_choose_map_modal_instances(
         OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
         SHELL_DROPDOWN_DEPTH - 0.00012,
     );
+}
+
+/// Background for the random-map setup modal. Same asset and same 800-wide-only
+/// gate as the choose-map modal — the two dialogs share one background surface.
+pub(super) fn random_map_setup_background_entry(
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &RandomMapSetupLayout,
+) -> Option<SkirmishShellChromeEntry> {
+    match layout.screen.w {
+        800 => atlas.choose_map_background_800_customize_battle,
+        _ => None,
+    }
+}
+
+/// Build the sprite instances for the random-map setup modal `0x105`.
+///
+/// Frame, background and right column are the choose-map chrome; only the left
+/// column differs. The preview box is drawn as an empty outline: rendering the
+/// generated terrain into it is a deferred follow-up.
+pub(super) fn push_random_map_setup_modal_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &RandomMapSetupLayout,
+    modal: &RandomMapSetupModalState,
+) {
+    if let Some(background) = random_map_setup_background_entry(atlas, layout) {
+        push_entry_native(
+            out,
+            background,
+            layout.screen.x,
+            layout.screen.y,
+            SHELL_PARENT_BACKGROUND_DEPTH,
+        );
+    }
+    push_solid_rect(
+        out,
+        atlas,
+        layout.dialog,
+        SHELL_MODAL_BG_RGB,
+        SHELL_DROPDOWN_DEPTH - 0.00008,
+    );
+    push_rect_outline(
+        out,
+        atlas,
+        layout.dialog,
+        OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
+        SHELL_DROPDOWN_DEPTH - 0.00009,
+    );
+
+    let chrome = atlas.control_chrome();
+    // Rows 0..4 are combos; row 5 is the players trackbar. A collapsed combo
+    // occupies only its face, not the dropdown extent the resource reserves.
+    for (row, control) in COMBO_ROW_CONTROLS.iter().enumerate() {
+        let rect = layout.control_rects[row];
+        paint_control(
+            out,
+            &chrome,
+            ControlPaint::Combo {
+                rect: RectPx::new(rect.x, rect.y, rect.w, COMBO_FACE_H),
+                swatch: None,
+                open: modal.open_combo == Some(*control),
+                disabled: !modal.is_enabled(SETUP_COMBO_CONTROLS[row]),
+            },
+        );
+    }
+    let players = layout.control_rects[PLAYERS_ROW];
+    paint_control(
+        out,
+        &chrome,
+        ControlPaint::Trackbar {
+            rect: players,
+            thumb_px: trackbar_pixel_offset(
+                modal.options.num_players,
+                PLAYERS_MIN,
+                PLAYERS_MAX,
+                1,
+                players,
+            ),
+        },
+    );
+
+    // Seed is a display-only field: a sunken plate with no caret or focus.
+    push_solid_rect(
+        out,
+        atlas,
+        layout.seed_field,
+        SHELL_MODAL_PANEL_RGB,
+        SHELL_DROPDOWN_DEPTH - 0.00010,
+    );
+    push_rect_outline(
+        out,
+        atlas,
+        layout.seed_field,
+        OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
+        SHELL_DROPDOWN_DEPTH - 0.00011,
+    );
+
+    for (rect, control) in [
+        (layout.randomize, RandomMapSetupControl::Randomize0x621),
+        (layout.generate, RandomMapSetupControl::Generate0x620),
+    ] {
+        push_button_30(
+            out,
+            atlas,
+            rect,
+            modal.pressed_control == Some(control),
+            !modal.is_enabled(control),
+            SHELL_DROPDOWN_DEPTH - 0.00011,
+        );
+    }
+
+    for (rect, control) in [
+        (layout.use_map, RandomMapSetupControl::Ok0x6c5),
+        (layout.load, RandomMapSetupControl::Load0x6c2),
+        (layout.save, RandomMapSetupControl::Save0x6c3),
+        (layout.delete, RandomMapSetupControl::Delete0x6c4),
+        (layout.cancel, RandomMapSetupControl::Cancel0x5c0),
+    ] {
+        push_right_panel_button_shp(
+            out,
+            atlas,
+            rect,
+            modal.pressed_control == Some(control),
+            !modal.is_enabled(control),
+            SHELL_DROPDOWN_DEPTH - 0.00011,
+        );
+    }
+
+    push_rect_outline(
+        out,
+        atlas,
+        layout.preview,
+        OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
+        SHELL_DROPDOWN_DEPTH - 0.00012,
+    );
+
+    // The progress widgets are hidden in the resource and shown only while the
+    // synchronous generate block owns the dialog.
+    if modal.generating {
+        push_solid_rect(
+            out,
+            atlas,
+            layout.progress_bar,
+            SHELL_MODAL_PANEL_RGB,
+            SHELL_DROPDOWN_DEPTH - 0.00013,
+        );
+        push_rect_outline(
+            out,
+            atlas,
+            layout.progress_bar,
+            OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
+            SHELL_DROPDOWN_DEPTH - 0.00014,
+        );
+    }
 }
 
 pub(super) fn push_validation_modal_instances(

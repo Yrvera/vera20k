@@ -11,7 +11,7 @@ use super::super::static_reveal::StaticReveal;
 use super::trackbars::{SkirmishTrackbarBounds, trackbar_control_id, trackbar_hscroll_wparam};
 use super::{
     ChooseMapModalState, DropdownScrollDragState, DropdownScrollbarPressState, OpenComboDropdown,
-    OwnerDrawButton, SkirmishShellOpponent, SkirmishShellUiSound,
+    OwnerDrawButton, RandomMapSetupModalState, SkirmishShellOpponent, SkirmishShellUiSound,
     SkirmishTrackbarHScrollNotification, SkirmishValidationModalState, TrackbarDragState,
     default_opponents,
 };
@@ -254,6 +254,8 @@ pub struct SkirmishShellState {
     pub dropdown_scroll_press: Option<DropdownScrollbarPressState>,
     pub open_combo_dropdown: Option<OpenComboDropdown>,
     pub choose_map_modal: Option<ChooseMapModalState>,
+    /// The Create Random Map dialog, opened over the choose-map modal.
+    pub random_map_setup_modal: Option<RandomMapSetupModalState>,
     pub validation_modal: Option<SkirmishValidationModalState>,
     pub status_help_text: String,
     pub pending_trackbar_hscrolls: Vec<SkirmishTrackbarHScrollNotification>,
@@ -300,6 +302,7 @@ impl Default for SkirmishShellState {
             dropdown_scroll_press: None,
             open_combo_dropdown: None,
             choose_map_modal: None,
+            random_map_setup_modal: None,
             validation_modal: None,
             status_help_text: String::new(),
             pending_trackbar_hscrolls: Vec::new(),

@@ -39,7 +39,7 @@ use crate::ui::skirmish_shell::{
 use crate::ui::skirmish_shell::{
     ChooseMapModalLayout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
     SkirmishShellState, ValidationModalLayout, compute_choose_map_modal_layout, compute_layout,
-    compute_validation_modal_layout, player_row_visible,
+    compute_random_map_setup_layout, compute_validation_modal_layout, player_row_visible,
 };
 
 use self::chrome::*;
@@ -202,6 +202,13 @@ pub fn build_skirmish_shell_instances(
 
     if let Some(choose_map_layout) = choose_map_layout {
         push_choose_map_modal_instances(&mut instances, atlas, choose_map_layout, shell, modes);
+        // The setup dialog opens over the chooser, so it must stack on top --
+        // and inside this block, which returns before the shell body is drawn.
+        if let Some(modal) = shell.random_map_setup_modal.as_ref() {
+            let setup_layout =
+                compute_random_map_setup_layout(choose_map_layout.screen.w as u32, choose_map_layout.screen.h as u32);
+            push_random_map_setup_modal_instances(&mut instances, atlas, &setup_layout, modal);
+        }
         return instances;
     }
 
