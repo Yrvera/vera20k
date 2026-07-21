@@ -14,6 +14,42 @@ use super::choose_map::ChooseMapSelection;
 /// Sentinel meaning "no seed chosen yet"; replaced with a random one on open.
 const UNSET_SEED: i32 = -1;
 
+/// Dialog-time RNG.
+///
+/// Deliberately separate from the generator's seeded RNG: this only decides
+/// which configuration the player is offered, never the terrain, which follows
+/// from the chosen seed. Keeping it separate also means dialog draws can never
+/// perturb a stream that gameplay depends on.
+pub struct DialogRng(u32);
+
+impl DialogRng {
+    pub fn from_entropy() -> Self {
+        Self(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.subsec_nanos())
+                .unwrap_or(0x1234_5678)
+                | 1,
+        )
+    }
+}
+
+impl RandomRanged for DialogRng {
+    fn ranged(&mut self, min: i32, max: i32) -> i32 {
+        // The original swaps an inverted pair and short-circuits an empty range;
+        // no caller passes either, but match it so the helper is total.
+        let (min, max) = if max < min { (max, min) } else { (min, max) };
+        if min == max {
+            return min;
+        }
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        let span = (max - min + 1) as u32;
+        min + (self.0 % span) as i32
+    }
+}
+
 /// Which combo is currently dropped open, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupCombo {

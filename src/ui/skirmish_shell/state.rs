@@ -26,7 +26,7 @@ pub use hit_test::{
 pub use launch::{launch_session, launch_settings, pack_launch_session_without_start_validation};
 
 pub use choose_map::{ChooseMapModalState, ChooseMapSelection};
-pub use random_map_setup::{AcceptOutcome, RandomMapSetupModalState, SetupCombo};
+pub use random_map_setup::{AcceptOutcome, DialogRng, RandomMapSetupModalState, SetupCombo};
 pub use player_name::{
     PLAYER_NAME_CARET_MARGIN_PX, PLAYER_NAME_DEFAULT, PLAYER_NAME_MAX_CHARS, PlayerNameEditState,
     SkirmishShellState, accept_selected_map, blur_player_name_edit, clear_status_help_text,

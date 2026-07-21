@@ -67,6 +67,14 @@ use crate::ui::main_menu::{self, SkirmishSettings};
 use crate::ui::shell::controller::ShellKey;
 use crate::util::config::GameConfig;
 
+/// The random-map seed file the `.SED` launch branch recognises. Written into
+/// the RA2 directory so `map_load` finds it where the original puts it.
+const RANDMAP_SED_FILE: &str = "RandMap.Sed";
+/// Description the setup dialog stamps onto a randomized configuration; it also
+/// becomes the sentinel row's displayed name.
+const RANDOM_MAP_DESCRIPTION_KEY: &str = "TXT_RANDOM_MAP_DESCRIPTION";
+const RANDOM_MAP_DESCRIPTION_FALLBACK: &str = "Random Map";
+
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
 const SHELL_WINDOW_WIDTH: u32 = 800;
 const SHELL_WINDOW_HEIGHT: u32 = 600;
@@ -1327,6 +1335,9 @@ impl App {
 
         let mut selection_to_commit = None;
         let mut close_modal = false;
+        // Copied out inside the arm so the `modal` borrow ends before anything
+        // below reborrows `state`. `ChooseMapSelection` is `Copy`.
+        let mut open_random_map_setup = None;
         match released_button.expect("checked equal to pressed button") {
             crate::ui::skirmish_shell::ChooseMapModalButton::UseMap0x6c5 => {
                 selection_to_commit = modal.accept_selection();
@@ -1335,16 +1346,190 @@ impl App {
                 close_modal = true;
             }
             crate::ui::skirmish_shell::ChooseMapModalButton::CreateRandomMap0x583 => {
-                log::info!(
-                    "Create Random Map button is recognized, but random map generation is not implemented yet"
-                );
+                open_random_map_setup = Some(modal.cancel_selection());
             }
         }
         if let Some(selection) = selection_to_commit {
             close_modal = Self::commit_choose_map_selection(state, selection);
         }
+        if let Some(previous) = open_random_map_setup {
+            // The setup dialog opens OVER the chooser, which stays open behind
+            // it so a cancel returns to the untouched selection.
+            state.skirmish_shell_state.random_map_setup_modal =
+                Some(crate::ui::skirmish_shell::RandomMapSetupModalState::open(
+                    crate::map::rmg::RmgOptions::default(),
+                    Some(previous),
+                    // Saved-seed browsing (0x6C2/0x6C3/0x6C4) is not implemented.
+                    false,
+                    &mut crate::ui::skirmish_shell::DialogRng::from_entropy(),
+                ));
+        }
         if close_modal {
             Self::close_choose_map_modal(state);
+        }
+        true
+    }
+
+    /// Persist accepted random-map setup, refresh the sentinel record, and
+    /// select it so launch generates from it.
+    ///
+    /// A failed write is fatal to the commit: `map_load` treats a missing seed
+    /// file as "use defaults", so committing anyway would silently start a
+    /// different map than the one the player configured.
+    fn commit_random_map_setup(
+        state: &mut AppState,
+        options: &crate::map::rmg::RmgOptions,
+    ) -> anyhow::Result<()> {
+        let ra2_dir = state
+            .game_config
+            .as_ref()
+            .map(|config| config.paths.ra2_dir.clone())
+            .ok_or_else(|| anyhow::anyhow!("no game config; cannot locate the RA2 directory"))?;
+        std::fs::write(ra2_dir.join(RANDMAP_SED_FILE), options.to_sed_bytes())?;
+
+        let display = if options.description.is_empty() {
+            RANDOM_MAP_DESCRIPTION_FALLBACK
+        } else {
+            options.description.as_str()
+        };
+        // Reuse the modal helper: it upserts the single sentinel, honours the
+        // mode's random-map admission, and refreshes the filtered record list.
+        let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
+            return Ok(());
+        };
+        let index = modal.create_random_map(
+            &mut state.skirmish_scenario_records,
+            &state.skirmish_modes,
+            display,
+        );
+        let mode_id = modal.selected_mode_id;
+        let _ = modal;
+        if let Some(index) = index {
+            let selection = crate::ui::skirmish_shell::ChooseMapSelection {
+                mode_id,
+                record_index: Some(index),
+            };
+            let _ = Self::commit_choose_map_selection(state, selection);
+            Self::close_choose_map_modal(state);
+        }
+        Ok(())
+    }
+
+    fn skirmish_random_map_setup_layout(
+        state: &AppState,
+    ) -> crate::ui::skirmish_shell::RandomMapSetupLayout {
+        crate::ui::skirmish_shell::compute_random_map_setup_layout(
+            state.render_width(),
+            state.render_height(),
+        )
+    }
+
+    fn handle_random_map_setup_mouse_down(state: &mut AppState) -> bool {
+        let layout = Self::skirmish_random_map_setup_layout(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
+            return false;
+        };
+        if let Some(control) = crate::ui::skirmish_shell::random_map_setup_control_at(&layout, x, y)
+        {
+            // A disabled control swallows the click without arming a press, so
+            // releasing over it cannot fire.
+            if modal.is_enabled(control) {
+                modal.pressed_control = Some(control);
+                Self::play_main_menu_button_sound(state);
+            }
+            return true;
+        }
+        layout.dialog.contains(x, y)
+    }
+
+    fn handle_random_map_setup_mouse_up(state: &mut AppState) -> bool {
+        use crate::ui::skirmish_shell::RandomMapSetupControl as Control;
+
+        let layout = Self::skirmish_random_map_setup_layout(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        // RMGMD.INI drives the randomizer's vegetation bounds; without it the
+        // derived vegetation collapses to zero and randomized maps lose trees.
+        let settings = state
+            .asset_manager
+            .as_ref()
+            .map(crate::map::rmg::RmgSettings::load)
+            .unwrap_or_default();
+        let description = state
+            .csf
+            .as_ref()
+            .and_then(|csf| csf.get(RANDOM_MAP_DESCRIPTION_KEY))
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| RANDOM_MAP_DESCRIPTION_FALLBACK.to_string());
+        let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
+            return false;
+        };
+        let pressed = modal.pressed_control.take();
+        let released = crate::ui::skirmish_shell::random_map_setup_control_at(&layout, x, y);
+        if pressed.is_none() || pressed != released {
+            return layout.dialog.contains(x, y) || pressed.is_some();
+        }
+
+        let mut commit_options = None;
+        let mut close_setup = false;
+        match released.expect("checked equal to pressed control") {
+            Control::Randomize0x621 => {
+                modal.randomize_options(
+                    &settings,
+                    &mut crate::ui::skirmish_shell::DialogRng::from_entropy(),
+                    &description,
+                );
+            }
+            Control::Generate0x620 => {
+                // v1 runs no generator here: the launch path regenerates from
+                // the seed, and the preview box is not drawn yet.
+                modal.begin_generate();
+                modal.finish_generate();
+            }
+            Control::Ok0x6c5 => {
+                if matches!(
+                    modal.accept(),
+                    crate::ui::skirmish_shell::AcceptOutcome::NeedsGenerate
+                ) {
+                    modal.begin_generate();
+                    modal.finish_generate();
+                }
+                if let crate::ui::skirmish_shell::AcceptOutcome::Commit(options) = modal.accept() {
+                    commit_options = Some(options);
+                }
+            }
+            Control::Cancel0x5c0 => {
+                // Result 2 in the original: no seed file, no sentinel, no
+                // selection change. The chooser underneath is left untouched.
+                close_setup = true;
+            }
+            // Saved-seed load/save/delete is a separate feature; the buttons are
+            // drawn for parity but do nothing yet.
+            Control::Load0x6c2 | Control::Save0x6c3 | Control::Delete0x6c4 => {}
+            // Combo and trackbar editing is not wired yet.
+            Control::MapType0x405
+            | Control::Time0x3ea
+            | Control::Theater0x407
+            | Control::Size0x406
+            | Control::Resources0x408
+            | Control::Players0x3eb => {}
+        }
+
+        if let Some(options) = commit_options {
+            match Self::commit_random_map_setup(state, &options) {
+                Ok(()) => close_setup = true,
+                Err(err) => {
+                    // Staying open is deliberate: a missing seed file makes the
+                    // launch path fall back to defaults, which would silently
+                    // start a different map than the one configured.
+                    log::error!("random map: could not write {RANDMAP_SED_FILE}: {err}");
+                }
+            }
+        }
+        if close_setup {
+            state.skirmish_shell_state.random_map_setup_modal = None;
         }
         true
     }
@@ -1560,6 +1745,11 @@ impl App {
         if Self::route_validation_modal_mouse_down(state) {
             return;
         }
+        // The setup dialog sits on top of the chooser, so it takes input first.
+        if state.skirmish_shell_state.random_map_setup_modal.is_some() {
+            Self::handle_random_map_setup_mouse_down(state);
+            return;
+        }
         if Self::handle_choose_map_modal_mouse_down(state) {
             return;
         }
@@ -1609,6 +1799,11 @@ impl App {
 
     fn handle_skirmish_shell_mouse_up(state: &mut AppState, event_loop: &ActiveEventLoop) {
         if Self::route_validation_modal_mouse_up(state) {
+            return;
+        }
+        // The setup dialog sits on top of the chooser, so it takes input first.
+        if state.skirmish_shell_state.random_map_setup_modal.is_some() {
+            Self::handle_random_map_setup_mouse_up(state);
             return;
         }
         if state.skirmish_shell_state.choose_map_modal.is_some() {

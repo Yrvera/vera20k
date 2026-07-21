@@ -252,6 +252,35 @@ mod tests {
     use super::*;
     use crate::skirmish_modes::stock_skirmish_modes;
 
+    #[test]
+    fn upserting_the_random_map_sentinel_keeps_exactly_one_row() {
+        // Accepting Create Random Map twice must refresh the existing row, not
+        // append a second one.
+        let mut records = Vec::new();
+        let first = upsert_random_map_sentinel(&mut records, "Random Map");
+        let second = upsert_random_map_sentinel(&mut records, "Random Map");
+        assert_eq!(first, second, "the sentinel is updated, never duplicated");
+
+        let sentinels = records
+            .iter()
+            .filter(|record| record.kind == SkirmishScenarioKind::RandomMapSentinel)
+            .count();
+        assert_eq!(sentinels, 1);
+
+        let sentinel = &records[first];
+        assert_eq!(sentinel.file_name, RANDMAP_SED);
+        assert!(sentinel.official, "the original constructs it official");
+        // Current repo behaviour. The binary's record constructor passes 2 and 4
+        // into +0x180/+0x184, but nothing reads those two fields when deciding a
+        // player count - MPGameOptions__GetScenarioPlayerCount reads
+        // [RandomMap] NumPlayers from the .SED instead - so the wider range here
+        // is what the dialog's 2..8 trackbar actually produces.
+        assert_eq!(
+            (sentinel.min_players, sentinel.max_players),
+            (Some(RANDOM_MAP_MIN_PLAYERS), Some(RANDOM_MAP_MAX_PLAYERS))
+        );
+    }
+
     fn mode(id: i32) -> SkirmishGameMode {
         stock_skirmish_modes()
             .into_iter()

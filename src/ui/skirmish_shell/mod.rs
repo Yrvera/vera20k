@@ -33,7 +33,7 @@ pub use layout::{
 };
 pub use state::{
     AcceptOutcome, ChooseMapHoverTarget, ChooseMapModalState, ChooseMapSelection,
-    DropdownScrollDragState, RandomMapSetupModalState, SetupCombo,
+    DialogRng, DropdownScrollDragState, RandomMapSetupModalState, SetupCombo,
     DropdownScrollbarPart, DropdownScrollbarPressState, OpenComboDropdown, OwnerDrawButton,
     PLAYER_NAME_CARET_MARGIN_PX, PLAYER_NAME_DEFAULT, PLAYER_NAME_MAX_CHARS, PlayerNameEditState,
     SkirmishAiRowType, SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice,
