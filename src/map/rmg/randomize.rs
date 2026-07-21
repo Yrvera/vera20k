@@ -69,6 +69,38 @@ pub fn derive_from_map_type(
     options.seed = rng.ranged(0, 0xFFFF);
 }
 
+/// Theater draw threshold: values above this select the second theater, so the
+/// randomizer only ever produces the first two theaters.
+const THEATER_THRESHOLD: i32 = 0x31;
+
+/// Randomize the option set the way the dialog's Surprise Me button does.
+///
+/// Draw order: theater, map type, time, resources, size, then the derived
+/// fields, then a second seed draw that supersedes the one the derived pass
+/// wrote. Both seed draws consume the stream.
+pub fn randomize(
+    options: &mut RmgOptions,
+    settings: &RmgSettings,
+    rng: &mut impl RandomRanged,
+    description: &str,
+) {
+    options.theater = i32::from(rng.ranged(0, 100) > THEATER_THRESHOLD);
+    options.map_type = rng.ranged(1, 4);
+    options.time = rng.ranged(0, 3);
+    options.resources = rng.ranged(0, 3);
+    // One draw drives both size axes.
+    let size = rng.ranged(0, 3);
+    options.width = size;
+    options.height = size;
+
+    derive_from_map_type(options, settings, rng);
+
+    options.description = description.to_string();
+    options.seed = rng.ranged(0, 0xFFFF);
+
+    options.normalize();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +206,82 @@ mod tests {
         let mut rng = ScriptedRng::new(vec![0; 8]);
         derive_from_map_type(&mut options, &RmgSettings::default(), &mut rng);
         assert_eq!(rng.calls[0], (WATER_MIN[4], WATER_MAX[4]));
+    }
+
+    #[test]
+    fn randomize_only_ever_picks_the_first_two_theaters() {
+        for value in 0..=100 {
+            let mut options = RmgOptions::default();
+            let mut rng = ScriptedRng::new(vec![value, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            randomize(&mut options, &RmgSettings::default(), &mut rng, "");
+            assert!(
+                options.theater == 0 || options.theater == 1,
+                "theater {} out of range for draw {value}",
+                options.theater
+            );
+        }
+    }
+
+    #[test]
+    fn randomize_theater_flips_above_the_threshold() {
+        let theater_for = |first: i32| {
+            let mut options = RmgOptions::default();
+            let mut rng = ScriptedRng::new(vec![first, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            randomize(&mut options, &RmgSettings::default(), &mut rng, "");
+            options.theater
+        };
+        assert_eq!(theater_for(0x31), 0, "at the threshold stays on theater 0");
+        assert_eq!(theater_for(0x32), 1, "just above the threshold flips");
+    }
+
+    #[test]
+    fn randomize_writes_both_size_axes_from_one_draw() {
+        let mut options = RmgOptions::default();
+        let mut rng = ScriptedRng::new(vec![0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        randomize(&mut options, &RmgSettings::default(), &mut rng, "");
+        assert_eq!((options.width, options.height), (2, 2));
+        assert_eq!(rng.calls[4], (0, 3), "size is a single 0..3 draw");
+    }
+
+    #[test]
+    fn randomize_draws_the_seed_twice() {
+        let mut options = RmgOptions::default();
+        let mut rng = ScriptedRng::new(vec![0; 16]);
+        randomize(&mut options, &RmgSettings::default(), &mut rng, "");
+        let seed_draws = rng
+            .calls
+            .iter()
+            .filter(|call| **call == (0, 0xFFFF))
+            .count();
+        assert_eq!(
+            seed_draws, 2,
+            "derived pass and the button each draw a seed"
+        );
+        // 5 button draws + 8 derived draws + 1 final seed draw.
+        assert_eq!(rng.calls.len(), 14);
+    }
+
+    #[test]
+    fn randomize_draws_time_before_resources() {
+        let mut options = RmgOptions::default();
+        // theater, map type, time=2, resources=1, size
+        let mut rng = ScriptedRng::new(vec![0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        randomize(&mut options, &RmgSettings::default(), &mut rng, "");
+        assert_eq!(options.time, 2);
+        assert_eq!(options.resources, 1);
+    }
+
+    #[test]
+    fn randomize_sets_the_description_and_normalizes() {
+        let mut options = RmgOptions::default();
+        let mut rng = ScriptedRng::new(vec![0; 16]);
+        randomize(
+            &mut options,
+            &RmgSettings::default(),
+            &mut rng,
+            "Random Map",
+        );
+        assert_eq!(options.description, "Random Map");
+        assert!(options.tiberium >= 1, "normalize floors tiberium at 1");
     }
 }
