@@ -8,7 +8,9 @@
 
 use std::collections::BTreeMap;
 
-use super::{SimSoundEvent, Simulation};
+use super::{
+    PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, SimSoundEvent, Simulation,
+};
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::object_type::ObjectCategory;
@@ -238,7 +240,8 @@ impl Simulation {
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.foundation = obj.foundation.clone();
             }
-            self.unlimbo(ge);
+            let (_, outcome) = self.unlimbo(ge);
+            debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
             count += 1;
         }
 
@@ -393,7 +396,9 @@ impl Simulation {
         }
 
         ge.foundation = obj.foundation.clone();
-        Some(self.unlimbo(ge))
+        let (stable_id, outcome) = self.unlimbo(ge);
+        debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+        Some(stable_id)
     }
 
     /// Create an object in limbo: stored in EntityStore and owner counts, but
@@ -527,26 +532,23 @@ impl Simulation {
         Some(self.create_limbo(ge))
     }
 
-    /// Shared spawn placement. Inserts the entity, then either reveals + occupies
-    /// it (active spawn) or leaves it in limbo. Preserves the exact pre-collapse
-    /// step order (`insert -> reveal -> increment -> occupancy`) so the replay hash
-    /// is bit-identical (pure no-op collapse). Returns the stable id.
-    ///
-    /// `active=true` reproduces the old active 4-step; `active=false` reproduces the
-    /// limbo fork. A later slice adopts the native mark-before-register order — do
-    /// NOT swap occupancy ahead of reveal here.
-    fn place_spawned(&mut self, ge: GameEntity, active: bool) -> u64 {
+    /// Store a freshly constructed object in native-style limbo and account for
+    /// its owner. Placement is a separate, result-bearing Reveal transaction.
+    fn store_spawned_limbo(&mut self, mut ge: GameEntity) -> u64 {
         let stable_id = ge.stable_id;
         let owner = self.interner.resolve(ge.owner).to_string();
         let category = ge.category;
+
+        // This boundary receives newly constructed objects. Make those constructor
+        // facts explicit so storage can never imply cell or logic presence.
+        ge.lifecycle.object_alive = true;
+        ge.lifecycle.in_limbo = true;
+        ge.lifecycle.cell_marked = false;
+        ge.in_logic_vector = false;
+        ge.owned_count_released = false;
+
         self.substrate.entities.insert(ge);
-        if active {
-            self.reveal(stable_id);
-            self.increment_owned_count(&owner, category);
-            self.add_entity_occupancy(stable_id);
-        } else {
-            self.increment_owned_count(&owner, category);
-        }
+        self.increment_owned_count(&owner, category);
         stable_id
     }
 
@@ -554,16 +556,31 @@ impl Simulation {
     /// but NOT registered in the active order or map occupancy. Registration
     /// happens later at reveal/landing (e.g. paradrop drop). Returns the stable id.
     pub(crate) fn create_limbo(&mut self, ge: GameEntity) -> u64 {
-        self.place_spawned(ge, false)
+        self.store_spawned_limbo(ge)
     }
 
-    /// Spawn an object and place it on the playfield in one step: insert, reveal
-    /// (active-object order), increment owner counts, and register map occupancy —
-    /// in that exact order. Returns the stable id. This is the active counterpart
-    /// to [`Self::create_limbo`]; the two differ only by whether reveal+occupancy
-    /// run.
-    pub(crate) fn unlimbo(&mut self, ge: GameEntity) -> u64 {
-        self.place_spawned(ge, true)
+    /// Store a new object, then place it through ObjectClass-style Reveal:
+    /// coordinates commit, Mark(PUT) owns occupancy, and eligible logic
+    /// registration happens last. The stored object remains addressable if a
+    /// future caller-supplied placement result makes Reveal fail.
+    pub(crate) fn unlimbo(&mut self, ge: GameEntity) -> (u64, RevealOutcome) {
+        let position = RevealPosition {
+            rx: ge.position.rx,
+            ry: ge.position.ry,
+            z: ge.position.z,
+            sub_x: ge.position.sub_x,
+            sub_y: ge.position.sub_y,
+        };
+        let stable_id = self.store_spawned_limbo(ge);
+        let outcome = self.try_reveal_entity(
+            stable_id,
+            RevealRequest {
+                position,
+                placement: PlacementEvidence::MarkSucceeded,
+                logic_eligible: true,
+            },
+        );
+        (stable_id, outcome)
     }
 
     /// Update VoxelAnimation frame_counts for all voxel entities from atlas data.

@@ -16,7 +16,99 @@ pub use receive::{
 };
 
 use crate::map::entities::EntityCategory;
+#[cfg(test)]
+use crate::sim::world::LifecycleTestEvent;
 use crate::sim::world::Simulation;
+
+#[cfg(test)]
+use std::cell::RefCell;
+
+/// Ordered radio boundaries exposed only to crate tests.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RadioTestEvent {
+    BroadcastSlotRead {
+        sender_sid: u64,
+        slot: usize,
+        target_sid: Option<u64>,
+    },
+    SenderBreakCleared {
+        sender_sid: u64,
+        target_sid: u64,
+    },
+    ReceiverClassEffect {
+        receiver_sid: u64,
+        sender_sid: u64,
+    },
+    ReceiverCommonCleared {
+        receiver_sid: u64,
+        sender_sid: u64,
+    },
+}
+
+#[cfg(test)]
+thread_local! {
+    static RADIO_TEST_TRACE: RefCell<Vec<RadioTestEvent>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_trace() {
+    RADIO_TEST_TRACE.with(|trace| trace.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn take_test_trace() -> Vec<RadioTestEvent> {
+    RADIO_TEST_TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
+}
+
+#[cfg(test)]
+fn record_test_event(event: RadioTestEvent) {
+    RADIO_TEST_TRACE.with(|trace| trace.borrow_mut().push(event));
+}
+
+/// Send BREAK synchronously to every live contact before Techno Conceal.
+///
+/// Only the capacity is captured. Each sparse slot is re-read immediately
+/// before dispatch so mutations made by an earlier receiver are visible to the
+/// remaining ascending-slot walk, matching `Broadcast_Radio_ToAll @ 0x0065ACE0`.
+/// No entity borrow is held across [`transmit`].
+pub(crate) fn broadcast_break(sim: &mut Simulation, sender_sid: u64) {
+    let capacity = sim
+        .substrate
+        .entities
+        .get(sender_sid)
+        .map_or(0, |sender| sender.radio_contacts.capacity());
+
+    for slot in 0..capacity {
+        let target_sid = sim
+            .substrate
+            .entities
+            .get(sender_sid)
+            .and_then(|sender| sender.radio_contacts.slot(slot));
+
+        #[cfg(test)]
+        record_test_event(RadioTestEvent::BroadcastSlotRead {
+            sender_sid,
+            slot,
+            target_sid,
+        });
+        #[cfg(test)]
+        sim.trace_lifecycle_for_test(LifecycleTestEvent::BreakSlot {
+            slot,
+            target: target_sid,
+        });
+
+        if let Some(target_sid) = target_sid {
+            transmit(
+                sim,
+                sender_sid,
+                target_sid,
+                RadioMessage::Break,
+                RadioPayload::default(),
+            );
+        }
+    }
+}
 
 /// Synchronous radio RPC (§5.2.1). Centralizes the HELLO/BREAK sender-side
 /// contact bookkeeping (already-linked ⇒ ROGER without re-dispatch; on ROGER
@@ -97,6 +189,15 @@ fn transmit_break(sim: &mut Simulation, sender_sid: u64, target_sid: u64, filter
     if let Some(sender) = sim.substrate.entities.get_mut(sender_sid) {
         while sender.radio_contacts.remove(target_sid).is_some() {}
     }
+
+    #[cfg(test)]
+    record_test_event(RadioTestEvent::SenderBreakCleared {
+        sender_sid,
+        target_sid,
+    });
+    #[cfg(test)]
+    sim.trace_lifecycle_for_test(LifecycleTestEvent::BreakSenderCleared { target: target_sid });
+
     receive_radio(
         sim,
         target_sid,

@@ -164,28 +164,31 @@ impl BuildingGateRuntime {
     }
 }
 
-/// Authoritative-shadow lifecycle state of an object (the substrate `Presence`
-/// FSM, Slice 2). Mirrors the single InLimbo bit: an object is either in the
-/// active set (`InCell`) or out of it (`Limbo`). `Dying` is set during teardown
-/// after conceal and persists in the store until the end-of-tick deferred-delete
-/// drain frees the slot (Slice 6) — during that window the entity is resolvable by
-/// id but off occupancy + off the logic vector, excluded from all live systems.
+/// Independent ObjectClass lifecycle facts.
 ///
-/// In this slice `presence` *shadows* the old gates (`in_logic_vector` + store
-/// membership) — those stay authoritative — and a debug assert proves the two
-/// never disagree. Not serialized (`#[serde(skip)]` on the field); rebuilt on
-/// load from the restored active order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum Presence {
-    /// Out of the active set: born-in-limbo, concealed, or loaded as cargo. The
-    /// default for a freshly constructed entity (born InLimbo).
-    #[default]
-    Limbo,
-    /// In the active-object set and placed on the playfield (`in_logic_vector`).
-    InCell,
-    /// Teardown in progress — set after conceal; persists in-store until the
-    /// end-of-tick deferred-delete drain frees the slot.
-    Dying,
+/// These bytes deliberately do not derive from health, store presence, cell
+/// occupancy, LogicVector membership, or the Rust death-sequence state. Active
+/// gamemd keeps those concerns independent, including alive objects that are in
+/// limbo, active objects that are temporarily off-cell, and dead-limbo objects
+/// that remain resolvable until the pending-delete drain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ObjectLifecycle {
+    /// ObjectClass native-alive state (`ObjectClass+0x90` analogue).
+    pub object_alive: bool,
+    /// ObjectClass InLimbo state. This is independent of LogicVector membership.
+    pub in_limbo: bool,
+    /// Whether Mark/cell-list insertion currently owns cell membership.
+    pub cell_marked: bool,
+}
+
+impl Default for ObjectLifecycle {
+    fn default() -> Self {
+        Self {
+            object_alive: true,
+            in_limbo: true,
+            cell_marked: false,
+        }
+    }
 }
 
 /// Unified entity struct — replaces all hecs ECS components.
@@ -250,16 +253,22 @@ pub struct GameEntity {
     pub repairing: bool,
     /// LogicClass active-vector membership — mirrors gamemd ObjectClass+0x98.
     /// True iff this entity is currently in `Simulation::logic`. Not serialized:
-    /// rebuilt from the restored order on load (native does not round-trip it).
+    /// Rust snapshots rebuild it from the serialized LogicVector order. Exact
+    /// native save/load reconstruction remains unverified.
     #[serde(skip)]
     pub in_logic_vector: bool,
-    /// Substrate lifecycle shadow (Slice 2). Tracks `Limbo | InCell | Dying`.
-    /// Authoritative gates remain `in_logic_vector` + store membership; this
-    /// field rides alongside them and a per-tick debug assert proves they agree.
-    /// Not serialized (rebuilt from the restored active order on load), and NOT
-    /// hashed (non-authoritative this slice).
-    #[serde(skip)]
-    pub presence: Presence,
+    /// Independent, serialized ObjectClass lifecycle facts.
+    #[serde(default)]
+    pub lifecycle: ObjectLifecycle,
+    /// Explicit represented type fact for the native type `+0xAC` tactical-dirty
+    /// branch. False unless a caller has positive evidence; never inferred from
+    /// category or render representation.
+    #[serde(default)]
+    pub dirty_rect_eligible: bool,
+    /// Rust bookkeeping that makes the represented owner-count decrement
+    /// exactly-once. This does not stand in for native-alive or `dying`.
+    #[serde(default)]
+    pub owned_count_released: bool,
     /// Monotonic order of the last successful insertion into a CellClass-style
     /// object list. Serialized because `OccupancyGrid` is a rebuilt cache; this
     /// is the authoritative fact needed to reconstruct its linked-list order.
@@ -533,24 +542,6 @@ pub struct GameEntity {
 }
 
 impl GameEntity {
-    /// Ground-truth presence derived from the authoritative gates. A unit in the
-    /// active set is `InCell` (this includes a dying-but-animating unit, which
-    /// keeps ticking and stays in its cell until teardown); otherwise `Limbo`.
-    /// `Dying` is never *derived* here — it is set imperatively during `uninit`
-    /// (which also enqueues the slot for the end-of-tick drain). It cannot be
-    /// derived from `GameEntity` fields: `dying && !in_logic_vector` is shared by
-    /// a uninit'd corpse (field `Dying`) and a concealed-dead object mid-teardown
-    /// (field `Limbo`); only `pending_delete` membership tells them apart, and
-    /// that lives on the substrate. The presence invariant for surviving corpses
-    /// is therefore handled at the substrate-aware assert, not here.
-    pub fn derived_presence(&self) -> Presence {
-        if self.in_logic_vector {
-            Presence::InCell
-        } else {
-            Presence::Limbo
-        }
-    }
-
     /// Ground-truth current mission + sub-phase derived from the authoritative
     /// `Option<T>` machines. Priority: miner → aircraft → dock → attack → move →
     /// idle. The `mission` component's `current`/`substate` are refreshed from
@@ -649,7 +640,9 @@ impl GameEntity {
             selected: false,
             repairing: false,
             in_logic_vector: false,
-            presence: Presence::Limbo,
+            lifecycle: ObjectLifecycle::default(),
+            dirty_rect_eligible: false,
+            owned_count_released: false,
             occupancy_enter_order: stable_id,
             locomotor: None,
             movement_target: None,
@@ -846,15 +839,18 @@ impl GameEntity {
         self.health.current > 0
     }
 
-    /// Whether this entity is an active (non-corpse) object — the native
-    /// `IsAlive`-equivalent gate for mid-tick raw-store consumers. `false` once
-    /// `uninit` has flagged it `dying` (it then lingers in the store, off the
-    /// logic vector and occupancy grid, until the end-of-tick deferred-delete
-    /// drain). Distinct from `is_alive()` (health-based): a sold or captured
-    /// structure keeps its health but is `dying`, so vision/power/production/
-    /// movement scans must use THIS, not `health.current > 0`, to exclude it.
+    /// Whether ObjectClass native-alive state is set. This is intentionally
+    /// independent from health and the Rust death-sequence state.
+    pub fn is_object_alive(&self) -> bool {
+        self.lifecycle.object_alive
+    }
+
+    /// Transitional Rust system gate until ordinary Infantry lifecycle authority
+    /// migrates. Distinct from both health-based `is_alive()` and native-alive
+    /// `is_object_alive()`; death-sequence state still suppresses current raw-store
+    /// consumers even while ObjectClass native-alive remains set.
     pub fn is_active(&self) -> bool {
-        !self.dying
+        self.lifecycle.object_alive && !self.dying
     }
 
     /// Whether this entity is in any deploy phase (Deploying, Deployed, or Undeploying).
@@ -1079,27 +1075,34 @@ mod tests {
 }
 
 #[cfg(test)]
-mod presence_tests {
+mod lifecycle_tests {
     use super::*;
 
     #[test]
-    fn derived_presence_tracks_active_membership() {
+    fn lifecycle_authority_state_axes_are_independent() {
         let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
-        // Born in limbo: not yet in the active set.
+        assert_eq!(e.lifecycle, ObjectLifecycle::default());
         assert!(!e.in_logic_vector);
-        assert_eq!(e.derived_presence(), Presence::Limbo);
+        assert!(!e.dirty_rect_eligible);
+        assert!(!e.owned_count_released);
 
-        // Joins the active set.
-        e.in_logic_vector = true;
-        assert_eq!(e.derived_presence(), Presence::InCell);
+        // Exercise every combination without deriving one fact from another.
+        for bits in 0u8..64 {
+            e.lifecycle.object_alive = bits & 0b00_0001 != 0;
+            e.lifecycle.in_limbo = bits & 0b00_0010 != 0;
+            e.lifecycle.cell_marked = bits & 0b00_0100 != 0;
+            e.in_logic_vector = bits & 0b00_1000 != 0;
+            e.dying = bits & 0b01_0000 != 0;
+            e.health.current = if bits & 0b10_0000 != 0 { 1 } else { 0 };
 
-        // A dying-but-animating unit stays active → still InCell (dying ignored).
-        e.dying = true;
-        assert_eq!(e.derived_presence(), Presence::InCell);
-
-        // Leaves the active set.
-        e.in_logic_vector = false;
-        assert_eq!(e.derived_presence(), Presence::Limbo);
+            assert_eq!(e.is_object_alive(), bits & 0b00_0001 != 0);
+            assert_eq!(e.lifecycle.in_limbo, bits & 0b00_0010 != 0);
+            assert_eq!(e.lifecycle.cell_marked, bits & 0b00_0100 != 0);
+            assert_eq!(e.in_logic_vector, bits & 0b00_1000 != 0);
+            assert_eq!(e.dying, bits & 0b01_0000 != 0);
+            assert_eq!(e.is_alive(), bits & 0b10_0000 != 0);
+            assert_eq!(e.is_active(), e.lifecycle.object_alive && !e.dying,);
+        }
     }
 }
 

@@ -106,7 +106,12 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// tick equality and the absolute RNG pins also remained unchanged. This shift
 /// is therefore composition-only and remains a Rust regression ratchet, not
 /// gamemd parity evidence.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 1952953649455887606;
+/// Re-baselined for snapshot/hash schema v28: independent lifecycle axes,
+/// lifecycle bookkeeping, and ordered pending deletion now join the hash. The
+/// current-tree legacy-schema probe reproduces the prior value, record/replay
+/// equality remains exact, and all three absolute RNG pins are unchanged.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 1952953649455887606;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 5770877639486444278;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -376,6 +381,11 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
         );
     }
 
+    assert_eq!(
+        rep.state_hash_without_lifecycle_v28(),
+        GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
+        "pre-v28 schema probe must reproduce the prior baseline; otherwise this is behavior drift"
+    );
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,
         "committed global-harness baseline drifted. Do not copy the observed value: \

@@ -28,6 +28,7 @@ pub mod economy; // per-house wallet/storage/statistics value-type (production+e
 pub mod entity_store;
 pub mod game_entity;
 pub mod intern;
+pub(crate) mod lifecycle_request;
 pub mod rng;
 pub mod scenario_session; // app->sim launch descriptor (per-match seed pipeline)
 pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution

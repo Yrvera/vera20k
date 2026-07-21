@@ -61,6 +61,18 @@ impl Simulation {
     /// Hashes clocks, all three RNG streams, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
+        self.state_hash_with_lifecycle_v28(true)
+    }
+
+    /// Test-only provenance probe for lifecycle-v28 hash rebaselines. This
+    /// executes the current simulation and omits only the fields introduced by
+    /// the lifecycle/pending-queue hash schema change.
+    #[cfg(test)]
+    pub(crate) fn state_hash_without_lifecycle_v28(&self) -> u64 {
+        self.state_hash_with_lifecycle_v28(false)
+    }
+
+    fn state_hash_with_lifecycle_v28(&self, include_lifecycle_v28: bool) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
         self.session.tick.hash(&mut hasher);
@@ -85,6 +97,16 @@ impl Simulation {
             id.hash(&mut hasher);
         }
 
+        if include_lifecycle_v28 {
+            // PendingDeleteList is an independent ordered substrate fact. The
+            // length delimiter distinguishes queue boundaries before the ordered
+            // IDs are folded (duplicates are intentionally preserved here).
+            self.substrate.pending_delete.len().hash(&mut hasher);
+            for id in &self.substrate.pending_delete {
+                id.hash(&mut hasher);
+            }
+        }
+
         self.hash_game_options(&mut hasher);
         self.hash_houses(&mut hasher);
         self.hash_production(&mut hasher);
@@ -95,7 +117,7 @@ impl Simulation {
         self.hash_smudge_grid(&mut hasher);
         self.hash_radiation(&mut hasher);
         self.hash_super_weapons(&mut hasher);
-        self.hash_entities(&mut hasher);
+        self.hash_entities(&mut hasher, include_lifecycle_v28);
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
         self.hash_session_identity(&mut hasher);
@@ -521,10 +543,20 @@ impl Simulation {
 
     /// Hash all entity components in stable-entity-ID order.
     /// BTreeMap iterates in key order (= stable_id), so no manual sort needed.
-    fn hash_entities(&self, hasher: &mut impl Hasher) {
+    fn hash_entities(&self, hasher: &mut impl Hasher, include_lifecycle_v28: bool) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
             entity.occupancy_enter_order.hash(hasher);
+            if include_lifecycle_v28 {
+                // Independent lifecycle axes and deterministic Rust bookkeeping.
+                // Keep this order fixed: it is part of the lockstep hash contract.
+                entity.lifecycle.object_alive.hash(hasher);
+                entity.lifecycle.in_limbo.hash(hasher);
+                entity.lifecycle.cell_marked.hash(hasher);
+                entity.dying.hash(hasher);
+                entity.dirty_rect_eligible.hash(hasher);
+                entity.owned_count_released.hash(hasher);
+            }
             entity.position.rx.hash(hasher);
             entity.position.ry.hash(hasher);
             entity.position.z.hash(hasher);
@@ -797,6 +829,61 @@ impl Simulation {
             id.hash(hasher);
             anim.hash(hasher);
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_hash_tests {
+    use super::Simulation;
+    use crate::sim::game_entity::GameEntity;
+
+    fn assert_entity_mutation_changes_hash(mutate: impl FnOnce(&mut GameEntity)) {
+        let mut sim = Simulation::new();
+        sim.substrate
+            .entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        let before = sim.state_hash();
+        mutate(sim.substrate.entities.get_mut(1).expect("fixture entity"));
+        assert_ne!(before, sim.state_hash());
+    }
+
+    #[test]
+    fn lifecycle_authority_each_axis_changes_state_hash() {
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.lifecycle.object_alive = !entity.lifecycle.object_alive;
+        });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.lifecycle.in_limbo = !entity.lifecycle.in_limbo;
+        });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.lifecycle.cell_marked = !entity.lifecycle.cell_marked;
+        });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.dying = !entity.dying;
+        });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.dirty_rect_eligible = !entity.dirty_rect_eligible;
+        });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.owned_count_released = !entity.owned_count_released;
+        });
+    }
+
+    #[test]
+    fn lifecycle_authority_pending_queue_order_and_length_change_state_hash() {
+        let mut empty = Simulation::new();
+        let empty_hash = empty.state_hash();
+
+        empty.substrate.pending_delete.push(1);
+        let one_hash = empty.state_hash();
+        empty.substrate.pending_delete.push(2);
+        let ordered_hash = empty.state_hash();
+        empty.substrate.pending_delete.swap(0, 1);
+        let reversed_hash = empty.state_hash();
+
+        assert_ne!(empty_hash, one_hash);
+        assert_ne!(one_hash, ordered_hash);
+        assert_ne!(ordered_hash, reversed_hash);
     }
 }
 
@@ -1255,6 +1342,17 @@ mod radio_contact_hash_tests {
         let survivor_b = vehicle_entity(&mut never_contacted, 2);
         never_contacted.substrate.entities.insert(removed_b);
         never_contacted.substrate.entities.insert(survivor_b);
+
+        for id in [1, 2] {
+            assert!(matches!(
+                with_stale_contact.reveal(id),
+                crate::sim::world::RevealOutcome::Revealed { .. }
+            ));
+            assert!(matches!(
+                never_contacted.reveal(id),
+                crate::sim::world::RevealOutcome::Revealed { .. }
+            ));
+        }
 
         with_stale_contact.despawn_entity(1);
         never_contacted.despawn_entity(1);

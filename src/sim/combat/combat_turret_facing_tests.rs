@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::AttackTarget;
+use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::InternedId;
 use crate::sim::movement::FacingClass;
@@ -458,8 +458,8 @@ fn kill_tick_unit_facing_holds_target() {
     // THE S3 fidelity pin: a unit whose target dies from this tick's fire
     // keeps aiming at it this tick (gamemd: the munition is deferred and the
     // bullet's AI runs after the firing unit's pass, so Facing_Update reads a
-    // live TarCom on the kill tick). The destination is read in the P2 window
-    // even though the batch clears attack_target before the apply site runs.
+    // live TarCom on the kill tick). Lethal damage must not run the later
+    // Object UnInit pointer-expiry listener stage early.
     let mut sim = Simulation::new();
     spawn_turreted(&mut sim, 1, 5, 5, 100);
     spawn_target(&mut sim, 2, 5, 8);
@@ -500,8 +500,9 @@ fn kill_tick_unit_facing_holds_target() {
             .get(1)
             .unwrap()
             .attack_target
-            .is_none(),
-        "precondition: the death batch cleared the attacker's target before the apply site"
+            .as_ref()
+            .is_some_and(|target| matches!(target.target, TargetKind::Entity(2))),
+        "lethal damage must retain the target until the UnInit listener stage"
     );
 }
 
@@ -598,8 +599,8 @@ fn facing_apply_point_equivalence_no_kill() {
 fn co_attacker_facing_matches_killer() {
     // Two attackers on one target; the killer's shot lands this tick. The
     // co-attacker's barrel destination this tick must ALSO hold the dying
-    // target's facing (its facing read happens in the per-object window,
-    // before the death batch clears co-attacker targets).
+    // target's facing (its facing read happens in the per-object window, and
+    // lethal damage does not run UnInit pointer-expiry listeners early).
     let mut sim = Simulation::new();
     spawn_turreted(&mut sim, 1, 5, 5, 100); // killer
     spawn_turreted(&mut sim, 3, 8, 8, 100); // co-attacker (out of its own ROF this tick)
@@ -633,8 +634,10 @@ fn co_attacker_facing_matches_killer() {
     );
     let co = sim.substrate.entities.get(3).unwrap();
     assert!(
-        co.attack_target.is_none(),
-        "precondition: the death batch cleared the co-attacker's target"
+        co.attack_target
+            .as_ref()
+            .is_some_and(|target| matches!(target.target, TargetKind::Entity(2))),
+        "co-attacker target remains until the UnInit listener stage"
     );
     assert_eq!(
         co.barrel_facing.as_ref().unwrap().destination(),

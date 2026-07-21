@@ -134,6 +134,7 @@ fn spawn_engineer(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
         false,
     );
     sim.substrate.entities.insert(e);
+    assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
     id
 }
 
@@ -160,6 +161,7 @@ fn spawn_seal(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
         false,
     );
     sim.substrate.entities.insert(e);
+    assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
     id
 }
 
@@ -186,6 +188,7 @@ fn spawn_cabhut(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
         false,
     );
     sim.substrate.entities.insert(e);
+    assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
     id
 }
 

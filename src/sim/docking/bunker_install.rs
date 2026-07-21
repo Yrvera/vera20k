@@ -353,7 +353,8 @@ fn start_install_force_track(
 mod tests {
     use super::*;
     use crate::sim::components::Health;
-    use crate::sim::game_entity::{GameEntity, Presence};
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::world::RevealOutcome;
 
     fn rules() -> RuleSet {
         RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
@@ -435,8 +436,7 @@ mod tests {
         let rules = rules();
         spawn_bunker(&mut sim, 2);
         spawn_tank_on(&mut sim, 1, 10, 10); // already on the anchor cell
-        sim.reveal(1);
-        sim.add_entity_occupancy(1);
+        assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
         sim.substrate.entities.get_mut(1).unwrap().bunker_link = BunkerLink::Approaching(2);
         set_state(&mut sim, 2, BunkerState::ArriveWait, Some(1));
 
@@ -474,10 +474,10 @@ mod tests {
             !sim.substrate.entities.get(1).unwrap().in_logic_vector,
             "installed unit is hidden"
         );
-        assert_eq!(
-            sim.substrate.entities.get(1).unwrap().presence,
-            Presence::Limbo
-        );
+        let installed = sim.substrate.entities.get(1).unwrap();
+        assert!(installed.lifecycle.object_alive);
+        assert!(installed.lifecycle.in_limbo);
+        assert!(!installed.lifecycle.cell_marked);
         assert_eq!(
             sim.bunker_wall_events.iter().filter(|e| e.up).count(),
             1,
@@ -491,7 +491,7 @@ mod tests {
         let rules = rules();
         spawn_bunker(&mut sim, 2);
         spawn_tank_on(&mut sim, 1, 10, 10);
-        sim.reveal(1);
+        assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
         // No Approaching marker (a retask cleared it) → machine resets.
         set_state(&mut sim, 2, BunkerState::ArriveWait, Some(1));
         tick_bunker_install(&mut sim, &rules, None);
@@ -506,10 +506,8 @@ mod tests {
         spawn_bunker(&mut sim, 2);
         spawn_tank_on(&mut sim, 1, 10, 10); // installer on the anchor
         spawn_tank_on(&mut sim, 3, 10, 10); // blocker on the same footprint cell
-        sim.reveal(1);
-        sim.add_entity_occupancy(1);
-        sim.reveal(3);
-        sim.add_entity_occupancy(3);
+        assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
+        assert!(matches!(sim.reveal(3), RevealOutcome::Revealed { .. }));
         sim.substrate.entities.get_mut(1).unwrap().bunker_link = BunkerLink::Approaching(2);
         set_state(&mut sim, 2, BunkerState::ArriveWait, Some(1));
 

@@ -10,10 +10,11 @@ use crate::sim::components::{Health, Position};
 use crate::sim::intern::InternedId;
 use crate::sim::movement;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::occupancy::CellListInsertion;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::pathfinding::cell_entry::{TerrainCheckResult, check_terrain};
-use crate::sim::world::Simulation;
+use crate::sim::world::{
+    PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, Simulation,
+};
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 use crate::util::lepton;
 
@@ -348,12 +349,12 @@ fn garrison_inside_foundation_fallback(rx: u16, ry: u16, width: u16, height: u16
     )
 }
 
-fn mark_garrison_passenger_removed(sim: &mut Simulation, passenger_id: u64) {
+fn uninit_garrison_passenger_without_exit(sim: &mut Simulation, passenger_id: u64) {
     if let Some(pax) = sim.substrate.entities.get_mut(passenger_id) {
         pax.health.current = 0;
-        pax.dying = true;
         pax.passenger_role = PassengerRole::None;
     }
+    sim.uninit(passenger_id);
 }
 
 fn sellbuilding_direct_scatter_handoff(
@@ -437,30 +438,37 @@ fn place_garrison_passenger_at_cell(
     if let Some(owner) = owner_override {
         sim.change_owner(passenger_id, owner);
     }
-    let Some(pax) = sim.substrate.entities.get_mut(passenger_id) else {
+    let Some(pax_sub_cell) = sim
+        .substrate
+        .entities
+        .get(passenger_id)
+        .map(|pax| pax.sub_cell)
+    else {
         return false;
     };
-    pax.passenger_role = PassengerRole::None;
-    pax.position.rx = rx;
-    pax.position.ry = ry;
-    pax.position.z = z;
-    let (sub_x, sub_y) = lepton::subcell_lepton_offset(pax.sub_cell);
-    pax.position.sub_x = sub_x;
-    pax.position.sub_y = sub_y;
-    pax.position.refresh_screen_coords();
-    let pax_sub_cell = pax.sub_cell;
-
-    sim.substrate.occupancy.add(
-        rx,
-        ry,
+    if let Some(pax) = sim.substrate.entities.get_mut(passenger_id) {
+        pax.passenger_role = PassengerRole::None;
+    }
+    let (sub_x, sub_y) = lepton::subcell_lepton_offset(pax_sub_cell);
+    let reveal = sim.try_reveal_entity(
         passenger_id,
-        crate::sim::movement::locomotor::MovementLayer::Ground,
-        pax_sub_cell,
-        CellListInsertion::PrependNonBuilding,
+        RevealRequest {
+            position: RevealPosition {
+                rx,
+                ry,
+                z,
+                sub_x,
+                sub_y,
+            },
+            // The selected exit/fallback is this caller's bounded admission
+            // evidence; the exact native placement oracle remains separate.
+            placement: PlacementEvidence::MarkSucceeded,
+            logic_eligible: true,
+        },
     );
-    // Reveal: ejected garrison occupant is back on the playfield — re-append it
-    // to the active-object order (tail, idempotent).
-    sim.reveal(passenger_id);
+    if !matches!(reveal, RevealOutcome::Revealed { .. }) {
+        return false;
+    }
 
     sellbuilding_direct_scatter_handoff(
         sim,
@@ -503,7 +511,7 @@ fn eject_garrison_passengers_at_edges(
 
     let Some((exit_rx, exit_ry)) = exit_cell else {
         for &pax_id in passenger_ids.iter().rev() {
-            mark_garrison_passenger_removed(sim, pax_id);
+            uninit_garrison_passenger_without_exit(sim, pax_id);
         }
         return 0;
     };
@@ -595,9 +603,9 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
 /// Verified gamemd evidence routes destroyed `CanBeOccupied` garrisons through
 /// the same SellBuilding helper used by sell/abandon. Destruction callers use
 /// the null no-exit branch: if no edge coordinate is accepted, occupants are
-/// removed rather than parachuted or placed inside the foundation. The building
-/// has already been removed, so destruction does not restore
-/// `garrison_original_owner`.
+/// removed rather than parachuted or placed inside the foundation. The caller
+/// invokes this while the building is still resolvable, before building UnInit,
+/// so its cargo can be detached from generic transport-death recursion.
 ///
 /// Returns the count of occupants successfully ejected (excludes those killed
 /// when no edge cell can be used).
@@ -606,6 +614,18 @@ pub fn eject_destruction_garrison(
     rules: &RuleSet,
     event: &DestroyedGarrisonBuilding,
 ) -> usize {
+    let passenger_ids = sim
+        .substrate
+        .entities
+        .get_mut(event.building_id)
+        .and_then(|building| building.passenger_role.cargo_mut())
+        .map(|cargo| cargo.take_for_uninit())
+        .unwrap_or_else(|| event.passenger_ids.clone());
+    debug_assert_eq!(
+        passenger_ids, event.passenger_ids,
+        "destroyed-garrison cargo must be detached before building UnInit"
+    );
+
     eject_garrison_passengers_at_edges(
         sim,
         rules,
@@ -614,7 +634,7 @@ pub fn eject_destruction_garrison(
         event.z,
         event.foundation_w,
         event.foundation_h,
-        &event.passenger_ids,
+        &passenger_ids,
         Some(event.owner),
         GarrisonEjectMode::DestructionNoExitRemove,
     )
@@ -842,6 +862,7 @@ mod tests {
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::locomotor::LocomotorState;
+    use crate::sim::occupancy::CellListInsertion;
 
     fn garrison_edge_rules() -> RuleSet {
         let ini = IniFile::from_str(
@@ -1250,6 +1271,9 @@ mod tests {
             );
             assert!(matches!(pax.passenger_role, PassengerRole::None));
             assert!(!pax.dying);
+            assert!(!pax.lifecycle.in_limbo);
+            assert!(pax.lifecycle.cell_marked);
+            assert!(pax.in_logic_vector);
         }
 
         let occupancy_ids: Vec<u64> = sim
@@ -1265,6 +1289,47 @@ mod tests {
             vec![pax1, pax2, pax3],
             "prepend insertion makes the final list expose LIFO placement order"
         );
+    }
+
+    #[test]
+    fn garrison_destruction_detaches_cargo_before_building_uninit() {
+        let rules = garrison_edge_rules();
+        let mut sim = Simulation::new();
+        let building_id = 60;
+        let passenger_id = 61;
+        insert_captured_player_owned_garrison(&mut sim, building_id, passenger_id);
+        let owner = sim.interner.intern("Americans");
+        let event = DestroyedGarrisonBuilding {
+            building_id,
+            type_id: sim.interner.intern("CAGAS01"),
+            owner,
+            rx: 10,
+            ry: 10,
+            z: 0,
+            foundation_w: 2,
+            foundation_h: 2,
+            passenger_ids: vec![passenger_id],
+        };
+
+        assert_eq!(eject_destruction_garrison(&mut sim, &rules, &event), 1);
+        assert!(
+            sim.substrate
+                .entities
+                .get(building_id)
+                .and_then(|building| building.passenger_role.cargo())
+                .is_some_and(|cargo| cargo.is_empty()),
+            "destroyed-garrison helper must detach cargo before building UnInit"
+        );
+
+        sim.uninit(building_id);
+        let passenger = sim
+            .substrate
+            .entities
+            .get(passenger_id)
+            .expect("detached occupant must survive the building UnInit");
+        assert!(passenger.lifecycle.object_alive);
+        assert!(passenger.is_alive());
+        assert!(!passenger.lifecycle.in_limbo);
     }
 
     #[test]
@@ -1377,9 +1442,15 @@ mod tests {
             .substrate
             .entities
             .get(passenger_id)
-            .expect("null fallback leaves Rust entity marked dying");
+            .expect("UnInit keeps the no-exit occupant resolvable until the drain");
         assert_eq!(passenger.health.current, 0);
         assert!(passenger.dying);
         assert!(matches!(passenger.passenger_role, PassengerRole::None));
+        assert!(!passenger.lifecycle.object_alive);
+        assert!(passenger.lifecycle.in_limbo);
+        assert!(sim.substrate.pending_delete.contains(&passenger_id));
+
+        sim.flush_pending_delete();
+        assert!(sim.substrate.entities.get(passenger_id).is_none());
     }
 }

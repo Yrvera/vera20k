@@ -30,7 +30,7 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
-use crate::sim::world::{SimFireEvent, SimSoundEvent};
+use crate::sim::world::{LifecycleOutput, SimFireEvent, SimSoundEvent};
 use crate::ui::game_screen::GameScreen;
 
 /// Prevent runaway catch-up loops after pauses/debugger stops.
@@ -609,20 +609,25 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 animation::tick_animations(ents, &state.animation_sequences, SIM_TICK_MS, interner);
             // Despawn entities whose death animation has completed.
             for dead_id in &death_finished {
-                // Remove from occupancy before despawning.
-                if let Some(entity) = sim.entities().get(*dead_id) {
-                    let rx = entity.position.rx;
-                    let ry = entity.position.ry;
-                    sim.occupancy_mut().remove(rx, ry, *dead_id);
-                }
+                // Transitional app-owned completion request. Central UnInit owns
+                // occupancy, radio, logic, alive, and pending-delete ordering.
                 sim.uninit(*dead_id);
             }
             if !death_finished.is_empty() {
-                // Anim-end corpses were uninit'd above (enqueued). Drain now so they
-                // free at exactly this frame — the deferred queue must not carry an
-                // animated death into the next tick.
-                sim.flush_pending_delete();
                 refresh_after_tick = true;
+            }
+            // Preserve the release-visible lifecycle order even while the
+            // display/Anim/Voc/redraw consumers remain separately blocked.
+            for output in sim.lifecycle_outputs.drain(..) {
+                match output {
+                    LifecycleOutput::RevealDisplay { .. }
+                    | LifecycleOutput::DisplayRemove { .. }
+                    | LifecycleOutput::DetachAttachedAnims { .. }
+                    | LifecycleOutput::StopVoc { .. }
+                    | LifecycleOutput::DirtyTacticalRect { .. }
+                    | LifecycleOutput::ClearDrawnState { .. }
+                    | LifecycleOutput::ClearRedraw { .. } => {}
+                }
             }
             animation::tick_voxel_animations(sim.entities_mut(), SIM_TICK_MS);
             animation::tick_harvest_overlays(sim.entities_mut(), SIM_TICK_MS);

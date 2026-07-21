@@ -130,6 +130,10 @@ fn force_fire_cell_pursuit_then_fire_integration() {
     // GameEntity::test_default resolve correctly.
     sim.interner = crate::sim::intern::test_interner();
     let owner_id = sim.interner.intern("Americans");
+    assert!(matches!(
+        sim.reveal(1),
+        crate::sim::world::RevealOutcome::Revealed { .. }
+    ));
     let grid = PathGrid::test_all_passable(64, 64);
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 

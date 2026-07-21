@@ -195,7 +195,7 @@ impl Simulation {
         debug_assert!(self.substrate.anims.insert(object).is_none());
         // Native registry insertion precedes Reveal, and Reveal precedes the
         // delay-zero constructor-time Middle call.
-        self.reveal(stable_id);
+        self.reveal_anim(stable_id);
         if descriptor.delay == 0 {
             self.anim_middle(stable_id, &config);
         }
@@ -336,10 +336,8 @@ impl Simulation {
             stop_sound_id: stop_sound,
             world,
         });
-        self.conceal(id);
-        if !self.substrate.pending_delete.contains(&id) {
-            self.substrate.pending_delete.push(id);
-        }
+        self.conceal_anim(id);
+        self.substrate.pending_delete.push(id);
     }
 
     pub(crate) fn set_anim_frame_and_z_adjust(&mut self, id: AnimId, frame: i32, z_adjust: i32) {

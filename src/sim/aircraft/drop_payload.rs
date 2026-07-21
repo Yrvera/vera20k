@@ -19,10 +19,11 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::parachute_descent::begin_parachute_descent;
-use crate::sim::occupancy::CellListInsertion;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::world::{SimSoundEvent, Simulation};
+use crate::sim::world::{
+    PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, SimSoundEvent, Simulation,
+};
 use crate::util::facing_table::facing_to_movement;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
 use crate::util::lepton;
@@ -76,8 +77,8 @@ pub enum DropResult {
     /// Drop cell impassable. Passenger was re-inserted at cargo HEAD; caller
     /// leaves drop_cooldown unchanged so the mission can retry immediately.
     ImpassableRetry,
-    /// begin_parachute_descent returned false (entity missing or attach failed).
-    /// Same retry semantics as ImpassableRetry.
+    /// Reveal/Unlimbo or parachute attachment failed after placement admission.
+    /// Same cargo-head retry semantics as ImpassableRetry.
     AttachFailedRetry,
     /// Cargo was empty (caller should have gated on cargo_empty already).
     NoCargo,
@@ -148,14 +149,23 @@ pub fn try_drop(
             rules.object(type_str).map(|o| o.size)
         })
         .unwrap_or(1);
-    let passenger_category = match sim.substrate.entities.get(passenger_id).map(|p| p.category) {
-        Some(category) => category,
-        None => {
-            sim.clear_radio_contacts_for(passenger_id);
-            restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
-            return DropResult::AttachFailedRetry;
-        }
-    };
+    let (passenger_category, passenger_z, passenger_ready_for_reveal) =
+        match sim.substrate.entities.get(passenger_id) {
+            Some(passenger) => (
+                passenger.category,
+                passenger.position.z,
+                passenger.lifecycle.object_alive && passenger.lifecycle.in_limbo,
+            ),
+            None => {
+                sim.clear_radio_contacts_for(passenger_id);
+                restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+                return DropResult::AttachFailedRetry;
+            }
+        };
+    if !passenger_ready_for_reveal {
+        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+        return DropResult::AttachFailedRetry;
+    }
 
     // 3. Compute V-offset in leptons, then split into (cell, sub-cell).
     // Using `div_euclid`/`rem_euclid` so negative offsets cross cell
@@ -202,35 +212,20 @@ pub fn try_drop(
         .map(|sub_cell| lepton::subcell_lepton_offset(Some(sub_cell)))
         .unwrap_or((drop_sub_x, drop_sub_y));
 
-    // 5. Position passenger at drop cell; un-limbo. Do NOT touch
+    // 5. Supply caller-owned subcell/role state while the passenger is still
+    // limbo. Parachute attachment follows; Reveal is the success boundary.
+    // Do NOT touch
     // `loco.altitude` here: normal paradropped infantry keep their base
     // locomotor identity, while descent altitude lives in ParachuteDescentState.
     if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
-        passenger.position.rx = drop_rx;
-        passenger.position.ry = drop_ry;
-        passenger.position.sub_x = final_sub_x;
-        passenger.position.sub_y = final_sub_y;
         passenger.sub_cell = selected_sub_cell;
-        // Update cached screen coords now so the first frame of descent
-        // doesn't briefly render the GI at the carrier's old position.
-        passenger.position.refresh_screen_coords();
         passenger.passenger_role = PassengerRole::None;
     }
-    sim.substrate.occupancy.add(
-        drop_rx,
-        drop_ry,
-        passenger_id,
-        MovementLayer::Ground,
-        selected_sub_cell,
-        CellListInsertion::from_category(passenger_category),
-    );
-
-    // 6. Attach parachute descent.
+    // 6. Attach parachute descent while the passenger is still limbo. Reveal
+    // is the local success boundary; an attach retry is not Techno Limbo.
     if !begin_parachute_descent(&mut sim.substrate.entities, passenger_id, altitude) {
-        // L17 deviation: revert passenger_role and re-insert at cargo HEAD; retry.
-        sim.substrate
-            .occupancy
-            .remove(drop_rx, drop_ry, passenger_id);
+        // Preserve the separately classified legacy retry scrub. No common
+        // Reveal state has been committed yet.
         sim.clear_radio_contacts_for(passenger_id);
         if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
             passenger.passenger_role = PassengerRole::Inside {
@@ -241,10 +236,34 @@ pub fn try_drop(
         return DropResult::AttachFailedRetry;
     }
 
-    // Reveal: the dropped passenger leaves the transport's limbo and becomes an
-    // active object. Occupancy was already added above (the manual occupancy.add
-    // before parachute attach); this only appends it to the active-object order.
-    sim.reveal(passenger_id);
+    let reveal_outcome = sim.try_reveal_entity(
+        passenger_id,
+        RevealRequest {
+            position: RevealPosition {
+                rx: drop_rx,
+                ry: drop_ry,
+                z: passenger_z,
+                sub_x: final_sub_x,
+                sub_y: final_sub_y,
+            },
+            placement: PlacementEvidence::MarkSucceeded,
+            logic_eligible: true,
+        },
+    );
+    if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
+        if reveal_outcome == RevealOutcome::AlreadyRevealed {
+            let _ = sim.techno_limbo(passenger_id);
+        }
+        sim.clear_radio_contacts_for(passenger_id);
+        if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
+            passenger.parachute_state = None;
+            passenger.passenger_role = PassengerRole::Inside {
+                transport_id: aircraft_id,
+            };
+        }
+        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+        return DropResult::AttachFailedRetry;
+    }
 
     // 7. ChuteSound at drop cell.
     sim.sound_events.push(SimSoundEvent::ChuteSound {
@@ -440,6 +459,10 @@ mod tests {
             .entities
             .get(passenger_id)
             .expect("passenger exists");
+        assert!(passenger.lifecycle.object_alive);
+        assert!(!passenger.lifecycle.in_limbo);
+        assert!(passenger.lifecycle.cell_marked);
+        assert!(passenger.in_logic_vector);
         assert_eq!((passenger.position.rx, passenger.position.ry), (51, 20));
         let sub_cell = passenger
             .sub_cell
@@ -479,14 +502,17 @@ mod tests {
         let passenger_id = 2;
         insert_loaded_paradrop_pair(&mut sim, aircraft_id, passenger_id);
         for (id, sub_cell) in [(90, 2), (91, 3), (92, 4)] {
-            sim.substrate.occupancy.add(
-                51,
-                20,
-                id,
-                MovementLayer::Ground,
-                Some(sub_cell),
-                CellListInsertion::PrependNonBuilding,
-            );
+            let mut blocker = GameEntity::test_default(id, "E1", "Americans", 51, 20);
+            blocker.owner = sim.interner.intern("Americans");
+            blocker.type_ref = sim.interner.intern("E1");
+            blocker.category = EntityCategory::Infantry;
+            blocker.is_voxel = false;
+            blocker.sub_cell = Some(sub_cell);
+            (blocker.position.sub_x, blocker.position.sub_y) =
+                lepton::subcell_lepton_offset(Some(sub_cell));
+            blocker.position.refresh_screen_coords();
+            sim.substrate.entities.insert(blocker);
+            assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
         }
 
         let result = try_drop(&mut sim, &rules, aircraft_id, 4, None);
@@ -516,6 +542,10 @@ mod tests {
             PassengerRole::Inside { transport_id } if transport_id == aircraft_id
         ));
         assert!(passenger.parachute_state.is_none());
+        assert!(passenger.lifecycle.object_alive);
+        assert!(passenger.lifecycle.in_limbo);
+        assert!(!passenger.lifecycle.cell_marked);
+        assert!(!passenger.in_logic_vector);
         assert!(
             !sim.substrate
                 .occupancy

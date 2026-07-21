@@ -58,7 +58,6 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::infantry;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
-use crate::sim::passenger::PassengerRole;
 use crate::sim::power_system::PowerState;
 use crate::sim::vision::FogState;
 use crate::sim::world::{FireOriginSnapshot, SimFireEvent, SimSoundEvent};
@@ -730,9 +729,9 @@ pub struct TiberiumReductionRequest {
 pub struct CombatTickResult {
     pub reveal_events: Vec<RevealEvent>,
     pub despawned_ids: Vec<u64>,
-    /// IDs that should be physically removed by the world lifecycle this tick.
+    /// IDs that should enter world-owned UnInit immediately this tick.
     /// `despawned_ids` also includes SHP deaths that remain in-store for their
-    /// death animation; this list is immediate structure/voxel removal only.
+    /// death animation; this list is the immediate structure/voxel handoff only.
     pub immediate_uninit_ids: Vec<u64>,
     /// A structure was destroyed — PathGrid needs footprint unblock.
     pub structure_destroyed: bool,
@@ -833,7 +832,7 @@ struct DeathEffects {
     smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
 }
 
-/// Process all entity deaths for this tick: death weapons, passengers, explosions, despawn.
+/// Process combat-owned death effects and classify the lifecycle handoff.
 ///
 /// Extracts death side-effects into a `DeathEffects` struct so the caller can apply them
 /// (bridge damage, sound events, etc.) without the combat function growing unbounded.
@@ -918,18 +917,18 @@ fn handle_entity_deaths(
                 }
             }
 
-            // Snapshot cargo before the building entity is despawned. Used to
-            // either eject garrison occupants alive (CanBeOccupied buildings)
-            // or kill all riders (transports — current behavior).
+            // Generic transport cargo remains attached and untouched here so
+            // the carrier's world-owned UnInit can recurse in cargo order. The
+            // snapshot is only exported for the distinct garrison-eject path.
             let passenger_ids: Vec<u64> = entities
                 .get(dead_id)
                 .and_then(|e| e.passenger_role.cargo())
                 .map(|c| c.passengers.clone())
                 .unwrap_or_default();
 
-            // Branch: garrisoned CanBeOccupied buildings use the same gamemd
-            // SellBuilding occupant-eject contract as sell. Transports continue
-            // to kill all riders; that's a separate parity gap to fix later.
+            // Garrisoned CanBeOccupied buildings use the same gamemd
+            // SellBuilding occupant-eject contract as sell. Generic transports
+            // deliberately emit no passenger-side mutations from combat.
             //
             // Re-resolve the type string here because earlier mutable borrows
             // of `interner` (death_weapon_aoe, intern calls) ended its prior
@@ -958,18 +957,6 @@ fn handle_entity_deaths(
                     foundation_h,
                     passenger_ids,
                 });
-            } else {
-                // Existing transport / non-garrison cargo behavior: kill riders.
-                for &pid in &passenger_ids {
-                    if let Some(pax) = entities.get_mut(pid) {
-                        pax.health.current = 0;
-                        pax.dying = true;
-                        pax.passenger_role = PassengerRole::None;
-                        pax.attack_target = None;
-                        pax.movement_target = None;
-                        pax.selected = false;
-                    }
-                }
             }
 
             // Look up the warhead that dealt the killing blow for InfDeath
@@ -1009,11 +996,10 @@ fn handle_entity_deaths(
                 }
             }
 
-            clear_targets_on_dead_entity(entities, dead_id);
-
             if has_animation {
-                // Infantry/SHP units: mark dying, trigger death animation.
-                // The animation system will despawn when the death anim finishes.
+                // Transitional Infantry/SHP handoff: health was already reduced
+                // to zero by damage processing. Combat owns only the Rust death
+                // gate and sequence selection until Mission/Foot owns cadence.
                 // Select InfDeath variant from the killing warhead (default Die1).
                 let inf_death: u8 = killing_warhead
                     .as_ref()
@@ -1021,9 +1007,6 @@ fn handle_entity_deaths(
                     .unwrap_or(1);
                 if let Some(entity) = entities.get_mut(dead_id) {
                     entity.dying = true;
-                    entity.attack_target = None;
-                    entity.movement_target = None;
-                    entity.selected = false;
                     if let Some(ref mut anim) = entity.animation {
                         use crate::sim::animation::death_sequence_for_inf_death;
                         anim.switch_to(death_sequence_for_inf_death(inf_death));
@@ -1034,14 +1017,9 @@ fn handle_entity_deaths(
                 despawned_ids.push(dead_id);
                 log::trace!("Entity {} dying (death animation)", dead_id);
             } else {
-                // Structures and voxel vehicles: immediate physical removal,
-                // but the world layer owns lifecycle cleanup.
-                if let Some(entity) = entities.get_mut(dead_id) {
-                    entity.dying = true;
-                    entity.attack_target = None;
-                    entity.movement_target = None;
-                    entity.selected = false;
-                }
+                // Structures and voxel vehicles remain otherwise intact. The
+                // world consumes this request through ordered UnInit, which owns
+                // deselection, targets, radio, cell/logic state, and passengers.
                 immediate_uninit_ids.push(dead_id);
                 despawned_ids.push(dead_id);
                 log::trace!("Entity {} destroyed", dead_id);
@@ -1148,23 +1126,6 @@ fn handle_entity_deaths(
         tiberium_reduction_requests,
         death_sounds,
         smudge_spawn_requests,
-    }
-}
-
-/// Remove AttackTarget from any entity currently targeting the dead entity.
-fn clear_targets_on_dead_entity(entities: &mut EntityStore, dead_id: u64) {
-    let keys: Vec<u64> = entities.keys_sorted();
-    for &eid in &keys {
-        if let Some(entity) = entities.get_mut(eid) {
-            // Cell targets don't despawn, so this only matters for Entity targets.
-            if entity
-                .attack_target
-                .as_ref()
-                .is_some_and(|a| matches!(a.target, TargetKind::Entity(id) if id == dead_id))
-            {
-                entity.attack_target = None;
-            }
-        }
     }
 }
 

@@ -354,10 +354,15 @@ pub(super) fn build_live_building_entry_skip_map(
             && building
                 .building_gate
                 .is_some_and(|state| state.can_garrison_passable());
+        let infantry_entry_target = mover.category == EntityCategory::Infantry
+            && (mover.capture_target == Some(building.stable_id)
+                || mover
+                    .c4_plant
+                    .is_some_and(|plant| plant.target_building_id == building.stable_id));
         let has_contact = vehicle_row_helpers && mover.has_live_contact_with(building.stable_id);
         let has_vehicle_exception =
             vehicle_row_helpers && (has_contact || obj.unit_repair || obj.bunker || obj.bib);
-        if !has_vehicle_exception && !gate_skip {
+        if !has_vehicle_exception && !gate_skip && !infantry_entry_target {
             continue;
         }
         let is_bunker_occupied = obj.bunker
@@ -413,6 +418,7 @@ pub(super) fn build_live_building_entry_skip_map(
                 )
                 || bib_skip
                 || gate_skip
+                || infantry_entry_target
             {
                 skips
                     .entry((cx, cy))
@@ -669,8 +675,17 @@ pub(super) fn handle_deferred_occupancy(
             // Remove crush victims from occupancy immediately (matches gamemd's
             // PerCellProcess which calls RemoveFromGame before continuing).
             for &vid in &victims {
-                if let Some(v) = entities.get(vid) {
-                    occupancy.remove(v.position.rx, v.position.ry, vid);
+                let victim_cell = entities
+                    .get(vid)
+                    .map(|victim| (victim.position.rx, victim.position.ry));
+                if let Some((rx, ry)) = victim_cell {
+                    occupancy.remove(rx, ry, vid);
+                    if let Some(victim) = entities.get_mut(vid) {
+                        // UNCHECKED: movement still owns this pre-UnInit unmark
+                        // until the unified per-object scheduler can place the
+                        // exact native Mark(0) boundary.
+                        victim.lifecycle.cell_marked = false;
+                    }
                 }
             }
             crush_kills.extend(victims.into_iter().map(|victim_id| PendingCrushKill {

@@ -4,8 +4,9 @@
 //! call (synchronous RPC, no queue) and commits its side effects in native
 //! order. This slice implements the zero-link refinery inbound idiom: HELLO
 //! admission, the CAN_DOCK accepted-cell reply, the ENTER/LEAVE dock-entered
-//! flag, and BREAK teardown. Unit/Infantry/Aircraft receivers and the other
-//! dock idioms (airfield, bunker, depot) land in later slices.
+//! flag, and BREAK teardown. BREAK's base receiver-contact clear is shared by
+//! every represented Techno category; unrepresented class-specific handlers
+//! remain explicit gaps rather than being guessed here.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/radio + sim/world. sim/ NEVER depends on
@@ -14,6 +15,8 @@
 use crate::map::entities::EntityCategory;
 use crate::sim::docking::bunker_install::BunkerState;
 use crate::sim::radio::{RadioMessage, RadioPayload, RadioResponse};
+#[cfg(test)]
+use crate::sim::world::LifecycleTestEvent;
 use crate::sim::world::Simulation;
 
 /// CAN_DOCK accepted-cell offset from the refinery NW anchor: anchor + (3, 1).
@@ -46,16 +49,56 @@ pub fn receive_radio(
         Some(target) => target.category,
         None => return RadioResponse::None,
     };
-    match category {
+    let response = match category {
         EntityCategory::Structure => {
+            // TODO(BLOCKED parity): BuildingClass runs GrandOpening before its
+            // Techno/base BREAK tail. No exact represented animation authority
+            // exists here yet, so do not approximate that effect.
             if is_bunker_building(sim, target_sid) {
                 bunker_receive(sim, target_sid, sender_sid, msg)
             } else {
                 refinery_receive(sim, target_sid, sender_sid, msg)
             }
         }
-        // Unit/Infantry/Aircraft receivers are wired in later slices.
+        // Unit/Infantry/Aircraft have no represented class-specific BREAK work
+        // in this slice, but still reach the common RadioClass receiver tail.
         _ => RadioResponse::None,
+    };
+
+    if msg == RadioMessage::Break {
+        if let Some(sender_sid) = sender_sid {
+            #[cfg(test)]
+            super::record_test_event(super::RadioTestEvent::ReceiverClassEffect {
+                receiver_sid: target_sid,
+                sender_sid,
+            });
+            #[cfg(test)]
+            sim.trace_lifecycle_for_test(LifecycleTestEvent::BreakReceiverClassEffect {
+                target: target_sid,
+            });
+
+            clear_receiver_break_contact(sim, target_sid, sender_sid);
+
+            #[cfg(test)]
+            super::record_test_event(super::RadioTestEvent::ReceiverCommonCleared {
+                receiver_sid: target_sid,
+                sender_sid,
+            });
+            #[cfg(test)]
+            sim.trace_lifecycle_for_test(LifecycleTestEvent::BreakReceiverCleared {
+                target: target_sid,
+            });
+        }
+    }
+
+    response
+}
+
+/// Common `RadioClass::Receive_Radio(BREAK)` tail. Class-specific receiver work
+/// has already run; this only nulls the first matching receiver slot in place.
+fn clear_receiver_break_contact(sim: &mut Simulation, receiver_sid: u64, sender_sid: u64) {
+    if let Some(receiver) = sim.substrate.entities.get_mut(receiver_sid) {
+        receiver.radio_contacts.remove(sender_sid);
     }
 }
 
@@ -93,7 +136,7 @@ fn refinery_receive(
             RadioResponse::Roger
         }
         RadioMessage::Break => {
-            refinery_break(sim, ref_sid, miner_sid);
+            refinery_break_effect(sim, ref_sid, miner_sid);
             RadioResponse::None
         }
         RadioMessage::IsOccupied => {
@@ -144,12 +187,12 @@ fn refinery_hello(sim: &mut Simulation, ref_sid: u64, miner_sid: u64) -> RadioRe
     }
 }
 
-/// BREAK receiver-side teardown (§5.2.5/§5.2.9): null the first matching slot,
-/// then clear the dock-entered cascade on the miner.
-fn refinery_break(sim: &mut Simulation, ref_sid: u64, miner_sid: u64) {
-    if let Some(refinery) = sim.substrate.entities.get_mut(ref_sid) {
-        refinery.radio_contacts.remove(miner_sid);
-    }
+/// Represented refinery-specific BREAK work, before the common receiver clear.
+///
+/// This preserves the existing one-sided Rust dock-entered projection. It is
+/// not the native conditional two-sided `0x19` transmit cascade, which remains
+/// blocked until both `Techno+0x418` bytes have exact represented ownership.
+fn refinery_break_effect(sim: &mut Simulation, ref_sid: u64, miner_sid: u64) {
     if let Some(miner) = sim.substrate.entities.get_mut(miner_sid) {
         if miner.dock_entered_with == Some(ref_sid) {
             miner.dock_entered_with = None;
@@ -198,9 +241,9 @@ fn bunker_receive(
             RadioResponse::Roger
         }
         RadioMessage::Break => {
-            if let Some(b) = sim.substrate.entities.get_mut(bld) {
-                b.radio_contacts.remove(unit);
-            }
+            // Bunker reciprocal-link teardown is owned by bunker_link's three
+            // verified trigger-specific helpers. Radio BREAK adds no guessed
+            // bunker mutation here; the shared receiver tail clears Contacts.
             RadioResponse::None
         }
         _ => RadioResponse::None,
@@ -234,7 +277,10 @@ mod tests {
     use crate::map::entities::EntityCategory;
     use crate::sim::components::Health;
     use crate::sim::game_entity::GameEntity;
-    use crate::sim::radio::{RadioMessage, RadioPayload, RadioResponse, transmit};
+    use crate::sim::radio::{
+        RadioMessage, RadioPayload, RadioResponse, RadioTestEvent, broadcast_break,
+        clear_test_trace, take_test_trace, transmit,
+    };
     use crate::sim::world::Simulation;
 
     fn spawn_refinery(sim: &mut Simulation, sid: u64, owner: &str, capacity: usize) {
@@ -484,5 +530,235 @@ mod tests {
     #[test]
     fn accepted_cell_is_anchor_plus_three_one() {
         assert_eq!(refinery_accepted_cell(10, 10), (13, 11));
+    }
+
+    #[test]
+    fn lifecycle_authority_limbo_break_uses_sparse_slot_order() {
+        let mut sim = Simulation::new();
+        spawn_miner(&mut sim, 1, "Americans");
+        spawn_refinery(&mut sim, 2, "Americans", 1);
+        spawn_refinery(&mut sim, 3, "Americans", 1);
+        spawn_refinery(&mut sim, 4, "Americans", 1);
+
+        let sender = sim.substrate.entities.get_mut(1).unwrap();
+        sender.radio_contacts.set_capacity(4);
+        assert_eq!(sender.radio_contacts.insert(2), Some(0));
+        assert_eq!(sender.radio_contacts.insert(3), Some(1));
+        assert_eq!(sender.radio_contacts.insert(4), Some(2));
+        assert_eq!(sender.radio_contacts.remove(3), Some(1));
+        sim.substrate
+            .entities
+            .get_mut(2)
+            .unwrap()
+            .radio_contacts
+            .insert(1);
+        sim.substrate
+            .entities
+            .get_mut(4)
+            .unwrap()
+            .radio_contacts
+            .insert(1);
+
+        clear_test_trace();
+        broadcast_break(&mut sim, 1);
+        let trace = take_test_trace();
+
+        let reads = trace
+            .iter()
+            .filter_map(|event| match event {
+                RadioTestEvent::BroadcastSlotRead {
+                    slot, target_sid, ..
+                } => Some((*slot, *target_sid)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reads,
+            vec![(0, Some(2)), (1, None), (2, Some(4)), (3, None)]
+        );
+
+        let targets = trace
+            .iter()
+            .filter_map(|event| match event {
+                RadioTestEvent::SenderBreakCleared { target_sid, .. } => Some(*target_sid),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(targets, vec![2, 4]);
+        assert!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .radio_contacts
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn lifecycle_authority_break_sender_is_clear_before_receiver_effect() {
+        let mut sim = Simulation::new();
+        spawn_refinery(&mut sim, 2, "Americans", 1);
+        spawn_miner(&mut sim, 1, "Americans");
+        assert_eq!(hello(&mut sim, 1, 2), RadioResponse::Roger);
+        transmit(
+            &mut sim,
+            1,
+            2,
+            RadioMessage::EnterDock,
+            RadioPayload::default(),
+        );
+
+        clear_test_trace();
+        transmit(&mut sim, 1, 2, RadioMessage::Break, RadioPayload::default());
+
+        assert_eq!(
+            take_test_trace(),
+            vec![
+                RadioTestEvent::SenderBreakCleared {
+                    sender_sid: 1,
+                    target_sid: 2,
+                },
+                RadioTestEvent::ReceiverClassEffect {
+                    receiver_sid: 2,
+                    sender_sid: 1,
+                },
+                RadioTestEvent::ReceiverCommonCleared {
+                    receiver_sid: 2,
+                    sender_sid: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().dock_entered_with,
+            None
+        );
+        assert!(
+            !sim.substrate
+                .entities
+                .get(2)
+                .unwrap()
+                .radio_contacts
+                .contains(1)
+        );
+    }
+
+    #[test]
+    fn lifecycle_authority_break_receiver_effect_precedes_common_clear() {
+        let mut sim = Simulation::new();
+        spawn_refinery(&mut sim, 2, "Americans", 1);
+        spawn_miner(&mut sim, 1, "Americans");
+        assert_eq!(hello(&mut sim, 1, 2), RadioResponse::Roger);
+        transmit(
+            &mut sim,
+            1,
+            2,
+            RadioMessage::EnterDock,
+            RadioPayload::default(),
+        );
+
+        clear_test_trace();
+        transmit(&mut sim, 1, 2, RadioMessage::Break, RadioPayload::default());
+        let trace = take_test_trace();
+
+        let effect_index = trace
+            .iter()
+            .position(|event| matches!(event, RadioTestEvent::ReceiverClassEffect { .. }))
+            .expect("represented receiver effect boundary");
+        let common_index = trace
+            .iter()
+            .position(|event| matches!(event, RadioTestEvent::ReceiverCommonCleared { .. }))
+            .expect("common receiver clear boundary");
+        assert!(effect_index < common_index);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().dock_entered_with,
+            None
+        );
+        assert!(
+            !sim.substrate
+                .entities
+                .get(2)
+                .unwrap()
+                .radio_contacts
+                .contains(1)
+        );
+    }
+
+    #[test]
+    fn lifecycle_authority_break_clears_non_structure_receiver_contact() {
+        for category in [
+            EntityCategory::Unit,
+            EntityCategory::Infantry,
+            EntityCategory::Aircraft,
+        ] {
+            let mut sim = Simulation::new();
+            spawn_miner(&mut sim, 1, "Americans");
+            spawn_miner(&mut sim, 2, "Americans");
+            sim.substrate.entities.get_mut(2).unwrap().category = category;
+            sim.substrate
+                .entities
+                .get_mut(1)
+                .unwrap()
+                .radio_contacts
+                .insert(2);
+            sim.substrate
+                .entities
+                .get_mut(2)
+                .unwrap()
+                .radio_contacts
+                .insert(1);
+
+            transmit(&mut sim, 1, 2, RadioMessage::Break, RadioPayload::default());
+
+            assert!(
+                !sim.substrate
+                    .entities
+                    .get(1)
+                    .unwrap()
+                    .radio_contacts
+                    .contains(2)
+            );
+            assert!(
+                !sim.substrate
+                    .entities
+                    .get(2)
+                    .unwrap()
+                    .radio_contacts
+                    .contains(1)
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_authority_stale_break_contact_is_idempotent() {
+        let mut sim = Simulation::new();
+        spawn_miner(&mut sim, 1, "Americans");
+        spawn_miner(&mut sim, 2, "Americans");
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .radio_contacts
+            .insert(2);
+
+        transmit(&mut sim, 1, 2, RadioMessage::Break, RadioPayload::default());
+        transmit(&mut sim, 1, 2, RadioMessage::Break, RadioPayload::default());
+
+        assert!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .radio_contacts
+                .is_empty()
+        );
+        assert!(
+            sim.substrate
+                .entities
+                .get(2)
+                .unwrap()
+                .radio_contacts
+                .is_empty()
+        );
     }
 }

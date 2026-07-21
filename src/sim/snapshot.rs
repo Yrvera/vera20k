@@ -73,7 +73,10 @@ use crate::sim::world::Simulation;
 // cannot preserve mixed-difficulty AI behavior after load.
 // Bumped 26 -> 27: ObjectSubstrate gains the serialized AnimStore and GameEntity
 // gains the authoritative damage-fire transition cache plus eight animation IDs.
-const SNAPSHOT_VERSION: u32 = 27;
+// Bumped 27 -> 28: independent object-alive/limbo/cell lifecycle state,
+// lifecycle bookkeeping, and the ordered pending-delete queue are serialized and
+// hashed instead of being reconstructed from store/LogicVector presence.
+const SNAPSHOT_VERSION: u32 = 28;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -199,7 +202,7 @@ mod tests {
     use crate::sim::pathfinding::PathGrid;
     use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
     use crate::sim::pathfinding::zone_map::ZoneGrid;
-    use crate::sim::world::Simulation;
+    use crate::sim::world::{RevealOutcome, Simulation};
     use std::collections::BTreeMap;
 
     /// Helper: advance a sim by one tick with empty inputs.
@@ -426,11 +429,12 @@ mod tests {
     /// relocated to the AI host) took 23 -> 24, and S4b (the hashed
     /// `damage_particle_live_until` `+0x308`-equivalent field) took 24 -> 25,
     /// per-house native AI difficulty took 25 -> 26, and scheduler-owned
-    /// animation persistence took 26 -> 27. This pins it so a later accidental
-    /// bump is caught.
+    /// animation persistence took 26 -> 27, and independent serialized lifecycle
+    /// axes plus the pending-delete boundary took 27 -> 28. This pins it so a
+    /// later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_27() {
-        assert_eq!(super::SNAPSHOT_VERSION, 27);
+    fn snapshot_version_is_28() {
+        assert_eq!(super::SNAPSHOT_VERSION, 28);
     }
 
     #[test]
@@ -553,72 +557,101 @@ mod tests {
         );
     }
 
-    /// Slice 2 acceptance: save/load restores identical `presence` for an active
-    /// unit (InCell), a never-revealed limbo object (Limbo), and a boarded/cargo
-    /// unit (Limbo) — and the state hash is unchanged by `presence` (it is
-    /// serde-skip and not hashed).
+    /// Rust snapshots preserve a dead-limbo object's independent state and the
+    /// ordered pending-delete boundary instead of reconstructing either from
+    /// global storage or LogicVector membership.
     #[test]
-    fn saveload_restores_presence_for_active_limbo_and_cargo() {
-        use crate::sim::game_entity::{GameEntity, Presence};
-        use crate::sim::passenger::PassengerRole;
+    fn lifecycle_authority_pending_boundary_roundtrips_queue_and_state() {
+        use crate::sim::game_entity::GameEntity;
 
         let mut sim = Simulation::new();
-        // (1) Active unit on the playfield → InCell.
-        sim.substrate
-            .entities
-            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
-        sim.reveal(1);
-        // (2) Never-revealed limbo object → Limbo (default, never joined active set).
-        sim.substrate
-            .entities
-            .insert(GameEntity::test_default(2, "E1", "Americans", 0, 0));
-        // (3) Transport-loaded infantry: revealed, then concealed while boarding → Limbo.
-        let mut pax = GameEntity::test_default(3, "E1", "Americans", 6, 6);
-        pax.passenger_role = PassengerRole::Inside { transport_id: 1 };
-        sim.substrate.entities.insert(pax);
-        sim.reveal(3);
-        sim.conceal(3); // boards: leaves the active order → Limbo
-
-        // Pre-save expectations.
-        assert_eq!(
-            sim.substrate.entities.get(1).unwrap().presence,
-            Presence::InCell
-        );
-        assert_eq!(
-            sim.substrate.entities.get(2).unwrap().presence,
-            Presence::Limbo
-        );
-        assert_eq!(
-            sim.substrate.entities.get(3).unwrap().presence,
-            Presence::Limbo
-        );
+        let mut entity = GameEntity::test_default(7, "MTNK", "Americans", 5, 5);
+        entity.lifecycle.object_alive = false;
+        entity.lifecycle.in_limbo = true;
+        entity.lifecycle.cell_marked = false;
+        entity.in_logic_vector = false;
+        entity.dying = true;
+        entity.dirty_rect_eligible = true;
+        entity.owned_count_released = true;
+        sim.substrate.entities.insert(entity);
+        sim.substrate.pending_delete.extend([7, 3, 7]);
         let hash_before = sim.state_hash();
 
-        // Round-trip + the real load-path membership rebuild.
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
+        let restored_entity = restored.substrate.entities.get(7).expect("entity restored");
+
+        assert!(!restored_entity.lifecycle.object_alive);
+        assert!(restored_entity.lifecycle.in_limbo);
+        assert!(!restored_entity.lifecycle.cell_marked);
+        assert!(!restored_entity.in_logic_vector);
+        assert!(restored_entity.dying);
+        assert!(restored_entity.dirty_rect_eligible);
+        assert!(restored_entity.owned_count_released);
+        assert_eq!(restored.substrate.pending_delete, vec![7, 3, 7]);
+        assert_eq!(restored.state_hash(), hash_before);
+    }
+
+    #[test]
+    fn lifecycle_authority_logic_rebuild_does_not_rederive_limbo_or_mark() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        let mut off_cell_member = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        off_cell_member.lifecycle.in_limbo = false;
+        off_cell_member.lifecycle.cell_marked = false;
+        sim.substrate.entities.insert(off_cell_member);
+        sim.substrate
+            .logic
+            .try_push(1)
+            .expect("logic fixture append");
+
+        let mut marked_non_member = GameEntity::test_default(2, "MTNK", "Americans", 6, 6);
+        marked_non_member.lifecycle.in_limbo = false;
+        marked_non_member.lifecycle.cell_marked = true;
+        sim.substrate.entities.insert(marked_non_member);
+
         let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
         let mut restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
         restored.rebuild_logic_membership();
 
-        // Presence restored identically.
-        assert_eq!(
-            restored.substrate.entities.get(1).unwrap().presence,
-            Presence::InCell
-        );
-        assert_eq!(
-            restored.substrate.entities.get(2).unwrap().presence,
-            Presence::Limbo
-        );
-        assert_eq!(
-            restored.substrate.entities.get(3).unwrap().presence,
-            Presence::Limbo
-        );
+        let member = restored.substrate.entities.get(1).expect("member restored");
+        assert!(member.in_logic_vector);
+        assert!(!member.lifecycle.in_limbo);
+        assert!(!member.lifecycle.cell_marked);
 
-        // Hash is unaffected by presence (serde-skip + not hashed).
-        assert_eq!(restored.state_hash(), hash_before);
+        let non_member = restored
+            .substrate
+            .entities
+            .get(2)
+            .expect("non-member restored");
+        assert!(!non_member.in_logic_vector);
+        assert!(!non_member.lifecycle.in_limbo);
+        assert!(non_member.lifecycle.cell_marked);
+    }
 
-        // The reconciled shadow agrees with the derivation everywhere.
-        #[cfg(debug_assertions)]
-        restored.debug_assert_presence_consistent();
+    #[test]
+    fn lifecycle_authority_bookkeeping_facts_roundtrip_and_change_state_hash() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        sim.substrate
+            .entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        let default_hash = sim.state_hash();
+
+        let entity = sim.substrate.entities.get_mut(1).expect("fixture entity");
+        entity.dirty_rect_eligible = true;
+        entity.owned_count_released = true;
+        let changed_hash = sim.state_hash();
+        assert_ne!(default_hash, changed_hash);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
+        let restored_entity = restored.substrate.entities.get(1).expect("entity restored");
+        assert!(restored_entity.dirty_rect_eligible);
+        assert!(restored_entity.owned_count_released);
+        assert_eq!(restored.state_hash(), changed_hash);
     }
 
     #[test]
@@ -752,31 +785,33 @@ mod tests {
     /// is incremented. (No-op collapse: same end state as the old 4-step.)
     #[test]
     fn unlimbo_ge_places_into_logic_and_occupancy_atomically() {
-        use crate::sim::game_entity::{GameEntity, Presence};
+        use crate::sim::game_entity::GameEntity;
         let mut sim = Simulation::new();
         let mut ge = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
         // `place_spawned` resolves the owner against `sim.interner`; re-intern so
         // the id is valid there (test_default uses the thread-local test interner).
         ge.owner = sim.interner.intern("Americans");
-        let id = sim.unlimbo(ge);
+        let (id, outcome) = sim.unlimbo(ge);
+        assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
 
         let e = sim.substrate.entities.get(id).expect("entity in store");
         assert!(e.in_logic_vector, "must be in the active order");
-        assert_eq!(e.presence, Presence::InCell);
+        assert!(!e.lifecycle.in_limbo);
+        assert!(e.lifecycle.cell_marked);
         assert_eq!(sim.live_object_order_snapshot(), vec![id]);
         assert!(
             sim.substrate.occupancy.contains_entity(5, 5, id),
             "must be registered in its foundation cell",
         );
         #[cfg(debug_assertions)]
-        sim.debug_assert_presence_consistent();
+        sim.debug_assert_lifecycle_consistent();
     }
 
     /// Slice 3: `create_limbo(ge)` stores the entity and increments owner counts
     /// but leaves it OUT of the active order and OUT of occupancy (born InLimbo).
     #[test]
     fn create_limbo_leaves_entity_out_of_logic_and_occupancy() {
-        use crate::sim::game_entity::{GameEntity, Presence};
+        use crate::sim::game_entity::GameEntity;
         let mut sim = Simulation::new();
         let mut ge = GameEntity::test_default(2, "E1", "Americans", 6, 6);
         // `place_spawned` resolves the owner against `sim.interner`; re-intern so
@@ -786,7 +821,8 @@ mod tests {
 
         let e = sim.substrate.entities.get(id).expect("entity in store");
         assert!(!e.in_logic_vector, "limbo object is not an active member");
-        assert_eq!(e.presence, Presence::Limbo);
+        assert!(e.lifecycle.in_limbo);
+        assert!(!e.lifecycle.cell_marked);
         assert!(sim.live_object_order_snapshot().is_empty());
         assert!(
             !sim.substrate.occupancy.contains_entity(6, 6, id),

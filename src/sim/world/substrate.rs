@@ -71,13 +71,12 @@ pub(crate) struct ObjectSubstrate {
     /// LogicVector with entities.
     #[serde(default)]
     pub(crate) anims: AnimStore,
-    /// Deferred-delete queue (the native `PendingDeleteList`). `uninit` pushes an
-    /// id here instead of freeing the store slot; `Simulation::flush_pending_delete`
-    /// drains it in death order at end-of-tick. Transient: empty at every tick/save
-    /// boundary, so it is `#[serde(skip)]` — not serialized, not hashed. Between
-    /// enqueue and drain the entity stays in the store as a `Dying`, off-occupancy,
-    /// off-logic corpse, resolvable by id (the two-phase death window).
-    #[serde(skip)]
+    /// Deferred-delete queue (the native `PendingDeleteList`). Ordered IDs may
+    /// survive a Rust snapshot boundary: between enqueue and the ordinary late
+    /// drain an entity remains resolvable in storage while its independent
+    /// lifecycle facts describe dead/limbo/cell/logic state. Serialized verbatim;
+    /// the state hash folds the queue length followed by IDs in insertion order.
+    #[serde(default)]
     pub(crate) pending_delete: Vec<u64>,
 }
 

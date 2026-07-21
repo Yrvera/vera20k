@@ -24,6 +24,7 @@ use crate::sim::components::{MovementTarget, NavTargetRef, Position};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::infantry;
+use crate::sim::lifecycle_request::{LifecycleRequest, UninitReason};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::cell_entry::{self, CellEntryResult, TerrainEntryMode};
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
@@ -771,8 +772,16 @@ fn handle_deferred_drive_track_chain(
                 _ => Vec::new(),
             };
             for &victim_id in &victims {
-                if let Some(victim) = entities.get(victim_id) {
-                    occupancy.remove(victim.position.rx, victim.position.ry, victim_id);
+                if let Some((rx, ry)) = entities
+                    .get(victim_id)
+                    .map(|victim| (victim.position.rx, victim.position.ry))
+                {
+                    occupancy.remove(rx, ry, victim_id);
+                }
+                if let Some(victim) = entities.get_mut(victim_id) {
+                    // This forced-drive path shares the same UNCHECKED
+                    // pre-UnInit unmark timing as the ordinary crush path.
+                    victim.lifecycle.cell_marked = false;
                 }
             }
             crush_kills.extend(victims.into_iter().map(|victim_id| PendingCrushKill {
@@ -828,9 +837,9 @@ fn handle_deferred_drive_track_chain(
     true
 }
 
-pub fn tick_movement_with_grids(
+pub(crate) fn tick_movement_with_grids(
     entities: &mut EntityStore,
-    live_order: &[u64],
+    live_order: Option<&[u64]>,
     path_grid: Option<&PathGrid>,
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     alliances: &HouseAllianceMap,
@@ -849,9 +858,15 @@ pub fn tick_movement_with_grids(
     interner: &mut crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
 ) -> MovementTickStats {
     let mut stats = MovementTickStats::default();
     if tick_ms == 0 {
+        return stats;
+    }
+    if live_order.is_some_and(|order| order.is_empty()) {
+        // An explicitly supplied empty LogicVector is authoritative. It is not
+        // the test-wrapper signal for deriving stable-id order from storage.
         return stats;
     }
     let blocker_neighbor_counts = path_grid.map(|grid| {
@@ -877,11 +892,12 @@ pub fn tick_movement_with_grids(
     };
     let dt: SimFixed = dt_from_tick_ms(tick_ms);
     let fallback_order;
-    let entity_order: &[u64] = if live_order.is_empty() {
-        fallback_order = entities.keys_sorted();
-        &fallback_order
-    } else {
-        live_order
+    let entity_order: &[u64] = match live_order {
+        Some(order) => order,
+        None => {
+            fallback_order = entities.keys_sorted();
+            &fallback_order
+        }
     };
     // Collect entities that have finished their paths (need movement_target removal after loop).
     let mut finished_entities: Vec<u64> = Vec::new();
@@ -988,6 +1004,9 @@ pub fn tick_movement_with_grids(
     }
 
     for entity_id in movers {
+        if contains_crush_victim(&crush_kills, entity_id) {
+            continue;
+        }
         stats.movers_total = stats.movers_total.saturating_add(1);
 
         // Snapshot mover data before entering the inner loop so we can release the
@@ -1749,8 +1768,10 @@ pub fn tick_movement_with_grids(
 
     sync_formation_speeds(entities);
 
-    // Apply deferred crush kills (instant death, then remove from EntityStore).
-    // Occupancy entries were already removed in handle_deferred_occupancy.
+    // Apply the immediate crush effects, then hand teardown to the lifecycle
+    // authority. Occupancy entries were already removed in
+    // handle_deferred_occupancy; that early timing remains UNCHECKED until the
+    // unified per-object scheduler owns the whole locomotor/PerCellProcess pass.
     crush_kills.sort_by_key(|kill| (kill.victim_id, kill.crusher_id));
     crush_kills.dedup_by_key(|kill| kill.victim_id);
     for kill in &crush_kills {
@@ -1772,14 +1793,16 @@ pub fn tick_movement_with_grids(
             if let Some(victim) = entities.get_mut(victim_id) {
                 victim.health.current = 0;
             }
-            entities.clear_radio_contacts_for(victim_id);
-            entities.remove(victim_id);
+            lifecycle_requests.push(LifecycleRequest::Uninit {
+                stable_id: victim_id,
+                reason: UninitReason::Crush,
+            });
             stats.crush_kills = stats.crush_kills.saturating_add(1);
         }
     }
 
-    finalize_finished_entities(entities, &finished_entities, sim_tick);
-    update_locomotor_phases(entities, sim_tick);
+    finalize_finished_entities(entities, &finished_entities, &crush_kills, sim_tick);
+    update_locomotor_phases(entities, &crush_kills, sim_tick);
 
     // Hover vertical controller — every hover unit, moving OR parked (idle
     // units still float at cruise height and bob). Runs after the XY stage so
@@ -1800,6 +1823,9 @@ pub fn tick_movement_with_grids(
             3, // engine code default; stock [AudioVisual] overrides to 6
         ));
     for &entity_id in entity_order {
+        if contains_crush_victim(&crush_kills, entity_id) {
+            continue;
+        }
         let Some(entity) = entities.get_mut(entity_id) else {
             continue;
         };
@@ -1895,8 +1921,23 @@ fn sync_formation_speeds(entities: &mut EntityStore) {
 
 /// Remove movement targets from finished entities, reset sub-cell to final
 /// position, and transition locomotor to Idle.
-fn finalize_finished_entities(entities: &mut EntityStore, finished: &[u64], sim_tick: u64) {
+fn contains_crush_victim(crush_kills: &[PendingCrushKill], stable_id: u64) -> bool {
+    // The mover loop consults this before the deferred kill list is sorted.
+    // Preserve native live-order visibility with a linear membership check;
+    // post-loop sorting remains only for deterministic request emission.
+    crush_kills.iter().any(|kill| kill.victim_id == stable_id)
+}
+
+fn finalize_finished_entities(
+    entities: &mut EntityStore,
+    finished: &[u64],
+    crush_kills: &[PendingCrushKill],
+    sim_tick: u64,
+) {
     for &entity_id in finished {
+        if contains_crush_victim(crush_kills, entity_id) {
+            continue;
+        }
         if let Some(entity) = entities.get_mut(entity_id) {
             if !super::navcom::defer_drive_arrival_clear(entity) {
                 super::navcom::set_destination_internal_null(entity);
@@ -1943,9 +1984,16 @@ fn finalize_finished_entities(entities: &mut EntityStore, finished: &[u64], sim_
 
 /// Update locomotor phases for all active movers — 7-state mapping.
 /// Maps the current movement state to the appropriate WalkLocomotionClass state.
-fn update_locomotor_phases(entities: &mut EntityStore, sim_tick: u64) {
+fn update_locomotor_phases(
+    entities: &mut EntityStore,
+    crush_kills: &[PendingCrushKill],
+    sim_tick: u64,
+) {
     let all_keys = entities.keys_sorted();
     for &id in &all_keys {
+        if contains_crush_victim(crush_kills, id) {
+            continue;
+        }
         if let Some(entity) = entities.get_mut(id) {
             // Compute new phase and capture old phase in a scoped block to release
             // borrows before calling push_debug_event.
@@ -2174,10 +2222,14 @@ mod drive_track_chain_tests {
         let mut entities = EntityStore::new();
         let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
         mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        mover.lifecycle.in_limbo = false;
+        mover.lifecycle.cell_marked = true;
         entities.insert(mover);
 
         let mut blocker = GameEntity::test_default(2, "MTNK", "Americans", 11, 10);
         blocker.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        blocker.lifecycle.in_limbo = false;
+        blocker.lifecycle.cell_marked = true;
         if blocker_moving {
             blocker.movement_target = Some(MovementTarget::default());
         }
@@ -2256,11 +2308,15 @@ mod drive_track_chain_tests {
         let mut entities = EntityStore::new();
         let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
         mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        mover.lifecycle.in_limbo = false;
+        mover.lifecycle.cell_marked = true;
         entities.insert(mover);
 
         let mut gate = GameEntity::test_default(100, "GAGATE_A", "Americans", 11, 10);
         gate.category = EntityCategory::Structure;
         gate.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
+        gate.lifecycle.in_limbo = false;
+        gate.lifecycle.cell_marked = true;
         entities.insert(gate);
 
         let occupancy = OccupancyGrid::rebuild(&entities);
@@ -2308,5 +2364,58 @@ mod drive_track_chain_tests {
         assert!(installed);
         assert!(entities.get(1).unwrap().drive_track.is_some());
         assert_eq!(stats.scatter_successes, 0);
+    }
+
+    #[test]
+    fn drive_track_crush_clears_cell_mark_before_lifecycle_handoff() {
+        let mut entities = EntityStore::new();
+        let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
+        mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        mover.lifecycle.in_limbo = false;
+        mover.lifecycle.cell_marked = true;
+        entities.insert(mover);
+
+        let mut victim = GameEntity::test_default(2, "E1", "Soviets", 11, 10);
+        victim.category = EntityCategory::Infantry;
+        victim.crushable = true;
+        victim.lifecycle.in_limbo = false;
+        victim.lifecycle.cell_marked = true;
+        entities.insert(victim);
+
+        let mut occupancy = OccupancyGrid::rebuild(&entities);
+        let mut snap = drive_snapshot();
+        snap.regular_crusher = true;
+        let live_building_entry_skips = BTreeMap::new();
+        let alliances = HouseAllianceMap::new();
+        let interner = test_interner();
+        let mut rng = SimRng::new(0);
+        let mut stats = MovementTickStats::default();
+        let mut crush_kills = Vec::new();
+        let mut already_scattered = BTreeSet::new();
+
+        let installed = handle_deferred_drive_track_chain(
+            &mut entities,
+            1,
+            &snap,
+            chain_to_east_cell(),
+            None,
+            None,
+            None,
+            &mut occupancy,
+            &live_building_entry_skips,
+            &alliances,
+            &interner,
+            None,
+            &mut rng,
+            &mut stats,
+            &mut crush_kills,
+            &mut already_scattered,
+        );
+
+        assert!(installed);
+        assert_eq!(crush_kills.len(), 1);
+        assert_eq!(crush_kills[0].victim_id, 2);
+        assert!(!entities.get(2).unwrap().lifecycle.cell_marked);
+        assert!(!occupancy.contains_entity(11, 10, 2));
     }
 }

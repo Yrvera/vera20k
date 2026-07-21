@@ -130,14 +130,14 @@ fn build_slave_scan_filter<'a>(
 /// Uses the two-phase snapshot pattern: snapshot → process → write back.
 pub(super) fn tick_slave_harvesters(
     sim: &mut Simulation,
+    live_order: &[u64],
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
 ) {
     // Phase 1: Snapshot all slave harvesters.
-    let keys = sim.substrate.entities.keys_sorted();
     let mut snapshots: Vec<SlaveSnapshot> = Vec::new();
-    for &id in &keys {
+    for &id in live_order {
         let Some(entity) = sim.substrate.entities.get(id) else {
             continue;
         };
@@ -609,9 +609,32 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
 ///
 /// When a slave dies (removed from entity store), spawn a replacement after
 /// `SlaveRegenRate` ticks. `SlaveReloadRate` is the minimum gap between spawns.
-pub(super) fn tick_slave_regen(sim: &mut Simulation, rules: &RuleSet) {
-    // Collect master IDs that have slave bindings.
-    let master_ids: Vec<u64> = sim.production.slave_bindings.keys().copied().collect();
+pub(super) fn tick_slave_regen(sim: &mut Simulation, live_order: &[u64], rules: &RuleSet) {
+    // Missing/dead masters are lifecycle cleanup, not AI visitation. Remove
+    // those bindings even though the master is no longer in LogicVector.
+    let stale_master_ids = sim
+        .production
+        .slave_bindings
+        .keys()
+        .copied()
+        .filter(|&master_id| {
+            !sim.substrate
+                .entities
+                .get(master_id)
+                .is_some_and(|master| master.lifecycle.object_alive)
+        })
+        .collect::<Vec<_>>();
+    for master_id in stale_master_ids {
+        sim.production.slave_bindings.remove(&master_id);
+    }
+
+    // Regeneration is master AI work and therefore follows authoritative
+    // LogicVector order. An explicit empty vector performs no regeneration.
+    let master_ids = live_order
+        .iter()
+        .copied()
+        .filter(|master_id| sim.production.slave_bindings.contains_key(master_id))
+        .collect::<Vec<_>>();
 
     for master_id in master_ids {
         let Some(master) = sim.substrate.entities.get(master_id) else {

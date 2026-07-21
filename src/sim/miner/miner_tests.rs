@@ -275,7 +275,12 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
         super::miner_system::tick_miners(sim, rules, &config, Some(&grid));
         // Also tick movement so issue_direct_move targets are consumed
         // (Linked/Departing wait for movement_target to be None).
-        crate::sim::movement::tick_movement(&mut sim.substrate.entities, 67, &mut sim.interner);
+        crate::sim::movement::tick_movement(
+            &mut sim.substrate.entities,
+            67,
+            &mut sim.interner,
+            &mut sim.pending_lifecycle_requests,
+        );
         sim.session.tick += 1;
     }
 }
@@ -3262,6 +3267,7 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             67,
             sim.session.tick,
             &mut sim.interner,
+            &mut sim.pending_lifecycle_requests,
         );
         sim.session.tick += 1;
         // Advance the frame clock so the L10 post-unload resume jitter (and the
@@ -3309,6 +3315,7 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             67,
             sim.session.tick,
             &mut sim.interner,
+            &mut sim.pending_lifecycle_requests,
         );
         sim.session.tick += 1;
         sim.session.binary_frame += 1;
@@ -3433,6 +3440,7 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
             67,
             sim.session.tick,
             &mut sim.interner,
+            &mut sim.pending_lifecycle_requests,
         );
         sim.session.tick += 1;
         // The dock cadence timers (G5/G6) key on `binary_frame`; advance it so

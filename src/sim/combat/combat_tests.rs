@@ -146,6 +146,166 @@ fn make_structure_entity(
     entity
 }
 
+fn run_combat_death_handoff(
+    entities: &mut EntityStore,
+    rules: &RuleSet,
+    interner: &mut crate::sim::intern::StringInterner,
+    dead_entities: &[u64],
+) -> DeathEffects {
+    let mut occupancy = OccupancyGrid::new();
+    let mut resource_nodes = BTreeMap::new();
+    handle_entity_deaths(
+        entities,
+        &mut occupancy,
+        rules,
+        interner,
+        dead_entities,
+        &[],
+        &mut resource_nodes,
+        None,
+        None,
+        None,
+        0,
+    )
+}
+
+#[test]
+fn lifecycle_authority_immediate_combat_death_reaches_uninit_without_precleanup() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+
+    let mut dead = make_entity(1, "MTNK", 5, 5, 0);
+    dead.selected = true;
+    dead.attack_target = Some(AttackTarget::new(2));
+    dead.movement_target = Some(crate::sim::components::MovementTarget::default());
+    dead.in_logic_vector = true;
+    dead.lifecycle.in_limbo = false;
+    dead.lifecycle.cell_marked = true;
+    dead.radio_contacts.insert(2);
+    store.insert(dead);
+
+    let mut observer = make_entity(2, "MTNK", 6, 5, 300);
+    observer.attack_target = Some(AttackTarget::new(1));
+    store.insert(observer);
+
+    let mut interner = test_interner();
+    let result = run_combat_death_handoff(&mut store, &rules, &mut interner, &[1]);
+
+    assert_eq!(result.immediate_uninit_ids, vec![1]);
+    assert_eq!(result.despawned_ids, vec![1]);
+    let dead = store
+        .get(1)
+        .expect("world must still be able to UnInit the victim");
+    assert_eq!(dead.health.current, 0);
+    assert!(
+        !dead.dying,
+        "immediate UnInit, not combat, owns the death gate"
+    );
+    assert!(dead.selected, "UnInit owns deselection");
+    assert!(dead.attack_target.is_some(), "UnInit owns attack cleanup");
+    assert!(
+        dead.movement_target.is_some(),
+        "UnInit owns movement cleanup"
+    );
+    assert!(dead.in_logic_vector, "UnInit owns LogicVector removal");
+    assert!(dead.lifecycle.object_alive);
+    assert!(!dead.lifecycle.in_limbo);
+    assert!(dead.lifecycle.cell_marked);
+    assert!(dead.radio_contacts.contains(2), "Techno Limbo owns BREAK");
+    assert!(
+        !dead.owned_count_released,
+        "world lifecycle owns count release"
+    );
+    assert!(
+        store.get(2).unwrap().attack_target.is_some(),
+        "combat must not bulk-clear other objects' targets"
+    );
+}
+
+#[test]
+fn lifecycle_authority_combat_leaves_transport_cargo_for_carrier_uninit() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+
+    let mut cargo = crate::sim::passenger::PassengerCargo::new(2, 1);
+    assert!(cargo.board(2, 1));
+    let mut carrier = make_entity(1, "MTNK", 5, 5, 0);
+    carrier.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
+    store.insert(carrier);
+
+    let mut passenger = make_infantry_entity(2, "E1", 5, 5, 125);
+    passenger.passenger_role = crate::sim::passenger::PassengerRole::Inside { transport_id: 1 };
+    passenger.selected = true;
+    passenger.attack_target = Some(AttackTarget::new(3));
+    passenger.movement_target = Some(crate::sim::components::MovementTarget::default());
+    store.insert(passenger);
+    store.insert(make_entity(3, "MTNK", 6, 5, 300));
+
+    let mut interner = test_interner();
+    let result = run_combat_death_handoff(&mut store, &rules, &mut interner, &[1]);
+
+    assert_eq!(result.immediate_uninit_ids, vec![1]);
+    assert!(result.destroyed_garrison_buildings.is_empty());
+    let carrier = store.get(1).unwrap();
+    assert_eq!(carrier.passenger_role.cargo().unwrap().passengers, vec![2]);
+    let passenger = store.get(2).unwrap();
+    assert_eq!(passenger.health.current, 125);
+    assert!(!passenger.dying);
+    assert!(matches!(
+        passenger.passenger_role,
+        crate::sim::passenger::PassengerRole::Inside { transport_id: 1 }
+    ));
+    assert!(passenger.selected);
+    assert!(passenger.attack_target.is_some());
+    assert!(passenger.movement_target.is_some());
+}
+
+#[test]
+fn lifecycle_authority_animated_combat_handoff_changes_only_dying_and_sequence() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+
+    let mut dead = make_infantry_entity(1, "E1", 5, 5, 0);
+    dead.selected = true;
+    dead.attack_target = Some(AttackTarget::new(2));
+    dead.movement_target = Some(crate::sim::components::MovementTarget::default());
+    dead.in_logic_vector = true;
+    dead.lifecycle.in_limbo = false;
+    dead.lifecycle.cell_marked = true;
+    dead.radio_contacts.insert(2);
+    store.insert(dead);
+
+    let mut observer = make_entity(2, "MTNK", 6, 5, 300);
+    observer.attack_target = Some(AttackTarget::new(1));
+    store.insert(observer);
+
+    let mut interner = test_interner();
+    let result = run_combat_death_handoff(&mut store, &rules, &mut interner, &[1]);
+
+    assert!(result.immediate_uninit_ids.is_empty());
+    assert_eq!(result.despawned_ids, vec![1]);
+    let dead = store.get(1).unwrap();
+    assert_eq!(dead.health.current, 0);
+    assert!(dead.dying);
+    assert_eq!(
+        dead.animation.as_ref().unwrap().sequence,
+        SequenceKind::Die1
+    );
+    assert!(dead.selected);
+    assert!(dead.attack_target.is_some());
+    assert!(dead.movement_target.is_some());
+    assert!(dead.in_logic_vector);
+    assert!(dead.lifecycle.object_alive);
+    assert!(!dead.lifecycle.in_limbo);
+    assert!(dead.lifecycle.cell_marked);
+    assert!(dead.radio_contacts.contains(2));
+    assert!(!dead.owned_count_released);
+    assert!(
+        store.get(2).unwrap().attack_target.is_some(),
+        "selective removal listeners, not combat, own target invalidation"
+    );
+}
+
 fn considered_aircraft_weapon_rules() -> RuleSet {
     let ini_str: &str = "\
 [InfantryTypes]
@@ -1769,7 +1929,7 @@ fn wall_destruction_routes_through_uninit_no_leak() {
         max: 400,
     };
     // Active spawn: insert -> reveal (logic order) -> increment count -> occupancy.
-    let id = sim.unlimbo(entity);
+    let (id, _) = sim.unlimbo(entity);
 
     // Pre-destruction: the wall is a live, occupying member.
     assert!(
@@ -1780,10 +1940,10 @@ fn wall_destruction_routes_through_uninit_no_leak() {
         sim.substrate.occupancy.contains_entity(5, 5, id),
         "active wall must occupy its cell"
     );
-    assert_eq!(
-        sim.substrate.entities.get(id).unwrap().presence,
-        crate::sim::game_entity::Presence::InCell
-    );
+    let wall = sim.substrate.entities.get(id).unwrap();
+    assert!(wall.lifecycle.object_alive);
+    assert!(!wall.lifecycle.in_limbo);
+    assert!(wall.lifecycle.cell_marked);
 
     // Forced destruction (u16::MAX bypasses the probabilistic gate).
     let events = [WallDamageEvent {
@@ -1805,9 +1965,12 @@ fn wall_destruction_routes_through_uninit_no_leak() {
         !sim.substrate.occupancy.contains_entity(5, 5, id),
         "destroyed wall must release its occupancy"
     );
-    assert_eq!(
-        sim.substrate.entities.get(id).unwrap().presence,
-        crate::sim::game_entity::Presence::Dying,
+    let wall = sim.substrate.entities.get(id).unwrap();
+    assert!(!wall.lifecycle.object_alive);
+    assert!(wall.lifecycle.in_limbo);
+    assert!(!wall.lifecycle.cell_marked);
+    assert!(
+        wall.dying,
         "wall is a deferred-death corpse until the flush"
     );
 
@@ -1858,7 +2021,7 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
             current: 400,
             max: 400,
         };
-        sim.unlimbo(wall);
+        let _ = sim.unlimbo(wall);
 
         let obj = rules.object(veh_type).expect("veh object");
         let veh_type_id = sim.interner.intern(veh_type);

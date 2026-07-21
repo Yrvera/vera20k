@@ -74,17 +74,19 @@ fn uninit_removes_all_structure_foundation_cells() {
 }
 
 #[test]
-fn unregister_live_object_scrubs_removed_store_id() {
+fn unregister_live_object_clears_flag_when_vector_entry_is_missing() {
     let mut sim = Simulation::new();
     let entity = GameEntity::test_default(10, "HTNK", "Americans", 4, 5);
     sim.substrate.entities.insert(entity);
     sim.reveal(10);
-    sim.substrate.entities.remove(10);
+    sim.substrate.logic.set_order_for_test(Vec::new());
+    assert!(sim.substrate.entities.get(10).unwrap().in_logic_vector);
 
     sim.unregister_live_object(10);
 
     sim.debug_assert_logic_membership_consistent();
     assert!(sim.live_object_order_snapshot().is_empty());
+    assert!(!sim.substrate.entities.get(10).unwrap().in_logic_vector);
 }
 
 fn insert_house_with_counts(
@@ -147,6 +149,8 @@ fn despawn_entity_clears_live_radio_contacts() {
     survivor.mark_live_contact_with(1);
     sim.substrate.entities.insert(despawned);
     sim.substrate.entities.insert(survivor);
+    assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
+    assert!(matches!(sim.reveal(2), RevealOutcome::Revealed { .. }));
 
     sim.despawn_entity(1);
 
@@ -2907,7 +2911,7 @@ fn test_attack_move_auto_acquires_enemy() {
 }
 
 #[test]
-fn test_attack_move_resumes_after_kill() {
+fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
     let rules = combat_test_rules();
     let mut sim: Simulation = Simulation::new();
     sim.spawn_from_map(
@@ -2965,25 +2969,26 @@ fn test_attack_move_resumes_after_kill() {
         None,
         100,
     );
-    assert!(
-        sim.substrate
-            .entities
-            .get(1)
-            .unwrap()
-            .attack_target
-            .is_none(),
-        "target should die and attack should clear"
-    );
-    let ge = sim
+    let victim = sim
         .substrate
         .entities
-        .get(1)
-        .expect("entity 1 should exist");
-    let movement = ge
-        .movement_target
-        .as_ref()
-        .expect("attack-move should resume movement after kill");
-    assert_eq!(movement.path.last().copied(), Some((8, 2)));
+        .get(2)
+        .expect("animated victim remains stored through its death sequence");
+    assert_eq!(victim.health.current, 0);
+    assert!(victim.dying);
+    assert!(victim.lifecycle.object_alive);
+
+    let attacker = sim.substrate.entities.get(1).expect("attacker exists");
+    assert!(
+        attacker.attack_target.as_ref().is_some_and(|target| {
+            matches!(target.target, crate::sim::combat::TargetKind::Entity(2))
+        }),
+        "damage handling must not pre-run the later UnInit listener stage"
+    );
+    assert!(
+        attacker.movement_target.is_none(),
+        "attack-move remains engaged until pointer expiry is dispatched"
+    );
 }
 
 #[test]
@@ -3025,6 +3030,7 @@ fn test_guard_returns_to_anchor_when_displaced() {
         100,
     );
 
+    sim.remove_entity_occupancy(1);
     if let Some(e) = sim.substrate.entities.get_mut(1) {
         e.position.rx = 5;
         e.position.ry = 2;
@@ -3034,6 +3040,7 @@ fn test_guard_returns_to_anchor_when_displaced() {
         e.movement_target = None;
         e.attack_target = None;
     }
+    sim.add_entity_occupancy(1);
 
     let _ = sim.advance_tick(&[], Some(&rules), &empty_heights(), Some(&grid), None, 100);
     let ge = sim
@@ -3484,7 +3491,6 @@ fn insert_revealed_structure(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
     s.foundation = "2x2".to_string();
     sim.substrate.entities.insert(s);
     sim.reveal(id);
-    sim.add_entity_occupancy(id);
 }
 
 /// Immediate (structure) path: `uninit` leaves the entity resolvable-but-`Dying`
@@ -3552,11 +3558,11 @@ fn mutual_same_tick_death_both_dying_then_flushed() {
     assert!(a.substrate.pending_delete.is_empty());
 }
 
-/// Animated (infantry/SHP) path: the app layer despawns a finished-animation corpse
-/// via `uninit` (enqueue) then a single `flush_pending_delete`. This mirrors the
-/// app-layer drain so the corpse frees at exactly one frame, no extra tick of linger.
+/// Animated (infantry/SHP) compatibility path: completion requests central UnInit.
+/// The corpse remains resolvable until the next ordinary simulation tail commits
+/// the frame and performs the sole pending-delete drain.
 #[test]
-fn animated_death_uninit_enqueues_then_flush_frees() {
+fn animated_death_uninit_waits_for_ordinary_tail_drain() {
     let mut sim = Simulation::new();
     let mut inf = GameEntity::test_default(5, "E1", "Americans", 3, 3);
     inf.owner = sim.interner.intern("Americans");
@@ -3569,17 +3575,17 @@ fn animated_death_uninit_enqueues_then_flush_frees() {
     assert!(sim.substrate.entities.get(5).is_some_and(|e| e.dying));
     assert!(sim.substrate.pending_delete.contains(&5));
 
-    sim.flush_pending_delete();
+    sim.advance_tick(&[], None, &BTreeMap::new(), None, None, 67);
     assert!(sim.substrate.entities.get(5).is_none());
     assert!(sim.substrate.pending_delete.is_empty());
 }
 
-/// Command-applied death (here: selling a power plant) is uninit'd at the command-
-/// region boundary and flushed BEFORE Phase 1, so vision (P3) and power (P4) — raw-
-/// store consumers feeding the state hash — must not count it on the sell tick. The
-/// deferred Dying window is reserved for combat-immediate deaths (drained at Phase 9).
+/// Command-applied death (here: selling a power plant) is UnInit'd during command
+/// application but remains resolvable until the ordinary tail drain. Earlier
+/// systems must gate on lifecycle authority rather than counting the dead-limbo
+/// object merely because it is still stored.
 #[test]
-fn command_death_is_flushed_before_vision_and_power() {
+fn command_death_is_ignored_before_ordinary_tail_drain() {
     use crate::sim::components::Health;
 
     let ini_str: &str = "\
@@ -3616,7 +3622,6 @@ fn command_death_is_flushed_before_vision_and_power() {
         };
         sim.substrate.entities.insert(bld);
         sim.reveal(id);
-        sim.add_entity_occupancy(id);
     }
 
     // Tick 1: power registers both plants.
@@ -3627,10 +3632,9 @@ fn command_death_is_flushed_before_vision_and_power() {
         "two power plants should produce 200 before sale",
     );
 
-    // Tick 2: sell plant 1 via command. It is uninit'd at the command boundary and
-    // flushed before P1, so P4 power recomputes counting ONLY the surviving plant 2.
-    // Without the command-region flush, the dying plant 1 (health 750) would still be
-    // counted at P4 → 200.
+    // Tick 2: sell plant 1 via command. It remains stored as dead-limbo until the
+    // tail, while P4 power counts only the surviving plant 2 through its lifecycle
+    // gate.
     let sell = CommandEnvelope::new(
         owner_id,
         sim.session.tick + 1,
@@ -3653,7 +3657,7 @@ fn command_death_is_flushed_before_vision_and_power() {
     assert_eq!(
         sim.power_states.get(&owner_id).map(|s| s.total_output),
         Some(100),
-        "sold plant must not contribute power on the sell tick (command-region flush)",
+        "sold dead-limbo plant must not contribute power before the tail drain",
     );
 }
 

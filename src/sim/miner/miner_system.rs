@@ -92,7 +92,13 @@ pub(crate) fn tick_miners(
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
 ) {
-    tick_miners_with_overlay_registry(sim, rules, config, path_grid, None);
+    // Focused miner fixtures may insert directly into storage. Preserve that
+    // fallback only when no explicit test LogicVector exists; otherwise honor
+    // its native insertion order. Production always supplies an authoritative
+    // order, including empty, through the entry point below.
+    let live_order = sim.live_object_order_snapshot();
+    let fixture_order = (!live_order.is_empty()).then_some(live_order.as_slice());
+    tick_miners_in_order(sim, rules, config, path_grid, None, fixture_order);
 }
 
 pub(crate) fn tick_miners_with_overlay_registry(
@@ -102,16 +108,33 @@ pub(crate) fn tick_miners_with_overlay_registry(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
-    // Phase 1: Snapshot all miners from EntityStore.
     let live_order = sim.live_object_order_snapshot();
+    tick_miners_in_order(
+        sim,
+        rules,
+        config,
+        path_grid,
+        overlay_registry,
+        Some(&live_order),
+    );
+}
+
+fn tick_miners_in_order(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    live_order: Option<&[u64]>,
+) {
+    // Phase 1: Snapshot all miners from EntityStore.
     let fallback_keys;
-    let keys: &[u64] = if live_order.is_empty() {
-        // Focused unit tests often insert entities directly without going
-        // through reveal/register. Preserve their old stable-id behavior.
-        fallback_keys = sim.substrate.entities.keys_sorted();
-        &fallback_keys
-    } else {
-        &live_order
+    let keys: &[u64] = match live_order {
+        Some(order) => order,
+        None => {
+            fallback_keys = sim.substrate.entities.keys_sorted();
+            &fallback_keys
+        }
     };
     let mut snapshots: Vec<MinerSnapshot> = Vec::new();
     for &id in keys {

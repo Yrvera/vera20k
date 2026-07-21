@@ -12,6 +12,7 @@
 
 pub(crate) mod bridge_orchestrator;
 pub mod edge_cell;
+mod lifecycle;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
@@ -21,6 +22,15 @@ mod world_hash;
 mod world_orders;
 mod world_spawn;
 
+#[cfg(test)]
+mod lifecycle_tests;
+
+pub(crate) use lifecycle::{
+    ConcealOutcome, LifecycleOutput, PlacementEvidence, RevealOutcome, RevealPosition,
+    RevealRequest,
+};
+#[cfg(test)]
+pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
 pub(crate) use logic_vector::LogicVector;
 pub use substrate::EnterOrderCounter;
 pub(crate) use substrate::ObjectSubstrate;
@@ -48,9 +58,9 @@ use crate::sim::components::WorldEffect;
 use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
-use crate::sim::game_entity::Presence;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
+use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::droppod_movement;
@@ -60,7 +70,7 @@ use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
 use crate::sim::movement::tunnel_movement;
 use crate::sim::movement::turret;
-use crate::sim::occupancy::{CellListInsertion, OccupancyGrid, entity_occupancy_cells};
+use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
 use crate::sim::overlay_grid::{WallDamageEvent, cleanup_wall_neighbors, damage_wall_overlay};
 use crate::sim::particles::ParticleSystemStore;
@@ -365,6 +375,18 @@ pub struct Simulation {
     /// (reveal/conceal/unlimbo/uninit) mutates; entity storage and the
     /// occupancy grid migrate here in later stages.
     pub(crate) substrate: ObjectSubstrate,
+    /// Ordered release-visible handoffs produced by lifecycle transactions.
+    /// The app drains these without feeding them back into simulation.
+    #[serde(skip)]
+    pub(crate) lifecycle_outputs: Vec<LifecycleOutput>,
+    /// Reusable movement-to-world lifecycle request buffer. Requests are applied
+    /// immediately after the movement call returns.
+    #[serde(skip)]
+    pub(crate) pending_lifecycle_requests: Vec<LifecycleRequest>,
+    /// Internal order proof; release builds carry no ledger or recording branch.
+    #[cfg(test)]
+    #[serde(skip)]
+    lifecycle_test_events: Vec<LifecycleTestEvent>,
     /// Sound events produced during the current tick — drained by the app layer.
     #[serde(skip)]
     pub sound_events: Vec<SimSoundEvent>,
@@ -597,6 +619,10 @@ impl Simulation {
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
+            lifecycle_outputs: Vec::new(),
+            pending_lifecycle_requests: Vec::new(),
+            #[cfg(test)]
+            lifecycle_test_events: Vec::new(),
             sound_events: Vec::new(),
             fire_events: Vec::new(),
             pending_smudge_requests: Vec::new(),
@@ -854,112 +880,7 @@ impl Simulation {
     }
 
     /// Native Reveal's append: +0x98 guard → tail-append → set flag. Idempotent.
-    pub(crate) fn register_live_object(&mut self, stable_id: u64) {
-        if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
-            if anim.in_logic_vector {
-                return;
-            }
-            debug_assert!(
-                !self.substrate.entities.contains(stable_id),
-                "object id {stable_id} exists in both entity and animation stores",
-            );
-            anim.in_logic_vector = true;
-            self.substrate.logic.push(stable_id);
-            return;
-        }
-        match self.substrate.entities.get_mut(stable_id) {
-            Some(e) if !e.in_logic_vector => {
-                // Legal source: the only non-active presence in this slice is
-                // Limbo, so an object joining the active set must be in Limbo.
-                debug_assert_eq!(
-                    e.presence,
-                    Presence::Limbo,
-                    "register_live_object: entity {stable_id} joined active set from {:?}, expected Limbo",
-                    e.presence,
-                );
-                e.in_logic_vector = true;
-                e.presence = Presence::InCell;
-            }
-            _ => return, // absent, or already a member (idempotent)
-        }
-        self.substrate.logic.push(stable_id);
-    }
-
-    /// Native Conceal's remove: gate on flag → clear flag → compacting remove.
-    pub(crate) fn unregister_live_object(&mut self, stable_id: u64) {
-        if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
-            if !anim.in_logic_vector {
-                return;
-            }
-            anim.in_logic_vector = false;
-            self.substrate.logic.remove(stable_id);
-            return;
-        }
-        if let Some(e) = self.substrate.entities.get_mut(stable_id) {
-            if !e.in_logic_vector {
-                return; // not a member — nothing to remove
-            }
-            // Legal source: an object leaving the active set was InCell.
-            debug_assert_eq!(
-                e.presence,
-                Presence::InCell,
-                "unregister_live_object: entity {stable_id} left active set from {:?}, expected InCell",
-                e.presence,
-            );
-            e.in_logic_vector = false;
-            e.presence = Presence::Limbo;
-        }
-        // Entity present-and-member, or already gone from store: scrub the order.
-        self.substrate.logic.remove(stable_id);
-    }
-
-    /// Native `ObjectClass::Reveal` append: an object becomes a live AI member.
-    /// Active spawns / unlimbo / unload / paradrop call this. Delegates to the
-    /// membership-guarded tail-append primitive; idempotent.
-    pub(crate) fn reveal(&mut self, stable_id: u64) {
-        self.register_live_object(stable_id);
-    }
-
-    /// Native `ObjectClass::Conceal`: the object leaves the live AI set but stays
-    /// in the store (limbo). Delegates to the compacting-remove primitive.
-    pub(crate) fn conceal(&mut self, stable_id: u64) {
-        self.unregister_live_object(stable_id);
-    }
-
-    pub(crate) fn add_entity_occupancy(&mut self, stable_id: u64) {
-        let Some(entity) = self.substrate.entities.get_mut(stable_id) else {
-            return;
-        };
-        if entity.passenger_role.is_inside_transport() {
-            return;
-        }
-        let Some(layer) = entity.occupancy_list_layer() else {
-            return;
-        };
-        let cells = entity_occupancy_cells(entity);
-        let sub_cell = if entity.category == EntityCategory::Infantry {
-            entity.sub_cell
-        } else {
-            None
-        };
-        let order = self.substrate.next_occupancy_enter_order.next();
-        entity.occupancy_enter_order = order;
-        let insertion = CellListInsertion::from_category(entity.category);
-        for (rx, ry) in cells {
-            self.substrate
-                .occupancy
-                .add(rx, ry, stable_id, layer, sub_cell, insertion);
-        }
-    }
-
-    pub(crate) fn remove_entity_occupancy(&mut self, stable_id: u64) {
-        let Some(entity) = self.substrate.entities.get(stable_id) else {
-            return;
-        };
-        for (rx, ry) in entity_occupancy_cells(entity) {
-            self.substrate.occupancy.remove(rx, ry, stable_id);
-        }
-    }
+    // Reveal/Conceal and raw LogicVector transactions live in lifecycle.rs.
 
     /// Debug-only invariant: the active order and the per-entity membership flag
     /// are two views of one set and must never disagree. The order must be
@@ -1006,24 +927,52 @@ impl Simulation {
         );
     }
 
-    /// Debug-only invariant: the `presence` shadow must equal the value derivable
-    /// from the authoritative gates for every in-store entity. Proves transition
-    /// coverage is complete (every gate flip set the shadow). O(n); compiled out of
-    /// release builds. `Dying` entities exist in-store between `uninit`'s enqueue
-    /// and the end-of-tick `flush_pending_delete`. The flush runs in Phase 9 before
-    /// this assert, so no `Dying` entity remains in the store at this call point.
+    /// Debug-only checks for relationships that remain true while the native
+    /// lifecycle axes themselves are deliberately independent.
     #[cfg(debug_assertions)]
-    pub(crate) fn debug_assert_presence_consistent(&self) {
-        for e in self.substrate.entities.values() {
-            debug_assert_eq!(
-                e.presence,
-                e.derived_presence(),
-                "entity {} presence {:?} != derived {:?} (in_logic_vector={})",
-                e.stable_id,
-                e.presence,
-                e.derived_presence(),
-                e.in_logic_vector,
-            );
+    pub(crate) fn debug_assert_lifecycle_consistent(&self) {
+        for entity in self.substrate.entities.values() {
+            if !entity.lifecycle.object_alive {
+                debug_assert!(
+                    entity.lifecycle.in_limbo,
+                    "dead entity {} must have completed Conceal before alive clear",
+                    entity.stable_id
+                );
+                debug_assert!(
+                    !entity.lifecycle.cell_marked,
+                    "dead entity {} must be unmarked before alive clear",
+                    entity.stable_id
+                );
+                debug_assert!(
+                    !entity.in_logic_vector,
+                    "dead entity {} must leave LogicVector before alive clear",
+                    entity.stable_id
+                );
+                debug_assert!(
+                    entity.owned_count_released,
+                    "dead entity {} must release owned count exactly once before alive clear",
+                    entity.stable_id
+                );
+                debug_assert!(
+                    self.substrate.pending_delete.contains(&entity.stable_id),
+                    "dead entity {} must remain pending until finalization",
+                    entity.stable_id
+                );
+            }
+            if entity.lifecycle.cell_marked
+                && !entity.passenger_role.is_inside_transport()
+                && entity.occupancy_list_layer().is_some()
+            {
+                for (rx, ry) in crate::sim::occupancy::entity_occupancy_cells(entity) {
+                    debug_assert!(
+                        self.substrate
+                            .occupancy
+                            .contains_entity(rx, ry, entity.stable_id),
+                        "cell-marked entity {} missing occupancy at ({rx}, {ry})",
+                        entity.stable_id
+                    );
+                }
+            }
         }
     }
 
@@ -1282,10 +1231,17 @@ impl Simulation {
     /// Test-only: force the active order and sync membership flags to it.
     #[cfg(test)]
     pub(crate) fn set_logic_order_for_test(&mut self, order: Vec<u64>) {
+        for entity in self.substrate.entities.values_mut() {
+            entity.in_logic_vector = false;
+        }
+        for anim in self.substrate.anims.values_mut() {
+            anim.in_logic_vector = false;
+        }
         for &id in &order {
             if let Some(e) = self.substrate.entities.get_mut(id) {
                 e.in_logic_vector = true;
-                e.presence = Presence::InCell;
+            } else if let Some(anim) = self.substrate.anims.get_mut(id) {
+                anim.in_logic_vector = true;
             }
         }
         self.substrate.logic.set_order_for_test(order);
@@ -1329,78 +1285,8 @@ impl Simulation {
         self.substrate.entities.change_owner(stable_id, new_owner);
     }
 
-    /// Despawn an entity by stable_id, removing it from EntityStore.
-    /// Decrements owned count if the entity was not already dying (combat deaths
-    /// are decremented when dying is first set, not at physical removal).
-    /// Also removes the entity from every occupied foundation cell.
-    pub(crate) fn uninit(&mut self, stable_id: u64) {
-        self.clear_building_damage_fire_slots(stable_id);
-        // Gather entity data before any mutable borrows.
-        let entity_info = self.substrate.entities.get(stable_id).map(|e| {
-            (
-                e.dying,
-                self.interner.resolve(e.owner).to_string(),
-                e.category,
-            )
-        });
-        if let Some((dying, owner_str, category)) = entity_info {
-            if !dying {
-                self.decrement_owned_count(&owner_str, category);
-            }
-            self.remove_entity_occupancy(stable_id);
-        }
-        self.clear_radio_contacts_for(stable_id);
-        // Despawn safety net: clear the surviving side of any bunker link.
-        crate::sim::docking::bunker_link::break_links_on_despawn(self, stable_id);
-        self.conceal(stable_id); // leave the active order before freeing the slot
-        // Conceal moved presence to Limbo (or it was already Limbo for a never-
-        // revealed limbo object); we then mark Dying + enqueue. The store slot is
-        // NOT freed here — flush_pending_delete frees it at end-of-tick. The entity
-        // stays resolvable by id as a Dying corpse until then (the death window).
-        if let Some(e) = self.substrate.entities.get_mut(stable_id) {
-            debug_assert_ne!(
-                e.presence,
-                Presence::Dying,
-                "uninit: entity {stable_id} already Dying (double teardown?)",
-            );
-            e.presence = Presence::Dying;
-            // IsAlive-equivalent: a queued corpse is dead for all live systems.
-            // Idempotent — the count-decrement above already read the original
-            // `dying`, so owned-counts are still adjusted exactly once.
-            e.dying = true;
-        }
-        // Two-phase death: enqueue instead of freeing. The slot is freed by
-        // flush_pending_delete at end-of-tick (ProcessPendingDelete).
-        self.substrate.pending_delete.push(stable_id);
-    }
-
-    /// Remove an entity from the world. Retained name for existing callers and
-    /// tests; routes through `uninit` so conceal-before-free stays centralized.
-    pub(crate) fn despawn_entity(&mut self, stable_id: u64) {
-        self.uninit(stable_id);
-    }
-
-    /// Drain the deferred-delete queue, freeing each enqueued store slot in death
-    /// (insertion) order. The end-of-tick `ProcessPendingDelete` drain. Called at
-    /// the end of `run_late_region` (inside `advance_tick`, before the asserts +
-    /// state hash) and in the app layer after the death-animation despawn loop.
-    /// After this returns the queue is empty and no `Dying` entity remains in the
-    /// store.
-    pub(crate) fn flush_pending_delete(&mut self) {
-        // mem::take so the loop body can call entities.remove without a
-        // simultaneous borrow of self.substrate.pending_delete. Removing an
-        // absent id is a no-op, covering any defensive double-enqueue.
-        let queued = std::mem::take(&mut self.substrate.pending_delete);
-        for id in queued {
-            let entity = self.substrate.entities.remove(id);
-            let anim = self.substrate.anims.remove(id);
-            debug_assert!(
-                !(entity.is_some() && anim.is_some()),
-                "object id {id} was removed from both stores",
-            );
-        }
-    }
-
+    /// Legacy non-lifecycle contact scrub retained only for separately classified
+    /// failure paths. Reveal/Conceal/UnInit must use synchronous radio authority.
     pub(crate) fn clear_radio_contacts_for(&mut self, stable_id: u64) {
         self.substrate.entities.clear_radio_contacts_for(stable_id);
     }
@@ -1557,16 +1443,8 @@ impl Simulation {
                 anim.in_logic_vector = true;
             }
         }
-        // Presence is #[serde(skip)] → all-default (Limbo) straight after
-        // deserialize. Reconcile it from the just-restored authoritative gates so
-        // a save/load round-trip restores identical presence (Slice 2 acceptance).
-        // `mission` is NOT re-derived: it is hashed authoritative state (Slice 8)
-        // that round-trips via serde, and as of S2 the dispatch-time value can
-        // legitimately differ from a fresh derivation (arrival tick) — a re-derive
-        // here would desync the restored hash.
-        for entity in self.substrate.entities.values_mut() {
-            entity.presence = entity.derived_presence();
-        }
+        // Alive, limbo, cell Mark, and death-sequence state are independent
+        // serialized facts. Load repair must never derive them from this vector.
     }
 
     /// Rebuild the zone connectivity map from the current PathGrid and terrain costs.
@@ -1725,9 +1603,8 @@ impl Simulation {
             // wall is an EntityCategory::Structure, so it owns owned-building
             // count, foundation occupancy, logic-vector membership, and any radio
             // contacts. uninit tears all of those down in native order, marks the
-            // entity Dying, and enqueues the slot for the end-of-tick
-            // flush_pending_delete (the same deferred-death window every combat
-            // death uses). A direct entities.remove leaks count/occupancy and
+            // entity dead-limbo, and enqueues the slot for the ordinary tail
+            // pending-delete drain. A direct entities.remove leaks count/occupancy and
             // leaves a dangling id in the active order.
             self.uninit(id);
         } else {
@@ -2149,26 +2026,6 @@ impl Simulation {
         });
         self.sound_events.extend(started_effect_sounds);
 
-        // The SINGLE in-tick deferred-delete drain (gamemd's one ProcessPending-
-        // Delete at the tail of Main_Tick). Frees every entity uninit'd anywhere
-        // in this advance_tick: command deaths (sells, MCV/slave deploy-undeploy,
-        // engineer capture), Phase-5 combat structure/voxel deaths, tick_building_
-        // down undeploy frees. The earlier command-boundary and end-of-Phase-5
-        // drains were removed — corpses now live the full Dying window and every
-        // mid-tick raw-store consumer is dying-gated instead. Runs BEFORE the
-        // OCCUPANCY_DEBUG rebuild (which would re-add an unflushed dying structure)
-        // and before the tail presence/membership asserts + state_hash.
-        self.flush_pending_delete();
-
-        // Debug-mode safety net: rebuild occupancy from scratch and compare
-        // with the persistent grid. Catches missed add/remove calls.
-        // Enable via OCCUPANCY_DEBUG=1 environment variable for focused debugging.
-        #[cfg(debug_assertions)]
-        if std::env::var("OCCUPANCY_DEBUG").is_ok() {
-            let expected = OccupancyGrid::rebuild(&self.substrate.entities);
-            self.substrate.occupancy.debug_assert_matches(&expected);
-        }
-
         // Native frame / tick contract: commit the synthetic 15 Hz frame LATE,
         // after all phase work — mirrors Main_Tick's guarded g_CurrentFrameCounter
         // increment after Network_ServiceLoop. During the tick, binary_frame held
@@ -2178,6 +2035,24 @@ impl Simulation {
         // of 1000/15 ≈ 66.67ms.
         self.session.total_sim_ms = self.session.total_sim_ms.saturating_add(tick_ms as u64);
         self.session.binary_frame = ((self.session.total_sim_ms * 15) / 1000) as u32;
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::BinaryFrameCommitted);
+
+        // The one ordinary ProcessPendingDelete drain follows the native frame
+        // commit. Alive queue entries keep their position; ready duplicate IDs
+        // collapse and physically finalize exactly once.
+        self.process_pending_delete();
+
+        // Debug-mode safety net: rebuild occupancy after the drain so dead
+        // structures are not reconstructed into the comparison.
+        #[cfg(debug_assertions)]
+        if std::env::var("OCCUPANCY_DEBUG").is_ok() {
+            let expected = OccupancyGrid::rebuild(&self.substrate.entities);
+            self.substrate.occupancy.debug_assert_matches(&expected);
+        }
+
+        // The separate Rust session tick has no direct native field; preserve
+        // its existing post-debug-validation relation.
         self.session.tick = execute_tick;
     }
 
@@ -2237,7 +2112,7 @@ impl Simulation {
         let movement_order = self.live_object_order_snapshot();
         let movement_stats = movement::tick_movement_with_grids(
             &mut self.substrate.entities,
-            &movement_order,
+            Some(&movement_order),
             path_grid,
             &self.terrain_costs,
             &self.house_alliances,
@@ -2259,7 +2134,14 @@ impl Simulation {
             &mut self.interner,
             rules,
             &mut self.sound_events,
+            &mut self.pending_lifecycle_requests,
         );
+        let mut lifecycle_requests = std::mem::take(&mut self.pending_lifecycle_requests);
+        for request in lifecycle_requests.drain(..) {
+            self.apply_lifecycle_request(request);
+        }
+        debug_assert!(lifecycle_requests.is_empty());
+        self.pending_lifecycle_requests = lifecycle_requests;
         if let Some(rules) = rules {
             crate::sim::gate_runtime::tick_gate_runtimes(
                 &mut self.substrate.entities,
@@ -2286,75 +2168,77 @@ impl Simulation {
         // DEPENDS ON: commands (may set movement targets for air/special units).
         // INDEPENDENT OF: ground movement (air units bypass A* and occupancy).
         let special_movement_order = self.live_object_order_snapshot();
-        air_movement::tick_air_movement(
-            &mut self.substrate.entities,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        if let Some(rules) = rules {
-            let warp_out_type = self.interner.intern(&rules.general.warp_out.name);
-            let mut teleport_visuals = teleport_movement::TeleportVisuals {
-                world_effects: &mut self.world_effects,
-                effect_frame_counts: &self.effect_frame_counts,
-                warp_out_type,
-                warp_out_rate_ms: rules.general.warp_out.rate_ms,
-            };
-            teleport_movement::tick_teleport_movement(
+        if !special_movement_order.is_empty() {
+            air_movement::tick_air_movement(
+                &mut self.substrate.entities,
+                &special_movement_order,
+                tick_ms,
+                self.session.tick,
+            );
+            if let Some(rules) = rules {
+                let warp_out_type = self.interner.intern(&rules.general.warp_out.name);
+                let mut teleport_visuals = teleport_movement::TeleportVisuals {
+                    world_effects: &mut self.world_effects,
+                    effect_frame_counts: &self.effect_frame_counts,
+                    warp_out_type,
+                    warp_out_rate_ms: rules.general.warp_out.rate_ms,
+                };
+                teleport_movement::tick_teleport_movement(
+                    &mut self.substrate.entities,
+                    &mut self.substrate.occupancy,
+                    &special_movement_order,
+                    tick_ms,
+                    self.session.tick,
+                    Some(&mut teleport_visuals),
+                );
+            } else {
+                teleport_movement::tick_teleport_movement(
+                    &mut self.substrate.entities,
+                    &mut self.substrate.occupancy,
+                    &special_movement_order,
+                    tick_ms,
+                    self.session.tick,
+                    None,
+                );
+            }
+            tunnel_movement::tick_tunnel_movement(
                 &mut self.substrate.entities,
                 &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
                 self.session.tick,
-                Some(&mut teleport_visuals),
             );
-        } else {
-            teleport_movement::tick_teleport_movement(
+            let _rocket_detonations = rocket_movement::tick_rocket_movement(
                 &mut self.substrate.entities,
-                &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
                 self.session.tick,
-                None,
             );
-        }
-        tunnel_movement::tick_tunnel_movement(
-            &mut self.substrate.entities,
-            &mut self.substrate.occupancy,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        let _rocket_detonations = rocket_movement::tick_rocket_movement(
-            &mut self.substrate.entities,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        // Homing missile state machine. Runs in the same air/special-movement
-        // phase as rocket_movement; detonation list is currently unused — the
-        // production projectile-spawn dispatch lands in a separate follow-up.
-        let _homing_detonations = homing_movement::tick_homing_movement(
-            &mut self.substrate.entities,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        droppod_movement::tick_droppod_movement(
-            &mut self.substrate.entities,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        if let Some(rules) = rules {
-            parachute_descent::tick_parachute_descent(
+            // Homing missile state machine. Runs in the same air/special-movement
+            // phase as rocket_movement; detonation list is currently unused — the
+            // production projectile-spawn dispatch lands in a separate follow-up.
+            let _homing_detonations = homing_movement::tick_homing_movement(
                 &mut self.substrate.entities,
+                &special_movement_order,
                 tick_ms,
-                rules.general.parachute_max_fall_rate,
                 self.session.tick,
             );
+            droppod_movement::tick_droppod_movement(
+                &mut self.substrate.entities,
+                &special_movement_order,
+                tick_ms,
+                self.session.tick,
+            );
+            if let Some(rules) = rules {
+                parachute_descent::tick_parachute_descent(
+                    &mut self.substrate.entities,
+                    tick_ms,
+                    rules.general.parachute_max_fall_rate,
+                    self.session.tick,
+                );
+            }
+            movement::tick_locomotor_piggyback_restore(&mut self.substrate.entities);
         }
-        movement::tick_locomotor_piggyback_restore(&mut self.substrate.entities);
 
         // --- Phase 2.5: Body rocking + slope-transition advance ---
         // DEPENDS ON: all movement above (slope_type lookups must see the
@@ -2560,13 +2444,14 @@ impl Simulation {
                         .map(|entity| (entity.owner, entity.category))
                 })
                 .collect();
-            // Decrement owned counts for entities killed in combat (dying=true set this tick).
-            for &(owner_id, category) in &combat_dead_infos {
-                let owner_str = self.interner.resolve(owner_id).to_string();
-                self.decrement_owned_count(&owner_str, category);
-            }
+            // The still-blocked animated-death path releases its represented
+            // owner count and logic membership at the existing handoff timing.
+            // Immediate objects keep every common lifecycle fact for UnInit.
             for &dead_id in &combat_result.despawned_ids {
-                self.unregister_live_object(dead_id);
+                if !combat_result.immediate_uninit_ids.contains(&dead_id) {
+                    self.release_owned_count_once(dead_id);
+                    self.legacy_unregister_logic_only_for_app_death(dead_id);
+                }
             }
             let mut sw_refresh_owners: Vec<InternedId> = Vec::new();
             if self.session.game_options.super_weapons && combat_result.structure_destroyed {
@@ -2577,6 +2462,12 @@ impl Simulation {
                         sw_refresh_owners.push(owner_id);
                     }
                 }
+            }
+            // Destroyed garrisons detach/eject their cargo while the building is
+            // still alive and represented. Generic carrier recursion must not
+            // consume those occupants first.
+            for event in &combat_result.destroyed_garrison_buildings {
+                production::eject_destruction_garrison(self, rules, event);
             }
             for &dead_id in &combat_result.immediate_uninit_ids {
                 // Eject a bunkered unit before the bunker is removed (UndockUnit).
@@ -2656,10 +2547,6 @@ impl Simulation {
                     bldg.ry,
                     bldg.z,
                 );
-            }
-            // Eject garrison occupants from CanBeOccupied buildings destroyed in combat.
-            for ev in &combat_result.destroyed_garrison_buildings {
-                production::eject_destruction_garrison(self, rules, ev);
             }
             // Refresh superweapon grants for owners who lost structures in combat.
             if self.session.game_options.super_weapons && combat_result.structure_destroyed {
@@ -2947,7 +2834,7 @@ impl Simulation {
         #[cfg(debug_assertions)]
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
-        self.debug_assert_presence_consistent();
+        self.debug_assert_lifecycle_consistent();
         // Mission projection runs after all systems and before the hash, so the
         // folded `mission` reflects the current tick. As of Slice 8 `mission` is
         // canonical hashed state; the Slice-2 shadow-agreement assert is retired.

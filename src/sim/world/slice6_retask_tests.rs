@@ -98,7 +98,13 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// marker now join the hash. A current-tree legacy-schema probe reproduced the
 /// prior `10575654478637980762` value exactly, proving this shift is composition
 /// only rather than retask behavior drift.
-const SLICE6_BASELINE_HASH: u64 = 17461624628486653208;
+/// Re-baselined for snapshot/hash schema v28: independent Object lifecycle axes,
+/// deterministic lifecycle bookkeeping, and the ordered pending-delete queue
+/// now join the lockstep hash. The current-tree legacy-schema probe below still
+/// reproduces the prior value exactly; this is a Rust regression ratchet, not
+/// gamemd parity evidence.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 17461624628486653208;
+const SLICE6_BASELINE_HASH: u64 = 3364793811093096139;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -173,6 +179,11 @@ fn replay_hash_stable_through_slice6() {
         let _ = sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, 67);
     }
 
+    assert_eq!(
+        sim.state_hash_without_lifecycle_v28(),
+        SLICE6_PRE_LIFECYCLE_V28_HASH,
+        "pre-v28 schema probe must reproduce the prior baseline; otherwise this is behavior drift"
+    );
     let hash = sim.state_hash();
     assert_eq!(
         hash, SLICE6_BASELINE_HASH,

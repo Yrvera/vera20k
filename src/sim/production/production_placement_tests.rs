@@ -1307,6 +1307,10 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
 
     // Use spawn_structure for dual-write, then reduce health for the test.
     spawn_structure(&mut sim, 1, "Americans", "GAPOWR", 20, 20);
+    assert!(matches!(
+        sim.reveal(1),
+        crate::sim::world::RevealOutcome::Revealed { .. }
+    ));
     if let Some(ge) = sim.substrate.entities.get_mut(1) {
         ge.health = Health {
             current: 375,

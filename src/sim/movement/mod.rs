@@ -34,6 +34,7 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::InternedId;
+use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
@@ -61,8 +62,8 @@ pub mod drive_track;
 pub mod droppod_movement;
 pub mod facing_class;
 pub mod group_destination;
-pub mod hover;
 pub mod homing_movement;
+pub mod hover;
 pub mod jumpjet_movement;
 pub mod locomotor;
 pub mod parachute_descent;
@@ -93,7 +94,7 @@ pub(crate) use movement_path::{
     path_search_used_zone_grid_marker, reset_path_search_used_zone_grid_marker,
 };
 // Re-export the tick function so callers can use `movement::tick_movement_with_grids`.
-pub use movement_tick::tick_movement_with_grids;
+pub(crate) use movement_tick::tick_movement_with_grids;
 
 // ---------------------------------------------------------------------------
 // Constants — shared across movement submodules via `super::`
@@ -248,10 +249,11 @@ pub fn tick_locomotor_piggyback_restore(entities: &mut EntityStore) -> usize {
 ///
 /// Called once per simulation tick with `tick_ms` milliseconds elapsed.
 /// Entities that reach their destination have MovementTarget removed automatically.
-pub fn tick_movement(
+pub(crate) fn tick_movement(
     entities: &mut EntityStore,
     tick_ms: u32,
     interner: &mut crate::sim::intern::StringInterner,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
 ) {
     let empty_costs: BTreeMap<SpeedType, TerrainCostGrid> = BTreeMap::new();
     let empty_alliances: HouseAllianceMap = HouseAllianceMap::new();
@@ -267,6 +269,7 @@ pub fn tick_movement(
         tick_ms,
         0, // sim_tick not available in test-only wrapper
         interner,
+        lifecycle_requests,
     );
 }
 
@@ -275,7 +278,7 @@ pub fn tick_movement(
 /// `terrain_costs` is the per-SpeedType cost map for cost-aware repath.
 /// When provided, repath attempts use `find_path_with_costs` to prefer
 /// roads and avoid rough terrain.
-pub fn tick_movement_with_grid(
+pub(crate) fn tick_movement_with_grid(
     entities: &mut EntityStore,
     path_grid: Option<&PathGrid>,
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
@@ -285,12 +288,13 @@ pub fn tick_movement_with_grid(
     tick_ms: u32,
     sim_tick: u64,
     interner: &mut crate::sim::intern::StringInterner,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
 ) -> MovementTickStats {
     let mut sound_events: Vec<crate::sim::world::SimSoundEvent> = Vec::new();
     let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     tick_movement_with_grids(
         entities,
-        &[],
+        None,
         path_grid,
         terrain_costs,
         alliances,
@@ -309,6 +313,7 @@ pub fn tick_movement_with_grid(
         interner,
         None, // No RuleSet in legacy wrapper — crush sounds suppressed
         &mut sound_events,
+        lifecycle_requests,
     )
 }
 
