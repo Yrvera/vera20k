@@ -7,11 +7,12 @@ use crate::render::shell_paint;
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
 use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::skirmish_shell::{
-    COMBO_FACE_H, ChooseMapModalButton, ChooseMapModalLayout, RandomMapSetupControl,
-    RandomMapSetupLayout, RandomMapSetupModalState, RectPx, SetupCombo, SkirmishShellState,
-    ValidationModalLayout, choose_map_listbox_content_rect, choose_map_listbox_row_rect,
-    choose_map_listbox_scroll_thumb_rect, choose_map_listbox_scrollbar_rect,
-    choose_map_listbox_visible_row_count, trackbar_pixel_offset,
+    COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, ChooseMapModalButton, ChooseMapModalLayout,
+    RandomMapSetupControl, RandomMapSetupLayout, RandomMapSetupModalState, RectPx,
+    SETUP_COMBO_ROWS, SkirmishShellState, ValidationModalLayout, choose_map_listbox_content_rect,
+    choose_map_listbox_row_rect, choose_map_listbox_scroll_thumb_rect,
+    choose_map_listbox_scrollbar_rect, choose_map_listbox_visible_row_count,
+    random_map_setup_dropdown_rect, setup_combo_items, trackbar_pixel_offset,
 };
 
 use super::chrome::{
@@ -27,16 +28,7 @@ use super::{
     SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE,
 };
 
-/// The five combo rows of the random-map setup dialog, in layout row order:
-/// map type, time, theater, size, resources. Row 5 is the players trackbar.
-const COMBO_ROW_CONTROLS: [SetupCombo; 5] = [
-    SetupCombo::MapType,
-    SetupCombo::Time,
-    SetupCombo::Theater,
-    SetupCombo::Size,
-    SetupCombo::Resources,
-];
-/// The same five rows as hit-test controls, for the enabled/disabled lookup.
+/// The five combo rows as hit-test controls, for the enabled/disabled lookup.
 const SETUP_COMBO_CONTROLS: [RandomMapSetupControl; 5] = [
     RandomMapSetupControl::MapType0x405,
     RandomMapSetupControl::Time0x3ea,
@@ -257,7 +249,7 @@ pub(super) fn push_random_map_setup_modal_instances(
     let chrome = atlas.control_chrome();
     // Rows 0..4 are combos; row 5 is the players trackbar. A collapsed combo
     // occupies only its face, not the dropdown extent the resource reserves.
-    for (row, control) in COMBO_ROW_CONTROLS.iter().enumerate() {
+    for (row, control) in SETUP_COMBO_ROWS.iter().enumerate() {
         let rect = layout.control_rects[row];
         let face = RectPx::new(rect.x, rect.y, rect.w, COMBO_FACE_H);
         // ControlPaint::Combo emits only the swatch and the arrow -- the shell's
@@ -299,34 +291,51 @@ pub(super) fn push_random_map_setup_modal_instances(
         },
     );
 
-    // Seed is a display-only field: a sunken plate with no caret or focus.
-    push_solid_rect(
-        out,
-        atlas,
-        layout.seed_field,
-        SHELL_MODAL_PANEL_RGB,
-        SHELL_DROPDOWN_DEPTH - 0.00010,
-    );
-    push_rect_outline(
-        out,
-        atlas,
-        layout.seed_field,
-        OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
-        SHELL_DROPDOWN_DEPTH - 0.00011,
-    );
-
-    for (rect, control) in [
+    // Surprise Me and Generate are owner-draw type 3 for this dialog, so they
+    // take the MNBTTN modal button art rather than the generic PCX slices --
+    // the same art the message-box modals use. Native size, centred on the
+    // control rect.
+    let modal_button_frames = shell_paint::ModalButtonFrames {
+        up: atlas.modal_button_mnbttn_frame0,
+        disabled: atlas.modal_button_mnbttn_frame1,
+        pressed: atlas.modal_button_mnbttn_frame2,
+    };
+    let action_buttons: Vec<shell_paint::ModalButton> = [
         (layout.randomize, RandomMapSetupControl::Randomize0x621),
         (layout.generate, RandomMapSetupControl::Generate0x620),
-    ] {
-        push_button_30(
-            out,
-            atlas,
-            rect,
-            modal.pressed_control == Some(control),
-            !modal.is_enabled(control),
-            SHELL_DROPDOWN_DEPTH - 0.00011,
-        );
+    ]
+    .into_iter()
+    .map(|(rect, control)| shell_paint::ModalButton {
+        rect,
+        pressed: modal.pressed_control == Some(control),
+        enabled: modal.is_enabled(control),
+    })
+    .collect();
+    if modal_button_frames.up.is_some() {
+        out.extend(shell_paint::paint_modal_sprites(
+            None,
+            modal_button_frames,
+            layout.dialog,
+            &action_buttons,
+            shell_paint::ModalDepths {
+                background: SHELL_DROPDOWN_DEPTH - 0.00011,
+                button: SHELL_DROPDOWN_DEPTH - 0.00011,
+                text: 0.0,
+            },
+        ));
+    } else {
+        // MNBTTN.SHP missing from the install: fall back to the generic slices
+        // rather than drawing nothing where a button belongs.
+        for button in &action_buttons {
+            push_button_30(
+                out,
+                atlas,
+                button.rect,
+                button.pressed,
+                !button.enabled,
+                SHELL_DROPDOWN_DEPTH - 0.00011,
+            );
+        }
     }
 
     for (rect, control) in [
@@ -371,6 +380,41 @@ pub(super) fn push_random_map_setup_modal_instances(
             OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
             SHELL_DROPDOWN_DEPTH - 0.00014,
         );
+    }
+
+    // An open list paints last so it covers the rows beneath it.
+    if let Some(combo) = modal.open_combo {
+        let row = combo.row();
+        let items = setup_combo_items(combo);
+        let list = random_map_setup_dropdown_rect(layout, row, items.len());
+        push_solid_rect(
+            out,
+            atlas,
+            list,
+            SHELL_DROPDOWN_BG_RGB_PENDING_COMBODROPWIN_SOURCE_CAPTURE,
+            SHELL_DROPDOWN_DEPTH - 0.00015,
+        );
+        push_rect_outline(
+            out,
+            atlas,
+            list,
+            OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
+            SHELL_DROPDOWN_DEPTH - 0.00016,
+        );
+        if let Some(selected) = modal.selected_item_index(combo) {
+            push_solid_rect(
+                out,
+                atlas,
+                RectPx::new(
+                    list.x,
+                    list.y + COMBO_DROPDOWN_ROW_H * selected as i32,
+                    list.w,
+                    COMBO_DROPDOWN_ROW_H,
+                ),
+                OWNERDRAW_SELECTED_RGB_FROM_DAT_00AC4604_PACKED_000000FF,
+                SHELL_DROPDOWN_DEPTH - 0.00017,
+            );
+        }
     }
 }
 

@@ -60,6 +60,118 @@ pub enum SetupCombo {
     Resources,
 }
 
+/// The combos in layout row order. Row 5 of the option block is the players
+/// trackbar, which is not a combo and is absent here.
+pub const SETUP_COMBO_ROWS: [SetupCombo; 5] = [
+    SetupCombo::MapType,
+    SetupCombo::Time,
+    SetupCombo::Theater,
+    SetupCombo::Size,
+    SetupCombo::Resources,
+];
+
+impl SetupCombo {
+    /// The combo a control id addresses, if it is one.
+    pub const fn from_control(control: RandomMapSetupControl) -> Option<Self> {
+        match control {
+            RandomMapSetupControl::MapType0x405 => Some(Self::MapType),
+            RandomMapSetupControl::Time0x3ea => Some(Self::Time),
+            RandomMapSetupControl::Theater0x407 => Some(Self::Theater),
+            RandomMapSetupControl::Size0x406 => Some(Self::Size),
+            RandomMapSetupControl::Resources0x408 => Some(Self::Resources),
+            _ => None,
+        }
+    }
+
+    /// The control id this combo is.
+    pub const fn control(self) -> RandomMapSetupControl {
+        match self {
+            Self::MapType => RandomMapSetupControl::MapType0x405,
+            Self::Time => RandomMapSetupControl::Time0x3ea,
+            Self::Theater => RandomMapSetupControl::Theater0x407,
+            Self::Size => RandomMapSetupControl::Size0x406,
+            Self::Resources => RandomMapSetupControl::Resources0x408,
+        }
+    }
+
+    /// Index into the layout's option rows.
+    pub const fn row(self) -> usize {
+        match self {
+            Self::MapType => 0,
+            Self::Time => 1,
+            Self::Theater => 2,
+            Self::Size => 3,
+            Self::Resources => 4,
+        }
+    }
+}
+
+/// One combo entry: the label to resolve, an English fallback for a missing
+/// string, and the value the entry carries into its option field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetupComboItem {
+    pub key: &'static str,
+    pub fallback: &'static str,
+    pub value: i32,
+}
+
+const fn item(key: &'static str, fallback: &'static str, value: i32) -> SetupComboItem {
+    SetupComboItem {
+        key,
+        fallback,
+        value,
+    }
+}
+
+/// Landform entries. Note the values start at 1, not 0: archipelago (0) is
+/// deliberately absent from the list, so a map type of 0 leaves the combo
+/// showing nothing at all rather than falling back to the first entry.
+const MAP_TYPE_ITEMS: [SetupComboItem; 4] = [
+    item("TXT_MAP_CONTINENT", "Continent", 1),
+    item("TXT_MAP_TEAM_CONTINENTS", "Team Continents", 2),
+    item("TXT_MAP_INLAND", "Inland", 3),
+    item("TXT_MAP_MOUNTAINOUS", "Mountainous", 4),
+];
+
+const TIME_ITEMS: [SetupComboItem; 4] = [
+    item("TXT_TIME_MORNING", "Morning", 0),
+    item("TXT_TIME_AFTERNOON", "Afternoon", 1),
+    item("TXT_TIME_DUSK", "Dusk", 2),
+    item("TXT_TIME_NIGHT", "Night", 3),
+];
+
+/// Only two theaters are offered, and their labels come from the theater table's
+/// own name strings rather than the dialog's string list.
+const THEATER_ITEMS: [SetupComboItem; 2] = [
+    item("Name:Temperate", "Temperate", 0),
+    item("Name:Snow", "Snow", 1),
+];
+
+const SIZE_ITEMS: [SetupComboItem; 4] = [
+    item("TXT_MAPSIZE_SMALL", "Small", 0),
+    item("TXT_MAPSIZE_MEDIUM", "Medium", 1),
+    item("TXT_MAPSIZE_LARGE", "Large", 2),
+    item("TXT_MAPSIZE_VERY_LARGE", "Very Large", 3),
+];
+
+const RESOURCE_ITEMS: [SetupComboItem; 4] = [
+    item("TXT_RESOURCE_LOW", "Low", 0),
+    item("TXT_RESOURCE_MODERATE", "Moderate", 1),
+    item("TXT_RESOURCE_HIGH", "High", 2),
+    item("TXT_RESOURCE_EXTREME", "Extreme", 3),
+];
+
+/// The entries a combo is filled with, in list order.
+pub const fn setup_combo_items(combo: SetupCombo) -> &'static [SetupComboItem] {
+    match combo {
+        SetupCombo::MapType => &MAP_TYPE_ITEMS,
+        SetupCombo::Time => &TIME_ITEMS,
+        SetupCombo::Theater => &THEATER_ITEMS,
+        SetupCombo::Size => &SIZE_ITEMS,
+        SetupCombo::Resources => &RESOURCE_ITEMS,
+    }
+}
+
 /// What closing the dialog should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcceptOutcome {
@@ -160,6 +272,50 @@ impl RandomMapSetupModalState {
     pub fn set_num_players(&mut self, value: i32) {
         self.options.num_players = value;
         self.on_option_changed();
+    }
+
+    /// The option field a combo reflects. Size reads the width axis, which is
+    /// the one the original resyncs the combo from.
+    pub const fn combo_value(&self, combo: SetupCombo) -> i32 {
+        match combo {
+            SetupCombo::MapType => self.options.map_type,
+            SetupCombo::Time => self.options.time,
+            SetupCombo::Theater => self.options.theater,
+            SetupCombo::Size => self.options.width,
+            SetupCombo::Resources => self.options.resources,
+        }
+    }
+
+    /// Which entry is highlighted, or `None` when the current value has no entry
+    /// — the original resolves the selection by matching the entry, so an
+    /// unlisted value simply clears the selection instead of clamping.
+    pub fn selected_item_index(&self, combo: SetupCombo) -> Option<usize> {
+        let value = self.combo_value(combo);
+        setup_combo_items(combo)
+            .iter()
+            .position(|entry| entry.value == value)
+    }
+
+    /// Commit a picked entry and close the dropdown.
+    pub fn set_combo_value(&mut self, combo: SetupCombo, value: i32) {
+        match combo {
+            SetupCombo::MapType => self.set_map_type(value),
+            SetupCombo::Time => self.set_time(value),
+            SetupCombo::Theater => self.set_theater(value),
+            SetupCombo::Size => self.set_size(value),
+            SetupCombo::Resources => self.set_resources(value),
+        }
+        self.open_combo = None;
+    }
+
+    /// Clicking a combo face opens it, or closes it if it was already open.
+    /// Opening one closes any other.
+    pub fn toggle_combo(&mut self, combo: SetupCombo) {
+        self.open_combo = if self.open_combo == Some(combo) {
+            None
+        } else {
+            Some(combo)
+        };
     }
 
     fn on_option_changed(&mut self) {
@@ -360,6 +516,64 @@ mod tests {
             }
             other => panic!("expected a commit, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn map_type_entries_start_at_one_and_omit_archipelago() {
+        let items = setup_combo_items(SetupCombo::MapType);
+        assert_eq!(items.len(), 4);
+        assert_eq!(
+            items.iter().map(|entry| entry.value).collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn an_unlisted_map_type_clears_the_selection() {
+        let mut state = opened();
+        state.set_map_type(0);
+        assert_eq!(
+            state.selected_item_index(SetupCombo::MapType),
+            None,
+            "archipelago has no entry, so nothing is shown as selected"
+        );
+        state.set_map_type(3);
+        assert_eq!(state.selected_item_index(SetupCombo::MapType), Some(2));
+    }
+
+    #[test]
+    fn only_two_theaters_are_offered() {
+        assert_eq!(setup_combo_items(SetupCombo::Theater).len(), 2);
+    }
+
+    #[test]
+    fn size_selection_reflects_the_width_axis() {
+        let mut state = opened();
+        state.set_combo_value(SetupCombo::Size, 2);
+        assert_eq!((state.options.width, state.options.height), (2, 2));
+        assert_eq!(state.selected_item_index(SetupCombo::Size), Some(2));
+    }
+
+    #[test]
+    fn picking_an_entry_closes_the_dropdown_and_invalidates_the_result() {
+        let mut state = opened();
+        state.toggle_combo(SetupCombo::Resources);
+        assert_eq!(state.open_combo, Some(SetupCombo::Resources));
+        state.generated = true;
+        state.set_combo_value(SetupCombo::Resources, 3);
+        assert_eq!(state.open_combo, None);
+        assert_eq!(state.options.resources, 3);
+        assert!(!state.generated);
+    }
+
+    #[test]
+    fn opening_one_combo_closes_another() {
+        let mut state = opened();
+        state.toggle_combo(SetupCombo::Time);
+        state.toggle_combo(SetupCombo::Theater);
+        assert_eq!(state.open_combo, Some(SetupCombo::Theater));
+        state.toggle_combo(SetupCombo::Theater);
+        assert_eq!(state.open_combo, None);
     }
 
     #[test]

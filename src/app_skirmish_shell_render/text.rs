@@ -12,14 +12,14 @@ use crate::render::shell_text::{self, Reveal, ShellAlign, ShellTextDraw, TextRec
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
-    OwnerDrawButton, RandomMapSetupLayout, RectPx, SkirmishAiRowType, SkirmishCheckboxId,
-    SkirmishComboItem, SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent,
-    SkirmishShellState, SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect,
-    choose_map_listbox_content_rect, choose_map_listbox_row_rect,
+    OwnerDrawButton, RandomMapSetupLayout, RectPx, SETUP_COMBO_ROWS, SkirmishAiRowType,
+    SkirmishCheckboxId, SkirmishComboItem, SkirmishCountryChoice, SkirmishShellLayout,
+    SkirmishShellOpponent, SkirmishShellState, SkirmishTrackbarId, ValidationModalLayout,
+    checkbox_text_rect, choose_map_listbox_content_rect, choose_map_listbox_row_rect,
     choose_map_listbox_visible_row_count, combo_dropdown_content_rect, combo_dropdown_rect,
     combo_dropdown_visible_row_count, combo_enabled, combo_items, combo_text_rect,
-    player_name_edit_text_rect, player_row_visible, trackbar_value_text_rect,
-    trackbar_visual_value,
+    player_name_edit_text_rect, player_row_visible, random_map_setup_dropdown_rect,
+    setup_combo_items, trackbar_value_text_rect, trackbar_visual_value,
 };
 
 use super::controls::trackbar_rect_for_id;
@@ -814,6 +814,9 @@ pub(super) fn choose_map_modal_status_help_text(shell: &SkirmishShellState) -> O
 ///
 /// The combo faces render no selection text yet: the item lists come from the
 /// dialog's populate path and still need their string-table sources decoded.
+/// The players trackbar sits below the five combo rows.
+const PLAYERS_ROW: usize = 5;
+
 pub(super) fn push_random_map_setup_modal_text_draws(
     out: &mut Vec<ShellTextDraw>,
     state: &AppState,
@@ -877,12 +880,32 @@ pub(super) fn push_random_map_setup_modal_text_draws(
         );
     }
 
-    // Seed is display-only; the dialog formats the stored value straight in.
+    // Selected entry on each closed combo face. A value with no entry -- map
+    // type 0, which the list omits -- leaves the face blank, as the original's
+    // match-the-entry selection does.
+    for (row, combo) in SETUP_COMBO_ROWS.iter().enumerate() {
+        let items = setup_combo_items(*combo);
+        let Some(selected) = modal.selected_item_index(*combo) else {
+            continue;
+        };
+        let entry = items[selected];
+        push_text_draw(
+            out,
+            state,
+            &localized_label(state, entry.key, entry.fallback),
+            rect_to_text_rect(combo_text_rect(layout.control_rects[row])),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
+        );
+    }
+
+    // The players trackbar carries its value in the plaque at its right end.
     push_text_draw(
         out,
         state,
-        &modal.options.seed.to_string(),
-        rect_to_text_rect(layout.seed_field),
+        &modal.options.num_players.to_string(),
+        rect_to_text_rect(trackbar_value_text_rect(layout.control_rects[PLAYERS_ROW])),
         SHELL_LABEL_TEXT_RGB,
         ShellAlign::H_CENTER | ShellAlign::V_CENTER,
         SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
@@ -898,6 +921,30 @@ pub(super) fn push_random_map_setup_modal_text_draws(
             ShellAlign::V_CENTER,
             SHELL_DROPDOWN_TEXT_DEPTH - 0.0001,
         );
+    }
+
+    // Matches the sprite pass: the open list is drawn over everything else.
+    if let Some(combo) = modal.open_combo {
+        let row = combo.row();
+        let items = setup_combo_items(combo);
+        let list = random_map_setup_dropdown_rect(layout, row, items.len());
+        for (index, entry) in items.iter().enumerate() {
+            let row_rect = RectPx::new(
+                list.x + COMBO_TEXT_LEFT_INSET,
+                list.y + COMBO_DROPDOWN_ROW_H * index as i32,
+                list.w - COMBO_TEXT_LEFT_INSET,
+                COMBO_DROPDOWN_ROW_H,
+            );
+            push_text_draw(
+                out,
+                state,
+                &localized_label(state, entry.key, entry.fallback),
+                rect_to_text_rect(row_rect),
+                SHELL_LABEL_TEXT_RGB,
+                ShellAlign::V_CENTER,
+                SHELL_DROPDOWN_TEXT_DEPTH - 0.00011,
+            );
+        }
     }
 }
 

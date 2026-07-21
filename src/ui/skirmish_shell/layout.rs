@@ -814,6 +814,40 @@ pub fn random_map_setup_control_at(
         .map(|(_, control)| *control)
 }
 
+/// The open list of a combo row: directly under the face, as tall as its
+/// entries. The resource reserves a taller extent per combo, but a Windows
+/// dropdown sizes itself to the item count up to that reserve, and none of
+/// these lists come close to it.
+pub const fn random_map_setup_dropdown_rect(
+    layout: &RandomMapSetupLayout,
+    row: usize,
+    item_count: usize,
+) -> RectPx {
+    let face = layout.control_rects[row];
+    RectPx::new(
+        face.x,
+        face.y + COMBO_FACE_H,
+        face.w,
+        COMBO_DROPDOWN_ROW_H * item_count as i32,
+    )
+}
+
+/// Which entry of an open dropdown `(x, y)` falls on.
+pub fn random_map_setup_dropdown_row_at(
+    layout: &RandomMapSetupLayout,
+    row: usize,
+    item_count: usize,
+    x: i32,
+    y: i32,
+) -> Option<usize> {
+    let list = random_map_setup_dropdown_rect(layout, row, item_count);
+    if !list.contains(x, y) {
+        return None;
+    }
+    let index = ((y - list.y) / COMBO_DROPDOWN_ROW_H) as usize;
+    (index < item_count).then_some(index)
+}
+
 pub const fn choose_map_listbox_rect(
     layout: &ChooseMapModalLayout,
     id: ChooseMapListboxId,

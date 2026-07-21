@@ -657,9 +657,11 @@ fn render_skirmish_shell_with_atlas(
         .as_ref()
         .map(|layout| layout.preview)
         .unwrap_or(layout.map_preview);
+    let setup_modal_open = state.skirmish_shell_state.random_map_setup_modal.is_some();
     let fitted_preview_rect = state
         .skirmish_preview_texture
         .as_ref()
+        .filter(|_| !setup_modal_open)
         .map(|preview| aspect_fit_rect(preview_rect, preview.width, preview.height));
     let projected_start_positions = selected_preview_bounds
         .zip(fitted_preview_rect)
@@ -670,9 +672,16 @@ fn render_skirmish_shell_with_atlas(
         &projected_start_positions,
         preview_has_baked_start_markers,
     );
-    let preview_instance = state.skirmish_preview_texture.as_ref().and_then(|preview| {
-        build_preview_surface_instance(preview_rect, preview.width, preview.height)
-    });
+    // The setup dialog's preview box shows the generated map and nothing else;
+    // until a generate has run it stays empty rather than borrowing whatever the
+    // chooser underneath had selected.
+    let preview_instance = state
+        .skirmish_preview_texture
+        .as_ref()
+        .filter(|_| !setup_modal_open)
+        .and_then(|preview| {
+            build_preview_surface_instance(preview_rect, preview.width, preview.height)
+        });
     let preview_buffer = preview_instance.as_ref().and_then(|instance| {
         state
             .batch_renderer

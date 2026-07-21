@@ -27,13 +27,15 @@ pub use layout::{
     combo_arrow_rect, combo_face_rect, combo_swatch_rect, combo_text_rect,
     compute_choose_map_modal_layout, compute_fixed_800_choose_map_modal_layout,
     compute_fixed_800_layout, compute_layout, compute_random_map_setup_layout,
-    compute_validation_modal_layout, random_map_setup_control_at,
+    compute_validation_modal_layout, random_map_setup_control_at, random_map_setup_dropdown_rect,
+    random_map_setup_dropdown_row_at,
     player_name_edit_client_rect, player_name_edit_text_rect, trackbar_active_width,
     trackbar_pixel_offset, trackbar_plaque_rect, trackbar_thumb_rect, trackbar_value_text_rect,
 };
 pub use state::{
     AcceptOutcome, ChooseMapHoverTarget, ChooseMapModalState, ChooseMapSelection,
-    DialogRng, DropdownScrollDragState, RandomMapSetupModalState, SetupCombo,
+    DialogRng, DropdownScrollDragState, RandomMapSetupModalState, SETUP_COMBO_ROWS, SetupCombo,
+    SetupComboItem, setup_combo_items,
     DropdownScrollbarPart, DropdownScrollbarPressState, OpenComboDropdown, OwnerDrawButton,
     PLAYER_NAME_CARET_MARGIN_PX, PLAYER_NAME_DEFAULT, PLAYER_NAME_MAX_CHARS, PlayerNameEditState,
     SkirmishAiRowType, SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice,
