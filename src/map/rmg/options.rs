@@ -32,6 +32,9 @@ pub struct RmgOptions {
     pub accessibility: i32,
     pub region_size: i32,
     pub seed: i32,
+    /// Display description. Stored in `.SED` as comma-separated hex UTF-16 code
+    /// units, and used as the random-map row's displayed name.
+    pub description: String,
 }
 
 impl Default for RmgOptions {
@@ -55,8 +58,35 @@ impl Default for RmgOptions {
             accessibility: 0,
             region_size: 0,
             seed: -1,
+            description: String::new(),
         }
     }
+}
+
+/// Encode a description the way the original writes it: each UTF-16 code unit
+/// as lowercase hex followed by a comma, including a trailing one.
+fn encode_description(text: &str) -> String {
+    let mut out = String::new();
+    for unit in text.encode_utf16() {
+        out.push_str(&format!("{unit:x}"));
+        out.push(',');
+    }
+    out
+}
+
+/// Decode the comma-separated hex UTF-16 form. Unparsable tokens are skipped,
+/// matching the original's tolerant tokenizer.
+fn decode_description(raw: &str) -> String {
+    let units: Vec<u16> = raw
+        .split(',')
+        .filter_map(|token| {
+            let token = token.trim();
+            (!token.is_empty())
+                .then(|| u16::from_str_radix(token, 16).ok())
+                .flatten()
+        })
+        .collect();
+    String::from_utf16_lossy(&units)
 }
 
 impl RmgOptions {
@@ -98,6 +128,9 @@ impl RmgOptions {
         let Some(section) = ini.section(SECTION) else {
             return;
         };
+        if let Some(raw) = section.get("Description") {
+            self.description = decode_description(raw);
+        }
         let mut read = |key: &str, field: &mut i32| {
             if let Some(value) = section.get_i32(key) {
                 *field = value;
@@ -124,6 +157,8 @@ impl RmgOptions {
     /// Serialize to `.SED` bytes, writing every key in the original's order.
     pub fn to_sed_bytes(&self) -> Vec<u8> {
         let values: Vec<(&str, String)> = vec![
+            // The original emits Description first, ahead of the 16 integers.
+            ("Description", encode_description(&self.description)),
             ("Width", self.width.to_string()),
             ("Height", self.height.to_string()),
             ("NumPlayers", self.num_players.to_string()),
@@ -189,6 +224,7 @@ mod tests {
             accessibility: 101,
             region_size: -1,
             seed: 0x1_0000,
+            description: String::new(),
         };
         options.normalize();
 
@@ -276,6 +312,7 @@ mod tests {
             accessibility: 60,
             region_size: 45,
             seed: 4321,
+            description: "Round Trip".to_string(),
         };
         original.normalize();
 
@@ -292,5 +329,58 @@ mod tests {
         let options = RmgOptions::default();
         assert_eq!(options.seed, -1);
         assert_eq!(options.seed_u16(), 0, "-1 must not wrap to 0xFFFF");
+    }
+
+    #[test]
+    fn description_encodes_to_the_native_comma_hex_form() {
+        // The trailing comma is not a typo: the original appends the delimiter
+        // after every code unit, including the last.
+        assert_eq!(
+            encode_description("Random Map"),
+            "52,61,6e,64,6f,6d,20,4d,61,70,"
+        );
+    }
+
+    #[test]
+    fn description_decodes_the_native_form() {
+        assert_eq!(
+            decode_description("52,61,6e,64,6f,6d,20,4d,61,70,"),
+            "Random Map"
+        );
+    }
+
+    #[test]
+    fn description_round_trips_through_sed() {
+        let mut original = RmgOptions {
+            description: "Random Map".to_string(),
+            seed: 1234,
+            ..Default::default()
+        };
+        original.normalize();
+
+        let bytes = original.to_sed_bytes();
+        let mut parsed = RmgOptions::default();
+        parsed.apply_sed(&IniFile::from_bytes(&bytes).unwrap());
+        parsed.normalize();
+
+        assert_eq!(parsed.description, "Random Map");
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn description_is_the_first_emitted_key() {
+        let bytes = RmgOptions::default().to_sed_bytes();
+        let text = String::from_utf8(bytes).expect("ini is utf-8");
+        let body = text.split("[RandomMap]").nth(1).expect("section present");
+        let first = body
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("");
+        assert!(first.starts_with("Description"), "got {first:?}");
+    }
+
+    #[test]
+    fn malformed_description_tokens_are_skipped() {
+        assert_eq!(decode_description("52,zz,61,"), "Ra");
     }
 }
