@@ -12,12 +12,13 @@ use crate::render::shell_text::{self, Reveal, ShellAlign, ShellTextDraw, TextRec
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
-    OwnerDrawButton, RectPx, SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboItem,
-    SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState,
-    SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
-    choose_map_listbox_row_rect, choose_map_listbox_visible_row_count, combo_dropdown_content_rect,
-    combo_dropdown_rect, combo_dropdown_visible_row_count, combo_enabled, combo_items,
-    combo_text_rect, player_name_edit_text_rect, player_row_visible, trackbar_value_text_rect,
+    OwnerDrawButton, RandomMapSetupLayout, RectPx, SkirmishAiRowType, SkirmishCheckboxId,
+    SkirmishComboItem, SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent,
+    SkirmishShellState, SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect,
+    choose_map_listbox_content_rect, choose_map_listbox_row_rect,
+    choose_map_listbox_visible_row_count, combo_dropdown_content_rect, combo_dropdown_rect,
+    combo_dropdown_visible_row_count, combo_enabled, combo_items, combo_text_rect,
+    player_name_edit_text_rect, player_row_visible, trackbar_value_text_rect,
     trackbar_visual_value,
 };
 
@@ -803,6 +804,101 @@ pub(super) fn choose_map_modal_parent_status_help_text(
 
 pub(super) fn choose_map_modal_status_help_text(shell: &SkirmishShellState) -> Option<&str> {
     (!shell.status_help_text.is_empty()).then_some(shell.status_help_text.as_str())
+}
+
+/// Text for the random-map setup dialog `0x105`.
+///
+/// The six row labels are `SS_LEFT` in the resource (style `0x50000200`), unlike
+/// choose-map's headings which are `SS_CENTER` (`0x50000201`), so they are drawn
+/// left-aligned and vertically centred.
+///
+/// The combo faces render no selection text yet: the item lists come from the
+/// dialog's populate path and still need their string-table sources decoded.
+pub(super) fn push_random_map_setup_modal_text_draws(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    layout: &RandomMapSetupLayout,
+) {
+    let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_ref() else {
+        return;
+    };
+
+    push_text_draw(
+        out,
+        state,
+        &localized_label(state, "GUI:GenerateMap", "Generate Map"),
+        rect_to_text_rect(layout.title),
+        SHELL_LABEL_TEXT_RGB,
+        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+        SHELL_DROPDOWN_TEXT_DEPTH - 0.00008,
+    );
+
+    // Row order: map type, time, theater, size, resources, players. The 0x405
+    // label reads "Environment" even though the control writes the map type.
+    for (row, (key, fallback)) in [
+        ("GUI:Environment", "Environment"),
+        ("GUI:TimeOfDay", "Time of Day"),
+        ("GUI:Theater", "Theater"),
+        ("GUI:MapSize", "Map Size"),
+        ("GUI:Resources", "Resources"),
+        ("GUI:Players", "Players"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        push_text_draw(
+            out,
+            state,
+            &localized_label(state, key, fallback),
+            rect_to_text_rect(layout.label_rects[row]),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00008,
+        );
+    }
+
+    for (key, fallback, rect) in [
+        ("GUI:SurpriseMe", "Surprise Me", layout.randomize),
+        ("GUI:PreviewMap", "Preview Map", layout.generate),
+        ("GUI:UseMap", "Use Map", layout.use_map),
+        ("GUI:LoadMap", "Load Map", layout.load),
+        ("GUI:SaveMap", "Save Map", layout.save),
+        ("GUI:DeleteMap", "Delete Map", layout.delete),
+        ("GUI:Cancel", "Cancel", layout.cancel),
+    ] {
+        push_text_draw(
+            out,
+            state,
+            &localized_label(state, key, fallback),
+            rect_to_text_rect(rect),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
+        );
+    }
+
+    // Seed is display-only; the dialog formats the stored value straight in.
+    push_text_draw(
+        out,
+        state,
+        &modal.options.seed.to_string(),
+        rect_to_text_rect(layout.seed_field),
+        SHELL_LABEL_TEXT_RGB,
+        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+        SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
+    );
+
+    if modal.generating {
+        push_text_draw(
+            out,
+            state,
+            &localized_label(state, "GUI:WorkingPleaseWait", "Working, please wait..."),
+            rect_to_text_rect(layout.progress_text),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.0001,
+        );
+    }
 }
 
 pub(super) fn push_choose_map_modal_text_draws(

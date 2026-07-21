@@ -732,6 +732,18 @@ fn render_skirmish_shell_with_atlas(
     };
     if let Some(choose_map_layout) = choose_map_layout.as_ref() {
         push_choose_map_modal_text_draws(&mut shell_draws, state, choose_map_layout);
+        // The setup dialog sits on top of the chooser, so its text follows.
+        if state
+            .skirmish_shell_state
+            .random_map_setup_modal
+            .is_some()
+        {
+            let setup_layout = compute_random_map_setup_layout(
+                choose_map_layout.screen.w as u32,
+                choose_map_layout.screen.h as u32,
+            );
+            push_random_map_setup_modal_text_draws(&mut shell_draws, state, &setup_layout);
+        }
     }
     if let Some(validation_layout) = validation_layout.as_ref() {
         push_validation_modal_text_draws(
