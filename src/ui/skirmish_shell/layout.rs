@@ -38,10 +38,10 @@ pub const CHOOSE_MAP_MODAL_H: i32 = 369;
 pub const CHOOSE_MAP_LIST_ROW_H: i32 = 19;
 pub const CHOOSE_MAP_LISTBOX_ROW_H: i32 = CHOOSE_MAP_LIST_ROW_H;
 pub const CHOOSE_MAP_LISTBOX_SCROLLBAR_W: i32 = 20;
-// Validation popup child pixel size. This is the MapDialogRect 6x13 candidate
-// derived from the 300x200-DLU template; the exact post-creation client size
-// (runtime DLU->pixel conversion) has not been captured, so treat as unconfirmed
-// pending a native GetClientRect/screenshot.
+// Validation popup child pixel size, using the 6x13 dialog-unit base. The parent
+// chooser resource is a 533x369-DLU template; the exact post-creation client size
+// for this child popup (runtime DLU->pixel conversion) has not been captured, so
+// treat as unconfirmed pending a native GetClientRect/screenshot.
 pub const VALIDATION_MODAL_W: i32 = 450;
 pub const VALIDATION_MODAL_H: i32 = 325;
 
