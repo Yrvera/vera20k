@@ -6,6 +6,7 @@ mod hit_test;
 mod launch;
 mod player_name;
 mod random_map_setup;
+mod saved_seed_browser;
 mod trackbars;
 
 #[cfg(test)]
@@ -26,6 +27,9 @@ pub use hit_test::{
 pub use launch::{launch_session, launch_settings, pack_launch_session_without_start_validation};
 
 pub use choose_map::{ChooseMapModalState, ChooseMapSelection};
+pub use saved_seed_browser::{
+    SAVED_SEED_NAME_MAX_CHARS, SavedSeedBrowserState, SavedSeedOutcome,
+};
 pub use random_map_setup::{
     AcceptOutcome, DialogRng, RandomMapSetupModalState, SETUP_COMBO_ROWS, SetupCombo,
     SetupComboItem, setup_combo_items,

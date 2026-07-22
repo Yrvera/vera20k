@@ -848,6 +848,165 @@ pub fn random_map_setup_dropdown_row_at(
     (index < item_count).then_some(index)
 }
 
+// Saved-seed browser (Load 0xB7 / Save 0x2B4 / Delete 0x2B5). All three share
+// the 533x369 frame, the right column and the bottom status line with the
+// chooser; only the list extent, the prompt and the action button differ.
+/// List rects per mode: Load, Save, Delete. Save's is shorter to leave room for
+/// the file-name edit beneath it.
+const SEED_LIST_RECTS: [(i32, i32, i32, i32); 3] =
+    [(79, 78, 266, 187), (79, 80, 266, 157), (78, 76, 266, 187)];
+/// Prompt static above each list.
+const SEED_PROMPT_RECTS: [(i32, i32, i32, i32); 3] =
+    [(79, 44, 266, 24), (79, 46, 266, 24), (78, 42, 266, 24)];
+/// The file-name edit, Save only.
+const SEED_NAME_EDIT_RECT: (i32, i32, i32, i32) = (80, 253, 266, 14);
+/// The action button sits where the chooser puts Use Map, but is one DLU
+/// shorter than Back -- 22 against 23.
+const SEED_ACTION_Y: i32 = 122;
+const SEED_ACTION_H: i32 = 22;
+const SEED_RIGHT_X: i32 = 425;
+const SEED_RIGHT_W: i32 = 108;
+const SEED_TITLE_RECT: (i32, i32, i32, i32) = (425, 1, 108, 10);
+/// Load and Delete put the status line one pixel lower than Save does.
+const SEED_BLANK_RECTS: [(i32, i32, i32, i32); 3] =
+    [(2, 355, 303, 12), (2, 356, 303, 12), (2, 355, 303, 12)];
+
+/// Which of the three saved-seed dialogs is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedSeedMode {
+    Load,
+    Save,
+    Delete,
+}
+
+impl SavedSeedMode {
+    const fn index(self) -> usize {
+        match self {
+            Self::Load => 0,
+            Self::Save => 1,
+            Self::Delete => 2,
+        }
+    }
+
+    /// Caption key and English fallback for the action button.
+    pub const fn action_label(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Load => ("GUI:Load", "Load"),
+            Self::Save => ("GUI:Save", "Save"),
+            Self::Delete => ("GUI:Delete", "Delete"),
+        }
+    }
+
+    /// Caption key and fallback for the top-right title.
+    pub const fn title_label(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Load => ("GUI:LoadMissionMenu", "Load Mission"),
+            Self::Save => ("GUI:SaveMissionMenu", "Save Mission"),
+            Self::Delete => ("GUI:DeleteMissionMenu", "Delete Mission"),
+        }
+    }
+
+    /// Caption key and fallback for the prompt above the list.
+    pub const fn prompt_label(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Load => ("GUI:SelectMission", "Select a mission"),
+            Self::Save => ("GUI:SaveMission", "Save mission"),
+            Self::Delete => ("GUI:DeleteMission", "Delete mission"),
+        }
+    }
+}
+
+/// Clickable controls of the saved-seed browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedSeedControl {
+    /// Load 0x40F / Save 0x6C7 / Delete 0x6C8, by mode.
+    Action,
+    /// Back 0x686, shared by all three.
+    Back0x686,
+    /// The list, 0x525 / 0x527 / 0x528.
+    List,
+    /// The file-name edit 0x526; Save only.
+    NameEdit0x526,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SavedSeedLayout {
+    pub screen: RectPx,
+    pub dialog: RectPx,
+    pub title: RectPx,
+    pub prompt: RectPx,
+    pub list: RectPx,
+    /// Present only in Save mode.
+    pub name_edit: Option<RectPx>,
+    pub action: RectPx,
+    pub back: RectPx,
+    pub blank: RectPx,
+}
+
+pub fn compute_saved_seed_layout(
+    mode: SavedSeedMode,
+    screen_w: u32,
+    screen_h: u32,
+) -> SavedSeedLayout {
+    let screen_w = screen_w as i32;
+    let screen_h = screen_h as i32;
+    let panel = right_panel_rects(screen_w, screen_h);
+    let index = mode.index();
+
+    let rect_of = |(x, y, w, h): (i32, i32, i32, i32)| dlu_rect(x, y, w, h);
+    let right_button = |y: i32, h: i32| {
+        snap_button_biased_truncate(
+            screen_w,
+            screen_h,
+            dlu_rect(SEED_RIGHT_X, y, SEED_RIGHT_W, h),
+            panel,
+            SDBTNANM_W,
+        )
+    };
+
+    SavedSeedLayout {
+        screen: RectPx::new(0, 0, screen_w, screen_h),
+        dialog: RectPx::new(0, 0, screen_w, screen_h),
+        title: rect_of(SEED_TITLE_RECT),
+        prompt: rect_of(SEED_PROMPT_RECTS[index]),
+        list: rect_of(SEED_LIST_RECTS[index]),
+        name_edit: (mode == SavedSeedMode::Save).then(|| rect_of(SEED_NAME_EDIT_RECT)),
+        action: right_button(SEED_ACTION_Y, SEED_ACTION_H),
+        back: back_rect(screen_w, panel),
+        blank: rect_of(SEED_BLANK_RECTS[index]),
+    }
+}
+
+/// Topmost saved-seed control at `(x, y)`, or `None`.
+pub fn saved_seed_control_at(layout: &SavedSeedLayout, x: i32, y: i32) -> Option<SavedSeedControl> {
+    if let Some(edit) = layout.name_edit {
+        if edit.contains(x, y) {
+            return Some(SavedSeedControl::NameEdit0x526);
+        }
+    }
+    if layout.list.contains(x, y) {
+        return Some(SavedSeedControl::List);
+    }
+    if layout.action.contains(x, y) {
+        return Some(SavedSeedControl::Action);
+    }
+    if layout.back.contains(x, y) {
+        return Some(SavedSeedControl::Back0x686);
+    }
+    None
+}
+
+/// Which list row `(x, y)` falls on, given the row count.
+pub fn saved_seed_list_row_at(
+    layout: &SavedSeedLayout,
+    row_count: usize,
+    top_index: usize,
+    x: i32,
+    y: i32,
+) -> Option<usize> {
+    choose_map_listbox_row_at(layout.list, row_count, top_index, x, y)
+}
+
 pub const fn choose_map_listbox_rect(
     layout: &ChooseMapModalLayout,
     id: ChooseMapListboxId,
