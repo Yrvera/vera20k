@@ -189,10 +189,10 @@ fn choose_map_modal_random_map_command_is_mode_gated_and_single_record() {
     let mut modal = ChooseMapModalState::open(1, Some(0), &modes, &records);
 
     let first_random = modal
-        .create_random_map(&mut records, &modes, "Random Map")
+        .create_random_map(&mut records, &modes, "Random Map", 4)
         .expect("battle allows random maps");
     let second_random = modal
-        .create_random_map(&mut records, &modes, "Random Map")
+        .create_random_map(&mut records, &modes, "Random Map", 4)
         .expect("battle still allows random maps");
 
     assert_eq!(first_random, second_random);
@@ -204,7 +204,10 @@ fn choose_map_modal_random_map_command_is_mode_gated_and_single_record() {
     assert_eq!(modal.selected_record_index(), Some(first_random));
 
     assert!(modal.select_mode(9, &modes, &records));
-    assert_eq!(modal.create_random_map(&mut records, &modes, "Nope"), None);
+    assert_eq!(
+        modal.create_random_map(&mut records, &modes, "Nope", 4),
+        None
+    );
     assert_eq!(records.len(), 2);
 }
 
