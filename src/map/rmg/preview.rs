@@ -107,6 +107,51 @@ fn projected_bounds(cells: &[PreviewCell]) -> Option<(i32, i32, i32, i32)> {
     bounds
 }
 
+/// Collect the playable cells of a map with the radar colours the resolved
+/// terrain gave them.
+///
+/// Playability is the same `LocalSize` test the terrain grid uses to drop border
+/// filler: those cells sit under permanent shroud and must not stretch the
+/// preview. Cells with no tile are skipped, as are any the resolver did not
+/// produce.
+pub fn preview_cells_from_map(
+    map: &crate::map::map_file::MapFile,
+    resolved: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+) -> Vec<PreviewCell> {
+    let bounds = crate::map::terrain::LocalBounds::from_header(&map.header);
+    let mut cells = Vec::with_capacity(map.cells.len());
+    for cell in &map.cells {
+        if cell.tile_index < 0 {
+            continue;
+        }
+        let (screen_x, screen_y) = crate::map::terrain::iso_to_screen(cell.rx, cell.ry, cell.z);
+        if !bounds.contains(screen_x, screen_y) {
+            continue;
+        }
+        let Some(resolved_cell) = resolved.cell(cell.rx, cell.ry) else {
+            continue;
+        };
+        cells.push(PreviewCell {
+            x: cell.rx,
+            y: cell.ry,
+            left: resolved_cell.radar_left,
+            right: resolved_cell.radar_right,
+        });
+    }
+    cells
+}
+
+/// Start-position waypoints in slot order, ready for [`render_preview`].
+pub fn marker_waypoints(start_waypoints: &[(u8, u16, u16)]) -> Vec<(u16, u16)> {
+    let mut ordered: Vec<(u8, u16, u16)> = start_waypoints.to_vec();
+    ordered.sort_by_key(|(slot, _, _)| *slot);
+    ordered
+        .into_iter()
+        .map(|(_, x, y)| (x, y))
+        .take(MARKER_WAYPOINT_COUNT as usize)
+        .collect()
+}
+
 /// Render the preview for a generated map.
 ///
 /// `cells` must already be filtered to the playable area — the surface is sized

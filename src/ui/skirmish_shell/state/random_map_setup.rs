@@ -5,6 +5,7 @@
 //! the layout control enum only — no assets, no wgpu.
 
 use crate::map::rmg::options::RmgOptions;
+use crate::map::rmg::preview::PreviewImage;
 use crate::map::rmg::randomize::{RandomRanged, randomize};
 use crate::map::rmg::settings::RmgSettings;
 
@@ -199,6 +200,14 @@ pub struct RandomMapSetupModalState {
     /// sliders.
     pub dragging_players_thumb: bool,
     pub pressed_control: Option<RandomMapSetupControl>,
+    /// The rasterised preview of the last generated map, shown in the preview
+    /// box. `None` until a generate has produced one; any option edit clears it,
+    /// because it no longer describes the configured map.
+    pub generated_preview: Option<PreviewImage>,
+    /// Bumped every time a generate produces a preview. The renderer keys its
+    /// cached texture on this so it uploads once per generate rather than once
+    /// per frame, and so a regenerated map of identical size still refreshes.
+    pub preview_generation: u32,
     /// Restored verbatim if the player cancels.
     pub previous_selection: Option<ChooseMapSelection>,
 }
@@ -226,6 +235,8 @@ impl RandomMapSetupModalState {
             open_combo: None,
             dragging_players_thumb: false,
             pressed_control: None,
+            generated_preview: None,
+            preview_generation: 0,
             previous_selection,
         }
     }
@@ -326,6 +337,7 @@ impl RandomMapSetupModalState {
     fn on_option_changed(&mut self) {
         self.options.normalize();
         self.generated = false;
+        self.generated_preview = None;
     }
 
     /// Surprise Me: randomize the option subset and invalidate the result.
@@ -337,6 +349,7 @@ impl RandomMapSetupModalState {
     ) {
         randomize(&mut self.options, settings, rng, description);
         self.generated = false;
+        self.generated_preview = None;
         self.open_combo = None;
     }
 
@@ -352,10 +365,14 @@ impl RandomMapSetupModalState {
     /// This also switches Load/Delete on unconditionally: the original
     /// re-enables the whole control set afterwards without re-testing whether
     /// any saved seed actually exists.
-    pub fn finish_generate(&mut self) {
+    pub fn finish_generate(&mut self, preview: Option<PreviewImage>) {
         self.generating = false;
         self.generated = true;
         self.saved_seed_buttons_enabled = true;
+        if preview.is_some() {
+            self.preview_generation = self.preview_generation.wrapping_add(1);
+        }
+        self.generated_preview = preview;
     }
 
     /// Accept. The original generates first when nothing has been generated
@@ -489,7 +506,7 @@ mod tests {
     fn finishing_generate_unlocks_accept() {
         let mut state = opened();
         state.begin_generate();
-        state.finish_generate();
+        state.finish_generate(None);
         assert!(state.is_enabled(RandomMapSetupControl::Ok0x6c5));
         assert!(state.is_enabled(RandomMapSetupControl::Cancel0x5c0));
     }
@@ -501,7 +518,7 @@ mod tests {
         let mut state = opened();
         assert!(!state.is_enabled(RandomMapSetupControl::Load0x6c2));
         state.begin_generate();
-        state.finish_generate();
+        state.finish_generate(None);
         assert!(state.is_enabled(RandomMapSetupControl::Load0x6c2));
         assert!(state.is_enabled(RandomMapSetupControl::Delete0x6c4));
     }
@@ -514,7 +531,7 @@ mod tests {
     #[test]
     fn accept_after_generate_commits_normalized_options() {
         let mut state = opened();
-        state.finish_generate();
+        state.finish_generate(None);
         match state.accept() {
             AcceptOutcome::Commit(options) => {
                 assert!(options.tiberium >= 1, "committed options are normalized");

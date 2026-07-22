@@ -650,18 +650,25 @@ fn render_skirmish_shell_with_atlas(
     let selected_entry = state
         .skirmish_shell_maps
         .get(state.skirmish_shell_state.selected_map_idx);
-    let preview_has_baked_start_markers = selected_entry.is_some_and(is_random_map_sentinel_entry);
+    // Both the sentinel's RandMap.img and the setup dialog's generated image
+    // already carry their start markers, so the overlay pass must not add them
+    // a second time.
+    let preview_has_baked_start_markers = selected_entry.is_some_and(is_random_map_sentinel_entry)
+        || state.skirmish_shell_state.random_map_setup_modal.is_some();
     let selected_preview_bounds =
         selected_entry.and_then(|entry| entry.preview_source_bounds.as_ref());
-    let preview_rect = choose_map_layout
-        .as_ref()
-        .map(|layout| layout.preview)
-        .unwrap_or(layout.map_preview);
     let setup_modal_open = state.skirmish_shell_state.random_map_setup_modal.is_some();
+    // While the setup dialog is up it owns the preview box, so the image goes in
+    // its own 0x468 rect rather than the chooser's.
+    let setup_preview_rect = setup_modal_open.then(|| {
+        compute_random_map_setup_layout(state.render_width(), state.render_height()).preview
+    });
+    let preview_rect = setup_preview_rect
+        .or_else(|| choose_map_layout.as_ref().map(|layout| layout.preview))
+        .unwrap_or(layout.map_preview);
     let fitted_preview_rect = state
         .skirmish_preview_texture
         .as_ref()
-        .filter(|_| !setup_modal_open)
         .map(|preview| aspect_fit_rect(preview_rect, preview.width, preview.height));
     let projected_start_positions = selected_preview_bounds
         .zip(fitted_preview_rect)
@@ -672,16 +679,9 @@ fn render_skirmish_shell_with_atlas(
         &projected_start_positions,
         preview_has_baked_start_markers,
     );
-    // The setup dialog's preview box shows the generated map and nothing else;
-    // until a generate has run it stays empty rather than borrowing whatever the
-    // chooser underneath had selected.
-    let preview_instance = state
-        .skirmish_preview_texture
-        .as_ref()
-        .filter(|_| !setup_modal_open)
-        .and_then(|preview| {
-            build_preview_surface_instance(preview_rect, preview.width, preview.height)
-        });
+    let preview_instance = state.skirmish_preview_texture.as_ref().and_then(|preview| {
+        build_preview_surface_instance(preview_rect, preview.width, preview.height)
+    });
     let preview_buffer = preview_instance.as_ref().and_then(|instance| {
         state
             .batch_renderer

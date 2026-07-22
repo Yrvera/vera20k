@@ -80,6 +80,10 @@ const SETUP_PLAYERS_ROW: usize = 5;
 const SETUP_PLAYERS_MIN: i32 = 2;
 const SETUP_PLAYERS_MAX: i32 = 8;
 const SETUP_PLAYERS_STEP: i32 = 1;
+/// Matches the rules default the map-load path falls back to; the preview only
+/// needs it because terrain resolution takes it, not because cliffs affect the
+/// image.
+const RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY: u8 = 2;
 
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
 const SHELL_WINDOW_WIDTH: u32 = 800;
@@ -1382,6 +1386,62 @@ impl App {
     /// A failed write is fatal to the commit: `map_load` treats a missing seed
     /// file as "use defaults", so committing anyway would silently start a
     /// different map than the one the player configured.
+    /// Generate the map the current options describe and rasterise its preview.
+    ///
+    /// This runs the same generator the launch path does, so what the preview
+    /// box shows is the map the player gets — the seed alone decides the
+    /// terrain, and nothing here perturbs it.
+    fn render_random_map_setup_preview(
+        state: &mut AppState,
+        options: &crate::map::rmg::RmgOptions,
+    ) -> Option<crate::map::rmg::preview::PreviewImage> {
+        let asset_manager = state.asset_manager.as_mut()?;
+        let settings = crate::map::rmg::RmgSettings::load(asset_manager);
+        let theater_name = crate::map::rmg::emit::theater_name(options.theater);
+        let theater =
+            crate::map::theater::load_theater(asset_manager, theater_name).or_else(|| {
+                log::warn!("random map preview: theater {theater_name} unavailable");
+                None
+            })?;
+        let terrain_rules = asset_manager
+            .get_ref("rulesmd.ini")
+            .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
+            .map(|ini| crate::rules::terrain_rules::TerrainRules::from_ini(&ini))
+            .unwrap_or_default();
+        let resolved_inputs =
+            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(&theater, &terrain_rules);
+        let blocks =
+            crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
+                asset_manager.get(name)
+            });
+        let generated = crate::map::rmg::build::generate_map(
+            options,
+            &settings,
+            &resolved_inputs,
+            &blocks,
+            &[],
+        );
+
+        // LAT defaults off for runtime maps, so resolve the same way the load
+        // path will; a different setting here would colour cells the player
+        // never sees.
+        let resolved_terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::build(
+            &generated.map_file,
+            Some(&theater),
+            state.asset_manager.as_ref(),
+            Some(&terrain_rules),
+            None,
+            false,
+            RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
+        );
+        let cells = crate::map::rmg::preview::preview_cells_from_map(
+            &generated.map_file,
+            &resolved_terrain,
+        );
+        let waypoints = crate::map::rmg::preview::marker_waypoints(&generated.start_waypoints);
+        crate::map::rmg::preview::render_preview(&cells, &waypoints)
+    }
+
     fn commit_random_map_setup(
         state: &mut AppState,
         options: &crate::map::rmg::RmgOptions,
@@ -1583,6 +1643,10 @@ impl App {
 
         let mut commit_options = None;
         let mut close_setup = false;
+        // Generating needs the whole app state, so it cannot run while the modal
+        // is mutably borrowed; the actions below only record what to do.
+        let mut generate_requested = false;
+        let mut accept_requested = false;
         match released.expect("checked equal to pressed control") {
             Control::Randomize0x621 => {
                 modal.randomize_options(
@@ -1592,22 +1656,20 @@ impl App {
                 );
             }
             Control::Generate0x620 => {
-                // v1 runs no generator here: the launch path regenerates from
-                // the seed, and the preview box is not drawn yet.
                 modal.begin_generate();
-                modal.finish_generate();
+                generate_requested = true;
             }
             Control::Ok0x6c5 => {
+                // Accept generates first when nothing has been generated yet,
+                // so the committed options always describe a map that exists.
                 if matches!(
                     modal.accept(),
                     crate::ui::skirmish_shell::AcceptOutcome::NeedsGenerate
                 ) {
                     modal.begin_generate();
-                    modal.finish_generate();
+                    generate_requested = true;
                 }
-                if let crate::ui::skirmish_shell::AcceptOutcome::Commit(options) = modal.accept() {
-                    commit_options = Some(options);
-                }
+                accept_requested = true;
             }
             Control::Cancel0x5c0 => {
                 // Result 2 in the original: no seed file, no sentinel, no
@@ -1631,6 +1693,32 @@ impl App {
             // Dragging the players slider is a separate input mode; clicking the
             // track alone does not move it.
             Control::Players0x3eb => {}
+        }
+
+        if generate_requested {
+            let options = state
+                .skirmish_shell_state
+                .random_map_setup_modal
+                .as_ref()
+                .map(|modal| modal.options.clone());
+            let preview =
+                options.and_then(|options| Self::render_random_map_setup_preview(state, &options));
+            if preview.is_none() {
+                log::warn!("random map: could not build a preview for the configured options");
+            }
+            if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+                modal.finish_generate(preview);
+            }
+        }
+        if accept_requested {
+            if let Some(crate::ui::skirmish_shell::AcceptOutcome::Commit(options)) = state
+                .skirmish_shell_state
+                .random_map_setup_modal
+                .as_ref()
+                .map(|modal| modal.accept())
+            {
+                commit_options = Some(options);
+            }
         }
 
         if let Some(options) = commit_options {
