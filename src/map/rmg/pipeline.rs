@@ -18,7 +18,6 @@
 
 use crate::map::theater::TheaterCliffRanges;
 
-use super::MapGeometry;
 use super::grid::RmgGrid;
 use super::phases::blob::BlobCtx;
 use super::phases::hills::{HillsArgs, HillsCtx};
@@ -40,6 +39,7 @@ use super::rng::RmgRng;
 use super::scratch::RmgScratch;
 use super::tiles::TileIds;
 use super::x87::Gaussian;
+use super::{MapGeometry, Stage};
 
 /// The land-type count of the wheel-impassable table (`zones::LAND_TYPES`).
 pub const LAND_TYPES: usize = super::phases::zones::LAND_TYPES;
@@ -86,6 +86,17 @@ pub struct PipelineInputs<'a> {
     pub max_trees: i32,
 }
 
+/// Watches the grid between stages, for callers that draw the map as it builds.
+///
+/// Observation only: the grid arrives shared and the RNG, scratch and per-phase
+/// state are not passed at all, so an observer cannot change what a run
+/// generates. It fires at the boundary *named* by the stage whether or not that
+/// stage did any work — a stage this configuration skips leaves the grid
+/// untouched, so its boundary looks exactly like the one before it.
+///
+/// The waypoint slice is empty until `Starts` has run.
+pub type StageObserver<'a> = &'a mut dyn FnMut(Stage, &RmgGrid, &[(u8, u16, u16)]);
+
 /// What the pipeline collects for the emitter.
 #[derive(Debug, Default)]
 pub struct PipelineOutput {
@@ -107,6 +118,7 @@ pub fn run_pipeline(
     gauss: &mut Gaussian,
     geometry: &MapGeometry,
     inputs: &PipelineInputs<'_>,
+    observe: StageObserver<'_>,
 ) -> PipelineOutput {
     let MapGeometry {
         gen_w,
@@ -117,6 +129,9 @@ pub fn run_pipeline(
         ..
     } = *geometry;
     let local_rect = [2, 5, gen_w, gen_h];
+    // Emit-form start positions, filled in once `Starts` has produced them so
+    // every later boundary can hand them to the observer.
+    let mut waypoints: Vec<(u8, u16, u16)> = Vec::new();
 
     // ---- Water + finalize (map types 0-2 shape the base terrain) ----------
     // Struct-literal fields move a `&mut`, so every context reborrows the shared
@@ -147,7 +162,9 @@ pub fn run_pipeline(
         };
         water::run(&mut ctx, &args);
     }
+    observe(Stage::Water, grid, &waypoints);
     water_finalize::run(grid, inputs.ids, inputs.blocks, rng);
+    observe(Stage::WaterFinalize, grid, &waypoints);
 
     // ---- Regions -----------------------------------------------------------
     let mut regions: Regions = {
@@ -161,13 +178,17 @@ pub fn run_pipeline(
         };
         regions::run(&mut ctx)
     };
+    observe(Stage::Regions, grid, &waypoints);
 
     // IslandPasses (map types 3/4 extra region/bridge passes) are not modelled
     // yet; ordinary map types skip them entirely.
+    observe(Stage::IslandPasses, grid, &waypoints);
 
     // ---- Green spread + first recalc --------------------------------------
     green_spread::run(grid, inputs.ids, rng);
+    observe(Stage::GreenSpread, grid, &waypoints);
     lat_fixup::run(grid, inputs.ids);
+    observe(Stage::RecalcAfterTerrain, grid, &waypoints);
 
     // ---- Starts (needs the zone field) ------------------------------------
     let outcome = {
@@ -201,6 +222,13 @@ pub fn run_pipeline(
         };
         starts::run(&mut ctx, &args, &zones)
     };
+    waypoints = outcome
+        .waypoints
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, spot)| spot.map(|(x, y)| (slot as u8, x as u16, y as u16)))
+        .collect();
+    observe(Stage::Starts, grid, &waypoints);
 
     // ---- Tech buildings (map types 1-4; map type 0 places none) -----------
     let tech_placements = {
@@ -220,6 +248,7 @@ pub fn run_pipeline(
         };
         tech_buildings::run(&mut ctx, &args)
     };
+    observe(Stage::TechBuildings, grid, &waypoints);
 
     // ---- Tiberium ----------------------------------------------------------
     let tiberium = {
@@ -243,10 +272,13 @@ pub fn run_pipeline(
         };
         tiberium::run(&mut ctx, &args)
     };
+    observe(Stage::Tiberium, grid, &waypoints);
 
     // ---- Region reset + second recalc -------------------------------------
     scratch.reset_region_ids();
+    observe(Stage::RegionReset, grid, &waypoints);
     lat_fixup::run(grid, inputs.ids);
+    observe(Stage::RecalcAfterTiberium, grid, &waypoints);
 
     // ---- Hills -------------------------------------------------------------
     {
@@ -264,6 +296,7 @@ pub fn run_pipeline(
         };
         hills::run(&mut ctx, &args, inputs.cliff, inputs.morphable);
     }
+    observe(Stage::Hills, grid, &waypoints);
 
     // ---- LAT patches → recalc (creates sand-LAT) → trees → rocks ----------
     {
@@ -276,7 +309,9 @@ pub fn run_pipeline(
         };
         lat_patches::run(&mut ctx, inputs.theater, inputs.vegetation);
     }
+    observe(Stage::LatPatches, grid, &waypoints);
     lat_fixup::run(grid, inputs.ids);
+    observe(Stage::RecalcAfterPatches, grid, &waypoints);
 
     let trees = {
         let args = TreeArgs {
@@ -294,6 +329,7 @@ pub fn run_pipeline(
         };
         trees::run(&mut ctx, &args)
     };
+    observe(Stage::Trees, grid, &waypoints);
 
     // Rocks — temperate theater only.
     if inputs.theater == 0 {
@@ -310,18 +346,13 @@ pub fn run_pipeline(
         };
         rocks::run(&mut ctx, &args);
     }
+    observe(Stage::Rocks, grid, &waypoints);
 
     // ---- Final recalc ------------------------------------------------------
     lat_fixup::run(grid, inputs.ids);
+    observe(Stage::RecalcFinal, grid, &waypoints);
 
     // ---- Collect outputs for the emitter ----------------------------------
-    let waypoints = outcome
-        .waypoints
-        .iter()
-        .enumerate()
-        .filter_map(|(slot, spot)| spot.map(|(x, y)| (slot as u8, x as u16, y as u16)))
-        .collect();
-
     let mut terrain: Vec<(String, i16, i16)> = trees;
     terrain.extend(tiberium.trees);
 
@@ -437,6 +468,7 @@ mod tests {
             &mut gauss,
             &geometry,
             &ins,
+            &mut |_, _, _| {},
         );
         (grid, output)
     }

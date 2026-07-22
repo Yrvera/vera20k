@@ -93,18 +93,16 @@ const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
 const SHELL_WINDOW_WIDTH: u32 = 800;
 const SHELL_WINDOW_HEIGHT: u32 = 600;
 
-/// All initialized state. Created in `resumed()` when the window is available.
-/// pub(crate) so app_render.rs can access fields.
 /// A random-map generation handed to a worker thread.
 ///
-/// The worker only *generates*; colouring the preview needs the terrain
-/// resolver and therefore the asset manager, so the main thread finishes the
-/// job when the map arrives. What matters is that the expensive part is off the
-/// UI thread — that is what lets frames render while it runs.
+/// The worker only *generates*; colouring a preview needs the terrain resolver
+/// and therefore the asset manager, so the main thread rasterises everything the
+/// worker hands it. What matters is that the expensive part is off the UI
+/// thread — that is what lets frames render while it runs.
 pub(crate) struct RandomMapGenerationJob {
-    receiver: std::sync::mpsc::Receiver<Box<crate::map::rmg::GeneratedMap>>,
-    /// Kept back from the worker because finishing needs it: the resolver reads
-    /// theater data to decide each cell's final tile.
+    receiver: std::sync::mpsc::Receiver<RandomMapUpdate>,
+    /// Kept back from the worker because rasterising needs it: the resolver
+    /// reads theater data to decide each cell's final tile.
     theater: Box<crate::map::theater::TheaterData>,
     terrain_rules: Box<crate::rules::terrain_rules::TerrainRules>,
     /// Set when OK started this generation. Accept cannot run until the map
@@ -112,6 +110,47 @@ pub(crate) struct RandomMapGenerationJob {
     accept_on_finish: bool,
 }
 
+/// What the generator worker sends back as it goes.
+enum RandomMapUpdate {
+    /// The map at one of the boundaries the original redraws its preview at.
+    Progress(Box<crate::map::rmg::build::GenerationSnapshot>),
+    /// The finished map.
+    Finished(Box<crate::map::rmg::GeneratedMap>),
+}
+
+/// Whether the original redraws its preview at this generation boundary.
+///
+/// It draws eight times while generating, reporting 55, 60, 70, 80, 85, 90 and
+/// 95 percent on the seven after the first. Two of those pairs have no
+/// generation between them at all — only a progress-report helper runs — so the
+/// 60 and 85 redraws reproduce the image already on screen and are dropped here:
+/// eight calls, six distinct pictures.
+///
+/// The percentages are the anchor the boundaries below were chosen from; they
+/// have no home in the port yet, because the dialog's progress bar is still
+/// drawn empty.
+fn draws_preview(point: crate::map::rmg::build::GenerationPoint) -> bool {
+    use crate::map::rmg::Stage;
+    use crate::map::rmg::build::GenerationPoint;
+    matches!(
+        point,
+        // Clears the box before any terrain exists.
+        GenerationPoint::Initial
+            // 55 (and again at 60): the water is in.
+            | GenerationPoint::After(Stage::WaterFinalize)
+            // 70: regions, island passes and the green spread.
+            | GenerationPoint::After(Stage::RecalcAfterTerrain)
+            // 80 (and again at 85): starts, tech buildings and tiberium.
+            | GenerationPoint::After(Stage::RecalcAfterTiberium)
+            // 90: the hills.
+            | GenerationPoint::After(Stage::Hills)
+            // 95: LAT patches, trees and rocks.
+            | GenerationPoint::After(Stage::Rocks)
+    )
+}
+
+/// All initialized state. Created in `resumed()` when the window is available.
+/// pub(crate) so app_render.rs can access fields.
 pub(crate) struct AppState {
     pub(crate) window: Arc<Window>,
     pub(crate) gpu: GpuContext,
@@ -1405,17 +1444,6 @@ impl App {
         true
     }
 
-    /// Persist accepted random-map setup, refresh the sentinel record, and
-    /// select it so launch generates from it.
-    ///
-    /// A failed write is fatal to the commit: `map_load` treats a missing seed
-    /// file as "use defaults", so committing anyway would silently start a
-    /// different map than the one the player configured.
-    /// Generate the map the current options describe and rasterise its preview.
-    ///
-    /// This runs the same generator the launch path does, so what the preview
-    /// box shows is the map the player gets — the seed alone decides the
-    /// terrain, and nothing here perturbs it.
     /// Kick off generation on a worker and return immediately.
     ///
     /// Everything that needs the asset manager is done here, up front; only
@@ -1453,16 +1481,22 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("random-map-generate".to_string())
             .spawn(move || {
-                let generated = crate::map::rmg::build::generate_map(
+                let generated = crate::map::rmg::build::generate_map_observed(
                     &options,
                     &settings,
                     &resolved_inputs,
                     &blocks,
                     &[],
+                    // A closed receiver means the dialog went away; dropping
+                    // what we produce is the correct outcome, not an error.
+                    &mut |view| {
+                        if !draws_preview(view.point()) {
+                            return;
+                        }
+                        let _ = sender.send(RandomMapUpdate::Progress(Box::new(view.snapshot())));
+                    },
                 );
-                // A closed receiver means the dialog went away; dropping the
-                // result is the correct outcome, not an error.
-                let _ = sender.send(Box::new(generated));
+                let _ = sender.send(RandomMapUpdate::Finished(Box::new(generated)));
             });
         match spawned {
             Ok(_handle) => {
@@ -1481,38 +1515,78 @@ impl App {
         }
     }
 
-    /// Collect a finished generation, if one has arrived.
+    /// Collect whatever the generator has produced since the last frame.
     ///
-    /// Called every frame while a job is in flight. Returns true when the job
-    /// completed this call, so the caller knows the dialog changed.
+    /// Called every frame while a job is in flight. Returns true when the dialog
+    /// changed, so the caller knows to redraw.
+    ///
+    /// Only the newest of several progress snapshots is rasterised. Colouring is
+    /// the expensive half, and an image the worker overtook before a frame was
+    /// drawn was never on screen to be seen.
     pub(crate) fn poll_random_map_generation(state: &mut AppState) -> bool {
         let Some(job) = state.random_map_generation.as_ref() else {
             return false;
         };
-        let generated = match job.receiver.try_recv() {
-            Ok(generated) => generated,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                // The worker died without sending. Clear the job so the dialog
-                // does not sit disabled forever waiting on it.
-                log::warn!("random map: the generator thread ended without a result");
-                state.random_map_generation = None;
-                if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
-                    modal.finish_generate(None);
+        let mut latest_progress = None;
+        let mut finished = None;
+        let mut died = false;
+        loop {
+            match job.receiver.try_recv() {
+                Ok(RandomMapUpdate::Progress(snapshot)) => latest_progress = Some(snapshot),
+                Ok(RandomMapUpdate::Finished(generated)) => {
+                    finished = Some(generated);
+                    break;
                 }
-                return true;
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    died = true;
+                    break;
+                }
             }
+        }
+
+        if let Some(generated) = finished {
+            let job = state
+                .random_map_generation
+                .take()
+                .expect("checked present above");
+            let preview = Self::rasterise_generated_map(state, &job, &generated);
+            if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+                modal.finish_generate(preview);
+            }
+            if job.accept_on_finish {
+                Self::accept_random_map_setup(state);
+            }
+            return true;
+        }
+
+        if died {
+            // The worker ended without a result. Clear the job so the dialog
+            // does not sit disabled forever waiting on it.
+            log::warn!("random map: the generator thread ended without a result");
+            state.random_map_generation = None;
+            if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+                modal.finish_generate(None);
+            }
+            return true;
+        }
+
+        let Some(snapshot) = latest_progress else {
+            return false;
         };
+        // Lifted out and put straight back: rasterising reads the job and the
+        // rest of the app state at once, and the job lives inside that state.
         let job = state
             .random_map_generation
             .take()
             .expect("checked present above");
-        let preview = Self::rasterise_generated_map(state, &job, &generated);
+        let preview =
+            Self::rasterise_map(state, &job, &snapshot.map_file, &snapshot.start_waypoints);
+        state.random_map_generation = Some(job);
         if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
-            modal.finish_generate(preview);
-        }
-        if job.accept_on_finish {
-            Self::accept_random_map_setup(state);
+            if let Some(preview) = preview {
+                modal.show_progress_preview(preview);
+            }
         }
         true
     }
@@ -1539,18 +1613,36 @@ impl App {
         }
     }
 
-    /// Colour and rasterise a generated map. Main thread only: the resolver
-    /// reads theater data and the ore/gem colours come out of overlay SHPs.
+    /// Rasterise the finished map and persist it as the chooser's thumbnail.
     fn rasterise_generated_map(
         state: &AppState,
         job: &RandomMapGenerationJob,
         generated: &crate::map::rmg::GeneratedMap,
     ) -> Option<crate::map::rmg::preview::PreviewImage> {
+        let preview =
+            Self::rasterise_map(state, job, &generated.map_file, &generated.start_waypoints)?;
+        // Only the finished map is written out: the file is what the chooser
+        // row shows later, and a half-built map is not that map.
+        Self::write_random_map_preview_file(state, &preview);
+        Some(preview)
+    }
+
+    /// Colour and rasterise a map. Main thread only: the resolver reads theater
+    /// data and the ore/gem colours come out of overlay SHPs.
+    ///
+    /// Mid-generation snapshots go through here too, so an in-progress preview
+    /// is coloured by exactly the path that colours the finished one.
+    fn rasterise_map(
+        state: &AppState,
+        job: &RandomMapGenerationJob,
+        map_file: &crate::map::map_file::MapFile,
+        start_waypoints: &[(u8, u16, u16)],
+    ) -> Option<crate::map::rmg::preview::PreviewImage> {
         // LAT defaults off for runtime maps, so resolve the same way the load
         // path will; a different setting here would colour cells the player
         // never sees.
         let resolved_terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::build(
-            &generated.map_file,
+            map_file,
             Some(&job.theater),
             state.asset_manager.as_ref(),
             Some(&job.terrain_rules),
@@ -1587,14 +1679,12 @@ impl App {
             from_art.or_else(|| registry.flags(overlay_id)?.radar_color)
         };
         let cells = crate::map::rmg::preview::preview_cells_from_map(
-            &generated.map_file,
+            map_file,
             &resolved_terrain,
             &overlay_radar,
         );
-        let waypoints = crate::map::rmg::preview::marker_waypoints(&generated.start_waypoints);
-        let preview = crate::map::rmg::preview::render_preview(&cells, &waypoints)?;
-        Self::write_random_map_preview_file(state, &preview);
-        Some(preview)
+        let waypoints = crate::map::rmg::preview::marker_waypoints(start_waypoints);
+        crate::map::rmg::preview::render_preview(&cells, &waypoints)
     }
 
     /// Persist the generated preview so the chooser's random-map row can show it.
@@ -1796,6 +1886,12 @@ impl App {
         true
     }
 
+    /// Persist accepted random-map setup, refresh the sentinel record, and
+    /// select it so launch generates from it.
+    ///
+    /// A failed write is fatal to the commit: `map_load` treats a missing seed
+    /// file as "use defaults", so committing anyway would silently start a
+    /// different map than the one the player configured.
     fn commit_random_map_setup(
         state: &mut AppState,
         options: &crate::map::rmg::RmgOptions,
@@ -4461,6 +4557,31 @@ fn auto_detect_ui_scale(screen_width: u32, screen_height: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn six_preview_boundaries_cover_the_originals_eight_redraws() {
+        use crate::map::rmg::STAGE_ORDER;
+        use crate::map::rmg::build::GenerationPoint;
+
+        let drawn: Vec<GenerationPoint> = std::iter::once(GenerationPoint::Initial)
+            .chain(
+                STAGE_ORDER
+                    .iter()
+                    .map(|stage| GenerationPoint::After(*stage)),
+            )
+            .filter(|point| draws_preview(*point))
+            .collect();
+        // Eight redraws in the original, two of them repeats of the image
+        // already on screen.
+        assert_eq!(drawn.len(), 6, "{drawn:?}");
+        assert_eq!(drawn[0], GenerationPoint::Initial);
+        // The last one precedes the final recalc, so the finished map still
+        // differs from it and the closing draw is not a repeat either.
+        assert_eq!(
+            drawn[5],
+            GenerationPoint::After(crate::map::rmg::Stage::Rocks)
+        );
+    }
 
     #[test]
     fn shell_key_translation_matches_dialog_controller_route() {

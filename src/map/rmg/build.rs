@@ -88,6 +88,62 @@ impl ResolvedTheaterInputs {
     }
 }
 
+/// Where a generation observer is being called from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationPoint {
+    /// Before any terrain work. The original draws the preview here too, so the
+    /// box clears the moment Generate is pressed rather than showing the
+    /// previous map until the new one is finished.
+    Initial,
+    /// The boundary after `Stage` in `STAGE_ORDER`.
+    After(Stage),
+}
+
+/// The map as it stands at a generation boundary, in the shape the finished map
+/// takes so the preview path that colours the final map colours these too.
+#[derive(Debug)]
+pub struct GenerationSnapshot {
+    pub map_file: crate::map::map_file::MapFile,
+    pub start_waypoints: Vec<(u8, u16, u16)>,
+}
+
+/// A boundary an observer was called at.
+///
+/// Projecting the grid walks every cell, so it happens only when
+/// [`Self::snapshot`] is called — a boundary the observer ignores costs it
+/// nothing.
+pub struct GenerationPointView<'a> {
+    point: GenerationPoint,
+    options: &'a RmgOptions,
+    geometry: MapGeometry,
+    grid: &'a grid::RmgGrid,
+    waypoints: &'a [(u8, u16, u16)],
+}
+
+impl GenerationPointView<'_> {
+    pub fn point(&self) -> GenerationPoint {
+        self.point
+    }
+
+    /// Project the grid as it stands into a `MapFile`.
+    ///
+    /// Trees and tech buildings are left out: the pipeline collects them as it
+    /// goes and hands them over only at the end, and the preview draws neither
+    /// — it reads cells and overlays.
+    pub fn snapshot(&self) -> GenerationSnapshot {
+        let mut map_file = emit::empty_map_file(
+            self.options,
+            self.geometry.gen_w as u32,
+            self.geometry.gen_h as u32,
+        );
+        emit::populate(&mut map_file, self.grid, &[], &[], self.waypoints);
+        GenerationSnapshot {
+            map_file,
+            start_waypoints: self.waypoints.to_vec(),
+        }
+    }
+}
+
 /// Run the full generator, returning a populated `MapFile` plus the generated
 /// start waypoints and the executed stage list.
 ///
@@ -100,6 +156,22 @@ pub fn generate_map(
     resolved: &ResolvedTheaterInputs,
     blocks: &dyn TileBlocks,
     tech_types: &[TechType],
+) -> GeneratedMap {
+    generate_map_observed(options, settings, resolved, blocks, tech_types, &mut |_| {})
+}
+
+/// As [`generate_map`], calling `observe` at every generation boundary.
+///
+/// The observer sees the run; it cannot alter it. Everything that decides the
+/// output — the RNG, the scratch, the grid — is either not handed over or handed
+/// over shared, so an observed run generates exactly what an unobserved one does.
+pub fn generate_map_observed(
+    options: &RmgOptions,
+    settings: &RmgSettings,
+    resolved: &ResolvedTheaterInputs,
+    blocks: &dyn TileBlocks,
+    tech_types: &[TechType],
+    observe: &mut dyn FnMut(GenerationPointView<'_>),
 ) -> GeneratedMap {
     let mut options = options.clone();
     options.normalize();
@@ -135,6 +207,23 @@ pub fn generate_map(
         max_trees: settings.max_trees,
     };
 
+    observe(GenerationPointView {
+        point: GenerationPoint::Initial,
+        options: &options,
+        geometry,
+        grid: &grid,
+        waypoints: &[],
+    });
+
+    let mut on_stage = |stage: Stage, grid: &grid::RmgGrid, waypoints: &[(u8, u16, u16)]| {
+        observe(GenerationPointView {
+            point: GenerationPoint::After(stage),
+            options: &options,
+            geometry,
+            grid,
+            waypoints,
+        });
+    };
     let output = pipeline::run_pipeline(
         &mut grid,
         &mut scratch,
@@ -142,6 +231,7 @@ pub fn generate_map(
         &mut gauss,
         &geometry,
         &inputs,
+        &mut on_stage,
     );
 
     let mut map_file = emit::empty_map_file(&options, geometry.gen_w as u32, geometry.gen_h as u32);
@@ -316,6 +406,140 @@ mod tests {
         assert_eq!(snapshot(), snapshot());
     }
 
+    /// The comparable content of a generated map: what the emitter projected
+    /// plus the start positions.
+    fn projection(
+        generated: &GeneratedMap,
+    ) -> (Vec<i32>, Vec<(u16, u16, u8, u8)>, Vec<(u8, u16, u16)>) {
+        let tiles = generated
+            .map_file
+            .cells
+            .iter()
+            .map(|cell| cell.tile_index)
+            .collect();
+        let overlays = generated
+            .map_file
+            .overlays
+            .iter()
+            .map(|o| (o.rx, o.ry, o.overlay_id, o.frame))
+            .collect();
+        (tiles, overlays, generated.start_waypoints.clone())
+    }
+
+    fn observe_run(
+        options: &RmgOptions,
+    ) -> (GeneratedMap, Vec<GenerationPoint>, Vec<GenerationSnapshot>) {
+        let resolved = resolved();
+        let blocks = one_by_one();
+        let settings = RmgSettings::default();
+        let mut points = Vec::new();
+        let mut snapshots = Vec::new();
+        let generated =
+            generate_map_observed(options, &settings, &resolved, &blocks, &[], &mut |view| {
+                points.push(view.point());
+                snapshots.push(view.snapshot());
+            });
+        (generated, points, snapshots)
+    }
+
+    #[test]
+    fn observing_a_run_does_not_change_what_it_generates() {
+        let resolved = resolved();
+        let blocks = one_by_one();
+        let settings = RmgSettings::default();
+        let plain = generate_map(&options(1, 0), &settings, &resolved, &blocks, &[]);
+        // The observer does real work at every boundary — it projects the whole
+        // grid — so this covers the projection as well as the callback.
+        let (observed, _, _) = observe_run(&options(1, 0));
+
+        assert_eq!(plain.stages_run, observed.stages_run);
+        assert_eq!(projection(&plain), projection(&observed));
+    }
+
+    #[test]
+    fn every_boundary_is_reported_once_in_pipeline_order() {
+        // Emit is the caller's step, so the pipeline never reaches a boundary
+        // for it; everything before it reports, including the stages this
+        // configuration skips.
+        let expected: Vec<GenerationPoint> = std::iter::once(GenerationPoint::Initial)
+            .chain(
+                STAGE_ORDER
+                    .iter()
+                    .filter(|stage| **stage != Stage::Emit)
+                    .map(|stage| GenerationPoint::After(*stage)),
+            )
+            .collect();
+        let (_, points, _) = observe_run(&options(1, 0));
+        assert_eq!(points, expected);
+    }
+
+    #[test]
+    fn a_skipped_stage_still_reports_its_boundary() {
+        // Snow runs no rock pass, but the boundary after it is what the
+        // original's last in-progress preview sits at, so it must still fire.
+        let (generated, points, _) = observe_run(&options(1, 1));
+        assert!(!generated.stages_run.contains(&Stage::Rocks));
+        assert!(points.contains(&GenerationPoint::After(Stage::Rocks)));
+    }
+
+    #[test]
+    fn snapshots_share_the_final_maps_dimensions() {
+        // The preview's cell-admission test reads the header, so a snapshot
+        // whose header differed would rasterise to a different pixel size and
+        // the preview box would jump about while generating.
+        let (generated, _, snapshots) = observe_run(&options(1, 0));
+        let final_header = &generated.map_file.header;
+        for snapshot in &snapshots {
+            let header = &snapshot.map_file.header;
+            assert_eq!(
+                (
+                    header.width,
+                    header.height,
+                    header.local_left,
+                    header.local_top,
+                    header.local_width,
+                    header.local_height
+                ),
+                (
+                    final_header.width,
+                    final_header.height,
+                    final_header.local_left,
+                    final_header.local_top,
+                    final_header.local_width,
+                    final_header.local_height
+                ),
+            );
+            assert_eq!(
+                snapshot.map_file.cells.len(),
+                generated.map_file.cells.len()
+            );
+        }
+    }
+
+    #[test]
+    fn start_positions_appear_from_the_starts_boundary_onwards() {
+        let (generated, points, snapshots) = observe_run(&options(1, 0));
+        assert!(
+            !generated.start_waypoints.is_empty(),
+            "the run placed starts"
+        );
+        let first_with_starts = points
+            .iter()
+            .zip(&snapshots)
+            .position(|(_, snapshot)| !snapshot.start_waypoints.is_empty())
+            .expect("some snapshot carries the starts");
+        assert_eq!(
+            points[first_with_starts],
+            GenerationPoint::After(Stage::Starts)
+        );
+        // And once placed they stay, so the markers do not blink out again.
+        assert!(
+            snapshots[first_with_starts..]
+                .iter()
+                .all(|snapshot| snapshot.start_waypoints == generated.start_waypoints)
+        );
+    }
+
     #[test]
     fn non_temperate_theater_skips_rocks_stage() {
         let resolved = resolved();
@@ -340,6 +564,8 @@ mod send_check {
         assert_send::<super::ResolvedTheaterInputs>();
         assert_send::<crate::map::rmg::theater_blocks::TheaterTileBlocks>();
         assert_send::<crate::map::rmg::GeneratedMap>();
+        // The worker publishes these as it goes.
+        assert_send::<super::GenerationSnapshot>();
         assert_send::<crate::map::rmg::preview::PreviewPalette>();
     }
 }

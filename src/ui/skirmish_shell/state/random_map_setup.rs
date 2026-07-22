@@ -360,6 +360,17 @@ impl RandomMapSetupModalState {
         self.dragging_players_thumb = false;
     }
 
+    /// Show the map as it stands part-way through the generate block.
+    ///
+    /// The original draws its preview repeatedly while generating, so the player
+    /// watches the map build up rather than waiting on an empty box. The block
+    /// is still running: nothing here unlocks a control or marks a result
+    /// available.
+    pub fn show_progress_preview(&mut self, preview: PreviewImage) {
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+        self.generated_preview = Some(preview);
+    }
+
     /// End the generate block, marking a result available so accept unlocks.
     ///
     /// This also switches Load/Delete on unconditionally: the original

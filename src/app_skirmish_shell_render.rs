@@ -635,8 +635,9 @@ fn render_skirmish_shell_with_atlas(
     atlas: Option<&SkirmishShellChromeAtlas>,
     mode: ShellRenderMode,
 ) -> anyhow::Result<SkirmishShellAction> {
-    // Collect a finished generation before laying anything out, so the frame
-    // that clears "Working / Please Wait" is the same one that shows the map.
+    // Collect whatever the generator has produced before laying anything out,
+    // so each in-progress preview lands on the next frame drawn and the frame
+    // that clears "Working / Please Wait" is the one showing the finished map.
     // While a job is in flight the shell keeps asking for frames -- nothing else
     // is driving redraws, and without this the dialog would freeze on the first
     // "working" frame until the player moved the mouse.
