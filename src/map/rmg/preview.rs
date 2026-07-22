@@ -107,35 +107,81 @@ fn projected_bounds(cells: &[PreviewCell]) -> Option<(i32, i32, i32, i32)> {
     bounds
 }
 
-/// Collect the playable cells of a map with the radar colours the resolved
+/// The playfield rectangle in the diagonal space the playfield test works in.
+///
+/// Built from `LocalSize` plus the full map *width* only — the full height never
+/// enters the test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Playfield {
+    /// Exclusive lower bound on `x + y`.
+    sum_min_exclusive: i32,
+    /// Inclusive upper bound on `x + y`.
+    sum_max_inclusive: i32,
+    /// Exclusive lower bound on `x - y`.
+    diff_min_exclusive: i32,
+    /// Exclusive upper bound on `x - y`.
+    diff_max_exclusive: i32,
+}
+
+impl Playfield {
+    /// Derive the playfield from a map header.
+    ///
+    /// The bounds are asymmetric on purpose: the `x + y` upper bound is
+    /// inclusive while the other three are strict. Getting any one of them
+    /// wrong shifts the admitted cell set by a row, and the preview's surface
+    /// size is the extent of exactly that set.
+    pub fn from_header(header: &crate::map::map_file::MapHeader) -> Self {
+        let map_width = header.width as i32;
+        let left = header.local_left as i32;
+        let top = header.local_top as i32;
+        let width = header.local_width as i32;
+        let height = header.local_height as i32;
+        Self {
+            sum_min_exclusive: map_width + 2 * top,
+            sum_max_inclusive: map_width + 2 * top + 2 * height + 2,
+            diff_min_exclusive: 2 * left - map_width,
+            diff_max_exclusive: 2 * left - map_width + 2 * width,
+        }
+    }
+
+    /// Whether a cell is inside the playfield.
+    ///
+    /// Deliberately takes no elevation: the test is constant in `z`, so feeding
+    /// it a height would make cells drop in and out of the preview as the
+    /// terrain rises.
+    pub const fn contains(&self, x: u16, y: u16) -> bool {
+        let sum = x as i32 + y as i32;
+        let diff = x as i32 - y as i32;
+        sum > self.sum_min_exclusive
+            && sum <= self.sum_max_inclusive
+            && diff > self.diff_min_exclusive
+            && diff < self.diff_max_exclusive
+    }
+}
+
+/// Collect the playfield cells of a map with the radar colours the resolved
 /// terrain gave them.
 ///
-/// Playability is the same `LocalSize` test the terrain grid uses to drop border
-/// filler: those cells sit under permanent shroud and must not stretch the
-/// preview. Cells with no tile are skipped, as are any the resolver did not
-/// produce.
+/// Every playfield cell contributes, including ones the resolver produced no
+/// entry for: a missing colour becomes the same grey a black lookup does, rather
+/// than dropping the cell. That matters because the preview's surface is sized
+/// from the extent of this set, so silently skipping cells shrinks the image.
 pub fn preview_cells_from_map(
     map: &crate::map::map_file::MapFile,
     resolved: &crate::map::resolved_terrain::ResolvedTerrainGrid,
 ) -> Vec<PreviewCell> {
-    let bounds = crate::map::terrain::LocalBounds::from_header(&map.header);
+    let playfield = Playfield::from_header(&map.header);
     let mut cells = Vec::with_capacity(map.cells.len());
     for cell in &map.cells {
-        if cell.tile_index < 0 {
+        if !playfield.contains(cell.rx, cell.ry) {
             continue;
         }
-        let (screen_x, screen_y) = crate::map::terrain::iso_to_screen(cell.rx, cell.ry, cell.z);
-        if !bounds.contains(screen_x, screen_y) {
-            continue;
-        }
-        let Some(resolved_cell) = resolved.cell(cell.rx, cell.ry) else {
-            continue;
-        };
+        let resolved_cell = resolved.cell(cell.rx, cell.ry);
         cells.push(PreviewCell {
             x: cell.rx,
             y: cell.ry,
-            left: resolved_cell.radar_left,
-            right: resolved_cell.radar_right,
+            left: resolved_cell.map_or([0, 0, 0], |resolved| resolved.radar_left),
+            right: resolved_cell.map_or([0, 0, 0], |resolved| resolved.radar_right),
         });
     }
     cells
@@ -359,6 +405,72 @@ mod tests {
             marker_pixels <= (MARKER_WAYPOINT_COUNT as usize) * 16,
             "at most eight 4x4 markers, got {marker_pixels} pixels"
         );
+    }
+
+    fn header(
+        width: u32,
+        local_left: u32,
+        local_top: u32,
+        local_width: u32,
+        local_height: u32,
+    ) -> crate::map::map_file::MapHeader {
+        crate::map::map_file::MapHeader {
+            theater: "TEMPERATE".to_string(),
+            width,
+            height: 0,
+            local_left,
+            local_top,
+            local_width,
+            local_height,
+        }
+    }
+
+    #[test]
+    fn playfield_bounds_are_asymmetric_exactly_where_the_test_is() {
+        // Only the x+y upper bound is inclusive; the other three are strict.
+        // Each assertion below sits one cell either side of a boundary.
+        let field = Playfield::from_header(&header(20, 2, 5, 10, 8));
+        // sum bounds: (20 + 10, 20 + 10 + 16 + 2] = (30, 48]
+        assert!(!field.contains(15, 15), "sum 30 is excluded at the low end");
+        assert!(field.contains(16, 15), "sum 31 is the first admitted");
+        assert!(field.contains(24, 24), "sum 48 is admitted -- inclusive");
+        assert!(!field.contains(25, 24), "sum 49 is past the inclusive top");
+        // diff bounds: (2*2 - 20, 2*2 - 20 + 20) = (-16, 4)
+        let on_sum = |diff: i32| {
+            // Pick a cell with sum 40 (inside) and the requested difference.
+            let x = (40 + diff) / 2;
+            let y = 40 - x;
+            (x as u16, y as u16)
+        };
+        let (x, y) = on_sum(-16);
+        assert!(!field.contains(x, y), "diff -16 is excluded, strict");
+        let (x, y) = on_sum(-14);
+        assert!(field.contains(x, y), "diff -14 is inside");
+        let (x, y) = on_sum(2);
+        assert!(field.contains(x, y), "diff 2 is inside");
+        let (x, y) = on_sum(4);
+        assert!(!field.contains(x, y), "diff 4 is excluded, strict");
+    }
+
+    #[test]
+    fn the_playfield_ignores_the_full_map_height() {
+        // Only the full map WIDTH enters the test; height never does.
+        let short = Playfield::from_header(&header(20, 2, 5, 10, 8));
+        let mut tall_header = header(20, 2, 5, 10, 8);
+        tall_header.height = 500;
+        assert_eq!(Playfield::from_header(&tall_header), short);
+    }
+
+    #[test]
+    fn the_playfield_shifts_with_the_full_map_width() {
+        // Width enters both axes, so widening the map moves the whole diamond.
+        let narrow = Playfield::from_header(&header(20, 2, 5, 10, 8));
+        let wide = Playfield::from_header(&header(30, 2, 5, 10, 8));
+        assert_ne!(narrow, wide);
+        // Cell (20,30): sum 50, diff -10. The wider map admits it on both axes;
+        // the narrower one's sum window tops out at 48.
+        assert!(wide.contains(20, 30), "inside the wider map's playfield");
+        assert!(!narrow.contains(20, 30), "outside the narrower one");
     }
 
     #[test]
