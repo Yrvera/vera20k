@@ -13,6 +13,7 @@ pub mod pipeline;
 pub mod preview;
 pub mod randomize;
 pub mod rng;
+pub mod saved_seeds;
 pub mod scratch;
 pub mod settings;
 pub mod theater_blocks;
