@@ -84,6 +84,9 @@ const SETUP_PLAYERS_STEP: i32 = 1;
 /// needs it because terrain resolution takes it, not because cliffs affect the
 /// image.
 const RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY: u8 = 2;
+/// Where the generated preview is written. The chooser's sentinel row reads this
+/// back, so writing it is what makes the random-map thumbnail appear there.
+const RANDMAP_PREVIEW_FILE: &str = "RandMap.img";
 
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
 const SHELL_WINDOW_WIDTH: u32 = 800;
@@ -1439,7 +1442,50 @@ impl App {
             &resolved_terrain,
         );
         let waypoints = crate::map::rmg::preview::marker_waypoints(&generated.start_waypoints);
-        crate::map::rmg::preview::render_preview(&cells, &waypoints)
+        let preview = crate::map::rmg::preview::render_preview(&cells, &waypoints)?;
+        Self::write_random_map_preview_file(state, &preview);
+        Some(preview)
+    }
+
+    /// Persist the generated preview so the chooser's random-map row can show it.
+    ///
+    /// Failure is logged rather than propagated: the dialog's own preview box
+    /// draws from memory, so a write failure costs the chooser thumbnail and
+    /// nothing else.
+    fn write_random_map_preview_file(
+        state: &AppState,
+        preview: &crate::map::rmg::preview::PreviewImage,
+    ) {
+        let Some(ra2_dir) = state
+            .game_config
+            .as_ref()
+            .map(|config| config.paths.ra2_dir.clone())
+        else {
+            return;
+        };
+        let (Ok(width), Ok(height)) = (u16::try_from(preview.width), u16::try_from(preview.height))
+        else {
+            log::warn!(
+                "random map: preview {}x{} does not fit a PCX header",
+                preview.width,
+                preview.height
+            );
+            return;
+        };
+        let rgb: Vec<u8> = preview
+            .rgba
+            .chunks_exact(4)
+            .flat_map(|px| [px[0], px[1], px[2]])
+            .collect();
+        match crate::assets::pcx_file::encode_direct_rgb(width, height, &rgb) {
+            Ok(encoded) => {
+                let path = ra2_dir.join(RANDMAP_PREVIEW_FILE);
+                if let Err(err) = std::fs::write(&path, encoded) {
+                    log::warn!("random map: could not write {}: {err}", path.display());
+                }
+            }
+            Err(err) => log::warn!("random map: could not encode the preview: {err}"),
+        }
     }
 
     fn commit_random_map_setup(

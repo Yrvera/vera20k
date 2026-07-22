@@ -126,6 +126,75 @@ impl PcxFile {
     }
 }
 
+/// PCX header size; pixel data starts immediately after it.
+const PCX_HEADER_LEN: usize = 128;
+/// The longest run a single RLE pair can express.
+const PCX_MAX_RUN: usize = 0x3F;
+/// Top two bits set marks a run-length byte.
+const PCX_RUN_MARKER: u8 = 0xC0;
+
+/// Encode an RGB image as a 3-plane, 8-bit, RLE PCX.
+///
+/// This is the form the runtime preview is written in: each scanline stores a
+/// full red row, then green, then blue, rather than interleaving components.
+/// `rgb` is row-major, three bytes per pixel.
+pub fn encode_direct_rgb(width: u16, height: u16, rgb: &[u8]) -> Result<Vec<u8>, AssetError> {
+    let pixel_count = width as usize * height as usize;
+    if rgb.len() != pixel_count * 3 {
+        return Err(pcx_error("RGB buffer does not match the given dimensions"));
+    }
+    if width == 0 || height == 0 {
+        return Err(pcx_error("PCX dimensions must be non-zero"));
+    }
+
+    let mut out = vec![0u8; PCX_HEADER_LEN];
+    out[0] = 0x0A; // manufacturer
+    out[1] = 5; // version
+    out[2] = 1; // RLE encoding
+    out[3] = 8; // bits per pixel per plane
+    // The image rectangle is inclusive, so the maxima are one less than the size.
+    out[8..10].copy_from_slice(&(width - 1).to_le_bytes());
+    out[10..12].copy_from_slice(&(height - 1).to_le_bytes());
+    out[12..14].copy_from_slice(&width.to_le_bytes()); // horizontal DPI
+    out[14..16].copy_from_slice(&height.to_le_bytes()); // vertical DPI
+    out[65] = 3; // planes
+    out[66..68].copy_from_slice(&width.to_le_bytes()); // bytes per line, per plane
+    out[68..70].copy_from_slice(&1u16.to_le_bytes()); // colour palette type
+
+    let width_usize = width as usize;
+    let mut plane = vec![0u8; width_usize];
+    for row in 0..height as usize {
+        let row_start = row * width_usize * 3;
+        for component in 0..3 {
+            for column in 0..width_usize {
+                plane[column] = rgb[row_start + column * 3 + component];
+            }
+            encode_rle_row(&plane, &mut out);
+        }
+    }
+    Ok(out)
+}
+
+/// Append one RLE-encoded plane row.
+///
+/// A literal byte only escapes the run encoding when its top two bits are clear,
+/// so any other single byte still has to be written as a one-long run.
+fn encode_rle_row(row: &[u8], out: &mut Vec<u8>) {
+    let mut index = 0usize;
+    while index < row.len() {
+        let value = row[index];
+        let mut run = 1usize;
+        while index + run < row.len() && row[index + run] == value && run < PCX_MAX_RUN {
+            run += 1;
+        }
+        if run > 1 || value & PCX_RUN_MARKER == PCX_RUN_MARKER {
+            out.push(PCX_RUN_MARKER | run as u8);
+        }
+        out.push(value);
+        index += run;
+    }
+}
+
 fn decode_pcx_rle(encoded: &[u8], expected_scan: usize) -> Result<Vec<u8>, AssetError> {
     let mut scan = Vec::with_capacity(expected_scan);
     let mut i = 0usize;
@@ -315,5 +384,59 @@ mod tests {
                 255, 0, 255, 0,
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod direct_rgb_roundtrip_tests {
+    use super::*;
+
+    fn gradient(width: u16, height: u16) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                rgb.extend_from_slice(&[(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8]);
+            }
+        }
+        rgb
+    }
+
+    #[test]
+    fn encoded_rgb_decodes_back_to_the_same_pixels() {
+        let (w, h) = (37u16, 19u16);
+        let rgb = gradient(w, h);
+        let encoded = encode_direct_rgb(w, h, &rgb).expect("encode");
+        let decoded = PcxFile::from_bytes(&encoded).expect("decode");
+        assert_eq!((decoded.width, decoded.height), (w, h));
+        assert_eq!(decoded.pixels, rgb, "round trip is lossless");
+    }
+
+    #[test]
+    fn a_flat_image_round_trips_through_long_runs() {
+        // Runs cap at 63, so a row wider than that exercises run splitting.
+        let (w, h) = (200u16, 3u16);
+        let rgb = vec![0x80; w as usize * h as usize * 3];
+        let encoded = encode_direct_rgb(w, h, &rgb).expect("encode");
+        assert!(
+            encoded.len() < rgb.len(),
+            "a flat image should compress, got {} bytes for {}",
+            encoded.len(),
+            rgb.len()
+        );
+        assert_eq!(PcxFile::from_bytes(&encoded).expect("decode").pixels, rgb);
+    }
+
+    #[test]
+    fn literals_with_the_run_bits_set_survive() {
+        // 0xC5 would be read back as a run marker if written bare.
+        let rgb: Vec<u8> = vec![0xC5, 0x01, 0xC0, 0x02, 0xFF, 0x03];
+        let encoded = encode_direct_rgb(2, 1, &rgb).expect("encode");
+        assert_eq!(PcxFile::from_bytes(&encoded).expect("decode").pixels, rgb);
+    }
+
+    #[test]
+    fn a_mismatched_buffer_is_rejected() {
+        assert!(encode_direct_rgb(4, 4, &[0; 10]).is_err());
+        assert!(encode_direct_rgb(0, 4, &[]).is_err());
     }
 }
