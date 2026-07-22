@@ -1451,13 +1451,19 @@ impl App {
             if !registry.flags(overlay_id)?.tiberium {
                 return None;
             }
-            let name = registry.name(overlay_id)?;
-            let assets = assets?;
-            let bytes = crate::map::overlay_types::overlay_shp_candidates(name, theater_ext)
-                .iter()
-                .find_map(|candidate| assets.get_ref(candidate))?;
-            let shp = crate::assets::shp_file::ShpFile::from_bytes(bytes).ok()?;
-            Some(shp.frames.get(stage as usize)?.radar_color)
+            // The stage's colour out of the overlay SHP wins; the type's
+            // RadarColor= stands in when that comes back essentially black,
+            // which is also what happens when the art is missing entirely.
+            let from_art = (|| {
+                let name = registry.name(overlay_id)?;
+                let bytes = crate::map::overlay_types::overlay_shp_candidates(name, theater_ext)
+                    .iter()
+                    .find_map(|candidate| assets?.get_ref(candidate))?;
+                let shp = crate::assets::shp_file::ShpFile::from_bytes(bytes).ok()?;
+                Some(shp.frames.get(stage as usize)?.radar_color)
+            })()
+            .filter(|rgb| *rgb != [0, 0, 0]);
+            from_art.or_else(|| registry.flags(overlay_id)?.radar_color)
         };
         let cells = crate::map::rmg::preview::preview_cells_from_map(
             &generated.map_file,

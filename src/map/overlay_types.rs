@@ -96,6 +96,12 @@ pub struct OverlayTypeFlags {
     pub land_wheel_speed_zero: bool,
     /// Overlay name identifies a bridge deck/high-bridge overlay.
     pub bridge_deck: bool,
+    /// `RadarColor=R,G,B` from the type's rules section.
+    ///
+    /// The engine prefers the growth stage's colour out of the overlay SHP and
+    /// falls back to this when that comes back essentially black, so an overlay
+    /// whose art is missing still paints the right colour on radar and previews.
+    pub radar_color: Option<[u8; 3]>,
     /// Railroad track overlay (TRACKS01..TRACKS16). FA2 renders these +15px lower.
     pub track: bool,
     /// Land= key from INI — terrain classification for this overlay.
@@ -125,6 +131,7 @@ impl Default for OverlayTypeFlags {
             bridge_deck: false,
             track: false,
             land: None,
+            radar_color: None,
             strength: 1,
             damage_levels: 1,
         }
@@ -226,6 +233,7 @@ impl OverlayTypeRegistry {
                     .get("Strength")
                     .and_then(|v| v.parse::<u16>().ok())
                     .unwrap_or(1);
+                let radar_color = type_section.get("RadarColor").and_then(parse_radar_color);
                 // DamageLevels from art section (e.g., [GASAND] DamageLevels=2 in art.ini).
                 let damage_levels = art_ini
                     .and_then(|art| art.section(name))
@@ -248,6 +256,7 @@ impl OverlayTypeRegistry {
                     bridge_deck,
                     track,
                     land,
+                    radar_color,
                     strength,
                     damage_levels,
                 });
@@ -420,6 +429,19 @@ fn section_wheel_speed_is_exact_zero(section: &crate::rules::ini_parser::IniSect
 /// Returns a list of filenames to try in order, using the theater extension first
 /// (e.g., for temperate: `.tem`), then the generic `.shp` extension.
 /// Both lowercase and original case are tried.
+/// Parse a `RadarColor=R,G,B` value. Anything malformed yields `None` so the
+/// caller falls back to the overlay's art rather than to a wrong colour.
+fn parse_radar_color(value: &str) -> Option<[u8; 3]> {
+    let mut channels = value.split(',').map(|part| part.trim().parse::<u8>());
+    let red = channels.next()?.ok()?;
+    let green = channels.next()?.ok()?;
+    let blue = channels.next()?.ok()?;
+    if channels.next().is_some() {
+        return None;
+    }
+    Some([red, green, blue])
+}
+
 pub fn overlay_shp_candidates(name: &str, theater_ext: &str) -> Vec<String> {
     let lower: String = name.to_lowercase();
     vec![
@@ -774,5 +796,17 @@ Image=4
                 flat_variant: 0,
             })
         );
+    }
+
+    #[test]
+    fn radar_color_parses_only_a_well_formed_triple() {
+        assert_eq!(parse_radar_color("220,200,0"), Some([220, 200, 0]));
+        assert_eq!(parse_radar_color(" 220 , 200 , 0 "), Some([220, 200, 0]));
+        // Malformed values yield None so the caller falls back to the art
+        // rather than painting a confidently wrong colour.
+        assert_eq!(parse_radar_color("220,200"), None);
+        assert_eq!(parse_radar_color("220,200,0,5"), None);
+        assert_eq!(parse_radar_color("220,200,300"), None);
+        assert_eq!(parse_radar_color(""), None);
     }
 }
