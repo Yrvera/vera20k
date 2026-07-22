@@ -1437,9 +1437,32 @@ impl App {
             false,
             RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
         );
+        // Ore and gem cells take their colour from the overlay's own SHP: the
+        // growth stage indexes the frame list and the frame header carries the
+        // radar triple. The artwork is never sampled for it, so there is no
+        // substitute for loading the file.
+        let overlay_registry = state.overlay_registry.as_ref();
+        let assets = state.asset_manager.as_ref();
+        let theater_ext = theater.extension;
+        let overlay_radar = |overlay_id: u8, stage: u8| -> Option<[u8; 3]> {
+            let registry = overlay_registry?;
+            // The tiberium flag is the gate: walls, roads and bridges are
+            // overlays too, and they keep the terrain colour underneath.
+            if !registry.flags(overlay_id)?.tiberium {
+                return None;
+            }
+            let name = registry.name(overlay_id)?;
+            let assets = assets?;
+            let bytes = crate::map::overlay_types::overlay_shp_candidates(name, theater_ext)
+                .iter()
+                .find_map(|candidate| assets.get_ref(candidate))?;
+            let shp = crate::assets::shp_file::ShpFile::from_bytes(bytes).ok()?;
+            Some(shp.frames.get(stage as usize)?.radar_color)
+        };
         let cells = crate::map::rmg::preview::preview_cells_from_map(
             &generated.map_file,
             &resolved_terrain,
+            &overlay_radar,
         );
         let waypoints = crate::map::rmg::preview::marker_waypoints(&generated.start_waypoints);
         let preview = crate::map::rmg::preview::render_preview(&cells, &waypoints)?;

@@ -159,6 +159,43 @@ impl Playfield {
     }
 }
 
+/// Overlay id bands whose radar colour comes back with green and blue swapped.
+///
+/// Two contiguous bands are re-packed on the way out; everything else is copied
+/// straight through. Copying all of them straight through leaves these bands the
+/// wrong hue while the rest look correct, which is a miserable thing to spot by
+/// eye.
+const SWAPPED_CHANNEL_BANDS: [(u8, u8); 2] = [(0x7F, 0x8A), (0x93, 0x9E)];
+
+/// Reorder an overlay's radar triple for the bands that need it.
+pub const fn overlay_radar_channel_order(overlay_id: u8, rgb: [u8; 3]) -> [u8; 3] {
+    let mut band = 0;
+    while band < SWAPPED_CHANNEL_BANDS.len() {
+        let (low, high) = SWAPPED_CHANNEL_BANDS[band];
+        if overlay_id >= low && overlay_id <= high {
+            return [rgb[0], rgb[2], rgb[1]];
+        }
+        band += 1;
+    }
+    rgb
+}
+
+/// Density (growth stage) of each overlay cell, keyed by cell position.
+pub type OverlayDensities = std::collections::HashMap<(u16, u16), (u8, u8)>;
+
+/// Index a map's overlays by cell so the preview can look up id and density.
+pub fn overlay_densities(map: &crate::map::map_file::MapFile) -> OverlayDensities {
+    map.overlays
+        .iter()
+        .map(|overlay| {
+            (
+                (overlay.rx, overlay.ry),
+                (overlay.overlay_id, overlay.frame),
+            )
+        })
+        .collect()
+}
+
 /// Collect the playfield cells of a map with the radar colours the resolved
 /// terrain gave them.
 ///
@@ -166,22 +203,43 @@ impl Playfield {
 /// entry for: a missing colour becomes the same grey a black lookup does, rather
 /// than dropping the cell. That matters because the preview's surface is sized
 /// from the extent of this set, so silently skipping cells shrinks the image.
+/// `overlay_radar` resolves an ore/gem overlay's colour from its id and growth
+/// stage. An overlay that resolves to a colour paints BOTH pixels with it —
+/// unlike terrain, whose two halves differ — so ore reads as a solid patch
+/// rather than a dither of ore and ground.
 pub fn preview_cells_from_map(
     map: &crate::map::map_file::MapFile,
     resolved: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    overlay_radar: &dyn Fn(u8, u8) -> Option<[u8; 3]>,
 ) -> Vec<PreviewCell> {
     let playfield = Playfield::from_header(&map.header);
+    let overlays = overlay_densities(map);
     let mut cells = Vec::with_capacity(map.cells.len());
     for cell in &map.cells {
         if !playfield.contains(cell.rx, cell.ry) {
             continue;
         }
+        let overlay = overlays
+            .get(&(cell.rx, cell.ry))
+            .and_then(|(id, density)| {
+                overlay_radar(*id, *density).map(|rgb| overlay_radar_channel_order(*id, rgb))
+            })
+            // A black overlay colour means "not an ore/gem overlay" rather than
+            // a real colour, so it falls through to the terrain underneath.
+            .filter(|rgb| *rgb != [0, 0, 0]);
         let resolved_cell = resolved.cell(cell.rx, cell.ry);
+        let (left, right) = match overlay {
+            Some(rgb) => (rgb, rgb),
+            None => (
+                resolved_cell.map_or([0, 0, 0], |resolved| resolved.radar_left),
+                resolved_cell.map_or([0, 0, 0], |resolved| resolved.radar_right),
+            ),
+        };
         cells.push(PreviewCell {
             x: cell.rx,
             y: cell.ry,
-            left: resolved_cell.map_or([0, 0, 0], |resolved| resolved.radar_left),
-            right: resolved_cell.map_or([0, 0, 0], |resolved| resolved.radar_right),
+            left,
+            right,
         });
     }
     cells
@@ -471,6 +529,25 @@ mod tests {
         // the narrower one's sum window tops out at 48.
         assert!(wide.contains(20, 30), "inside the wider map's playfield");
         assert!(!narrow.contains(20, 30), "outside the narrower one");
+    }
+
+    #[test]
+    fn only_the_two_bands_get_their_channels_reordered() {
+        let rgb = [10, 20, 30];
+        // Straight through outside the bands.
+        assert_eq!(overlay_radar_channel_order(0x00, rgb), rgb);
+        assert_eq!(overlay_radar_channel_order(0x7E, rgb), rgb);
+        assert_eq!(overlay_radar_channel_order(0x8B, rgb), rgb);
+        assert_eq!(overlay_radar_channel_order(0x92, rgb), rgb);
+        assert_eq!(overlay_radar_channel_order(0x9F, rgb), rgb);
+        // Green and blue swap inside them, edges included.
+        for id in [0x7F, 0x8A, 0x93, 0x9E] {
+            assert_eq!(
+                overlay_radar_channel_order(id, rgb),
+                [10, 30, 20],
+                "id {id:#04x} sits in a swapped band"
+            );
+        }
     }
 
     #[test]
