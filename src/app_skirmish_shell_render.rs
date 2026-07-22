@@ -39,7 +39,8 @@ use crate::ui::skirmish_shell::{
 use crate::ui::skirmish_shell::{
     ChooseMapModalLayout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
     SkirmishShellState, ValidationModalLayout, compute_choose_map_modal_layout, compute_layout,
-    compute_random_map_setup_layout, compute_validation_modal_layout, player_row_visible,
+    compute_random_map_setup_layout, compute_saved_seed_layout, compute_validation_modal_layout,
+    player_row_visible,
 };
 
 use self::chrome::*;
@@ -204,7 +205,14 @@ pub fn build_skirmish_shell_instances(
         // The setup dialog REPLACES the chooser rather than overlaying it: the
         // original hides/suspends the chooser while 0x105 is up. Drawing both
         // collides their listboxes, labels and button captions.
-        if let Some(modal) = shell.random_map_setup_modal.as_ref() {
+        if let Some(browser) = shell.saved_seed_browser.as_ref() {
+            let seed_layout = compute_saved_seed_layout(
+                browser.mode,
+                choose_map_layout.screen.w as u32,
+                choose_map_layout.screen.h as u32,
+            );
+            push_saved_seed_modal_instances(&mut instances, atlas, &seed_layout, browser);
+        } else if let Some(modal) = shell.random_map_setup_modal.as_ref() {
             let setup_layout = compute_random_map_setup_layout(
                 choose_map_layout.screen.w as u32,
                 choose_map_layout.screen.h as u32,
@@ -746,7 +754,19 @@ fn render_skirmish_shell_with_atlas(
     if let Some(choose_map_layout) = choose_map_layout.as_ref() {
         // Mirrors the sprite pass: the setup dialog replaces the chooser, so
         // only one of the two contributes text.
-        if state.skirmish_shell_state.random_map_setup_modal.is_some() {
+        if let Some(mode) = state
+            .skirmish_shell_state
+            .saved_seed_browser
+            .as_ref()
+            .map(|browser| browser.mode)
+        {
+            let seed_layout = compute_saved_seed_layout(
+                mode,
+                choose_map_layout.screen.w as u32,
+                choose_map_layout.screen.h as u32,
+            );
+            push_saved_seed_modal_text_draws(&mut shell_draws, state, &seed_layout);
+        } else if state.skirmish_shell_state.random_map_setup_modal.is_some() {
             let setup_layout = compute_random_map_setup_layout(
                 choose_map_layout.screen.w as u32,
                 choose_map_layout.screen.h as u32,

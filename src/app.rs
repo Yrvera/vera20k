@@ -65,6 +65,7 @@ use crate::sim::world::Simulation;
 use crate::ui::game_screen::GameScreen;
 use crate::ui::main_menu::{self, SkirmishSettings};
 use crate::ui::shell::controller::ShellKey;
+use crate::ui::skirmish_shell::{SavedSeedBrowserState, SavedSeedMode};
 use crate::util::config::GameConfig;
 
 /// The random-map seed file the `.SED` launch branch recognises. Written into
@@ -1517,6 +1518,164 @@ impl App {
         }
     }
 
+    /// Where saved seeds live: the game directory, the same place the dialog's
+    /// own working file is written.
+    fn saved_seed_dir(state: &AppState) -> Option<std::path::PathBuf> {
+        state
+            .game_config
+            .as_ref()
+            .map(|config| config.paths.ra2_dir.clone())
+    }
+
+    fn skirmish_saved_seed_layout(
+        state: &AppState,
+        mode: SavedSeedMode,
+    ) -> crate::ui::skirmish_shell::SavedSeedLayout {
+        crate::ui::skirmish_shell::compute_saved_seed_layout(
+            mode,
+            state.render_width(),
+            state.render_height(),
+        )
+    }
+
+    fn handle_saved_seed_browser_mouse_down(state: &mut AppState) -> bool {
+        let Some(mode) = state
+            .skirmish_shell_state
+            .saved_seed_browser
+            .as_ref()
+            .map(|browser| browser.mode)
+        else {
+            return false;
+        };
+        let layout = Self::skirmish_saved_seed_layout(state, mode);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        let mut play_sound = false;
+        if let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_mut() {
+            match crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y) {
+                Some(crate::ui::skirmish_shell::SavedSeedControl::List) => {
+                    if let Some(row) = crate::ui::skirmish_shell::saved_seed_list_row_at(
+                        &layout,
+                        browser.entries.len(),
+                        browser.top_index,
+                        x,
+                        y,
+                    ) {
+                        browser.select(row);
+                    }
+                }
+                // The list selects on press; the buttons arm instead, so
+                // dragging off one cancels it.
+                Some(crate::ui::skirmish_shell::SavedSeedControl::Action)
+                | Some(crate::ui::skirmish_shell::SavedSeedControl::Back0x686) => {
+                    browser.pressed_control =
+                        crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y);
+                    play_sound = true;
+                }
+                _ => {}
+            }
+        }
+        if play_sound {
+            Self::play_main_menu_button_sound(state);
+        }
+        true
+    }
+
+    fn handle_saved_seed_browser_mouse_up(state: &mut AppState) -> bool {
+        let Some(mode) = state
+            .skirmish_shell_state
+            .saved_seed_browser
+            .as_ref()
+            .map(|browser| browser.mode)
+        else {
+            return false;
+        };
+        let layout = Self::skirmish_saved_seed_layout(state, mode);
+        let dir = Self::saved_seed_dir(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+
+        use crate::ui::skirmish_shell::SavedSeedControl as SeedControl;
+        use crate::ui::skirmish_shell::SavedSeedOutcome as Outcome;
+
+        let outcome = {
+            let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_mut() else {
+                return false;
+            };
+            let pressed = browser.pressed_control.take();
+            let released = crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y);
+            if pressed.is_none() || pressed != released {
+                return true;
+            }
+            match released {
+                Some(SeedControl::Back0x686) => Some(Outcome::Close),
+                Some(SeedControl::Action) => browser.action_outcome(),
+                _ => None,
+            }
+        };
+        let Some(outcome) = outcome else {
+            return true;
+        };
+        let Some(dir) = dir else {
+            state.skirmish_shell_state.saved_seed_browser = None;
+            return true;
+        };
+
+        match outcome {
+            Outcome::Close => state.skirmish_shell_state.saved_seed_browser = None,
+            Outcome::Load(file_name) => {
+                match crate::map::rmg::saved_seeds::load_saved_seed(&dir.join(&file_name)) {
+                    Ok(options) => {
+                        // Loading replaces the working options and invalidates
+                        // any generated result, exactly as an edit would.
+                        if let Some(modal) =
+                            state.skirmish_shell_state.random_map_setup_modal.as_mut()
+                        {
+                            modal.options = options;
+                            modal.generated = false;
+                            modal.generated_preview = None;
+                        }
+                        state.skirmish_shell_state.saved_seed_browser = None;
+                    }
+                    Err(err) => log::warn!("saved seed: could not read {file_name}: {err}"),
+                }
+            }
+            Outcome::Save(name) => {
+                let options = state
+                    .skirmish_shell_state
+                    .random_map_setup_modal
+                    .as_ref()
+                    .map(|modal| modal.options.clone());
+                let path = crate::map::rmg::saved_seeds::seed_path_for_name(&dir, &name);
+                match (options, path) {
+                    (Some(options), Some(path)) => {
+                        if let Err(err) =
+                            crate::map::rmg::saved_seeds::save_saved_seed(&path, &options)
+                        {
+                            log::warn!("saved seed: could not write {name}: {err}");
+                        }
+                        state.skirmish_shell_state.saved_seed_browser = None;
+                    }
+                    // A refused name leaves the browser open so the player can
+                    // retype rather than silently losing the save.
+                    _ => log::warn!("saved seed: {name} is not a usable save name"),
+                }
+            }
+            Outcome::Delete(file_name) => {
+                if let Err(err) =
+                    crate::map::rmg::saved_seeds::delete_saved_seed(&dir.join(&file_name))
+                {
+                    log::warn!("saved seed: could not delete {file_name}: {err}");
+                }
+                // Delete stays open so several can be removed in one visit.
+                if let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_mut() {
+                    browser.remove_entry(&file_name);
+                }
+            }
+        }
+        true
+    }
+
     fn commit_random_map_setup(
         state: &mut AppState,
         options: &crate::map::rmg::RmgOptions,
@@ -1735,6 +1894,7 @@ impl App {
         // is mutably borrowed; the actions below only record what to do.
         let mut generate_requested = false;
         let mut accept_requested = false;
+        let mut open_browser: Option<SavedSeedMode> = None;
         match released.expect("checked equal to pressed control") {
             Control::Randomize0x621 => {
                 modal.randomize_options(
@@ -1764,9 +1924,9 @@ impl App {
                 // selection change. The chooser underneath is left untouched.
                 close_setup = true;
             }
-            // Saved-seed load/save/delete is a separate feature; the buttons are
-            // drawn for parity but do nothing yet.
-            Control::Load0x6c2 | Control::Save0x6c3 | Control::Delete0x6c4 => {}
+            Control::Load0x6c2 => open_browser = Some(SavedSeedMode::Load),
+            Control::Save0x6c3 => open_browser = Some(SavedSeedMode::Save),
+            Control::Delete0x6c4 => open_browser = Some(SavedSeedMode::Delete),
             Control::MapType0x405
             | Control::Time0x3ea
             | Control::Theater0x407
@@ -1783,6 +1943,14 @@ impl App {
             Control::Players0x3eb => {}
         }
 
+        if let Some(mode) = open_browser {
+            let entries = Self::saved_seed_dir(state)
+                .map(|dir| crate::map::rmg::saved_seeds::list_saved_seeds(&dir))
+                .unwrap_or_default();
+            state.skirmish_shell_state.saved_seed_browser =
+                Some(SavedSeedBrowserState::open(mode, entries));
+            return true;
+        }
         if generate_requested {
             let options = state
                 .skirmish_shell_state
@@ -2037,7 +2205,12 @@ impl App {
         if Self::route_validation_modal_mouse_down(state) {
             return;
         }
-        // The setup dialog sits on top of the chooser, so it takes input first.
+        // The browser sits over the setup dialog, which sits over the
+        // chooser, so input is offered in that order.
+        if state.skirmish_shell_state.saved_seed_browser.is_some() {
+            Self::handle_saved_seed_browser_mouse_down(state);
+            return;
+        }
         if state.skirmish_shell_state.random_map_setup_modal.is_some() {
             Self::handle_random_map_setup_mouse_down(state);
             return;
@@ -2093,7 +2266,12 @@ impl App {
         if Self::route_validation_modal_mouse_up(state) {
             return;
         }
-        // The setup dialog sits on top of the chooser, so it takes input first.
+        // The browser sits over the setup dialog, which sits over the
+        // chooser, so input is offered in that order.
+        if state.skirmish_shell_state.saved_seed_browser.is_some() {
+            Self::handle_saved_seed_browser_mouse_up(state);
+            return;
+        }
         if state.skirmish_shell_state.random_map_setup_modal.is_some() {
             Self::handle_random_map_setup_mouse_up(state);
             return;

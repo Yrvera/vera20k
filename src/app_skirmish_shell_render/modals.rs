@@ -9,7 +9,8 @@ use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, ChooseMapModalButton, ChooseMapModalLayout,
     RandomMapSetupControl, RandomMapSetupLayout, RandomMapSetupModalState, RectPx,
-    SETUP_COMBO_ROWS, SkirmishShellState, ValidationModalLayout, choose_map_listbox_content_rect,
+    SETUP_COMBO_ROWS, SavedSeedBrowserState, SavedSeedControl, SavedSeedLayout, SavedSeedMode,
+    SkirmishShellState, ValidationModalLayout, choose_map_listbox_content_rect,
     choose_map_listbox_row_rect, choose_map_listbox_scroll_thumb_rect,
     choose_map_listbox_scrollbar_rect, choose_map_listbox_visible_row_count,
     random_map_setup_dropdown_rect, setup_combo_items, trackbar_pixel_offset,
@@ -457,4 +458,81 @@ pub(super) fn push_validation_modal_instances(
         &[button],
         VALIDATION_MODAL_SPRITE_DEPTHS,
     ));
+}
+
+/// Build the sprite instances for the saved-seed browser.
+///
+/// It replaces the setup dialog on screen, so it redraws the same background
+/// and right-column chrome rather than layering over it.
+pub(super) fn push_saved_seed_modal_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &SavedSeedLayout,
+    browser: &SavedSeedBrowserState,
+) {
+    if layout.screen.w == 800 {
+        if let Some(background) = atlas.choose_map_background_800_customize_battle {
+            push_entry_native(
+                out,
+                background,
+                layout.screen.x,
+                layout.screen.y,
+                SHELL_PARENT_BACKGROUND_DEPTH,
+            );
+        }
+    }
+    push_solid_rect(
+        out,
+        atlas,
+        layout.dialog,
+        SHELL_MODAL_BG_RGB,
+        SHELL_DROPDOWN_DEPTH - 0.00008,
+    );
+    push_rect_outline(
+        out,
+        atlas,
+        layout.dialog,
+        OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
+        SHELL_DROPDOWN_DEPTH - 0.00009,
+    );
+    push_choose_map_listbox_instances(
+        out,
+        atlas,
+        layout.list,
+        browser.entries.len(),
+        browser.top_index,
+        browser.selected,
+        SHELL_DROPDOWN_DEPTH - 0.00010,
+    );
+    // The name field is a plain sunken plate; Save is the only mode that has one.
+    if let Some(edit) = layout.name_edit {
+        push_solid_rect(
+            out,
+            atlas,
+            edit,
+            SHELL_MODAL_PANEL_RGB,
+            SHELL_DROPDOWN_DEPTH - 0.00010,
+        );
+        push_ownerdraw_two_pixel_bevel_frame(out, atlas, edit, SHELL_DROPDOWN_DEPTH - 0.00011);
+    }
+    for (rect, control) in [
+        (layout.action, SavedSeedControl::Action),
+        (layout.back, SavedSeedControl::Back0x686),
+    ] {
+        let disabled = control == SavedSeedControl::Action && !browser.action_enabled();
+        push_right_panel_button_shp(
+            out,
+            atlas,
+            rect,
+            browser.pressed_control == Some(control),
+            disabled,
+            SHELL_DROPDOWN_DEPTH - 0.00012,
+        );
+    }
+}
+
+/// The saved-seed browser's mode drives only its captions, so the renderer
+/// takes it separately from the layout it already carries.
+pub(super) const fn saved_seed_mode_of(browser: &SavedSeedBrowserState) -> SavedSeedMode {
+    browser.mode
 }

@@ -12,10 +12,11 @@ use crate::render::shell_text::{self, Reveal, ShellAlign, ShellTextDraw, TextRec
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
-    OwnerDrawButton, RandomMapSetupLayout, RectPx, SETUP_COMBO_ROWS, SkirmishAiRowType,
-    SkirmishCheckboxId, SkirmishComboItem, SkirmishCountryChoice, SkirmishShellLayout,
-    SkirmishShellOpponent, SkirmishShellState, SkirmishTrackbarId, ValidationModalLayout,
-    checkbox_text_rect, choose_map_listbox_content_rect, choose_map_listbox_row_rect,
+    OwnerDrawButton, RandomMapSetupLayout, RectPx, SETUP_COMBO_ROWS, SavedSeedLayout,
+    SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboItem, SkirmishCountryChoice,
+    SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState, SkirmishTrackbarId,
+    ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
+    choose_map_listbox_row_rect, choose_map_listbox_row_rect as seed_row_rect,
     choose_map_listbox_visible_row_count, combo_dropdown_content_rect, combo_dropdown_rect,
     combo_dropdown_visible_row_count, combo_enabled, combo_items, combo_text_rect,
     player_name_edit_text_rect, player_row_visible, random_map_setup_dropdown_rect,
@@ -1307,5 +1308,89 @@ mod tests {
 
         assert_eq!(label.as_ref(), "ab ");
         assert!(font.text_width(label.as_ref()) <= combo_face_text_fit_width(combo));
+    }
+}
+
+pub(super) fn push_saved_seed_modal_text_draws(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    layout: &SavedSeedLayout,
+) {
+    let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_ref() else {
+        return;
+    };
+    let (title_key, title_fallback) = browser.mode.title_label();
+    push_text_draw(
+        out,
+        state,
+        &localized_label(state, title_key, title_fallback),
+        rect_to_text_rect(layout.title),
+        SHELL_LABEL_TEXT_RGB,
+        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+        SHELL_DROPDOWN_TEXT_DEPTH - 0.00008,
+    );
+    let (prompt_key, prompt_fallback) = browser.mode.prompt_label();
+    push_text_draw(
+        out,
+        state,
+        &localized_label(state, prompt_key, prompt_fallback),
+        rect_to_text_rect(layout.prompt),
+        SHELL_LABEL_TEXT_RGB,
+        ShellAlign::V_CENTER,
+        SHELL_DROPDOWN_TEXT_DEPTH - 0.00008,
+    );
+
+    let content = choose_map_listbox_content_rect(browser.entries.len(), layout.list);
+    let visible = choose_map_listbox_visible_row_count(layout.list);
+    for row in 0..visible {
+        let Some(entry) = browser.entries.get(browser.top_index + row) else {
+            break;
+        };
+        let rect = seed_row_rect(content, row);
+        if rect.h <= 0 {
+            continue;
+        }
+        push_text_draw(
+            out,
+            state,
+            &entry.display_name,
+            rect_to_text_rect(RectPx::new(
+                rect.x + COMBODROPWIN_TEXT_INSET_X,
+                rect.y,
+                rect.w - COMBODROPWIN_TEXT_INSET_X,
+                rect.h,
+            )),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00011,
+        );
+    }
+
+    if let Some(edit) = layout.name_edit {
+        push_text_draw(
+            out,
+            state,
+            &browser.typed_name,
+            rect_to_text_rect(player_name_edit_text_rect(edit)),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00011,
+        );
+    }
+
+    let (action_key, action_fallback) = browser.mode.action_label();
+    for (key, fallback, rect) in [
+        (action_key, action_fallback, layout.action),
+        ("GUI:Back", "Back", layout.back),
+    ] {
+        push_text_draw(
+            out,
+            state,
+            &localized_label(state, key, fallback),
+            rect_to_text_rect(rect),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00012,
+        );
     }
 }

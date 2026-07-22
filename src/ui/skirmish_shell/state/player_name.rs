@@ -256,6 +256,10 @@ pub struct SkirmishShellState {
     pub choose_map_modal: Option<ChooseMapModalState>,
     /// The Create Random Map dialog, opened over the choose-map modal.
     pub random_map_setup_modal: Option<RandomMapSetupModalState>,
+    /// The Load / Save / Delete browser the setup dialog opens over itself.
+    /// Sits beside the setup modal rather than inside it because it replaces
+    /// the setup dialog on screen while that dialog keeps its working options.
+    pub saved_seed_browser: Option<super::SavedSeedBrowserState>,
     pub validation_modal: Option<SkirmishValidationModalState>,
     pub status_help_text: String,
     pub pending_trackbar_hscrolls: Vec<SkirmishTrackbarHScrollNotification>,
@@ -303,6 +307,7 @@ impl Default for SkirmishShellState {
             open_combo_dropdown: None,
             choose_map_modal: None,
             random_map_setup_modal: None,
+            saved_seed_browser: None,
             validation_modal: None,
             status_help_text: String::new(),
             pending_trackbar_hscrolls: Vec::new(),
