@@ -1622,3 +1622,39 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod setup_bounds {
+    use super::*;
+
+    /// Every control of the setup dialog has to land inside the 800x600 shell
+    /// surface. The right column anchors to the panel rather than to its own
+    /// resource x, so an anchoring change is the plausible way this breaks.
+    #[test]
+    fn random_map_setup_rects_stay_inside_the_screen() {
+        let layout = compute_random_map_setup_layout(800, 600);
+        let mut rects: Vec<(&str, RectPx)> = vec![
+            ("title", layout.title),
+            ("preview", layout.preview),
+            ("randomize", layout.randomize),
+            ("generate", layout.generate),
+            ("seed_field", layout.seed_field),
+            ("use_map", layout.use_map),
+            ("load", layout.load),
+            ("save", layout.save),
+            ("delete", layout.delete),
+            ("cancel", layout.cancel),
+            ("blank", layout.blank),
+            ("progress_text", layout.progress_text),
+            ("progress_bar", layout.progress_bar),
+        ];
+        rects.extend(layout.label_rects.iter().map(|rect| ("label", *rect)));
+        rects.extend(layout.control_rects.iter().map(|rect| ("control", *rect)));
+        for (name, rect) in rects {
+            assert!(
+                rect.x >= 0 && rect.y >= 0 && rect.x + rect.w <= 800 && rect.y + rect.h <= 600,
+                "{name} escapes the 800x600 screen: {rect:?}"
+            );
+        }
+    }
+}
