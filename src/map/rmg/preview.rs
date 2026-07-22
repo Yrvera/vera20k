@@ -203,6 +203,107 @@ pub fn overlay_densities(map: &crate::map::map_file::MapFile) -> OverlayDensitie
 /// entry for: a missing colour becomes the same grey a black lookup does, rather
 /// than dropping the cell. That matters because the preview's surface is sized
 /// from the extent of this set, so silently skipping cells shrinks the image.
+/// The colours the rasteriser needs, with no asset handles — safe to move to a
+/// worker thread.
+///
+/// Keyed on the cell identity as it appears in the map file, with the values
+/// taken from what the terrain resolver produced for cells carrying that
+/// identity. Recording the resolver's answer rather than re-deriving one is the
+/// point: the resolver decides which tile a cell actually ends up with, and a
+/// table that second-guessed it would drift from the colours on screen today.
+///
+/// A tile the table has never seen falls back to black, which the rasteriser
+/// then substitutes with grey — the same treatment a failed colour lookup gets
+/// in the original.
+#[derive(Debug, Clone, Default)]
+pub struct PreviewPalette {
+    tiles: std::collections::HashMap<(i32, u8), ([u8; 3], [u8; 3])>,
+    overlays: std::collections::HashMap<(u8, u8), [u8; 3]>,
+}
+
+impl PreviewPalette {
+    /// Record what the resolver produced for every tile identity this map uses,
+    /// plus the overlay colours its overlays resolve to.
+    pub fn from_map(
+        map: &crate::map::map_file::MapFile,
+        resolved: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+        overlay_radar: &dyn Fn(u8, u8) -> Option<[u8; 3]>,
+    ) -> Self {
+        let mut palette = Self::default();
+        for cell in &map.cells {
+            if let Some(resolved_cell) = resolved.cell(cell.rx, cell.ry) {
+                palette
+                    .tiles
+                    .entry((cell.tile_index, cell.sub_tile))
+                    .or_insert((resolved_cell.radar_left, resolved_cell.radar_right));
+            }
+        }
+        for overlay in &map.overlays {
+            let key = (overlay.overlay_id, overlay.frame);
+            if palette.overlays.contains_key(&key) {
+                continue;
+            }
+            if let Some(rgb) = overlay_radar(overlay.overlay_id, overlay.frame) {
+                palette.overlays.insert(key, rgb);
+            }
+        }
+        palette
+    }
+
+    /// The terrain colour pair for a raw cell identity.
+    pub fn tile_colours(&self, tile_index: i32, sub_tile: u8) -> ([u8; 3], [u8; 3]) {
+        self.tiles
+            .get(&(tile_index, sub_tile))
+            .copied()
+            .unwrap_or(([0, 0, 0], [0, 0, 0]))
+    }
+
+    /// The overlay colour for an id and growth stage, already channel-ordered.
+    pub fn overlay_colour(&self, overlay_id: u8, density: u8) -> Option<[u8; 3]> {
+        self.overlays
+            .get(&(overlay_id, density))
+            .map(|rgb| overlay_radar_channel_order(overlay_id, *rgb))
+            .filter(|rgb| *rgb != [0, 0, 0])
+    }
+
+    /// How many distinct tile identities the table covers, for diagnostics.
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
+    }
+}
+
+/// Collect the playfield cells of a map using a pre-built palette.
+///
+/// Same result as [`preview_cells_from_map`], but needs no assets — this is the
+/// form a worker thread can run.
+pub fn preview_cells_from_palette(
+    map: &crate::map::map_file::MapFile,
+    palette: &PreviewPalette,
+) -> Vec<PreviewCell> {
+    let playfield = Playfield::from_header(&map.header);
+    let overlays = overlay_densities(map);
+    let mut cells = Vec::with_capacity(map.cells.len());
+    for cell in &map.cells {
+        if !playfield.contains(cell.rx, cell.ry) {
+            continue;
+        }
+        let overlay = overlays
+            .get(&(cell.rx, cell.ry))
+            .and_then(|(id, density)| palette.overlay_colour(*id, *density));
+        let (left, right) = match overlay {
+            Some(rgb) => (rgb, rgb),
+            None => palette.tile_colours(cell.tile_index, cell.sub_tile),
+        };
+        cells.push(PreviewCell {
+            x: cell.rx,
+            y: cell.ry,
+            left,
+            right,
+        });
+    }
+    cells
+}
+
 /// `overlay_radar` resolves an ore/gem overlay's colour from its id and growth
 /// stage. An overlay that resolves to a colour paints BOTH pixels with it —
 /// unlike terrain, whose two halves differ — so ore reads as a solid patch
@@ -548,6 +649,58 @@ mod tests {
                 "id {id:#04x} sits in a swapped band"
             );
         }
+    }
+
+    /// A palette built by hand, standing in for one recorded off a resolved map.
+    fn palette_with(tile: (i32, u8), colours: ([u8; 3], [u8; 3])) -> PreviewPalette {
+        let mut palette = PreviewPalette::default();
+        palette.tiles.insert(tile, colours);
+        palette
+    }
+
+    #[test]
+    fn an_unknown_tile_falls_back_to_black_so_the_rasteriser_greys_it() {
+        let palette = palette_with((7, 0), ([1, 2, 3], [4, 5, 6]));
+        assert_eq!(palette.tile_colours(7, 0), ([1, 2, 3], [4, 5, 6]));
+        assert_eq!(
+            palette.tile_colours(9, 0),
+            ([0, 0, 0], [0, 0, 0]),
+            "an unseen tile yields black, which becomes grey when drawn"
+        );
+        assert_eq!(
+            substitute_if_black(palette.tile_colours(9, 0).0),
+            BLACK_PIXEL_SUBSTITUTE
+        );
+    }
+
+    #[test]
+    fn the_palette_applies_the_channel_order_exactly_once() {
+        let mut palette = PreviewPalette::default();
+        // Stored raw, as recorded from the overlay lookup.
+        palette.overlays.insert((0x80, 3), [10, 20, 30]);
+        palette.overlays.insert((0x10, 3), [10, 20, 30]);
+        assert_eq!(
+            palette.overlay_colour(0x80, 3),
+            Some([10, 30, 20]),
+            "a swapped-band id reorders on the way out"
+        );
+        assert_eq!(
+            palette.overlay_colour(0x10, 3),
+            Some([10, 20, 30]),
+            "an ordinary id passes straight through"
+        );
+    }
+
+    #[test]
+    fn a_black_overlay_colour_is_treated_as_absent() {
+        let mut palette = PreviewPalette::default();
+        palette.overlays.insert((0x10, 0), [0, 0, 0]);
+        assert_eq!(
+            palette.overlay_colour(0x10, 0),
+            None,
+            "black means no overlay colour, so the terrain shows through"
+        );
+        assert_eq!(palette.overlay_colour(0x10, 5), None, "unseen density");
     }
 
     #[test]
