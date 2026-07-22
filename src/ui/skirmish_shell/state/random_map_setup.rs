@@ -513,6 +513,41 @@ mod tests {
         }
     }
 
+    fn one_pixel_preview() -> PreviewImage {
+        PreviewImage {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255],
+        }
+    }
+
+    #[test]
+    fn progress_previews_show_without_ending_the_generate_block() {
+        let mut state = opened();
+        state.begin_generate();
+        state.show_progress_preview(one_pixel_preview());
+
+        assert!(state.generated_preview.is_some(), "the map is on screen");
+        // Still generating: nothing has unlocked, and accept must not become
+        // available off a half-built map.
+        assert!(state.generating);
+        assert!(!state.generated);
+        assert!(!state.is_enabled(RandomMapSetupControl::Cancel0x5c0));
+        assert!(!state.is_enabled(RandomMapSetupControl::Ok0x6c5));
+    }
+
+    #[test]
+    fn each_progress_preview_bumps_the_texture_key() {
+        // The renderer caches its texture on this counter, so a snapshot that
+        // did not bump it would never reach the screen.
+        let mut state = opened();
+        state.begin_generate();
+        let before = state.preview_generation;
+        state.show_progress_preview(one_pixel_preview());
+        state.show_progress_preview(one_pixel_preview());
+        assert_eq!(state.preview_generation, before.wrapping_add(2));
+    }
+
     #[test]
     fn finishing_generate_unlocks_accept() {
         let mut state = opened();

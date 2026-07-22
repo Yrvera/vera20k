@@ -1524,6 +1524,16 @@ impl App {
     /// the expensive half, and an image the worker overtook before a frame was
     /// drawn was never on screen to be seen.
     pub(crate) fn poll_random_map_generation(state: &mut AppState) -> bool {
+        if state.random_map_generation.is_some()
+            && state.skirmish_shell_state.random_map_setup_modal.is_none()
+        {
+            // The dialog went away without the job going with it. Drop it here
+            // rather than trusting every close path to remember: a job with no
+            // dialog has nowhere to deliver, and letting it finish would write
+            // a preview file for a map nobody asked for.
+            state.random_map_generation = None;
+            return false;
+        }
         let Some(job) = state.random_map_generation.as_ref() else {
             return false;
         };
@@ -1591,6 +1601,18 @@ impl App {
         true
     }
 
+    /// Close the setup dialog, abandoning any generation still running for it.
+    ///
+    /// Dropping the job drops the receiver, so a worker still going finds a
+    /// closed channel on its next send and its remaining output goes nowhere.
+    /// That matters beyond tidiness: a late finish would otherwise overwrite
+    /// `RandMap.img`, changing the chooser's thumbnail to a map the player
+    /// walked away from.
+    fn close_random_map_setup(state: &mut AppState) {
+        state.skirmish_shell_state.random_map_setup_modal = None;
+        state.random_map_generation = None;
+    }
+
     /// Commit the dialog's options and close it. Shared by the immediate accept
     /// and the one deferred behind a generation.
     fn accept_random_map_setup(state: &mut AppState) {
@@ -1603,7 +1625,7 @@ impl App {
             return;
         };
         match Self::commit_random_map_setup(state, &options) {
-            Ok(()) => state.skirmish_shell_state.random_map_setup_modal = None,
+            Ok(()) => Self::close_random_map_setup(state),
             Err(err) => {
                 // Staying open is deliberate: a missing seed file makes the
                 // launch path fall back to defaults, which would silently
@@ -2104,7 +2126,6 @@ impl App {
             return layout.dialog.contains(x, y) || pressed.is_some();
         }
 
-        let mut commit_options = None;
         let mut close_setup = false;
         // Generating needs the whole app state, so it cannot run while the modal
         // is mutably borrowed; the actions below only record what to do.
@@ -2190,17 +2211,8 @@ impl App {
         if accept_requested {
             Self::accept_random_map_setup(state);
         }
-
-        if let Some(options) = commit_options {
-            match Self::commit_random_map_setup(state, &options) {
-                Ok(()) => close_setup = true,
-                Err(err) => {
-                    log::error!("random map: could not write {RANDMAP_SED_FILE}: {err}");
-                }
-            }
-        }
         if close_setup {
-            state.skirmish_shell_state.random_map_setup_modal = None;
+            Self::close_random_map_setup(state);
         }
         true
     }
