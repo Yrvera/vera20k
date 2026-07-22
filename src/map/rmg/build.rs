@@ -327,3 +327,19 @@ mod tests {
         assert!(generated.stages_run.contains(&Stage::Trees));
     }
 }
+
+#[cfg(test)]
+mod send_check {
+    /// The worker that generation is about to move onto needs to own its
+    /// inputs, so every one of them has to cross a thread boundary.
+    #[test]
+    fn generator_inputs_and_output_are_send() {
+        const fn assert_send<T: Send>() {}
+        assert_send::<crate::map::rmg::RmgOptions>();
+        assert_send::<crate::map::rmg::RmgSettings>();
+        assert_send::<super::ResolvedTheaterInputs>();
+        assert_send::<crate::map::rmg::theater_blocks::TheaterTileBlocks>();
+        assert_send::<crate::map::rmg::GeneratedMap>();
+        assert_send::<crate::map::rmg::preview::PreviewPalette>();
+    }
+}

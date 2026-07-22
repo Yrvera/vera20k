@@ -635,6 +635,16 @@ fn render_skirmish_shell_with_atlas(
     atlas: Option<&SkirmishShellChromeAtlas>,
     mode: ShellRenderMode,
 ) -> anyhow::Result<SkirmishShellAction> {
+    // Collect a finished generation before laying anything out, so the frame
+    // that clears "Working / Please Wait" is the same one that shows the map.
+    // While a job is in flight the shell keeps asking for frames -- nothing else
+    // is driving redraws, and without this the dialog would freeze on the first
+    // "working" frame until the player moved the mouse.
+    if crate::app::App::poll_random_map_generation(state) {
+        state.window.request_redraw();
+    } else if state.random_map_generation.is_some() {
+        state.window.request_redraw();
+    }
     let layout = compute_layout(state.render_width(), state.render_height());
     let choose_map_layout = state
         .skirmish_shell_state

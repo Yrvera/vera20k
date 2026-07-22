@@ -95,6 +95,23 @@ const SHELL_WINDOW_HEIGHT: u32 = 600;
 
 /// All initialized state. Created in `resumed()` when the window is available.
 /// pub(crate) so app_render.rs can access fields.
+/// A random-map generation handed to a worker thread.
+///
+/// The worker only *generates*; colouring the preview needs the terrain
+/// resolver and therefore the asset manager, so the main thread finishes the
+/// job when the map arrives. What matters is that the expensive part is off the
+/// UI thread — that is what lets frames render while it runs.
+pub(crate) struct RandomMapGenerationJob {
+    receiver: std::sync::mpsc::Receiver<Box<crate::map::rmg::GeneratedMap>>,
+    /// Kept back from the worker because finishing needs it: the resolver reads
+    /// theater data to decide each cell's final tile.
+    theater: Box<crate::map::theater::TheaterData>,
+    terrain_rules: Box<crate::rules::terrain_rules::TerrainRules>,
+    /// Set when OK started this generation. Accept cannot run until the map
+    /// exists, so it is deferred to whoever collects the result.
+    accept_on_finish: bool,
+}
+
 pub(crate) struct AppState {
     pub(crate) window: Arc<Window>,
     pub(crate) gpu: GpuContext,
@@ -195,6 +212,10 @@ pub(crate) struct AppState {
         Option<crate::ui::skirmish_shell::OwnerDrawButton>,
     pub(crate) skirmish_shell_chrome:
         Option<crate::render::skirmish_shell_chrome::SkirmishShellChromeAtlas>,
+    /// Generation running on a worker, if any. Generating a map takes long
+    /// enough to freeze the window if done inline, which also means the
+    /// dialog's "Working / Please Wait" never gets a frame to appear in.
+    pub(crate) random_map_generation: Option<RandomMapGenerationJob>,
     pub(crate) skirmish_preview_texture:
         Option<crate::app_skirmish_shell_render::SkirmishPreviewTexture>,
     /// Minimap renderer — created at map load time.
@@ -1395,18 +1416,24 @@ impl App {
     /// This runs the same generator the launch path does, so what the preview
     /// box shows is the map the player gets — the seed alone decides the
     /// terrain, and nothing here perturbs it.
-    fn render_random_map_setup_preview(
+    /// Kick off generation on a worker and return immediately.
+    ///
+    /// Everything that needs the asset manager is done here, up front; only
+    /// plain data crosses to the worker.
+    fn start_random_map_generation(
         state: &mut AppState,
         options: &crate::map::rmg::RmgOptions,
-    ) -> Option<crate::map::rmg::preview::PreviewImage> {
-        let asset_manager = state.asset_manager.as_mut()?;
+        accept_on_finish: bool,
+    ) -> bool {
+        let Some(asset_manager) = state.asset_manager.as_mut() else {
+            return false;
+        };
         let settings = crate::map::rmg::RmgSettings::load(asset_manager);
         let theater_name = crate::map::rmg::emit::theater_name(options.theater);
-        let theater =
-            crate::map::theater::load_theater(asset_manager, theater_name).or_else(|| {
-                log::warn!("random map preview: theater {theater_name} unavailable");
-                None
-            })?;
+        let Some(theater) = crate::map::theater::load_theater(asset_manager, theater_name) else {
+            log::warn!("random map: theater {theater_name} unavailable");
+            return false;
+        };
         let terrain_rules = asset_manager
             .get_ref("rulesmd.ini")
             .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
@@ -1418,22 +1445,115 @@ impl App {
             crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
                 asset_manager.get(name)
             });
-        let generated = crate::map::rmg::build::generate_map(
-            options,
-            &settings,
-            &resolved_inputs,
-            &blocks,
-            &[],
-        );
 
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let options = options.clone();
+        // Generation stays single-threaded and seed-driven; the thread changes
+        // only where it runs, never the order it consumes its RNG in.
+        let spawned = std::thread::Builder::new()
+            .name("random-map-generate".to_string())
+            .spawn(move || {
+                let generated = crate::map::rmg::build::generate_map(
+                    &options,
+                    &settings,
+                    &resolved_inputs,
+                    &blocks,
+                    &[],
+                );
+                // A closed receiver means the dialog went away; dropping the
+                // result is the correct outcome, not an error.
+                let _ = sender.send(Box::new(generated));
+            });
+        match spawned {
+            Ok(_handle) => {
+                state.random_map_generation = Some(RandomMapGenerationJob {
+                    receiver,
+                    theater: Box::new(theater),
+                    terrain_rules: Box::new(terrain_rules),
+                    accept_on_finish,
+                });
+                true
+            }
+            Err(err) => {
+                log::warn!("random map: could not spawn the generator thread: {err}");
+                false
+            }
+        }
+    }
+
+    /// Collect a finished generation, if one has arrived.
+    ///
+    /// Called every frame while a job is in flight. Returns true when the job
+    /// completed this call, so the caller knows the dialog changed.
+    pub(crate) fn poll_random_map_generation(state: &mut AppState) -> bool {
+        let Some(job) = state.random_map_generation.as_ref() else {
+            return false;
+        };
+        let generated = match job.receiver.try_recv() {
+            Ok(generated) => generated,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // The worker died without sending. Clear the job so the dialog
+                // does not sit disabled forever waiting on it.
+                log::warn!("random map: the generator thread ended without a result");
+                state.random_map_generation = None;
+                if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+                    modal.finish_generate(None);
+                }
+                return true;
+            }
+        };
+        let job = state
+            .random_map_generation
+            .take()
+            .expect("checked present above");
+        let preview = Self::rasterise_generated_map(state, &job, &generated);
+        if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+            modal.finish_generate(preview);
+        }
+        if job.accept_on_finish {
+            Self::accept_random_map_setup(state);
+        }
+        true
+    }
+
+    /// Commit the dialog's options and close it. Shared by the immediate accept
+    /// and the one deferred behind a generation.
+    fn accept_random_map_setup(state: &mut AppState) {
+        let Some(crate::ui::skirmish_shell::AcceptOutcome::Commit(options)) = state
+            .skirmish_shell_state
+            .random_map_setup_modal
+            .as_ref()
+            .map(|modal| modal.accept())
+        else {
+            return;
+        };
+        match Self::commit_random_map_setup(state, &options) {
+            Ok(()) => state.skirmish_shell_state.random_map_setup_modal = None,
+            Err(err) => {
+                // Staying open is deliberate: a missing seed file makes the
+                // launch path fall back to defaults, which would silently
+                // start a different map than the one configured.
+                log::error!("random map: could not write {RANDMAP_SED_FILE}: {err}");
+            }
+        }
+    }
+
+    /// Colour and rasterise a generated map. Main thread only: the resolver
+    /// reads theater data and the ore/gem colours come out of overlay SHPs.
+    fn rasterise_generated_map(
+        state: &AppState,
+        job: &RandomMapGenerationJob,
+        generated: &crate::map::rmg::GeneratedMap,
+    ) -> Option<crate::map::rmg::preview::PreviewImage> {
         // LAT defaults off for runtime maps, so resolve the same way the load
         // path will; a different setting here would colour cells the player
         // never sees.
         let resolved_terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::build(
             &generated.map_file,
-            Some(&theater),
+            Some(&job.theater),
             state.asset_manager.as_ref(),
-            Some(&terrain_rules),
+            Some(&job.terrain_rules),
             None,
             false,
             RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
@@ -1444,7 +1564,7 @@ impl App {
         // substitute for loading the file.
         let overlay_registry = state.overlay_registry.as_ref();
         let assets = state.asset_manager.as_ref();
-        let theater_ext = theater.extension;
+        let theater_ext = job.theater.extension;
         let overlay_radar = |overlay_id: u8, stage: u8| -> Option<[u8; 3]> {
             let registry = overlay_registry?;
             // The tiberium flag is the gate: walls, roads and bridges are
@@ -1957,33 +2077,28 @@ impl App {
                 .random_map_setup_modal
                 .as_ref()
                 .map(|modal| modal.options.clone());
-            let preview =
-                options.and_then(|options| Self::render_random_map_setup_preview(state, &options));
-            if preview.is_none() {
-                log::warn!("random map: could not build a preview for the configured options");
+            let started = options.is_some_and(|options| {
+                Self::start_random_map_generation(state, &options, accept_requested)
+            });
+            if !started {
+                // Nothing will arrive, so the dialog must not be left sitting
+                // in its generating state with every control disabled.
+                log::warn!("random map: could not start generation for the configured options");
+                if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+                    modal.finish_generate(None);
+                }
             }
-            if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
-                modal.finish_generate(preview);
-            }
+            // Accept, if it was asked for, is now the job's responsibility.
+            return true;
         }
         if accept_requested {
-            if let Some(crate::ui::skirmish_shell::AcceptOutcome::Commit(options)) = state
-                .skirmish_shell_state
-                .random_map_setup_modal
-                .as_ref()
-                .map(|modal| modal.accept())
-            {
-                commit_options = Some(options);
-            }
+            Self::accept_random_map_setup(state);
         }
 
         if let Some(options) = commit_options {
             match Self::commit_random_map_setup(state, &options) {
                 Ok(()) => close_setup = true,
                 Err(err) => {
-                    // Staying open is deliberate: a missing seed file makes the
-                    // launch path fall back to defaults, which would silently
-                    // start a different map than the one configured.
                     log::error!("random map: could not write {RANDMAP_SED_FILE}: {err}");
                 }
             }
@@ -3436,6 +3551,7 @@ impl App {
         });
 
         let mut state = AppState {
+            random_map_generation: None,
             window,
             gpu,
             batch_renderer,
