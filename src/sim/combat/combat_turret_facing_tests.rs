@@ -340,6 +340,7 @@ fn run_combat_direct(
         sim.session.binary_frame,
         &live_order,
         None, // radiation state — not under test here
+        &mut sim.scenario_rng,
     )
 }
 

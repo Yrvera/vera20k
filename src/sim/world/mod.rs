@@ -718,7 +718,7 @@ impl Simulation {
     // --- Main stream (gamemd g_MainRng @ 0x00886B88); no sim/ consumer wired yet ---
     pub(crate) fn weapon_spread_rng(&mut self) -> &mut SimRng {
         &mut self.main_rng
-    } // projectile spread X/Y, warhead detonate scatter
+    } // verified main-only weapon/warhead property rolls; not detonation scatter
     pub(crate) fn house_ai_rng(&mut self) -> &mut SimRng {
         &mut self.main_rng
     } // HouseClass superpower/AI gate roll
@@ -2404,6 +2404,7 @@ impl Simulation {
                 self.session.binary_frame,
                 &logic_order,
                 Some(&mut self.radiation),
+                &mut self.scenario_rng,
             );
             // Radiation site evolution (lifetime countdown, periodic per-cell
             // decay, self-deletion) runs after the per-object combat work —

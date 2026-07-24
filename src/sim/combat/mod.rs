@@ -25,6 +25,7 @@ pub(crate) mod combat_weapon;
 pub(crate) mod damage;
 pub(crate) mod fire_decision;
 pub(crate) mod in_range;
+mod inviso_scatter;
 pub mod smudge_dispatch;
 
 #[cfg(test)]
@@ -59,6 +60,7 @@ use crate::sim::infantry;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
 use crate::sim::power_system::PowerState;
+use crate::sim::rng::SimRng;
 use crate::sim::vision::FogState;
 use crate::sim::world::{FireOriginSnapshot, SimFireEvent, SimSoundEvent};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
@@ -573,6 +575,7 @@ pub fn tick_combat(
     current_tick: u64,
     tick_ms: u32,
     binary_frame: u32,
+    scenario_rng: &mut SimRng,
 ) -> CombatTickResult {
     tick_combat_with_fog(
         entities,
@@ -593,6 +596,7 @@ pub fn tick_combat(
         // stable-id resolution order, preserving prior behavior exactly.
         &[],
         None,
+        scenario_rng,
     )
 }
 
@@ -651,6 +655,8 @@ pub enum SmudgeSpawnRequest {
         anim_name: InternedId,
         rx: u16,
         ry: u16,
+        sub_x: SimFixed,
+        sub_y: SimFixed,
         z: i32,
     },
     /// Emitted once per >=2x2 building destruction (DestructionEffects path).
@@ -704,6 +710,8 @@ pub(crate) fn emit_warhead_detonation_effects(
         anim_name: interned_name,
         rx,
         ry,
+        sub_x,
+        sub_y,
         z: z as i32,
     });
 }
@@ -1205,6 +1213,10 @@ pub(crate) struct CombatEmit {
 /// cells from bridge cells when a wall-warhead detonates (so the right event
 /// stream — WallDamageEvent vs BridgeDamageEvent — gets populated). Pass
 /// `None` to skip wall-cell discrimination (legacy bridge-only routing).
+///
+/// `scenario_rng` is the persistent `ScenarioClass::Random` authority used
+/// inline by projectile detonation mechanisms such as the Inviso
+/// impact-animation scatter.
 pub fn tick_combat_with_fog(
     entities: &mut EntityStore,
     occupancy: &mut OccupancyGrid,
@@ -1222,6 +1234,7 @@ pub fn tick_combat_with_fog(
     binary_frame: u32,
     live_order: &[u64],
     radiation: Option<&mut crate::sim::radiation::RadiationState>,
+    scenario_rng: &mut SimRng,
 ) -> CombatTickResult {
     if tick_ms == 0 {
         return CombatTickResult {
@@ -1580,7 +1593,7 @@ pub fn tick_combat_with_fog(
     // Phase 2: per-attacker fire decision + emission, in live-LOGIC snapshot
     // order. Each attacker is resolved through `resolve_attacker_fire` (the
     // reusable per-object fire body); emission order is identical to the prior
-    // inline loop, so the downstream scenario_rng smudge cursor is unmoved.
+    // inline loop, preserving both event order and inline Scenario-RNG draws.
     // Fire is category-agnostic (Units fire through the same body here); Unit
     // FACING destinations are computed per-object right after each Unit's own
     // resolution (S3 post-Foot Fire→Facing order) and applied post-batch by
@@ -1601,6 +1614,7 @@ pub fn tick_combat_with_fog(
             terrain,
             binary_frame,
             tick_ms,
+            scenario_rng,
             &mut emit,
         );
         // S3: per-object barrel destination for Unit attackers, read in the
@@ -2018,6 +2032,7 @@ pub(crate) fn resolve_attacker_fire(
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
     binary_frame: u32,
     tick_ms: u32,
+    scenario_rng: &mut SimRng,
     out: &mut CombatEmit,
 ) {
     // Pre-compute garrison scan range for retargeting (includes +1 buffer).
@@ -2510,13 +2525,32 @@ pub(crate) fn resolve_attacker_fire(
         TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
         TargetKind::Cell(_, _) => 0,
     };
+    // BulletClass::Detonate randomizes only the visible CoordStruct for an
+    // Inviso projectile. The draw happens before AnimList selection, so this
+    // must run even when the warhead has no animation to emit.
+    let (effect_rx, effect_ry, effect_sub_x, effect_sub_y) = if weapon
+        .projectile
+        .as_deref()
+        .and_then(|projectile_id| rules.projectile(projectile_id))
+        .is_some_and(|projectile| projectile.inviso)
+    {
+        inviso_scatter::scatter_inviso_effect_coord(
+            scenario_rng,
+            target_rx,
+            target_ry,
+            target_sub_x,
+            target_sub_y,
+        )
+    } else {
+        (target_rx, target_ry, target_sub_x, target_sub_y)
+    };
     emit_warhead_detonation_effects(
         warhead,
         base_damage,
-        target_rx,
-        target_ry,
-        target_sub_x,
-        target_sub_y,
+        effect_rx,
+        effect_ry,
+        effect_sub_x,
+        effect_sub_y,
         impact_z,
         interner,
         &mut out.explosion_effects,
