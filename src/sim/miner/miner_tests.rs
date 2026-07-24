@@ -11,7 +11,7 @@ use crate::map::entities::EntityCategory;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::components::Health;
+use crate::sim::components::{HarvestOverlay, Health, VoxelAnimation};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::miner::{
     CargoBale, Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase, ResourceNode,
@@ -5321,14 +5321,294 @@ fn harvester_caps_extraction_at_remaining_capacity() {
 
     let miner = get_miner(&sim, miner_id);
     assert_eq!(miner.cargo.len(), 40, "capped at capacity");
+    assert_eq!(
+        miner.state,
+        MinerState::Harvest,
+        "positive filling extraction remains a successful Harvest tick"
+    );
+    assert_eq!(
+        miner.harvest_timer.duration,
+        u32::from(config.harvest_tick_interval) + 1,
+        "success-reset gate remains due at the native F+19 observation"
+    );
+    assert_eq!(
+        miner.last_harvest_cell, None,
+        "archive is not selected on fill"
+    );
+    assert_eq!(
+        miner.reserved_refinery, None,
+        "return does not begin on fill"
+    );
 
-    // 2 bales extracted from an 11-density cell → 9 levels remain.
+    let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+    assert!(entity.movement_target.is_none());
+    assert!(entity.teleport_state.is_none());
+
     let after = sim
         .production
         .resource_nodes
         .get(&(20, 20))
         .expect("cell still has ore");
     assert_eq!(after.remaining, 9 * 120, "cell drops to density 9");
+}
+
+#[test]
+fn filling_extraction_waits_for_full_gate_before_war_return() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    place_ore(&mut sim, 30, 30, 11 * 120);
+    place_ore(&mut sim, 31, 30, 5 * 120);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 30, 30);
+
+    {
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..38 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: config.ore_bale_value,
+            });
+        }
+        miner.state = MinerState::Harvest;
+        miner.target_ore_cell = Some((30, 30));
+        miner.harvest_timer.clear();
+        let mut voxel = VoxelAnimation::new(15, 67);
+        voxel.frame = 7;
+        voxel.elapsed_ms = 31;
+        voxel.playing = true;
+        entity.voxel_animation = Some(voxel);
+        entity.harvest_overlay = Some(HarvestOverlay {
+            frame: 6,
+            visible: true,
+            elapsed_ms: 29,
+        });
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+    let fill_frame = sim.session.binary_frame;
+    {
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        let miner = entity.miner.as_ref().expect("miner component");
+        assert_eq!(miner.cargo.len(), 40);
+        assert_eq!(miner.state, MinerState::Harvest);
+        assert_eq!(miner.harvest_timer.start_frame, fill_frame);
+        assert_eq!(
+            miner.harvest_timer.duration,
+            u32::from(config.harvest_tick_interval) + 1
+        );
+        assert_eq!(miner.last_harvest_cell, None);
+        assert_eq!(miner.reserved_refinery, None);
+        assert!(entity.movement_target.is_none());
+        assert!(entity.teleport_state.is_none());
+        let voxel = entity.voxel_animation.expect("voxel anim");
+        assert!(voxel.playing);
+        assert_eq!((voxel.frame, voxel.elapsed_ms), (7, 31));
+        let overlay = entity.harvest_overlay.expect("harvest overlay");
+        assert!(overlay.visible);
+        assert_eq!((overlay.frame, overlay.elapsed_ms), (6, 29));
+    }
+
+    tick_miners_n(&mut sim, &rules, config.harvest_tick_interval as usize);
+    assert_eq!(
+        sim.session.binary_frame.wrapping_sub(fill_frame),
+        u32::from(config.harvest_tick_interval)
+    );
+    {
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        let miner = entity.miner.as_ref().expect("miner component");
+        assert_eq!(miner.state, MinerState::Harvest, "F+18 remains pending");
+        assert_eq!(miner.last_harvest_cell, None);
+        assert_eq!(miner.reserved_refinery, None);
+        assert!(entity.movement_target.is_none());
+        let voxel = entity.voxel_animation.expect("voxel anim");
+        assert!(voxel.playing);
+        assert_eq!(
+            (voxel.frame, voxel.elapsed_ms),
+            (7, 31),
+            "nonzero visual state remains live through F+18"
+        );
+        let overlay = entity.harvest_overlay.expect("harvest overlay");
+        assert!(overlay.visible);
+        assert_eq!(
+            (overlay.frame, overlay.elapsed_ms),
+            (6, 29),
+            "nonzero overlay state remains live through F+18"
+        );
+    }
+
+    sim.production.resource_nodes.remove(&(30, 30));
+    tick_miners_n(&mut sim, &rules, 1);
+    let full_gate_frame = sim.session.binary_frame;
+    {
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        let miner = entity.miner.as_ref().expect("miner component");
+        assert_eq!(
+            full_gate_frame.wrapping_sub(fill_frame),
+            u32::from(config.harvest_tick_interval) + 1
+        );
+        assert_eq!(miner.state, MinerState::ReturnToRefinery);
+        assert_eq!(miner.harvest_timer.start_frame, full_gate_frame);
+        assert_eq!(miner.harvest_timer.duration, 0);
+        assert_eq!(miner.last_harvest_cell, Some((31, 30)));
+        assert_eq!(miner.reserved_refinery, None);
+        assert!(entity.movement_target.is_none());
+        assert!(entity.teleport_state.is_none());
+        let voxel = entity.voxel_animation.expect("voxel anim");
+        assert!(!voxel.playing);
+        assert_eq!((voxel.frame, voxel.elapsed_ms), (0, 0));
+        let overlay = entity.harvest_overlay.expect("harvest overlay");
+        assert!(!overlay.visible);
+        assert_eq!((overlay.frame, overlay.elapsed_ms), (0, 0));
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+    {
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        let miner = entity.miner.as_ref().expect("miner component");
+        assert_eq!(miner.reserved_refinery, Some(2));
+        assert!(
+            entity.movement_target.is_some(),
+            "F+20 state-2 dispatch issues the existing far HARV return move"
+        );
+    }
+}
+
+#[test]
+fn chrono_filling_extraction_does_not_warp_before_state2_tick() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    place_ore(&mut sim, 63, 63, 11 * 120);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 63, 63);
+
+    {
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(miner_id)
+            .expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..18 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: config.ore_bale_value,
+            });
+        }
+        miner.state = MinerState::Harvest;
+        miner.target_ore_cell = Some((63, 63));
+        miner.harvest_timer.clear();
+    }
+
+    sim.sound_events.clear();
+    tick_miners_n(&mut sim, &rules, 1);
+    let fill_frame = sim.session.binary_frame;
+    {
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        let miner = entity.miner.as_ref().expect("miner component");
+        assert_eq!(miner.cargo.len(), 20);
+        assert_eq!(miner.state, MinerState::Harvest);
+        assert_eq!(miner.harvest_timer.start_frame, fill_frame);
+        assert_eq!(
+            miner.harvest_timer.duration,
+            u32::from(config.harvest_tick_interval) + 1
+        );
+        assert_eq!(miner.last_harvest_cell, None);
+        assert_eq!(miner.reserved_refinery, None);
+        assert!(entity.movement_target.is_none());
+        assert!(entity.teleport_state.is_none());
+        assert!(sim.sound_events.iter().all(|event| !matches!(
+            event,
+            crate::sim::world::SimSoundEvent::ChronoTeleport { .. }
+        )));
+    }
+    assert_eq!(
+        sim.production
+            .resource_nodes
+            .get(&(63, 63))
+            .expect("productive source cell after fill")
+            .remaining,
+        9 * 120
+    );
+
+    tick_miners_n(&mut sim, &rules, config.harvest_tick_interval as usize);
+    {
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        let miner = entity.miner.as_ref().expect("miner component");
+        assert_eq!(
+            sim.session.binary_frame.wrapping_sub(fill_frame),
+            u32::from(config.harvest_tick_interval)
+        );
+        assert_eq!(miner.state, MinerState::Harvest, "F+18 remains pending");
+        assert_eq!(miner.last_harvest_cell, None);
+        assert_eq!(miner.reserved_refinery, None);
+        assert!(entity.movement_target.is_none());
+        assert!(entity.teleport_state.is_none());
+        assert!(sim.sound_events.iter().all(|event| !matches!(
+            event,
+            crate::sim::world::SimSoundEvent::ChronoTeleport { .. }
+        )));
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+    let full_gate_frame = sim.session.binary_frame;
+    {
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        let miner = entity.miner.as_ref().expect("miner component");
+        assert_eq!(
+            full_gate_frame.wrapping_sub(fill_frame),
+            u32::from(config.harvest_tick_interval) + 1
+        );
+        assert_eq!(miner.cargo.len(), 20);
+        assert_eq!(miner.state, MinerState::ReturnToRefinery);
+        assert_eq!(miner.harvest_timer.start_frame, full_gate_frame);
+        assert_eq!(miner.harvest_timer.duration, 0);
+        assert_eq!(
+            miner.last_harvest_cell,
+            Some((63, 63)),
+            "archive is selected from the productive F+19 source cell"
+        );
+        assert_eq!(miner.reserved_refinery, None);
+        assert!(entity.movement_target.is_none());
+        assert!(entity.teleport_state.is_none());
+        assert!(sim.sound_events.iter().all(|event| !matches!(
+            event,
+            crate::sim::world::SimSoundEvent::ChronoTeleport { .. }
+        )));
+    }
+    assert_eq!(
+        sim.production
+            .resource_nodes
+            .get(&(63, 63))
+            .expect("full gate must not reduce the productive cell")
+            .remaining,
+        9 * 120
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+    {
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        let miner = entity.miner.as_ref().expect("miner component");
+        assert_eq!(miner.reserved_refinery, Some(2));
+        assert!(entity.teleport_state.is_some());
+    }
+    assert_eq!(
+        sim.sound_events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                crate::sim::world::SimSoundEvent::ChronoTeleport { .. }
+            ))
+            .count(),
+        2
+    );
 }
 
 /// After a partial-density cell is fully drained but the miner still has
