@@ -146,9 +146,7 @@ fn current_tiberium_type(
     let registry = ctx.overlay_registry?;
     let types = ctx.tiberium_types?;
     let overlay_id = grid.cell(cell.0, cell.1).overlay_id?;
-    registry
-        .tiberium_overlay_mapping(types, overlay_id)
-        .map(|mapping| mapping.tiberium_type)
+    registry.tiberium_type_for_overlay(types, overlay_id)
 }
 
 fn stock_per_density(resource_type: ResourceType) -> u16 {
@@ -203,6 +201,8 @@ mod tests {
             "\
 [Tiberiums]
 0=Riparius
+1=Cruentus
+2=Vinifera
 
 [Riparius]
 Image=1
@@ -211,14 +211,38 @@ GrowthPercentage=.06
 Spread=2200
 SpreadPercentage=.06
 
+[Cruentus]
+Image=2
+Growth=10000
+GrowthPercentage=0
+Spread=10000
+SpreadPercentage=0
+
+[Vinifera]
+Image=3
+Growth=2200
+GrowthPercentage=.06
+Spread=2200
+SpreadPercentage=.06
+
 [OverlayTypes]
 ",
         );
-        for i in 1..=12 {
-            ini_text.push_str(&format!("{}=TIB{:02}\n", i - 1, i));
+        let mut tiberium_names = Vec::new();
+        for raw_key in (1..=149).filter(|key| *key != 40 && *key != 41) {
+            let name = match raw_key {
+                28..=39 => format!("GEM{:02}", raw_key - 27),
+                105..=124 => format!("TIB{:02}", raw_key - 104),
+                130..=149 => format!("TIB2_{:02}", raw_key - 129),
+                _ => format!("FILL{raw_key:03}"),
+            };
+            ini_text.push_str(&format!("{raw_key}={name}\n"));
+            if name.starts_with("TIB") || name.starts_with("GEM") {
+                tiberium_names.push(name);
+            }
         }
-        for i in 1..=12 {
-            ini_text.push_str(&format!("[TIB{:02}]\nTiberium=yes\n", i));
+        for name in tiberium_names {
+            ini_text.push_str(&format!("[{name}]\nTiberium=yes\n"));
         }
         let ini = IniFile::from_str(&ini_text);
         (
@@ -355,15 +379,16 @@ SpreadPercentage=.06
     #[test]
     fn full_reduction_reseeds_native_spread_queue_when_type_context_is_available() {
         let (overlay_registry, tiberium_types) = native_tiberium_fixture();
-        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let tib2_20 = overlay_registry.id_for_name("TIB2_20").expect("TIB2_20");
+        assert_eq!(tib2_20, 146);
         let mut nodes = BTreeMap::new();
         nodes.insert((5, 5), ore_node(3));
         nodes.insert((6, 5), ore_node(4));
         nodes.insert((5, 6), ore_node(4));
         let mut overlay = OverlayGrid::new(10, 10);
-        overlay.place_overlay(5, 5, tib01, 3);
-        overlay.place_overlay(6, 5, tib01, 4);
-        overlay.place_overlay(5, 6, tib01, 4);
+        overlay.place_overlay(5, 5, tib2_20, 3);
+        overlay.place_overlay(6, 5, tib2_20, 4);
+        overlay.place_overlay(5, 6, tib2_20, 4);
         let mut growth = OreGrowthState::new(10, 10);
         growth.reset_native_tiberium_classes(tiberium_types.len(), 100);
         let mut rng = SimRng::new(3);
@@ -379,7 +404,9 @@ SpreadPercentage=.06
             true,
             &mut rng,
         );
-        let before_reduce_rng = rng.state();
+        let mut expected_rng = rng.clone();
+        expected_rng.next_u32();
+        expected_rng.next_u32();
         let source_object_cells = BTreeSet::new();
 
         let mut ctx = ReduceTiberiumContext {
@@ -402,7 +429,7 @@ SpreadPercentage=.06
 
         assert!(outcome.fully_removed);
         assert!(growth.spread_queue_entries().is_empty());
-        let class = &growth.native_tiberium_state().classes[0];
+        let class = &growth.native_tiberium_state().classes[2];
         assert!(
             !class.spread_bitmap.contains(&(5, 5)),
             "full removal clears the removed cell's native spread bitmap bit"
@@ -417,10 +444,30 @@ SpreadPercentage=.06
                 .count(),
             2
         );
-        assert_ne!(
-            rng.state(),
-            before_reduce_rng,
-            "native AddToSpreadQueue reseed consumes RNG for accepted neighbors"
+        let reseeded: Vec<_> = class
+            .spread_heap
+            .iter()
+            .filter(|entry| (entry.rx, entry.ry) != (5, 5))
+            .map(|entry| (entry.rx, entry.ry))
+            .collect();
+        assert_eq!(reseeded, vec![(6, 5), (5, 6)]);
+        for (class_index, wrong_class) in growth.native_tiberium_state().classes.iter().enumerate()
+        {
+            if class_index != 2 {
+                assert!(
+                    wrong_class.spread_heap.is_empty(),
+                    "wrong class {class_index}"
+                );
+                assert!(
+                    wrong_class.spread_bitmap.is_empty(),
+                    "wrong class {class_index}"
+                );
+            }
+        }
+        assert_eq!(
+            rng.logical_state(),
+            expected_rng.logical_state(),
+            "reseed consumes exactly one raw draw per accepted neighbor"
         );
     }
 
