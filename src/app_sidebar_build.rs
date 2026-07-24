@@ -13,7 +13,7 @@ use crate::app_sidebar_render::current_sidebar_chrome;
 use crate::render::batch::SpriteInstance;
 use crate::render::sidebar_chrome::SidebarChromeAtlas;
 use crate::sidebar::power_bar_anim::PowerBarAnimState;
-use crate::sidebar::{SidebarChromeLayoutSpec, SidebarLayout, SidebarTabButton, SidebarView};
+use crate::sidebar::{Rect, SidebarChromeLayoutSpec, SidebarLayout, SidebarTabButton, SidebarView};
 
 // ---------------------------------------------------------------------------
 // Main sidebar panel instances (backgrounds, progress, badges, buttons, meters)
@@ -455,6 +455,40 @@ fn ready_text_scale(ui_scale: f32) -> f32 {
     ui_scale
 }
 
+/// Map an alpha-cropped source rectangle through its original canvas into a
+/// sidebar slot. Rounding both crop edges from the shared canvas transform
+/// keeps the base art and full-canvas overlays on the same pixel boundaries.
+/// The camera offset is added after screen-space rounding so the shader can
+/// subtract it without making fixed UI geometry depend on fractional panning.
+fn place_canvas_crop_in_slot(
+    slot: Rect,
+    canvas_size: [f32; 2],
+    crop_origin: [f32; 2],
+    crop_size: [f32; 2],
+    camera_offset: [f32; 2],
+) -> Option<Rect> {
+    let [canvas_w, canvas_h] = canvas_size;
+    let [crop_w, crop_h] = crop_size;
+    if canvas_w <= 0.0 || canvas_h <= 0.0 || crop_w <= 0.0 || crop_h <= 0.0 {
+        return None;
+    }
+
+    let scale = (slot.w / canvas_w).min(slot.h / canvas_h);
+    let canvas_x = slot.x + (slot.w - canvas_w * scale) * 0.5;
+    let canvas_y = slot.y + (slot.h - canvas_h * scale) * 0.5;
+    let left = (canvas_x + crop_origin[0] * scale).round();
+    let top = (canvas_y + crop_origin[1] * scale).round();
+    let right = (canvas_x + (crop_origin[0] + crop_w) * scale).round();
+    let bottom = (canvas_y + (crop_origin[1] + crop_h) * scale).round();
+
+    Some(Rect {
+        x: left + camera_offset[0],
+        y: top + camera_offset[1],
+        w: right - left,
+        h: bottom - top,
+    })
+}
+
 /// Returns (cameo_instances, gclock_instances, overlay_instances).
 /// Cameo instances use the cameo atlas texture.
 /// Gclock instances use the GCLOCK2 atlas texture (progress overlay).
@@ -484,22 +518,22 @@ pub(crate) fn build_sidebar_cameo_instances(
             continue;
         };
         let slot = item.cameo_rect();
-        let [aw, ah] = entry.pixel_size;
-        if aw <= 0.0 || ah <= 0.0 {
+        let Some(cameo_rect) = place_canvas_crop_in_slot(
+            slot,
+            entry.canvas_size,
+            entry.crop_origin,
+            entry.pixel_size,
+            co,
+        ) else {
             continue;
-        }
-        let scale = (slot.w / aw).min(slot.h / ah);
-        let dw = (aw * scale).round();
-        let dh = (ah * scale).round();
+        };
         let is_building = !item.is_ready && item.progress > 0.0;
 
         if is_building {
             // Full cameo quad (normal tint — GCLOCK2 overlay handles darkening).
-            let cam_x = (slot.x + (slot.w - dw) * 0.5 + co[0]).round();
-            let cam_y = (slot.y + (slot.h - dh) * 0.5 + co[1]).round();
             instances.push(SpriteInstance {
-                position: [cam_x, cam_y],
-                size: [dw, dh],
+                position: [cameo_rect.x, cameo_rect.y],
+                size: [cameo_rect.w, cameo_rect.h],
                 uv_origin: entry.uv_origin,
                 uv_size: entry.uv_size,
                 depth: 0.00044,
@@ -521,25 +555,30 @@ pub(crate) fn build_sidebar_cameo_instances(
                     last_frame.min(1)
                 };
                 let gclock_entry = &gclock_frames[frame_index];
-                gclock_instances.push(SpriteInstance {
-                    position: [cam_x, cam_y],
-                    size: [dw, dh],
-                    uv_origin: gclock_entry.uv_origin,
-                    uv_size: gclock_entry.uv_size,
-                    depth: 0.00043,
-                    tint: [1.0, 1.0, 1.0],
-                    alpha: 1.0,
-                    ..Default::default()
-                });
+                if let Some(gclock_rect) = place_canvas_crop_in_slot(
+                    slot,
+                    gclock_entry.pixel_size,
+                    [0.0, 0.0],
+                    gclock_entry.pixel_size,
+                    co,
+                ) {
+                    gclock_instances.push(SpriteInstance {
+                        position: [gclock_rect.x, gclock_rect.y],
+                        size: [gclock_rect.w, gclock_rect.h],
+                        uv_origin: gclock_entry.uv_origin,
+                        uv_size: gclock_entry.uv_size,
+                        depth: 0.00043,
+                        tint: [1.0, 1.0, 1.0],
+                        alpha: 1.0,
+                        ..Default::default()
+                    });
+                }
             }
         } else {
             // Non-building items: single full cameo quad. No blinking.
             instances.push(SpriteInstance {
-                position: [
-                    (slot.x + (slot.w - dw) * 0.5 + co[0]).round(),
-                    (slot.y + (slot.h - dh) * 0.5 + co[1]).round(),
-                ],
-                size: [dw, dh],
+                position: [cameo_rect.x, cameo_rect.y],
+                size: [cameo_rect.w, cameo_rect.h],
                 uv_origin: entry.uv_origin,
                 uv_size: entry.uv_size,
                 depth: 0.00044,
@@ -681,4 +720,78 @@ pub(crate) fn build_sidebar_text_instances(
         }
     }
     instances
+}
+
+#[cfg(test)]
+mod tests {
+    use super::place_canvas_crop_in_slot;
+    use crate::sidebar::Rect;
+
+    #[test]
+    fn test_canvas_crop_uses_shared_rounded_edges_with_camera_cancellation() {
+        let slot = Rect {
+            x: 100.1,
+            y: 50.3,
+            w: 75.0,
+            h: 60.0,
+        };
+        let without_camera =
+            place_canvas_crop_in_slot(slot, [60.0, 48.0], [3.0, 4.0], [54.0, 40.0], [0.0, 0.0])
+                .unwrap();
+        let with_camera =
+            place_canvas_crop_in_slot(slot, [60.0, 48.0], [3.0, 4.0], [54.0, 40.0], [13.25, -7.5])
+                .unwrap();
+
+        assert_eq!(
+            without_camera,
+            Rect {
+                x: 104.0,
+                y: 55.0,
+                w: 67.0,
+                h: 50.0
+            }
+        );
+        assert_eq!(with_camera.w, without_camera.w);
+        assert_eq!(with_camera.h, without_camera.h);
+        assert_eq!(with_camera.x - 13.25, without_camera.x);
+        assert_eq!(with_camera.y + 7.5, without_camera.y);
+        // 54 * 1.25 is 67.5; deriving size from the shared rounded edges
+        // intentionally produces 67 rather than independently rounding to 68.
+        assert_eq!(with_camera.w, 67.0);
+    }
+
+    #[test]
+    fn test_gclock_canvas_fills_slot_independently_of_base_crop() {
+        let slot = Rect {
+            x: 100.1,
+            y: 50.3,
+            w: 75.0,
+            h: 60.0,
+        };
+        let base =
+            place_canvas_crop_in_slot(slot, [60.0, 48.0], [3.0, 4.0], [54.0, 40.0], [13.25, -7.5])
+                .unwrap();
+        let gclock =
+            place_canvas_crop_in_slot(slot, [60.0, 48.0], [0.0, 0.0], [60.0, 48.0], [13.25, -7.5])
+                .unwrap();
+
+        assert_eq!(
+            base,
+            Rect {
+                x: 117.25,
+                y: 47.5,
+                w: 67.0,
+                h: 50.0
+            }
+        );
+        assert_eq!(
+            gclock,
+            Rect {
+                x: 113.25,
+                y: 42.5,
+                w: 75.0,
+                h: 60.0
+            }
+        );
+    }
 }
