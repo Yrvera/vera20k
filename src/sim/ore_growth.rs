@@ -348,15 +348,12 @@ impl OreGrowthState {
     ) -> Option<NativeTiberiumQueueEntry> {
         let cell = overlay_grid.cell(rx, ry);
         let overlay_id = cell.overlay_id?;
-        let mapping = overlay_registry.tiberium_overlay_mapping(tiberium_types, overlay_id)?;
-        let ty = tiberium_types.get(mapping.tiberium_type)?;
+        let type_id = overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)?;
+        let ty = tiberium_types.get(type_id)?;
         if cell.overlay_data >= ty.max_density.saturating_sub(1) {
             return None;
         }
-        let class = self
-            .native_tiberium
-            .classes
-            .get_mut(mapping.tiberium_type.0 as usize)?;
+        let class = self.native_tiberium.classes.get_mut(type_id.0 as usize)?;
         let entry = NativeTiberiumQueueEntry {
             rx,
             ry,
@@ -799,19 +796,15 @@ impl OreGrowthState {
             let Some(overlay_id) = cell.overlay_id else {
                 continue;
             };
-            let Some(mapping) =
-                overlay_registry.tiberium_overlay_mapping(tiberium_types, overlay_id)
+            let Some(type_id) =
+                overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)
             else {
                 continue;
             };
-            let Some(ty) = tiberium_types.get(mapping.tiberium_type) else {
+            let Some(ty) = tiberium_types.get(type_id) else {
                 continue;
             };
-            let Some(class) = self
-                .native_tiberium
-                .classes
-                .get_mut(mapping.tiberium_type.0 as usize)
-            else {
+            let Some(class) = self.native_tiberium.classes.get_mut(type_id.0 as usize) else {
                 continue;
             };
             if !cell_is_flat(resolved_terrain, rx, ry) {
@@ -833,7 +826,7 @@ impl OreGrowthState {
 
             if tiberium_spreads_enabled
                 && ty.spread_percentage_ppm >= 0
-                && cell.overlay_data > mapping.tiberium_type.0 / 2
+                && cell.overlay_data > type_id.0 / 2
                 && !source_object_cells.contains(&(rx, ry))
             {
                 class.spread_heap.push(NativeTiberiumQueueEntry {
@@ -1085,9 +1078,7 @@ fn current_tiberium_type(
     ry: u16,
 ) -> Option<TiberiumTypeId> {
     let overlay_id = overlay_grid.cell(rx, ry).overlay_id?;
-    overlay_registry
-        .tiberium_overlay_mapping(tiberium_types, overlay_id)
-        .map(|mapping| mapping.tiberium_type)
+    overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)
 }
 
 fn source_can_spread_tiberium(
@@ -1600,6 +1591,7 @@ mod tests {
 [Tiberiums]
 0=Riparius
 1=Cruentus
+2=Vinifera
 
 [Riparius]
 Image=1
@@ -1617,25 +1609,32 @@ GrowthPercentage=0
 Spread=10000
 SpreadPercentage=0
 
+[Vinifera]
+Image=3
+Value=25
+Growth=2200
+GrowthPercentage=.06
+Spread=2200
+SpreadPercentage=.06
+
 [OverlayTypes]
 ",
         );
-        let mut key = 1;
-        for prefix in ["TIB", "GEM"] {
-            for variant in 1..=12 {
-                text.push_str(&format!(
-                    "{}={}{}\n",
-                    key,
-                    prefix,
-                    format!("{:02}", variant)
-                ));
-                key += 1;
+        let mut tiberium_names = Vec::new();
+        for raw_key in (1..=149).filter(|key| *key != 40 && *key != 41) {
+            let name = match raw_key {
+                28..=39 => format!("GEM{:02}", raw_key - 27),
+                105..=124 => format!("TIB{:02}", raw_key - 104),
+                130..=149 => format!("TIB2_{:02}", raw_key - 129),
+                _ => format!("FILL{raw_key:03}"),
+            };
+            text.push_str(&format!("{raw_key}={name}\n"));
+            if name.starts_with("TIB") || name.starts_with("GEM") {
+                tiberium_names.push(name);
             }
         }
-        for prefix in ["TIB", "GEM"] {
-            for variant in 1..=12 {
-                text.push_str(&format!("[{}{:02}]\nTiberium=yes\n", prefix, variant));
-            }
+        for name in tiberium_names {
+            text.push_str(&format!("[{name}]\nTiberium=yes\n"));
         }
         let ini = IniFile::from_str(&text);
         let overlay_registry = OverlayTypeRegistry::from_ini(&ini, None);
@@ -1938,6 +1937,56 @@ SpreadPercentage=0
     }
 
     #[test]
+    fn native_queue_rebuild_classifies_nonzero_extra_variant_through_production_method() {
+        let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
+        let tib2_20 = overlay_registry.id_for_name("TIB2_20").expect("TIB2_20");
+        assert_eq!(tib2_20, 146);
+        let overlay_grid = OverlayGrid::from_overlay_entries(
+            &[OverlayEntry {
+                rx: 3,
+                ry: 4,
+                overlay_id: tib2_20,
+                frame: 3,
+            }],
+            8,
+            8,
+        );
+        let mut state = make_state(8, 8);
+
+        let stats = state.rebuild_native_tiberium_queues_from_overlays(
+            &overlay_grid,
+            &overlay_registry,
+            &tiberium_types,
+            None,
+            &BTreeSet::new(),
+            true,
+            false,
+            77,
+        );
+
+        assert_eq!(
+            stats,
+            NativeTiberiumRebuildStats {
+                growth_entries: 1,
+                spread_entries: 0,
+            }
+        );
+        for (class_index, class) in state.native_tiberium_state().classes.iter().enumerate() {
+            if class_index == 2 {
+                assert_eq!(class.growth_heap.len(), 1);
+                assert_eq!((class.growth_heap[0].rx, class.growth_heap[0].ry), (3, 4));
+                assert_eq!(class.growth_heap[0].priority_bits, 0.0f32.to_bits());
+                assert_eq!(class.growth_bitmap, BTreeSet::from([(3, 4)]));
+            } else {
+                assert!(class.growth_heap.is_empty(), "wrong class {class_index}");
+                assert!(class.growth_bitmap.is_empty(), "wrong class {class_index}");
+            }
+            assert!(class.spread_heap.is_empty());
+            assert!(class.spread_bitmap.is_empty());
+        }
+    }
+
+    #[test]
     fn native_tiberium_rebuild_respects_basic_growth_and_source_object_gates() {
         let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
         let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
@@ -2055,6 +2104,9 @@ SpreadPercentage=0
         let mut state = make_state(8, 8);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
         let mut rng = SimRng::new(1);
+        let mut expected_after_accepts = rng.clone();
+        expected_after_accepts.next_u32();
+        expected_after_accepts.next_u32();
 
         let first = state.add_native_growth_queue_cell(
             &overlay_grid,
@@ -2074,7 +2126,13 @@ SpreadPercentage=0
             100,
             &mut rng,
         );
+        assert_eq!(
+            rng.logical_state(),
+            expected_after_accepts.logical_state(),
+            "each accepted growth insertion consumes exactly one raw draw"
+        );
         let before_reject = rng.state();
+        let before_reject_logical = rng.logical_state();
         let rejected = state.add_native_growth_queue_cell(
             &overlay_grid,
             &overlay_registry,
@@ -2101,6 +2159,11 @@ SpreadPercentage=0
             rng.state(),
             before_reject,
             "density-11 rejection consumes no RNG"
+        );
+        assert_eq!(
+            rng.logical_state(),
+            before_reject_logical,
+            "density-11 rejection preserves every logical RNG field"
         );
     }
 
