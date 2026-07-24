@@ -167,7 +167,9 @@ pub struct MinerConfig {
     pub chrono_miner_capacity: u16,
 
     // -- Timing (in sim ticks at 15Hz = RA2 game frames) --
-    /// Ticks between each harvest action (extract one bale).
+    /// Frame span for the nine native harvest StepTimer expiries:
+    /// `9 * HarvesterLoadRate`. Mission dispatch observes the ninth post-mission
+    /// increment on the following frame, so harvest gates arm for this value + 1.
     pub harvest_tick_interval: u8,
     /// Whole-frame dump gate: the unload accumulator advances one frame per
     /// unloading tick and a resource slot drains once it reaches this value.
@@ -202,8 +204,9 @@ impl Default for MinerConfig {
             war_miner_capacity: 40,
             // Chrono Miner: 20 bales * 25 = 500 ore, 20 * 50 = 1000 gems
             chrono_miner_capacity: 20,
-            // HarvesterLoadRate=2 (frames per StepTimer step). One bale requires
-            // 9 steps, so interval = 2 * 9 = 18 frames/bale at 15fps (~1.2s).
+            // HarvesterLoadRate=2 and nine expiries produce the 18-frame threshold.
+            // Mission dispatch runs before timer maintenance, so it observes step 9 on
+            // frame 19; call sites preserve that with harvest_tick_interval + 1.
             harvest_tick_interval: 18,
             // HarvesterDumpRate=0.016 × 900 = 14.4 frames/gate; the integer
             // accumulator crosses at ceil(14.4) = 15. The whole slot drains per
@@ -297,11 +300,9 @@ pub struct Miner {
     pub cargo: Vec<CargoBale>,
     /// Maximum number of bales this miner can carry.
     pub capacity_bales: u16,
-    /// Frame-anchored gate for the next harvest action (was a per-tick `u8`
-    /// countdown). When `due`, a bale extracts and the timer re-arms for
-    /// `harvest_tick_interval + 1` frames (the +1 preserves the old
-    /// fire-when-zero fence-post: a seed of N decremented to 0 fires on the
-    /// (N+1)th call).
+    /// Frame-anchored gate for the next harvest helper call. Call sites arm for
+    /// `harvest_tick_interval + 1`: the ninth native StepTimer expiry occurs after
+    /// the frame-18 mission call, so the mission first observes it on frame 19.
     pub harvest_timer: MissionTimer,
     /// Whether the player issued a manual return order.
     pub forced_return: bool,
@@ -310,11 +311,10 @@ pub struct Miner {
     /// Frame-anchored cooldown before re-scanning for ore in WaitNoOre state
     /// (was a per-tick `u8` countdown; same +1 fence-post as `harvest_timer`).
     pub rescan_cooldown: MissionTimer,
-    /// Archive ("ghost cell") of a nearby still-productive ore patch,
-    /// saved on the `Harvest` → `ReturnToRefinery` transition (when the
-    /// miner becomes full). Survives the entire dock cycle so the next
-    /// `SearchOre` returns directly to it; consumed and cleared at
-    /// `SearchOre` entry.
+    /// Archive ("ghost cell") of a nearby still-productive ore patch, saved
+    /// after the due full gate selects `ReturnToRefinery`. Survives the entire
+    /// dock cycle so the next `SearchOre` returns directly to it; consumed and
+    /// cleared at `SearchOre` entry.
     pub last_harvest_cell: Option<(u16, u16)>,
     /// Current phase of the refinery docking sequence.
     /// Only meaningful when `state == MinerState::Dock`.

@@ -551,7 +551,9 @@ fn handle_move_to_ore(
     // Arrived?
     if (snap.rx, snap.ry) == target {
         snap.miner.state = MinerState::Harvest;
-        // Original requires 9 StepTimer steps before first bale (18 frames at default rate).
+        // This physical-arrival anchor is legacy Rust behavior; native initializes
+        // the timer when search/move succeeds, a separately tracked acquisition-
+        // timing drift. Retain +1 for the verified mission-before-timer observation.
         snap.miner.harvest_timer.arm(
             sim.session.binary_frame,
             u32::from(config.harvest_tick_interval) + 1,
@@ -621,6 +623,17 @@ fn handle_harvest(
         return;
     }
 
+    if snap.miner.is_full() {
+        // Harvest_Ore_Tick checks full storage before Reduce_Tiberium, resets its
+        // timer, and returns failure. Mission_Harvest then writes return state
+        // before choosing the ghost/archive cell; state-2 work waits for the next
+        // mission dispatch.
+        snap.miner.harvest_timer.reset(sim.session.binary_frame);
+        snap.miner.state = MinerState::ReturnToRefinery;
+        save_archive_via_short_scan(sim, config, path_grid, snap);
+        return;
+    }
+
     let cell = (snap.rx, snap.ry);
     let empty: u16 = snap
         .miner
@@ -647,20 +660,10 @@ fn handle_harvest(
                 value,
             }));
 
-        if snap.miner.is_full() {
-            // Becoming-full: save an archive ghost cell pointing at a
-            // nearby still-productive patch so the next `SearchOre`
-            // (after dock) returns directly to it.
-            save_archive_via_short_scan(sim, config, path_grid, snap);
-            begin_return(sim, rules, config, path_grid, snap);
-            return;
-        }
-        // Bales extracted but miner not full → cell has either been
-        // drained (multi-bale exhausted it) or still has more density
-        // (capacity capped this call). Reset timer; next tick re-enters
-        // Harvest. If the cell is now empty the next call returns 0 and
-        // we fall through to short-scan; if it still has density we wait
-        // 18 frames per gamemd's step-counter gate.
+        // A positive extraction is success even when it fills storage. Native
+        // Mission_Harvest remains in state 1 and observes fullness only at the
+        // next helper gate: 9 * HarvesterLoadRate + 1 frame numbers under the
+        // verified mission-before-timer order.
         snap.miner.harvest_timer.arm(
             sim.session.binary_frame,
             u32::from(config.harvest_tick_interval) + 1,
@@ -668,17 +671,9 @@ fn handle_harvest(
         return;
     }
 
-    // No bales extracted (cell empty). Three sub-paths:
-    //   1. Full → return, save archive via short scan.
-    //   2. Otherwise run a short continuation scan from the current
-    //      cell. Hit → keep harvesting (we use MoveToOre, which
-    //      re-enters Harvest on arrival).
-    //   3. Miss while not full → return, clear archive.
-    if snap.miner.is_full() {
-        save_archive_via_short_scan(sim, config, path_grid, snap);
-        begin_return(sim, rules, config, path_grid, snap);
-        return;
-    }
+    // No bales extracted while not full. Run the caller-owned short continuation
+    // scan; a hit moves toward the next patch, while a miss begins the existing
+    // no-resource return path.
 
     // Short scan. The filter's closure captures `&sim`; scope it so the
     // immutable borrow drops before `begin_return` needs `&mut sim` below.
@@ -706,9 +701,9 @@ fn handle_harvest(
 }
 
 /// Save a fresh ghost-cell archive by running a short-radius scan from
-/// the miner's current position. Called when the miner becomes full so
-/// the next `SearchOre` cycle can return directly to a nearby still-
-/// productive patch. On scan miss, clears the archive.
+/// the miner's current position. The due full-failure caller invokes this only
+/// after selecting Return, so the next `SearchOre` cycle can return directly to
+/// a nearby still-productive patch. On scan miss, clears the archive.
 fn save_archive_via_short_scan(
     sim: &Simulation,
     config: &MinerConfig,
