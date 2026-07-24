@@ -752,7 +752,7 @@ mod tests {
     ) {
         let owner_id = sim.interner.intern(owner);
         let type_id_interned = sim.interner.intern(type_id);
-        let ge = crate::sim::game_entity::GameEntity::new(
+        let ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -820,7 +820,7 @@ mod tests {
             let mut sim = Simulation::new();
             let owner_id = sim.interner.intern("Americans");
             let mcv_type = sim.interner.intern("TSTMCV");
-            let ge = crate::sim::game_entity::GameEntity::new(
+            let ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
                 1,
                 5,
                 5,

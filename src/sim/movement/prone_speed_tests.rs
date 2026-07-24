@@ -38,7 +38,7 @@ fn infantry_rules(crawls: bool) -> RuleSet {
 }
 
 fn prone_mover() -> GameEntity {
-    let mut entity = GameEntity::new(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         1,
         0,
         0,

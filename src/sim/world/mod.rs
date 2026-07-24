@@ -61,6 +61,7 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
 use crate::sim::lifecycle_request::LifecycleRequest;
+use crate::sim::mission::compatibility::legacy_tick_tail_projection;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::droppod_movement;
@@ -998,9 +999,7 @@ impl Simulation {
                 continue;
             }
             let (current, substate) = entity.derived_mission();
-            entity.mission.current = current;
-            entity.mission.substate = substate;
-            entity.mission.tick_counter = entity.mission.tick_counter.wrapping_add(1);
+            legacy_tick_tail_projection(&mut entity.mission, current, substate);
         }
     }
 

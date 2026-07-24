@@ -286,7 +286,7 @@ mod tests {
     fn spawn_refinery(sim: &mut Simulation, sid: u64, owner: &str, capacity: usize) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern("GAREFN");
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             10,
             10,
@@ -310,7 +310,7 @@ mod tests {
     fn spawn_miner(sim: &mut Simulation, sid: u64, owner: &str) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern("HARV");
-        let ge = GameEntity::new(
+        let ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             12,
             12,
@@ -334,7 +334,7 @@ mod tests {
         use crate::sim::docking::bunker_install::BunkerRuntime;
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern("NATBNK");
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             10,
             10,

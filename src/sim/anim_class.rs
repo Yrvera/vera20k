@@ -686,7 +686,7 @@ mod tests {
             sim.interner.intern(name);
         }
         let id = sim.allocate_stable_id();
-        let mut building = GameEntity::new(
+        let mut building = GameEntity::new_at_frame_zero_for_test(
             id,
             10,
             10,

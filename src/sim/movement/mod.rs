@@ -44,6 +44,7 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed, facing_from_delta_int};
 
 // --- Internal submodules ---
 mod drive_locomotion;
+pub(crate) mod locomotor_ready;
 mod movement_blocked;
 mod movement_bridge;
 mod movement_commands;

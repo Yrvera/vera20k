@@ -18,7 +18,7 @@
 use crate::map::entities::EntityCategory;
 use crate::sim::aircraft::AircraftMission;
 use crate::sim::animation::Animation;
-use crate::sim::combat::AttackTarget;
+use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
     DriveLocomotionRuntime, HarvestOverlay, Health, MovementTarget, NavigationState, OrderIntent,
@@ -30,7 +30,7 @@ use crate::sim::docking::aircraft_dock::AircraftAmmo;
 use crate::sim::docking::building_dock::DockState;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
-use crate::sim::mission::{MissionCom, MissionTimer, MissionType};
+use crate::sim::mission::{MissionCom, MissionLeafState, MissionTimer, MissionType};
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
 use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
@@ -515,14 +515,15 @@ pub struct GameEntity {
     /// vehicles and voxel-bodied buildings.
     #[serde(default)]
     pub rocking: Option<RockingState>,
-    /// Mission substrate state. Written in parallel by the Slice-6 verb API
-    /// (`mission::verb` / `mission::retask`) alongside the still-authoritative
-    /// `Option<T>` machines; `current`/`substate` are additionally refreshed from
-    /// those machines each tick. NOT folded into `world_hash` yet (a later slice
-    /// makes it authoritative and hashes it), so it round-trips via serde without
-    /// affecting the lockstep hash. `#[serde(default)]` lets pre-Slice-6 saves load.
-    #[serde(default)]
+    /// Exact native-width Mission state. All writes pass through a named legacy
+    /// compatibility adapter or the dormant exact-authority surface.
     pub mission: MissionCom,
+    /// Category-specific bytes read by Mission readiness and Aircraft policy.
+    pub(crate) mission_leaf: MissionLeafState,
+    /// Target identity archived by the Techno Override wrapper.
+    pub(crate) suspended_attack_target: Option<TargetKind>,
+    /// ObjectClass falling-down byte read by Infantry readiness.
+    pub(crate) object_is_falling_down: u8,
     /// Sim-side model of gamemd's TechnoClass `+0x308` (`DamageSparkSystem`): the
     /// `session.tick` at which the live AI_Update damage-Spark particle system
     /// expires and the object may roll again. `0` = no live system (may roll;
@@ -589,7 +590,7 @@ impl GameEntity {
     }
 
     /// Create a new entity with all required fields. Optional fields default to None/false.
-    pub fn new(
+    pub fn new_at_frame(
         stable_id: u64,
         rx: u16,
         ry: u16,
@@ -602,6 +603,7 @@ impl GameEntity {
         veterancy: u16,
         vision_range: u16,
         is_voxel: bool,
+        construction_frame: u32,
     ) -> Self {
         // Infantry spawn at sub-cell 2 (top of diamond) instead of cell center
         // so they don't overlap with other units at the same position.
@@ -718,10 +720,52 @@ impl GameEntity {
                 None
             },
             rocking: None,
-            mission: MissionCom::idle(),
+            mission: MissionCom::at_frame(construction_frame),
+            mission_leaf: MissionLeafState::for_entity_category(category),
+            suspended_attack_target: None,
+            object_is_falling_down: 0,
             damage_particle_live_until: 0,
             debug_log: None,
         }
+    }
+
+    /// Explicit frame-zero constructor for tests that do not exercise
+    /// construction-time Mission timer anchoring.
+    #[cfg(test)]
+    pub fn new_at_frame_zero_for_test(
+        stable_id: u64,
+        rx: u16,
+        ry: u16,
+        z: u8,
+        facing: u8,
+        owner: InternedId,
+        health: Health,
+        type_ref: InternedId,
+        category: EntityCategory,
+        veterancy: u16,
+        vision_range: u16,
+        is_voxel: bool,
+    ) -> Self {
+        Self::new_at_frame(
+            stable_id,
+            rx,
+            ry,
+            z,
+            facing,
+            owner,
+            health,
+            type_ref,
+            category,
+            veterancy,
+            vision_range,
+            is_voxel,
+            0,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_object_is_falling_down_for_test(&mut self, raw: u8) {
+        self.object_is_falling_down = raw;
     }
 
     /// Record a debug event if the event log is active. No-op when `debug_log` is `None`.
@@ -815,7 +859,7 @@ impl GameEntity {
     /// Create a minimal test entity with the given owner and type_ref strings.
     /// Uses a shared test interner via `test_intern()` for consistent IDs.
     pub fn test_default(stable_id: u64, type_ref: &str, owner: &str, rx: u16, ry: u16) -> Self {
-        Self::new(
+        Self::new_at_frame_zero_for_test(
             stable_id,
             rx,
             ry,
@@ -1050,7 +1094,7 @@ mod tests {
 
     #[test]
     fn test_screen_coords_computed() {
-        let e = GameEntity::new(
+        let e = GameEntity::new_at_frame_zero_for_test(
             1,
             30,
             40,
@@ -1110,14 +1154,15 @@ mod lifecycle_tests {
 mod mission_shadow_tests {
     use super::*;
     use crate::sim::combat::{AttackTarget, TargetKind};
-    use crate::sim::mission::MissionType;
+    use crate::sim::mission::state::MissionTestFixture;
+    use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionType};
 
     #[test]
     fn mission_defaults_to_idle_none() {
         let e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
-        assert_eq!(e.mission.current, MissionType::None);
-        assert_eq!(e.mission.substate, 0);
-        assert_eq!(e.mission.tick_counter, 0);
+        assert_eq!(e.mission.current(), MissionId::NONE);
+        assert_eq!(e.mission.handler_state(), 0);
+        assert_eq!(e.mission.ai_counter(), 0);
     }
 
     #[test]
@@ -1166,17 +1211,30 @@ mod mission_shadow_tests {
         // timer survive a save/load. (current/substate are also reconciled from
         // the legacy machines on load; the rest persists as serialized.)
         let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
-        e.mission.current = MissionType::Attack;
-        e.mission.queued = Some(MissionType::Guard);
-        e.mission.tick_counter = 99;
+        e.mission.apply_test_fixture(MissionTestFixture {
+            current: MissionId::from_known(MissionType::Attack),
+            suspended: MissionId::NONE,
+            queued: MissionId::from_known(MissionType::Guard),
+            movement_bypass_latch: 0,
+            handler_state: 0,
+            mission_start_frame: 0,
+            ai_counter: 99,
+            dispatch_timer: MissionDispatchTimer::at_frame(0),
+        });
         let json = serde_json::to_string(&e).expect("serialize entity");
         assert!(
             json.contains("mission"),
             "mission must round-trip — present in serialized form"
         );
         let restored: GameEntity = serde_json::from_str(&json).expect("deserialize entity");
-        assert_eq!(restored.mission.current, MissionType::Attack);
-        assert_eq!(restored.mission.queued, Some(MissionType::Guard));
-        assert_eq!(restored.mission.tick_counter, 99);
+        assert_eq!(
+            restored.mission.current(),
+            MissionId::from_known(MissionType::Attack)
+        );
+        assert_eq!(
+            restored.mission.queued(),
+            MissionId::from_known(MissionType::Guard)
+        );
+        assert_eq!(restored.mission.ai_counter(), 99);
     }
 }

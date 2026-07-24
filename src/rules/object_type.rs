@@ -523,6 +523,9 @@ pub struct ObjectType {
     /// None for non-factory buildings/units. Data-driven replacement for
     /// hardcoded building-name checks in production queue logic.
     pub factory: Option<FactoryType>,
+    /// Native BuildingType `WeaponsFactory=` classification used by Unit
+    /// ReadyToCommence. Independent from `Factory=` and `Naval=`.
+    pub weapons_factory: bool,
     /// Whether this building clones produced infantry (Cloning=yes in rules.ini).
     pub cloning: bool,
 
@@ -1111,6 +1114,7 @@ impl ObjectType {
                 .unwrap_or(0x80),
             construction_yard: section.get_bool("ConstructionYard").unwrap_or(false),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
+            weapons_factory: section.get_bool("WeaponsFactory").unwrap_or(false),
             cloning: section.get_bool("Cloning").unwrap_or(false),
             exit_coord: parse_exit_coord(section.get("ExitCoord")),
 
@@ -1794,6 +1798,68 @@ mod tests {
         assert!(barracks.has_rally_line());
         assert!(factory.has_rally_line());
         assert!(depot.has_rally_line());
+    }
+
+    #[test]
+    fn weapons_factory_parses_independently_from_factory_type() {
+        let ini = IniFile::from_str(
+            "[MISSING]\n\
+             [EXPLICIT_NO]\nWeaponsFactory=no\n\
+             [EXPLICIT_YES]\nWeaponsFactory=yes\n\
+             [FACTORY_ONLY]\nFactory=UnitType\n\
+             [WEAPONS_FACTORY_ONLY]\nWeaponsFactory=yes\n",
+        );
+
+        let parse = |id| {
+            ObjectType::from_ini_section(
+                id,
+                ini.section(id).expect("fixture section"),
+                ObjectCategory::Building,
+            )
+        };
+
+        assert!(!parse("MISSING").weapons_factory);
+        assert!(!parse("EXPLICIT_NO").weapons_factory);
+        assert!(parse("EXPLICIT_YES").weapons_factory);
+        assert_eq!(parse("FACTORY_ONLY").factory, Some(FactoryType::UnitType));
+        assert!(!parse("FACTORY_ONLY").weapons_factory);
+        assert_eq!(parse("WEAPONS_FACTORY_ONLY").factory, None);
+        assert!(parse("WEAPONS_FACTORY_ONLY").weapons_factory);
+    }
+
+    #[test]
+    fn weapons_factory_flag_includes_stock_land_factories_and_naval_yards() {
+        let base_text = std::fs::read_to_string("ini/rules.ini").expect("stock rules.ini missing");
+        let patch_text =
+            std::fs::read_to_string("ini/rulesmd.ini").expect("stock rulesmd.ini missing");
+        let mut merged = IniFile::from_str(&base_text);
+        merged.merge(&IniFile::from_str(&patch_text));
+
+        for id in ["GAWEAP", "NAWEAP", "GAYARD", "NAYARD", "YAWEAP", "YAYARD"] {
+            let object = ObjectType::from_ini_section(
+                id,
+                merged.section(id).expect("stock building section"),
+                ObjectCategory::Building,
+            );
+            assert!(
+                object.weapons_factory,
+                "{id} must retain WeaponsFactory=yes"
+            );
+        }
+
+        for id in ["GAPILE", "GAPOWR"] {
+            let object = ObjectType::from_ini_section(
+                id,
+                merged
+                    .section(id)
+                    .expect("stock non-weapons-factory section"),
+                ObjectCategory::Building,
+            );
+            assert!(
+                !object.weapons_factory,
+                "{id} must not be inferred as a weapons factory"
+            );
+        }
     }
 
     #[test]

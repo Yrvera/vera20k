@@ -111,7 +111,11 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// current-tree legacy-schema probe reproduces the prior value, record/replay
 /// equality remains exact, and all three absolute RNG pins are unchanged.
 const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 1952953649455887606;
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 5770877639486444278;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 5770877639486444278;
+// Snapshot/hash schema v29 adds the exact Mission/readiness state. Historical
+// probes and the absolute RNG pins below prove this one-time shift is hash
+// composition only; it remains a Rust regression ratchet, not gamemd evidence.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x5AE7_95B9_F380_92F3;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -382,9 +386,14 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     }
 
     assert_eq!(
-        rep.state_hash_without_lifecycle_v28(),
+        rep.state_hash_before_lifecycle_v28_and_mission_v29(),
         GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
-        "pre-v28 schema probe must reproduce the prior baseline; otherwise this is behavior drift"
+        "pre-v28/pre-v29 schema probe must reproduce the historical baseline"
+    );
+    assert_eq!(
+        rep.state_hash_without_mission_v29(),
+        GLOBAL_HARNESS_PRE_MISSION_V29_HASH,
+        "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
     );
     assert_eq!(
         final_hash, GLOBAL_HARNESS_FINAL_HASH,

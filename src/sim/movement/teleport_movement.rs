@@ -520,6 +520,7 @@ mod tests {
             deploy_facing: 0x80,
             construction_yard: false,
             factory: None,
+            weapons_factory: false,
             cloning: false,
             exit_coord: None,
             crushable: false,

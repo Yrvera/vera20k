@@ -17,7 +17,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::OrderIntent;
-use crate::sim::mission::MissionType;
+use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::pathfinding::PathGrid;
 use std::collections::BTreeMap;
 
@@ -104,7 +104,12 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// reproduces the prior value exactly; this is a Rust regression ratchet, not
 /// gamemd parity evidence.
 const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 17461624628486653208;
-const SLICE6_BASELINE_HASH: u64 = 3364793811093096139;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 3364793811093096139;
+// Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
+// suspended Target/falling state, and raw locomotor-ready inputs. The two
+// schema probes below must prove the shift is composition-only before updating
+// this live regression value.
+const SLICE6_BASELINE_HASH: u64 = 17647978103130620580;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -180,9 +185,14 @@ fn replay_hash_stable_through_slice6() {
     }
 
     assert_eq!(
-        sim.state_hash_without_lifecycle_v28(),
+        sim.state_hash_before_lifecycle_v28_and_mission_v29(),
         SLICE6_PRE_LIFECYCLE_V28_HASH,
-        "pre-v28 schema probe must reproduce the prior baseline; otherwise this is behavior drift"
+        "pre-v28/pre-v29 schema probe must reproduce the historical baseline"
+    );
+    assert_eq!(
+        sim.state_hash_without_mission_v29(),
+        SLICE6_PRE_MISSION_V29_HASH,
+        "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
     );
     let hash = sim.state_hash();
     assert_eq!(
@@ -195,9 +205,9 @@ fn replay_hash_stable_through_slice6() {
 
 #[test]
 fn slice6_move_command_retasks_via_mission_substrate_and_clears_state() {
-    // A Move command must route through the verb API: the mission substrate's
-    // `current` becomes Move (proving the verb ran — checked BEFORE any tick-tail
-    // shadow refresh) AND the legacy conflicting fields are cleared.
+    // A Move command must route through the compatibility boundary: the mission
+    // substrate's `current` becomes Move (checked BEFORE any tick-tail shadow
+    // refresh) AND the legacy conflicting fields are cleared.
     let rules = slice6_rules();
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let grid = PathGrid::new(64, 64);
@@ -234,9 +244,9 @@ fn slice6_move_command_retasks_via_mission_substrate_and_clears_state() {
 
     let e = sim.substrate.entities.get(1).expect("unit");
     assert_eq!(
-        e.mission.current,
-        MissionType::Move,
-        "verb API committed Move to the mission substrate (pre-refresh)"
+        e.mission.current(),
+        MissionId::from_known(MissionType::Move),
+        "compatibility retask committed Move to the mission substrate (pre-refresh)"
     );
     assert!(
         e.attack_target.is_none(),

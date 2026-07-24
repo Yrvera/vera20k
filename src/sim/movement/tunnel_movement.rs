@@ -325,6 +325,7 @@ mod tests {
     fn make_tunnel_loco() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Tunnel,
+            mission_ready_state: None,
             primary_kind: Some(LocomotorKind::Tunnel),
             piggyback: None,
             layer: MovementLayer::Ground,

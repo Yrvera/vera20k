@@ -100,7 +100,7 @@ mod tests {
     fn spawn(sim: &mut Simulation, id: u64, type_ref: &str, rx: u16, ry: u16, cat: EntityCategory) {
         let owner = sim.interner.intern("Americans");
         let tref = sim.interner.intern(type_ref);
-        let e = GameEntity::new(
+        let e = GameEntity::new_at_frame_zero_for_test(
             id,
             rx,
             ry,

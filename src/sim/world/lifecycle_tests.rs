@@ -18,7 +18,7 @@ use super::{
 fn insert_entity(sim: &mut Simulation, stable_id: u64, category: EntityCategory) {
     let owner = sim.interner.intern("Americans");
     let type_ref = sim.interner.intern("TEST");
-    let mut entity = GameEntity::new(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         stable_id,
         2,
         3,

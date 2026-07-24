@@ -76,7 +76,10 @@ use crate::sim::world::Simulation;
 // Bumped 27 -> 28: independent object-alive/limbo/cell lifecycle state,
 // lifecycle bookkeeping, and the ordered pending-delete queue are serialized and
 // hashed instead of being reconstructed from store/LogicVector presence.
-const SNAPSHOT_VERSION: u32 = 28;
+// Bumped 28 -> 29: exact native-width Mission state, category readiness leaves,
+// archived target/falling state, and raw locomotor-readiness inputs replace the
+// reduced Mission schema and are serialized + hashed.
+const SNAPSHOT_VERSION: u32 = 29;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -168,14 +171,14 @@ impl GameSnapshot {
     /// Checks the version field but NOT map/rules hashes — the caller decides
     /// policy on hash mismatches (warn vs reject).
     pub fn load(bytes: &[u8]) -> Result<GameSnapshot, SnapshotError> {
-        let snapshot: GameSnapshot = bincode::deserialize(bytes)?;
-        if snapshot.version != SNAPSHOT_VERSION {
+        let header: GameSnapshotHeader = bincode::deserialize(bytes)?;
+        if header.version != SNAPSHOT_VERSION {
             return Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                found: snapshot.version,
+                found: header.version,
             });
         }
-        Ok(snapshot)
+        Ok(bincode::deserialize(bytes)?)
     }
 
     /// Read only the header fields from a save file without deserializing the
@@ -419,8 +422,52 @@ mod tests {
         // Corrupt the version field (first 4 bytes in bincode little-endian).
         bytes[0] = 255;
 
-        let result = GameSnapshot::load(&bytes);
-        assert!(result.is_err(), "mismatched version should fail");
+        assert!(matches!(
+            GameSnapshot::load(&bytes),
+            Err(SnapshotError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                found: 255,
+            })
+        ));
+    }
+
+    #[test]
+    fn old_header_is_rejected_before_an_absent_body_is_decoded() {
+        let bytes = bincode::serialize(&GameSnapshotHeader {
+            version: SNAPSHOT_VERSION - 1,
+            map_hash: 1,
+            rules_hash: 2,
+            tick: 3,
+            save_timestamp: 4,
+            map_name: "old-layout".to_string(),
+        })
+        .expect("serialize old header only");
+
+        assert!(matches!(
+            GameSnapshot::load(&bytes),
+            Err(SnapshotError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                found,
+            }) if found == SNAPSHOT_VERSION - 1
+        ));
+    }
+
+    #[test]
+    fn current_header_with_missing_body_reports_deserialization_failure() {
+        let bytes = bincode::serialize(&GameSnapshotHeader {
+            version: SNAPSHOT_VERSION,
+            map_hash: 1,
+            rules_hash: 2,
+            tick: 3,
+            save_timestamp: 4,
+            map_name: "current-layout".to_string(),
+        })
+        .expect("serialize current header only");
+
+        assert!(matches!(
+            GameSnapshot::load(&bytes),
+            Err(SnapshotError::DeserializeFailed(_))
+        ));
     }
 
     /// Concurrent-slice ladder: radiation took 20 -> 21, ScenarioSession (SC-2)
@@ -430,11 +477,171 @@ mod tests {
     /// `damage_particle_live_until` `+0x308`-equivalent field) took 24 -> 25,
     /// per-house native AI difficulty took 25 -> 26, and scheduler-owned
     /// animation persistence took 26 -> 27, and independent serialized lifecycle
-    /// axes plus the pending-delete boundary took 27 -> 28. This pins it so a
-    /// later accidental bump is caught.
+    /// axes plus the pending-delete boundary took 27 -> 28, and exact Mission
+    /// state/readiness schema took 28 -> 29. This pins it so a later accidental
+    /// bump is caught.
     #[test]
-    fn snapshot_version_is_28() {
-        assert_eq!(super::SNAPSHOT_VERSION, 28);
+    fn snapshot_version_is_29() {
+        assert_eq!(super::SNAPSHOT_VERSION, 29);
+    }
+
+    #[test]
+    fn exact_mission_schema_round_trips_raw_ids_leaves_archives_and_locomotors() {
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::combat::TargetKind;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::mission::state::MissionTestFixture;
+        use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionLeafState};
+        use crate::sim::movement::locomotor::LocomotorState;
+        use crate::sim::movement::locomotor_ready::LocomotorReadyState;
+
+        let leaves = [
+            MissionLeafState::unit_raw_for_test(1, 2, 3, 4),
+            MissionLeafState::infantry_raw_for_test(5, 41),
+            MissionLeafState::aircraft_raw_for_test(6, 7, true),
+            MissionLeafState::building_raw_for_test(8),
+            MissionLeafState::unit_raw_for_test(9, 10, 11, 12),
+            MissionLeafState::infantry_raw_for_test(13, -1),
+        ];
+        let locomotor_inputs = [
+            LocomotorReadyState::Drive {
+                turning_active: true,
+                slot_moving: false,
+                head_to_nonnull: true,
+                owner_speed: -1,
+            },
+            LocomotorReadyState::Ship {
+                turning_active: false,
+                slot_moving: true,
+                head_to_nonnull: true,
+                owner_speed: 1,
+            },
+            LocomotorReadyState::Hover {
+                slot_moving: true,
+                speed_bits: 0x7ff8_0000_0000_0001,
+            },
+            LocomotorReadyState::Walk {
+                moving_byte: 255,
+                applied_speed_bits: 1,
+                destination_nonnull: true,
+            },
+            LocomotorReadyState::Teleport { state: 255 },
+            LocomotorReadyState::Jumpjet { state: -1 },
+        ];
+
+        let mut sim = Simulation::new();
+        for index in 0..6 {
+            let id = index as u64 + 1;
+            let mut entity = GameEntity::test_default(id, "MTNK", "Americans", 5, 5);
+            entity.mission_leaf = leaves[index];
+            entity.suspended_attack_target = Some(if index & 1 == 0 {
+                TargetKind::Entity(100 + id)
+            } else {
+                TargetKind::Cell(index as u16, (index + 1) as u16)
+            });
+            entity.set_object_is_falling_down_for_test(index as u8 + 1);
+            let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Drive);
+            locomotor.set_mission_ready_state_for_test(Some(locomotor_inputs[index]));
+            entity.locomotor = Some(locomotor);
+            if index == 0 {
+                entity.mission.apply_test_fixture(MissionTestFixture {
+                    current: MissionId::from_raw(i32::MIN),
+                    suspended: MissionId::from_raw(0x1234_5678),
+                    queued: MissionId::from_raw(i32::MAX),
+                    movement_bypass_latch: 0xa5,
+                    handler_state: 0x1122_3344,
+                    mission_start_frame: 0x5566_7788,
+                    ai_counter: 0x99aa_bbcc,
+                    dispatch_timer: MissionDispatchTimer::from_raw(-17, -29),
+                });
+            }
+            sim.substrate.entities.insert(entity);
+        }
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "mission-schema", 3);
+        let loaded = GameSnapshot::load(&bytes).expect("load exact Mission schema");
+
+        for index in 0..6 {
+            let entity = loaded
+                .sim
+                .substrate
+                .entities
+                .get(index as u64 + 1)
+                .expect("restored Mission fixture");
+            let id = index as u64 + 1;
+            let expected_suspended_target = Some(if index & 1 == 0 {
+                TargetKind::Entity(100 + id)
+            } else {
+                TargetKind::Cell(index as u16, (index + 1) as u16)
+            });
+            assert_eq!(entity.mission_leaf, leaves[index]);
+            assert_eq!(
+                entity.suspended_attack_target, expected_suspended_target,
+                "suspended TargetKind variant and payload must round-trip"
+            );
+            assert_eq!(
+                entity
+                    .locomotor
+                    .as_ref()
+                    .and_then(|locomotor| locomotor.mission_ready_state),
+                Some(locomotor_inputs[index])
+            );
+            assert_eq!(entity.object_is_falling_down, index as u8 + 1);
+        }
+
+        let first = loaded.sim.substrate.entities.get(1).unwrap();
+        assert_eq!(first.mission.current(), MissionId::from_raw(i32::MIN));
+        assert_eq!(first.mission.suspended(), MissionId::from_raw(0x1234_5678));
+        assert_eq!(first.mission.queued(), MissionId::from_raw(i32::MAX));
+        assert_eq!(
+            first.mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(-17, -29)
+        );
+    }
+
+    #[test]
+    fn entity_construction_frame_round_trips_as_dispatch_start() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::components::Health;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("MTNK");
+        let entity = GameEntity::new_at_frame(
+            1,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+            37,
+        );
+        sim.substrate.entities.insert(entity);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "frame-37", 0);
+        let loaded = GameSnapshot::load(&bytes).expect("load frame-37 entity");
+        assert_eq!(
+            loaded
+                .sim
+                .substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer()
+                .start_frame(),
+            37
+        );
     }
 
     #[test]

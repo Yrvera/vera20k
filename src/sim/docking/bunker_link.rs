@@ -8,7 +8,8 @@
 use crate::rules::ruleset::RuleSet;
 use crate::sim::docking::bunker_install::{BunkerRuntime, BunkerState};
 use crate::sim::game_entity::BunkerLink;
-use crate::sim::mission::{MissionType, verb};
+use crate::sim::mission::MissionType;
+use crate::sim::mission::compatibility::legacy_full_retask;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::radio::{RadioMessage, RadioPayload, transmit};
 use crate::sim::world::{
@@ -54,7 +55,7 @@ pub fn install_bunker_link(sim: &mut Simulation, building_id: u64, unit_id: u64)
         u.movement_target = None;
         u.facing_target = None;
         u.forced_drive_track = None;
-        verb::assign_mission(&mut u.mission, MissionType::Guard, now);
+        legacy_full_retask(&mut u.mission, MissionType::Guard, now);
     }
     // Techno Limbo broadcasts BREAK before Object Conceal removes Mark and
     // LogicVector membership. Reciprocal bunker state remains class-owned.
@@ -135,7 +136,7 @@ pub fn release_normal(
     // Preserve the class-specific release behavior independently of whether
     // the caller-owned placement attempt found or admitted a destination.
     if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
-        verb::assign_mission(&mut u.mission, MissionType::Move, now);
+        legacy_full_retask(&mut u.mission, MissionType::Move, now);
     }
     reset_bunker_idle(sim, building_id);
 }
@@ -319,6 +320,7 @@ mod tests {
     use crate::sim::components::Health;
     use crate::sim::docking::bunker_install::BunkerRuntime;
     use crate::sim::game_entity::GameEntity;
+    use crate::sim::mission::MissionId;
 
     fn rules() -> RuleSet {
         RuleSet::from_ini(&IniFile::from_str(
@@ -334,7 +336,7 @@ mod tests {
     fn spawn_bunker(sim: &mut Simulation, sid: u64, owner: &str) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern("NATBNK");
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             10,
             10,
@@ -358,7 +360,7 @@ mod tests {
     fn spawn_tank(sim: &mut Simulation, sid: u64, owner: &str, type_name: &str) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern(type_name);
-        let ge = GameEntity::new(
+        let ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             12,
             12,
@@ -408,7 +410,10 @@ mod tests {
         assert!(unit.lifecycle.object_alive);
         assert!(unit.lifecycle.in_limbo);
         assert!(!unit.lifecycle.cell_marked);
-        assert_eq!(unit.mission.current, MissionType::Guard);
+        assert_eq!(
+            unit.mission.current(),
+            MissionId::from_known(MissionType::Guard)
+        );
 
         let up = sim
             .sound_events
@@ -464,7 +469,10 @@ mod tests {
         assert!(unit.lifecycle.cell_marked);
         // anchor = building NW (10,10) + (-1,+1) = (9,11)
         assert_eq!((unit.position.rx, unit.position.ry), (9, 11));
-        assert_eq!(unit.mission.current, MissionType::Move);
+        assert_eq!(
+            unit.mission.current(),
+            MissionId::from_known(MissionType::Move)
+        );
         assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
         assert_eq!(down_sounds(&sim), 1, "one walls-down on normal eject");
     }
@@ -481,7 +489,11 @@ mod tests {
         assert!(unit.lifecycle.cell_marked);
         assert_eq!((unit.position.rx, unit.position.ry), (10, 10));
         assert_eq!(unit.facing, 0x80);
-        assert_eq!(unit.mission.current, MissionType::Guard, "no Move order");
+        assert_eq!(
+            unit.mission.current(),
+            MissionId::from_known(MissionType::Guard),
+            "no Move order"
+        );
         assert_eq!(down_sounds(&sim), 0, "sell teardown is silent");
     }
 

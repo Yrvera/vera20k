@@ -1696,6 +1696,7 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::house_state::HouseState;
     use crate::sim::miner::{Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase};
+    use crate::sim::mission::MissionId;
     use crate::sim::movement::locomotor::LocomotorState;
 
     fn amcv_move_rules() -> RuleSet {
@@ -1721,7 +1722,7 @@ mod tests {
         let type_ref = sim.interner.intern(type_id);
         let obj = rules.object(type_id).expect("object type");
         let health = obj.strength.clamp(0, u16::MAX as i32) as u16;
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             sid,
             20,
             20,
@@ -1864,7 +1865,7 @@ mod tests {
     fn spawn_miner(sim: &mut Simulation, sid: u64) {
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("HARV");
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             sid,
             20,
             20,
@@ -1888,7 +1889,7 @@ mod tests {
     fn spawn_refinery(sim: &mut Simulation, sid: u64, type_id: &str, rx: u16, ry: u16) {
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern(type_id);
-        let entity = GameEntity::new(
+        let entity = GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -1936,23 +1937,25 @@ mod tests {
     ) {
         let owner = sim.interner.intern(owner_name);
         let type_ref = sim.interner.intern(type_id);
-        sim.substrate.entities.insert(GameEntity::new(
-            sid,
-            rx,
-            ry,
-            0,
-            0,
-            owner,
-            Health {
-                current: 1000,
-                max: 1000,
-            },
-            type_ref,
-            EntityCategory::Structure,
-            0,
-            5,
-            false,
-        ));
+        sim.substrate
+            .entities
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                sid,
+                rx,
+                ry,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 1000,
+                    max: 1000,
+                },
+                type_ref,
+                EntityCategory::Structure,
+                0,
+                5,
+                false,
+            ));
     }
 
     #[test]
@@ -2121,7 +2124,7 @@ mod tests {
     fn spawn_bunker_struct(sim: &mut Simulation, sid: u64, owner: &str, rx: u16, ry: u16) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern("NATBNK");
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -2152,7 +2155,7 @@ mod tests {
     ) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern(type_name);
-        let ge = GameEntity::new(
+        let ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -2195,7 +2198,10 @@ mod tests {
         assert!(applied);
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::Approaching(2));
-        assert_eq!(unit.mission.current, MissionType::Enter);
+        assert_eq!(
+            unit.mission.current(),
+            MissionId::from_known(MissionType::Enter)
+        );
         let rt = sim
             .substrate
             .entities
@@ -2299,7 +2305,10 @@ mod tests {
         // Released at the anchor SW of the bunker (10,10) + (-1,+1) when no grid.
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!((unit.position.rx, unit.position.ry), (9, 11));
-        assert_eq!(unit.mission.current, MissionType::Move);
+        assert_eq!(
+            unit.mission.current(),
+            MissionId::from_known(MissionType::Move)
+        );
     }
 
     #[test]
@@ -2390,7 +2399,10 @@ mod tests {
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::None);
         assert!(unit.in_logic_vector, "occupant revealed on eject");
-        assert_eq!(unit.mission.current, MissionType::Move);
+        assert_eq!(
+            unit.mission.current(),
+            MissionId::from_known(MissionType::Move)
+        );
         assert_eq!(
             sim.bunker_wall_events.iter().filter(|e| !e.up).count(),
             1,

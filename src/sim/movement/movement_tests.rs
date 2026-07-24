@@ -1868,6 +1868,7 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
     use crate::util::fixed_math::SIM_ONE;
     LocomotorState {
         kind: LocomotorKind::Drive,
+        mission_ready_state: None,
         primary_kind: Some(LocomotorKind::Drive),
         piggyback: None,
         layer: MovementLayer::Ground,
@@ -2362,6 +2363,7 @@ use std::collections::BTreeMap;
 fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
     LocomotorState {
         kind: LocomotorKind::Drive,
+        mission_ready_state: None,
         primary_kind: Some(LocomotorKind::Drive),
         piggyback: None,
         layer,
@@ -2876,7 +2878,7 @@ fn multi_crossing_preserves_first_bridge_set_update() {
 /// Minimal hover mover: hover locomotor, straight eastward path, cell-center start.
 fn make_hover_mover(path: Vec<(u16, u16)>, sub_x: i32) -> GameEntity {
     let goal = *path.last().expect("non-empty path");
-    let mut entity = GameEntity::new(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         1,
         path[0].0,
         path[0].1,

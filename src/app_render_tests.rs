@@ -18,7 +18,7 @@ use crate::sim::world::Simulation;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn spawn_mobile(store: &mut EntityStore, sid: u64, x: f32, y: f32, owner: &str, selected: bool) {
-    let mut entity = GameEntity::new(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         sid,
         0,
         0,
@@ -140,7 +140,7 @@ fn test_box_additive_toggles_and_excludes_structures() {
     spawn_mobile(&mut store, 1, 90.0, 90.0, "Americans", true);
     spawn_mobile(&mut store, 2, 130.0, 90.0, "Americans", true);
     spawn_mobile(&mut store, 3, 170.0, 90.0, "Americans", false);
-    let mut building = GameEntity::new(
+    let mut building = GameEntity::new_at_frame_zero_for_test(
         4,
         0,
         0,
@@ -181,7 +181,7 @@ fn test_box_replace_can_clear_selection_when_empty() {
 #[test]
 fn test_click_selection_allows_visible_allied_units_for_local_owner() {
     let mut store = EntityStore::new();
-    let mut entity = GameEntity::new(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         7,
         11,
         10,
@@ -230,7 +230,7 @@ fn test_pick_enemy_target_ignores_hidden_entities() {
     let e1_id = sim.interner.intern("E1");
 
     let (hx, hy) = terrain::iso_to_screen(10, 10, 0);
-    let mut hidden = GameEntity::new(
+    let mut hidden = GameEntity::new_at_frame_zero_for_test(
         2,
         10,
         10,
@@ -260,7 +260,7 @@ fn test_pick_enemy_target_ignores_hidden_entities() {
     );
 
     let (vx, vy) = terrain::iso_to_screen(11, 10, 0);
-    let mut visible = GameEntity::new(
+    let mut visible = GameEntity::new_at_frame_zero_for_test(
         3,
         11,
         10,
@@ -305,7 +305,7 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
     let half_tile = terrain::TILE_WIDTH / 2.0;
     let (fsx, fsy) = terrain::iso_to_screen(5, 5, 0);
     let (friendly_sx, friendly_sy) = (fsx + half_tile, fsy);
-    let mut friendly = GameEntity::new(
+    let mut friendly = GameEntity::new_at_frame_zero_for_test(
         10,
         5,
         5,
@@ -328,7 +328,7 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
 
     let (esx, esy) = terrain::iso_to_screen(20, 5, 0);
     let (enemy_sx, enemy_sy) = (esx + half_tile, esy);
-    let mut enemy = GameEntity::new(
+    let mut enemy = GameEntity::new_at_frame_zero_for_test(
         11,
         20,
         5,

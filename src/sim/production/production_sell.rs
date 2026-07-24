@@ -986,7 +986,7 @@ mod tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("GAPOWR");
-        let mut building = GameEntity::new(
+        let mut building = GameEntity::new_at_frame_zero_for_test(
             1,
             10,
             10,

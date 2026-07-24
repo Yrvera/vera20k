@@ -436,7 +436,7 @@ mod tests {
     fn add_building(sim: &mut Simulation, id: u64, type_name: &str) {
         let owner = sim.interner.intern("Neutral");
         let type_ref = sim.interner.intern(type_name);
-        let entity = GameEntity::new(
+        let entity = GameEntity::new_at_frame_zero_for_test(
             id,
             0,
             0,

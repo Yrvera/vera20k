@@ -515,7 +515,7 @@ mod tests {
         };
         let terrain = ResolvedTerrainGrid::from_cells_with_tubes(3, 1, cells, vec![tube]);
         let mut entities = EntityStore::new();
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,
@@ -577,7 +577,7 @@ mod tests {
             vec![TubeFact::auto_low_bridge((0, 0), 2)],
         );
         let mut entities = EntityStore::new();
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,
@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn unit_tube_final_empty_ground_list_keeps_accumulated_z() {
         let tube = TubeFact::explicit((0, 0), (1, 0), 2, vec![2]);
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,
@@ -789,7 +789,7 @@ mod tests {
     #[test]
     fn unit_tube_final_blocked_ground_list_keeps_active_tube() {
         let tube = TubeFact::explicit((0, 0), (1, 0), 2, vec![2]);
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,

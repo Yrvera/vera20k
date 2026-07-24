@@ -79,7 +79,7 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
     let type_id = sim.interner.intern(type_str);
     let id = sim.substrate.next_stable_object_id;
     sim.substrate.next_stable_object_id += 1;
-    let e = GameEntity::new(
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -105,7 +105,7 @@ fn spawn_building(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
     let type_id = sim.interner.intern(type_str);
     let id = sim.substrate.next_stable_object_id;
     sim.substrate.next_stable_object_id += 1;
-    let e = GameEntity::new(
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,

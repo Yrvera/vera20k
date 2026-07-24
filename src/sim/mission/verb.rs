@@ -1,354 +1,520 @@
-//! Mission verb API — the pure dispatch surface over [`MissionCom`].
+//! Exact common Mission transitions over private [`MissionCom`] state.
 //!
-//! These are the Rust-native equivalents of the native mission queue/commence/
-//! override/restore operations. Every verb is a pure function of
-//! `(MissionCom, arg, now)` — no clock, no RNG, no float — so the scheduler is
-//! trivially deterministic and unit-testable in isolation. The `Simulation`
-//! wrappers (`mission::retask`) layer the legacy dock teardown on top.
-//!
-//! Slice 6 scope: the verbs write `MissionCom` in parallel with the still-
-//! authoritative `Option<T>` machines. The interrupt guards (Selling /
-//! Deliberate) and the `ready_to_commence` per-category hook are encoded from
-//! the verified predicate *structure*; the exact excluded-mission set and the
-//! busy byte-flag semantics carry V1 STILL-UNCHECKED residue and are traced
-//! before any *live* commence path relies on the gate.
-//!
-//! S3 TRAP (must resolve before the first live caller of the sentinel-reading
-//! verbs): `get_current_mission` / `is_busy` / `override_mission` treat
-//! `current == MissionType::None` as the idle sentinel, but since S3 an idle
-//! machine-less **Unit** projects `Guard` — in gamemd Guard IS the idle
-//! mission, and the native busy predicate uses byte flags, not a mission
-//! sentinel. These verbs currently have zero live callers (only
-//! `assign_mission` is wired); re-derive the idle/busy predicate from the
-//! traced byte-flag semantics before wiring commence/override live, or idle
-//! Units will read as busy and `override_mission` will suspend `Guard`.
+//! These functions model only the verified base Assign, Queue, Commence,
+//! Override, and Restore field semantics. Category wrappers own readiness,
+//! Aircraft policy, Target, and NavCom ordering. No base transition reads a
+//! clock, consumes RNG, allocates, or exposes a production-facing verb.
 
-use crate::map::entities::EntityCategory;
+use super::{MissionCom, MissionId};
 
-use super::{MissionCom, MissionType};
+const GUARD: MissionId = MissionId::from_raw(5);
+const SELLING: MissionId = MissionId::from_raw(19);
+const DELIBERATE: MissionId = MissionId::from_raw(28);
 
-/// The effective current mission. Falls back to the queued follow-up when no
-/// mission is committed (so a freshly-queued order reads as "what's next").
-#[inline]
-pub fn get_current_mission(com: &MissionCom) -> MissionType {
-    if com.current != MissionType::None {
-        com.current
-    } else {
-        com.queued.unwrap_or(MissionType::None)
-    }
-}
-
-/// True when a committed (non-idle) mission is active.
+/// Whether Queue passed its whole-function guard.
 ///
-/// V1 STILL-UNCHECKED: the native busy predicate also consults per-subclass
-/// byte flags + the locomotor idle latch. Slice 6 uses the minimal honest
-/// definition (idle ⇔ no committed mission); the richer predicate is folded in
-/// when a live commence path needs it.
-#[inline]
-pub fn is_busy(com: &MissionCom) -> bool {
-    com.current != MissionType::None
+/// `Continue` does not imply that Queue's mutation predicate wrote anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QueueContinuation {
+    OuterGuardBlocked,
+    Continue,
 }
 
-/// Whether a transition from `current` to `target` is blocked by an interrupt
-/// guard. Two hardcoded native guards:
-///   * `Selling` blocks **all** transitions — the sell is irreversible.
-///   * `Deliberate` (the guard-protected interrupt-wait) ignores a `Guard`
-///     interrupt only; other targets pass.
-#[inline]
-pub fn is_transition_blocked(current: MissionType, target: MissionType) -> bool {
-    match current {
-        MissionType::Selling => true,
-        MissionType::Deliberate => target == MissionType::Guard,
-        _ => false,
+/// Apply the common Assign transition.
+///
+/// Native Assign has only the Deliberate-to-Guard guard; Selling is allowed.
+pub(super) fn assign_base(state: &mut MissionCom, requested: MissionId, now: u32) {
+    if state.current() == DELIBERATE && requested == GUARD {
+        return;
     }
+    state.assign_transition(requested, now);
 }
 
-/// Force a fresh current mission: clears the queued/suspended interrupt stack
-/// and resets the dispatch timer. Bypasses the interrupt guards (force-promote,
-/// the `assign_mission` contract — only `queue_mission(commence)` consults the
-/// `ready_to_commence` hook).
-#[inline]
-pub fn assign_mission(com: &mut MissionCom, mission: MissionType, now: u32) {
-    com.current = mission;
-    com.queued = None;
-    com.suspended = None;
-    com.substate = 0;
-    com.timer.reset(now);
+/// Apply Queue's guard and conditional queue write.
+///
+/// Readiness and optional synchronous Commence belong to the category-aware
+/// caller and run only after this function returns `Continue`.
+pub(super) fn queue_base(state: &mut MissionCom, requested: MissionId) -> QueueContinuation {
+    let current = state.current();
+    if (current == DELIBERATE && requested == GUARD) || current == SELLING {
+        return QueueContinuation::OuterGuardBlocked;
+    }
+    if requested != MissionId::NONE
+        && !(current == requested
+            && (state.queued() == requested || state.queued() == MissionId::NONE))
+    {
+        state.write_queue_and_clear_b8(requested);
+    }
+    QueueContinuation::Continue
 }
 
-/// Queue a follow-up mission to commence after the current one. Respects the
-/// interrupt guard; returns `false` (no-op) when blocked.
-#[inline]
-pub fn queue_mission(com: &mut MissionCom, mission: MissionType) -> bool {
-    if is_transition_blocked(com.current, mission) {
+/// Promote a queued selector and apply the exact Commence reset set.
+pub(super) fn commence_base(state: &mut MissionCom, now: u32) -> bool {
+    if state.queued() == MissionId::NONE {
         return false;
     }
-    com.queued = Some(mission);
+    state.promote_queue(now);
     true
 }
 
-/// Promote the queued mission to current, resetting the dispatch timer.
-/// Returns `false` when nothing is queued.
-#[inline]
-pub fn commence_queued(com: &mut MissionCom, now: u32) -> bool {
-    match com.queued.take() {
-        Some(m) => {
-            com.current = m;
-            com.substate = 0;
-            com.timer.reset(now);
-            true
-        }
-        None => false,
+/// Apply the common Override transition.
+///
+/// The queued selector, when present, is copied to suspended and remains queued.
+pub(super) fn override_base(state: &mut MissionCom, requested: MissionId) {
+    let current = state.current();
+    if (current == DELIBERATE && requested == GUARD) || current == SELLING {
+        return;
     }
+    state.override_transition(requested);
 }
 
-/// Suspend the current mission and switch to `mission`, saving the prior intent
-/// for [`restore_mission`]. If a mission was queued, the override discards the
-/// current mission and saves the *queued* one (it is the pending intent);
-/// otherwise it saves the current mission. Respects the interrupt guard.
-#[inline]
-pub fn override_mission(com: &mut MissionCom, mission: MissionType, now: u32) -> bool {
-    if is_transition_blocked(com.current, mission) {
+/// Restore a suspended selector without resetting handler or timing state.
+pub(super) fn restore_base(state: &mut MissionCom) -> bool {
+    if state.suspended() == MissionId::NONE {
         return false;
     }
-    com.suspended = match com.queued.take() {
-        Some(queued) => Some(queued),
-        None => Some(com.current),
-    };
-    com.current = mission;
-    com.substate = 0;
-    com.timer.reset(now);
+    state.restore_transition();
     true
-}
-
-/// Restore a suspended mission to current, resetting the dispatch timer.
-/// Returns `false` when nothing is suspended.
-#[inline]
-pub fn restore_mission(com: &mut MissionCom, now: u32) -> bool {
-    match com.suspended.take() {
-        Some(m) => {
-            com.current = m;
-            com.substate = 0;
-            com.timer.reset(now);
-            true
-        }
-        None => false,
-    }
-}
-
-/// The four leaf entity categories that override the native commence predicate.
-/// (`Structure` maps to `Building`.)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReadyCategory {
-    Building,
-    Unit,
-    Infantry,
-    Aircraft,
-}
-
-impl From<EntityCategory> for ReadyCategory {
-    fn from(cat: EntityCategory) -> Self {
-        match cat {
-            EntityCategory::Structure => ReadyCategory::Building,
-            EntityCategory::Unit => ReadyCategory::Unit,
-            EntityCategory::Infantry => ReadyCategory::Infantry,
-            EntityCategory::Aircraft => ReadyCategory::Aircraft,
-        }
-    }
-}
-
-/// Inputs the per-category commence predicate reads. Slice 6 carries only the
-/// verified-structural fields; the full per-subclass busy byte-flags are V1
-/// STILL-UNCHECKED and added when a live commence path needs them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReadySnapshot {
-    pub category: ReadyCategory,
-    /// The locomotor is actively driving (native locomotor `+0x80` idle latch
-    /// is clear). A moving vehicle is not yet ready to commence a new mission.
-    pub is_driving: bool,
-}
-
-/// The per-`ReadyCategory` commence gate. The native base predicate is
-/// `return 1`; each leaf type overrides it. Slice 6 encodes the verified
-/// *structure* — base always-ready, a driving vehicle not-ready — and is
-/// exercised live only by the dock slices' `Queue_Mission` reserve path.
-#[inline]
-pub fn ready_to_commence(snap: &ReadySnapshot) -> bool {
-    match snap.category {
-        ReadyCategory::Unit => !snap.is_driving,
-        // Building / Infantry / Aircraft: base predicate until the per-type
-        // excluded-mission set is traced (V1 STILL-UNCHECKED).
-        _ => true,
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::mission::MissionTimer;
+    use crate::sim::mission::MissionDispatchTimer;
+    use crate::sim::mission::state::MissionTestFixture;
 
-    fn com_with(current: MissionType) -> MissionCom {
-        MissionCom {
+    const ATTACK: MissionId = MissionId::from_raw(1);
+    const MOVE: MissionId = MissionId::from_raw(2);
+    const HARVEST: MissionId = MissionId::from_raw(10);
+    const UNKNOWN_CURRENT: MissionId = MissionId::from_raw(0x1111_1111);
+    const UNKNOWN_SUSPENDED: MissionId = MissionId::from_raw(0x2222_2222);
+    const UNKNOWN_QUEUED: MissionId = MissionId::from_raw(0x3333_3333);
+    const UNKNOWN_REQUEST: MissionId = MissionId::from_raw(0x4444_4444);
+    const MOVEMENT_BYPASS_SENTINEL: u8 = 0xa5;
+    const HANDLER_STATE_SENTINEL: u32 = 0x1122_3344;
+    const MISSION_START_SENTINEL: u32 = 0x5566_7788;
+    const AI_COUNTER_SENTINEL: u32 = 0x99aa_bbcc;
+    const DISPATCH_START_SENTINEL: i32 = -17;
+    const DISPATCH_DELAY_SENTINEL: i32 = -29;
+
+    fn sentinel_fixture(current: MissionId, queued: MissionId) -> MissionTestFixture {
+        MissionTestFixture {
             current,
-            ..MissionCom::idle()
+            suspended: UNKNOWN_SUSPENDED,
+            queued,
+            movement_bypass_latch: MOVEMENT_BYPASS_SENTINEL,
+            handler_state: HANDLER_STATE_SENTINEL,
+            mission_start_frame: MISSION_START_SENTINEL,
+            ai_counter: AI_COUNTER_SENTINEL,
+            dispatch_timer: MissionDispatchTimer::from_raw(
+                DISPATCH_START_SENTINEL,
+                DISPATCH_DELAY_SENTINEL,
+            ),
+        }
+    }
+
+    fn state_from(fixture: MissionTestFixture) -> MissionCom {
+        let mut state = MissionCom::at_frame(0);
+        state.apply_test_fixture(fixture);
+        state
+    }
+
+    fn assert_all_fields(context: &str, actual: &MissionCom, expected: &MissionCom) {
+        assert_eq!(actual.current(), expected.current(), "{context}: current");
+        assert_eq!(
+            actual.suspended(),
+            expected.suspended(),
+            "{context}: suspended"
+        );
+        assert_eq!(actual.queued(), expected.queued(), "{context}: queued");
+        assert_eq!(
+            actual.movement_bypass_latch(),
+            expected.movement_bypass_latch(),
+            "{context}: movement bypass latch"
+        );
+        assert_eq!(
+            actual.handler_state(),
+            expected.handler_state(),
+            "{context}: handler state"
+        );
+        assert_eq!(
+            actual.mission_start_frame(),
+            expected.mission_start_frame(),
+            "{context}: mission start frame"
+        );
+        assert_eq!(
+            actual.ai_counter(),
+            expected.ai_counter(),
+            "{context}: AI counter"
+        );
+        assert_eq!(
+            actual.dispatch_timer().start_frame(),
+            expected.dispatch_timer().start_frame(),
+            "{context}: dispatch start frame"
+        );
+        assert_eq!(
+            actual.dispatch_timer().delay(),
+            expected.dispatch_timer().delay(),
+            "{context}: dispatch delay"
+        );
+    }
+
+    #[test]
+    fn mission_assign_base_deliberate_to_guard_is_fieldwise_noop() {
+        let fixture = sentinel_fixture(DELIBERATE, UNKNOWN_QUEUED);
+        let mut state = state_from(fixture);
+        let before = state;
+
+        assign_base(&mut state, GUARD, 0xdead_beef);
+
+        assert_all_fields("guarded Assign", &state, &before);
+    }
+
+    #[test]
+    fn mission_assign_base_resets_exact_fields_and_preserves_suspended() {
+        let now = 0xdead_beef;
+        let cases = [
+            ("Deliberate to non-Guard", DELIBERATE, ATTACK),
+            ("Selling remains assignable", SELLING, MOVE),
+            ("ordinary same mission", GUARD, GUARD),
+            ("unknown requested dword", MOVE, UNKNOWN_REQUEST),
+            (
+                "high bits prevent Deliberate guard",
+                MissionId::from_raw(0x1000_001c),
+                GUARD,
+            ),
+            (
+                "high requested bits prevent Guard target",
+                DELIBERATE,
+                MissionId::from_raw(0x1000_0005),
+            ),
+            (
+                "None remains a raw assignable selector",
+                DELIBERATE,
+                MissionId::NONE,
+            ),
+        ];
+
+        for (name, current, requested) in cases {
+            let fixture = sentinel_fixture(current, UNKNOWN_QUEUED);
+            let mut state = state_from(fixture);
+            let mut expected_fixture = fixture;
+            expected_fixture.current = requested;
+            expected_fixture.queued = MissionId::NONE;
+            expected_fixture.movement_bypass_latch = 0;
+            expected_fixture.handler_state = 0;
+            expected_fixture.mission_start_frame = now;
+            expected_fixture.ai_counter = 0;
+            expected_fixture.dispatch_timer = MissionDispatchTimer::at_frame(now);
+            let expected = state_from(expected_fixture);
+
+            assign_base(&mut state, requested, now);
+
+            assert_all_fields(name, &state, &expected);
         }
     }
 
     #[test]
-    fn slice6_assign_forces_clears_and_resets_timer() {
-        let mut com = com_with(MissionType::Guard);
-        com.queued = Some(MissionType::Attack);
-        com.suspended = Some(MissionType::Move);
-        com.timer = MissionTimer::armed(5, 99);
-        assign_mission(&mut com, MissionType::Harvest, 42);
-        assert_eq!(com.current, MissionType::Harvest);
-        assert_eq!(com.queued, None, "assign clears the queued follow-up");
-        assert_eq!(com.suspended, None, "assign clears the suspended stack");
-        // reset(now) == defer(now, 0): armed at `now`, zero duration → due next.
-        assert_eq!(com.timer.start_frame, 42);
-        assert_eq!(com.timer.duration, 0);
-    }
+    fn mission_queue_base_outer_guards_are_fieldwise_noops() {
+        let cases = [
+            ("Deliberate to Guard", DELIBERATE, GUARD),
+            ("Selling to Attack", SELLING, ATTACK),
+            ("Selling to None", SELLING, MissionId::NONE),
+        ];
 
-    #[test]
-    fn slice6_assign_force_promotes_past_selling_guard() {
-        // assign bypasses the interrupt guard (force-promote contract).
-        let mut com = com_with(MissionType::Selling);
-        assign_mission(&mut com, MissionType::Move, 1);
-        assert_eq!(com.current, MissionType::Move);
-    }
+        for (name, current, requested) in cases {
+            let fixture = sentinel_fixture(current, UNKNOWN_QUEUED);
+            let mut state = state_from(fixture);
+            let before = state;
 
-    #[test]
-    fn slice6_selling_blocks_all_transitions() {
-        assert!(is_transition_blocked(
-            MissionType::Selling,
-            MissionType::Move
-        ));
-        assert!(is_transition_blocked(
-            MissionType::Selling,
-            MissionType::Guard
-        ));
-        assert!(is_transition_blocked(
-            MissionType::Selling,
-            MissionType::Attack
-        ));
-    }
+            let continuation = queue_base(&mut state, requested);
 
-    #[test]
-    fn slice6_deliberate_blocks_only_guard_target() {
-        assert!(is_transition_blocked(
-            MissionType::Deliberate,
-            MissionType::Guard
-        ));
-        assert!(!is_transition_blocked(
-            MissionType::Deliberate,
-            MissionType::Attack
-        ));
-        assert!(!is_transition_blocked(
-            MissionType::Deliberate,
-            MissionType::Move
-        ));
-    }
-
-    #[test]
-    fn slice6_queue_and_override_respect_guard() {
-        let mut com = com_with(MissionType::Deliberate);
-        assert!(
-            !queue_mission(&mut com, MissionType::Guard),
-            "guard blocked"
-        );
-        assert_eq!(com.queued, None);
-        assert!(
-            !override_mission(&mut com, MissionType::Guard, 0),
-            "guard blocked"
-        );
-        assert_eq!(com.current, MissionType::Deliberate);
-        // A non-Guard target passes the Deliberate guard.
-        assert!(queue_mission(&mut com, MissionType::Attack));
-        assert_eq!(com.queued, Some(MissionType::Attack));
-    }
-
-    #[test]
-    fn slice6_override_without_queued_saves_current_then_restore() {
-        let mut com = com_with(MissionType::Guard);
-        assert!(override_mission(&mut com, MissionType::Attack, 7));
-        assert_eq!(com.current, MissionType::Attack);
-        assert_eq!(com.suspended, Some(MissionType::Guard), "saved current");
-        assert!(restore_mission(&mut com, 9));
-        assert_eq!(com.current, MissionType::Guard, "restored");
-        assert_eq!(com.suspended, None);
-        assert!(!restore_mission(&mut com, 9), "nothing left to restore");
-    }
-
-    #[test]
-    fn slice6_override_with_queued_discards_current_saves_queued() {
-        let mut com = com_with(MissionType::Guard);
-        com.queued = Some(MissionType::Harvest);
-        assert!(override_mission(&mut com, MissionType::Attack, 3));
-        assert_eq!(com.current, MissionType::Attack);
-        assert_eq!(
-            com.suspended,
-            Some(MissionType::Harvest),
-            "saved the queued intent, discarded current"
-        );
-        assert_eq!(com.queued, None);
-    }
-
-    #[test]
-    fn slice6_commence_queued_promotes_or_noops() {
-        let mut com = com_with(MissionType::None);
-        assert!(!commence_queued(&mut com, 0), "nothing queued");
-        com.queued = Some(MissionType::Move);
-        assert!(commence_queued(&mut com, 5));
-        assert_eq!(com.current, MissionType::Move);
-        assert_eq!(com.queued, None);
-        assert_eq!(com.timer.start_frame, 5);
-    }
-
-    #[test]
-    fn slice6_get_current_falls_back_to_queued() {
-        let mut com = com_with(MissionType::None);
-        assert_eq!(get_current_mission(&com), MissionType::None);
-        com.queued = Some(MissionType::Attack);
-        assert_eq!(
-            get_current_mission(&com),
-            MissionType::Attack,
-            "idle current falls back to the queued mission"
-        );
-        com.current = MissionType::Move;
-        assert_eq!(
-            get_current_mission(&com),
-            MissionType::Move,
-            "a committed current wins over queued"
-        );
-    }
-
-    #[test]
-    fn slice6_is_busy_tracks_committed_mission() {
-        assert!(!is_busy(&com_with(MissionType::None)));
-        assert!(is_busy(&com_with(MissionType::Attack)));
-    }
-
-    #[test]
-    fn slice6_ready_to_commence_base_true_unit_not_while_driving() {
-        // Base predicate (Building / Infantry / Aircraft): always ready.
-        for cat in [
-            ReadyCategory::Building,
-            ReadyCategory::Infantry,
-            ReadyCategory::Aircraft,
-        ] {
-            assert!(ready_to_commence(&ReadySnapshot {
-                category: cat,
-                is_driving: true,
-            }));
+            assert_eq!(
+                continuation,
+                QueueContinuation::OuterGuardBlocked,
+                "{name}: continuation"
+            );
+            assert_all_fields(name, &state, &before);
         }
-        // Unit: not ready while driving, ready when idle.
-        assert!(!ready_to_commence(&ReadySnapshot {
-            category: ReadyCategory::Unit,
-            is_driving: true,
-        }));
-        assert!(ready_to_commence(&ReadySnapshot {
-            category: ReadyCategory::Unit,
-            is_driving: false,
-        }));
+    }
+
+    #[test]
+    fn mission_queue_base_complete_write_predicate_matrix() {
+        let cases = [
+            (
+                "requested None with unequal current and queue",
+                ATTACK,
+                MOVE,
+                MissionId::NONE,
+                false,
+            ),
+            (
+                "requested None with equal current and empty queue",
+                MissionId::NONE,
+                MissionId::NONE,
+                MissionId::NONE,
+                false,
+            ),
+            (
+                "requested None with equal current and different queue",
+                MissionId::NONE,
+                MOVE,
+                MissionId::NONE,
+                false,
+            ),
+            (
+                "requested None with unequal current and equal queue",
+                ATTACK,
+                MissionId::NONE,
+                MissionId::NONE,
+                false,
+            ),
+            (
+                "equal current and empty queue",
+                ATTACK,
+                MissionId::NONE,
+                ATTACK,
+                false,
+            ),
+            (
+                "equal current and equal queue",
+                ATTACK,
+                ATTACK,
+                ATTACK,
+                false,
+            ),
+            (
+                "equal current and different queue",
+                ATTACK,
+                MOVE,
+                ATTACK,
+                true,
+            ),
+            (
+                "unequal current and empty queue",
+                ATTACK,
+                MissionId::NONE,
+                MOVE,
+                true,
+            ),
+            (
+                "unequal current and equal queue still clears B8",
+                ATTACK,
+                MOVE,
+                MOVE,
+                true,
+            ),
+            (
+                "unequal current and different queue",
+                ATTACK,
+                HARVEST,
+                MOVE,
+                true,
+            ),
+            (
+                "unknown dwords compare without normalization",
+                UNKNOWN_CURRENT,
+                UNKNOWN_QUEUED,
+                UNKNOWN_REQUEST,
+                true,
+            ),
+        ];
+
+        for (name, current, queued, requested, writes) in cases {
+            let fixture = sentinel_fixture(current, queued);
+            let mut state = state_from(fixture);
+            let mut expected_fixture = fixture;
+            if writes {
+                expected_fixture.queued = requested;
+                expected_fixture.movement_bypass_latch = 0;
+            }
+            let expected = state_from(expected_fixture);
+
+            let continuation = queue_base(&mut state, requested);
+
+            assert_eq!(
+                continuation,
+                QueueContinuation::Continue,
+                "{name}: continuation"
+            );
+            assert_all_fields(name, &state, &expected);
+        }
+    }
+
+    #[test]
+    fn mission_queue_base_uses_full_dword_guard_comparisons() {
+        let cases = [
+            (
+                "high current bits avoid Deliberate guard",
+                MissionId::from_raw(0x1000_001c),
+                GUARD,
+            ),
+            (
+                "high requested bits avoid Guard target",
+                DELIBERATE,
+                MissionId::from_raw(0x1000_0005),
+            ),
+            (
+                "high current bits avoid Selling guard",
+                MissionId::from_raw(0x1000_0013),
+                ATTACK,
+            ),
+        ];
+
+        for (name, current, requested) in cases {
+            let fixture = sentinel_fixture(current, UNKNOWN_QUEUED);
+            let mut state = state_from(fixture);
+            let mut expected_fixture = fixture;
+            expected_fixture.queued = requested;
+            expected_fixture.movement_bypass_latch = 0;
+            let expected = state_from(expected_fixture);
+
+            let continuation = queue_base(&mut state, requested);
+
+            assert_eq!(continuation, QueueContinuation::Continue, "{name}");
+            assert_all_fields(name, &state, &expected);
+        }
+    }
+
+    #[test]
+    fn mission_commence_base_empty_queue_is_fieldwise_noop() {
+        let fixture = sentinel_fixture(UNKNOWN_CURRENT, MissionId::NONE);
+        let mut state = state_from(fixture);
+        let before = state;
+
+        assert!(!commence_base(&mut state, 0xdead_beef));
+
+        assert_all_fields("empty Commence", &state, &before);
+    }
+
+    #[test]
+    fn mission_commence_base_promotes_raw_queue_and_resets_exact_fields() {
+        let now = 0xdead_beef;
+        let fixture = sentinel_fixture(UNKNOWN_CURRENT, UNKNOWN_QUEUED);
+        let mut state = state_from(fixture);
+        let mut expected_fixture = fixture;
+        expected_fixture.current = UNKNOWN_QUEUED;
+        expected_fixture.queued = MissionId::NONE;
+        expected_fixture.movement_bypass_latch = 0;
+        expected_fixture.handler_state = 0;
+        expected_fixture.mission_start_frame = now;
+        expected_fixture.ai_counter = 0;
+        expected_fixture.dispatch_timer = MissionDispatchTimer::at_frame(now);
+        let expected = state_from(expected_fixture);
+
+        assert!(commence_base(&mut state, now));
+
+        assert_all_fields("successful Commence", &state, &expected);
+    }
+
+    #[test]
+    fn mission_override_base_outer_guards_are_fieldwise_noops() {
+        let cases = [
+            ("Deliberate to Guard", DELIBERATE, GUARD),
+            ("Selling to Attack", SELLING, ATTACK),
+            ("Selling to None", SELLING, MissionId::NONE),
+        ];
+
+        for (name, current, requested) in cases {
+            let fixture = sentinel_fixture(current, UNKNOWN_QUEUED);
+            let mut state = state_from(fixture);
+            let before = state;
+
+            override_base(&mut state, requested);
+
+            assert_all_fields(name, &state, &before);
+        }
+    }
+
+    #[test]
+    fn mission_override_base_queue_present_suspends_queue_without_clearing_it() {
+        let fixture = sentinel_fixture(UNKNOWN_CURRENT, UNKNOWN_QUEUED);
+        let mut state = state_from(fixture);
+        let mut expected_fixture = fixture;
+        expected_fixture.current = UNKNOWN_REQUEST;
+        expected_fixture.suspended = UNKNOWN_QUEUED;
+        expected_fixture.movement_bypass_latch = 0;
+        let expected = state_from(expected_fixture);
+
+        override_base(&mut state, UNKNOWN_REQUEST);
+
+        assert_all_fields("queued Override", &state, &expected);
+    }
+
+    #[test]
+    fn mission_override_base_queue_absent_suspends_current_and_accepts_none() {
+        let fixture = sentinel_fixture(UNKNOWN_CURRENT, MissionId::NONE);
+        let mut state = state_from(fixture);
+        let mut expected_fixture = fixture;
+        expected_fixture.current = MissionId::NONE;
+        expected_fixture.suspended = UNKNOWN_CURRENT;
+        expected_fixture.movement_bypass_latch = 0;
+        let expected = state_from(expected_fixture);
+
+        override_base(&mut state, MissionId::NONE);
+
+        assert_all_fields("queue-absent Override", &state, &expected);
+    }
+
+    #[test]
+    fn mission_override_base_uses_full_dword_guard_comparisons() {
+        let cases = [
+            (
+                "high current bits avoid Deliberate guard",
+                MissionId::from_raw(0x1000_001c),
+                GUARD,
+            ),
+            (
+                "high requested bits avoid Guard target",
+                DELIBERATE,
+                MissionId::from_raw(0x1000_0005),
+            ),
+            (
+                "high current bits avoid Selling guard",
+                MissionId::from_raw(0x1000_0013),
+                ATTACK,
+            ),
+        ];
+
+        for (name, current, requested) in cases {
+            let fixture = sentinel_fixture(current, MissionId::NONE);
+            let mut state = state_from(fixture);
+            let mut expected_fixture = fixture;
+            expected_fixture.current = requested;
+            expected_fixture.suspended = current;
+            expected_fixture.movement_bypass_latch = 0;
+            let expected = state_from(expected_fixture);
+
+            override_base(&mut state, requested);
+
+            assert_all_fields(name, &state, &expected);
+        }
+    }
+
+    #[test]
+    fn mission_restore_base_empty_suspended_is_fieldwise_noop() {
+        let mut fixture = sentinel_fixture(UNKNOWN_CURRENT, UNKNOWN_QUEUED);
+        fixture.suspended = MissionId::NONE;
+        let mut state = state_from(fixture);
+        let before = state;
+
+        assert!(!restore_base(&mut state));
+
+        assert_all_fields("empty Restore", &state, &before);
+    }
+
+    #[test]
+    fn mission_restore_base_promotes_raw_suspended_and_preserves_other_fields() {
+        let fixture = sentinel_fixture(UNKNOWN_CURRENT, UNKNOWN_QUEUED);
+        let mut state = state_from(fixture);
+        let mut expected_fixture = fixture;
+        expected_fixture.current = UNKNOWN_SUSPENDED;
+        expected_fixture.suspended = MissionId::NONE;
+        expected_fixture.movement_bypass_latch = 0;
+        let expected = state_from(expected_fixture);
+
+        assert!(restore_base(&mut state));
+
+        assert_all_fields("successful Restore", &state, &expected);
     }
 }

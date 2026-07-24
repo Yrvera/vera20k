@@ -27,6 +27,8 @@ use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::ObjectType;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
 
+use super::locomotor_ready::LocomotorReadyState;
+
 /// Which spatial layer the unit currently occupies.
 ///
 /// Affects occupancy checks, rendering, and targeting. Ground units block
@@ -112,6 +114,11 @@ const FLY_CLIMB_RATE: SimFixed = SimFixed::lit("300");
 pub struct LocomotorState {
     /// Which locomotor class is currently active.
     pub kind: LocomotorKind,
+    /// Raw native inputs for the Mission ReadyToCommence locomotor virtual.
+    ///
+    /// `None` means the exact input producer has not been implemented; it must
+    /// never be interpreted as "stopped".
+    pub(crate) mission_ready_state: Option<LocomotorReadyState>,
     /// Primary locomotor class for this unit.
     ///
     /// `None` represents old serialized states and resolves to `kind`. New
@@ -263,6 +270,7 @@ impl LocomotorState {
 
         Self {
             kind,
+            mission_ready_state: None,
             primary_kind: Some(kind),
             piggyback: None,
             layer,
@@ -336,6 +344,7 @@ impl LocomotorState {
 
         Self {
             kind,
+            mission_ready_state: None,
             primary_kind: Some(kind),
             piggyback: None,
             layer,
@@ -366,6 +375,11 @@ impl LocomotorState {
             hover_throttle: SIM_ZERO,
             hover_bob_offset: SIM_ZERO,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_mission_ready_state_for_test(&mut self, state: Option<LocomotorReadyState>) {
+        self.mission_ready_state = state;
     }
 
     /// Whether this locomotor is in the ground family (Drive/Walk/Hover/Mech/Ship).

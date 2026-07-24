@@ -17,6 +17,7 @@ use crate::map::entities::EntityCategory;
 use crate::rules::particle_system_type::ParticleSystemBehavesLike;
 use crate::rules::ruleset::RuleSet;
 // `DispatchSlot` types the always-defined `UnitDispatchRecord`, so its import is non-gated.
+use crate::sim::mission::compatibility::legacy_unit_host_projection;
 use crate::sim::mission::dispatch::DispatchSlot;
 // `unit_dispatch_family` is consumed only by the gated record pass + proof below.
 #[cfg(any(test, debug_assertions))]
@@ -546,10 +547,8 @@ fn unit_techno_bracket(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) -
     // this per-object AI point. `current`/`substate` mirror `derived_mission`;
     // the verbs own `queued`/`suspended`/`timer`.
     if let Some(e) = sim.substrate.entities.get_mut(id) {
-        e.mission.tick_counter = e.mission.tick_counter.wrapping_add(1);
         let (current, substate) = e.derived_mission();
-        e.mission.current = current;
-        e.mission.substate = substate;
+        legacy_unit_host_projection(&mut e.mission, current, substate);
     }
     // Guard E (post-dispatch IsAlive): a mission commit cannot kill the Unit, so
     // this cannot fire yet; the structure is preserved for the S5 dispatch
@@ -862,7 +861,8 @@ mod tests {
     use crate::sim::docking::building_dock::{DockPhase, DockState};
     use crate::sim::game_entity::GameEntity;
     use crate::sim::miner::{Miner, MinerConfig, MinerKind};
-    use crate::sim::mission::MissionType;
+    use crate::sim::mission::state::MissionTestFixture;
+    use crate::sim::mission::{MissionCom, MissionId, MissionType};
 
     /// Build a test entity of a specific category (`test_default` makes a Unit).
     fn entity_of(id: u64, category: EntityCategory) -> GameEntity {
@@ -871,10 +871,32 @@ mod tests {
         e
     }
 
+    fn mission_test_fixture(mission: &MissionCom) -> MissionTestFixture {
+        MissionTestFixture {
+            current: mission.current(),
+            suspended: mission.suspended(),
+            queued: mission.queued(),
+            movement_bypass_latch: mission.movement_bypass_latch(),
+            handler_state: mission.handler_state(),
+            mission_start_frame: mission.mission_start_frame(),
+            ai_counter: mission.ai_counter(),
+            dispatch_timer: mission.dispatch_timer(),
+        }
+    }
+
+    fn update_mission_test_fixture(
+        mission: &mut MissionCom,
+        update: impl FnOnce(&mut MissionTestFixture),
+    ) {
+        let mut fixture = mission_test_fixture(mission);
+        update(&mut fixture);
+        mission.apply_test_fixture(fixture);
+    }
+
     #[test]
     fn object_ai_stage_commits_live_unit_mission() {
         // S4a (Option B): the stage AUTHORITATIVELY commits each live non-miner
-        // Unit's mission (+0xC4 tick_counter + derived_mission); non-Units are
+        // Unit's mission (+0xC4 ai_counter + derived_mission); non-Units are
         // untouched here (the Phase-9 tail projects them).
         let mut sim = Simulation::new();
         sim.substrate
@@ -897,12 +919,12 @@ mod tests {
         // The idle non-miner Unit committed Guard and ticked its counter once.
         assert_eq!(committed.iter().copied().collect::<Vec<_>>(), vec![1]);
         let u = sim.substrate.entities.get(1).unwrap();
-        assert_eq!(u.mission.current, MissionType::Guard);
-        assert_eq!(u.mission.tick_counter, 1);
+        assert_eq!(u.mission.current().known(), Some(MissionType::Guard));
+        assert_eq!(u.mission.ai_counter(), 1);
         // Non-Units are not committed by the host (tail owns them): counter at 0.
         for id in [2u64, 3, 4] {
             assert_eq!(
-                sim.substrate.entities.get(id).unwrap().mission.tick_counter,
+                sim.substrate.entities.get(id).unwrap().mission.ai_counter(),
                 0,
                 "non-Unit {id} must not be committed by the host"
             );
@@ -1028,14 +1050,14 @@ mod tests {
             .entities
             .insert(entity_of(1, EntityCategory::Unit));
         // A live non-miner Unit reaches the dispatch point and commits: +0xC4
-        // tick_counter + derived_mission (idle -> Guard).
+        // ai_counter + derived_mission (idle -> Guard).
         assert_eq!(
             unit_techno_bracket(&mut sim, 1, None),
             BracketReach::Committed
         );
         let u = sim.substrate.entities.get(1).unwrap();
-        assert_eq!(u.mission.tick_counter, 1);
-        assert_eq!(u.mission.current, MissionType::Guard);
+        assert_eq!(u.mission.ai_counter(), 1);
+        assert_eq!(u.mission.current().known(), Some(MissionType::Guard));
     }
 
     #[test]
@@ -1051,7 +1073,7 @@ mod tests {
             BracketReach::DiedInPre
         );
         assert_eq!(
-            sim.substrate.entities.get(1).unwrap().mission.tick_counter,
+            sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
             0
         );
     }
@@ -1069,7 +1091,7 @@ mod tests {
             BracketReach::MinerDeferred
         );
         assert_eq!(
-            sim.substrate.entities.get(1).unwrap().mission.tick_counter,
+            sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
             0
         );
     }
@@ -1199,7 +1221,10 @@ mod tests {
         // host's Phase-0 commit and can go stale (a unit retasked mid-tick), so a
         // stale committed value must NOT change what the shadow observes: an
         // in-scope move unit's decision is `Move` regardless of the stale commit.
-        sim.substrate.entities.get_mut(1).unwrap().mission.current = MissionType::Guard;
+        update_mission_test_fixture(
+            &mut sim.substrate.entities.get_mut(1).unwrap().mission,
+            |fixture| fixture.current = MissionId::from_known(MissionType::Guard),
+        );
         let mut seq = 0u32;
         let trace = unit_ai_shadow_step(&sim, 1, &mut seq).expect("still in scope");
         assert_eq!(
@@ -1372,8 +1397,8 @@ mod tests {
             "the scoped mover is committed by the host"
         );
         let u = sim.substrate.entities.get(1).unwrap();
-        assert_eq!(u.mission.current, MissionType::Move);
-        assert_eq!(u.mission.tick_counter, 1);
+        assert_eq!(u.mission.current().known(), Some(MissionType::Move));
+        assert_eq!(u.mission.ai_counter(), 1);
     }
 
     #[test]
@@ -1422,7 +1447,7 @@ mod tests {
     fn insert_s2_scoped_move_unit(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("TEST");
-        let mut e = GameEntity::new(
+        let mut e = GameEntity::new_at_frame_zero_for_test(
             id,
             rx,
             ry,
@@ -1458,8 +1483,8 @@ mod tests {
         let e = sim.substrate.entities.get(1).unwrap();
         assert!(e.movement_target.is_none(), "fixture must arrive on tick 1");
         assert_eq!(
-            e.mission.current,
-            MissionType::Move,
+            e.mission.current().known(),
+            Some(MissionType::Move),
             "arrival tick keeps Move"
         );
 
@@ -1468,8 +1493,8 @@ mod tests {
         // S3 idle→Guard: a machine-less idle Unit derives Guard (gamemd's
         // post-arrival idle mission), not the legacy None placeholder.
         assert_eq!(
-            e.mission.current,
-            MissionType::Guard,
+            e.mission.current().known(),
+            Some(MissionType::Guard),
             "post-arrival tick → Guard"
         );
     }
@@ -1492,17 +1517,23 @@ mod tests {
         sim.substrate.entities.get_mut(1).unwrap().dying = true;
         sim.refresh_mission_shadow();
         assert_eq!(
-            sim.substrate.entities.get(1).unwrap().mission.current,
-            MissionType::Guard,
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .current()
+                .known(),
+            Some(MissionType::Guard),
             "dying machine-less Unit projects Guard (uniform tail projection)"
         );
     }
 
-    /// S2: exactly one tick_counter increment per unit-tick — in-loop for a
+    /// S2: exactly one ai_counter increment per unit-tick — in-loop for a
     /// dispatched mover, tail for an idle (never-collected) unit. Double or
     /// zero count is permanent lockstep drift.
     #[test]
-    fn s2_tick_counter_increments_exactly_once() {
+    fn s2_ai_counter_increments_exactly_once() {
         let mut sim = Simulation::new();
         insert_s2_scoped_move_unit(&mut sim, 1, 5, 5); // dispatched on tick 1
         insert_s2_scoped_move_unit(&mut sim, 2, 8, 8);
@@ -1513,20 +1544,20 @@ mod tests {
 
         let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
         assert_eq!(
-            sim.substrate.entities.get(1).unwrap().mission.tick_counter,
+            sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
             1
         );
         assert_eq!(
-            sim.substrate.entities.get(2).unwrap().mission.tick_counter,
+            sim.substrate.entities.get(2).unwrap().mission.ai_counter(),
             1
         );
         let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
         assert_eq!(
-            sim.substrate.entities.get(1).unwrap().mission.tick_counter,
+            sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
             2
         );
         assert_eq!(
-            sim.substrate.entities.get(2).unwrap().mission.tick_counter,
+            sim.substrate.entities.get(2).unwrap().mission.ai_counter(),
             2
         );
     }
@@ -1545,8 +1576,8 @@ mod tests {
 
         let e = sim.substrate.entities.get(1).unwrap();
         assert_eq!(
-            e.mission.current,
-            MissionType::Move,
+            e.mission.current().known(),
+            Some(MissionType::Move),
             "precondition: divergent window"
         );
         assert!(e.movement_target.is_none());
@@ -1561,8 +1592,15 @@ mod tests {
             "load must trust serialized MissionCom"
         );
         assert_eq!(
-            restored.substrate.entities.get(1).unwrap().mission.current,
-            MissionType::Move,
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .current()
+                .known(),
+            Some(MissionType::Move),
         );
     }
 
@@ -1607,7 +1645,7 @@ ConditionRedSparkingProbability={red_prob}\nConditionYellowSparkingProbability={
     fn insert_cyborg_unit(sim: &mut Simulation, id: u64, current: u16, max: u16) {
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("CYB");
-        let e = GameEntity::new(
+        let e = GameEntity::new_at_frame_zero_for_test(
             id,
             5,
             5,
@@ -1799,7 +1837,7 @@ ConditionRedSparkingProbability=1.0\nConditionYellowSparkingProbability=1.0\n\n\
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("VEHCYB");
-        let e = GameEntity::new(
+        let e = GameEntity::new_at_frame_zero_for_test(
             1,
             5,
             5,

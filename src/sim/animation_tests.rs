@@ -243,7 +243,7 @@ fn make_test_interner() -> StringInterner {
 }
 
 fn make_infantry_entity(id: u64, facing: u8, interner: &mut StringInterner) -> GameEntity {
-    let mut e = GameEntity::new(
+    let mut e = GameEntity::new_at_frame_zero_for_test(
         id,
         0,
         0,

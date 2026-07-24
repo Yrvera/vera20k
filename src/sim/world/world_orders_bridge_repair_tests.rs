@@ -116,7 +116,7 @@ fn spawn_engineer(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let ty = sim.interner.intern("ENGI");
     let id = sim.substrate.next_stable_object_id;
     sim.substrate.next_stable_object_id += 1;
-    let e = GameEntity::new(
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -143,7 +143,7 @@ fn spawn_seal(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let ty = sim.interner.intern("GHOST");
     let id = sim.substrate.next_stable_object_id;
     sim.substrate.next_stable_object_id += 1;
-    let e = GameEntity::new(
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -170,7 +170,7 @@ fn spawn_cabhut(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let ty = sim.interner.intern("CABHUT");
     let id = sim.substrate.next_stable_object_id;
     sim.substrate.next_stable_object_id += 1;
-    let e = GameEntity::new(
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,

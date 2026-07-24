@@ -8,7 +8,7 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::intern;
 
 fn spawn_with_vision(store: &mut EntityStore, id: u64, owner: &str, rx: u16, ry: u16, range: u16) {
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -195,7 +195,7 @@ fn test_sight_capped_at_max_range() {
 fn test_veteran_sight_bonus() {
     let mut store = EntityStore::new();
     // Spawn veteran unit (veterancy >= 100) with base sight 5.
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -236,7 +236,7 @@ fn test_veteran_sight_bonus() {
 fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
     let mut store = EntityStore::new();
     // z=8, LeptonsPerSightIncrease=2000: bonus = 8*256/2000 = 1 (integer division).
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -276,7 +276,7 @@ fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
 #[test]
 fn test_elevation_sight_bonus_z0_gives_no_bonus() {
     let mut store = EntityStore::new();
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -315,7 +315,7 @@ fn test_elevation_sight_bonus_z0_gives_no_bonus() {
 fn test_elevation_sight_bonus_disabled_when_zero() {
     let mut store = EntityStore::new();
     // High z — would give large bonus if enabled.
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,

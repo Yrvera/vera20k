@@ -10,7 +10,8 @@
 //! also clears the aircraft dock phase), so they cannot be folded into a fixed
 //! teardown without diverging.
 
-use crate::sim::mission::{MissionType, verb};
+use crate::sim::mission::MissionType;
+use crate::sim::mission::compatibility::{legacy_current_only_retask, legacy_full_retask};
 use crate::sim::world::Simulation;
 
 /// Which dock-reservation teardown a retasking command performs.
@@ -65,10 +66,10 @@ impl Simulation {
     }
 
     /// Retask `id` onto a fresh `mission`: run the dock teardown, then commit the
-    /// mission to the substrate via [`verb::assign_mission`] (clears the queued/
-    /// suspended interrupt stack + resets the dispatch timer). Use for commands
-    /// that start a brand-new order (Move, Stop, RepairAtDepot, EnterTransport,
-    /// PlantC4, CaptureBuilding).
+    /// mission through the behavior-preserving compatibility boundary (clears
+    /// the queued/suspended interrupt stack + resets the dispatch timer). Use
+    /// for commands that start a brand-new order (Move, Stop, RepairAtDepot,
+    /// EnterTransport, PlantC4, CaptureBuilding).
     pub fn assign_mission_with_teardown(
         &mut self,
         id: u64,
@@ -78,7 +79,7 @@ impl Simulation {
         self.run_dock_teardown(id, teardown);
         let now = self.session.binary_frame;
         if let Some(e) = self.substrate.entities.get_mut(id) {
-            verb::assign_mission(&mut e.mission, mission, now);
+            legacy_full_retask(&mut e.mission, mission, now);
         }
     }
 
@@ -94,7 +95,7 @@ impl Simulation {
     ) {
         self.run_dock_teardown(id, teardown);
         if let Some(e) = self.substrate.entities.get_mut(id) {
-            e.mission.current = mission;
+            legacy_current_only_retask(&mut e.mission, mission);
         }
     }
 }

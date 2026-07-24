@@ -570,23 +570,24 @@ mod tests {
         let report = sim.interner.intern("GIAttack");
         let anim = sim.interner.intern("MGUN-NE");
         sim.effect_frame_counts.insert(anim, 4);
-        sim.entities_mut().insert(GameEntity::new(
-            1,
-            10,
-            11,
-            0,
-            0,
-            owner,
-            Health {
-                current: 125,
-                max: 125,
-            },
-            e1,
-            EntityCategory::Infantry,
-            0,
-            5,
-            false,
-        ));
+        sim.entities_mut()
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                1,
+                10,
+                11,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 125,
+                    max: 125,
+                },
+                e1,
+                EntityCategory::Infantry,
+                0,
+                5,
+                false,
+            ));
         let events = vec![SimFireEvent {
             attacker_id: 1,
             attacker_type_ref: e1,

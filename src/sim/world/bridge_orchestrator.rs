@@ -1614,6 +1614,7 @@ mod tests {
     fn drive_loco_on_bridge() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Drive,
+            mission_ready_state: None,
             primary_kind: Some(LocomotorKind::Drive),
             piggyback: None,
             layer: MovementLayer::Bridge,
@@ -1648,7 +1649,7 @@ mod tests {
 
     /// Insert a vehicle on the bridge deck at (5,5) with deck_level=3.
     fn spawn_deck_unit(sim: &mut Simulation) -> u64 {
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             5,
             5,
@@ -2229,7 +2230,7 @@ mod tests {
     fn drop_in_ignores_ground_layer_entities_at_destroyed_cell() {
         let mut sim = Simulation::new();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             5,
             5,
@@ -2300,7 +2301,7 @@ mod tests {
         let mut sim = Simulation::new();
 
         // Ground unit at (5,5): no locomotor => Ground layer, on_bridge=false.
-        let ground = GameEntity::new(
+        let ground = GameEntity::new_at_frame_zero_for_test(
             1,
             5,
             5,
@@ -2320,7 +2321,7 @@ mod tests {
         sim.substrate.entities.insert(ground);
 
         // Aircraft hovering over (5,5): Air layer, on_bridge=false.
-        let mut air = GameEntity::new(
+        let mut air = GameEntity::new_at_frame_zero_for_test(
             2,
             5,
             5,

@@ -855,40 +855,42 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         let factory_type = sim.interner.intern("GAWEAP");
         let tank_type = sim.interner.intern("MTNK");
-        sim.entities_mut().insert(GameEntity::new(
-            1,
-            10,
-            10,
-            0,
-            0,
-            owner,
-            Health {
-                current: 1000,
-                max: 1000,
-            },
-            factory_type,
-            EntityCategory::Structure,
-            0,
-            5,
-            false,
-        ));
-        sim.entities_mut().insert(GameEntity::new(
-            2,
-            11,
-            10,
-            0,
-            0,
-            owner,
-            Health {
-                current: 300,
-                max: 300,
-            },
-            tank_type,
-            EntityCategory::Unit,
-            0,
-            5,
-            true,
-        ));
+        sim.entities_mut()
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                1,
+                10,
+                10,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 1000,
+                    max: 1000,
+                },
+                factory_type,
+                EntityCategory::Structure,
+                0,
+                5,
+                false,
+            ));
+        sim.entities_mut()
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                2,
+                11,
+                10,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 300,
+                    max: 300,
+                },
+                tank_type,
+                EntityCategory::Unit,
+                0,
+                5,
+                true,
+            ));
 
         let producer_ids = selected_rally_producer_ids(&sim, &[2, 1], owner);
 

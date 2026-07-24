@@ -369,7 +369,7 @@ mod tests {
     fn spawn_bunker(sim: &mut Simulation, sid: u64) {
         let owner_id = sim.interner.intern("Americans");
         let type_id = sim.interner.intern("NATBNK");
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             10,
             10,
@@ -393,7 +393,7 @@ mod tests {
     fn spawn_tank_on(sim: &mut Simulation, sid: u64, rx: u16, ry: u16) {
         let owner_id = sim.interner.intern("Americans");
         let type_id = sim.interner.intern("TANK");
-        let ge = GameEntity::new(
+        let ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,

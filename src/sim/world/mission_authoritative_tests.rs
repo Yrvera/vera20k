@@ -5,7 +5,28 @@
 
 use super::Simulation;
 use crate::sim::game_entity::GameEntity;
-use crate::sim::mission::{MissionTimer, MissionType};
+use crate::sim::mission::state::MissionTestFixture;
+use crate::sim::mission::{MissionCom, MissionDispatchTimer, MissionId, MissionType};
+
+fn fixture_from(state: &MissionCom) -> MissionTestFixture {
+    MissionTestFixture {
+        current: state.current(),
+        suspended: state.suspended(),
+        queued: state.queued(),
+        movement_bypass_latch: state.movement_bypass_latch(),
+        handler_state: state.handler_state(),
+        mission_start_frame: state.mission_start_frame(),
+        ai_counter: state.ai_counter(),
+        dispatch_timer: state.dispatch_timer(),
+    }
+}
+
+fn edit_mission(sim: &mut Simulation, edit: impl FnOnce(&mut MissionTestFixture)) {
+    let entity = sim.substrate.entities.get_mut(1).expect("test entity");
+    let mut fixture = fixture_from(&entity.mission);
+    edit(&mut fixture);
+    entity.mission.apply_test_fixture(fixture);
+}
 
 fn two_sims() -> (Simulation, Simulation) {
     let mut a = Simulation::new();
@@ -27,7 +48,9 @@ fn two_sims() -> (Simulation, Simulation) {
 #[test]
 fn mission_current_changes_state_hash() {
     let (a, mut b) = two_sims();
-    b.substrate.entities.get_mut(1).unwrap().mission.current = MissionType::Attack;
+    edit_mission(&mut b, |fixture| {
+        fixture.current = MissionId::from_known(MissionType::Attack);
+    });
     assert_ne!(
         a.state_hash(),
         b.state_hash(),
@@ -38,44 +61,59 @@ fn mission_current_changes_state_hash() {
 #[test]
 fn mission_timer_and_substate_change_state_hash() {
     let (a, mut b) = two_sims();
-    // substate
-    b.substrate.entities.get_mut(1).unwrap().mission.substate = 7;
+    // The old reduced substate projects into the final full-width handler state.
+    edit_mission(&mut b, |fixture| fixture.handler_state = 7);
     assert_ne!(
         a.state_hash(),
         b.state_hash(),
-        "mission.substate must affect hash"
+        "mission.handler_state must affect hash"
     );
-    // reset substate -> back to equal -> then perturb the timer
-    b.substrate.entities.get_mut(1).unwrap().mission.substate = 0;
+    // Reset handler state -> back to equal -> then perturb the dispatch timer.
+    edit_mission(&mut b, |fixture| fixture.handler_state = 0);
     assert_eq!(
         a.state_hash(),
         b.state_hash(),
-        "substate reset restores equality"
+        "handler-state reset restores equality"
     );
-    b.substrate.entities.get_mut(1).unwrap().mission.timer = MissionTimer::armed(5, 30);
+    edit_mission(&mut b, |fixture| {
+        fixture.dispatch_timer = MissionDispatchTimer::from_raw(5, 30);
+    });
+    let dispatch_timer = b
+        .substrate
+        .entities
+        .get(1)
+        .expect("test entity")
+        .mission
+        .dispatch_timer();
+    assert_eq!(dispatch_timer.start_frame(), 5);
+    assert_eq!(dispatch_timer.delay(), 30);
     assert_ne!(
         a.state_hash(),
         b.state_hash(),
-        "mission.timer must affect hash"
+        "mission.dispatch_timer must affect hash"
     );
 }
 
 #[test]
 fn mission_queued_and_suspended_change_state_hash() {
     let (a, mut b) = two_sims();
-    b.substrate.entities.get_mut(1).unwrap().mission.queued = Some(MissionType::Guard);
+    edit_mission(&mut b, |fixture| {
+        fixture.queued = MissionId::from_known(MissionType::Guard);
+    });
     assert_ne!(
         a.state_hash(),
         b.state_hash(),
         "mission.queued must affect hash"
     );
-    b.substrate.entities.get_mut(1).unwrap().mission.queued = None;
+    edit_mission(&mut b, |fixture| fixture.queued = MissionId::NONE);
     assert_eq!(
         a.state_hash(),
         b.state_hash(),
         "queued reset restores equality"
     );
-    b.substrate.entities.get_mut(1).unwrap().mission.suspended = Some(MissionType::Move);
+    edit_mission(&mut b, |fixture| {
+        fixture.suspended = MissionId::from_known(MissionType::Move);
+    });
     assert_ne!(
         a.state_hash(),
         b.state_hash(),

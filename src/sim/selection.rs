@@ -199,7 +199,7 @@ mod tests {
 
     fn spawn_unit(store: &mut EntityStore, id: u64, owner: &str) -> u64 {
         let mut interner = StringInterner::new();
-        let e = GameEntity::new(
+        let e = GameEntity::new_at_frame_zero_for_test(
             id,
             0,
             0,

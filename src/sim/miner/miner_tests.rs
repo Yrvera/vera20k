@@ -113,7 +113,7 @@ fn spawn_miner(sim: &mut Simulation, sid: u64, kind: MinerKind, rx: u16, ry: u16
     };
     let owner_id = sim.interner.intern("Americans");
     let type_id_interned = sim.interner.intern(type_id);
-    let mut ge = GameEntity::new(
+    let mut ge = GameEntity::new_at_frame_zero_for_test(
         sid,
         rx,
         ry,
@@ -146,7 +146,7 @@ fn spawn_miner(sim: &mut Simulation, sid: u64, kind: MinerKind, rx: u16, ry: u16
 fn spawn_refinery(sim: &mut Simulation, sid: u64, rx: u16, ry: u16) {
     let owner_id = sim.interner.intern("Americans");
     let type_id = sim.interner.intern("GAREFN");
-    let ge = GameEntity::new(
+    let ge = GameEntity::new_at_frame_zero_for_test(
         sid,
         rx,
         ry,
@@ -184,7 +184,7 @@ fn spawn_structure_owned(
 ) {
     let owner_id = sim.interner.intern(owner);
     let type_id_interned = sim.interner.intern(type_id);
-    let ge = GameEntity::new(
+    let ge = GameEntity::new_at_frame_zero_for_test(
         sid,
         rx,
         ry,

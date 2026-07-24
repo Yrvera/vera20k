@@ -114,7 +114,7 @@ impl Simulation {
             let type_id = self.interner.intern(&map_ent.type_id);
 
             // Build the GameEntity with all required fields.
-            let mut ge = GameEntity::new(
+            let mut ge = GameEntity::new_at_frame(
                 stable_id,
                 map_ent.cell_x,
                 map_ent.cell_y,
@@ -127,6 +127,7 @@ impl Simulation {
                 map_ent.veterancy,
                 sight_range,
                 uses_voxel,
+                self.session.binary_frame,
             );
 
             if self.debug_event_logging {
@@ -294,7 +295,7 @@ impl Simulation {
         let owner_iid = self.interner.intern(owner);
         let type_iid = self.interner.intern(type_id);
 
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame(
             stable_id,
             rx,
             ry,
@@ -307,6 +308,7 @@ impl Simulation {
             0, // veterancy = rookie for production spawns
             sight_range,
             uses_voxel,
+            self.session.binary_frame,
         );
 
         if self.debug_event_logging {
@@ -434,7 +436,7 @@ impl Simulation {
         let owner_iid = self.interner.intern(owner);
         let type_iid = self.interner.intern(type_id);
 
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame(
             stable_id,
             rx,
             ry,
@@ -447,6 +449,7 @@ impl Simulation {
             0,
             sight_range,
             uses_voxel,
+            self.session.binary_frame,
         );
 
         if self.debug_event_logging {
