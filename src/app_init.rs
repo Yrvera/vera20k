@@ -13,8 +13,8 @@ use anyhow::Result;
 
 use crate::app_init_helpers::{
     build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas, load_art_ini,
-    load_rules_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env, spawn_entities,
-    theater_ext_for,
+    load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
+    spawn_entities, theater_ext_for,
 };
 use crate::app_list_maps::{load_map_by_name_or_path_with_assets, try_load_mmx};
 use crate::app_skirmish::{
@@ -528,14 +528,14 @@ pub(crate) fn load_map_from_initial(
                 })
         }
     };
-    let mut rules: Option<RuleSet> = Some(
-        load_rules_ini(
-            &asset_manager,
-            mode_override_ini.as_ref(),
-            Some(&map_data.ini),
-        )
-        .ok_or_else(|| anyhow::anyhow!("failed to load or validate merged game rules"))?,
-    );
+    let (loaded_rules, rules_ini) = load_rules_with_merged_ini(
+        &asset_manager,
+        mode_override_ini.as_ref(),
+        Some(&map_data.ini),
+    )
+    .ok_or_else(|| anyhow::anyhow!("failed to load or validate merged game rules"))?
+    .into_parts();
+    let mut rules: Option<RuleSet> = Some(loaded_rules);
     let art_result: Option<(ArtRegistry, IniFile)> = load_art_ini(&asset_manager);
     let (mut art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
         Some((reg, ini)) => (Some(reg), Some(ini)),
@@ -587,14 +587,6 @@ pub(crate) fn load_map_from_initial(
     progress.milestone(35);
     progress.milestone(45);
     let csf: Option<crate::assets::csf_file::CsfFile> = load_csf(&asset_manager);
-    let rules_ini: IniFile = asset_manager
-        .get_with_source("rulesmd.ini")
-        .or_else(|| asset_manager.get_with_source("rules.ini"))
-        .and_then(|(d, source)| {
-            log::info!("Raw rules INI from: {}", source);
-            IniFile::from_bytes(&d).ok()
-        })
-        .unwrap_or_else(|| IniFile::from_str(""));
     let overlay_registry: OverlayTypeRegistry =
         OverlayTypeRegistry::from_ini(&rules_ini, art_ini.as_ref());
 
