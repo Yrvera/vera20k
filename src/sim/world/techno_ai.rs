@@ -855,14 +855,28 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::tube_facts::TubeId;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::aircraft::AircraftMission;
     use crate::sim::combat::{AttackTarget, TargetKind};
-    use crate::sim::components::{DriveLocomotionRuntime, MovementTarget};
+    use crate::sim::components::{DriveLocomotionRuntime, MovementTarget, NavTargetRef};
     use crate::sim::docking::building_dock::{DockPhase, DockState};
     use crate::sim::game_entity::GameEntity;
     use crate::sim::miner::{Miner, MinerConfig, MinerKind};
     use crate::sim::mission::state::MissionTestFixture;
-    use crate::sim::mission::{MissionCom, MissionId, MissionType};
+    use crate::sim::mission::{
+        MissionCom, MissionControl, MissionDispatchTimer, MissionId, MissionType,
+    };
+    use crate::sim::movement::drive_track::begin_forced_turn_track;
+    use crate::sim::movement::locomotor::{
+        LocomotorState, MovementLayer, OverrideKind, OverrideLocomotor, PiggybackLocomotor,
+    };
+    use crate::sim::movement::tube_movement::{LowBridgeTubeMovementState, LowBridgeTubePhase};
+    use crate::sim::rng::SimRngLogicalState;
+    use crate::sim::snapshot::GameSnapshot;
+    use crate::sim::world::SimulationRngState;
+    use crate::util::fixed_math::SimFixed;
 
     /// Build a test entity of a specific category (`test_default` makes a Unit).
     fn entity_of(id: u64, category: EntityCategory) -> GameEntity {
@@ -1314,6 +1328,1517 @@ mod tests {
                 .collect()
         }
         assert_eq!(run(), run());
+    }
+
+    // ===== Checkpoint A — cloned ordinary-Drive host trace =====
+
+    const ORDINARY_DRIVE_HOST_ID: u64 = 41;
+    const STOCK_MOVE_RATE_FRAMES: u32 = 14;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ActiveGate {
+        GuardB,
+        Dispatch,
+        GuardE,
+        FootPostTechno,
+        FootPostProcess,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum UnitMoveByte {
+        Byte6e1,
+        Byte6e2,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum HostTraceEvent {
+        TechnoPreThroughRocking,
+        ActiveGate {
+            gate: ActiveGate,
+            pass: bool,
+        },
+        TechnoRemainingPre,
+        MissionAiCounter {
+            before: u32,
+            after: u32,
+        },
+        MissionDispatchEnter,
+        ObjectAiMarker,
+        DispatchTimerGate {
+            due: bool,
+        },
+        DispatchHealthGate {
+            pass: bool,
+        },
+        UnitMoveRead6e0 {
+            nonzero: bool,
+        },
+        UnitMoveClear6d2,
+        UnitMoveCheckSaved6e0 {
+            nonzero: bool,
+        },
+        UnitMoveCheck {
+            byte: UnitMoveByte,
+            nonzero: bool,
+        },
+        QueueMissionMarker {
+            mission_id: MissionId,
+            arg: u32,
+        },
+        UnitTrackerCheckMarker,
+        UnitTrackerRestartMarker,
+        FootMissionMove,
+        NavComCheck {
+            present: bool,
+        },
+        IsMovingCall {
+            moving: bool,
+        },
+        NullLocomotorInvariant,
+        OnArrivalMarker {
+            arg0: u32,
+            arg1: u32,
+        },
+        RateLookup {
+            mission: MissionType,
+            frames: u32,
+        },
+        ScenarioRandomRangedApi {
+            low: u32,
+            high: u32,
+            value: u32,
+            raw_advances: usize,
+        },
+        DispatchWriteStart {
+            frame: i32,
+        },
+        DispatchWriteScratchMarker,
+        DispatchWriteDelay {
+            delay: i32,
+        },
+        PassiveAcquireMarker,
+        BombMarker,
+        SlaveManagerMarker,
+        CaptureManagerMarker,
+        TechnoLatePostMarker,
+        FootPreProcessMarker,
+        FootProcessGate {
+            ordinal: u8,
+            pass: bool,
+        },
+        DriveProcessMarker,
+        FootLaterWorkMarker,
+        FootReturnMarker,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct HostTraceGates {
+        guard_b_active: bool,
+        dispatch_active: bool,
+        guard_e_active: bool,
+        foot_post_techno_active: bool,
+        foot_post_process_active: bool,
+        unit_move_bytes: [bool; 3],
+        tracker_needs_restart: bool,
+        is_moving: bool,
+        foot_process_gates: [bool; 5],
+        class_special_pre_foot_path: bool,
+        lifecycle_countdown_exit: bool,
+    }
+
+    impl HostTraceGates {
+        fn ordinary() -> Self {
+            Self {
+                guard_b_active: true,
+                dispatch_active: true,
+                guard_e_active: true,
+                foot_post_techno_active: true,
+                foot_post_process_active: true,
+                unit_move_bytes: [false; 3],
+                tracker_needs_restart: false,
+                is_moving: true,
+                foot_process_gates: [true; 5],
+                class_special_pre_foot_path: false,
+                lifecycle_countdown_exit: false,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ClonedHostTrace {
+        events: Vec<HostTraceEvent>,
+        mission_after: MissionCom,
+        scenario_rng_after: SimRngLogicalState,
+        is_moving_calls: u8,
+        move_random_ranged_calls: u8,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HostTraceError {
+        MissingEntity,
+        NonUnit,
+        NonMoveStoredMission,
+        MinerPath,
+        DockPath,
+        AircraftPath,
+        SpecialLocomotorPath,
+        ActiveTube,
+        ForcedTrack,
+        ClassSpecialPath,
+        LifecyclePath,
+        MissingDriveRuntime,
+        StockMoveRate { actual: u32 },
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct LiveHostWitness {
+        state_hash: u64,
+        rng_state: SimulationRngState,
+        mission: Option<MissionCom>,
+        snapshot: Vec<u8>,
+        occupancy_debug: String,
+        occupancy_generation: u64,
+        occupied_cell_count: usize,
+        event_lengths: [usize; 6],
+    }
+
+    fn stock_move_control() -> MissionControl {
+        MissionControl::from_ini(&IniFile::from_str("[Move]\nRate=.016\n"))
+    }
+
+    fn ordinary_drive_host_sim(seed: u64) -> Simulation {
+        let mut sim = Simulation::with_seed(seed);
+        let mut entity = entity_of(ORDINARY_DRIVE_HOST_ID, EntityCategory::Unit);
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        entity.drive_locomotion = Some(DriveLocomotionRuntime::default());
+        entity.navigation.nav_com = Some(NavTargetRef::cell(8, 8));
+        update_mission_test_fixture(&mut entity.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Move);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        sim.substrate.entities.insert(entity);
+        sim.set_logic_order_for_test(vec![ORDINARY_DRIVE_HOST_ID]);
+        sim
+    }
+
+    fn capture_live_host_witness(sim: &Simulation, id: u64) -> LiveHostWitness {
+        LiveHostWitness {
+            state_hash: sim.state_hash(),
+            rng_state: sim.rng_state(),
+            mission: sim.substrate.entities.get(id).map(|entity| entity.mission),
+            snapshot: GameSnapshot::save(sim, 0, 0, "checkpoint_a_host_trace", 0),
+            occupancy_debug: format!("{:?}", sim.occupancy()),
+            occupancy_generation: sim.occupancy().generation(),
+            occupied_cell_count: sim.occupancy().occupied_cell_count(),
+            event_lengths: [
+                sim.sound_events.len(),
+                sim.fire_events.len(),
+                sim.pending_smudge_requests.len(),
+                sim.bale_events.len(),
+                sim.bunker_wall_events.len(),
+                sim.world_effects.len(),
+            ],
+        }
+    }
+
+    fn validate_ordinary_drive_host_entity(
+        entity: &GameEntity,
+        gates: HostTraceGates,
+    ) -> Result<(), HostTraceError> {
+        if entity.category == EntityCategory::Aircraft || entity.aircraft_mission.is_some() {
+            return Err(HostTraceError::AircraftPath);
+        }
+        if entity.category != EntityCategory::Unit {
+            return Err(HostTraceError::NonUnit);
+        }
+        if entity.mission.current() != MissionId::from_known(MissionType::Move) {
+            return Err(HostTraceError::NonMoveStoredMission);
+        }
+        if entity.miner.is_some() {
+            return Err(HostTraceError::MinerPath);
+        }
+        if entity.dock_state.is_some() {
+            return Err(HostTraceError::DockPath);
+        }
+        if entity.low_bridge_tube_state.is_some()
+            || entity
+                .drive_locomotion
+                .as_ref()
+                .is_some_and(|drive| drive.active_tube.is_some())
+        {
+            return Err(HostTraceError::ActiveTube);
+        }
+        if entity.forced_drive_track.is_some() {
+            return Err(HostTraceError::ForcedTrack);
+        }
+        if gates.class_special_pre_foot_path {
+            return Err(HostTraceError::ClassSpecialPath);
+        }
+        if gates.lifecycle_countdown_exit {
+            return Err(HostTraceError::LifecyclePath);
+        }
+        if entity.teleport_state.is_some()
+            || entity.tunnel_state.is_some()
+            || entity.rocket_state.is_some()
+            || entity.homing_state.is_some()
+            || entity.droppod_state.is_some()
+            || entity.parachute_state.is_some()
+        {
+            return Err(HostTraceError::SpecialLocomotorPath);
+        }
+
+        let locomotor = entity
+            .locomotor
+            .as_ref()
+            .ok_or(HostTraceError::SpecialLocomotorPath)?;
+        if locomotor.active_kind() != LocomotorKind::Drive
+            || locomotor.primary_kind() != LocomotorKind::Drive
+            || locomotor.piggyback.is_some()
+            || locomotor.is_overridden()
+        {
+            return Err(HostTraceError::SpecialLocomotorPath);
+        }
+        if entity.drive_locomotion.is_none() && entity.navigation.nav_com.is_some() {
+            return Err(HostTraceError::MissingDriveRuntime);
+        }
+        Ok(())
+    }
+
+    fn finish_cloned_host_trace(
+        events: Vec<HostTraceEvent>,
+        entity: &GameEntity,
+        scenario_rng: &crate::sim::rng::SimRng,
+        is_moving_calls: u8,
+        move_random_ranged_calls: u8,
+    ) -> ClonedHostTrace {
+        ClonedHostTrace {
+            events,
+            mission_after: entity.mission,
+            scenario_rng_after: scenario_rng.logical_state(),
+            is_moving_calls,
+            move_random_ranged_calls,
+        }
+    }
+
+    fn draw_cloned_move_jitter(rng: &mut crate::sim::rng::SimRng) -> (u32, usize) {
+        let mut probe = rng.clone();
+        let value = rng.next_range_u32_inclusive(0, 2);
+        let mut raw_advances = 0usize;
+        let probe_value = loop {
+            raw_advances += 1;
+            let candidate = probe.next_u32() & 3;
+            if candidate <= 2 {
+                break candidate;
+            }
+        };
+        assert_eq!(
+            probe_value, value,
+            "the raw probe must reproduce the ranged result"
+        );
+        assert_eq!(
+            probe.logical_state(),
+            rng.logical_state(),
+            "the raw probe must reproduce the complete ranged-call RNG state"
+        );
+        (value, raw_advances)
+    }
+
+    fn trace_cloned_ordinary_drive_host(
+        sim: &Simulation,
+        id: u64,
+        mission_control: &MissionControl,
+        native_frame: u32,
+        gates: HostTraceGates,
+    ) -> Result<ClonedHostTrace, HostTraceError> {
+        let source = sim
+            .substrate
+            .entities
+            .get(id)
+            .ok_or(HostTraceError::MissingEntity)?;
+        validate_ordinary_drive_host_entity(source, gates)?;
+        let move_rate = mission_control.rate_frames(MissionType::Move);
+        if move_rate != STOCK_MOVE_RATE_FRAMES {
+            return Err(HostTraceError::StockMoveRate { actual: move_rate });
+        }
+
+        let mut entity = source.clone();
+        let mut scenario_rng = sim.clone_scenario_rng();
+        let mut events = Vec::new();
+        let mut is_moving_calls = 0u8;
+        let mut move_random_ranged_calls = 0u8;
+
+        events.push(HostTraceEvent::TechnoPreThroughRocking);
+        events.push(HostTraceEvent::ActiveGate {
+            gate: ActiveGate::GuardB,
+            pass: gates.guard_b_active,
+        });
+        if !gates.guard_b_active {
+            events.push(HostTraceEvent::ActiveGate {
+                gate: ActiveGate::FootPostTechno,
+                pass: false,
+            });
+            events.push(HostTraceEvent::FootReturnMarker);
+            return Ok(finish_cloned_host_trace(
+                events,
+                &entity,
+                &scenario_rng,
+                is_moving_calls,
+                move_random_ranged_calls,
+            ));
+        }
+
+        events.push(HostTraceEvent::TechnoRemainingPre);
+        let ai_counter_before = entity.mission.ai_counter();
+        update_mission_test_fixture(&mut entity.mission, |fixture| {
+            fixture.ai_counter = ai_counter_before.wrapping_add(1);
+        });
+        events.push(HostTraceEvent::MissionAiCounter {
+            before: ai_counter_before,
+            after: entity.mission.ai_counter(),
+        });
+        events.push(HostTraceEvent::MissionDispatchEnter);
+        events.push(HostTraceEvent::ObjectAiMarker);
+        events.push(HostTraceEvent::ActiveGate {
+            gate: ActiveGate::Dispatch,
+            pass: gates.dispatch_active,
+        });
+
+        let dispatch_inactive = !gates.dispatch_active;
+        let mut handler_delay: Option<i32> = None;
+        if gates.dispatch_active {
+            let due = entity.mission.dispatch_timer().due(native_frame);
+            events.push(HostTraceEvent::DispatchTimerGate { due });
+            if due {
+                let health_pass = entity.health.current > 0;
+                events.push(HostTraceEvent::DispatchHealthGate { pass: health_pass });
+                if health_pass {
+                    let byte6e0 = gates.unit_move_bytes[0];
+                    events.push(HostTraceEvent::UnitMoveRead6e0 { nonzero: byte6e0 });
+                    events.push(HostTraceEvent::UnitMoveClear6d2);
+                    events.push(HostTraceEvent::UnitMoveCheckSaved6e0 { nonzero: byte6e0 });
+
+                    let queue_guard = if byte6e0 {
+                        true
+                    } else {
+                        let byte6e1 = gates.unit_move_bytes[1];
+                        events.push(HostTraceEvent::UnitMoveCheck {
+                            byte: UnitMoveByte::Byte6e1,
+                            nonzero: byte6e1,
+                        });
+                        if byte6e1 {
+                            true
+                        } else {
+                            let byte6e2 = gates.unit_move_bytes[2];
+                            events.push(HostTraceEvent::UnitMoveCheck {
+                                byte: UnitMoveByte::Byte6e2,
+                                nonzero: byte6e2,
+                            });
+                            byte6e2
+                        }
+                    };
+
+                    if queue_guard {
+                        events.push(HostTraceEvent::QueueMissionMarker {
+                            mission_id: MissionId::from_known(MissionType::Guard),
+                            arg: 0,
+                        });
+                        handler_delay = Some(1);
+                    } else {
+                        events.push(HostTraceEvent::UnitTrackerCheckMarker);
+                        if gates.tracker_needs_restart {
+                            events.push(HostTraceEvent::UnitTrackerRestartMarker);
+                        }
+                        events.push(HostTraceEvent::FootMissionMove);
+                        let nav_com_present = entity.navigation.nav_com.is_some();
+                        events.push(HostTraceEvent::NavComCheck {
+                            present: nav_com_present,
+                        });
+
+                        if !nav_com_present && entity.drive_locomotion.is_none() {
+                            events.push(HostTraceEvent::NullLocomotorInvariant);
+                            return Ok(finish_cloned_host_trace(
+                                events,
+                                &entity,
+                                &scenario_rng,
+                                is_moving_calls,
+                                move_random_ranged_calls,
+                            ));
+                        }
+
+                        let stopped_arrival = if nav_com_present {
+                            false
+                        } else {
+                            is_moving_calls = is_moving_calls.wrapping_add(1);
+                            events.push(HostTraceEvent::IsMovingCall {
+                                moving: gates.is_moving,
+                            });
+                            !gates.is_moving && entity.mission.queued() == MissionId::NONE
+                        };
+
+                        if stopped_arrival {
+                            events.push(HostTraceEvent::OnArrivalMarker { arg0: 0, arg1: 1 });
+                            handler_delay = Some(1);
+                        } else {
+                            events.push(HostTraceEvent::RateLookup {
+                                mission: MissionType::Move,
+                                frames: move_rate,
+                            });
+                            let (jitter, raw_advances) = draw_cloned_move_jitter(&mut scenario_rng);
+                            move_random_ranged_calls = move_random_ranged_calls.wrapping_add(1);
+                            events.push(HostTraceEvent::ScenarioRandomRangedApi {
+                                low: 0,
+                                high: 2,
+                                value: jitter,
+                                raw_advances,
+                            });
+                            handler_delay = Some((move_rate + jitter) as i32);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(delay) = handler_delay {
+            events.push(HostTraceEvent::DispatchWriteStart {
+                frame: native_frame as i32,
+            });
+            events.push(HostTraceEvent::DispatchWriteScratchMarker);
+            events.push(HostTraceEvent::DispatchWriteDelay { delay });
+            update_mission_test_fixture(&mut entity.mission, |fixture| {
+                fixture.dispatch_timer = MissionDispatchTimer::from_raw(native_frame as i32, delay);
+            });
+        }
+
+        events.push(HostTraceEvent::PassiveAcquireMarker);
+        events.push(HostTraceEvent::BombMarker);
+        events.push(HostTraceEvent::SlaveManagerMarker);
+        events.push(HostTraceEvent::CaptureManagerMarker);
+        let guard_e_active = !dispatch_inactive && gates.guard_e_active;
+        events.push(HostTraceEvent::ActiveGate {
+            gate: ActiveGate::GuardE,
+            pass: guard_e_active,
+        });
+        if !guard_e_active {
+            events.push(HostTraceEvent::ActiveGate {
+                gate: ActiveGate::FootPostTechno,
+                pass: false,
+            });
+            events.push(HostTraceEvent::FootReturnMarker);
+            return Ok(finish_cloned_host_trace(
+                events,
+                &entity,
+                &scenario_rng,
+                is_moving_calls,
+                move_random_ranged_calls,
+            ));
+        }
+
+        events.push(HostTraceEvent::TechnoLatePostMarker);
+        events.push(HostTraceEvent::ActiveGate {
+            gate: ActiveGate::FootPostTechno,
+            pass: gates.foot_post_techno_active,
+        });
+        if !gates.foot_post_techno_active {
+            events.push(HostTraceEvent::FootReturnMarker);
+            return Ok(finish_cloned_host_trace(
+                events,
+                &entity,
+                &scenario_rng,
+                is_moving_calls,
+                move_random_ranged_calls,
+            ));
+        }
+
+        events.push(HostTraceEvent::FootPreProcessMarker);
+        for (index, pass) in gates.foot_process_gates.into_iter().enumerate() {
+            events.push(HostTraceEvent::FootProcessGate {
+                ordinal: index as u8 + 1,
+                pass,
+            });
+            if !pass {
+                events.push(HostTraceEvent::FootLaterWorkMarker);
+                events.push(HostTraceEvent::FootReturnMarker);
+                return Ok(finish_cloned_host_trace(
+                    events,
+                    &entity,
+                    &scenario_rng,
+                    is_moving_calls,
+                    move_random_ranged_calls,
+                ));
+            }
+        }
+
+        if matches!(
+            process_drive_locomotion_shell(&entity),
+            DriveProcessOutcome::Processed
+        ) {
+            events.push(HostTraceEvent::DriveProcessMarker);
+        } else {
+            events.push(HostTraceEvent::NullLocomotorInvariant);
+            return Ok(finish_cloned_host_trace(
+                events,
+                &entity,
+                &scenario_rng,
+                is_moving_calls,
+                move_random_ranged_calls,
+            ));
+        }
+
+        events.push(HostTraceEvent::ActiveGate {
+            gate: ActiveGate::FootPostProcess,
+            pass: gates.foot_post_process_active,
+        });
+        if gates.foot_post_process_active {
+            events.push(HostTraceEvent::FootLaterWorkMarker);
+        }
+        events.push(HostTraceEvent::FootReturnMarker);
+        Ok(finish_cloned_host_trace(
+            events,
+            &entity,
+            &scenario_rng,
+            is_moving_calls,
+            move_random_ranged_calls,
+        ))
+    }
+
+    fn run_inert_ordinary_drive_host_trace(
+        sim: &Simulation,
+        id: u64,
+        mission_control: &MissionControl,
+        native_frame: u32,
+        gates: HostTraceGates,
+    ) -> Result<ClonedHostTrace, HostTraceError> {
+        let before = capture_live_host_witness(sim, id);
+        let result =
+            trace_cloned_ordinary_drive_host(sim, id, mission_control, native_frame, gates);
+        let after = capture_live_host_witness(sim, id);
+        assert_eq!(
+            before, after,
+            "the cloned host trace must leave live state inert"
+        );
+        result
+    }
+
+    #[track_caller]
+    fn ordinary_drive_host_trace_ok(
+        sim: &Simulation,
+        native_frame: u32,
+        gates: HostTraceGates,
+    ) -> ClonedHostTrace {
+        run_inert_ordinary_drive_host_trace(
+            sim,
+            ORDINARY_DRIVE_HOST_ID,
+            &stock_move_control(),
+            native_frame,
+            gates,
+        )
+        .expect("ordinary Drive host fixture should trace")
+    }
+
+    #[track_caller]
+    fn assert_ordinary_drive_host_error(
+        sim: &Simulation,
+        mission_control: &MissionControl,
+        native_frame: u32,
+        gates: HostTraceGates,
+        expected: HostTraceError,
+    ) {
+        assert_eq!(
+            run_inert_ordinary_drive_host_trace(
+                sim,
+                ORDINARY_DRIVE_HOST_ID,
+                mission_control,
+                native_frame,
+                gates,
+            )
+            .expect_err("out-of-scope fixture must be rejected"),
+            expected
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_due_move_full_order_is_inert() {
+        let sim = ordinary_drive_host_sim(1);
+        let native_frame = 100;
+        let trace = ordinary_drive_host_trace_ok(&sim, native_frame, HostTraceGates::ordinary());
+        let (jitter, raw_advances) = trace
+            .events
+            .iter()
+            .find_map(|event| match event {
+                HostTraceEvent::ScenarioRandomRangedApi {
+                    low: 0,
+                    high: 2,
+                    value,
+                    raw_advances,
+                } => Some((*value, *raw_advances)),
+                _ => None,
+            })
+            .expect("the due Move path makes one ranged call");
+        let delay = (STOCK_MOVE_RATE_FRAMES + jitter) as i32;
+        assert_eq!(
+            trace.events,
+            vec![
+                HostTraceEvent::TechnoPreThroughRocking,
+                HostTraceEvent::ActiveGate {
+                    gate: ActiveGate::GuardB,
+                    pass: true,
+                },
+                HostTraceEvent::TechnoRemainingPre,
+                HostTraceEvent::MissionAiCounter {
+                    before: 0,
+                    after: 1,
+                },
+                HostTraceEvent::MissionDispatchEnter,
+                HostTraceEvent::ObjectAiMarker,
+                HostTraceEvent::ActiveGate {
+                    gate: ActiveGate::Dispatch,
+                    pass: true,
+                },
+                HostTraceEvent::DispatchTimerGate { due: true },
+                HostTraceEvent::DispatchHealthGate { pass: true },
+                HostTraceEvent::UnitMoveRead6e0 { nonzero: false },
+                HostTraceEvent::UnitMoveClear6d2,
+                HostTraceEvent::UnitMoveCheckSaved6e0 { nonzero: false },
+                HostTraceEvent::UnitMoveCheck {
+                    byte: UnitMoveByte::Byte6e1,
+                    nonzero: false,
+                },
+                HostTraceEvent::UnitMoveCheck {
+                    byte: UnitMoveByte::Byte6e2,
+                    nonzero: false,
+                },
+                HostTraceEvent::UnitTrackerCheckMarker,
+                HostTraceEvent::FootMissionMove,
+                HostTraceEvent::NavComCheck { present: true },
+                HostTraceEvent::RateLookup {
+                    mission: MissionType::Move,
+                    frames: STOCK_MOVE_RATE_FRAMES,
+                },
+                HostTraceEvent::ScenarioRandomRangedApi {
+                    low: 0,
+                    high: 2,
+                    value: jitter,
+                    raw_advances,
+                },
+                HostTraceEvent::DispatchWriteStart {
+                    frame: native_frame as i32,
+                },
+                HostTraceEvent::DispatchWriteScratchMarker,
+                HostTraceEvent::DispatchWriteDelay { delay },
+                HostTraceEvent::PassiveAcquireMarker,
+                HostTraceEvent::BombMarker,
+                HostTraceEvent::SlaveManagerMarker,
+                HostTraceEvent::CaptureManagerMarker,
+                HostTraceEvent::ActiveGate {
+                    gate: ActiveGate::GuardE,
+                    pass: true,
+                },
+                HostTraceEvent::TechnoLatePostMarker,
+                HostTraceEvent::ActiveGate {
+                    gate: ActiveGate::FootPostTechno,
+                    pass: true,
+                },
+                HostTraceEvent::FootPreProcessMarker,
+                HostTraceEvent::FootProcessGate {
+                    ordinal: 1,
+                    pass: true,
+                },
+                HostTraceEvent::FootProcessGate {
+                    ordinal: 2,
+                    pass: true,
+                },
+                HostTraceEvent::FootProcessGate {
+                    ordinal: 3,
+                    pass: true,
+                },
+                HostTraceEvent::FootProcessGate {
+                    ordinal: 4,
+                    pass: true,
+                },
+                HostTraceEvent::FootProcessGate {
+                    ordinal: 5,
+                    pass: true,
+                },
+                HostTraceEvent::DriveProcessMarker,
+                HostTraceEvent::ActiveGate {
+                    gate: ActiveGate::FootPostProcess,
+                    pass: true,
+                },
+                HostTraceEvent::FootLaterWorkMarker,
+                HostTraceEvent::FootReturnMarker,
+            ]
+        );
+        assert_eq!(trace.is_moving_calls, 0);
+        assert_eq!(trace.move_random_ranged_calls, 1);
+        assert!((14..=16).contains(&delay));
+        assert_eq!(trace.mission_after.ai_counter(), 1);
+        assert_eq!(
+            trace.mission_after.current().known(),
+            Some(MissionType::Move)
+        );
+        assert_eq!(
+            trace.mission_after.dispatch_timer(),
+            MissionDispatchTimer::from_raw(native_frame as i32, delay)
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_timer_not_due_still_marks_process() {
+        let mut sim = ordinary_drive_host_sim(2);
+        update_mission_test_fixture(
+            &mut sim
+                .substrate
+                .entities
+                .get_mut(ORDINARY_DRIVE_HOST_ID)
+                .unwrap()
+                .mission,
+            |fixture| fixture.dispatch_timer = MissionDispatchTimer::from_raw(10, 5),
+        );
+        let trace = ordinary_drive_host_trace_ok(&sim, 14, HostTraceGates::ordinary());
+
+        assert!(
+            trace
+                .events
+                .contains(&HostTraceEvent::DispatchTimerGate { due: false })
+        );
+        assert!(!trace.events.iter().any(|event| matches!(
+            event,
+            HostTraceEvent::DispatchHealthGate { .. }
+                | HostTraceEvent::UnitMoveRead6e0 { .. }
+                | HostTraceEvent::FootMissionMove
+                | HostTraceEvent::ScenarioRandomRangedApi { .. }
+                | HostTraceEvent::DispatchWriteStart { .. }
+                | HostTraceEvent::DispatchWriteScratchMarker
+                | HostTraceEvent::DispatchWriteDelay { .. }
+        )));
+        assert!(trace.events.contains(&HostTraceEvent::DriveProcessMarker));
+        assert_eq!(trace.events.last(), Some(&HostTraceEvent::FootReturnMarker));
+        assert_eq!(
+            trace.mission_after.dispatch_timer(),
+            MissionDispatchTimer::from_raw(10, 5)
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_due_health_failure_skips_handler_and_write() {
+        let mut sim = ordinary_drive_host_sim(3);
+        sim.substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .health
+            .current = 0;
+        let trace = ordinary_drive_host_trace_ok(&sim, 20, HostTraceGates::ordinary());
+
+        assert!(
+            trace
+                .events
+                .contains(&HostTraceEvent::DispatchHealthGate { pass: false })
+        );
+        assert!(!trace.events.iter().any(|event| matches!(
+            event,
+            HostTraceEvent::UnitMoveRead6e0 { .. }
+                | HostTraceEvent::FootMissionMove
+                | HostTraceEvent::ScenarioRandomRangedApi { .. }
+                | HostTraceEvent::DispatchWriteStart { .. }
+                | HostTraceEvent::DispatchWriteDelay { .. }
+        )));
+        assert!(trace.events.contains(&HostTraceEvent::PassiveAcquireMarker));
+        assert!(trace.events.contains(&HostTraceEvent::DriveProcessMarker));
+        assert_eq!(
+            trace.mission_after.dispatch_timer(),
+            MissionDispatchTimer::at_frame(0)
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_dispatch_inactive_propagates_to_foot_return() {
+        let sim = ordinary_drive_host_sim(4);
+        let mut gates = HostTraceGates::ordinary();
+        gates.dispatch_active = false;
+        let trace = ordinary_drive_host_trace_ok(&sim, 30, gates);
+
+        assert!(!trace.events.iter().any(|event| matches!(
+            event,
+            HostTraceEvent::DispatchTimerGate { .. }
+                | HostTraceEvent::DispatchHealthGate { .. }
+                | HostTraceEvent::UnitMoveRead6e0 { .. }
+                | HostTraceEvent::DriveProcessMarker
+        )));
+        assert!(trace.events.ends_with(&[
+            HostTraceEvent::PassiveAcquireMarker,
+            HostTraceEvent::BombMarker,
+            HostTraceEvent::SlaveManagerMarker,
+            HostTraceEvent::CaptureManagerMarker,
+            HostTraceEvent::ActiveGate {
+                gate: ActiveGate::GuardE,
+                pass: false,
+            },
+            HostTraceEvent::ActiveGate {
+                gate: ActiveGate::FootPostTechno,
+                pass: false,
+            },
+            HostTraceEvent::FootReturnMarker,
+        ]));
+        assert!(!trace.events.contains(&HostTraceEvent::TechnoLatePostMarker));
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_each_unit_wrapper_byte_queues_guard() {
+        let sim = ordinary_drive_host_sim(5);
+        for (bytes, expected_checks) in [
+            (
+                [true, false, false],
+                vec![
+                    HostTraceEvent::UnitMoveRead6e0 { nonzero: true },
+                    HostTraceEvent::UnitMoveClear6d2,
+                    HostTraceEvent::UnitMoveCheckSaved6e0 { nonzero: true },
+                ],
+            ),
+            (
+                [false, true, false],
+                vec![
+                    HostTraceEvent::UnitMoveRead6e0 { nonzero: false },
+                    HostTraceEvent::UnitMoveClear6d2,
+                    HostTraceEvent::UnitMoveCheckSaved6e0 { nonzero: false },
+                    HostTraceEvent::UnitMoveCheck {
+                        byte: UnitMoveByte::Byte6e1,
+                        nonzero: true,
+                    },
+                ],
+            ),
+            (
+                [false, false, true],
+                vec![
+                    HostTraceEvent::UnitMoveRead6e0 { nonzero: false },
+                    HostTraceEvent::UnitMoveClear6d2,
+                    HostTraceEvent::UnitMoveCheckSaved6e0 { nonzero: false },
+                    HostTraceEvent::UnitMoveCheck {
+                        byte: UnitMoveByte::Byte6e1,
+                        nonzero: false,
+                    },
+                    HostTraceEvent::UnitMoveCheck {
+                        byte: UnitMoveByte::Byte6e2,
+                        nonzero: true,
+                    },
+                ],
+            ),
+        ] {
+            let mut gates = HostTraceGates::ordinary();
+            gates.unit_move_bytes = bytes;
+            let trace = ordinary_drive_host_trace_ok(&sim, 40, gates);
+            let observed_checks: Vec<HostTraceEvent> = trace
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        HostTraceEvent::UnitMoveRead6e0 { .. }
+                            | HostTraceEvent::UnitMoveClear6d2
+                            | HostTraceEvent::UnitMoveCheckSaved6e0 { .. }
+                            | HostTraceEvent::UnitMoveCheck { .. }
+                    )
+                })
+                .cloned()
+                .collect();
+            assert_eq!(observed_checks, expected_checks);
+            assert!(trace.events.contains(&HostTraceEvent::QueueMissionMarker {
+                mission_id: MissionId::from_known(MissionType::Guard),
+                arg: 0,
+            }));
+            assert!(
+                trace
+                    .events
+                    .contains(&HostTraceEvent::DispatchWriteDelay { delay: 1 })
+            );
+            assert!(!trace.events.contains(&HostTraceEvent::FootMissionMove));
+            assert!(
+                !trace
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, HostTraceEvent::ScenarioRandomRangedApi { .. }))
+            );
+            assert!(trace.events.contains(&HostTraceEvent::DriveProcessMarker));
+        }
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_foot_move_branch_matrix_uses_is_moving() {
+        let live_nav = ordinary_drive_host_sim(6);
+        let live_trace = ordinary_drive_host_trace_ok(&live_nav, 50, HostTraceGates::ordinary());
+        assert_eq!(live_trace.is_moving_calls, 0);
+        assert_eq!(live_trace.move_random_ranged_calls, 1);
+
+        let mut null_moving = ordinary_drive_host_sim(6);
+        null_moving
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .navigation
+            .nav_com = None;
+        let moving_trace =
+            ordinary_drive_host_trace_ok(&null_moving, 50, HostTraceGates::ordinary());
+        assert_eq!(moving_trace.is_moving_calls, 1);
+        assert_eq!(moving_trace.move_random_ranged_calls, 1);
+        assert!(
+            !moving_trace
+                .events
+                .iter()
+                .any(|event| matches!(event, HostTraceEvent::OnArrivalMarker { .. }))
+        );
+
+        let mut null_stopped_queued = ordinary_drive_host_sim(6);
+        {
+            let entity = null_stopped_queued
+                .substrate
+                .entities
+                .get_mut(ORDINARY_DRIVE_HOST_ID)
+                .unwrap();
+            entity.navigation.nav_com = None;
+            update_mission_test_fixture(&mut entity.mission, |fixture| {
+                fixture.queued = MissionId::from_known(MissionType::Guard);
+            });
+        }
+        let mut stopped = HostTraceGates::ordinary();
+        stopped.is_moving = false;
+        let queued_trace = ordinary_drive_host_trace_ok(&null_stopped_queued, 50, stopped);
+        assert_eq!(queued_trace.is_moving_calls, 1);
+        assert_eq!(queued_trace.move_random_ranged_calls, 1);
+        assert!(
+            !queued_trace
+                .events
+                .iter()
+                .any(|event| matches!(event, HostTraceEvent::OnArrivalMarker { .. }))
+        );
+
+        let mut null_stopped = ordinary_drive_host_sim(6);
+        null_stopped
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .navigation
+            .nav_com = None;
+        let arrived_trace = ordinary_drive_host_trace_ok(&null_stopped, 50, stopped);
+        assert_eq!(arrived_trace.is_moving_calls, 1);
+        assert_eq!(arrived_trace.move_random_ranged_calls, 0);
+        assert!(
+            arrived_trace
+                .events
+                .contains(&HostTraceEvent::OnArrivalMarker { arg0: 0, arg1: 1 })
+        );
+        assert!(
+            arrived_trace
+                .events
+                .contains(&HostTraceEvent::DispatchWriteDelay { delay: 1 })
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_null_locomotor_is_invariant() {
+        let mut sim = ordinary_drive_host_sim(7);
+        {
+            let entity = sim
+                .substrate
+                .entities
+                .get_mut(ORDINARY_DRIVE_HOST_ID)
+                .unwrap();
+            entity.navigation.nav_com = None;
+            entity.drive_locomotion = None;
+        }
+        let trace = ordinary_drive_host_trace_ok(&sim, 60, HostTraceGates::ordinary());
+        assert_eq!(
+            trace.events.last(),
+            Some(&HostTraceEvent::NullLocomotorInvariant)
+        );
+        assert!(!trace.events.iter().any(|event| matches!(
+            event,
+            HostTraceEvent::OnArrivalMarker { .. }
+                | HostTraceEvent::DispatchWriteStart { .. }
+                | HostTraceEvent::PassiveAcquireMarker
+                | HostTraceEvent::DriveProcessMarker
+                | HostTraceEvent::FootReturnMarker
+        )));
+        assert_eq!(trace.move_random_ranged_calls, 0);
+        assert_eq!(
+            trace.mission_after.dispatch_timer(),
+            MissionDispatchTimer::at_frame(0)
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_guard_exits_truncate_exact_segments() {
+        let sim = ordinary_drive_host_sim(8);
+
+        let mut guard_b = HostTraceGates::ordinary();
+        guard_b.guard_b_active = false;
+        let guard_b_trace = ordinary_drive_host_trace_ok(&sim, 70, guard_b);
+        assert_eq!(
+            guard_b_trace.events,
+            vec![
+                HostTraceEvent::TechnoPreThroughRocking,
+                HostTraceEvent::ActiveGate {
+                    gate: ActiveGate::GuardB,
+                    pass: false,
+                },
+                HostTraceEvent::ActiveGate {
+                    gate: ActiveGate::FootPostTechno,
+                    pass: false,
+                },
+                HostTraceEvent::FootReturnMarker,
+            ]
+        );
+
+        let mut guard_e = HostTraceGates::ordinary();
+        guard_e.guard_e_active = false;
+        guard_e.foot_post_techno_active = true;
+        let guard_e_trace = ordinary_drive_host_trace_ok(&sim, 70, guard_e);
+        assert!(guard_e_trace.events.ends_with(&[
+            HostTraceEvent::ActiveGate {
+                gate: ActiveGate::GuardE,
+                pass: false,
+            },
+            HostTraceEvent::ActiveGate {
+                gate: ActiveGate::FootPostTechno,
+                pass: false,
+            },
+            HostTraceEvent::FootReturnMarker,
+        ]));
+        assert!(
+            !guard_e_trace
+                .events
+                .contains(&HostTraceEvent::TechnoLatePostMarker)
+        );
+        assert!(
+            !guard_e_trace
+                .events
+                .contains(&HostTraceEvent::FootPreProcessMarker)
+        );
+
+        let mut foot_guard = HostTraceGates::ordinary();
+        foot_guard.foot_post_techno_active = false;
+        let foot_trace = ordinary_drive_host_trace_ok(&sim, 70, foot_guard);
+        assert!(foot_trace.events.ends_with(&[
+            HostTraceEvent::TechnoLatePostMarker,
+            HostTraceEvent::ActiveGate {
+                gate: ActiveGate::FootPostTechno,
+                pass: false,
+            },
+            HostTraceEvent::FootReturnMarker,
+        ]));
+        assert!(
+            !foot_trace
+                .events
+                .contains(&HostTraceEvent::FootPreProcessMarker)
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_each_foot_process_gate_short_circuits() {
+        let sim = ordinary_drive_host_sim(10);
+        for failed_index in 0..5 {
+            let mut gates = HostTraceGates::ordinary();
+            gates.foot_process_gates[failed_index] = false;
+            let trace = ordinary_drive_host_trace_ok(&sim, 80, gates);
+            let observed: Vec<(u8, bool)> = trace
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    HostTraceEvent::FootProcessGate { ordinal, pass } => Some((*ordinal, *pass)),
+                    _ => None,
+                })
+                .collect();
+            let expected: Vec<(u8, bool)> = (0..=failed_index)
+                .map(|index| (index as u8 + 1, index != failed_index))
+                .collect();
+            assert_eq!(observed, expected);
+            assert!(!trace.events.contains(&HostTraceEvent::DriveProcessMarker));
+            assert!(trace.events.ends_with(&[
+                HostTraceEvent::FootLaterWorkMarker,
+                HostTraceEvent::FootReturnMarker,
+            ]));
+        }
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_post_process_guard_uses_epilogue_exit() {
+        let sim = ordinary_drive_host_sim(11);
+        let mut gates = HostTraceGates::ordinary();
+        gates.foot_post_process_active = false;
+        let trace = ordinary_drive_host_trace_ok(&sim, 90, gates);
+        assert!(trace.events.ends_with(&[
+            HostTraceEvent::DriveProcessMarker,
+            HostTraceEvent::ActiveGate {
+                gate: ActiveGate::FootPostProcess,
+                pass: false,
+            },
+            HostTraceEvent::FootReturnMarker,
+        ]));
+        assert!(!trace.events.contains(&HostTraceEvent::FootLaterWorkMarker));
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_rng_rejection_advances_clone_twice() {
+        let sim = ordinary_drive_host_sim(9);
+        let mut reference = sim.clone_scenario_rng();
+        assert_eq!(reference.next_u32() & 3, 3);
+        assert_eq!(reference.next_u32() & 3, 0);
+
+        let trace = ordinary_drive_host_trace_ok(&sim, 100, HostTraceGates::ordinary());
+        let ranged_events: Vec<(u32, usize)> = trace
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                HostTraceEvent::ScenarioRandomRangedApi {
+                    value,
+                    raw_advances,
+                    ..
+                } => Some((*value, *raw_advances)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ranged_events, vec![(0, 2)]);
+        assert_eq!(trace.move_random_ranged_calls, 1);
+        assert_eq!(trace.scenario_rng_after, reference.logical_state());
+        assert_eq!(
+            sim.rng_state().scenario,
+            sim.clone_scenario_rng().logical_state()
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_reads_stored_move_not_derived_projection() {
+        let sim = ordinary_drive_host_sim(12);
+        let entity = sim.substrate.entities.get(ORDINARY_DRIVE_HOST_ID).unwrap();
+        assert_eq!(entity.mission.current().known(), Some(MissionType::Move));
+        assert!(entity.movement_target.is_none());
+        assert!(entity.attack_target.is_none());
+        assert!(entity.dock_state.is_none());
+        assert!(entity.miner.is_none());
+
+        let trace = ordinary_drive_host_trace_ok(&sim, 110, HostTraceGates::ordinary());
+        assert!(trace.events.contains(&HostTraceEvent::FootMissionMove));
+        assert_eq!(
+            trace.mission_after.current().known(),
+            Some(MissionType::Move)
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_rejects_out_of_scope_fixtures() {
+        let control = stock_move_control();
+        let ordinary = HostTraceGates::ordinary();
+
+        let missing = Simulation::with_seed(13);
+        assert_ordinary_drive_host_error(
+            &missing,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::MissingEntity,
+        );
+
+        let mut non_unit = ordinary_drive_host_sim(13);
+        non_unit
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .category = EntityCategory::Infantry;
+        assert_ordinary_drive_host_error(
+            &non_unit,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::NonUnit,
+        );
+
+        let mut non_move = ordinary_drive_host_sim(13);
+        update_mission_test_fixture(
+            &mut non_move
+                .substrate
+                .entities
+                .get_mut(ORDINARY_DRIVE_HOST_ID)
+                .unwrap()
+                .mission,
+            |fixture| fixture.current = MissionId::from_known(MissionType::Guard),
+        );
+        assert_ordinary_drive_host_error(
+            &non_move,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::NonMoveStoredMission,
+        );
+
+        let mut low_bridge_tube = ordinary_drive_host_sim(13);
+        low_bridge_tube
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .low_bridge_tube_state = Some(LowBridgeTubeMovementState {
+            tube_id: TubeId(0),
+            cursor: 0,
+            entry: (5, 5),
+            exit: (6, 5),
+            phase: LowBridgeTubePhase::Traversing,
+        });
+        assert_ordinary_drive_host_error(
+            &low_bridge_tube,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::ActiveTube,
+        );
+
+        let mut drive_tube = ordinary_drive_host_sim(13);
+        drive_tube
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .drive_locomotion
+            .as_mut()
+            .unwrap()
+            .active_tube = Some(Default::default());
+        assert_ordinary_drive_host_error(
+            &drive_tube,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::ActiveTube,
+        );
+
+        let mut forced_track = ordinary_drive_host_sim(13);
+        forced_track
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .forced_drive_track = begin_forced_turn_track(0, 0, 0, SimFixed::from_num(1), false);
+        assert!(
+            forced_track
+                .substrate
+                .entities
+                .get(ORDINARY_DRIVE_HOST_ID)
+                .unwrap()
+                .forced_drive_track
+                .is_some()
+        );
+        assert_ordinary_drive_host_error(
+            &forced_track,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::ForcedTrack,
+        );
+
+        let mut miner = ordinary_drive_host_sim(13);
+        miner
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
+        assert_ordinary_drive_host_error(
+            &miner,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::MinerPath,
+        );
+
+        let mut dock = ordinary_drive_host_sim(13);
+        dock.substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .dock_state = Some(DockState {
+            dock_building_id: 99,
+            phase: DockPhase::Approach,
+            service_timer: 0,
+            no_funds_ticks: 0,
+        });
+        assert_ordinary_drive_host_error(&dock, &control, 120, ordinary, HostTraceError::DockPath);
+
+        let mut aircraft = ordinary_drive_host_sim(13);
+        aircraft
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .aircraft_mission = Some(AircraftMission::Guard);
+        assert_ordinary_drive_host_error(
+            &aircraft,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::AircraftPath,
+        );
+
+        let mut primary_mismatch = ordinary_drive_host_sim(13);
+        primary_mismatch
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .primary_kind = Some(LocomotorKind::Teleport);
+        assert_ordinary_drive_host_error(
+            &primary_mismatch,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::SpecialLocomotorPath,
+        );
+
+        let mut piggyback = ordinary_drive_host_sim(13);
+        piggyback
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .piggyback = Some(PiggybackLocomotor {
+            kind: LocomotorKind::Teleport,
+            layer: MovementLayer::Ground,
+        });
+        assert_ordinary_drive_host_error(
+            &piggyback,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::SpecialLocomotorPath,
+        );
+
+        let mut overridden = ordinary_drive_host_sim(13);
+        overridden
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap()
+            .override_state = Some(OverrideLocomotor {
+            saved: Box::new(LocomotorState::for_test_kind(LocomotorKind::Drive)),
+            override_kind: OverrideKind::Teleport,
+        });
+        assert_ordinary_drive_host_error(
+            &overridden,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::SpecialLocomotorPath,
+        );
+
+        let mut class_special = HostTraceGates::ordinary();
+        class_special.class_special_pre_foot_path = true;
+        assert_ordinary_drive_host_error(
+            &ordinary_drive_host_sim(13),
+            &control,
+            120,
+            class_special,
+            HostTraceError::ClassSpecialPath,
+        );
+
+        let mut lifecycle = HostTraceGates::ordinary();
+        lifecycle.lifecycle_countdown_exit = true;
+        assert_ordinary_drive_host_error(
+            &ordinary_drive_host_sim(13),
+            &control,
+            120,
+            lifecycle,
+            HostTraceError::LifecyclePath,
+        );
+
+        let mut missing_runtime = ordinary_drive_host_sim(13);
+        missing_runtime
+            .substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .unwrap()
+            .drive_locomotion = None;
+        assert_ordinary_drive_host_error(
+            &missing_runtime,
+            &control,
+            120,
+            ordinary,
+            HostTraceError::MissingDriveRuntime,
+        );
+
+        let bad_rate = MissionControl::from_ini(&IniFile::from_str("[Move]\nRate=.017\n"));
+        assert_ordinary_drive_host_error(
+            &ordinary_drive_host_sim(13),
+            &bad_rate,
+            120,
+            ordinary,
+            HostTraceError::StockMoveRate { actual: 15 },
+        );
+    }
+
+    #[test]
+    fn checkpoint_a_ordinary_drive_host_uses_exact_signed_dispatch_timer_domain() {
+        for (timer, native_frame, expected_due) in [
+            (MissionDispatchTimer::from_raw(-1, 1), 120, true),
+            (MissionDispatchTimer::from_raw(-1, 0), i32::MIN as u32, true),
+            (MissionDispatchTimer::from_raw(10, 5), 9, false),
+            (
+                MissionDispatchTimer::from_raw(i32::MIN, 0),
+                i32::MIN as u32,
+                true,
+            ),
+            (MissionDispatchTimer::from_raw(0, 0), i32::MIN as u32, false),
+            (MissionDispatchTimer::from_raw(0, i32::MIN), 120, true),
+            (MissionDispatchTimer::from_raw(-3, 5), 2, true),
+        ] {
+            let mut sim = ordinary_drive_host_sim(13);
+            update_mission_test_fixture(
+                &mut sim
+                    .substrate
+                    .entities
+                    .get_mut(ORDINARY_DRIVE_HOST_ID)
+                    .unwrap()
+                    .mission,
+                |fixture| fixture.dispatch_timer = timer,
+            );
+            let trace =
+                ordinary_drive_host_trace_ok(&sim, native_frame, HostTraceGates::ordinary());
+            assert!(
+                trace
+                    .events
+                    .contains(&HostTraceEvent::DispatchTimerGate { due: expected_due }),
+                "signed timer {timer:?} at frame {native_frame:#010x}"
+            );
+            assert_eq!(trace.mission_after.ai_counter(), 1);
+            if expected_due {
+                assert!(trace.events.contains(&HostTraceEvent::FootMissionMove));
+                assert!(trace.events.iter().any(|event| matches!(
+                    event,
+                    HostTraceEvent::DispatchWriteStart { frame }
+                        if *frame == native_frame as i32
+                )));
+                assert_eq!(
+                    trace.mission_after.dispatch_timer().start_frame(),
+                    native_frame as i32
+                );
+                assert!((14..=16).contains(&trace.mission_after.dispatch_timer().delay()));
+            } else {
+                assert!(!trace.events.iter().any(|event| matches!(
+                    event,
+                    HostTraceEvent::DispatchHealthGate { .. }
+                        | HostTraceEvent::FootMissionMove
+                        | HostTraceEvent::DispatchWriteStart { .. }
+                )));
+                assert_eq!(trace.mission_after.dispatch_timer(), timer);
+            }
+        }
     }
 
     // ===== Slice S2a — host-time Unit dispatch shadow =====
