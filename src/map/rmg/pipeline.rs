@@ -84,6 +84,10 @@ pub struct PipelineInputs<'a> {
     pub width: i32,
     /// `MaxTrees` (`MapSeed+0x2FC`; 0 disables trees).
     pub max_trees: i32,
+    /// Whether a river on this map may allow a bridge, decided by the
+    /// generation's very first draw. Only the river carver reads the value; the
+    /// draw that produces it is stream-relevant to every map type.
+    pub bridge_enabled: bool,
 }
 
 /// Watches the grid between stages, for callers that draw the map as it builds.
@@ -155,6 +159,7 @@ pub fn run_pipeline(
             map_type: inputs.map_type,
             water_percent: inputs.water_percent,
             num_players: inputs.num_players,
+            bridge_enabled: inputs.bridge_enabled,
             playable: PlayableRect {
                 x: local_rect[0],
                 y: local_rect[1],
@@ -441,6 +446,7 @@ mod tests {
             theater,
             num_players: 4,
             water_percent: 30,
+            bridge_enabled: false,
             resources: 1,
             tib_option: 50,
             min_tib: 900,

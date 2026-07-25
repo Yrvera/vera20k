@@ -57,6 +57,9 @@ pub struct WaterArgs {
     pub map_type: i32,
     pub water_percent: i32,
     pub num_players: i32,
+    /// Whether a river here may carry a bridge — the generation's first draw.
+    /// Unread until the river lands; the draw is already stream-relevant.
+    pub bridge_enabled: bool,
     pub playable: PlayableRect,
 }
 
@@ -631,6 +634,7 @@ mod tests {
             map_type,
             water_percent,
             num_players: 4,
+            bridge_enabled: false,
             playable: PlayableRect {
                 x: 2,
                 y: 5,
@@ -848,6 +852,7 @@ mod tests {
             map_type,
             water_percent,
             num_players: 4,
+            bridge_enabled: false,
             playable: PlayableRect {
                 x: 2,
                 y: 5,
