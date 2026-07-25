@@ -288,10 +288,11 @@ existing egui fallback.
 
 - `src/render/native_surface_format.rs`
   owns the reusable Rust-native DirectDraw shift/loss description, known RGB565
-  and RGB555 formats, packing/index helpers, and presentation codebook logic.
+  and RGB555 formats, presentation index helpers, and presentation codebook
+  logic.
 - `src/render/tactical_compat.rs`
-  imports or re-exports the shared format so existing tactical callers retain a
-  stable API while ownership moves out of a tactical-only module.
+  re-exports the shared format and retains the existing packing helper so
+  tactical callers keep a stable API and unchanged packing behavior.
 - `src/render/shell_surface_present.rs` and
   `src/render/shell_surface_present.wgsl`
   own the GPU resources, encoded-byte presentation pass, compatible copy, and
