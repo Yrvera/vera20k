@@ -259,7 +259,7 @@ fn stock_gapowr_placement_restores_power_and_radar_during_buildup() {
     let grid = PathGrid::new(64, 64);
 
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
-    spawn_structure(&mut sim, 2, "Americans", "GAAIRC", 10, 14);
+    spawn_structure(&mut sim, 2, "Americans", "AMRADR", 10, 14);
 
     let americans = sim.interner.intern("Americans");
     let gapowr = sim.interner.intern("GAPOWR");
@@ -280,7 +280,7 @@ fn stock_gapowr_placement_restores_power_and_radar_during_buildup() {
             americans,
             &sim.interner,
         ),
-        "stock GAAIRC radar must be offline during house low power"
+        "stock American radar must be offline during house low power"
     );
 
     sim.production
@@ -316,13 +316,24 @@ fn stock_gapowr_placement_restores_power_and_radar_during_buildup() {
         "power recovery must occur while the placement buildup is still active"
     );
 
+    // Native Unlimbo requests a house power reassessment, but exact event-vs-
+    // House update ordering within the placement command frame remains
+    // unverified. Advance to the next guaranteed assessment while buildup is
+    // still active rather than certifying an unsupported one-frame claim.
+    sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(
+        sim.substrate.entities.values().any(|entity| {
+            entity.owner == americans && entity.type_ref == gapowr && entity.building_up.is_some()
+        }),
+        "GAPOWR must still be in its visible buildup during reassessment"
+    );
+
     let recovered = sim
         .power_states
         .get(&americans)
-        .expect("placement tick should reassess stock power");
+        .expect("post-placement tick should reassess stock power");
     assert_eq!(recovered.total_output, 200);
     assert_eq!(recovered.total_drain, 50);
-    assert!(recovered.was_low_power);
     assert!(!recovered.is_low_power);
     assert!(
         has_active_radar(
@@ -332,7 +343,7 @@ fn stock_gapowr_placement_restores_power_and_radar_during_buildup() {
             americans,
             &sim.interner,
         ),
-        "existing stock GAAIRC radar should recover in the placement tick"
+        "existing stock American radar should recover while GAPOWR is building up"
     );
 }
 

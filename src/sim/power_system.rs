@@ -244,9 +244,8 @@ pub fn has_active_radar(
     interner: &crate::sim::intern::StringInterner,
 ) -> bool {
     // Native UpdateTacticalRadarAvailability gates the house on its aggregate
-    // power ratio before scanning Radar= providers. Stock GAAIRC does not set
-    // Powered=, so routing this through is_building_powered would leave radar
-    // online during low power.
+    // power ratio before scanning Radar= providers. Stock GAAIRC and AMRADR
+    // omit Powered=, so this cannot be a per-building Powered gate.
     if power_states
         .get(&owner_id)
         .is_some_and(|state| state.is_low_power)
@@ -258,7 +257,6 @@ pub fn has_active_radar(
         !e.dying
             && e.category == EntityCategory::Structure
             && e.owner == owner_id
-            && e.building_up.is_none()
             && rules
                 .object(interner.resolve(e.type_ref))
                 .is_some_and(|obj| obj.radar)
@@ -590,19 +588,17 @@ BuildSpeed=0.02
     }
 
     #[test]
-    fn test_has_active_radar_with_power() {
-        // Need a radar building in the rules.
+    fn test_live_buildup_radar_follows_house_power() {
         let rules = rules_from_ini(
             "\
 [BuildingTypes]
-0=GAAIRC
+0=AMRADR
 1=GAPOWR
 
-[GAAIRC]
+[AMRADR]
 Radar=yes
 Power=-50
 Strength=600
-Powered=yes
 
 [GAPOWR]
 Power=200
@@ -613,7 +609,12 @@ BuildSpeed=0.02
 ",
         );
         let mut store = EntityStore::new();
-        store.insert(make_building(1, "GAAIRC", "Allies", 600, 600));
+        let mut radar = make_building(1, "AMRADR", "Allies", 600, 600);
+        radar.building_up = Some(crate::sim::components::BuildingUp {
+            elapsed_ticks: 1,
+            total_ticks: 30,
+        });
+        store.insert(radar);
         store.insert(make_building(2, "GAPOWR", "Allies", 600, 600));
 
         let interner = test_interner();
@@ -623,16 +624,17 @@ BuildSpeed=0.02
 
         assert!(
             has_active_radar(&store, &states, &rules, allies, &interner),
-            "radar should be active with sufficient power"
+            "a live radar provider remains authoritative during its buildup"
         );
 
-        // Remove the power plant → low power → radar disabled.
+        // Remove the power plant: aggregate low power disables the same live
+        // buildup provider.
         store.remove(2);
         tick_power_states(&mut states, &mut store, &rules, 16, &interner);
 
         assert!(
             !has_active_radar(&store, &states, &rules, allies, &interner),
-            "radar should be disabled during low power"
+            "house low power must disable radar during provider buildup"
         );
     }
 

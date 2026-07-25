@@ -22,8 +22,8 @@ use std::collections::VecDeque;
 /// Check if the given owner has at least one operational radar-providing building.
 ///
 /// A building provides radar if its ObjectType has `Radar=yes` and the house is
-/// not in low power. This is a house-level gate; stock `GAAIRC` does not require
-/// `Powered=yes`.
+/// not in low power. This is a house-level gate; stock Allied `GAAIRC` and
+/// `AMRADR` omit `Powered=yes`.
 pub fn has_radar_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> bool {
     let Some(owner_id) = sim.interner.get(owner) else {
         return false;
