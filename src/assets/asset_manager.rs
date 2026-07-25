@@ -91,6 +91,8 @@ const KNOWN_NESTED_MIX_NAMES: &[&str] = &[
     "sidec01md.mix",
     "sidec02.mix",
     "sidec02md.mix",
+    "sidenc01.mix",
+    "sidenc02.mix",
     "snow.mix",
     "temperat.mix",
     "theme.mix",
@@ -597,5 +599,33 @@ mod tests {
 
         assert!(manager.archive("audio.mix").is_some());
         assert!(manager.archive("language.mix -> audio.mix").is_some());
+    }
+
+    #[test]
+    fn neutral_sidebar_mix_names_match_retail_hashes_and_can_be_guessed() {
+        let expected = [("sidenc01.mix", 0x330A_4ADF), ("sidenc02.mix", 0x74AA_300F)];
+
+        for (name, entry_id) in expected {
+            assert_eq!(mix_hash(name), entry_id);
+            assert_eq!(guess_nested_mix_name(entry_id), Some(name));
+        }
+    }
+
+    #[test]
+    fn neutral_sidebar_nested_names_expose_leaf_lookup_keys() {
+        assert_eq!(
+            archive_lookup_keys("ra2.mix -> sidenc01.mix"),
+            vec![
+                "ra2.mix -> sidenc01.mix".to_string(),
+                "sidenc01.mix".to_string(),
+            ]
+        );
+        assert_eq!(
+            archive_lookup_keys("ra2md.mix -> sidenc02.mix"),
+            vec![
+                "ra2md.mix -> sidenc02.mix".to_string(),
+                "sidenc02.mix".to_string(),
+            ]
+        );
     }
 }
