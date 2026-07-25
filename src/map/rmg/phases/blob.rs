@@ -133,7 +133,9 @@ impl MinHeap {
 }
 
 /// Draw an index in `[0, dim)` with the seed-selection chain.
-fn seed_draw(rng: &mut RmgRng, dim: i32) -> i32 {
+///
+/// Shared with the lake seeder, which picks its seed the same way.
+pub(crate) fn seed_draw(rng: &mut RmgRng, dim: i32) -> i32 {
     let scale = TruncF64::from_f64(f64::from_bits(RANGE_K_BITS));
     let span = TruncF64::from_f64(f64::from(dim));
     loop {

@@ -12,6 +12,7 @@ use crate::map::rmg::tiles::TileIds;
 use crate::map::rmg::x87::{self, TruncF64, approx_sqrt};
 
 use super::blob::{self, BlobCtx, BlobParams};
+use super::lake;
 use super::shore::{self, ShoreCtx};
 
 /// Land-fraction endpoints and cap factor per shape (doubles by value; the
@@ -56,12 +57,77 @@ pub struct WaterArgs {
     pub map_type: i32,
     pub water_percent: i32,
     pub num_players: i32,
+    /// Whether a river here may carry a bridge — the generation's first draw.
+    /// Unread until the river lands; the draw is already stream-relevant.
+    pub bridge_enabled: bool,
     pub playable: PlayableRect,
 }
 
+/// Map types whose water is *carved into land* rather than shaped out of a full
+/// sea: inland and mountainous.
+///
+/// The original reaches these through a different top-level seeder than the
+/// other three, and the two seeders start from opposite terrain. **Everything
+/// below — the prefill, the three shape routines, and all five tail passes —
+/// is the body of the sea-shaping seeder**, which has exactly one caller: the
+/// non-carved arm of the generator's map-type branch. None of it runs for the
+/// carved types, which reach their own seeder instead and then rejoin at the
+/// water-finalize stage.
+const CARVED_WATER_MAP_TYPES: [i32; 2] = [3, 4];
+
 pub fn run(ctx: &mut BlobCtx<'_>, args: &WaterArgs) {
-    // Phase 1: every cell becomes water.
     let coords: Vec<(i32, i32)> = ctx.grid.native_cells().collect();
+
+    // Establish the background every map type starts from: the clear tile.
+    //
+    // In the original this is not part of the water seeder at all — the map is
+    // initialised to the clear tile before the water branch is reached, and the
+    // sea-shaping seeder then floods over it. This pipeline has no separate
+    // init step, so the fill is hosted here.
+    //
+    // It is not cosmetic. The clear predicate accepts both the clear tile and
+    // the unassigned sentinel, so carving behaves the same either way — but the
+    // emitter projects the sentinel as "no tile", which would ship a map with
+    // most of its cells unpainted. The original leaves them as the clear tile.
+    for &(x, y) in &coords {
+        ctx.grid.get_mut(x, y).expect("native cell").tile = ctx.ids.clear;
+    }
+
+    // Inland and mountainous begin on the background the map init leaves behind
+    // — clear tile, sub-tile 0, uniform base level — and *add* water by carving
+    // rivers and lakes into it, admitting only clear cells. Flooding first would
+    // leave the carver nothing to admit, so it would place no water at all and
+    // the terrain would come out inverted.
+    //
+    // A zero water amount is not a degenerate input for these two types: the
+    // option is rolled from a per-map-type range whose minimum is zero for both,
+    // and the original then seeds no water whatsoever. That case is complete
+    // here.
+    //
+    // The return is the map-type branch itself, not an optimization. The five
+    // phases below are the sea-shaping seeder's body; the carved types never
+    // enter that seeder. Running the tail anyway is not harmless even on a map
+    // with no water for it to reshape: phase 4 draws a bounded uniform for
+    // every cell of two full sweeps, so it would advance the shared generator
+    // by thousands of values that the original never consumes, and every later
+    // stage — regions, starts, tiberium, hills, LAT — would then read the
+    // stream from the wrong position.
+    //
+    // Dropping phase 4's region-id reset with it is safe: the region phase
+    // resets on entry, matching the generator's own teardown ahead of the
+    // region partition.
+    if CARVED_WATER_MAP_TYPES.contains(&args.map_type) {
+        // A zero water amount is not a degenerate input for these two types: the
+        // option is rolled from a per-map-type range whose minimum is zero for
+        // both, and the original then does not enter the carved seeder at all.
+        // That case is complete here, and it must stay draw-free.
+        if args.water_percent != 0 {
+            lake::seed_water_carved(ctx, args);
+        }
+        return;
+    }
+
+    // Phase 1: every cell becomes water.
     for &(x, y) in &coords {
         ctx.grid.get_mut(x, y).expect("native cell").tile = ctx.ids.water_base;
     }
@@ -504,7 +570,10 @@ mod tests {
         OneByOne(TileBlock {
             width: 1,
             height: 1,
-            subtiles: vec![Some(SubTile { height: 0, terrain: 0 })],
+            subtiles: vec![Some(SubTile {
+                height: 0,
+                terrain: 0,
+            })],
         })
     }
 
@@ -540,6 +609,10 @@ mod tests {
     }
 
     fn run_water(map_type: i32, seed: u16) -> (RmgGrid, TileIds) {
+        run_water_with(map_type, seed, 50)
+    }
+
+    fn run_water_with(map_type: i32, seed: u16, water_percent: i32) -> (RmgGrid, TileIds) {
         let (map_w, map_h) = (34, 42); // gen 30x30
         let (mut grid, mut scratch) = world(map_w, map_h);
         let identity = ids();
@@ -559,8 +632,9 @@ mod tests {
         };
         let args = WaterArgs {
             map_type,
-            water_percent: 50,
+            water_percent,
             num_players: 4,
+            bridge_enabled: false,
             playable: PlayableRect {
                 x: 2,
                 y: 5,
@@ -663,5 +737,198 @@ mod tests {
             }
         };
         assert!((1..=4).contains(&extra));
+    }
+
+    /// Inland and mountainous must never be flooded.
+    ///
+    /// The original reaches them through a seeder that carves water *into* land
+    /// and admits only clear cells; the flood-the-map prefill lives in the other
+    /// seeder, which has exactly one caller — the branch these two types do not
+    /// take. Flooding first leaves the carver nothing to admit, so the map comes
+    /// out with land and sea inverted. Routing them into the sea-shaping path is
+    /// what this pins against.
+    /// Now that lakes are carved, "not flooded" can no longer mean "no water at
+    /// all" — it means water stays a minority that was cut into land, rather
+    /// than land being the leftover of a full sea. Zero water is still exactly
+    /// zero.
+    #[test]
+    fn carved_water_types_never_flood_the_map() {
+        for map_type in CARVED_WATER_MAP_TYPES {
+            for water_percent in [0, 50, 100] {
+                let (grid, identity) = run_water_with(map_type, 4242, water_percent);
+                let total = grid.native_cells().count();
+                let flooded = grid
+                    .native_cells()
+                    .filter(|&(x, y)| {
+                        grid.get(x, y).expect("native cell").tile == identity.water_base
+                    })
+                    .count();
+                if water_percent == 0 {
+                    assert_eq!(
+                        flooded, 0,
+                        "map type {map_type} with no water must have none at all"
+                    );
+                } else {
+                    assert!(
+                        flooded * 2 < total,
+                        "map type {map_type} at water {water_percent}: {flooded} of \
+                         {total} cells are water — land and sea look inverted, which \
+                         is what routing these types through the sea-shaping prefill \
+                         produced"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The zero-water case is not a degenerate input, it is stock behaviour: the
+    /// water amount is rolled from a per-map-type range whose minimum is zero for
+    /// both of these types, and the original then seeds no water at all. So the
+    /// background must survive as clear ground everywhere.
+    ///
+    /// Asserts the tile is **exactly** the clear tile, not merely that it
+    /// satisfies `is_clear`. That distinction is the whole point: `is_clear`
+    /// also accepts the unassigned sentinel, so the permissive form passed while
+    /// the emitter was still projecting most of the map as "no tile". Only the
+    /// retail resolvability pass caught it. Keep this assertion exact.
+    #[test]
+    fn carved_water_types_leave_a_zero_water_map_all_clear() {
+        for map_type in CARVED_WATER_MAP_TYPES {
+            let (grid, identity) = run_water_with(map_type, 4242, 0);
+            let not_clear_tile = grid
+                .native_cells()
+                .filter(|&(x, y)| grid.get(x, y).expect("native cell").tile != identity.clear)
+                .count();
+            assert_eq!(
+                not_clear_tile, 0,
+                "map type {map_type} with no water must be the clear tile everywhere, \
+                 not the unassigned sentinel"
+            );
+        }
+    }
+
+    /// Guard the other direction: the sea-shaping types must still be flooded and
+    /// still carve land back out. Without this, skipping the prefill for 3 and 4
+    /// could be over-applied and go unnoticed.
+    #[test]
+    fn sea_shaped_types_are_still_flooded_and_carved() {
+        for map_type in [0, 1, 2] {
+            let (grid, identity) = run_water_with(map_type, 4242, 50);
+            let mut water = 0usize;
+            let mut land = 0usize;
+            for (x, y) in grid.native_cells() {
+                if grid.get(x, y).expect("native cell").tile == identity.water_base {
+                    water += 1;
+                } else {
+                    land += 1;
+                }
+            }
+            assert!(water > 0, "map type {map_type} must still have sea");
+            assert!(land > 0, "map type {map_type} must still have land");
+        }
+    }
+
+    /// Run the stage and hand back the generator so a caller can ask how far it
+    /// moved. Mirrors `run_water_with` exactly; only the return differs.
+    fn water_stage_rng_after(map_type: i32, seed: u16, water_percent: i32) -> RmgRng {
+        let (map_w, map_h) = (34, 42);
+        let (mut grid, mut scratch) = world(map_w, map_h);
+        let identity = ids();
+        let block_table = blocks();
+        let mut rng = RmgRng::new(seed);
+        let mut gauss = Gaussian::default();
+        let mut ctx = BlobCtx {
+            grid: &mut grid,
+            scratch: &mut scratch,
+            ids: &identity,
+            blocks: &block_table,
+            rng: &mut rng,
+            gauss: &mut gauss,
+            map_w,
+            map_h,
+            rollback_level: 4,
+        };
+        let args = WaterArgs {
+            map_type,
+            water_percent,
+            num_players: 4,
+            bridge_enabled: false,
+            playable: PlayableRect {
+                x: 2,
+                y: 5,
+                w: 30,
+                h: 30,
+            },
+        };
+        run(&mut ctx, &args);
+        rng
+    }
+
+    /// How many values the stage took out of the shared generator.
+    ///
+    /// This is the assertion that matters most in this file, and it is the one a
+    /// tile census cannot make. The tail passes barely change tiles on a map with
+    /// no water in it, so a wrongly-run tail is close to invisible in the output
+    /// grid — but it still advances the generator, and every later stage then
+    /// reads the stream from the wrong place. Comparing a used generator against
+    /// a fresh one of the same seed is exact: the two agree on the next value
+    /// only if the stage consumed nothing.
+    ///
+    /// Zero water is the whole of the draw-free case: the original does not
+    /// enter the carved seeder at all unless the amount is non-zero, so a
+    /// zero-water inland map must still cost nothing. Non-zero amounts do draw
+    /// — see `carved_water_types_draw_once_the_seeder_runs`.
+    #[test]
+    fn carved_water_types_consume_no_draws_at_zero_water() {
+        for map_type in CARVED_WATER_MAP_TYPES {
+            let mut used = water_stage_rng_after(map_type, 4242, 0);
+            let mut fresh = RmgRng::new(4242);
+            // A single value could collide by chance; a run of them cannot.
+            for index in 0..8 {
+                assert_eq!(
+                    used.next_u32(),
+                    fresh.next_u32(),
+                    "map type {map_type}: the stage moved the generator at draw \
+                     {index} with no water to place. The carved types must not \
+                     enter the sea-shaping seeder, whose shore pass alone draws \
+                     once per cell across two full sweeps, and must not enter \
+                     their own seeder either at a zero amount.",
+                );
+            }
+        }
+    }
+
+    /// The other half of the gate: once there *is* water to place, the carved
+    /// seeder runs and must consume draws. Without this, the zero-water
+    /// assertion above could be satisfied by a seeder that never runs at all.
+    #[test]
+    fn carved_water_types_draw_once_the_seeder_runs() {
+        for map_type in CARVED_WATER_MAP_TYPES {
+            for water_percent in [1, 20, 50] {
+                let mut used = water_stage_rng_after(map_type, 4242, water_percent);
+                let mut fresh = RmgRng::new(4242);
+                assert_ne!(
+                    used.next_u32(),
+                    fresh.next_u32(),
+                    "map type {map_type}, water {water_percent}: the carved \
+                     seeder must draw",
+                );
+            }
+        }
+    }
+
+    /// The other direction, so the guard above cannot be satisfied by a stage
+    /// that stopped drawing for everyone.
+    #[test]
+    fn sea_shaped_types_still_consume_draws() {
+        for map_type in [0, 1, 2] {
+            let mut used = water_stage_rng_after(map_type, 4242, 50);
+            let mut fresh = RmgRng::new(4242);
+            assert_ne!(
+                used.next_u32(),
+                fresh.next_u32(),
+                "map type {map_type} must still consume draws",
+            );
+        }
     }
 }

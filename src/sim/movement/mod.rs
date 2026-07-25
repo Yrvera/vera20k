@@ -228,14 +228,26 @@ pub fn tick_locomotor_piggyback_restore(entities: &mut EntityStore) -> usize {
         let owner_deploying = entity.building_up.is_some()
             || entity.building_down.is_some()
             || entity.deploy_state.is_some();
-        if let Some(ref mut loco) = entity.locomotor
-            && loco.can_restore_primary_from_piggyback(
+        let mut retired_drive = false;
+        let restored_now = if let Some(ref mut loco) = entity.locomotor {
+            retired_drive =
+                loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive;
+            loco.can_restore_primary_from_piggyback(
                 owner_moving,
                 owner_teleporting,
                 owner_deploying,
-            )
-            && loco.restore_primary_from_piggyback()
-        {
+            ) && loco.restore_primary_from_piggyback()
+        } else {
+            false
+        };
+        if restored_now {
+            if retired_drive {
+                // Native FootClass::AI releases the old active locomotor before
+                // installing the stored primary. Do not retain hashed Drive
+                // state after primary Teleport is active again.
+                entity.drive_locomotion = None;
+                entity.drive_track = None;
+            }
             restored = restored.saturating_add(1);
         }
     }
