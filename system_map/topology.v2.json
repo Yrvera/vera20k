@@ -51,6 +51,38 @@
       ],
       "notes": ["Global scheduler and active-object order are load-bearing consumers of almost every gameplay loop."]
     },
+    "GSI-02.01": {
+      "native_anchors": [
+        {
+          "symbol": "InitSideMixFiles",
+          "address": "0x00534FA0",
+          "evidence": "docs/research/SIDE_MIXFILE_INIT_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "LoadFileFromMIX",
+          "address": "0x005B40B0",
+          "evidence": "docs/research/LOADFILEFROMMIX_SIDEBAR_SIDE_RESOLVER_ORDER_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/assets/asset_manager.rs",
+          "symbol": "KNOWN_NESTED_MIX_NAMES / AssetManager::archive",
+          "coverage": "representative",
+          "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
+        },
+        {
+          "path": "src/render/sidebar_chrome.rs",
+          "symbol": "SidebarSideRoute / resolve_sidebar_asset_in_order",
+          "coverage": "representative",
+          "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
+        }
+      ],
+      "notes": [
+        "Side-specific archive precedence is an authority boundary consumed by shell and tactical presentation.",
+        "Feature 7448a5a5 closes bounded generic sidebar lookup through the active side-1/side-2 archive stack without changing global archive order."
+      ]
+    },
     "GSI-03.10": {
       "native_anchors": [
         {
@@ -361,6 +393,44 @@
         }
       ],
       "notes": ["Map knowledge authority is consumed by tactical shroud and radar pixels."]
+    },
+    "GSI-13.24": {
+      "native_anchors": [
+        {
+          "symbol": "SidebarClass::LoadSHPs",
+          "address": "0x006A5840",
+          "evidence": "docs/research/SIDEBAR_SOVIET_SHP_LOAD_PATH_FUN_006D02B0_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "StripClass::Draw",
+          "address": "0x006A9540",
+          "evidence": "docs/research/SIDEBAR_LAYER_PALETTE_CONVERTCLASS_PIXEL_COLORS_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/render/sidebar_chrome.rs",
+          "symbol": "build_theme_atlas / build_gclock_cpu_atlas",
+          "coverage": "representative",
+          "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
+        },
+        {
+          "path": "src/app_sidebar_build.rs",
+          "symbol": "build_gclock_instance / build_sidebar_cameo_instances",
+          "coverage": "representative",
+          "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
+        },
+        {
+          "path": "src/render/sidebar_chrome_tests.rs",
+          "symbol": "retail_yuri_generic_route_uses_side_two_and_builds_production_clock",
+          "coverage": "representative",
+          "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
+        }
+      ],
+      "notes": [
+        "Production progress presentation consumes side-correct generic art while radar/background art retains its theme-specific authority.",
+        "Retail Yuri/side-2 provenance, SHP decode, GCLOCK CPU atlas geometry/frame count, and production instance construction are verified; queue-to-theme execution, GPU pixels, exact conversion/blending, and cadence remain unverified."
+      ]
     },
     "GSI-17.04": {
       "native_anchors": [
@@ -1189,6 +1259,36 @@
       "context": "Power-outage-recovery loop",
       "detail": "The replacement power producer must pass and commit stock placement before power can recover.",
       "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0054-SIDEBAR-SIDE-ASSET-RESOLUTION",
+      "plane": "native",
+      "kind": "requires",
+      "from": "GSI-13.24",
+      "to": "GSI-02.01",
+      "context": "Sidebar generic asset construction",
+      "detail": "Active-YR generic sidebar chrome loading consumes the faction-side MIX resolver installed before SidebarClass::LoadSHPs.",
+      "evidence": [
+        "docs/research/SIDE_MIXFILE_INIT_GHIDRA_REPORT.md",
+        "docs/research/LOADFILEFROMMIX_SIDEBAR_SIDE_RESOLVER_ORDER_GHIDRA_REPORT.md",
+        "docs/research/SIDEBAR_SOVIET_SHP_LOAD_PATH_FUN_006D02B0_GHIDRA_REPORT.md"
+      ]
+    },
+    {
+      "id": "EDGE-0055-RUST-SIDEBAR-SIDE-ASSET-RESOLUTION",
+      "plane": "rust",
+      "kind": "requires",
+      "from": "GSI-13.24",
+      "to": "GSI-02.01",
+      "context": "Rust sidebar atlas construction",
+      "detail": "The production sidebar atlas resolves verified generic roles and SIDEBAR.PAL through immutable side-1/side-2 routes while leaving Yuri radar/background on sidec02md and RADARYURI.PAL.",
+      "evidence": [
+        "src/assets/asset_manager.rs",
+        "src/render/sidebar_chrome.rs",
+        "src/app_sidebar_build.rs",
+        "src/render/sidebar_chrome_tests.rs"
+      ],
+      "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
     }
   ],
   "loops": {
@@ -1391,7 +1491,11 @@
         {"path": "src/sim/production/production_queue.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/production/production_placement.rs", "coverage": "representative", "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"},
         {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "e726da11bdafed70d634cc93e871e5a5cd8c6135"},
-        {"path": "src/app_init_helpers_retail_placement_oracle_tests.rs", "coverage": "representative", "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"}
+        {"path": "src/app_init_helpers_retail_placement_oracle_tests.rs", "coverage": "representative", "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"},
+        {"path": "src/assets/asset_manager.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
+        {"path": "src/render/sidebar_chrome.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
+        {"path": "src/render/sidebar_chrome_tests.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
+        {"path": "src/app_sidebar_build.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"}
       ],
       "stages": [
         {"order": 1, "system": "GSI-14.10", "action": "Select production cameo."},
@@ -1399,7 +1503,7 @@
         {"order": 3, "system": "GSI-09.09", "action": "Own factory queue."},
         {"order": 4, "system": "GSI-09.10", "action": "Advance cost/time progress."},
         {"order": 5, "system": "GSI-09.01", "action": "Commit spending."},
-        {"order": 6, "system": "GSI-13.24", "action": "Present ready/queue state."},
+        {"order": 6, "system": "GSI-13.24", "action": "Present ready/queue state with faction-correct generic chrome and GCLOCK progress."},
         {"order": 7, "system": "GSI-14.08", "action": "Enter placement mode."},
         {"order": 8, "system": "GSI-13.25", "action": "Draw placement feedback."},
         {"order": 9, "system": "GSI-09.11", "action": "Walk the candidate foundation and evaluate placement policy."},
@@ -1413,7 +1517,7 @@
       ],
       "oracle": {
         "status": "UNVERIFIED",
-        "gate": "A sealed-retail Dustbowl production-load Rust oracle verifies bounded overlay rejection, accepted lifecycle/occupancy, buildup, and power, but no active-gamemd input/pixel differential is recorded."
+        "gate": "Sealed-retail Rust oracles verify bounded placement/lifecycle/power plus Yuri/side-2 archive and palette provenance, Yuri GCLOCK CPU atlas geometry/frame count, and production instance creation. Queue-to-theme execution, GPU/swapchain pixels, exact conversion/blending, progress timing/cadence, and an active-gamemd full-loop differential remain unverified."
       },
       "evidence": [
         "docs/research/FACTORYCLASS_PRODUCTION_DEEP_DIVE.md",
@@ -1421,7 +1525,12 @@
         "docs/research/pathfinding/BUILDING_CAN_ENTER_CELL_PLACEMENT_PASSABILITY_BODY_GHIDRA_REPORT.md",
         "docs/research/pathfinding/CELL_PASSABILITY_BUILDING_PLACEMENT_FLAGS_GHIDRA_REPORT.md",
         "docs/research/traces/2026-07-25-loop-005-stock-building-placement-trace.md",
-        "docs/research/SIDEBAR_SYSTEM_GHIDRA_REPORT.md"
+        "docs/research/SIDEBAR_SYSTEM_GHIDRA_REPORT.md",
+        "docs/research/SIDE_MIXFILE_INIT_GHIDRA_REPORT.md",
+        "docs/research/LOADFILEFROMMIX_SIDEBAR_SIDE_RESOLVER_ORDER_GHIDRA_REPORT.md",
+        "docs/research/SIDEBAR_SOVIET_SHP_LOAD_PATH_FUN_006D02B0_GHIDRA_REPORT.md",
+        "docs/research/SIDEBAR_LAYER_PALETTE_CONVERTCLASS_PIXEL_COLORS_GHIDRA_REPORT.md",
+        "docs/research/RETAIL_SOVIET_SIDEBAR_SHP_DIMENSIONS_OFFSETS_GHIDRA_REPORT.md"
       ]
     },
     "LOOP-006-FACTORY-EXIT": {
