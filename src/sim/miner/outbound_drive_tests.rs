@@ -13,7 +13,9 @@ use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::components::{DriveCoord, NavTargetRef};
-use crate::sim::miner::{MinerKind, MinerState, ResourceNode, ResourceType};
+use crate::sim::miner::{
+    CargoBale, MinerConfig, MinerKind, MinerState, ResourceNode, ResourceType,
+};
 use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer, PiggybackLocomotor};
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
@@ -287,6 +289,48 @@ fn spawn_stock_miner(
     id
 }
 
+fn spawn_stock_refinery(
+    sim: &mut Simulation,
+    oracle: &RetailOutboundOracle,
+    anchor: (u16, u16),
+) -> u64 {
+    let id = sim
+        .spawn_object(
+            "GAREFN",
+            "Americans",
+            anchor.0,
+            anchor.1,
+            0,
+            &oracle.rules,
+            &BTreeMap::new(),
+        )
+        .expect("spawn GAREFN");
+    let entity = sim.substrate.entities.get(id).expect("spawned refinery");
+    assert!(entity.lifecycle.object_alive);
+    assert!(!entity.lifecycle.in_limbo);
+    assert!(entity.lifecycle.cell_marked);
+    assert!(entity.in_logic_vector);
+    assert!(sim.live_object_order_snapshot().contains(&id));
+    id
+}
+
+fn arm_full_ore_return(sim: &mut Simulation, entity_id: u64, config: &MinerConfig) {
+    let miner = sim
+        .substrate
+        .entities
+        .get_mut(entity_id)
+        .and_then(|entity| entity.miner.as_mut())
+        .expect("miner component");
+    miner.cargo = (0..miner.capacity_bales)
+        .map(|_| CargoBale {
+            resource_type: ResourceType::Ore,
+            value: config.ore_bale_value,
+        })
+        .collect();
+    miner.state = MinerState::ReturnToRefinery;
+    miner.reserved_refinery = None;
+}
+
 fn arm_search(sim: &mut Simulation, entity_id: u64) {
     let entity = sim
         .substrate
@@ -536,6 +580,236 @@ fn production_harv_outbound_drive_uses_rule_profile() {
     assert_eq!(movement.current_speed, movement.speed * acceleration);
     assert!(movement.current_speed > SIM_ZERO);
     assert_eq!(sim.rng_state(), rng_before);
+}
+
+#[test]
+fn production_stock_harv_far_return_drive_uses_rule_profile() {
+    let oracle = retail_outbound_oracle();
+    let config = MinerConfig::from_rules(&oracle.rules);
+    let refinery_anchor = (10, 10);
+    let refinery_type = oracle.rules.object("GAREFN").expect("GAREFN");
+    let queueing = refinery_type.queueing_cell.expect("stock QueueingCell");
+    let staging = (
+        refinery_anchor.0 + queueing.0,
+        refinery_anchor.1 + queueing.1,
+    );
+    let accepted_dock = (refinery_anchor.0 + 3, refinery_anchor.1 + 1);
+    assert_eq!(queueing, (4, 1));
+    assert_ne!(staging, accepted_dock);
+
+    let dx = u32::from(START.0.abs_diff(refinery_anchor.0));
+    let dy = u32::from(START.1.abs_diff(refinery_anchor.1));
+    let threshold = u32::from(config.too_far_threshold_standard);
+    assert!(dx * dx + dy * dy > threshold * threshold);
+
+    let mut sim = production_sim(0x0715_D008, &oracle);
+    let mut grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+    grid.block_building_movement_cells(
+        refinery_anchor.0,
+        refinery_anchor.1,
+        &refinery_type.foundation,
+        refinery_type.bib,
+    );
+    assert!(!grid.is_walkable(refinery_anchor.0, refinery_anchor.1));
+    assert!(grid.is_walkable(staging.0, staging.1));
+    install_world(&mut sim, &oracle, &grid, &[], &[], true);
+    let refinery_id = spawn_stock_refinery(&mut sim, &oracle, refinery_anchor);
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
+    arm_full_ore_return(&mut sim, entity_id, &config);
+
+    let start = position_tuple(&sim, entity_id);
+    // Mission_Harvest's shared delay-jitter RNG tail remains a separate scheduler residual.
+    advance(&mut sim, &oracle, &grid);
+
+    let harv = oracle.rules.object("HARV").expect("HARV");
+    let entity = sim.substrate.entities.get(entity_id).expect("HARV");
+    let miner = entity.miner.as_ref().expect("miner");
+    let movement = entity.movement_target.as_ref().expect("movement target");
+    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+    assert_eq!(miner.state, MinerState::ReturnToRefinery);
+    assert_eq!(miner.reserved_refinery, Some(refinery_id));
+    assert_eq!(movement.final_goal, Some(staging));
+    assert_eq!(
+        entity.navigation.nav_com,
+        Some(NavTargetRef::cell(staging.0, staging.1)),
+    );
+    assert_eq!(
+        drive.destination,
+        Some(DriveCoord::cell(staging.0, staging.1, 0)),
+    );
+    assert_eq!(movement.speed, ra2_speed_to_leptons_per_second(harv.speed),);
+    assert_eq!(movement.accel_factor, harv.accel_factor);
+    assert_eq!(movement.decel_factor, harv.decel_factor);
+    assert_eq!(
+        movement.slowdown_distance,
+        SimFixed::from_num(harv.slowdown_distance),
+    );
+    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+
+    advance(&mut sim, &oracle, &grid);
+    let entity = sim.substrate.entities.get(entity_id).expect("HARV");
+    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+    let movement = entity.movement_target.as_ref().expect("movement target");
+    assert_eq!(drive.current_speed_fraction, harv.accel_factor);
+    assert_eq!(movement.current_speed, movement.speed * harv.accel_factor,);
+    assert!(movement.current_speed > SIM_ZERO);
+
+    let mut departed = position_tuple(&sim, entity_id) != start;
+    for _ in 0..96 {
+        if departed {
+            break;
+        }
+        advance(&mut sim, &oracle, &grid);
+        departed = position_tuple(&sim, entity_id) != start;
+    }
+    assert!(departed, "stock HARV must physically leave {start:?}");
+}
+
+#[test]
+fn production_stock_harv_far_return_preserves_existing_navcom_owner() {
+    let oracle = retail_outbound_oracle();
+    let config = MinerConfig::from_rules(&oracle.rules);
+    let refinery_anchor = (10, 10);
+    let original = (32, 29);
+    let refinery_type = oracle.rules.object("GAREFN").expect("GAREFN");
+    let queueing = refinery_type.queueing_cell.expect("stock QueueingCell");
+    let staging = (
+        refinery_anchor.0 + queueing.0,
+        refinery_anchor.1 + queueing.1,
+    );
+    let accepted_dock = (refinery_anchor.0 + 3, refinery_anchor.1 + 1);
+    assert_eq!(queueing, (4, 1));
+    assert_ne!(staging, accepted_dock);
+    let mut sim = production_sim(0x0715_D009, &oracle);
+    let mut grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+    grid.block_building_movement_cells(
+        refinery_anchor.0,
+        refinery_anchor.1,
+        &refinery_type.foundation,
+        refinery_type.bib,
+    );
+    assert!(!grid.is_walkable(refinery_anchor.0, refinery_anchor.1));
+    assert!(grid.is_walkable(staging.0, staging.1));
+    install_world(&mut sim, &oracle, &grid, &[original], &[original], true);
+    let refinery_id = spawn_stock_refinery(&mut sim, &oracle, refinery_anchor);
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
+    arm_search(&mut sim, entity_id);
+
+    advance(&mut sim, &oracle, &grid);
+    advance(&mut sim, &oracle, &grid);
+    {
+        let entity = sim.substrate.entities.get(entity_id).expect("HARV");
+        assert_eq!(
+            entity.navigation.nav_com,
+            Some(NavTargetRef::cell(original.0, original.1)),
+        );
+        assert_eq!(
+            entity
+                .drive_locomotion
+                .as_ref()
+                .expect("Drive runtime")
+                .destination,
+            Some(DriveCoord::cell(original.0, original.1, 0)),
+        );
+    }
+
+    {
+        let entity = sim.substrate.entities.get_mut(entity_id).expect("HARV");
+        entity.movement_target = None;
+    }
+    arm_full_ore_return(&mut sim, entity_id, &config);
+
+    let (
+        nav_before,
+        drive_before,
+        target_before,
+        cargo_before,
+        timers_before,
+        miner_contacts_before,
+        dock_entered_before,
+    ) = {
+        let entity = sim.substrate.entities.get(entity_id).expect("HARV");
+        let miner = entity.miner.as_ref().expect("miner");
+        assert_eq!(miner.reserved_refinery, None);
+        (
+            entity.navigation.nav_com,
+            entity
+                .drive_locomotion
+                .as_ref()
+                .expect("Drive runtime")
+                .clone(),
+            miner.target_ore_cell,
+            miner.cargo.clone(),
+            (
+                miner.harvest_timer,
+                miner.rescan_cooldown,
+                miner.dock_enter_retry,
+                miner.approach_hello_timer,
+                miner.mission_deploy_timer,
+                miner.unload_cluster_timer,
+            ),
+            entity.radio_contacts.clone(),
+            entity.dock_entered_with,
+        )
+    };
+    let refinery_contacts_before = sim
+        .substrate
+        .entities
+        .get(refinery_id)
+        .expect("GAREFN")
+        .radio_contacts
+        .clone();
+    let sound_count_before = sim.sound_events.len();
+    assert!(!sim.production.dock_reservations.is_occupied(refinery_id));
+
+    // This oracle covers the state-2 owner gate, not the shared mission-delay RNG tail.
+    advance(&mut sim, &oracle, &grid);
+
+    let entity = sim.substrate.entities.get(entity_id).expect("HARV");
+    let miner = entity.miner.as_ref().expect("miner");
+    let timers_after = (
+        miner.harvest_timer,
+        miner.rescan_cooldown,
+        miner.dock_enter_retry,
+        miner.approach_hello_timer,
+        miner.mission_deploy_timer,
+        miner.unload_cluster_timer,
+    );
+    assert_eq!(miner.state, MinerState::ReturnToRefinery);
+    assert_eq!(miner.reserved_refinery, None);
+    assert_eq!(entity.navigation.nav_com, nav_before);
+    assert_eq!(entity.drive_locomotion.as_ref(), Some(&drive_before));
+    assert!(entity.movement_target.is_none());
+    assert_eq!(miner.target_ore_cell, target_before);
+    assert_eq!(miner.cargo, cargo_before);
+    assert_eq!(timers_after, timers_before);
+    assert_eq!(entity.radio_contacts, miner_contacts_before);
+    assert_eq!(entity.dock_entered_with, dock_entered_before);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(refinery_id)
+            .expect("GAREFN")
+            .radio_contacts,
+        refinery_contacts_before,
+    );
+    assert!(!sim.production.dock_reservations.is_occupied(refinery_id));
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact(refinery_id, entity_id),
+    );
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(refinery_id, entity_id),
+    );
+    assert!(
+        !sim.production
+            .dock_reservations
+            .is_on_pad(refinery_id, entity_id),
+    );
+    assert_eq!(sim.sound_events.len(), sound_count_before);
 }
 
 #[test]
