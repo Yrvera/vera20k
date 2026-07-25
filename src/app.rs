@@ -271,6 +271,7 @@ pub(crate) struct AppState {
     pub(crate) main_menu_shell_chrome:
         Option<crate::render::main_menu_shell_chrome::MainMenuShellChromeAtlas>,
     pub(crate) main_menu_movie: Option<crate::render::bink_movie::BinkMovieSurface>,
+    pub(crate) main_menu_movie_owner: Option<crate::app_main_menu_shell_render::Ra2tsDialogOwner>,
     pub(crate) main_menu_movie_base: Option<crate::ui::main_menu_shell::MainMenuMovieBase>,
     pub(crate) main_menu_movie_last_step: Instant,
     pub(crate) main_menu_shell_failed: bool,
@@ -862,6 +863,10 @@ impl App {
     }
 
     fn enter_native_skirmish_from_single_player(state: &mut AppState) {
+        // Native destroys dialog 0x100 and its child 0x71A movie handle before
+        // constructing 0x102. Drop the hidden Rust session as well so returning
+        // to 0x100 cannot continue the pre-Skirmish RA2TS timeline.
+        crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
         state.main_menu_show_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = true;
         state.skirmish_shell_return_to_single_player_shell = true;
@@ -3149,8 +3154,7 @@ impl App {
             .main_menu_movie_base
             .is_some_and(|base| base != movie_base)
         {
-            state.main_menu_movie = None;
-            state.main_menu_movie_base = None;
+            crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
         }
     }
 
@@ -3741,6 +3745,7 @@ impl App {
             shell_controller: crate::ui::shell::controller::DialogController::default(),
             main_menu_shell_chrome,
             main_menu_movie: None,
+            main_menu_movie_owner: None,
             main_menu_movie_base: None,
             main_menu_movie_last_step: Instant::now(),
             main_menu_shell_failed,
