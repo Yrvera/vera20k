@@ -173,7 +173,10 @@ pub(crate) fn render_single_player_shell(
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
 ) -> Result<SinglePlayerShellRenderResult> {
-    crate::app_main_menu_shell_render::ensure_movie_for_current_layout(state)?;
+    crate::app_main_menu_shell_render::ensure_movie_for_current_layout(
+        state,
+        crate::app_main_menu_shell_render::Ra2tsDialogOwner::SinglePlayer0x100,
+    )?;
     if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
         state.main_menu_shell_failed = true;
         return Ok(SinglePlayerShellRenderResult::Fallback);
