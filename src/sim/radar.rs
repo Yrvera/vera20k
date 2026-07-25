@@ -1,8 +1,9 @@
 //! Radar availability detection and event system.
 //!
 //! In RA2/YR, the minimap (Radar Screen) only appears when the player owns a
-//! powered radar-providing building. Buildings with `Radar=yes` or `SpySat=yes`
-//! provide radar. Radar goes offline when power balance is negative (produced < drained).
+//! radar-providing building. Buildings with `Radar=yes` provide the tactical
+//! radar; `SpySat=yes` is handled by the separate shroud-reveal path. Radar goes
+//! offline when the house power balance is negative (produced < drained).
 //!
 //! Also implements the radar event (ping) system: animated rectangles that flash
 //! on the minimap when combat or other events occur. Spacebar cycles through the
@@ -20,8 +21,9 @@ use std::collections::VecDeque;
 
 /// Check if the given owner has at least one operational radar-providing building.
 ///
-/// A building provides radar if its ObjectType has `Radar=yes` OR `SpySat=yes`
-/// AND the building is powered (not disabled by low-power state).
+/// A building provides radar if its ObjectType has `Radar=yes` and the house is
+/// not in low power. This is a house-level gate; stock `GAAIRC` does not require
+/// `Powered=yes`.
 pub fn has_radar_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> bool {
     let Some(owner_id) = sim.interner.get(owner) else {
         return false;
@@ -330,6 +332,30 @@ mod tests {
             &sim.interner,
         );
         assert!(!has_radar_for_owner(&sim, &rules, "Americans"));
+    }
+
+    #[test]
+    fn spy_sat_does_not_replace_a_radar_provider() {
+        let mut sim = Simulation::new();
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+             [BuildingTypes]\n0=GASPYSAT\n\
+             [GASPYSAT]\nName=Spy Satellite\nSpySat=yes\nPower=0\nFoundation=2x2\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("spy satellite test rules");
+        spawn_building(&mut sim, 1, "Americans", "GASPYSAT");
+        crate::sim::power_system::tick_power_states(
+            &mut sim.power_states,
+            &mut sim.substrate.entities,
+            &rules,
+            16,
+            &sim.interner,
+        );
+
+        assert!(
+            !has_radar_for_owner(&sim, &rules, "Americans"),
+            "SpySat full-map reveal is separate from the native Radar=yes gate"
+        );
     }
 
     #[test]

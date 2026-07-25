@@ -92,10 +92,10 @@ fn recalculate_power_for_owner(
         // Theoretical total includes ALL buildings regardless of state.
         theoretical += obj.power.unsigned_abs() as i32;
 
-        // Skip buildings still under construction for operational power calc.
-        if entity.building_up.is_some() {
-            continue;
-        }
+        // BuildingUp is presentation state, not lifecycle authority. Native
+        // AI_AssessPower iterates every live owned building and lets
+        // GetPowerOutput/GetPowerDrain decide its contribution; it has no
+        // construction-state exclusion.
 
         // Producer branch: base = max(Power, 0), plus ExtraPower × occupants
         // for InfantryAbsorb/UnitAbsorb buildings (gate is strict on all
@@ -243,6 +243,17 @@ pub fn has_active_radar(
     owner_id: InternedId,
     interner: &crate::sim::intern::StringInterner,
 ) -> bool {
+    // Native UpdateTacticalRadarAvailability gates the house on its aggregate
+    // power ratio before scanning Radar= providers. Stock GAAIRC does not set
+    // Powered=, so routing this through is_building_powered would leave radar
+    // online during low power.
+    if power_states
+        .get(&owner_id)
+        .is_some_and(|state| state.is_low_power)
+    {
+        return false;
+    }
+
     entities.values().any(|e| {
         !e.dying
             && e.category == EntityCategory::Structure
@@ -250,8 +261,7 @@ pub fn has_active_radar(
             && e.building_up.is_none()
             && rules
                 .object(interner.resolve(e.type_ref))
-                .is_some_and(|obj| obj.radar || obj.spy_sat)
-            && is_building_powered(power_states, rules, e, interner)
+                .is_some_and(|obj| obj.radar)
     })
 }
 
@@ -558,7 +568,7 @@ BuildSpeed=0.02
     }
 
     #[test]
-    fn test_building_under_construction_excluded() {
+    fn test_live_building_under_construction_contributes_power() {
         let rules = test_rules();
         let mut store = EntityStore::new();
         let mut plant = make_building(1, "GAPOWR", "Allies", 600, 600);
@@ -574,8 +584,8 @@ BuildSpeed=0.02
         recalculate_power_for_owner(&mut state, &store, &rules, allies, &interner);
 
         assert_eq!(
-            state.total_output, 0,
-            "building under construction produces no power"
+            state.total_output, 200,
+            "native power authority includes a live building during buildup"
         );
     }
 
@@ -856,7 +866,7 @@ BuildSpeed=0.02
     }
 
     #[test]
-    fn test_yapowr_under_construction_excluded() {
+    fn test_live_yapowr_under_construction_keeps_native_output_formula() {
         let rules = yapowr_rules();
         let mut store = EntityStore::new();
         let mut e = make_yapowr(1, "Yuri", 750, 750, 5);
@@ -872,8 +882,8 @@ BuildSpeed=0.02
         recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
 
         assert_eq!(
-            state.total_output, 0,
-            "building_up suppresses all output including bonus"
+            state.total_output, 650,
+            "building_up does not bypass the native base-plus-occupant formula"
         );
     }
 }
