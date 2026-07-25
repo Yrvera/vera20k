@@ -353,8 +353,21 @@ def ensure_fresh(
     """Return fresh health, rebuilding synchronously only when required."""
     db_path = db_path.resolve()
     workspace = workspace.resolve()
+    health = inspect_index(
+        db_path,
+        workspace,
+        roots=roots,
+        limit=limit,
+    )
+    if health["fresh"]:
+        health["refreshed"] = False
+        return health
+
     try:
         with index_lock(db_path):
+            # Another process may have published the required generation while
+            # this caller waited. Recheck under the publication lock before
+            # performing the expensive rebuild.
             health = inspect_index(
                 db_path,
                 workspace,

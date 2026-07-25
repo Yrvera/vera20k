@@ -53,6 +53,7 @@ instead of bulk-decomposing the whole registry.
 ## Commands
 
 ```powershell
+python tools/research_index/navigate.py "power outage recovery"
 python -m tools.system_map import
 python -m tools.system_map check --require-sources
 python -m tools.system_map render --output target/system-map-v2
@@ -62,6 +63,14 @@ python -m tools.system_map loop LOOP-004-HARVEST-CREDIT
 python -m tools.system_map owners --limit 20
 python -m tools.system_map stale
 ```
+
+The research navigator is the preferred broad entry point when both evidence
+and topology are needed. It calls the public read-only API in
+`tools/system_map/api.py`, preserves System Map as an independent truth domain,
+and labels natural-language matches as candidates. Use the standalone commands
+for detailed inspection and topology maintenance. Git probes used by validation
+and freshness are non-interactive and time-bounded so MCP stdio sessions cannot
+inherit a prompt or hang indefinitely.
 
 `owners` is a navigation view over mapped load-bearing systems. It is not a
 gap scan and never treats absence from the bootstrap graph as low priority.

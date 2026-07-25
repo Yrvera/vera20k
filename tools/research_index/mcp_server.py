@@ -20,9 +20,14 @@ import threading
 from pathlib import Path
 from typing import Literal
 
+import anyio
+
 # Make the research_index package importable when launched by `python mcp_server.py`.
 _SERVER_DIR = Path(__file__).resolve().parent
+# Repo root is two parents up from this file's directory.
+WORKSPACE = _SERVER_DIR.parents[1]
 sys.path.insert(0, str(_SERVER_DIR))
+sys.path.insert(0, str(WORKSPACE))
 
 # Reconfigure stdout to UTF-8 (matches the CLI shims; research docs contain non-ASCII).
 if hasattr(sys.stdout, "reconfigure"):
@@ -61,8 +66,11 @@ from research_index.lifecycle import (
     inspect_index,
     refresh_index,
 )
+from research_index.navigator import research_navigate as _research_navigate_lib
+from research_index.navigator_formatting import format_research_navigator
 from research_index.system_map import system_map
 from research_index.validation import validate_index
+from tools.system_map.api import load_report as _load_system_map_report_lib
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,9 +78,6 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 logger = logging.getLogger("research-index-mcp")
-
-# Repo root is two parents up from this file's directory.
-WORKSPACE = _SERVER_DIR.parents[1]
 
 mcp = FastMCP("research-index")
 _LIFECYCLE_LOCK = threading.RLock()
@@ -82,6 +87,11 @@ def _ensure_fresh_index() -> dict:
     """Certify one current generation before serving indexed evidence."""
     with _LIFECYCLE_LOCK:
         return ensure_fresh(DEFAULT_DB, WORKSPACE)
+
+
+def _load_system_map_report() -> dict:
+    """Load one validated live topology without importing CLI internals."""
+    return _load_system_map_report_lib(WORKSPACE, require_sources=True)
 
 
 @mcp.tool()
@@ -373,6 +383,79 @@ def research_brief(
     if format == "json":
         return json.dumps(result, indent=2)
     return format_research_brief(result)
+
+
+@mcp.tool()
+async def research_navigate(
+    query: str,
+    anchors: list[str] | None = None,
+    system: str | None = None,
+    source: str | None = None,
+    system_id: str | None = None,
+    loop_id: str | None = None,
+    limit: int = 8,
+    format: Literal["text", "json"] = "text",
+) -> str:
+    """Unified evidence and System Map navigator.
+
+    This is a thin façade over two independent navigation domains. Research
+    results remain cited evidence hints; System Map lexical matches remain
+    candidates rather than verified owners or parity claims. Use exact
+    ``system_id`` or ``loop_id`` selectors to pin a canonical route.
+
+    Args:
+        query: Natural-language topic or an exact canonical GSI/LOOP ID.
+        anchors: Optional exact symbols or addresses, limited to eight.
+        system: Optional research-index system filter.
+        source: Optional research source-kind filter.
+        system_id: Optional exact canonical ``GSI-NN.NN`` selection.
+        loop_id: Optional exact canonical ``LOOP-NNN-SLUG`` selection.
+        limit: Candidate/brief rows per section, from 1 through 20.
+        format: "text" for a bounded handoff, "json" for structured data.
+    """
+    return await anyio.to_thread.run_sync(
+        lambda: _research_navigate_request(
+            query,
+            anchors=anchors,
+            system=system,
+            source=source,
+            system_id=system_id,
+            loop_id=loop_id,
+            limit=limit,
+            format=format,
+        )
+    )
+
+
+def _research_navigate_request(
+    query: str,
+    *,
+    anchors: list[str] | None,
+    system: str | None,
+    source: str | None,
+    system_id: str | None,
+    loop_id: str | None,
+    limit: int,
+    format: Literal["text", "json"],
+) -> str:
+    """Run filesystem, SQLite, and Git work outside the MCP event loop."""
+    _ensure_fresh_index()
+    report = _load_system_map_report()
+    result = _research_navigate_lib(
+        DEFAULT_DB,
+        WORKSPACE,
+        report,
+        query,
+        system=system,
+        source_kind=source,
+        anchors=anchors,
+        system_id=system_id,
+        loop_id=loop_id,
+        limit=limit,
+    )
+    if format == "json":
+        return json.dumps(result, indent=2)
+    return format_research_navigator(result)
 
 
 @mcp.tool()

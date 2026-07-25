@@ -17,6 +17,7 @@ from .model import (
 
 _ADDRESS_IN_TEXT_RE = re.compile(r"\b0x[0-9A-Fa-f]{4,8}\b")
 _CITATION_LINE_RE = re.compile(r"^(.*?):(\d+)(?:-(\d+))?$")
+_GIT_TIMEOUT_SECONDS = 15.0
 
 
 def validate_observation_commits(
@@ -26,15 +27,14 @@ def validate_observation_commits(
 ) -> None:
     """Verify every declared observation commit exists on current history."""
 
-    probe = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=repo,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    probe = _git(repo, "rev-parse", "--is-inside-work-tree")
+    if probe is None:
+        _warning(
+            diagnostics,
+            "GIT_OBSERVATION_CHECK_UNAVAILABLE",
+            "Git observation checks were unavailable or timed out",
+        )
+        return
     if probe.returncode != 0:
         return
     locations: dict[str, list[str]] = {}
@@ -56,12 +56,15 @@ def validate_observation_commits(
     for commit, fields in sorted(locations.items()):
         if not COMMIT_RE.fullmatch(commit):
             continue
-        exists = subprocess.run(
-            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
-            cwd=repo,
-            check=False,
-            capture_output=True,
-        )
+        exists = _git(repo, "cat-file", "-e", f"{commit}^{{commit}}")
+        if exists is None:
+            _warning(
+                diagnostics,
+                "GIT_OBSERVATION_CHECK_UNAVAILABLE",
+                "Git observation checks were unavailable or timed out",
+                field=", ".join(fields),
+            )
+            return
         if exists.returncode != 0:
             _error(
                 diagnostics,
@@ -70,12 +73,21 @@ def validate_observation_commits(
                 field=", ".join(fields),
             )
             continue
-        ancestor = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
-            cwd=repo,
-            check=False,
-            capture_output=True,
+        ancestor = _git(
+            repo,
+            "merge-base",
+            "--is-ancestor",
+            commit,
+            "HEAD",
         )
+        if ancestor is None:
+            _warning(
+                diagnostics,
+                "GIT_OBSERVATION_CHECK_UNAVAILABLE",
+                "Git observation checks were unavailable or timed out",
+                field=", ".join(fields),
+            )
+            return
         if ancestor.returncode != 0:
             _error(
                 diagnostics,
@@ -83,6 +95,25 @@ def validate_observation_commits(
                 f"observation commit is not an ancestor of HEAD: {commit}",
                 field=", ".join(fields),
             )
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
+    """Run a bounded non-interactive Git probe in CLI or server contexts."""
+
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
 
 
 def validate_native_edge_evidence(

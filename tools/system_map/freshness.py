@@ -9,6 +9,9 @@ import subprocess
 from .model import COMMIT_RE
 
 
+_GIT_TIMEOUT_SECONDS = 15.0
+
+
 def repository_state(repo: Path) -> dict:
     """Return deterministic read-only Git state for report provenance."""
 
@@ -309,11 +312,13 @@ def _git(repo: Path, *args: str) -> str | None:
             cwd=repo,
             check=False,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=_GIT_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     return completed.stdout if completed.returncode == 0 else None
 
@@ -345,9 +350,11 @@ class _GitInspector:
                     cwd=self.repo,
                     check=False,
                     capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=_GIT_TIMEOUT_SECONDS,
                 )
                 self._exists[commit] = completed.returncode == 0
-            except OSError:
+            except (OSError, subprocess.TimeoutExpired):
                 self._exists[commit] = False
         return self._exists[commit]
 
@@ -359,9 +366,11 @@ class _GitInspector:
                     cwd=self.repo,
                     check=False,
                     capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=_GIT_TIMEOUT_SECONDS,
                 )
                 self._ancestor[commit] = completed.returncode == 0
-            except OSError:
+            except (OSError, subprocess.TimeoutExpired):
                 self._ancestor[commit] = False
         return self._ancestor[commit]
 

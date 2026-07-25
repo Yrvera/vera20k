@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
@@ -806,6 +807,29 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(health["roots"], ["notes"])
             self.assertEqual(health["current_file_count"], 1)
 
+    def test_fresh_ensure_does_not_take_publication_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / "docs/research"
+            root.mkdir(parents=True)
+            (root / "VALID.md").write_text(
+                "# Valid\nEvidence.\n",
+                encoding="utf-8",
+            )
+            db_path = workspace / "research.db"
+            refresh_index(db_path, workspace, roots=["docs/research"])
+
+            with mock.patch(
+                "research_index.lifecycle.index_lock",
+                side_effect=AssertionError(
+                    "fresh reads must not acquire the publication lock"
+                ),
+            ):
+                health = ensure_fresh(db_path, workspace)
+
+            self.assertTrue(health["fresh"])
+            self.assertFalse(health["refreshed"])
+
     def test_unsafe_and_empty_roots_cannot_replace_a_valid_generation(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,
@@ -1250,6 +1274,35 @@ class MCPServerSmokeTests(unittest.TestCase):
         # anchors=None should normalize to [] without exception.
         out = self.mcp_server.research_brief(query="BridgeRepairHut", anchors=None, limit=3)
         self.assertNotEqual(out.strip(), "")
+
+    def test_research_navigate_returns_bounded_text(self) -> None:
+        out = asyncio.run(
+            self.mcp_server.research_navigate(
+                query="power outage recovery",
+                limit=3,
+            )
+        )
+        self.assertIn("Research navigator:", out)
+        self.assertIn(
+            "candidate only; not verified ownership",
+            out,
+        )
+        self.assertIn("LOOP-012-POWER-OUTAGE-RECOVERY", out)
+
+    def test_research_navigate_exact_selection_round_trips_json(self) -> None:
+        out = asyncio.run(
+            self.mcp_server.research_navigate(
+                query="GSI-07.15",
+                limit=2,
+                format="json",
+            )
+        )
+        result = json.loads(out)
+        self.assertTrue(result["matched"])
+        self.assertEqual(
+            result["system_map"]["selected_system"]["system"]["id"],
+            "GSI-07.15",
+        )
 
     def test_research_health_reports_live_generation(self) -> None:
         out = self.mcp_server.research_health(format="json")

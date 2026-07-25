@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from tools.system_map.tests.helpers import (
     registry_fixture,
@@ -457,6 +458,28 @@ class ValidationTests(unittest.TestCase):
             self.assertIn(
                 "UNKNOWN_OBSERVATION_COMMIT",
                 {item.code for item in errors(diagnostics)},
+            )
+
+    def test_unavailable_git_observation_check_is_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            registry = registry_fixture()
+            topology = topology_fixture(repo)
+
+            with mock.patch(
+                "tools.system_map.evidence_validation._git",
+                return_value=None,
+            ):
+                diagnostics = validate_all(
+                    repo,
+                    registry,
+                    source_lock_fixture(registry),
+                    topology,
+                )
+
+            self.assertIn(
+                "GIT_OBSERVATION_CHECK_UNAVAILABLE",
+                {item.code for item in diagnostics},
             )
 
     def test_semantically_duplicate_edges_are_rejected(self) -> None:
