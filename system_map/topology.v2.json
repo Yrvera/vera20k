@@ -425,11 +425,24 @@
           "symbol": "retail_yuri_generic_route_uses_side_two_and_builds_production_clock",
           "coverage": "representative",
           "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"
+        },
+        {
+          "path": "src/app_sidebar_render.rs",
+          "symbol": "current_sidebar_theme / sidebar_theme_for_owner_sources",
+          "coverage": "representative",
+          "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"
+        },
+        {
+          "path": "src/app_skirmish.rs",
+          "symbol": "explicit_launch_local_owner_drives_production_sidebar_theme",
+          "coverage": "representative",
+          "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"
         }
       ],
       "notes": [
-        "Production progress presentation consumes side-correct generic art while radar/background art retains its theme-specific authority.",
-        "Retail Yuri/side-2 provenance, SHP decode, GCLOCK CPU atlas geometry/frame count, and production instance construction are verified; queue-to-theme execution, GPU pixels, exact conversion/blending, and cadence remain unverified."
+        "Production progress presentation consumes side-correct generic art and resolves ordinary launch-created local owners through their live side identity when no matching map-roster row exists.",
+        "Matching map-roster rows intentionally retain priority, including a deliberate launch-name collision; map-load radar animation initialization is separate GSI-13.23 drift and remains hardwired to Allied.",
+        "Retail Yuri/side-2 provenance, SHP decode, GCLOCK CPU atlas geometry/frame count, and production instance construction have named executable coverage; GPU pixels, exact conversion/blending, and progress cadence remain unverified."
       ]
     },
     "GSI-17.04": {
@@ -1495,7 +1508,9 @@
         {"path": "src/assets/asset_manager.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
         {"path": "src/render/sidebar_chrome.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
         {"path": "src/render/sidebar_chrome_tests.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
-        {"path": "src/app_sidebar_build.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"}
+        {"path": "src/app_sidebar_build.rs", "coverage": "representative", "observed_at_commit": "7448a5a55d8ee9a7c9daf7b45254d250f4acc69e"},
+        {"path": "src/app_sidebar_render.rs", "coverage": "representative", "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"},
+        {"path": "src/app_skirmish.rs", "coverage": "representative", "observed_at_commit": "82b022134ab98c7203c8a680bd7479d71f60bed6"}
       ],
       "stages": [
         {"order": 1, "system": "GSI-14.10", "action": "Select production cameo."},
@@ -1517,7 +1532,7 @@
       ],
       "oracle": {
         "status": "UNVERIFIED",
-        "gate": "Sealed-retail Rust oracles verify bounded placement/lifecycle/power plus Yuri/side-2 archive and palette provenance, Yuri GCLOCK CPU atlas geometry/frame count, and production instance creation. Queue-to-theme execution, GPU/swapchain pixels, exact conversion/blending, progress timing/cadence, and an active-gamemd full-loop differential remain unverified."
+        "gate": "Sealed-retail Rust oracles verify bounded placement/lifecycle/power plus Yuri/side-2 archive and palette provenance, Yuri GCLOCK CPU atlas geometry/frame count, and production instance creation. A complete explicit America/Russia/Yuri launch feeds its returned local owner through the production-shared theme resolver. Map-load-result-to-AppState pinning, deliberate owner/roster name collisions, GPU/swapchain pixels, exact conversion/blending, radar theme initialization, progress timing/cadence, and an active-gamemd full-loop differential remain unverified or drifting."
       },
       "evidence": [
         "docs/research/FACTORYCLASS_PRODUCTION_DEEP_DIVE.md",
