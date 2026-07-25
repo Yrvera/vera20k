@@ -1,0 +1,813 @@
+//! Merged-retail production oracles for stock miner outbound Drive commands.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+
+use crate::map::bridge_facts::BridgeCellFacts;
+use crate::map::overlay_types::OverlayTypeRegistry;
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+use crate::rules::art_data::ArtRegistry;
+use crate::rules::ini_parser::IniFile;
+use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
+use crate::rules::ruleset::RuleSet;
+use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+use crate::sim::components::{DriveCoord, NavTargetRef};
+use crate::sim::miner::{MinerKind, MinerState, ResourceNode, ResourceType};
+use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer, PiggybackLocomotor};
+use crate::sim::overlay_grid::OverlayGrid;
+use crate::sim::pathfinding::PathGrid;
+use crate::sim::pathfinding::passability::LandType;
+use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::world::Simulation;
+use crate::util::fixed_math::{SIM_ZERO, SimFixed, ra2_speed_to_leptons_per_second};
+
+const GRID_SIZE: u16 = 64;
+const START: (u16, u16) = (32, 32);
+const ONE_ORE_LEVEL: u16 = 120;
+
+struct RetailOutboundOracle {
+    rules: RuleSet,
+    overlays: OverlayTypeRegistry,
+    tib01: u8,
+    clear_speed_costs: SpeedCostProfile,
+    tiberium_speed_costs: SpeedCostProfile,
+}
+
+fn merged_ini(base: &str, patch: &str) -> IniFile {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut ini = IniFile::from_str(
+        &fs::read_to_string(root.join(base)).unwrap_or_else(|error| panic!("read {base}: {error}")),
+    );
+    let patch_ini = IniFile::from_str(
+        &fs::read_to_string(root.join(patch))
+            .unwrap_or_else(|error| panic!("read {patch}: {error}")),
+    );
+    ini.merge(&patch_ini);
+    ini
+}
+
+fn retail_outbound_oracle() -> RetailOutboundOracle {
+    let rules_ini = merged_ini("ini/rules.ini", "ini/rulesmd.ini");
+    let mut rules = RuleSet::from_ini(&rules_ini).expect("merged retail rules");
+    let art_ini = merged_ini("ini/art.ini", "ini/artmd.ini");
+    rules.merge_art_data(&ArtRegistry::from_ini(&art_ini));
+    let overlays = OverlayTypeRegistry::from_ini(&rules_ini, None);
+    let tib01 = overlays.id_for_name("TIB01").expect("retail TIB01");
+    let clear_speed_costs = rules
+        .terrain_rules
+        .semantics_by_name("Clear")
+        .expect("merged [Clear]")
+        .speed_costs;
+    let tiberium_speed_costs = rules
+        .terrain_rules
+        .semantics_by_name("Tiberium")
+        .expect("merged [Tiberium]")
+        .speed_costs;
+
+    assert_eq!(tiberium_speed_costs.track, Some(70));
+    assert!(overlays.flags(tib01).is_some_and(|flags| flags.tiberium));
+    for (type_id, expected_locomotor, teleporter) in [
+        ("HARV", LocomotorKind::Drive, false),
+        ("CMIN", LocomotorKind::Teleport, true),
+    ] {
+        let object = rules
+            .object(type_id)
+            .unwrap_or_else(|| panic!("retail {type_id}"));
+        assert!(object.harvester, "{type_id} Harvester=yes");
+        assert_eq!(object.speed, 4, "{type_id} Speed=4");
+        assert_eq!(object.turret_rot, 5, "{type_id} ROT=5");
+        assert!(object.crusher, "{type_id} Crusher=yes");
+        assert_eq!(object.movement_zone, MovementZone::Crusher);
+        assert_eq!(object.speed_type, SpeedType::Track);
+        assert_eq!(object.locomotor, expected_locomotor);
+        assert_eq!(object.teleporter, teleporter);
+        assert!(object.accelerates);
+        assert_eq!(object.accel_factor, SimFixed::lit("0.03"));
+        assert_eq!(object.decel_factor, SimFixed::lit("0.002"));
+        assert_eq!(object.slowdown_distance, 500);
+    }
+
+    RetailOutboundOracle {
+        rules,
+        overlays,
+        tib01,
+        clear_speed_costs,
+        tiberium_speed_costs,
+    }
+}
+
+fn production_sim(seed: u64, oracle: &RetailOutboundOracle) -> Simulation {
+    let mut sim = Simulation::with_seed(seed);
+    oracle.rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&oracle.rules);
+    sim
+}
+
+fn resolved_cell(
+    rx: u16,
+    ry: u16,
+    terrain_class: TerrainClass,
+    land_type: u8,
+    speed_costs: SpeedCostProfile,
+) -> ResolvedTerrainCell {
+    ResolvedTerrainCell {
+        rx,
+        ry,
+        source_tile_index: 0,
+        source_sub_tile: 0,
+        final_tile_index: 0,
+        final_sub_tile: 0,
+        is_wood_bridge_repair_tile: false,
+        level: 0,
+        filled_clear: false,
+        tileset_index: Some(0),
+        land_type,
+        yr_cell_land_type: land_type,
+        slope_type: 0,
+        template_height: 0,
+        render_offset_x: 0,
+        render_offset_y: 0,
+        terrain_class,
+        speed_costs,
+        is_water: false,
+        is_cliff_like: false,
+        is_rough: false,
+        is_road: false,
+        accepts_smudge: false,
+        allows_tiberium: false,
+        is_cliff_redraw: false,
+        variant: 0,
+        has_ramp: false,
+        canonical_ramp: None,
+        ground_walk_blocked: false,
+        terrain_object_blocks: false,
+        overlay_blocks: false,
+        zone_type: zone_class::GROUND,
+        base_ground_walk_blocked: false,
+        base_build_blocked: false,
+        base_land_type: LandType::Clear.as_index(),
+        base_yr_cell_land_type: LandType::Clear.as_index(),
+        base_terrain_class: TerrainClass::Clear,
+        base_speed_costs: speed_costs,
+        build_blocked: false,
+        has_bridge_deck: false,
+        bridge_walkable: false,
+        bridge_transition: false,
+        bridge_deck_level: 0,
+        bridge_layer: None,
+        bridge_facts: BridgeCellFacts::default(),
+        tube_index: None,
+        radar_left: [0, 0, 0],
+        radar_right: [0, 0, 0],
+        has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
+    }
+}
+
+fn staged_terrain(oracle: &RetailOutboundOracle, ore_cells: &[(u16, u16)]) -> ResolvedTerrainGrid {
+    let clear_land_type = LandType::Clear.as_index();
+    let mut terrain = ResolvedTerrainGrid::from_cells(
+        GRID_SIZE,
+        GRID_SIZE,
+        (0..GRID_SIZE)
+            .flat_map(|ry| {
+                (0..GRID_SIZE).map(move |rx| {
+                    resolved_cell(
+                        rx,
+                        ry,
+                        TerrainClass::Clear,
+                        clear_land_type,
+                        oracle.clear_speed_costs,
+                    )
+                })
+            })
+            .collect(),
+    );
+    for &(rx, ry) in ore_cells {
+        let cell = terrain.cell_mut(rx, ry).expect("staged ore cell");
+        let tiberium_land_type = LandType::Tiberium.as_index();
+        cell.land_type = tiberium_land_type;
+        cell.yr_cell_land_type = tiberium_land_type;
+        cell.terrain_class = TerrainClass::Tiberium;
+        cell.speed_costs = oracle.tiberium_speed_costs;
+        cell.allows_tiberium = true;
+    }
+    terrain
+}
+
+fn install_world(
+    sim: &mut Simulation,
+    oracle: &RetailOutboundOracle,
+    grid: &PathGrid,
+    ore_cells: &[(u16, u16)],
+    nodes: &[(u16, u16)],
+    install_zones: bool,
+) {
+    let terrain = staged_terrain(oracle, ore_cells);
+    sim.terrain_costs = SpeedType::ALL_WITH_COSTS
+        .iter()
+        .copied()
+        .map(|speed_type| {
+            (
+                speed_type,
+                TerrainCostGrid::from_resolved_terrain(&terrain, speed_type),
+            )
+        })
+        .collect();
+    sim.resolved_terrain = Some(terrain);
+    sim.overlay_grid = Some(OverlayGrid::new(GRID_SIZE, GRID_SIZE));
+    for &(rx, ry) in ore_cells {
+        sim.overlay_grid
+            .as_mut()
+            .expect("overlay grid")
+            .place_overlay(rx, ry, oracle.tib01, 0);
+    }
+    for &cell in nodes {
+        sim.production.resource_nodes.insert(
+            cell,
+            ResourceNode {
+                resource_type: ResourceType::Ore,
+                remaining: ONE_ORE_LEVEL,
+            },
+        );
+    }
+    if install_zones {
+        sim.rebuild_zone_grid(grid);
+        assert!(sim.zone_grid.is_some());
+    } else {
+        sim.zone_grid = None;
+    }
+    for &(rx, ry) in ore_cells {
+        assert_eq!(
+            sim.terrain_costs
+                .get(&SpeedType::Track)
+                .expect("Track terrain costs")
+                .cost_at(rx, ry),
+            70,
+        );
+    }
+}
+
+fn spawn_stock_miner(
+    sim: &mut Simulation,
+    oracle: &RetailOutboundOracle,
+    type_id: &str,
+    expected_kind: MinerKind,
+) -> u64 {
+    let id = sim
+        .spawn_object(
+            type_id,
+            "Americans",
+            START.0,
+            START.1,
+            0,
+            &oracle.rules,
+            &BTreeMap::new(),
+        )
+        .unwrap_or_else(|| panic!("spawn {type_id}"));
+    let entity = sim.substrate.entities.get(id).expect("spawned miner");
+    assert!(entity.lifecycle.object_alive);
+    assert!(!entity.lifecycle.in_limbo);
+    assert!(entity.lifecycle.cell_marked);
+    assert!(entity.in_logic_vector);
+    assert!(sim.live_object_order_snapshot().contains(&id));
+    assert_eq!(
+        entity.miner.as_ref().expect("miner component").kind,
+        expected_kind,
+    );
+    assert_eq!(
+        entity
+            .locomotor
+            .as_ref()
+            .expect("stock locomotor")
+            .movement_zone,
+        MovementZone::Crusher,
+    );
+    id
+}
+
+fn arm_search(sim: &mut Simulation, entity_id: u64) {
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(entity_id)
+        .expect("miner entity");
+    let miner = entity.miner.as_mut().expect("miner component");
+    miner.state = MinerState::SearchOre;
+    miner.target_ore_cell = None;
+    miner.harvest_timer.clear();
+}
+
+fn advance(sim: &mut Simulation, oracle: &RetailOutboundOracle, grid: &PathGrid) {
+    let _ = sim.advance_tick(
+        &[],
+        Some(&oracle.rules),
+        &BTreeMap::new(),
+        Some(grid),
+        Some(&oracle.overlays),
+        67,
+    );
+}
+
+fn position_tuple(sim: &Simulation, entity_id: u64) -> (u16, u16, SimFixed, SimFixed) {
+    let position = &sim
+        .substrate
+        .entities
+        .get(entity_id)
+        .expect("entity")
+        .position;
+    (position.rx, position.ry, position.sub_x, position.sub_y)
+}
+
+fn assert_ore_intact(sim: &Simulation, oracle: &RetailOutboundOracle, target: (u16, u16)) {
+    let node = sim
+        .production
+        .resource_nodes
+        .get(&target)
+        .expect("positive ore node");
+    assert_eq!(node.resource_type, ResourceType::Ore);
+    assert_eq!(node.remaining, ONE_ORE_LEVEL);
+    let overlay = sim
+        .overlay_grid
+        .as_ref()
+        .expect("overlay grid")
+        .cell(target.0, target.1);
+    assert_eq!(overlay.overlay_id, Some(oracle.tib01));
+    assert_eq!(overlay.overlay_data, 0);
+}
+
+fn assert_command_state(
+    sim: &Simulation,
+    oracle: &RetailOutboundOracle,
+    entity_id: u64,
+    type_id: &str,
+    target: (u16, u16),
+) {
+    let object = oracle.rules.object(type_id).expect("retail miner type");
+    let entity = sim.substrate.entities.get(entity_id).expect("miner entity");
+    let movement = entity.movement_target.as_ref().expect("movement target");
+    assert_eq!(movement.path.first().copied(), Some(START));
+    assert_eq!(movement.path.last().copied(), Some(target));
+    assert_eq!(movement.final_goal, Some(target));
+    assert_eq!(
+        movement.speed,
+        ra2_speed_to_leptons_per_second(object.speed),
+    );
+    assert_eq!(movement.accel_factor, object.accel_factor);
+    assert_eq!(movement.decel_factor, object.decel_factor);
+    assert_eq!(
+        movement.slowdown_distance,
+        SimFixed::from_num(object.slowdown_distance),
+    );
+    assert!(!movement.ignore_terrain_cost);
+    assert!(!movement.bypass_grid);
+    assert_eq!(
+        entity.navigation.nav_com,
+        Some(NavTargetRef::cell(target.0, target.1)),
+    );
+    let expected_coord = DriveCoord::cell(target.0, target.1, 0);
+    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+    assert_eq!(drive.destination, Some(expected_coord));
+    assert_eq!(drive.head_to, Some(expected_coord));
+    assert_eq!(
+        drive.path.directions.len(),
+        movement.path.len().saturating_sub(1),
+    );
+    assert!(!drive.path.directions.is_empty());
+    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+    assert_eq!(
+        entity.locomotor.as_ref().expect("active locomotor").kind,
+        LocomotorKind::Drive,
+    );
+}
+
+fn locomotor_tuple(
+    sim: &Simulation,
+    entity_id: u64,
+) -> (
+    LocomotorKind,
+    Option<LocomotorKind>,
+    Option<PiggybackLocomotor>,
+    MovementLayer,
+    GroundMovePhase,
+) {
+    let locomotor = sim
+        .substrate
+        .entities
+        .get(entity_id)
+        .and_then(|entity| entity.locomotor.as_ref())
+        .expect("locomotor");
+    (
+        locomotor.kind,
+        locomotor.primary_kind,
+        locomotor.piggyback,
+        locomotor.layer,
+        locomotor.phase,
+    )
+}
+
+#[test]
+fn production_stock_miners_use_drive_command_for_adjacent_ore() {
+    let oracle = retail_outbound_oracle();
+    let target = (32, 31);
+    for (type_id, kind) in [("HARV", MinerKind::War), ("CMIN", MinerKind::Chrono)] {
+        let mut sim = production_sim(0x0715_D001, &oracle);
+        let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+        install_world(&mut sim, &oracle, &grid, &[target], &[target], true);
+        let entity_id = spawn_stock_miner(&mut sim, &oracle, type_id, kind);
+        let start_position = position_tuple(&sim, entity_id);
+        arm_search(&mut sim, entity_id);
+        let rng_before_search = sim.rng_state();
+
+        advance(&mut sim, &oracle, &grid);
+        assert_eq!(sim.rng_state(), rng_before_search, "{type_id} search RNG");
+        let miner = sim
+            .substrate
+            .entities
+            .get(entity_id)
+            .and_then(|entity| entity.miner.as_ref())
+            .expect("miner");
+        assert_eq!(miner.state, MinerState::MoveToOre);
+        assert_eq!(miner.target_ore_cell, Some(target));
+
+        if type_id == "CMIN" {
+            let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
+            let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
+            assert_eq!(entity.navigation.nav_com, None);
+            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
+            assert_eq!(locomotor.piggyback, None);
+        }
+
+        let rng_before_issue = sim.rng_state();
+        advance(&mut sim, &oracle, &grid);
+        assert_eq!(sim.rng_state(), rng_before_issue, "{type_id} issue RNG");
+        assert_command_state(&sim, &oracle, entity_id, type_id, target);
+        {
+            let entity = sim.substrate.entities.get(entity_id).expect("miner");
+            let locomotor = entity.locomotor.as_ref().expect("locomotor");
+            if type_id == "CMIN" {
+                assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
+                assert_eq!(
+                    locomotor.piggyback.expect("CMIN Drive piggyback").kind,
+                    LocomotorKind::Teleport,
+                );
+            } else {
+                assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Drive));
+                assert_eq!(locomotor.piggyback, None);
+            }
+            assert!(entity.teleport_state.is_none());
+        }
+
+        advance(&mut sim, &oracle, &grid);
+        {
+            let entity = sim.substrate.entities.get(entity_id).expect("miner");
+            let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+            let movement = entity.movement_target.as_ref().expect("movement");
+            assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.3"));
+            assert_eq!(
+                movement.current_speed,
+                movement.speed * SimFixed::lit("0.3"),
+            );
+        }
+
+        let mut physically_departed = position_tuple(&sim, entity_id) != start_position;
+        let mut reached_harvest = false;
+        for _ in 0..128 {
+            advance(&mut sim, &oracle, &grid);
+            let entity = sim.substrate.entities.get(entity_id).expect("miner");
+            physically_departed |= position_tuple(&sim, entity_id) != start_position;
+            reached_harvest |= entity.miner.as_ref().expect("miner").state == MinerState::Harvest;
+            assert!(entity.teleport_state.is_none());
+            if type_id == "CMIN" && entity.movement_target.is_some() {
+                let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
+                assert_eq!(locomotor.kind, LocomotorKind::Drive);
+                assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
+                assert!(locomotor.piggyback.is_some());
+            }
+            if reached_harvest {
+                break;
+            }
+        }
+        assert!(physically_departed, "{type_id} must leave {START:?}");
+        assert!(reached_harvest, "{type_id} must reach Harvest");
+        let entity = sim.substrate.entities.get(entity_id).expect("miner");
+        assert_eq!(entity.navigation.nav_com, None);
+        assert!(!entity.navigation.pending_arrival_clear);
+        if type_id == "CMIN" {
+            let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
+            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
+            assert_eq!(locomotor.piggyback, None);
+            assert!(
+                entity.drive_locomotion.is_none(),
+                "native FootClass::AI releases retired Drive"
+            );
+        }
+        assert_eq!(sim.rng_state(), rng_before_search, "{type_id} outbound RNG");
+        assert_ore_intact(&sim, &oracle, target);
+    }
+}
+
+#[test]
+fn production_harv_outbound_drive_uses_rule_profile() {
+    let oracle = retail_outbound_oracle();
+    let target = (32, 29);
+    let mut sim = production_sim(0x0715_D002, &oracle);
+    let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+    install_world(&mut sim, &oracle, &grid, &[target], &[target], true);
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
+    arm_search(&mut sim, entity_id);
+    let rng_before = sim.rng_state();
+
+    advance(&mut sim, &oracle, &grid);
+    advance(&mut sim, &oracle, &grid);
+    assert_command_state(&sim, &oracle, entity_id, "HARV", target);
+    let harv = oracle.rules.object("HARV").expect("HARV");
+    assert!(3 * 256 > harv.slowdown_distance);
+    let acceleration = harv.accel_factor;
+
+    advance(&mut sim, &oracle, &grid);
+    let entity = sim.substrate.entities.get(entity_id).expect("HARV");
+    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+    let movement = entity.movement_target.as_ref().expect("movement");
+    assert_eq!(drive.current_speed_fraction, acceleration);
+    assert_eq!(movement.current_speed, movement.speed * acceleration);
+    assert!(movement.current_speed > SIM_ZERO);
+    assert_eq!(sim.rng_state(), rng_before);
+}
+
+#[test]
+fn production_cmin_outbound_drive_keeps_teleport_primary() {
+    let oracle = retail_outbound_oracle();
+    let target = (32, 29);
+    let mut sim = production_sim(0x0715_D003, &oracle);
+    let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+    install_world(&mut sim, &oracle, &grid, &[target], &[target], true);
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
+    arm_search(&mut sim, entity_id);
+    let rng_before = sim.rng_state();
+
+    advance(&mut sim, &oracle, &grid);
+    {
+        let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
+        let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
+        assert_eq!(entity.navigation.nav_com, None);
+        assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+        assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
+        assert_eq!(locomotor.piggyback, None);
+    }
+
+    advance(&mut sim, &oracle, &grid);
+    assert_command_state(&sim, &oracle, entity_id, "CMIN", target);
+    {
+        let locomotor = sim
+            .substrate
+            .entities
+            .get(entity_id)
+            .and_then(|entity| entity.locomotor.as_ref())
+            .expect("CMIN locomotor");
+        assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
+        assert!(locomotor.piggyback.is_some());
+    }
+
+    let mut reached_harvest = false;
+    for _ in 0..240 {
+        advance(&mut sim, &oracle, &grid);
+        let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
+        assert!(entity.teleport_state.is_none());
+        if entity.movement_target.is_some() {
+            let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
+            assert_eq!(locomotor.kind, LocomotorKind::Drive);
+            assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
+            assert!(locomotor.piggyback.is_some());
+        }
+        if entity.miner.as_ref().expect("miner").state == MinerState::Harvest {
+            assert!(entity.movement_target.is_none());
+            let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
+            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
+            assert_eq!(locomotor.piggyback, None);
+            assert_eq!(entity.navigation.nav_com, None);
+            assert!(!entity.navigation.pending_arrival_clear);
+            assert!(entity.drive_locomotion.is_none());
+            reached_harvest = true;
+            break;
+        }
+    }
+    assert!(reached_harvest);
+    assert_eq!(sim.rng_state(), rng_before);
+}
+
+#[test]
+fn production_cmin_failed_outbound_issue_restores_locomotor_exactly() {
+    let oracle = retail_outbound_oracle();
+    let target = (32, 29);
+    let mut sim = production_sim(0x0715_D004, &oracle);
+    let mut grid = PathGrid::test_all_blocked(GRID_SIZE, GRID_SIZE);
+    grid.set_blocked(START.0, START.1, false);
+    grid.set_blocked(target.0, target.1, false);
+    install_world(&mut sim, &oracle, &grid, &[target], &[target], false);
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
+    arm_search(&mut sim, entity_id);
+    let rng_before = sim.rng_state();
+
+    advance(&mut sim, &oracle, &grid);
+    let before = locomotor_tuple(&sim, entity_id);
+    assert_eq!(before.0, LocomotorKind::Teleport);
+    assert_eq!(before.1, Some(LocomotorKind::Teleport));
+    assert_eq!(before.2, None);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(entity_id)
+            .expect("CMIN")
+            .navigation
+            .nav_com,
+        None,
+    );
+
+    advance(&mut sim, &oracle, &grid);
+    let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
+    assert!(entity.movement_target.is_none());
+    assert_eq!(entity.navigation.nav_com, None);
+    assert_eq!(locomotor_tuple(&sim, entity_id), before);
+    assert_eq!(sim.rng_state(), rng_before);
+}
+
+#[test]
+fn production_harv_navcom_without_movement_target_is_not_reissued() {
+    let oracle = retail_outbound_oracle();
+    let original = (32, 29);
+    let preferable = (32, 31);
+    let mut sim = production_sim(0x0715_D005, &oracle);
+    let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+    install_world(
+        &mut sim,
+        &oracle,
+        &grid,
+        &[original, preferable],
+        &[original],
+        true,
+    );
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
+    arm_search(&mut sim, entity_id);
+
+    advance(&mut sim, &oracle, &grid);
+    advance(&mut sim, &oracle, &grid);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(entity_id)
+            .expect("HARV")
+            .navigation
+            .nav_com,
+        Some(NavTargetRef::cell(original.0, original.1)),
+    );
+
+    {
+        let entity = sim.substrate.entities.get_mut(entity_id).expect("HARV");
+        entity.movement_target = None;
+    }
+    sim.production.resource_nodes.insert(
+        preferable,
+        ResourceNode {
+            resource_type: ResourceType::Ore,
+            remaining: ONE_ORE_LEVEL,
+        },
+    );
+    let rng_before = sim.rng_state();
+
+    advance(&mut sim, &oracle, &grid);
+    let entity = sim.substrate.entities.get(entity_id).expect("HARV");
+    assert_eq!(
+        entity.miner.as_ref().expect("miner").target_ore_cell,
+        Some(original),
+    );
+    assert_eq!(
+        entity.navigation.nav_com,
+        Some(NavTargetRef::cell(original.0, original.1)),
+    );
+    assert!(
+        entity.movement_target.is_none(),
+        "non-null NavCom must suppress scan and command reissue",
+    );
+    assert_eq!(sim.rng_state(), rng_before);
+}
+
+#[test]
+fn production_harv_navcom_defers_removed_target_revalidation() {
+    let oracle = retail_outbound_oracle();
+    let original = (32, 29);
+    let replacement = (32, 31);
+    let mut sim = production_sim(0x0715_D006, &oracle);
+    let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+    install_world(
+        &mut sim,
+        &oracle,
+        &grid,
+        &[original, replacement],
+        &[original],
+        true,
+    );
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
+    arm_search(&mut sim, entity_id);
+
+    advance(&mut sim, &oracle, &grid);
+    advance(&mut sim, &oracle, &grid);
+    assert_command_state(&sim, &oracle, entity_id, "HARV", original);
+
+    {
+        let entity = sim.substrate.entities.get_mut(entity_id).expect("HARV");
+        entity.movement_target = None;
+        assert_eq!(
+            entity.navigation.nav_com,
+            Some(NavTargetRef::cell(original.0, original.1)),
+            "fixture must isolate the native NavCom owner gate",
+        );
+    }
+    sim.production.resource_nodes.remove(&original);
+    sim.production.resource_nodes.insert(
+        replacement,
+        ResourceNode {
+            resource_type: ResourceType::Ore,
+            remaining: ONE_ORE_LEVEL,
+        },
+    );
+    let rng_before = sim.rng_state();
+
+    advance(&mut sim, &oracle, &grid);
+    let entity = sim.substrate.entities.get(entity_id).expect("HARV");
+    let miner = entity.miner.as_ref().expect("miner");
+    assert_eq!(miner.state, MinerState::MoveToOre);
+    assert_eq!(miner.target_ore_cell, Some(original));
+    assert_eq!(
+        entity.navigation.nav_com,
+        Some(NavTargetRef::cell(original.0, original.1)),
+    );
+    assert!(
+        entity.movement_target.is_none(),
+        "non-null NavCom must defer depletion validation and command reissue",
+    );
+    assert_eq!(sim.rng_state(), rng_before);
+}
+
+#[test]
+fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
+    let oracle = retail_outbound_oracle();
+    let target = (32, 31);
+    let mut sim = production_sim(0x0715_D007, &oracle);
+    let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+    install_world(&mut sim, &oracle, &grid, &[target], &[target], true);
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
+    arm_search(&mut sim, entity_id);
+
+    advance(&mut sim, &oracle, &grid);
+    advance(&mut sim, &oracle, &grid);
+    assert_command_state(&sim, &oracle, entity_id, "CMIN", target);
+
+    let mut saw_pending_owner = false;
+    for _ in 0..128 {
+        advance(&mut sim, &oracle, &grid);
+        let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
+        assert!(entity.teleport_state.is_none());
+        if entity.navigation.pending_arrival_clear {
+            saw_pending_owner = true;
+            assert_eq!((entity.position.rx, entity.position.ry), target);
+            assert!(entity.movement_target.is_none());
+            assert_eq!(
+                entity.navigation.nav_com,
+                Some(NavTargetRef::cell(target.0, target.1)),
+            );
+            assert_eq!(
+                entity.miner.as_ref().expect("miner").state,
+                MinerState::MoveToOre,
+            );
+            let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
+            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
+            assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
+            assert_eq!(locomotor.piggyback, None);
+            assert!(
+                entity.drive_locomotion.is_none(),
+                "restoring primary Teleport must release retired Drive runtime",
+            );
+            break;
+        }
+    }
+    assert!(
+        saw_pending_owner,
+        "must observe track-end owner-NavCom interval"
+    );
+
+    advance(&mut sim, &oracle, &grid);
+    let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
+    assert_eq!(entity.navigation.nav_com, None);
+    assert!(!entity.navigation.pending_arrival_clear);
+    assert_eq!(
+        entity.miner.as_ref().expect("miner").state,
+        MinerState::Harvest,
+    );
+    assert!(entity.drive_locomotion.is_none());
+    assert_ore_intact(&sim, &oracle, target);
+}
