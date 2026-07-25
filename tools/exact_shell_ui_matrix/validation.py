@@ -8,8 +8,18 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 
 from . import GENERATOR_NAME, GENERATOR_VERSION, SCHEMA_VERSION
-from .catalog import RA2TS_CURRENT_POLICY, STANDARD_POLICY, resolution_token
-from .io import MatrixError
+from .catalog import (
+    RA2TS_CURRENT_POLICY,
+    RESOLUTIONS,
+    SCOPE_EXCLUSIONS,
+    SOURCES,
+    STANDARD_POLICY,
+    build_blockers,
+    build_rows,
+    catalog_snapshot,
+    resolution_token,
+)
+from .io import MatrixError, canonical_json_bytes, sha256_bytes
 
 
 ROW_STATUSES = ("DRIFT", "DRIFT_FIXED_UNVERIFIED", "UNVERIFIED", "VERIFIED")
@@ -393,12 +403,143 @@ def validate_evidence_manifest(value: object) -> dict[str, object]:
     unused = sorted(evidence_ids - used)
     if unused:
         _fail("$.evidence", f"unreferenced evidence records: {unused}")
+    if not evidence and not row_results and not resolutions:
+        _fail("$", "empty evidence manifest has no effect; omit it")
     return {
         "blocker_resolutions": resolutions,
         "evidence": evidence,
         "row_results": row_results,
         "schema_version": SCHEMA_VERSION,
     }
+
+
+_IMMUTABLE_BLOCKER_FIELDS = (
+    "description",
+    "evidence_needed",
+    "id",
+    "source_refs",
+)
+
+_IMMUTABLE_ROW_FIELDS = (
+    "blocker_ids",
+    "checkpoint",
+    "family",
+    "id",
+    "requirements",
+    "resolution",
+    "source_refs",
+    "state",
+    "variant",
+    "verification_policy",
+)
+
+
+def _validate_current_catalog_binding(
+    *,
+    catalog_digest: str,
+    sources: list[str],
+    resolutions: list[dict[str, int]],
+    exclusions: list[dict[str, object]],
+    blockers: list[dict[str, object]],
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Bind every immutable matrix field to the current generated catalog."""
+
+    expected_digest = sha256_bytes(canonical_json_bytes(catalog_snapshot()))
+    if catalog_digest != expected_digest:
+        _fail(
+            "$.catalog_digest",
+            f"does not match current catalog; expected {expected_digest}",
+        )
+    if sources != list(SOURCES):
+        _fail("$.sources", "does not match the current catalog source set")
+    if resolutions != list(RESOLUTIONS):
+        _fail("$.resolutions", "does not match the current catalog resolution set")
+    if exclusions != list(SCOPE_EXCLUSIONS):
+        _fail("$.scope_exclusions", "does not match the current catalog exclusions")
+
+    expected_blockers = build_blockers()
+    actual_blocker_ids = [item["id"] for item in blockers]
+    expected_blocker_ids = [item["id"] for item in expected_blockers]
+    if actual_blocker_ids != expected_blocker_ids:
+        _fail(
+            "$.catalog_blockers",
+            "blocker IDs do not match the current catalog",
+        )
+    for actual, expected in zip(blockers, expected_blockers, strict=True):
+        for field in _IMMUTABLE_BLOCKER_FIELDS:
+            if actual[field] != expected[field]:
+                _fail(
+                    f"$.catalog_blockers[{actual['id']}].{field}",
+                    "does not match the current catalog",
+                )
+
+    expected_rows = build_rows()
+    actual_row_ids = [item["id"] for item in rows]
+    expected_row_ids = [item["id"] for item in expected_rows]
+    if actual_row_ids != expected_row_ids:
+        _fail("$.rows", "row IDs do not match the current catalog")
+    for actual, expected in zip(rows, expected_rows, strict=True):
+        for field in _IMMUTABLE_ROW_FIELDS:
+            if actual[field] != expected[field]:
+                _fail(
+                    f"$.rows[{actual['id']}].{field}",
+                    "does not match the current catalog",
+                )
+    return expected_rows
+
+
+def _matrix_overlay_digest(
+    *,
+    evidence: list[dict[str, object]],
+    blockers: list[dict[str, object]],
+    rows: list[dict[str, object]],
+    baseline_rows: list[dict[str, object]],
+) -> str | None:
+    """Reconstruct the normalized overlay embedded in a generated matrix."""
+
+    blocker_resolutions = [
+        {
+            "blocker_id": blocker["id"],
+            "evidence_id": blocker["evidence_id"],
+        }
+        for blocker in blockers
+        if blocker["status"] == "RESOLVED"
+    ]
+    baseline_by_id = {row["id"]: row for row in baseline_rows}
+    row_results = []
+    for row in rows:
+        baseline = baseline_by_id[row["id"]]
+        if (
+            row["comparison_result"] == baseline["comparison_result"]
+            and row["evidence"] == baseline["evidence"]
+            and row["owner"] == baseline["owner"]
+            and row["residuals"] == baseline["residuals"]
+            and row["status"] == baseline["status"]
+        ):
+            continue
+        row_results.append(
+            {
+                "comparison_id": row["evidence"]["comparison_id"],
+                "comparison_result": row["comparison_result"],
+                "native_ids": row["evidence"]["native_ids"],
+                "owner": row["owner"],
+                "residuals": row["residuals"],
+                "row_id": row["id"],
+                "rust_ids": row["evidence"]["rust_ids"],
+                "status": row["status"],
+            }
+        )
+
+    if not evidence and not blocker_resolutions and not row_results:
+        return None
+    manifest = {
+        "blocker_resolutions": blocker_resolutions,
+        "evidence": evidence,
+        "row_results": row_results,
+        "schema_version": SCHEMA_VERSION,
+    }
+    return sha256_bytes(canonical_json_bytes(manifest))
 
 
 def _validate_matrix_semantics(
@@ -526,8 +667,9 @@ def validate_matrix(
         _fail("$.generator.name", f"expected {GENERATOR_NAME!r}")
     if _integer(generator["version"], "$.generator.version") != GENERATOR_VERSION:
         _fail("$.generator.version", f"expected {GENERATOR_VERSION}")
-    _sha(obj["catalog_digest"], "$.catalog_digest")
-    _sha(obj["evidence_digest"], "$.evidence_digest", nullable=True)
+    catalog_digest = _sha(obj["catalog_digest"], "$.catalog_digest")
+    assert catalog_digest is not None
+    evidence_digest = _sha(obj["evidence_digest"], "$.evidence_digest", nullable=True)
     sources = _string_array(obj["sources"], "$.sources")
     for index, source in enumerate(sources):
         _portable_path(source, f"$.sources[{index}]")
@@ -679,6 +821,25 @@ def validate_matrix(
     if not rows:
         _fail("$.rows", "matrix must contain rows")
     _sorted_unique(rows, "$.rows", lambda item: item["id"])
+    baseline_rows = _validate_current_catalog_binding(
+        catalog_digest=catalog_digest,
+        sources=sources,
+        resolutions=resolutions,
+        exclusions=exclusions,
+        blockers=blockers,
+        rows=rows,
+    )
+    expected_evidence_digest = _matrix_overlay_digest(
+        evidence=evidence,
+        blockers=blockers,
+        rows=rows,
+        baseline_rows=baseline_rows,
+    )
+    if evidence_digest != expected_evidence_digest:
+        _fail(
+            "$.evidence_digest",
+            f"does not match embedded overlay; expected {expected_evidence_digest!r}",
+        )
 
     coverage = _object(obj["coverage"], "$.coverage", {"by_family", "by_status", "total"})
     expected_family = dict(sorted(Counter(row["family"] for row in rows).items()))

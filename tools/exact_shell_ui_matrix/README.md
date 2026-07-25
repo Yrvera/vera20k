@@ -25,6 +25,11 @@ Artifact paths in the evidence manifest are portable paths relative to
 artifact beneath that root and hash its actual bytes. Missing files, path
 escapes, and digest mismatches fail closed.
 
+Validation also recomputes the catalog and embedded-overlay digests and binds
+all immutable rows, blockers, sources, exclusions, and resolutions to the
+current generator catalog. A hand-edited or stale matrix cannot pass merely by
+repairing its summary counts.
+
 `VERIFIED` requires a native-executable differential or exhaustive proof,
 resolution coverage where applicable, and resolution of every catalog blocker
 attached to the row. Static research and Rust production regressions can be

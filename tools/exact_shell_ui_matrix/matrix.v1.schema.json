@@ -320,7 +320,7 @@
     },
     "evidence": {
       "items": {
-        "$ref": "evidence.v1.schema.json#/$defs/evidence"
+        "$ref": "exact-shell-ui-evidence.v1.schema.json#/$defs/evidence"
       },
       "type": "array"
     },

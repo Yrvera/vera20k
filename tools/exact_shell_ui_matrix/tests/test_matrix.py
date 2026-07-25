@@ -7,6 +7,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from urllib.parse import urljoin
 
 from tools.exact_shell_ui_matrix.catalog import (
     CONTROL_STATES,
@@ -501,9 +502,65 @@ class MatrixTests(unittest.TestCase):
         with self.assertRaisesRegex(MatrixError, "duplicate JSON key"):
             load_json_strict('{"schema_version":1,"schema_version":1}')
 
+    def test_validator_binds_immutable_rows_and_digest_to_current_catalog(self) -> None:
+        matrix = build_matrix()
+
+        tampered_digest = deepcopy(matrix)
+        tampered_digest["catalog_digest"] = "0" * 64
+        with self.assertRaisesRegex(MatrixError, r"\$\.catalog_digest"):
+            validate_matrix(tampered_digest)
+
+        tampered_row = deepcopy(matrix)
+        tampered_row["rows"][0]["state"] = "invented-hand-edited-state"
+        with self.assertRaisesRegex(MatrixError, "does not match the current catalog"):
+            validate_matrix(tampered_row)
+
+        tampered_sources = deepcopy(matrix)
+        tampered_sources["sources"] = tampered_sources["sources"][1:]
+        with self.assertRaisesRegex(MatrixError, r"\$\.sources"):
+            validate_matrix(tampered_sources)
+
+    def test_validator_recomputes_the_embedded_evidence_overlay_digest(self) -> None:
+        row = next(item for item in build_matrix()["rows"] if item["family"] == "input")
+        static = _evidence("static-research")
+        manifest = _manifest(
+            static,
+            row_results=[
+                _row_result(
+                    row,
+                    native_ids=(static["id"],),
+                    owner="SLICE-TEST",
+                    residuals=("Native comparison remains unavailable.",),
+                )
+            ],
+        )
+        matrix = self._build(manifest)
+        validate_matrix(matrix, artifact_root=self.artifact_root)
+
+        tampered = deepcopy(matrix)
+        attached = next(item for item in tampered["rows"] if item["id"] == row["id"])
+        attached["owner"] = "SLICE-HAND-EDITED"
+        with self.assertRaisesRegex(MatrixError, r"\$\.evidence_digest"):
+            validate_matrix(tampered, artifact_root=self.artifact_root)
+
+    def test_empty_evidence_manifest_is_rejected_as_non_canonical(self) -> None:
+        empty = {
+            "blocker_resolutions": [],
+            "evidence": [],
+            "row_results": [],
+            "schema_version": 1,
+        }
+        with self.assertRaisesRegex(MatrixError, "empty evidence manifest has no effect"):
+            build_matrix(empty, artifact_root=self.artifact_root)
+
     def test_portable_schema_enums_match_runtime(self) -> None:
         matrix_schema = load_json_path(TOOL_ROOT / "matrix.v1.schema.json")
         evidence_schema = load_json_path(TOOL_ROOT / "evidence.v1.schema.json")
+        evidence_ref = matrix_schema["properties"]["evidence"]["items"]["$ref"]
+        self.assertEqual(
+            urljoin(matrix_schema["$id"], evidence_ref.split("#", 1)[0]),
+            evidence_schema["$id"],
+        )
         self.assertEqual(
             set(matrix_schema["$defs"]["row"]["properties"]["family"]["enum"]),
             set(ROW_FAMILIES),
