@@ -421,6 +421,7 @@ mod tests {
         morphable: &'a dyn Fn(i32) -> bool,
         map_type: i32,
         theater: i32,
+        tech_types: &'a [TechType],
     ) -> PipelineInputs<'a> {
         PipelineInputs {
             ids: identity,
@@ -428,7 +429,7 @@ mod tests {
             cliff,
             morphable,
             wheel_impassable: [false; LAND_TYPES],
-            tech_types: &[],
+            tech_types,
             map_type,
             theater,
             num_players: 4,
@@ -446,6 +447,24 @@ mod tests {
     }
 
     fn run(seed: u16, map_type: i32, theater: i32) -> (RmgGrid, PipelineOutput) {
+        run_with_types(seed, map_type, theater, &[])
+    }
+
+    /// The stock YR neutral catalog, resolved from the real INIs so the gate
+    /// tests exercise the same list the app wires in.
+    fn stock_tech_types() -> Vec<TechType> {
+        crate::map::rmg::tech_catalog::resolve(
+            &crate::rules::ini_parser::IniFile::from_str(include_str!("../../../ini/rulesmd.ini")),
+            &crate::rules::ini_parser::IniFile::from_str(include_str!("../../../ini/artmd.ini")),
+        )
+    }
+
+    fn run_with_types(
+        seed: u16,
+        map_type: i32,
+        theater: i32,
+        tech_types: &[TechType],
+    ) -> (RmgGrid, PipelineOutput) {
         let options = RmgOptions {
             num_players: 4,
             ..Default::default()
@@ -460,7 +479,9 @@ mod tests {
         let blocks = one_by_one();
         let cliff = TheaterCliffRanges::default();
         let morphable = |_tile: i32| false;
-        let ins = inputs(&identity, &blocks, &cliff, &morphable, map_type, theater);
+        let ins = inputs(
+            &identity, &blocks, &cliff, &morphable, map_type, theater, tech_types,
+        );
         let output = run_pipeline(
             &mut grid,
             &mut scratch,
@@ -506,6 +527,67 @@ mod tests {
             (tiles, overlays, output.waypoints, output.terrain)
         };
         assert_eq!(snapshot(4242), snapshot(4242));
+    }
+
+    /// Rock gate, on-side. The original runs the rock overlay pass only on the
+    /// `theater == 0` branch of "RMG: Creating LATs, rocks etc"; that branch
+    /// must actually produce overlays, or the off-side test below proves
+    /// nothing. (Gate verified 2026-07-25: `decompile_function 0x00598960`,
+    /// `0x005a3ae0` has the overlay loop, `0x005a4280` does not.)
+    #[test]
+    fn temperate_theater_paints_rocks() {
+        let (grid, _) = run(77, 1, 0);
+        let rocks = grid
+            .native_cells()
+            .filter(|&(x, y)| (168..=177).contains(&grid.get(x, y).unwrap().overlay))
+            .count();
+        assert!(rocks > 0, "temperate places rocks");
+    }
+
+    /// Tech gate, on-side. The original calls the placement driver whenever
+    /// `map_type != 0` (verified 2026-07-25: `decompile_function 0x00598960`,
+    /// the `RMG: Adding tech buildings` block). The off-side is pinned at phase
+    /// level by `tech_buildings::tests::map_type_zero_is_a_no_op`, which also
+    /// uses a non-empty catalog; map type 0 cannot be driven through the whole
+    /// pipeline on this synthetic terrain until the start-starvation assert at
+    /// `starts.rs:332` is resolved.
+    ///
+    /// Seed 9 is the combination the neighbouring map-type test already relies
+    /// on: the 1x1 synthetic tile block starves the start selector on many
+    /// seeds, which is a fixture limitation, not a generator property.
+    #[test]
+    fn tech_buildings_are_placed_for_non_zero_map_types() {
+        let types = stock_tech_types();
+        assert!(!types.is_empty(), "stock catalog resolves");
+        let placed: usize = [1, 2]
+            .into_iter()
+            .map(|map_type| run_with_types(9, map_type, 0, &types).1.structures.len())
+            .sum();
+        assert!(placed > 0, "map types 1/2 place tech buildings");
+    }
+
+    /// The catalog is what stops the phase being a no-op: with an empty list
+    /// the same run places nothing, which is the regression this pins.
+    #[test]
+    fn an_empty_catalog_places_no_tech_buildings() {
+        let (_, output) = run_with_types(9, 1, 0, &[]);
+        assert!(output.structures.is_empty());
+    }
+
+    /// Every placed structure names a type from the resolved catalog.
+    #[test]
+    fn placed_tech_buildings_come_from_the_resolved_catalog() {
+        let types = stock_tech_types();
+        let names: Vec<&str> = types.iter().map(|t| t.name.as_str()).collect();
+        for map_type in [1, 2] {
+            let (_, output) = run_with_types(9, map_type, 0, &types);
+            for (name, _, _) in &output.structures {
+                assert!(
+                    names.contains(&name.as_str()),
+                    "{name} is in NeutralTechBuildings"
+                );
+            }
+        }
     }
 
     #[test]
