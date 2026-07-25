@@ -557,6 +557,7 @@ mod tests {
             },
         };
         {
+            let trig = crate::map::rmg::trig::TrigTable::synthetic();
             let mut ctx = BlobCtx {
                 grid: &mut grid,
                 scratch: &mut scratch,
@@ -564,7 +565,7 @@ mod tests {
                 blocks: &blocks,
                 rng: &mut rng,
                 gauss: &mut gauss,
-                trig: ctx_trig_placeholder,
+                trig: Some(&trig),
                 map_w,
                 map_h,
                 rollback_level: 4,
@@ -671,6 +672,7 @@ mod tests {
             placed: target - MIN_CELLS,
             region_id: 1,
         };
+        let trig = crate::map::rmg::trig::TrigTable::synthetic();
         let mut ctx = BlobCtx {
             grid: &mut grid,
             scratch: &mut scratch,
@@ -678,13 +680,13 @@ mod tests {
             blocks: &blocks,
             rng: &mut rng,
             gauss: &mut gauss,
-            trig: ctx_trig_placeholder,
+            trig: Some(&trig),
             map_w,
             map_h,
             rollback_level: 4,
         };
         assert!(
-            !grow_lake(&mut ctx, &args, &mut quota),
+            !grow_lake(&mut ctx, &args, &mut quota, None),
             "a quota with only the minimum left must not start a lake"
         );
 

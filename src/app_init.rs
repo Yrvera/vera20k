@@ -373,13 +373,18 @@ pub(crate) fn load_map_initial_with_assets(
         // start-placement time, before any rock/rough/cliff terrain exists), but
         // it is resolved faithfully from `rulesmd.ini` when present; a missing
         // file falls back to the passable defaults.
+        crate::map::rmg::trig::install_from_dir(&ra2_dir);
         let terrain_rules = asset_manager
             .get_ref("rulesmd.ini")
             .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
             .map(|ini| crate::rules::terrain_rules::TerrainRules::from_ini(&ini))
             .unwrap_or_default();
         let resolved =
-            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(&theater, &terrain_rules);
+            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(
+                &theater,
+                &terrain_rules,
+                crate::map::rmg::trig::global().cloned(),
+            );
 
         // Tile-block layouts (sub-cell height/terrain grids) from the theater's
         // real TMP data — the shore tiler and zone classifier read these.

@@ -32,7 +32,7 @@ pub struct BlobCtx<'a> {
     /// twin persists across blobs, so the driver owns it.
     pub gauss: &'a mut Gaussian,
     /// The retail sine table, for the river's heading.
-    pub trig: &'a crate::map::rmg::trig::TrigTable,
+    pub trig: Option<&'a crate::map::rmg::trig::TrigTable>,
     /// Map rect dims (the +0xF4/+0xF8 pair): seed draws scale by these.
     pub map_w: i32,
     pub map_h: i32,
@@ -444,6 +444,7 @@ mod tests {
         let block_table = blocks();
         let mut rng = RmgRng::new(1234);
         let mut gauss = Gaussian::default();
+        let trig = crate::map::rmg::trig::TrigTable::synthetic();
         let mut ctx = BlobCtx {
             grid: &mut grid,
             scratch: &mut scratch,
@@ -451,7 +452,7 @@ mod tests {
             blocks: &block_table,
             rng: &mut rng,
             gauss: &mut gauss,
-            trig: ctx_trig_placeholder,
+            trig: Some(&trig),
             map_w: 30,
             map_h: 24,
             rollback_level: 4,
@@ -493,6 +494,7 @@ mod tests {
             let block_table = blocks();
             let mut rng = RmgRng::new(77);
             let mut gauss = Gaussian::default();
+            let trig = crate::map::rmg::trig::TrigTable::synthetic();
             let mut ctx = BlobCtx {
                 grid: &mut grid,
                 scratch: &mut scratch,
@@ -500,7 +502,7 @@ mod tests {
                 blocks: &block_table,
                 rng: &mut rng,
                 gauss: &mut gauss,
-                trig: ctx_trig_placeholder,
+                trig: Some(&trig),
                 map_w: 30,
                 map_h: 24,
                 rollback_level: 4,
@@ -565,6 +567,7 @@ mod tests {
         let block_table = blocks();
         let mut rng = RmgRng::new(5);
         let mut gauss = Gaussian::default();
+        let trig = crate::map::rmg::trig::TrigTable::synthetic();
         let mut ctx = BlobCtx {
             grid: &mut grid,
             scratch: &mut scratch,
@@ -572,7 +575,7 @@ mod tests {
             blocks: &block_table,
             rng: &mut rng,
             gauss: &mut gauss,
-            trig: ctx_trig_placeholder,
+            trig: Some(&trig),
             map_w: 20,
             map_h: 16,
             rollback_level: 4,

@@ -1468,7 +1468,11 @@ impl App {
             .map(|ini| crate::rules::terrain_rules::TerrainRules::from_ini(&ini))
             .unwrap_or_default();
         let resolved_inputs =
-            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(&theater, &terrain_rules);
+            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(
+                &theater,
+                &terrain_rules,
+                crate::map::rmg::trig::global().cloned(),
+            );
         let blocks =
             crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
                 asset_manager.get(name)

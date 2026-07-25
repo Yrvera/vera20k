@@ -619,6 +619,7 @@ mod tests {
         let block_table = blocks();
         let mut rng = RmgRng::new(seed);
         let mut gauss = Gaussian::default();
+        let trig = crate::map::rmg::trig::TrigTable::synthetic();
         let mut ctx = BlobCtx {
             grid: &mut grid,
             scratch: &mut scratch,
@@ -626,7 +627,7 @@ mod tests {
             blocks: &block_table,
             rng: &mut rng,
             gauss: &mut gauss,
-            trig: ctx_trig_placeholder,
+            trig: Some(&trig),
             map_w,
             map_h,
             rollback_level: 4,
@@ -838,6 +839,7 @@ mod tests {
         let block_table = blocks();
         let mut rng = RmgRng::new(seed);
         let mut gauss = Gaussian::default();
+        let trig = crate::map::rmg::trig::TrigTable::synthetic();
         let mut ctx = BlobCtx {
             grid: &mut grid,
             scratch: &mut scratch,
@@ -845,7 +847,7 @@ mod tests {
             blocks: &block_table,
             rng: &mut rng,
             gauss: &mut gauss,
-            trig: ctx_trig_placeholder,
+            trig: Some(&trig),
             map_w,
             map_h,
             rollback_level: 4,

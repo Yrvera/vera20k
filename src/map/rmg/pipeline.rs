@@ -60,6 +60,8 @@ pub struct PipelineInputs<'a> {
     pub wheel_impassable: [bool; LAND_TYPES],
     /// The resolved `NeutralTechBuildings` list.
     pub tech_types: &'a [TechType],
+    /// The generator's sine table, for the river's heading.
+    pub trig: Option<&'a super::trig::TrigTable>,
 
     // Scalars from the `.SED` options / MapSeed / RMGMD settings.
     pub map_type: i32,
@@ -151,7 +153,7 @@ pub fn run_pipeline(
             blocks: inputs.blocks,
             rng: &mut *rng,
             gauss: &mut *gauss,
-            trig: ctx_trig_placeholder,
+            trig: inputs.trig,
             map_w,
             map_h,
             rollback_level: DEFAULT_LEVEL,
@@ -279,7 +281,6 @@ pub fn run_pipeline(
             ids: inputs.ids,
             rng: &mut *rng,
             gauss: &mut *gauss,
-            trig: ctx_trig_placeholder,
             regions: &regions,
             waypoints: &outcome.waypoints,
         };
@@ -305,7 +306,6 @@ pub fn run_pipeline(
             scratch: &mut *scratch,
             ids: inputs.ids,
             gauss: &mut *gauss,
-            trig: ctx_trig_placeholder,
             rng: &mut *rng,
         };
         hills::run(&mut ctx, &args, inputs.cliff, inputs.morphable);
@@ -320,7 +320,6 @@ pub fn run_pipeline(
             ids: inputs.ids,
             rng: &mut *rng,
             gauss: &mut *gauss,
-            trig: ctx_trig_placeholder,
         };
         lat_patches::run(&mut ctx, inputs.theater, inputs.vegetation);
     }
@@ -341,7 +340,6 @@ pub fn run_pipeline(
             ids: inputs.ids,
             rng: &mut *rng,
             gauss: &mut *gauss,
-            trig: ctx_trig_placeholder,
         };
         trees::run(&mut ctx, &args)
     };
@@ -447,6 +445,7 @@ mod tests {
             morphable,
             wheel_impassable: [false; LAND_TYPES],
             tech_types,
+            trig: None,
             map_type,
             theater,
             num_players: 4,

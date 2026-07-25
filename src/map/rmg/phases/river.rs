@@ -28,8 +28,8 @@ use crate::map::rmg::x87::{self, Gaussian, TruncF64};
 
 use super::blob::{BlobCtx, seed_draw};
 use super::lake::{self, WaterQuota};
-use super::water::WaterArgs;
 use super::shore::{self, ShoreCtx};
+use super::water::WaterArgs;
 
 /// Edge count, and the heading each edge aims at: `7π/4 − edge·π/2`.
 const EDGES: i32 = 4;
@@ -162,7 +162,15 @@ struct Walk {
 }
 
 /// Stamp one cross-section. Returns whether the walk survives it.
-fn carve_section(ctx: &mut BlobCtx<'_>, walk: &mut Walk, fx: f64, fy: f64, span: i32, sin: f64, cos: f64) {
+fn carve_section(
+    ctx: &mut BlobCtx<'_>,
+    walk: &mut Walk,
+    fx: f64,
+    fy: f64,
+    span: i32,
+    sin: f64,
+    cos: f64,
+) {
     let step_back = f64::from(span - 1) * HALF;
     let mut x = fx - step_back * sin;
     let mut y = fy - step_back * cos;
@@ -221,6 +229,12 @@ pub fn carve(
     start: Option<(i32, i32, f64)>,
     is_branch: bool,
 ) -> bool {
+    // Without the retail sine table a river cannot be steered faithfully, so
+    // none is carved. Skipping is the honest failure: a river built on a
+    // substitute table would be wrong in a way nothing here could detect.
+    let Some(trig) = ctx.trig else {
+        return false;
+    };
     let cells: Vec<(i32, i32)> = ctx.grid.native_cells().collect();
     let region = quota.region_id;
 
@@ -288,8 +302,8 @@ pub fn carve(
             break;
         }
 
-        let sin = f64::from(ctx.trig.sin_radians(heading));
-        let cos = f64::from(ctx.trig.cos_radians(heading));
+        let sin = f64::from(trig.sin_radians(heading));
+        let cos = f64::from(trig.cos_radians(heading));
 
         let span = x87::ftol(width_walk + HALF);
         carve_section(ctx, &mut walk, fx, fy, span, sin, cos);
