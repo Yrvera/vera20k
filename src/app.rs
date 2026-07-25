@@ -1473,6 +1473,9 @@ impl App {
             crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
                 asset_manager.get(name)
             });
+        // `[AI] NeutralTechBuildings` plus each type's `Foundation=`, resolved
+        // here because only plain data may cross to the worker.
+        let tech_types = crate::app_init_helpers::load_neutral_tech_types(asset_manager);
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let options = options.clone();
@@ -1486,7 +1489,7 @@ impl App {
                     &settings,
                     &resolved_inputs,
                     &blocks,
-                    &[],
+                    &tech_types,
                     // A closed receiver means the dialog went away; dropping
                     // what we produce is the correct outcome, not an error.
                     &mut |view| {

@@ -16,6 +16,7 @@ pub mod rng;
 pub mod saved_seeds;
 pub mod scratch;
 pub mod settings;
+pub mod tech_catalog;
 pub mod theater_blocks;
 pub mod tiles;
 pub mod x87;
