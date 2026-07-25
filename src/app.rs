@@ -271,8 +271,8 @@ pub(crate) struct AppState {
     pub(crate) main_menu_shell_chrome:
         Option<crate::render::main_menu_shell_chrome::MainMenuShellChromeAtlas>,
     pub(crate) main_menu_movie: Option<crate::render::bink_movie::BinkMovieSurface>,
-    pub(crate) main_menu_movie_owner: Option<crate::app_main_menu_shell_render::Ra2tsDialogOwner>,
-    pub(crate) main_menu_movie_base: Option<crate::ui::main_menu_shell::MainMenuMovieBase>,
+    pub(crate) main_menu_movie_identity:
+        Option<crate::app_main_menu_shell_render::Ra2tsMovieSessionIdentity>,
     pub(crate) main_menu_movie_last_step: Instant,
     pub(crate) main_menu_shell_failed: bool,
     /// Contents of `VERSION.TXT` from the retail install, used by the
@@ -846,6 +846,11 @@ impl App {
 
     fn open_single_player_shell(state: &mut AppState) {
         Self::enter_shell_window_mode(state);
+        // Native destroys 0xE2 (including child 0x71A) before constructing
+        // 0x100. Invalidate at the route edge rather than waiting for a paint:
+        // a queued Back/Escape can otherwise return to 0xE2 before 0x100 draws
+        // and incorrectly preserve the old main-menu movie timeline.
+        crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
         state.main_menu_show_single_player_shell = true;
         state.main_menu_show_native_skirmish_shell = false;
         state.shell_first_paint_slide = None;
@@ -857,6 +862,10 @@ impl App {
     }
 
     fn close_single_player_shell(state: &mut AppState) {
+        // Result 0x12 destroys 0x100 before the main-menu loop constructs a new
+        // 0xE2. Clear immediately so a same-event-loop round trip cannot reuse
+        // the source dialog's movie session.
+        crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
         state.main_menu_show_single_player_shell = false;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
@@ -3152,8 +3161,8 @@ impl App {
         let movie_base =
             crate::ui::main_menu_shell::movie_base_for_screen_width(state.gpu.config.width);
         if state
-            .main_menu_movie_base
-            .is_some_and(|base| base != movie_base)
+            .main_menu_movie_identity
+            .is_some_and(|identity| identity.base() != movie_base)
         {
             crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
         }
@@ -3813,8 +3822,7 @@ impl App {
             shell_controller: crate::ui::shell::controller::DialogController::default(),
             main_menu_shell_chrome,
             main_menu_movie: None,
-            main_menu_movie_owner: None,
-            main_menu_movie_base: None,
+            main_menu_movie_identity: None,
             main_menu_movie_last_step: Instant::now(),
             main_menu_shell_failed,
             version_txt,
