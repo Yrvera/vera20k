@@ -67,6 +67,10 @@ impl Ra2tsMovieSessionIdentity {
         Self { owner, base }
     }
 
+    pub(crate) const fn owner(self) -> Ra2tsDialogOwner {
+        self.owner
+    }
+
     pub(crate) const fn base(self) -> MainMenuMovieBase {
         self.base
     }

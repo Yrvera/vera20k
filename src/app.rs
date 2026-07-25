@@ -11,7 +11,7 @@ use anyhow::Result;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -595,6 +595,7 @@ impl AppState {
 /// Top-level application. Implements winit's ApplicationHandler.
 pub struct App {
     state: Option<AppState>,
+    shell_capture: Option<crate::app_shell_capture::ShellCaptureSession>,
 }
 
 impl Default for App {
@@ -3168,7 +3169,24 @@ impl App {
     }
 
     pub fn new() -> Self {
-        Self { state: None }
+        Self {
+            state: None,
+            shell_capture: None,
+        }
+    }
+
+    pub fn new_shell_capture(request: crate::app_shell_capture::ShellCaptureRequest) -> Self {
+        Self {
+            state: None,
+            shell_capture: Some(crate::app_shell_capture::ShellCaptureSession::new(request)),
+        }
+    }
+
+    pub fn finish_shell_capture(&mut self) -> Result<()> {
+        match self.shell_capture.as_mut() {
+            Some(session) => session.take_outcome(),
+            None => Ok(()),
+        }
     }
 }
 
@@ -3178,20 +3196,51 @@ impl ApplicationHandler for App {
             return;
         }
         log::info!("Application resumed — creating window and GPU context");
-        match Self::initialize(event_loop) {
-            Ok(state) => {
+        let capture_request = self
+            .shell_capture
+            .as_ref()
+            .map(|session| session.request().clone());
+        match Self::initialize(event_loop, capture_request.as_ref()) {
+            Ok(mut state) => {
+                if let Some(session) = self.shell_capture.as_mut() {
+                    session.prepare_state(&mut state);
+                }
                 self.state = Some(state);
                 log::info!("Initialization complete — showing main menu");
             }
             Err(err) => {
                 log::error!("Failed to initialize: {:#}", err);
+                if let Some(session) = self.shell_capture.as_mut() {
+                    session.fail(format!("shell capture initialization failed: {err:#}"));
+                }
                 event_loop.exit();
             }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let capture_active = self.shell_capture.is_some();
         let Some(state) = &mut self.state else { return };
+
+        // A hidden Windows HWND is not guaranteed to receive WM_PAINT, so
+        // capture frames are pumped from `about_to_wait`, never window input.
+        if capture_active {
+            match event {
+                WindowEvent::CloseRequested => {
+                    log::info!("Shell-capture window close requested");
+                    self.shell_capture
+                        .as_mut()
+                        .expect("capture session exists")
+                        .fail("shell-capture window closed before bundle completion");
+                    event_loop.exit();
+                }
+                WindowEvent::Resized(size) => {
+                    Self::resize_surface_for_window_size(state, size);
+                }
+                _ => {}
+            }
+            return;
+        }
 
         // Always let egui see the event first for input handling.
         let egui_response: egui_winit::EventResponse =
@@ -3463,7 +3512,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Err(err) = Self::render_frame(state, event_loop) {
+                if let Err(err) = Self::render_frame(state, event_loop, None) {
                     log::error!("Render: {:#}", err);
                 }
             }
@@ -3471,8 +3520,18 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = &self.state {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let (Some(state), Some(session)) = (self.state.as_mut(), self.shell_capture.as_mut()) {
+            if let Err(err) = Self::render_frame(state, event_loop, Some(&mut *session)) {
+                log::error!("Shell capture render: {err:#}");
+                session.fail(format!("shell capture render failed: {err:#}"));
+                event_loop.exit();
+                return;
+            }
+            if !session.is_finished() {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(session.next_wake_deadline()));
+            }
+        } else if let Some(state) = &self.state {
             state.window.request_redraw();
         }
     }
@@ -3482,11 +3541,20 @@ impl App {
     /// Create window, GPU context, and egui integration. Does NOT load a map —
     /// starts in MainMenu state. Map loading is deferred to when the user
     /// clicks "Quick Play".
-    fn initialize(event_loop: &ActiveEventLoop) -> Result<AppState> {
+    fn initialize(
+        event_loop: &ActiveEventLoop,
+        capture_request: Option<&crate::app_shell_capture::ShellCaptureRequest>,
+    ) -> Result<AppState> {
+        let (window_width, window_height, window_visible) = capture_request
+            .map_or((SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT, true), |request| {
+                (request.width(), request.height(), false)
+            });
         let window_attrs: WindowAttributes = WindowAttributes::default()
             .with_title("RA2 Engine")
-            .with_inner_size(PhysicalSize::new(SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT))
-            .with_resizable(false);
+            .with_inner_size(PhysicalSize::new(window_width, window_height))
+            .with_resizable(false)
+            .with_visible(window_visible)
+            .with_active(window_visible);
         let window: Arc<Window> = Arc::new(event_loop.create_window(window_attrs)?);
         let gpu: GpuContext = GpuContext::new(window.clone())?;
         let egui: EguiIntegration = EguiIntegration::new(&gpu, &window);
@@ -3910,7 +3978,11 @@ impl App {
     }
 
     /// Dispatch rendering based on current GameScreen state.
-    fn render_frame(state: &mut AppState, event_loop: &ActiveEventLoop) -> Result<()> {
+    fn render_frame(
+        state: &mut AppState,
+        event_loop: &ActiveEventLoop,
+        mut shell_capture: Option<&mut crate::app_shell_capture::ShellCaptureSession>,
+    ) -> Result<()> {
         state.frame_timer.sample(Instant::now());
         crate::app_tooltips::update(state);
         crate::app_messages::update(state);
@@ -4001,6 +4073,10 @@ impl App {
         // Advance the Skirmish right-panel static text reveals (started at the
         // slide's completion edge). 30 ms-gated internally; a no-op when idle.
         crate::app_shell_transition::advance_shell_static_reveals(state);
+        let capture_current_frame = match shell_capture.as_deref_mut() {
+            Some(session) => session.should_capture_current_frame(state)?,
+            None => false,
+        };
 
         match &state.screen {
             GameScreen::MainMenu => {
@@ -4254,8 +4330,42 @@ impl App {
             }
         }
 
-        state.gpu.queue.submit(std::iter::once(encoder.finish()));
+        let pending_capture = if capture_current_frame {
+            Some(crate::render::frame_readback::PendingBgra8Readback::encode(
+                &state.gpu.device,
+                &mut encoder,
+                &output.texture,
+                state.gpu.config.format,
+                state.gpu.config.width,
+                state.gpu.config.height,
+            )?)
+        } else {
+            None
+        };
+        let capture_timeout = if capture_current_frame {
+            Some(
+                shell_capture
+                    .as_deref()
+                    .expect("capture session exists when readback is requested")
+                    .readback_timeout()?,
+            )
+        } else {
+            None
+        };
+        let submission = state.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+        if let Some(pending_capture) = pending_capture {
+            let pixels = pending_capture.finish(
+                &state.gpu.device,
+                submission,
+                capture_timeout.expect("capture timeout exists with pending readback"),
+            )?;
+            shell_capture
+                .as_deref_mut()
+                .expect("capture session exists when readback completes")
+                .complete(state, state.gpu.config.format, &pixels)?;
+            event_loop.exit();
+        }
 
         // Deferred loading: after presenting the Loading screen frame,
         // pump one loading phase. The next patch will continue splitting the
