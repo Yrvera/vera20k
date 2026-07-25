@@ -59,18 +59,61 @@ pub struct WaterArgs {
     pub playable: PlayableRect,
 }
 
+/// Map types whose water is *carved into land* rather than shaped out of a full
+/// sea: inland and mountainous.
+///
+/// The original reaches these through a different top-level seeder than the
+/// other three, and the two seeders start from opposite terrain. The
+/// flood-the-map prefill and the three shape routines below belong exclusively
+/// to the sea-shaping branch — its own seeder owns the prefill, and that seeder
+/// has exactly one caller.
+const CARVED_WATER_MAP_TYPES: [i32; 2] = [3, 4];
+
 pub fn run(ctx: &mut BlobCtx<'_>, args: &WaterArgs) {
-    // Phase 1: every cell becomes water.
     let coords: Vec<(i32, i32)> = ctx.grid.native_cells().collect();
+
+    // Establish the background every map type starts from: the clear tile.
+    //
+    // In the original this is not part of the water seeder at all — the map is
+    // initialised to the clear tile before the water branch is reached, and the
+    // sea-shaping seeder then floods over it. This pipeline has no separate
+    // init step, so the fill is hosted here.
+    //
+    // It is not cosmetic. The clear predicate accepts both the clear tile and
+    // the unassigned sentinel, so carving behaves the same either way — but the
+    // emitter projects the sentinel as "no tile", which would ship a map with
+    // most of its cells unpainted. The original leaves them as the clear tile.
     for &(x, y) in &coords {
-        ctx.grid.get_mut(x, y).expect("native cell").tile = ctx.ids.water_base;
+        ctx.grid.get_mut(x, y).expect("native cell").tile = ctx.ids.clear;
     }
 
-    // Phase 2: shape dispatch.
-    match args.map_type {
-        0 => archipelago(ctx, args),
-        1 => continental(ctx, args),
-        _ => islands_in_sea(ctx, args),
+    // Inland and mountainous begin on the background the map init leaves behind
+    // — clear tile, sub-tile 0, uniform base level — and *add* water by carving
+    // rivers and lakes into it, admitting only clear cells. Flooding first would
+    // leave the carver nothing to admit, so it would place no water at all and
+    // the terrain would come out inverted.
+    //
+    // A zero water amount is not a degenerate input for these two types: the
+    // option is rolled from a per-map-type range whose minimum is zero for both,
+    // and the original then seeds no water whatsoever. That case is complete
+    // here.
+    //
+    // For a non-zero water amount the carving itself is not modelled yet, so the
+    // map comes out short of water. That is a declared gap, and a far smaller
+    // one than inverting land and sea, which is what routing these types into
+    // the sea-shaping path produced.
+    if !CARVED_WATER_MAP_TYPES.contains(&args.map_type) {
+        // Phase 1: every cell becomes water.
+        for &(x, y) in &coords {
+            ctx.grid.get_mut(x, y).expect("native cell").tile = ctx.ids.water_base;
+        }
+
+        // Phase 2: shape dispatch.
+        match args.map_type {
+            0 => archipelago(ctx, args),
+            1 => continental(ctx, args),
+            _ => islands_in_sea(ctx, args),
+        }
     }
 
     // Phase 3: isolated water cells with four clear cardinals become land.
@@ -504,7 +547,10 @@ mod tests {
         OneByOne(TileBlock {
             width: 1,
             height: 1,
-            subtiles: vec![Some(SubTile { height: 0, terrain: 0 })],
+            subtiles: vec![Some(SubTile {
+                height: 0,
+                terrain: 0,
+            })],
         })
     }
 
@@ -540,6 +586,10 @@ mod tests {
     }
 
     fn run_water(map_type: i32, seed: u16) -> (RmgGrid, TileIds) {
+        run_water_with(map_type, seed, 50)
+    }
+
+    fn run_water_with(map_type: i32, seed: u16, water_percent: i32) -> (RmgGrid, TileIds) {
         let (map_w, map_h) = (34, 42); // gen 30x30
         let (mut grid, mut scratch) = world(map_w, map_h);
         let identity = ids();
@@ -559,7 +609,7 @@ mod tests {
         };
         let args = WaterArgs {
             map_type,
-            water_percent: 50,
+            water_percent,
             num_players: 4,
             playable: PlayableRect {
                 x: 2,
@@ -663,5 +713,79 @@ mod tests {
             }
         };
         assert!((1..=4).contains(&extra));
+    }
+
+    /// Inland and mountainous must never be flooded.
+    ///
+    /// The original reaches them through a seeder that carves water *into* land
+    /// and admits only clear cells; the flood-the-map prefill lives in the other
+    /// seeder, which has exactly one caller — the branch these two types do not
+    /// take. Flooding first leaves the carver nothing to admit, so the map comes
+    /// out with land and sea inverted. Routing them into the sea-shaping path is
+    /// what this pins against.
+    #[test]
+    fn carved_water_types_never_flood_the_map() {
+        for map_type in CARVED_WATER_MAP_TYPES {
+            for water_percent in [0, 50, 100] {
+                let (grid, identity) = run_water_with(map_type, 4242, water_percent);
+                let flooded = grid
+                    .native_cells()
+                    .filter(|&(x, y)| {
+                        grid.get(x, y).expect("native cell").tile == identity.water_base
+                    })
+                    .count();
+                assert_eq!(
+                    flooded, 0,
+                    "map type {map_type} at water {water_percent} must not be flooded"
+                );
+            }
+        }
+    }
+
+    /// The zero-water case is not a degenerate input, it is stock behaviour: the
+    /// water amount is rolled from a per-map-type range whose minimum is zero for
+    /// both of these types, and the original then seeds no water at all. So the
+    /// background must survive as clear ground everywhere.
+    ///
+    /// Asserts the tile is **exactly** the clear tile, not merely that it
+    /// satisfies `is_clear`. That distinction is the whole point: `is_clear`
+    /// also accepts the unassigned sentinel, so the permissive form passed while
+    /// the emitter was still projecting most of the map as "no tile". Only the
+    /// retail resolvability pass caught it. Keep this assertion exact.
+    #[test]
+    fn carved_water_types_leave_a_zero_water_map_all_clear() {
+        for map_type in CARVED_WATER_MAP_TYPES {
+            let (grid, identity) = run_water_with(map_type, 4242, 0);
+            let not_clear_tile = grid
+                .native_cells()
+                .filter(|&(x, y)| grid.get(x, y).expect("native cell").tile != identity.clear)
+                .count();
+            assert_eq!(
+                not_clear_tile, 0,
+                "map type {map_type} with no water must be the clear tile everywhere, \
+                 not the unassigned sentinel"
+            );
+        }
+    }
+
+    /// Guard the other direction: the sea-shaping types must still be flooded and
+    /// still carve land back out. Without this, skipping the prefill for 3 and 4
+    /// could be over-applied and go unnoticed.
+    #[test]
+    fn sea_shaped_types_are_still_flooded_and_carved() {
+        for map_type in [0, 1, 2] {
+            let (grid, identity) = run_water_with(map_type, 4242, 50);
+            let mut water = 0usize;
+            let mut land = 0usize;
+            for (x, y) in grid.native_cells() {
+                if grid.get(x, y).expect("native cell").tile == identity.water_base {
+                    water += 1;
+                } else {
+                    land += 1;
+                }
+            }
+            assert!(water > 0, "map type {map_type} must still have sea");
+            assert!(land > 0, "map type {map_type} must still have land");
+        }
     }
 }
