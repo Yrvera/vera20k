@@ -8,6 +8,8 @@ use thiserror::Error;
 
 use crate::util::native_x87::{NativeF64Bits, NativeX87Error, X87Chop53, X87Value};
 
+pub use super::native_surface_format::DirectDrawPixelFormat;
+
 const Z_CORRECTION_THRESHOLD: i32 = 728;
 const PARTICLE_Z_BIAS: i32 = 0x32;
 const A_PASSTHROUGH_THRESHOLD: u16 = 127;
@@ -69,17 +71,6 @@ impl TacticalRect {
         let bottom = self.top.wrapping_add(self.height);
         point.x >= self.left && point.x < right && point.y >= self.top && point.y < bottom
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DirectDrawPixelFormat {
-    pub red_loss: u32,
-    pub red_shift: u32,
-    pub green_loss: u32,
-    pub green_shift: u32,
-    pub blue_loss: u32,
-    pub blue_shift: u32,
-    pub destination_bytes_per_pixel: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -383,6 +374,23 @@ mod tests {
             },
             draw_ordinal: 42,
         }
+    }
+
+    #[test]
+    fn verified_rgb565_and_rgb555_layouts_pack_expected_masks() {
+        use crate::render::native_surface_format::{RGB555, RGB565};
+
+        assert_eq!(pack_rgb([255, 255, 255], RGB565), 0xffff);
+        assert_eq!(pack_rgb([255, 0, 0], RGB565), 0xf800);
+        assert_eq!(pack_rgb([0, 255, 0], RGB565), 0x07e0);
+        assert_eq!(pack_rgb([0, 0, 255], RGB565), 0x001f);
+        assert_eq!(pack_rgb([255, 255, 0], RGB565), 0xffe0);
+
+        assert_eq!(pack_rgb([255, 255, 255], RGB555), 0x7fff);
+        assert_eq!(pack_rgb([255, 0, 0], RGB555), 0x7c00);
+        assert_eq!(pack_rgb([0, 255, 0], RGB555), 0x03e0);
+        assert_eq!(pack_rgb([0, 0, 255], RGB555), 0x001f);
+        assert_eq!(pack_rgb([255, 255, 0], RGB555), 0x7fe0);
     }
 
     #[test]

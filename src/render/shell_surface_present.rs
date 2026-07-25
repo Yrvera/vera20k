@@ -1,0 +1,372 @@
+//! Encoded-byte RGB565 presentation for the stock main-menu shell.
+//!
+//! The native shell composes into a 16-bit DirectDraw surface. Rust keeps its
+//! existing sRGB shell painters, then this shell-only boundary samples the
+//! stored encoded bytes through a compatible unorm view, applies the guarded
+//! presentation codebooks, and copies the resulting bytes into the swapchain.
+
+use std::num::NonZeroU64;
+
+use anyhow::{Result, bail};
+use wgpu::util::DeviceExt;
+
+use super::{gpu::GpuContext, native_surface_format::ACTIVE_RETAIL_RGB565_PRESENTATION};
+
+const SHADER_SOURCE: &str = include_str!("shell_surface_present.wgsl");
+const PROFILE_WORD_COUNT: usize = 96;
+const PROFILE_BUFFER_SIZE: u64 = (PROFILE_WORD_COUNT * std::mem::size_of::<u32>()) as u64;
+
+/// GPU resources for the active-retail shell presentation boundary.
+pub(crate) struct ShellSurfacePresenter {
+    _source_texture: wgpu::Texture,
+    source_render_view: wgpu::TextureView,
+    _source_encoded_view: wgpu::TextureView,
+    presented_texture: wgpu::Texture,
+    presented_view: wgpu::TextureView,
+    _profile_buffer: wgpu::Buffer,
+    bind_group_layout: wgpu::BindGroupLayout,
+    bind_group: wgpu::BindGroup,
+    pipeline: wgpu::RenderPipeline,
+    surface_format: wgpu::TextureFormat,
+    encoded_format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+}
+
+impl ShellSurfacePresenter {
+    /// Build the byte-domain presenter for the configured swapchain format.
+    pub(crate) fn new(gpu: &GpuContext) -> Result<Self> {
+        if gpu.config.width == 0 || gpu.config.height == 0 {
+            bail!(
+                "exact stock-shell presentation requires a non-zero surface, \
+                 configured {}x{}",
+                gpu.config.width,
+                gpu.config.height
+            );
+        }
+        let surface_format = gpu.surface_format;
+        let encoded_format = encoded_surface_format(surface_format)?;
+        let bind_group_layout = create_bind_group_layout(&gpu.device);
+        let profile_words = ACTIVE_RETAIL_RGB565_PRESENTATION.shader_words();
+        let profile_buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Active retail RGB565 presentation profile"),
+                contents: bytemuck::cast_slice(&profile_words),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let pipeline = create_pipeline(&gpu.device, &bind_group_layout, encoded_format);
+        let targets = create_targets(
+            &gpu.device,
+            &bind_group_layout,
+            &profile_buffer,
+            surface_format,
+            encoded_format,
+            gpu.config.width,
+            gpu.config.height,
+        );
+
+        Ok(Self {
+            _source_texture: targets.source_texture,
+            source_render_view: targets.source_render_view,
+            _source_encoded_view: targets.source_encoded_view,
+            presented_texture: targets.presented_texture,
+            presented_view: targets.presented_view,
+            _profile_buffer: profile_buffer,
+            bind_group_layout,
+            bind_group: targets.bind_group,
+            pipeline,
+            surface_format,
+            encoded_format,
+            width: gpu.config.width,
+            height: gpu.config.height,
+        })
+    }
+
+    /// Clone the sRGB offscreen view used by the existing shell painters.
+    pub(crate) fn source_render_view(&self) -> wgpu::TextureView {
+        self.source_render_view.clone()
+    }
+
+    /// Recreate only surface-sized resources after a swapchain resize.
+    pub(crate) fn resize(&mut self, gpu: &GpuContext) {
+        if self.width == gpu.config.width && self.height == gpu.config.height {
+            return;
+        }
+        debug_assert_eq!(self.surface_format, gpu.surface_format);
+        debug_assert_eq!(self.encoded_format, gpu.surface_format.remove_srgb_suffix());
+
+        let targets = create_targets(
+            &gpu.device,
+            &self.bind_group_layout,
+            &self._profile_buffer,
+            self.surface_format,
+            self.encoded_format,
+            gpu.config.width,
+            gpu.config.height,
+        );
+        self._source_texture = targets.source_texture;
+        self.source_render_view = targets.source_render_view;
+        self._source_encoded_view = targets.source_encoded_view;
+        self.presented_texture = targets.presented_texture;
+        self.presented_view = targets.presented_view;
+        self.bind_group = targets.bind_group;
+        self.width = gpu.config.width;
+        self.height = gpu.config.height;
+    }
+
+    /// Quantize the completed shell and copy its encoded bytes to the surface.
+    pub(crate) fn encode_present(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        destination: &wgpu::Texture,
+    ) {
+        debug_assert_eq!(destination.width(), self.width);
+        debug_assert_eq!(destination.height(), self.height);
+        debug_assert_eq!(destination.format(), self.surface_format);
+        debug_assert!(
+            destination.usage().contains(wgpu::TextureUsages::COPY_DST),
+            "shell presentation destination lacks COPY_DST"
+        );
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Active retail RGB565 shell presentation"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.presented_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.presented_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: destination,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+}
+
+struct PresentationTargets {
+    source_texture: wgpu::Texture,
+    source_render_view: wgpu::TextureView,
+    source_encoded_view: wgpu::TextureView,
+    presented_texture: wgpu::Texture,
+    presented_view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+}
+
+fn encoded_surface_format(surface_format: wgpu::TextureFormat) -> Result<wgpu::TextureFormat> {
+    match surface_format {
+        wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb => {
+            Ok(surface_format.remove_srgb_suffix())
+        }
+        _ => bail!(
+            "exact stock-shell presentation requires an sRGB BGRA8/RGBA8 \
+             swapchain, selected {surface_format:?}"
+        ),
+    }
+}
+
+fn create_targets(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    profile_buffer: &wgpu::Buffer,
+    surface_format: wgpu::TextureFormat,
+    encoded_format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> PresentationTargets {
+    let extent = wgpu::Extent3d {
+        width: width.max(1),
+        height: height.max(1),
+        depth_or_array_layers: 1,
+    };
+    let source_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Stock shell sRGB composition surface"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: surface_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[encoded_format],
+    });
+    let source_render_view = source_texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("Stock shell sRGB render view"),
+        format: Some(surface_format),
+        usage: Some(wgpu::TextureUsages::RENDER_ATTACHMENT),
+        ..Default::default()
+    });
+    let source_encoded_view = source_texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("Stock shell encoded-byte sampling view"),
+        format: Some(encoded_format),
+        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        ..Default::default()
+    });
+    let presented_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Stock shell quantized presentation surface"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: encoded_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let presented_view = presented_texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("Stock shell quantized presentation view"),
+        format: Some(encoded_format),
+        usage: Some(wgpu::TextureUsages::RENDER_ATTACHMENT),
+        ..Default::default()
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Stock shell RGB565 presentation bind group"),
+        layout: bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&source_encoded_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: profile_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    PresentationTargets {
+        source_texture,
+        source_render_view,
+        source_encoded_view,
+        presented_texture,
+        presented_view,
+        bind_group,
+    }
+}
+
+fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Stock shell RGB565 presentation layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(PROFILE_BUFFER_SIZE),
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+fn create_pipeline(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    encoded_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Stock shell RGB565 presentation shader"),
+        source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Stock shell RGB565 presentation pipeline layout"),
+        bind_group_layouts: &[bind_group_layout],
+        push_constant_ranges: &[],
+    });
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Stock shell RGB565 presentation pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: encoded_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_copy_compatible_color_srgb_surface_formats_are_accepted() {
+        assert_eq!(
+            encoded_surface_format(wgpu::TextureFormat::Bgra8UnormSrgb).unwrap(),
+            wgpu::TextureFormat::Bgra8Unorm
+        );
+        assert_eq!(
+            encoded_surface_format(wgpu::TextureFormat::Rgba8UnormSrgb).unwrap(),
+            wgpu::TextureFormat::Rgba8Unorm
+        );
+        assert!(encoded_surface_format(wgpu::TextureFormat::Bgra8Unorm).is_err());
+        assert!(encoded_surface_format(wgpu::TextureFormat::Rgba16Float).is_err());
+    }
+
+    #[test]
+    fn profile_buffer_size_matches_shader_contract() {
+        assert_eq!(
+            ACTIVE_RETAIL_RGB565_PRESENTATION.shader_words().len(),
+            PROFILE_WORD_COUNT
+        );
+        assert_eq!(PROFILE_BUFFER_SIZE, 384);
+    }
+}

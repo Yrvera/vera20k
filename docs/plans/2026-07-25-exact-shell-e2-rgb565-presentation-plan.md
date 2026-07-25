@@ -243,10 +243,7 @@ exact codebook values without transfer-function ambiguity.
 ```wgsl
 @group(0) @binding(0) var source: texture_2d<f32>;
 
-struct Profile {
-    codebook: array<u32>,
-};
-@group(0) @binding(1) var<storage, read> profile: Profile;
+@group(0) @binding(1) var<storage, read> codebook: array<u32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32)
@@ -260,9 +257,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32)
 fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
     let encoded = textureLoad(source, vec2i(position.xy), 0);
     let bytes = vec4u(round(encoded * 255.0));
-    let r = profile.codebook[bytes.r >> 3u];
-    let g = profile.codebook[32u + (bytes.g >> 2u)];
-    let b = profile.codebook[bytes.b >> 3u];
+    let r = codebook[bytes.r >> 3u];
+    let g = codebook[32u + (bytes.g >> 2u)];
+    let b = codebook[bytes.b >> 3u];
     return vec4f(vec4u(r, g, b, bytes.a)) / 255.0;
 }
 ```

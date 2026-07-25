@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use winit::window::Window;
 
 /// Holds all wgpu state needed for rendering.
@@ -88,6 +88,24 @@ impl GpuContext {
         // Pick the best texture format for the surface.
         // This is usually Bgra8UnormSrgb on Windows, Bgra8Unorm on some other platforms.
         let surface_caps: wgpu::SurfaceCapabilities = surface.get_capabilities(&adapter);
+        let required_surface_usages = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST;
+        if !surface_caps.usages.contains(required_surface_usages) {
+            bail!(
+                "exact stock-shell presentation requires surface usages \
+                 {required_surface_usages:?}, adapter exposes {:?}",
+                surface_caps.usages
+            );
+        }
+        let downlevel = adapter.get_downlevel_capabilities();
+        if !downlevel.flags.contains(wgpu::DownlevelFlags::VIEW_FORMATS) {
+            bail!(
+                "exact stock-shell presentation requires compatible sRGB/unorm \
+                 texture views, adapter downlevel flags are {:?}",
+                downlevel.flags
+            );
+        }
         let surface_format: wgpu::TextureFormat = surface_caps
             .formats
             .iter()
@@ -98,7 +116,7 @@ impl GpuContext {
         // Configure the surface with our chosen format and the window's current size.
         let window_size: winit::dpi::PhysicalSize<u32> = window.inner_size();
         let config: wgpu::SurfaceConfiguration = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: required_surface_usages,
             format: surface_format,
             width: window_size.width.max(1), // wgpu panics on 0-sized surfaces
             height: window_size.height.max(1),

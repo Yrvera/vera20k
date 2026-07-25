@@ -198,6 +198,8 @@ pub(crate) struct AppState {
     pub(crate) game_config: Option<GameConfig>,
     /// GPU depth texture for back-to-front depth ordering. Recreated on window resize.
     pub(crate) depth_view: wgpu::TextureView,
+    /// Shell-only encoded-byte RGB565 presentation boundary for dialog 0xE2.
+    pub(crate) shell_surface_presenter: crate::render::shell_surface_present::ShellSurfacePresenter,
     /// Optional Catmull-Rom bicubic upscale pass (render at lower res, upscale to window).
     pub(crate) upscale_pass: Option<crate::render::upscale_pass::UpscalePass>,
     pub(crate) camera_x: f32,
@@ -608,6 +610,7 @@ impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
         state.gpu.resize(size.width, size.height);
         state.depth_view = state.gpu.create_depth_texture();
+        state.shell_surface_presenter.resize(&state.gpu);
         // The frame-index wave is driven by wall-clock ticks and repaints every
         // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
         let new_scale = auto_detect_ui_scale(size.width, size.height);
@@ -3561,6 +3564,8 @@ impl App {
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
         let mut bit_font = BitFont::fallback_5x7(&gpu, &batch_renderer);
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
+        let shell_surface_presenter =
+            crate::render::shell_surface_present::ShellSurfacePresenter::new(&gpu)?;
         let game_config = GameConfig::load().ok();
         let input_delay_ticks: u64 = game_config
             .as_ref()
@@ -3786,6 +3791,7 @@ impl App {
             overlay_registry: None,
             game_config,
             depth_view,
+            shell_surface_presenter,
             upscale_pass,
             camera_x: 0.0,
             camera_y: 0.0,
@@ -4142,7 +4148,7 @@ impl App {
                     match crate::app_main_menu_shell_render::render_main_menu_shell(
                         state,
                         &mut encoder,
-                        &view,
+                        &output.texture,
                     )? {
                         crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered => {
                             state.egui.begin_frame(&state.window);

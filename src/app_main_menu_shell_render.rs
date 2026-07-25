@@ -363,20 +363,35 @@ fn menu_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
     })
 }
 
+/// Paint the normal 0xE2 route through its active-retail presentation boundary.
+///
+/// First-paint transition callers intentionally use
+/// [`render_main_menu_shell_to_target`] so their shared transition target is
+/// not post-processed as a steady native primary surface.
 pub(crate) fn render_main_menu_shell(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
+    destination: &wgpu::Texture,
 ) -> Result<MainMenuShellRenderResult> {
+    let color = state.shell_surface_presenter.source_render_view();
     let depth = state.depth_view.clone();
-    render_main_menu_shell_to_target(
+    let result = render_main_menu_shell_to_target(
         state,
         encoder,
         ShellRenderTarget {
-            color: target,
+            color: &color,
             depth: &depth,
         },
-    )
+    )?;
+    match result {
+        MainMenuShellRenderResult::Rendered => {
+            state
+                .shell_surface_presenter
+                .encode_present(encoder, destination);
+            Ok(MainMenuShellRenderResult::Rendered)
+        }
+        MainMenuShellRenderResult::Fallback => Ok(MainMenuShellRenderResult::Fallback),
+    }
 }
 
 pub(crate) fn render_main_menu_shell_to_target(
