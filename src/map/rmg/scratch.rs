@@ -42,6 +42,11 @@ pub struct ScratchCell {
     /// Water/region propagation flag written during water seeding, consumed
     /// by the region water pass, cleared on blob rollback.
     pub water_region: bool,
+    /// Lake allow-mask (+0x44): whether a growing lake may claim this cell.
+    /// Derived fresh at the start of every lake attempt and read nowhere else,
+    /// so its resting value does not matter — but it is its own slot, not a
+    /// reuse of `water_lock` or `shore_enable`, both of which other phases read.
+    pub lake_allow: bool,
 }
 
 impl Default for ScratchCell {
@@ -61,6 +66,7 @@ impl Default for ScratchCell {
             visited: false,
             shore_enable: true,
             water_region: false,
+            lake_allow: false,
         }
     }
 }
