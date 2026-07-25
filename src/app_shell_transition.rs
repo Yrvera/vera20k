@@ -189,10 +189,22 @@ pub(crate) fn render_shell_first_paint_slide(
             )?,
             crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Rendered
         ),
-        ShellSlideKind::MainMenu => matches!(
-            crate::app_main_menu_shell_render::render_main_menu_shell(state, encoder, target)?,
-            crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered
-        ),
+        ShellSlideKind::MainMenu => {
+            // The wave owns a shared transition target, not the native steady
+            // primary-surface boundary finalized by render_main_menu_shell.
+            let depth = state.depth_view.clone();
+            matches!(
+                crate::app_main_menu_shell_render::render_main_menu_shell_to_target(
+                    state,
+                    encoder,
+                    crate::render::shell_transition_pass::ShellRenderTarget {
+                        color: target,
+                        depth: &depth,
+                    },
+                )?,
+                crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered
+            )
+        }
     };
 
     if !rendered {
