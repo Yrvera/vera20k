@@ -19,6 +19,7 @@ pub mod settings;
 pub mod tech_catalog;
 pub mod theater_blocks;
 pub mod tiles;
+pub mod trig;
 pub mod x87;
 
 pub use grid::{DIRECTION_OFFSETS, DiamondScan, GridCell, RmgGrid};
