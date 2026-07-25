@@ -20,7 +20,9 @@ use super::rng::RmgRng;
 use super::scratch::RmgScratch;
 use super::tiles::TileIds;
 use super::x87::Gaussian;
-use super::{GeneratedMap, MapGeometry, RmgOptions, RmgSettings, STAGE_ORDER, Stage, emit, grid};
+use super::{
+    GeneratedMap, MapGeometry, RmgOptions, RmgSettings, Stage, emit, executed_stages, grid,
+};
 
 /// Land type → rules section, the RA2 `LandType` enum order (verified against
 /// the zone classifier's `LAND_WATER == 2` / `LAND_BEACH == 6`). Indices past
@@ -250,27 +252,10 @@ pub fn generate_map_observed(
     }
 }
 
-/// Walk `STAGE_ORDER`, dropping the stages this configuration skips (the island
-/// passes off the water-heavy map types; rocks off the non-temperate theaters).
-fn executed_stages(options: &RmgOptions) -> Vec<Stage> {
-    STAGE_ORDER
-        .iter()
-        .copied()
-        .filter(|stage| {
-            if *stage == Stage::IslandPasses && !matches!(options.map_type, 3 | 4) {
-                return false;
-            }
-            if *stage == Stage::Rocks && options.theater != 0 {
-                return false;
-            }
-            true
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::STAGE_ORDER;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
     use crate::rules::ini_parser::IniFile;
 

@@ -16,6 +16,7 @@ pub mod rng;
 pub mod saved_seeds;
 pub mod scratch;
 pub mod settings;
+pub mod tech_catalog;
 pub mod theater_blocks;
 pub mod tiles;
 pub mod x87;
@@ -28,10 +29,7 @@ pub use settings::RmgSettings;
 pub use tiles::TileIds;
 pub use x87::{Gaussian, TruncF64};
 
-use anyhow::Result;
-
 use crate::map::map_file::MapFile;
-use crate::map::theater::TheaterData;
 
 /// One stage of the generation pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,45 +197,26 @@ pub struct GeneratedMap {
     pub stages_run: Vec<Stage>,
 }
 
-/// Run the generator.
+/// Walk `STAGE_ORDER`, dropping the stages this configuration skips: the island
+/// passes off every map type but the two water-heavy ones, and the rock overlays
+/// off every theater but temperate (whose LAT driver still scatters trees).
 ///
-/// Phase bodies land separately; this walks the pipeline order and records it,
-/// so the ordering contract is testable before the phases exist.
-pub fn generate(
-    options: &RmgOptions,
-    settings: &RmgSettings,
-    // Optional while no phase consumes theater data yet.
-    _theater: Option<&TheaterData>,
-) -> Result<GeneratedMap> {
-    let mut options = options.clone();
-    options.normalize();
-
-    let geometry = MapGeometry::from_options(&options);
-    let mut rng = RmgRng::new(options.seed_u16());
-    let mut scratch = RmgScratch::new(geometry.stride, geometry.diamond_min, geometry.diamond_max);
-    let mut grid =
-        grid::RmgGrid::new(geometry.stride, geometry.diamond_min, geometry.diamond_max);
-    let _ = (&settings, &mut rng, &mut scratch, &mut grid);
-
-    let mut stages_run = Vec::with_capacity(STAGE_ORDER.len());
-    for stage in STAGE_ORDER {
-        // The island passes only exist for the two water-heavy map types.
-        if *stage == Stage::IslandPasses && !matches!(options.map_type, 3 | 4) {
-            continue;
-        }
-        // Rock overlays are painted only in the temperate theater; every other
-        // theater's LAT driver runs trees but no rocks.
-        if *stage == Stage::Rocks && options.theater != 0 {
-            continue;
-        }
-        stages_run.push(*stage);
-    }
-
-    Ok(GeneratedMap {
-        map_file: emit::empty_map_file(&options, geometry.gen_w as u32, geometry.gen_h as u32),
-        start_waypoints: Vec::new(),
-        stages_run,
-    })
+/// `options` must already be normalized — `build::generate_map` normalizes its
+/// copy before calling this.
+pub fn executed_stages(options: &RmgOptions) -> Vec<Stage> {
+    STAGE_ORDER
+        .iter()
+        .copied()
+        .filter(|stage| {
+            if *stage == Stage::IslandPasses && !matches!(options.map_type, 3 | 4) {
+                return false;
+            }
+            if *stage == Stage::Rocks && options.theater != 0 {
+                return false;
+            }
+            true
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -293,24 +272,22 @@ mod tests {
 
     #[test]
     fn rocks_run_only_in_the_temperate_theater() {
-        let settings = RmgSettings::default();
         // Temperate (theater 0) paints rocks; every other theater skips them,
         // but still runs trees.
-        let temperate = generate(&RmgOptions::default(), &settings, None).unwrap();
-        assert!(temperate.stages_run.contains(&Stage::Rocks));
-        assert!(temperate.stages_run.contains(&Stage::Trees));
+        let temperate = executed_stages(&RmgOptions::default());
+        assert!(temperate.contains(&Stage::Rocks));
+        assert!(temperate.contains(&Stage::Trees));
         for theater in [1, 2, 3, 4] {
-            let options = RmgOptions {
+            let stages = executed_stages(&RmgOptions {
                 theater,
                 ..Default::default()
-            };
-            let generated = generate(&options, &settings, None).unwrap();
+            });
             assert!(
-                !generated.stages_run.contains(&Stage::Rocks),
+                !stages.contains(&Stage::Rocks),
                 "theater {theater} must not paint rocks"
             );
             assert!(
-                generated.stages_run.contains(&Stage::Trees),
+                stages.contains(&Stage::Trees),
                 "theater {theater} still scatters trees"
             );
         }
@@ -318,28 +295,46 @@ mod tests {
 
     #[test]
     fn island_passes_are_skipped_for_ordinary_map_types() {
-        let settings = RmgSettings::default();
         for map_type in [0, 1, 2] {
-            let options = RmgOptions {
+            let stages = executed_stages(&RmgOptions {
                 map_type,
                 ..Default::default()
-            };
-            let generated = generate(&options, &settings, None).unwrap();
+            });
             assert!(
-                !generated.stages_run.contains(&Stage::IslandPasses),
+                !stages.contains(&Stage::IslandPasses),
                 "map type {map_type} must not run the island passes"
             );
         }
         for map_type in [3, 4] {
-            let options = RmgOptions {
+            let stages = executed_stages(&RmgOptions {
                 map_type,
                 ..Default::default()
-            };
-            let generated = generate(&options, &settings, None).unwrap();
+            });
             assert!(
-                generated.stages_run.contains(&Stage::IslandPasses),
+                stages.contains(&Stage::IslandPasses),
                 "map type {map_type} must run the island passes"
             );
+        }
+    }
+
+    /// Every executed list is a subsequence of `STAGE_ORDER`: the filter drops
+    /// stages, it never reorders or invents them.
+    #[test]
+    fn executed_stages_preserve_the_pipeline_order() {
+        for map_type in 0..=4 {
+            for theater in 0..=4 {
+                let stages = executed_stages(&RmgOptions {
+                    map_type,
+                    theater,
+                    ..Default::default()
+                });
+                assert!(!stages.is_empty());
+                let positions: Vec<usize> = stages.iter().map(|s| position(*s)).collect();
+                assert!(
+                    positions.windows(2).all(|w| w[0] < w[1]),
+                    "map type {map_type}, theater {theater} kept pipeline order"
+                );
+            }
         }
     }
 
@@ -394,6 +389,9 @@ mod tests {
         assert_eq!(geometry.stride, 74 + 82 + 1);
     }
 
+    /// The header projection every generated map starts from. `build` emits
+    /// into exactly this file, so the dimension and theater mapping is pinned
+    /// here rather than behind a whole generation run.
     #[test]
     fn generated_header_uses_the_real_dimensions() {
         let options = RmgOptions {
@@ -402,22 +400,11 @@ mod tests {
             height: 3,
             ..Default::default()
         };
-        let generated = generate(&options, &RmgSettings::default(), None).unwrap();
-        assert_eq!(generated.map_file.header.width, 124, "120 interior + 4");
-        assert_eq!(generated.map_file.header.height, 132, "120 interior + 12");
-        assert_eq!(generated.map_file.header.local_width, 120);
-    }
-
-    #[test]
-    fn generate_normalizes_before_use() {
-        // Out-of-range inputs must be clamped before the RNG conversion.
-        let options = RmgOptions {
-            seed: 0x9999_9999u32 as i32,
-            num_players: 99,
-            ..Default::default()
-        };
-        let generated = generate(&options, &RmgSettings::default(), None).unwrap();
-        assert!(!generated.stages_run.is_empty());
+        let geometry = MapGeometry::from_options(&options);
+        let map = emit::empty_map_file(&options, geometry.gen_w as u32, geometry.gen_h as u32);
+        assert_eq!(map.header.width, 124, "120 interior + 4");
+        assert_eq!(map.header.height, 132, "120 interior + 12");
+        assert_eq!(map.header.local_width, 120);
     }
 
     #[test]
@@ -426,28 +413,25 @@ mod tests {
             theater: 1,
             ..Default::default()
         };
-        let generated = generate(&options, &RmgSettings::default(), None).unwrap();
-        assert_eq!(generated.map_file.header.theater, "SNOW");
+        let geometry = MapGeometry::from_options(&options);
+        let map = emit::empty_map_file(&options, geometry.gen_w as u32, geometry.gen_h as u32);
+        assert_eq!(map.header.theater, "SNOW");
     }
 
+    /// Out-of-range inputs must be clamped before anything derives geometry or
+    /// an RNG seed from them.
     #[test]
-    fn generation_is_reproducible_from_the_same_options() {
-        let options = RmgOptions {
-            seed: 4321,
-            num_players: 6,
+    fn normalize_clamps_before_geometry_and_seed() {
+        let mut options = RmgOptions {
+            seed: 0x9999_9999u32 as i32,
+            num_players: 99,
             ..Default::default()
         };
-        let settings = RmgSettings::default();
-        let first = generate(&options, &settings, None).unwrap();
-        let second = generate(&options, &settings, None).unwrap();
-
-        assert_eq!(first.stages_run, second.stages_run);
-        assert_eq!(first.start_waypoints, second.start_waypoints);
-        assert_eq!(first.map_file.header.width, second.map_file.header.width);
-        assert_eq!(
-            first.map_file.header.theater,
-            second.map_file.header.theater
-        );
+        options.normalize();
+        assert!((2..=8).contains(&options.num_players));
+        assert!(!executed_stages(&options).is_empty());
+        let geometry = MapGeometry::from_options(&options);
+        assert!(geometry.gen_w > 0 && geometry.gen_h > 0);
     }
 
     #[test]

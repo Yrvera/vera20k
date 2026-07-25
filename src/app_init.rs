@@ -353,7 +353,9 @@ pub(crate) fn load_map_initial_with_assets(
         match std::fs::read(ra2_dir.join(seed_name)) {
             Ok(bytes) => match crate::rules::ini_parser::IniFile::from_bytes(&bytes) {
                 Ok(ini) => options.apply_sed(&ini),
-                Err(err) => log::warn!("random map: {seed_name} is not valid INI ({err}); using defaults"),
+                Err(err) => {
+                    log::warn!("random map: {seed_name} is not valid INI ({err}); using defaults")
+                }
             },
             // Missing seed file is not fatal: the original's options object
             // keeps its constructor defaults when a key (or the file) is absent.
@@ -386,10 +388,17 @@ pub(crate) fn load_map_initial_with_assets(
                 asset_manager.get(name)
             });
 
-        // Neutral tech buildings are not resolved yet (no `NeutralTechBuildings`
-        // footprint list), so none are placed.
-        let generated =
-            crate::map::rmg::build::generate_map(&options, &settings, &resolved, &blocks, &[]);
+        // `[AI] NeutralTechBuildings` plus each type's `Foundation=`. The phase
+        // runs for every map type except 0, so an empty list here would both
+        // strip the buildings and skip the draws the original consumes.
+        let tech_types = crate::app_init_helpers::load_neutral_tech_types(&asset_manager);
+        let generated = crate::map::rmg::build::generate_map(
+            &options,
+            &settings,
+            &resolved,
+            &blocks,
+            &tech_types,
+        );
         log::info!(
             "Random map generated: theater={}, {}x{}, seed={}, players={}",
             generated.map_file.header.theater,

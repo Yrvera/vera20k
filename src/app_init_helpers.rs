@@ -416,6 +416,46 @@ pub(crate) fn load_skirmish_game_options(
     GameOptions::from_multiplayer_dialog_settings(&ini)
 }
 
+/// Merge a YR-patched INI pair (`base` then `patch` on top) into one file.
+///
+/// Returns `None` only when the base is missing or unparseable; a missing or
+/// unparseable patch leaves the base as-is, which is how every other loader
+/// here treats an RA2-only installation.
+fn load_patched_ini(asset_manager: &AssetManager, base: &str, patch: &str) -> Option<IniFile> {
+    let (data, _) = asset_manager.get_with_source(base)?;
+    let mut ini = IniFile::from_bytes(&data).ok()?;
+    if let Some((patch_data, _)) = asset_manager.get_with_source(patch) {
+        if let Ok(patch_ini) = IniFile::from_bytes(&patch_data) {
+            ini.merge(&patch_ini);
+        }
+    }
+    Some(ini)
+}
+
+/// Resolve the neutral tech buildings the random map generator may place.
+///
+/// The type list lives in `[AI] NeutralTechBuildings` and each footprint in
+/// `Foundation=`, so both INI families are needed and both are YR-patched.
+/// An unavailable INI yields an empty catalog, which the placement phase
+/// treats as "place nothing" rather than as an error.
+pub(crate) fn load_neutral_tech_types(
+    asset_manager: &AssetManager,
+) -> Vec<crate::map::rmg::phases::tech_buildings::TechType> {
+    let (Some(rules), Some(art)) = (
+        load_patched_ini(asset_manager, "rules.ini", "rulesmd.ini"),
+        load_patched_ini(asset_manager, "art.ini", "artmd.ini"),
+    ) else {
+        log::warn!("random map: rules/art INI unavailable; placing no neutral tech buildings");
+        return Vec::new();
+    };
+    let types = crate::map::rmg::tech_catalog::resolve(&rules, &art);
+    log::info!(
+        "random map: resolved {} neutral tech building type(s)",
+        types.len()
+    );
+    types
+}
+
 /// Load art.ini from MIX archives and parse into ArtRegistry.
 ///
 /// Like rules, artmd.ini is a YR patch on top of art.ini. We load art.ini
