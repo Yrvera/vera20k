@@ -536,6 +536,209 @@ mod tests {
         assert!(!generated.stages_run.contains(&Stage::Rocks));
         assert!(generated.stages_run.contains(&Stage::Trees));
     }
+
+    // ---- The generation matrix -------------------------------------------
+    //
+    // Everything below is a REGRESSION RATCHET, never parity evidence: the
+    // inputs are synthetic and both sides of every comparison come from this
+    // build. It can expose a panic, a gate regression, or nondeterminism. It
+    // cannot show the generator agrees with the original.
+    //
+    // The synthetic fixture leaves whole systems inert, so the matrix must not
+    // be read as covering them: `morphable` is always false, so the hills
+    // corner engine never morphs; `TheaterCliffRanges::default()` leaves every
+    // range `None`, so cliff drops never fire; and six `TileIds` fields are
+    // -1, so the pave and road rejections in the start gate never trigger.
+
+    /// Seeds the matrix crosses. 0 is the normalizer's floor — an unset seed
+    /// of -1 clamps to it — and 0xFFFF is the randomizer's ceiling; the rest
+    /// are a fixed spread. A single seed would hide exactly what this matrix
+    /// exists to find, because the start selector starves seed-dependently.
+    const MATRIX_SEEDS: [i32; 5] = [0, 1, 4242, 30011, 0xFFFF];
+
+    /// What the dialog itself can emit: it offers two theaters, and its
+    /// map-type list starts at 1, so archipelago is not reachable from it.
+    const DIALOG_MAP_TYPES: [i32; 4] = [1, 2, 3, 4];
+    const DIALOG_THEATERS: [i32; 2] = [0, 1];
+    /// Reachable only through a hand-authored `.SED`: archipelago, and the
+    /// theaters the dialog never offers. Real input surfaces, but a failure
+    /// here ranks below one the player can reach by clicking.
+    const SED_ONLY_MAP_TYPE: i32 = 0;
+    const SED_ONLY_THEATERS: [i32; 3] = [2, 3, 4];
+
+    /// Rock overlay id range — the observable product of the temperate branch.
+    const ROCK_OVERLAYS: std::ops::RangeInclusive<u8> = 168..=177;
+
+    fn matrix_options(map_type: i32, theater: i32, seed: i32) -> RmgOptions {
+        RmgOptions {
+            seed,
+            ..options(map_type, theater)
+        }
+    }
+
+    fn run_cell(options: &RmgOptions) -> GeneratedMap {
+        generate_map(
+            options,
+            &RmgSettings::default(),
+            &resolved(),
+            &one_by_one(),
+            &[],
+        )
+    }
+
+    fn rock_overlay_count(generated: &GeneratedMap) -> usize {
+        generated
+            .map_file
+            .overlays
+            .iter()
+            .filter(|o| ROCK_OVERLAYS.contains(&o.overlay_id))
+            .count()
+    }
+
+    /// Generate one cell, assert it produced a real map, and return how many
+    /// rock overlays it painted.
+    ///
+    /// The rock gate is checked on its observable product, never on
+    /// `stages_run`: that field is assigned straight from
+    /// `executed_stages(&options)`, so comparing the two would compare one pure
+    /// function against itself and could not fail.
+    ///
+    /// Only the OFF side is a per-cell assertion. How many rocks a temperate
+    /// map paints is probabilistic, and zero is a legitimate outcome — the
+    /// first run of this matrix found `map_type=1, theater=0, seed=0` painting
+    /// none while `map_type=0` on the same theater and seed painted some. The
+    /// on side is therefore asserted in aggregate by the callers: if the
+    /// temperate branch were dead, no cell in the whole tier would paint any.
+    #[must_use]
+    fn assert_cell_generates(map_type: i32, theater: i32, seed: i32) -> usize {
+        let generated = run_cell(&matrix_options(map_type, theater, seed));
+        let cell = format!("map_type={map_type} theater={theater} seed={seed}");
+
+        assert!(
+            !generated.map_file.cells.is_empty(),
+            "{cell}: emitted no cells"
+        );
+        assert!(
+            generated.map_file.cells.iter().any(|c| c.tile_index != -1),
+            "{cell}: every emitted cell is no-tile"
+        );
+
+        let rocks = rock_overlay_count(&generated);
+        if theater != 0 {
+            assert_eq!(rocks, 0, "{cell}: only the temperate branch paints rocks");
+        }
+        rocks
+    }
+
+    /// Every configuration the dialog can emit, across the seed spread.
+    #[test]
+    fn dialog_reachable_matrix_generates() {
+        let mut temperate_rocks = 0usize;
+        for map_type in DIALOG_MAP_TYPES {
+            for theater in DIALOG_THEATERS {
+                for seed in MATRIX_SEEDS {
+                    temperate_rocks += assert_cell_generates(map_type, theater, seed);
+                }
+            }
+        }
+        // The on side of the rock gate, asserted over the tier rather than per
+        // cell: a dead temperate branch would paint nothing anywhere.
+        assert!(
+            temperate_rocks > 0,
+            "no dialog-reachable temperate configuration painted any rock"
+        );
+    }
+
+    /// The `.SED`-only tier, kept separate so a failure here is not confused
+    /// with one on a surface the player can reach from the dialog.
+    #[test]
+    fn sed_only_matrix_generates() {
+        let mut temperate_rocks = 0usize;
+        for theater in DIALOG_THEATERS {
+            for seed in MATRIX_SEEDS {
+                temperate_rocks += assert_cell_generates(SED_ONLY_MAP_TYPE, theater, seed);
+            }
+        }
+        for map_type in DIALOG_MAP_TYPES.iter().copied().chain([SED_ONLY_MAP_TYPE]) {
+            for theater in SED_ONLY_THEATERS {
+                for seed in MATRIX_SEEDS {
+                    let rocks = assert_cell_generates(map_type, theater, seed);
+                    debug_assert_eq!(rocks, 0, "non-temperate tier paints no rocks");
+                }
+            }
+        }
+        assert!(
+            temperate_rocks > 0,
+            "archipelago painted no rock on any temperate seed"
+        );
+    }
+
+    /// Determinism across the matrix. A ratchet: both sides are produced by
+    /// this build, so it detects nondeterminism and never drift.
+    #[test]
+    fn matrix_generation_is_deterministic() {
+        for map_type in 0..=4 {
+            for theater in [0, 1] {
+                for seed in [0, 4242, 0xFFFF] {
+                    let options = matrix_options(map_type, theater, seed);
+                    assert_eq!(
+                        projection(&run_cell(&options)),
+                        projection(&run_cell(&options)),
+                        "map_type={map_type} theater={theater} seed={seed}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn snapshot_projection(
+        snapshot: &GenerationSnapshot,
+    ) -> (Vec<i32>, Vec<(u16, u16, u8, u8)>, Vec<(u8, u16, u16)>) {
+        let tiles = snapshot
+            .map_file
+            .cells
+            .iter()
+            .map(|cell| cell.tile_index)
+            .collect();
+        let overlays = snapshot
+            .map_file
+            .overlays
+            .iter()
+            .map(|o| (o.rx, o.ry, o.overlay_id, o.frame))
+            .collect();
+        (tiles, overlays, snapshot.start_waypoints.clone())
+    }
+
+    /// `IslandPasses` is reported as executed for map types 3 and 4 but does
+    /// no work — that is the open RMG-01 defect.
+    ///
+    /// Pinned deliberately as a KNOWN NO-OP. Without this the matrix above
+    /// would go green on map types 3 and 4 and quietly certify the defect as
+    /// correct behaviour. When the island passes are implemented this test
+    /// must fail; that failure is the signal, and the test should then be
+    /// deleted rather than relaxed.
+    #[test]
+    fn island_passes_is_still_a_known_no_op() {
+        for map_type in [3, 4] {
+            let (_, points, snapshots) = observe_run(&matrix_options(map_type, 0, 4242));
+            let index_of = |point: GenerationPoint| {
+                points
+                    .iter()
+                    .position(|candidate| *candidate == point)
+                    .unwrap_or_else(|| panic!("{point:?} was never reported"))
+            };
+            let before =
+                snapshot_projection(&snapshots[index_of(GenerationPoint::After(Stage::Regions))]);
+            let after = snapshot_projection(
+                &snapshots[index_of(GenerationPoint::After(Stage::IslandPasses))],
+            );
+            assert_eq!(
+                before, after,
+                "map type {map_type}: IslandPasses changed the map. If RMG-01 \
+                 has landed, delete this test — it exists to make that visible."
+            );
+        }
+    }
 }
 
 #[cfg(test)]
