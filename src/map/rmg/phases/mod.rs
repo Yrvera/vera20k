@@ -12,6 +12,7 @@ pub mod lake;
 pub mod lat_fixup;
 pub mod lat_patches;
 pub mod regions;
+pub mod river;
 pub mod rocks;
 pub mod shore;
 pub mod starts;

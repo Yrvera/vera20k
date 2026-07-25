@@ -60,6 +60,8 @@ pub struct PipelineInputs<'a> {
     pub wheel_impassable: [bool; LAND_TYPES],
     /// The resolved `NeutralTechBuildings` list.
     pub tech_types: &'a [TechType],
+    /// The generator's sine table, for the river's heading.
+    pub trig: Option<&'a super::trig::TrigTable>,
 
     // Scalars from the `.SED` options / MapSeed / RMGMD settings.
     pub map_type: i32,
@@ -151,6 +153,7 @@ pub fn run_pipeline(
             blocks: inputs.blocks,
             rng: &mut *rng,
             gauss: &mut *gauss,
+            trig: inputs.trig,
             map_w,
             map_h,
             rollback_level: DEFAULT_LEVEL,
@@ -442,6 +445,7 @@ mod tests {
             morphable,
             wheel_impassable: [false; LAND_TYPES],
             tech_types,
+            trig: None,
             map_type,
             theater,
             num_players: 4,

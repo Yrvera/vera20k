@@ -19,6 +19,7 @@ use super::pipeline::{self, LAND_TYPES, PipelineInputs};
 use super::rng::{RANGE_K_BITS, RmgRng};
 use super::scratch::RmgScratch;
 use super::tiles::TileIds;
+use super::trig::TrigTable;
 use super::x87::{Gaussian, TruncF64};
 use super::{
     GeneratedMap, MapGeometry, RmgOptions, RmgSettings, Stage, emit, executed_stages, grid,
@@ -60,8 +61,13 @@ pub fn wheel_impassable_from_rules(rules: &TerrainRules) -> [bool; LAND_TYPES] {
     })
 }
 
-/// The theater/rules facts the generator needs, snapshotted so the run does not
-/// borrow `TheaterData`.
+/// The facts the generator needs, snapshotted so the run does not borrow
+/// `TheaterData`.
+///
+/// Mostly theater and rules, plus one thing that is neither: the sine table,
+/// which comes out of the retail executable. It rides here because this is
+/// already the "everything a run needs, resolved once" bundle, and threading a
+/// second parameter through every entry point would say less.
 #[derive(Debug, Clone)]
 pub struct ResolvedTheaterInputs {
     pub ids: TileIds,
@@ -69,11 +75,15 @@ pub struct ResolvedTheaterInputs {
     pub wheel_impassable: [bool; LAND_TYPES],
     /// Per-tile `Morphable=` flag, indexed by flat tile id.
     pub morphable: Vec<bool>,
+    /// The generator's sine table, read from `gamemd.exe`. `None` when the
+    /// install could not supply one — rivers are then skipped rather than
+    /// carved from a table this build does not recognise.
+    pub trig: Option<TrigTable>,
 }
 
 impl ResolvedTheaterInputs {
     /// Snapshot a theater + rules into the resolved input set.
-    pub fn from_theater(theater: &TheaterData, rules: &TerrainRules) -> Self {
+    pub fn from_theater(theater: &TheaterData, rules: &TerrainRules, trig: Option<TrigTable>) -> Self {
         let morphable = (0..theater.lookup.len())
             .map(|tile| theater.lookup.is_morphable(tile as u16))
             .collect();
@@ -82,6 +92,7 @@ impl ResolvedTheaterInputs {
             cliff: theater.cliff_ranges,
             wheel_impassable: wheel_impassable_from_rules(rules),
             morphable,
+            trig,
         }
     }
 
@@ -210,6 +221,7 @@ pub fn generate_map_observed(
         morphable: &morphable,
         wheel_impassable: resolved.wheel_impassable,
         tech_types,
+        trig: resolved.trig.as_ref(),
         map_type: options.map_type,
         theater: options.theater,
         num_players: options.num_players,
@@ -318,6 +330,7 @@ mod tests {
 
     fn resolved() -> ResolvedTheaterInputs {
         ResolvedTheaterInputs {
+            trig: None,
             ids: ids(),
             cliff: TheaterCliffRanges::default(),
             wheel_impassable: {
