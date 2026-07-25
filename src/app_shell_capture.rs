@@ -1,0 +1,779 @@
+//! Explicit one-shot capture mode for exact shell certification.
+//!
+//! The capture session is app-level diagnostic state. It never enters the
+//! deterministic simulation, never synthesizes OS input, and never rebuilds a
+//! shell in a second renderer. It waits for the production main-menu dispatcher
+//! to reach one ordinary steady frame, then records the final swapchain bytes.
+
+use std::ffi::OsString;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail, ensure};
+use serde::Serialize;
+
+use crate::app::AppState;
+use crate::app_main_menu_shell_render::Ra2tsDialogOwner;
+use crate::app_shell_transition::ShellSlideKind;
+use crate::ui::game_screen::GameScreen;
+use crate::ui::main_menu_shell::MainMenuMovieBase;
+
+const CAPTURE_FLAG: &str = "--shell-capture";
+const CHECKPOINT_MAIN_MENU_0XE2_STEADY: &str = "main-menu-0xe2-steady";
+const EXPECTED_WIDTH: u32 = 800;
+const EXPECTED_HEIGHT: u32 = 600;
+const EXPECTED_CURSOR_X: u32 = 400;
+const EXPECTED_CURSOR_Y: u32 = 300;
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(15);
+const CAPTURE_FRAME_INTERVAL: Duration = Duration::from_millis(8);
+const MAX_CAPTURE_FRAMES: u32 = 10_000;
+const CAPTURE_SCHEMA: &str = "vera20k.shell-capture.v1";
+const FRAME_FILE_NAME: &str = "frame.bgra";
+const MANIFEST_FILE_NAME: &str = "capture.json";
+
+#[derive(Debug)]
+pub enum AppLaunchMode {
+    Interactive,
+    ShellCapture(ShellCaptureRequest),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellCaptureCheckpoint {
+    MainMenu0xE2Steady,
+}
+
+impl ShellCaptureCheckpoint {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            CHECKPOINT_MAIN_MENU_0XE2_STEADY => Ok(Self::MainMenu0xE2Steady),
+            _ => bail!("unsupported shell-capture checkpoint {value:?}"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MainMenu0xE2Steady => CHECKPOINT_MAIN_MENU_0XE2_STEADY,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellCaptureRequest {
+    checkpoint: ShellCaptureCheckpoint,
+    width: u32,
+    height: u32,
+    cursor_x: u32,
+    cursor_y: u32,
+    output_dir: PathBuf,
+}
+
+impl ShellCaptureRequest {
+    pub fn checkpoint(&self) -> ShellCaptureCheckpoint {
+        self.checkpoint
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn cursor_x(&self) -> u32 {
+        self.cursor_x
+    }
+
+    pub fn cursor_y(&self) -> u32 {
+        self.cursor_y
+    }
+
+    pub fn output_dir(&self) -> &Path {
+        &self.output_dir
+    }
+
+    /// Capture must start from the ordinary main menu. Existing developer
+    /// shortcuts would silently bypass the checkpoint, so reject them.
+    pub fn validate_runtime_environment(&self) -> Result<()> {
+        ensure!(
+            std::env::var_os("RA2_QUICKPLAY").is_none(),
+            "RA2_QUICKPLAY must be unset for shell capture"
+        );
+        ensure!(
+            !truthy_env("RA2_DEV_SKIRMISH_SHELL"),
+            "RA2_DEV_SKIRMISH_SHELL must be unset or false for shell capture"
+        );
+        Ok(())
+    }
+}
+
+/// Parse the normal/capture launch boundary without changing ordinary no-arg
+/// startup. Capture mode is deliberately strict so a misspelled automation
+/// command cannot open an interactive window.
+pub fn parse_launch_args<I>(args: I) -> Result<AppLaunchMode>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let mut args = args.into_iter();
+    let Some(first) = args.next() else {
+        return Ok(AppLaunchMode::Interactive);
+    };
+    ensure!(
+        first == OsString::from(CAPTURE_FLAG),
+        "unknown argument {:?}; ordinary VERA20k launch takes no arguments",
+        first
+    );
+
+    let checkpoint_raw = next_utf8(&mut args, "checkpoint after --shell-capture")?;
+    let checkpoint = ShellCaptureCheckpoint::parse(&checkpoint_raw)?;
+    let mut width = None;
+    let mut height = None;
+    let mut cursor_x = None;
+    let mut cursor_y = None;
+    let mut output_dir = None;
+
+    while let Some(flag) = args.next() {
+        let flag = flag
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("shell-capture option name is not valid UTF-8"))?;
+        match flag.as_str() {
+            "--width" => set_once(
+                &mut width,
+                parse_u32(next_utf8(&mut args, "value after --width")?, "--width")?,
+                "--width",
+            )?,
+            "--height" => set_once(
+                &mut height,
+                parse_u32(next_utf8(&mut args, "value after --height")?, "--height")?,
+                "--height",
+            )?,
+            "--cursor-x" => set_once(
+                &mut cursor_x,
+                parse_u32(
+                    next_utf8(&mut args, "value after --cursor-x")?,
+                    "--cursor-x",
+                )?,
+                "--cursor-x",
+            )?,
+            "--cursor-y" => set_once(
+                &mut cursor_y,
+                parse_u32(
+                    next_utf8(&mut args, "value after --cursor-y")?,
+                    "--cursor-y",
+                )?,
+                "--cursor-y",
+            )?,
+            "--output" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("missing value after --output"))?;
+                set_once(&mut output_dir, PathBuf::from(value), "--output")?;
+            }
+            _ => bail!("unknown shell-capture option {flag:?}"),
+        }
+    }
+
+    let width = width.context("missing required --width")?;
+    let height = height.context("missing required --height")?;
+    let cursor_x = cursor_x.context("missing required --cursor-x")?;
+    let cursor_y = cursor_y.context("missing required --cursor-y")?;
+    let output_dir = output_dir.context("missing required --output")?;
+
+    ensure!(
+        width == EXPECTED_WIDTH && height == EXPECTED_HEIGHT,
+        "checkpoint {CHECKPOINT_MAIN_MENU_0XE2_STEADY} requires exactly \
+         {EXPECTED_WIDTH}x{EXPECTED_HEIGHT}, got {width}x{height}"
+    );
+    ensure!(
+        cursor_x == EXPECTED_CURSOR_X && cursor_y == EXPECTED_CURSOR_Y,
+        "checkpoint {CHECKPOINT_MAIN_MENU_0XE2_STEADY} requires neutral cursor \
+         ({EXPECTED_CURSOR_X},{EXPECTED_CURSOR_Y}), got ({cursor_x},{cursor_y})"
+    );
+    validate_new_output_dir(&output_dir)?;
+
+    Ok(AppLaunchMode::ShellCapture(ShellCaptureRequest {
+        checkpoint,
+        width,
+        height,
+        cursor_x,
+        cursor_y,
+        output_dir,
+    }))
+}
+
+fn next_utf8<I>(args: &mut I, what: &str) -> Result<String>
+where
+    I: Iterator<Item = OsString>,
+{
+    args.next()
+        .ok_or_else(|| anyhow::anyhow!("missing {what}"))?
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("{what} is not valid UTF-8"))
+}
+
+fn parse_u32(value: String, flag: &str) -> Result<u32> {
+    value
+        .parse()
+        .with_context(|| format!("{flag} requires an unsigned integer, got {value:?}"))
+}
+
+fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<()> {
+    ensure!(slot.is_none(), "duplicate shell-capture option {flag}");
+    *slot = Some(value);
+    Ok(())
+}
+
+fn validate_new_output_dir(path: &Path) -> Result<()> {
+    ensure!(path.is_absolute(), "--output must be an absolute path");
+    ensure!(
+        !path.exists(),
+        "--output already exists; capture bundles are immutable: {}",
+        path.display()
+    );
+    let parent = path
+        .parent()
+        .context("--output must have a parent directory")?;
+    ensure!(
+        parent.is_dir(),
+        "--output parent does not exist or is not a directory: {}",
+        parent.display()
+    );
+    Ok(())
+}
+
+fn truthy_env(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|value| {
+        let value = value.trim();
+        !value.is_empty()
+            && value != "0"
+            && !value.eq_ignore_ascii_case("false")
+            && !value.eq_ignore_ascii_case("off")
+            && !value.eq_ignore_ascii_case("no")
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MainMenuCaptureSnapshot {
+    width: u32,
+    height: u32,
+    main_menu_screen: bool,
+    shell_failed: bool,
+    single_player_active: bool,
+    skirmish_active: bool,
+    legacy_skirmish_setup_active: bool,
+    modal_open: bool,
+    quit_active: bool,
+    first_paint_slide_active: bool,
+    active_slide_is_main_menu: bool,
+    movie_loaded: bool,
+    movie_owner_is_main_menu: bool,
+    movie_base_is_large: bool,
+    chrome_loaded: bool,
+    software_cursor_active: bool,
+    cursor_x: f32,
+    cursor_y: f32,
+}
+
+impl MainMenuCaptureSnapshot {
+    fn from_state(state: &AppState) -> Self {
+        Self {
+            width: state.gpu.config.width,
+            height: state.gpu.config.height,
+            main_menu_screen: state.screen == GameScreen::MainMenu,
+            shell_failed: state.main_menu_shell_failed,
+            single_player_active: state.main_menu_show_single_player_shell,
+            skirmish_active: state.main_menu_show_native_skirmish_shell
+                || state.dev_skirmish_shell_enabled,
+            legacy_skirmish_setup_active: state.main_menu_show_skirmish_setup,
+            modal_open: state.main_menu_dialog_open(),
+            quit_active: state.quit_cascade.is_some(),
+            first_paint_slide_active: state.shell_first_paint_slide.is_some(),
+            active_slide_is_main_menu: state.shell_slide_active_shell
+                == Some(ShellSlideKind::MainMenu),
+            movie_loaded: state.main_menu_movie.is_some(),
+            movie_owner_is_main_menu: state.main_menu_movie_owner
+                == Some(Ra2tsDialogOwner::MainMenu0xE2),
+            movie_base_is_large: state.main_menu_movie_base == Some(MainMenuMovieBase::Ra2tsL),
+            chrome_loaded: state.main_menu_shell_chrome.is_some(),
+            software_cursor_active: state.use_software_cursor(),
+            cursor_x: state.cursor_x,
+            cursor_y: state.cursor_y,
+        }
+    }
+}
+
+fn steady_main_menu_capture_ready(snapshot: MainMenuCaptureSnapshot) -> Result<bool> {
+    ensure!(
+        snapshot.width == EXPECTED_WIDTH && snapshot.height == EXPECTED_HEIGHT,
+        "capture surface changed from 800x600 to {}x{}",
+        snapshot.width,
+        snapshot.height
+    );
+    ensure!(
+        snapshot.main_menu_screen,
+        "capture left the main-menu screen before the checkpoint"
+    );
+    ensure!(!snapshot.shell_failed, "native main-menu shell fell back");
+    ensure!(
+        !snapshot.single_player_active
+            && !snapshot.skirmish_active
+            && !snapshot.legacy_skirmish_setup_active,
+        "capture is not on bare dialog 0xE2"
+    );
+    ensure!(
+        !snapshot.modal_open && !snapshot.quit_active,
+        "capture cannot run with a modal or quit cascade active"
+    );
+    ensure!(
+        snapshot.cursor_x == EXPECTED_CURSOR_X as f32
+            && snapshot.cursor_y == EXPECTED_CURSOR_Y as f32,
+        "capture cursor moved from the sealed neutral point"
+    );
+
+    if snapshot.first_paint_slide_active {
+        return Ok(false);
+    }
+
+    ensure!(
+        snapshot.active_slide_is_main_menu,
+        "main-menu first-paint lifecycle did not settle on dialog 0xE2"
+    );
+    ensure!(
+        snapshot.movie_loaded && snapshot.movie_owner_is_main_menu && snapshot.movie_base_is_large,
+        "main-menu RA2TS_L session identity is not ready"
+    );
+    ensure!(
+        snapshot.chrome_loaded,
+        "main-menu shell chrome is unavailable"
+    );
+    ensure!(
+        snapshot.software_cursor_active,
+        "retail software cursor is unavailable"
+    );
+    Ok(true)
+}
+
+pub(crate) struct ShellCaptureSession {
+    request: ShellCaptureRequest,
+    started_at: Option<Instant>,
+    frames_seen: u32,
+    readback_started: bool,
+    outcome: Option<std::result::Result<(), String>>,
+}
+
+impl ShellCaptureSession {
+    pub(crate) fn new(request: ShellCaptureRequest) -> Self {
+        Self {
+            request,
+            started_at: None,
+            frames_seen: 0,
+            readback_started: false,
+            outcome: None,
+        }
+    }
+
+    pub(crate) fn request(&self) -> &ShellCaptureRequest {
+        &self.request
+    }
+
+    pub(crate) fn prepare_state(&mut self, state: &mut AppState) {
+        state.cursor_x = self.request.cursor_x as f32;
+        state.cursor_y = self.request.cursor_y as f32;
+        self.started_at = Some(Instant::now());
+    }
+
+    pub(crate) fn should_capture_current_frame(&mut self, state: &AppState) -> Result<bool> {
+        ensure!(
+            self.outcome.is_none() && !self.readback_started,
+            "shell capture attempted more than one readback"
+        );
+        let started_at = self
+            .started_at
+            .context("shell capture was not initialized")?;
+        self.frames_seen = self.frames_seen.saturating_add(1);
+        ensure!(
+            self.frames_seen <= MAX_CAPTURE_FRAMES,
+            "shell capture exceeded {MAX_CAPTURE_FRAMES} frames"
+        );
+        ensure!(
+            started_at.elapsed() <= CAPTURE_TIMEOUT,
+            "shell capture timed out after {} seconds",
+            CAPTURE_TIMEOUT.as_secs()
+        );
+
+        let ready = steady_main_menu_capture_ready(MainMenuCaptureSnapshot::from_state(state))?;
+        if ready {
+            self.readback_started = true;
+        }
+        Ok(ready)
+    }
+
+    pub(crate) fn readback_timeout(&self) -> Result<Duration> {
+        let started_at = self
+            .started_at
+            .context("shell capture was not initialized")?;
+        let remaining = CAPTURE_TIMEOUT
+            .checked_sub(started_at.elapsed())
+            .context("shell capture timeout expired before GPU readback")?;
+        ensure!(
+            !remaining.is_zero(),
+            "shell capture timeout expired before GPU readback"
+        );
+        Ok(remaining)
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.outcome.is_some()
+    }
+
+    pub(crate) fn next_wake_deadline(&self) -> Instant {
+        Instant::now() + CAPTURE_FRAME_INTERVAL
+    }
+
+    pub(crate) fn complete(
+        &mut self,
+        state: &AppState,
+        surface_format: wgpu::TextureFormat,
+        pixels: &[u8],
+    ) -> Result<()> {
+        ensure!(
+            self.readback_started,
+            "capture completed before readback started"
+        );
+        ensure!(
+            self.outcome.is_none(),
+            "capture outcome was already recorded"
+        );
+
+        let expected_len = usize::try_from(
+            u64::from(self.request.width) * u64::from(self.request.height) * u64::from(4_u8),
+        )
+        .context("capture byte length does not fit usize")?;
+        ensure!(
+            pixels.len() == expected_len,
+            "tight BGRA8 frame length mismatch: expected {expected_len}, got {}",
+            pixels.len()
+        );
+        ensure!(
+            steady_main_menu_capture_ready(MainMenuCaptureSnapshot::from_state(state))?,
+            "capture state changed before bundle write"
+        );
+
+        fs::create_dir(self.request.output_dir()).with_context(|| {
+            format!(
+                "create immutable shell-capture directory {}",
+                self.request.output_dir().display()
+            )
+        })?;
+        let frame_path = self.request.output_dir().join(FRAME_FILE_NAME);
+        write_new_file(&frame_path, pixels)?;
+
+        let manifest = capture_manifest(&self.request, surface_format, pixels.len() as u64);
+        let mut manifest_bytes =
+            serde_json::to_vec_pretty(&manifest).context("serialize shell-capture manifest")?;
+        manifest_bytes.push(b'\n');
+        let manifest_path = self.request.output_dir().join(MANIFEST_FILE_NAME);
+        write_new_file(&manifest_path, &manifest_bytes)?;
+
+        self.outcome = Some(Ok(()));
+        Ok(())
+    }
+
+    pub(crate) fn fail(&mut self, error: impl std::fmt::Display) {
+        if self.outcome.is_none() {
+            self.outcome = Some(Err(error.to_string()));
+        }
+    }
+
+    pub(crate) fn take_outcome(&mut self) -> Result<()> {
+        match self.outcome.take() {
+            Some(Ok(())) => Ok(()),
+            Some(Err(error)) => bail!("{error}"),
+            None => bail!("shell capture event loop exited without a completed bundle"),
+        }
+    }
+}
+
+fn capture_manifest<'a>(
+    request: &'a ShellCaptureRequest,
+    surface_format: wgpu::TextureFormat,
+    byte_length: u64,
+) -> CaptureManifest<'a> {
+    CaptureManifest {
+        schema_version: CAPTURE_SCHEMA,
+        checkpoint: request.checkpoint.as_str(),
+        surface: SurfaceManifest {
+            width: request.width,
+            height: request.height,
+            format: format!("{surface_format:?}"),
+            pixel_layout: "BGRA8",
+            row_order: "top-left",
+            bytes_per_pixel: 4,
+            row_stride: request.width * 4,
+        },
+        cursor: CursorManifest {
+            x: request.cursor_x,
+            y: request.cursor_y,
+            policy: "software-composited",
+        },
+        shell: ShellManifest {
+            screen: "main-menu",
+            dialog_resource_id: 0x00E2,
+            movie_owner: "main-menu-0xe2",
+            movie_base: "ra2ts-l",
+            main_menu_shell_failed: false,
+            single_player_active: false,
+            skirmish_active: false,
+            modal_open: false,
+            quit_active: false,
+            first_paint_slide_active: false,
+        },
+        frame: FrameManifest {
+            path: FRAME_FILE_NAME,
+            byte_length,
+        },
+    }
+}
+
+fn write_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("create new capture artifact {}", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("write capture artifact {}", path.display()))?;
+    file.flush()
+        .with_context(|| format!("flush capture artifact {}", path.display()))?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct CaptureManifest<'a> {
+    schema_version: &'a str,
+    checkpoint: &'a str,
+    surface: SurfaceManifest,
+    cursor: CursorManifest,
+    shell: ShellManifest,
+    frame: FrameManifest<'a>,
+}
+
+#[derive(Serialize)]
+struct SurfaceManifest {
+    width: u32,
+    height: u32,
+    format: String,
+    pixel_layout: &'static str,
+    row_order: &'static str,
+    bytes_per_pixel: u32,
+    row_stride: u32,
+}
+
+#[derive(Serialize)]
+struct CursorManifest {
+    x: u32,
+    y: u32,
+    policy: &'static str,
+}
+
+#[derive(Serialize)]
+struct ShellManifest {
+    screen: &'static str,
+    dialog_resource_id: u32,
+    movie_owner: &'static str,
+    movie_base: &'static str,
+    main_menu_shell_failed: bool,
+    single_player_active: bool,
+    skirmish_active: bool,
+    modal_open: bool,
+    quit_active: bool,
+    first_paint_slide_active: bool,
+}
+
+#[derive(Serialize)]
+struct FrameManifest<'a> {
+    path: &'a str,
+    byte_length: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    fn new_output_path(tag: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "vera20k-shell-capture-{}-{tag}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    fn valid_args(output: &Path) -> Vec<OsString> {
+        args(&[
+            "--shell-capture",
+            "main-menu-0xe2-steady",
+            "--width",
+            "800",
+            "--height",
+            "600",
+            "--cursor-x",
+            "400",
+            "--cursor-y",
+            "300",
+            "--output",
+            output.to_str().expect("UTF-8 temp path"),
+        ])
+    }
+
+    #[test]
+    fn no_args_preserves_interactive_launch() {
+        assert!(matches!(
+            parse_launch_args(Vec::<OsString>::new()).expect("parse"),
+            AppLaunchMode::Interactive
+        ));
+    }
+
+    #[test]
+    fn strict_capture_args_build_expected_request() {
+        let output = new_output_path("valid");
+        let launch = parse_launch_args(valid_args(&output)).expect("parse");
+        let AppLaunchMode::ShellCapture(request) = launch else {
+            panic!("expected capture");
+        };
+        assert_eq!(
+            request.checkpoint(),
+            ShellCaptureCheckpoint::MainMenu0xE2Steady
+        );
+        assert_eq!((request.width(), request.height()), (800, 600));
+        assert_eq!((request.cursor_x(), request.cursor_y()), (400, 300));
+        assert_eq!(request.output_dir(), output);
+    }
+
+    #[test]
+    fn capture_manifest_serializes_the_strict_validator_schema() {
+        let output = new_output_path("manifest");
+        let launch = parse_launch_args(valid_args(&output)).expect("parse");
+        let AppLaunchMode::ShellCapture(request) = launch else {
+            panic!("expected capture");
+        };
+        let value = serde_json::to_value(capture_manifest(
+            &request,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            800 * 600 * 4,
+        ))
+        .expect("serialize");
+
+        assert_eq!(
+            value["schema_version"].as_str(),
+            Some("vera20k.shell-capture.v1")
+        );
+        assert_eq!(value["checkpoint"].as_str(), Some("main-menu-0xe2-steady"));
+        assert_eq!(value["surface"]["width"].as_u64(), Some(800));
+        assert_eq!(value["surface"]["height"].as_u64(), Some(600));
+        assert_eq!(value["surface"]["format"].as_str(), Some("Bgra8UnormSrgb"));
+        assert_eq!(value["surface"]["pixel_layout"].as_str(), Some("BGRA8"));
+        assert_eq!(value["surface"]["row_order"].as_str(), Some("top-left"));
+        assert_eq!(value["surface"]["bytes_per_pixel"].as_u64(), Some(4));
+        assert_eq!(value["surface"]["row_stride"].as_u64(), Some(3200));
+        assert_eq!(value["cursor"]["x"].as_u64(), Some(400));
+        assert_eq!(value["cursor"]["y"].as_u64(), Some(300));
+        assert_eq!(
+            value["cursor"]["policy"].as_str(),
+            Some("software-composited")
+        );
+        assert_eq!(value["shell"]["screen"].as_str(), Some("main-menu"));
+        assert_eq!(value["shell"]["dialog_resource_id"].as_u64(), Some(0x00E2));
+        assert_eq!(
+            value["shell"]["movie_owner"].as_str(),
+            Some("main-menu-0xe2")
+        );
+        assert_eq!(value["shell"]["movie_base"].as_str(), Some("ra2ts-l"));
+        assert_eq!(value["frame"]["path"].as_str(), Some("frame.bgra"));
+        assert_eq!(value["frame"]["byte_length"].as_u64(), Some(1_920_000));
+    }
+
+    #[test]
+    fn unsupported_resolution_fails_closed() {
+        let output = new_output_path("resolution");
+        let mut values = valid_args(&output);
+        let width = values
+            .iter()
+            .position(|value| value == "--width")
+            .expect("width");
+        values[width + 1] = OsString::from("1024");
+        let err = parse_launch_args(values).expect_err("must reject");
+        assert!(err.to_string().contains("requires exactly 800x600"));
+    }
+
+    #[test]
+    fn duplicate_option_fails_closed() {
+        let output = new_output_path("duplicate");
+        let mut values = valid_args(&output);
+        values.extend(args(&["--width", "800"]));
+        let err = parse_launch_args(values).expect_err("must reject");
+        assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn existing_output_directory_is_never_overwritten() {
+        let output = new_output_path("existing");
+        fs::create_dir(&output).expect("create owned temp dir");
+        let err = parse_launch_args(valid_args(&output)).expect_err("must reject");
+        assert!(err.to_string().contains("already exists"));
+        fs::remove_dir(&output).expect("remove owned temp dir");
+    }
+
+    fn ready_snapshot() -> MainMenuCaptureSnapshot {
+        MainMenuCaptureSnapshot {
+            width: 800,
+            height: 600,
+            main_menu_screen: true,
+            shell_failed: false,
+            single_player_active: false,
+            skirmish_active: false,
+            legacy_skirmish_setup_active: false,
+            modal_open: false,
+            quit_active: false,
+            first_paint_slide_active: false,
+            active_slide_is_main_menu: true,
+            movie_loaded: true,
+            movie_owner_is_main_menu: true,
+            movie_base_is_large: true,
+            chrome_loaded: true,
+            software_cursor_active: true,
+            cursor_x: 400.0,
+            cursor_y: 300.0,
+        }
+    }
+
+    #[test]
+    fn active_wave_waits_without_weakening_identity_checks() {
+        let mut snapshot = ready_snapshot();
+        snapshot.first_paint_slide_active = true;
+        snapshot.movie_loaded = false;
+        snapshot.movie_owner_is_main_menu = false;
+        assert!(!steady_main_menu_capture_ready(snapshot).expect("wait"));
+    }
+
+    #[test]
+    fn first_ordinary_steady_frame_is_capture_ready() {
+        assert!(steady_main_menu_capture_ready(ready_snapshot()).expect("ready"));
+    }
+
+    #[test]
+    fn wrong_movie_owner_is_invalid_not_waiting() {
+        let mut snapshot = ready_snapshot();
+        snapshot.movie_owner_is_main_menu = false;
+        let err = steady_main_menu_capture_ready(snapshot).expect_err("must reject");
+        assert!(err.to_string().contains("session identity"));
+    }
+}
