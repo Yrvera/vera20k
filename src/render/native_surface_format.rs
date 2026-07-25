@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn shader_words_preserve_profile_order_exactly() {
         let words = ACTIVE_RETAIL_RGB565_PRESENTATION.shader_words();
-        assert_eq!(words[..32], OBSERVED_FIVE_BIT.map(u32::from).as_slice());
-        assert_eq!(words[32..], OBSERVED_SIX_BIT.map(u32::from).as_slice());
+        assert_eq!(&words[..32], OBSERVED_FIVE_BIT.map(u32::from).as_slice());
+        assert_eq!(&words[32..], OBSERVED_SIX_BIT.map(u32::from).as_slice());
     }
 }
