@@ -52,14 +52,32 @@ pub(crate) enum Ra2tsDialogOwner {
     SinglePlayer0x100,
 }
 
+/// Identity of the one RA2TS session installed for a movie-bearing dialog.
+///
+/// Owner and asset base change atomically because neither alone is sufficient
+/// to make the decoder/texture reusable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ra2tsMovieSessionIdentity {
+    owner: Ra2tsDialogOwner,
+    base: MainMenuMovieBase,
+}
+
+impl Ra2tsMovieSessionIdentity {
+    const fn new(owner: Ra2tsDialogOwner, base: MainMenuMovieBase) -> Self {
+        Self { owner, base }
+    }
+
+    pub(crate) const fn base(self) -> MainMenuMovieBase {
+        self.base
+    }
+}
+
 fn ra2ts_movie_session_is_reusable(
     movie_loaded: bool,
-    active_owner: Option<Ra2tsDialogOwner>,
-    requested_owner: Ra2tsDialogOwner,
-    active_base: Option<MainMenuMovieBase>,
-    requested_base: MainMenuMovieBase,
+    active_identity: Option<Ra2tsMovieSessionIdentity>,
+    requested_identity: Ra2tsMovieSessionIdentity,
 ) -> bool {
-    movie_loaded && active_owner == Some(requested_owner) && active_base == Some(requested_base)
+    movie_loaded && active_identity == Some(requested_identity)
 }
 
 /// Drop the one active RA2TS decoder/texture and all of its cache identity.
@@ -68,8 +86,7 @@ fn ra2ts_movie_session_is_reusable(
 /// next movie-bearing dialog reconstructs its own session lazily on first paint.
 pub(crate) fn clear_ra2ts_movie_session(state: &mut AppState) {
     state.main_menu_movie = None;
-    state.main_menu_movie_owner = None;
-    state.main_menu_movie_base = None;
+    state.main_menu_movie_identity = None;
     state.main_menu_movie_last_step = Instant::now();
 }
 
@@ -265,12 +282,11 @@ pub(crate) fn ensure_movie_for_current_layout(
     requested_owner: Ra2tsDialogOwner,
 ) -> Result<()> {
     let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
+    let requested_identity = Ra2tsMovieSessionIdentity::new(requested_owner, layout.movie_base);
     if ra2ts_movie_session_is_reusable(
         state.main_menu_movie.is_some(),
-        state.main_menu_movie_owner,
-        requested_owner,
-        state.main_menu_movie_base,
-        layout.movie_base,
+        state.main_menu_movie_identity,
+        requested_identity,
     ) {
         return Ok(());
     }
@@ -313,8 +329,7 @@ pub(crate) fn ensure_movie_for_current_layout(
         movie.source_archive()
     );
     state.main_menu_movie = Some(movie);
-    state.main_menu_movie_owner = Some(requested_owner);
-    state.main_menu_movie_base = Some(layout.movie_base);
+    state.main_menu_movie_identity = Some(requested_identity);
     state.main_menu_movie_last_step = Instant::now();
     Ok(())
 }
@@ -828,42 +843,83 @@ mod tests {
     fn changing_dialog_owner_restarts_ra2ts_even_when_asset_base_matches() {
         assert!(!ra2ts_movie_session_is_reusable(
             true,
-            Some(Ra2tsDialogOwner::MainMenu0xE2),
-            Ra2tsDialogOwner::SinglePlayer0x100,
-            Some(MainMenuMovieBase::Ra2tsL),
-            MainMenuMovieBase::Ra2tsL,
+            Some(Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::MainMenu0xE2,
+                MainMenuMovieBase::Ra2tsL,
+            )),
+            Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::SinglePlayer0x100,
+                MainMenuMovieBase::Ra2tsL,
+            ),
         ));
         assert!(!ra2ts_movie_session_is_reusable(
             true,
-            Some(Ra2tsDialogOwner::SinglePlayer0x100),
-            Ra2tsDialogOwner::MainMenu0xE2,
-            Some(MainMenuMovieBase::Ra2tsL),
-            MainMenuMovieBase::Ra2tsL,
+            Some(Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::SinglePlayer0x100,
+                MainMenuMovieBase::Ra2tsL,
+            )),
+            Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::MainMenu0xE2,
+                MainMenuMovieBase::Ra2tsL,
+            ),
         ));
     }
 
     #[test]
     fn matching_owner_and_base_reuses_only_a_loaded_ra2ts_session() {
+        let identity = Ra2tsMovieSessionIdentity::new(
+            Ra2tsDialogOwner::MainMenu0xE2,
+            MainMenuMovieBase::Ra2tsL,
+        );
         assert!(ra2ts_movie_session_is_reusable(
             true,
-            Some(Ra2tsDialogOwner::MainMenu0xE2),
-            Ra2tsDialogOwner::MainMenu0xE2,
-            Some(MainMenuMovieBase::Ra2tsL),
-            MainMenuMovieBase::Ra2tsL,
+            Some(identity),
+            identity,
         ));
         assert!(!ra2ts_movie_session_is_reusable(
             false,
-            Some(Ra2tsDialogOwner::MainMenu0xE2),
-            Ra2tsDialogOwner::MainMenu0xE2,
-            Some(MainMenuMovieBase::Ra2tsL),
-            MainMenuMovieBase::Ra2tsL,
+            Some(identity),
+            identity,
         ));
         assert!(!ra2ts_movie_session_is_reusable(
             true,
-            Some(Ra2tsDialogOwner::MainMenu0xE2),
-            Ra2tsDialogOwner::MainMenu0xE2,
-            Some(MainMenuMovieBase::Ra2tsS),
-            MainMenuMovieBase::Ra2tsL,
+            Some(Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::MainMenu0xE2,
+                MainMenuMovieBase::Ra2tsS,
+            )),
+            identity,
         ));
+    }
+
+    #[test]
+    fn cleared_identity_blocks_collapsed_dialog_round_trip_reuse() {
+        for owner in [
+            Ra2tsDialogOwner::MainMenu0xE2,
+            Ra2tsDialogOwner::SinglePlayer0x100,
+        ] {
+            let identity = Ra2tsMovieSessionIdentity::new(owner, MainMenuMovieBase::Ra2tsL);
+            let mut active_identity = Some(identity);
+            assert!(ra2ts_movie_session_is_reusable(
+                true,
+                active_identity,
+                identity,
+            ));
+
+            // The source dialog is destroyed and the destination never paints.
+            // Keep movie_loaded true deliberately to model a stale GPU surface.
+            active_identity = None;
+            assert!(!ra2ts_movie_session_is_reusable(
+                true,
+                active_identity,
+                identity,
+            ));
+
+            active_identity = Some(identity);
+            assert!(ra2ts_movie_session_is_reusable(
+                true,
+                active_identity,
+                identity,
+            ));
+        }
     }
 }
