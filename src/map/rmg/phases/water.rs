@@ -63,10 +63,12 @@ pub struct WaterArgs {
 /// sea: inland and mountainous.
 ///
 /// The original reaches these through a different top-level seeder than the
-/// other three, and the two seeders start from opposite terrain. The
-/// flood-the-map prefill and the three shape routines below belong exclusively
-/// to the sea-shaping branch — its own seeder owns the prefill, and that seeder
-/// has exactly one caller.
+/// other three, and the two seeders start from opposite terrain. **Everything
+/// below — the prefill, the three shape routines, and all five tail passes —
+/// is the body of the sea-shaping seeder**, which has exactly one caller: the
+/// non-carved arm of the generator's map-type branch. None of it runs for the
+/// carved types, which reach their own seeder instead and then rejoin at the
+/// water-finalize stage.
 const CARVED_WATER_MAP_TYPES: [i32; 2] = [3, 4];
 
 pub fn run(ctx: &mut BlobCtx<'_>, args: &WaterArgs) {
@@ -102,18 +104,33 @@ pub fn run(ctx: &mut BlobCtx<'_>, args: &WaterArgs) {
     // map comes out short of water. That is a declared gap, and a far smaller
     // one than inverting land and sea, which is what routing these types into
     // the sea-shaping path produced.
-    if !CARVED_WATER_MAP_TYPES.contains(&args.map_type) {
-        // Phase 1: every cell becomes water.
-        for &(x, y) in &coords {
-            ctx.grid.get_mut(x, y).expect("native cell").tile = ctx.ids.water_base;
-        }
+    //
+    // The return is the map-type branch itself, not an optimization. The five
+    // phases below are the sea-shaping seeder's body; the carved types never
+    // enter that seeder. Running the tail anyway is not harmless even on a map
+    // with no water for it to reshape: phase 4 draws a bounded uniform for
+    // every cell of two full sweeps, so it would advance the shared generator
+    // by thousands of values that the original never consumes, and every later
+    // stage — regions, starts, tiberium, hills, LAT — would then read the
+    // stream from the wrong position.
+    //
+    // Dropping phase 4's region-id reset with it is safe: the region phase
+    // resets on entry, matching the generator's own teardown ahead of the
+    // region partition.
+    if CARVED_WATER_MAP_TYPES.contains(&args.map_type) {
+        return;
+    }
 
-        // Phase 2: shape dispatch.
-        match args.map_type {
-            0 => archipelago(ctx, args),
-            1 => continental(ctx, args),
-            _ => islands_in_sea(ctx, args),
-        }
+    // Phase 1: every cell becomes water.
+    for &(x, y) in &coords {
+        ctx.grid.get_mut(x, y).expect("native cell").tile = ctx.ids.water_base;
+    }
+
+    // Phase 2: shape dispatch.
+    match args.map_type {
+        0 => archipelago(ctx, args),
+        1 => continental(ctx, args),
+        _ => islands_in_sea(ctx, args),
     }
 
     // Phase 3: isolated water cells with four clear cardinals become land.
@@ -786,6 +803,86 @@ mod tests {
             }
             assert!(water > 0, "map type {map_type} must still have sea");
             assert!(land > 0, "map type {map_type} must still have land");
+        }
+    }
+
+    /// Run the stage and hand back the generator so a caller can ask how far it
+    /// moved. Mirrors `run_water_with` exactly; only the return differs.
+    fn water_stage_rng_after(map_type: i32, seed: u16, water_percent: i32) -> RmgRng {
+        let (map_w, map_h) = (34, 42);
+        let (mut grid, mut scratch) = world(map_w, map_h);
+        let identity = ids();
+        let block_table = blocks();
+        let mut rng = RmgRng::new(seed);
+        let mut gauss = Gaussian::default();
+        let mut ctx = BlobCtx {
+            grid: &mut grid,
+            scratch: &mut scratch,
+            ids: &identity,
+            blocks: &block_table,
+            rng: &mut rng,
+            gauss: &mut gauss,
+            map_w,
+            map_h,
+            rollback_level: 4,
+        };
+        let args = WaterArgs {
+            map_type,
+            water_percent,
+            num_players: 4,
+            playable: PlayableRect {
+                x: 2,
+                y: 5,
+                w: 30,
+                h: 30,
+            },
+        };
+        run(&mut ctx, &args);
+        rng
+    }
+
+    /// How many values the stage took out of the shared generator.
+    ///
+    /// This is the assertion that matters most in this file, and it is the one a
+    /// tile census cannot make. The tail passes barely change tiles on a map with
+    /// no water in it, so a wrongly-run tail is close to invisible in the output
+    /// grid — but it still advances the generator, and every later stage then
+    /// reads the stream from the wrong place. Comparing a used generator against
+    /// a fresh one of the same seed is exact: the two agree on the next value
+    /// only if the stage consumed nothing.
+    #[test]
+    fn carved_water_types_consume_no_draws_at_any_water_amount() {
+        for map_type in CARVED_WATER_MAP_TYPES {
+            for water_percent in [0, 1, 20, 21, 50, 100] {
+                let mut used = water_stage_rng_after(map_type, 4242, water_percent);
+                let mut fresh = RmgRng::new(4242);
+                // A single value could collide by chance; a run of them cannot.
+                for index in 0..8 {
+                    assert_eq!(
+                        used.next_u32(),
+                        fresh.next_u32(),
+                        "map type {map_type}, water {water_percent}: the stage moved \
+                         the generator at draw {index}. The carved types must not \
+                         enter the sea-shaping seeder, and its shore pass alone \
+                         draws once per cell across two full sweeps.",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The other direction, so the guard above cannot be satisfied by a stage
+    /// that stopped drawing for everyone.
+    #[test]
+    fn sea_shaped_types_still_consume_draws() {
+        for map_type in [0, 1, 2] {
+            let mut used = water_stage_rng_after(map_type, 4242, 50);
+            let mut fresh = RmgRng::new(4242);
+            assert_ne!(
+                used.next_u32(),
+                fresh.next_u32(),
+                "map type {map_type} must still consume draws",
+            );
         }
     }
 }
