@@ -277,23 +277,38 @@
           "symbol": "BuildingClass::Can_Enter_Cell",
           "address": "0x00449440",
           "evidence": "docs/research/pathfinding/BUILDING_CAN_ENTER_CELL_PLACEMENT_PASSABILITY_BODY_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "Cell_passability_building_placement",
+          "address": "0x0047C620",
+          "evidence": "docs/research/pathfinding/CELL_PASSABILITY_BUILDING_PLACEMENT_FLAGS_GHIDRA_REPORT.md"
         }
       ],
       "rust_surfaces": [
         {
           "path": "src/sim/production/production_placement.rs",
-          "symbol": "building placement",
+          "symbol": "placement_preview_for_owner / place_ready_building / cell_placeable",
           "coverage": "representative",
-          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+          "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"
         },
         {
           "path": "src/sim/world/world_commands.rs",
           "symbol": "placement command application",
           "coverage": "representative",
-          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+          "observed_at_commit": "e726da11bdafed70d634cc93e871e5a5cd8c6135"
+        },
+        {
+          "path": "src/app_init_helpers_retail_placement_oracle_tests.rs",
+          "symbol": "retail_dustbowl_gapowr_blocked_then_valid_placement_oracle",
+          "coverage": "representative",
+          "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"
         }
       ],
-      "notes": ["Owner of build-ready, placement legality, rejection, and committed foundation handoff."]
+      "notes": [
+        "Owner of build-ready, placement legality, rejection, and committed foundation handoff.",
+        "Feature 12948d89 closes ordinary marked Ground-mobile and live nonempty-overlay rejection in the shared preview/commit predicate, with a sealed-retail Dustbowl GAPOWR oracle through lifecycle, four-cell occupancy, buildup, and power.",
+        "Special damaged-wall/ToTile/LaserFence/gate exceptions, delayed-command rejection UI/EVA, and active-retail input/pixel comparison remain explicit residuals."
+      ]
     },
     "GSI-11.02": {
       "native_anchors": [
@@ -1374,8 +1389,9 @@
         {"path": "src/app_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/production/factory.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/sim/production/production_queue.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/sim/production/production_placement.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
-        {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+        {"path": "src/sim/production/production_placement.rs", "coverage": "representative", "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"},
+        {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "e726da11bdafed70d634cc93e871e5a5cd8c6135"},
+        {"path": "src/app_init_helpers_retail_placement_oracle_tests.rs", "coverage": "representative", "observed_at_commit": "12948d89c7e68d0dac14f7e0ed58d9212e844a2e"}
       ],
       "stages": [
         {"order": 1, "system": "GSI-14.10", "action": "Select production cameo."},
@@ -1397,11 +1413,14 @@
       ],
       "oracle": {
         "status": "UNVERIFIED",
-        "gate": "No active-retail input/pixel differential oracle is recorded."
+        "gate": "A sealed-retail Dustbowl production-load Rust oracle verifies bounded overlay rejection, accepted lifecycle/occupancy, buildup, and power, but no active-gamemd input/pixel differential is recorded."
       },
       "evidence": [
         "docs/research/FACTORYCLASS_PRODUCTION_DEEP_DIVE.md",
+        "docs/research/BUILDING_PLACEMENT_VALIDATOR_FOUNDATION_HEIGHT_OCCUPY_GHIDRA_REPORT.md",
         "docs/research/pathfinding/BUILDING_CAN_ENTER_CELL_PLACEMENT_PASSABILITY_BODY_GHIDRA_REPORT.md",
+        "docs/research/pathfinding/CELL_PASSABILITY_BUILDING_PLACEMENT_FLAGS_GHIDRA_REPORT.md",
+        "docs/research/traces/2026-07-25-loop-005-stock-building-placement-trace.md",
         "docs/research/SIDEBAR_SYSTEM_GHIDRA_REPORT.md"
       ]
     },
