@@ -32,6 +32,34 @@ python -m tools.shell_certification capture-and-compare `
   --run-dir C:\path\to\brand-new-run-directory
 ```
 
+Derive the enrolled RGB565 presentation codebooks from all three source frames
+named by the sealed guard:
+
+```powershell
+python -m tools.shell_certification derive-presentation-profile `
+  --guard C:\Users\enok\AppData\Local\VERA20k\oracle\guards\sha256\fe\32\fe32f218137b76a91dc3bac07bc96372a61c22e48ea083519f1ecbdbd97d601c.shell-guard.json `
+  --oracle-runs C:\Users\enok\AppData\Local\VERA20k\oracle\runs `
+  --output C:\path\to\brand-new-presentation-profile.json
+```
+
+Profile derivation validates the guard's sealed SHA-256, accepts exactly three
+guarded source frames, and resolves every source only beneath the supplied
+Oracle runs root. It rejects traversal, links, non-files, concurrent mutation,
+wrong byte length or digest, non-opaque alpha, source-table disagreement,
+non-32/64/32 channel cardinality, and different blue/red five-bit tables. The
+canonical `vera20k.shell-presentation-profile.v1` JSON is written once and
+never replaces an existing path. Neither the guard nor any source run is
+modified. Keys and source-derived values are deterministic and sorted; the
+documented `generated_at_utc` field is the only intentionally variable value.
+
+The derived tables describe only the enrolled active
+retail/AMD/DDrawCompat/DXGI presentation environment sealed by that guard. They
+are not a universal `gamemd.exe` RGB565 expansion claim and do not certify
+other shell states, resolutions, adapters, display pipelines, or blended
+packed-domain behavior. The artifact therefore records
+`parity_certification` as `NONE`; it is executable input evidence, not a
+completion or parity certificate.
+
 The working directory is required because VERA20k loads `config.toml` and
 other relative resources from its process working directory. The wrapper
 requires an absolute non-link directory and a regular non-link `config.toml`,

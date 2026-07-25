@@ -21,6 +21,7 @@ from .orchestrator import (
     MAX_TIMEOUT_SECONDS,
     capture_and_compare,
 )
+from .presentation_profile import write_presentation_profile
 
 
 def _timeout(value: str) -> float:
@@ -65,6 +66,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"child timeout in seconds (default {DEFAULT_TIMEOUT_SECONDS:g})",
     )
+
+    profile = commands.add_parser(
+        "derive-presentation-profile",
+        help="derive an immutable RGB565 profile from the sealed guard sources",
+    )
+    profile.add_argument("--guard", required=True, type=Path)
+    profile.add_argument("--oracle-runs", required=True, type=Path)
+    profile.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -86,7 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = compare_to_file(
                 arguments.capture, arguments.guard, arguments.output
             )
-        else:
+        elif arguments.command_name == "capture-and-compare":
             _, report = capture_and_compare(
                 arguments.executable,
                 arguments.guard,
@@ -94,6 +103,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 working_directory=arguments.working_directory,
                 timeout_seconds=arguments.timeout,
             )
+        else:
+            profile = write_presentation_profile(
+                arguments.guard,
+                arguments.oracle_runs,
+                arguments.output,
+            )
+            print(
+                json.dumps(
+                    {
+                        "schema_version": profile["schema_version"],
+                        "guard_sha256": profile["guard"]["sha256"],
+                        "output": str(arguments.output.absolute()),
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
     except (ValidationError, OutputExistsError, OSError) as exc:
         print(f"shell certification error: {exc}", file=sys.stderr)
         return 2
