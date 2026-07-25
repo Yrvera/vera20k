@@ -25,7 +25,7 @@ use super::water::WaterArgs;
 
 /// Water amount above which the seeder also carves a river. Strictly greater,
 /// and signed — the river half is W2' and is not implemented here.
-const RIVER_GATE: i32 = 0x14;
+pub(crate) const RIVER_GATE: i32 = 0x14;
 /// Attempts the driver makes at each of its two phases, stopping on the first
 /// success.
 const SEED_ATTEMPTS: i32 = 10;
@@ -89,11 +89,16 @@ pub fn seed_water_carved(ctx: &mut BlobCtx<'_>, args: &WaterArgs) -> WaterQuota 
     // the gate itself is already exact: below the threshold the original carves
     // no river either, and this path is then complete rather than partial.
     if args.water_percent > RIVER_GATE {
-        // W2': CarveRiver, up to SEED_ATTEMPTS tries, region_id += 1 on success.
+        for _ in 0..SEED_ATTEMPTS {
+            if super::river::carve(ctx, args, &mut quota, None, false) {
+                quota.region_id += 1;
+                break;
+            }
+        }
     }
 
     for _ in 0..SEED_ATTEMPTS {
-        if grow_lake(ctx, args, &mut quota) {
+        if grow_lake(ctx, args, &mut quota, None) {
             quota.region_id += 1;
             break;
         }
@@ -165,7 +170,7 @@ fn retag_border_band(
 ///
 /// Returns false as soon as a neighbour belongs to a different region or is not
 /// clear — the caller treats that as the whole lake failing.
-fn dilate_region_rings(
+pub(crate) fn dilate_region_rings(
     ctx: &mut BlobCtx<'_>,
     cells: &[(i32, i32)],
     region: i32,
@@ -311,7 +316,12 @@ fn rollback(ctx: &mut BlobCtx<'_>, cells: &[(i32, i32)], region: i32) {
 }
 
 /// Grow one lake. Returns whether it was committed.
-fn grow_lake(ctx: &mut BlobCtx<'_>, args: &WaterArgs, quota: &mut WaterQuota) -> bool {
+pub(crate) fn grow_lake(
+    ctx: &mut BlobCtx<'_>,
+    args: &WaterArgs,
+    quota: &mut WaterQuota,
+    given_seed: Option<(i32, i32)>,
+) -> bool {
     let remaining = water_target(args) - quota.placed;
     if remaining <= MIN_CELLS {
         return false;
@@ -320,9 +330,21 @@ fn grow_lake(ctx: &mut BlobCtx<'_>, args: &WaterArgs, quota: &mut WaterQuota) ->
     let cells: Vec<(i32, i32)> = ctx.grid.native_cells().collect();
     let region = quota.region_id;
 
-    let seed = match prepare_and_seed(ctx, &cells, quota) {
-        Some(seed) => seed,
-        None => return false,
+    // The driver derives the allow mask and hunts for a seed. The river's
+    // end-lake hands one over instead, and admits every cell.
+    let seed = match given_seed {
+        Some(seed) => {
+            for &(x, y) in &cells {
+                let cell = ctx.scratch.get_mut(x, y);
+                cell.stamp = 0;
+                cell.lake_allow = true;
+            }
+            seed
+        }
+        None => match prepare_and_seed(ctx, &cells, quota) {
+            Some(seed) => seed,
+            None => return false,
+        },
     };
 
     let size = size_draw(ctx, remaining);
@@ -404,10 +426,14 @@ fn grow_lake(ctx: &mut BlobCtx<'_>, args: &WaterArgs, quota: &mut WaterQuota) ->
         }
     }
 
+    // The shore, dilation and green passes belong to the driver's own lake. A
+    // lake grown at the end of a river skips all three — the river finishes its
+    // own region afterwards, and running them here would do it twice.
+    let is_driver_call = given_seed.is_none();
     let committed = alive
         && placed > MIN_CELLS
         && placed > size / 4
-        && {
+        && (!is_driver_call || {
             let mut shore_ctx = ShoreCtx {
                 grid: ctx.grid,
                 scratch: ctx.scratch,
@@ -416,16 +442,20 @@ fn grow_lake(ctx: &mut BlobCtx<'_>, args: &WaterArgs, quota: &mut WaterQuota) ->
                 rng: ctx.rng,
             };
             shore::run(&mut shore_ctx, region, false)
-        }
-        && dilate_region_rings(ctx, &cells, region, 1);
+        })
+        && (!is_driver_call || dilate_region_rings(ctx, &cells, region, 1));
 
     if !committed {
         rollback(ctx, &cells, region);
         return false;
     }
 
-    // Anything still bare inside the finished region becomes green.
+    // Anything still bare inside the finished region becomes green — driver
+    // lakes only, for the same reason as the passes above.
     for &(x, y) in &cells {
+        if !is_driver_call {
+            break;
+        }
         if ctx.scratch.get(x, y).region != region {
             continue;
         }
@@ -527,6 +557,7 @@ mod tests {
             },
         };
         {
+            let trig = crate::map::rmg::trig::TrigTable::synthetic();
             let mut ctx = BlobCtx {
                 grid: &mut grid,
                 scratch: &mut scratch,
@@ -534,6 +565,7 @@ mod tests {
                 blocks: &blocks,
                 rng: &mut rng,
                 gauss: &mut gauss,
+                trig: Some(&trig),
                 map_w,
                 map_h,
                 rollback_level: 4,
@@ -640,6 +672,7 @@ mod tests {
             placed: target - MIN_CELLS,
             region_id: 1,
         };
+        let trig = crate::map::rmg::trig::TrigTable::synthetic();
         let mut ctx = BlobCtx {
             grid: &mut grid,
             scratch: &mut scratch,
@@ -647,12 +680,13 @@ mod tests {
             blocks: &blocks,
             rng: &mut rng,
             gauss: &mut gauss,
+            trig: Some(&trig),
             map_w,
             map_h,
             rollback_level: 4,
         };
         assert!(
-            !grow_lake(&mut ctx, &args, &mut quota),
+            !grow_lake(&mut ctx, &args, &mut quota, None),
             "a quota with only the minimum left must not start a lake"
         );
 
