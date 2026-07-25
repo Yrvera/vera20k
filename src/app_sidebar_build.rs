@@ -11,7 +11,7 @@
 use crate::app::AppState;
 use crate::app_sidebar_render::current_sidebar_chrome;
 use crate::render::batch::SpriteInstance;
-use crate::render::sidebar_chrome::SidebarChromeAtlas;
+use crate::render::sidebar_chrome::{SidebarChromeAtlas, SidebarChromeEntry};
 use crate::sidebar::power_bar_anim::PowerBarAnimState;
 use crate::sidebar::{Rect, SidebarChromeLayoutSpec, SidebarLayout, SidebarTabButton, SidebarView};
 
@@ -489,6 +489,43 @@ fn place_canvas_crop_in_slot(
     })
 }
 
+/// Select and place the GCLOCK2 frame for one in-progress cameo.
+pub(crate) fn build_gclock_instance(
+    gclock_frames: &[SidebarChromeEntry],
+    progress: f32,
+    slot: Rect,
+    camera_offset: [f32; 2],
+) -> Option<SpriteInstance> {
+    let last_frame = gclock_frames.len().checked_sub(1)?;
+    let progress = progress.clamp(0.0, 1.0);
+    // gamemd draws frame = Production_Value + 1 (range 1-55), skipping
+    // frame 0. Map our 0.0-1.0 progress to frames 1..last.
+    let frame_index = if last_frame >= 2 {
+        ((progress * (last_frame - 1) as f32).round() as usize + 1).min(last_frame)
+    } else {
+        last_frame.min(1)
+    };
+    let gclock_entry = &gclock_frames[frame_index];
+    let gclock_rect = place_canvas_crop_in_slot(
+        slot,
+        gclock_entry.pixel_size,
+        [0.0, 0.0],
+        gclock_entry.pixel_size,
+        camera_offset,
+    )?;
+
+    Some(SpriteInstance {
+        position: [gclock_rect.x, gclock_rect.y],
+        size: [gclock_rect.w, gclock_rect.h],
+        uv_origin: gclock_entry.uv_origin,
+        uv_size: gclock_entry.uv_size,
+        depth: 0.00043,
+        tint: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        ..Default::default()
+    })
+}
+
 /// Returns (cameo_instances, gclock_instances, overlay_instances).
 /// Cameo instances use the cameo atlas texture.
 /// Gclock instances use the GCLOCK2 atlas texture (progress overlay).
@@ -509,7 +546,7 @@ pub(crate) fn build_sidebar_cameo_instances(
     let mut gclock_instances = Vec::new();
     let mut overlay_instances = Vec::new();
     let co = [state.camera_x, state.camera_y];
-    let gclock_frames: &[crate::render::sidebar_chrome::SidebarChromeEntry] =
+    let gclock_frames: &[SidebarChromeEntry] =
         crate::app_sidebar_render::current_sidebar_chrome(state)
             .map(|a| a.gclock_frames.as_slice())
             .unwrap_or(&[]);
@@ -542,37 +579,10 @@ pub(crate) fn build_sidebar_cameo_instances(
                 ..Default::default()
             });
 
-            // GCLOCK2 overlay — select frame from progress (0.0-1.0).
-            // gamemd: frame = Production_Value + 1, Production_Value = 0..54.
-            if !gclock_frames.is_empty() {
-                let progress = item.progress.clamp(0.0, 1.0);
-                // gamemd draws frame = Production_Value + 1 (range 1-55), skipping
-                // frame 0. Map our 0.0-1.0 progress to frames 1..last.
-                let last_frame = gclock_frames.len() - 1;
-                let frame_index = if last_frame >= 2 {
-                    ((progress * (last_frame - 1) as f32).round() as usize + 1).min(last_frame)
-                } else {
-                    last_frame.min(1)
-                };
-                let gclock_entry = &gclock_frames[frame_index];
-                if let Some(gclock_rect) = place_canvas_crop_in_slot(
-                    slot,
-                    gclock_entry.pixel_size,
-                    [0.0, 0.0],
-                    gclock_entry.pixel_size,
-                    co,
-                ) {
-                    gclock_instances.push(SpriteInstance {
-                        position: [gclock_rect.x, gclock_rect.y],
-                        size: [gclock_rect.w, gclock_rect.h],
-                        uv_origin: gclock_entry.uv_origin,
-                        uv_size: gclock_entry.uv_size,
-                        depth: 0.00043,
-                        tint: [1.0, 1.0, 1.0],
-                        alpha: 1.0,
-                        ..Default::default()
-                    });
-                }
+            if let Some(gclock_instance) =
+                build_gclock_instance(gclock_frames, item.progress, slot, co)
+            {
+                gclock_instances.push(gclock_instance);
             }
         } else {
             // Non-building items: single full cameo quad. No blinking.
@@ -724,7 +734,8 @@ pub(crate) fn build_sidebar_text_instances(
 
 #[cfg(test)]
 mod tests {
-    use super::place_canvas_crop_in_slot;
+    use super::{build_gclock_instance, place_canvas_crop_in_slot};
+    use crate::render::sidebar_chrome::SidebarChromeEntry;
     use crate::sidebar::Rect;
 
     #[test]
@@ -793,5 +804,45 @@ mod tests {
                 h: 60.0
             }
         );
+    }
+
+    #[test]
+    fn test_gclock_instance_uses_current_mid_progress_frame_and_geometry() {
+        let frames: Vec<SidebarChromeEntry> = (0..55)
+            .map(|frame| SidebarChromeEntry {
+                uv_origin: [frame as f32 / 55.0, 0.25],
+                uv_size: [1.0 / 55.0, 0.5],
+                pixel_size: [60.0, 48.0],
+            })
+            .collect();
+        let slot = Rect {
+            x: 100.1,
+            y: 50.3,
+            w: 75.0,
+            h: 60.0,
+        };
+
+        let instance = build_gclock_instance(&frames, 0.5, slot, [13.25, -7.5]).unwrap();
+
+        // Current mapping for 55 stored frames selects index 28 at 50% progress.
+        assert_eq!(instance.uv_origin, frames[28].uv_origin);
+        assert_eq!(instance.uv_size, frames[28].uv_size);
+        assert_eq!(instance.position, [113.25, 42.5]);
+        assert_eq!(instance.size, [75.0, 60.0]);
+        assert_eq!(instance.depth, 0.00043);
+        assert_eq!(instance.tint, [1.0, 1.0, 1.0]);
+        assert_eq!(instance.alpha, 1.0);
+    }
+
+    #[test]
+    fn test_gclock_instance_requires_a_stored_frame() {
+        let slot = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 60.0,
+            h: 48.0,
+        };
+
+        assert!(build_gclock_instance(&[], 0.5, slot, [0.0, 0.0]).is_none());
     }
 }
