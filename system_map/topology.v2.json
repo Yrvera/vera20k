@@ -1,0 +1,1705 @@
+{
+  "schema_version": 2,
+  "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005",
+  "id_policy": {
+    "canonical_system_pattern": "^GSI-[0-9]{2}\\.[0-9]{2}$",
+    "slice_pattern": "^SLICE-[0-9]{8}-[A-Z0-9-]+$",
+    "loop_pattern": "^LOOP-[0-9]{3}-[A-Z0-9-]+$",
+    "edge_pattern": "^EDGE-[0-9]{4}-[A-Z0-9-]+$",
+    "rule": "Implementation slices never create or extend canonical GSI IDs."
+  },
+  "legacy_slice_aliases": [
+    {
+      "legacy_id": "GSI-04.03A",
+      "slice_id": "SLICE-20260724-OVERLAY-TIBERIUM-CLASSIFIER",
+      "canonical_systems": ["GSI-04.09"],
+      "reason": "The historical suffix described overlay-to-tiberium classification; canonical GSI-04.03 is elevation, ramps, cliffs, slopes, and height conversion.",
+      "evidence": [
+        "docs/contracts/2026-07-24-gsi-04-03a-overlay-to-tiberium-index-implementation-contract.md",
+        "docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:267",
+        "docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:273"
+      ]
+    },
+    {
+      "legacy_id": "GSI-04.03B",
+      "slice_id": "SLICE-20260724-MERGED-RULES-OVERLAY-AUTHORITY",
+      "canonical_systems": ["GSI-02.03", "GSI-02.04", "GSI-04.09"],
+      "reason": "The historical suffix described merged-rules registry authority supporting overlay identity, not an elevation child system.",
+      "evidence": [
+        "docs/contracts/2026-07-24-gsi-04-03b-merged-rules-overlay-registry-authority-implementation-contract.md",
+        "docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:267",
+        "docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:273"
+      ]
+    }
+  ],
+  "systems": {
+    "GSI-01.05": {
+      "native_anchors": [
+        {
+          "symbol": "LogicClass::PerTickUpdate",
+          "address": "0x0055AFB0",
+          "evidence": "docs/research/core-services-map/logicclass.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/world/mod.rs",
+          "symbol": "Simulation::advance_tick",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Global scheduler and active-object order are load-bearing consumers of almost every gameplay loop."]
+    },
+    "GSI-03.10": {
+      "native_anchors": [
+        {
+          "symbol": "skirmish start acceptance path",
+          "address": "0x006ACEE0",
+          "evidence": "docs/research/SKIRMISH_START_TO_LOADING_SCREEN_ACTIVATION_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/skirmish_launch.rs",
+          "symbol": "build_skirmish_launch",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/app_skirmish_session.rs",
+          "symbol": "skirmish session launch",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Owner of the bootstrap skirmish-launch loop."]
+    },
+    "GSI-06.13": {
+      "native_anchors": [
+        {
+          "symbol": "DriveLocomotionClass::Process",
+          "address": "0x004B0500",
+          "evidence": "docs/research/DRIVE_PROCESS_MOVEMENT_TICK_ORDER_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "Process_Movement",
+          "address": "0x004B2630",
+          "evidence": "docs/research/DRIVE_PROCESS_MOVEMENT_TICK_ORDER_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/movement/drive_locomotion.rs",
+          "symbol": "drive locomotion",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/movement/movement_tick.rs",
+          "symbol": "tick_movement_with_grids",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Owner of the bootstrap ground-move loop; native executable preflight remains blocked."]
+    },
+    "GSI-07.13": {
+      "native_anchors": [
+        {
+          "symbol": "InfantryClass::Mission_Capture",
+          "address": "0x005202F0",
+          "evidence": "docs/research/ENGINEER_CAPTURE_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/world/world_orders.rs",
+          "symbol": "tick_capture_orders",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Engineer mission capture, distinct from CaptureManager mind control."]
+    },
+    "GSI-07.39": {
+      "native_anchors": [
+        {
+          "symbol": "BuildingClass::Receive_Radio",
+          "address": "0x0043C2D0",
+          "evidence": "docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md"
+        },
+        {
+          "symbol": "UnitClass::Receive_Radio",
+          "address": "0x00737430",
+          "evidence": "docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/miner/miner_dock.rs",
+          "symbol": "refinery docking",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/miner/miner_dock_sequence.rs",
+          "symbol": "dock unload sequence",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Owner of the full harvest-return-dock-credit closed loop."]
+    },
+    "GSI-07.41": {
+      "native_anchors": [
+        {
+          "symbol": "BuildingClass::ExitObject_Main",
+          "address": "0x00443C60",
+          "evidence": "docs/research/GRIZZLY_PRODUCTION_COMPLETE_TO_WAR_FACTORY_EXIT_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/production/production_spawn.rs",
+          "symbol": "production spawn",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/production/war_factory_exit.rs",
+          "symbol": "war factory exit",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Factory exit and blocked-exit retry are a separate loop from building placement."]
+    },
+    "GSI-07.42": {
+      "native_anchors": [
+        {
+          "symbol": "CargoClass::AddPassenger",
+          "address": "0x004733A0",
+          "evidence": "docs/research/GENERIC_TRANSPORT_CARGO_INSERTION_ORDER_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/passenger.rs",
+          "symbol": "passenger cargo and unload",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/radio",
+          "symbol": "transport radio protocol",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Static evidence records concrete load/unload ordering drift; no native executable loop oracle exists."]
+    },
+    "GSI-08.10": {
+      "native_anchors": [
+        {
+          "symbol": "TechnoClass::ReceiveDamage",
+          "address": "0x00701900",
+          "evidence": "docs/research/DAMAGE_SIGNED_VITALITY_WRITER_AND_FATAL_HANDOFF_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "ObjectClass::ReceiveDamage",
+          "address": "0x005F5390",
+          "evidence": "docs/research/DAMAGE_RECEIVER_CORE_REINVESTIGATION_2026-07-13.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/combat/damage",
+          "symbol": "damage kernel",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/combat/mod.rs",
+          "symbol": "tick_combat_with_fog",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Owner of the attack-through-fatal-damage loop; batch ownership differs from the native live-vector path."]
+    },
+    "GSI-09.07": {
+      "native_anchors": [
+        {
+          "symbol": "HouseClass::AI_AssessPower",
+          "address": "0x00508C30",
+          "evidence": "docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "CheckPoweredRadar",
+          "address": "0x00508DF0",
+          "evidence": "docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/power_system.rs",
+          "symbol": "tick_power_states",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Power authority feeds radar, sidebar, production, EVA, and multiple same-tick consumers."]
+    },
+    "GSI-09.11": {
+      "native_anchors": [
+        {
+          "symbol": "HouseClass::Place_Production",
+          "address": "0x004FB0E0",
+          "evidence": "docs/research/FACTORYCLASS_PRODUCTION_DEEP_DIVE.md"
+        },
+        {
+          "symbol": "BuildingClass::Can_Enter_Cell",
+          "address": "0x00449440",
+          "evidence": "docs/research/pathfinding/BUILDING_CAN_ENTER_CELL_PLACEMENT_PASSABILITY_BODY_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/production/production_placement.rs",
+          "symbol": "building placement",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/world/world_commands.rs",
+          "symbol": "placement command application",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Owner of build-ready, placement legality, rejection, and committed foundation handoff."]
+    },
+    "GSI-11.02": {
+      "native_anchors": [
+        {
+          "symbol": "SuperClass::Launch",
+          "address": "0x006CC390",
+          "evidence": "docs/research/SUPERCLASS_SYSTEM_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "nuclear projectile maker",
+          "address": "0x0046B310",
+          "evidence": "docs/research/NUKE_SUPERWEAPON_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/superweapon",
+          "symbol": "superweapon runtime",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/world/world_commands.rs",
+          "symbol": "superweapon command dispatch",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["The native nuke mechanism is contracted while Rust remains scaffolded/partial."]
+    },
+    "GSI-12.02": {
+      "native_anchors": [
+        {
+          "symbol": "MapClass::RevealShroud",
+          "address": "0x005673A0",
+          "evidence": "docs/research/SHROUD_REVEAL_SYSTEM_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "TechnoClass::UpdateReveal",
+          "address": "0x0070AF50",
+          "evidence": "docs/research/SHROUD_REVEAL_SYSTEM_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/vision/mod.rs",
+          "symbol": "vision reveal update",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Map knowledge authority is consumed by tactical shroud and radar pixels."]
+    },
+    "GSI-17.04": {
+      "native_anchors": [
+        {
+          "symbol": "Load_Game",
+          "address": "0x0067E730",
+          "evidence": "docs/research/SAVELOAD_LOGIC_ACTIVE_VECTOR_RECONSTRUCTION_GHIDRA_REPORT.md"
+        },
+        {
+          "symbol": "swizzle registrar",
+          "address": "0x006CF240",
+          "evidence": "docs/research/SAVELOAD_LOGIC_ACTIVE_VECTOR_RECONSTRUCTION_GHIDRA_REPORT.md"
+        }
+      ],
+      "rust_surfaces": [
+        {
+          "path": "src/sim/snapshot.rs",
+          "symbol": "GameSnapshot",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        },
+        {
+          "path": "src/sim/world/mod.rs",
+          "symbol": "rebuild_caches_after_load",
+          "coverage": "representative",
+          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+        }
+      ],
+      "notes": ["Rust bincode snapshots are regression infrastructure, not native SAV parity."]
+    }
+  },
+  "services": {
+    "logicclass": {
+      "gsi_ids": ["GSI-01.05", "GSI-05.02", "GSI-01.12"],
+      "roles": ["drives", "orders", "owns_iteration"],
+      "detail": "Fixed per-tick rung order, active-object iteration, and final cleanup.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:28"]
+    },
+    "abstract-object": {
+      "gsi_ids": ["GSI-05.01", "GSI-05.02", "GSI-05.03", "GSI-05.04", "GSI-05.05", "GSI-17.02"],
+      "roles": ["owns_state", "owns_lifecycle"],
+      "detail": "Base identity/state, active membership, lifecycle, references, spatial identity, and per-object persistence contract.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:29"]
+    },
+    "techno-foot": {
+      "gsi_ids": ["GSI-05.06", "GSI-06.12", "GSI-08.01"],
+      "roles": ["drives", "handoff"],
+      "detail": "Per-object behavioral spine, locomotor authority handoff, and passive/opportunity targeting.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:30"]
+    },
+    "mission-radio": {
+      "gsi_ids": ["GSI-05.06", "GSI-07.02", "GSI-07.03", "GSI-07.04", "GSI-07.37", "GSI-07.38"],
+      "roles": ["owns_state", "drives", "handoff"],
+      "detail": "Mission metadata/API/dispatcher plus synchronous radio and generic docking protocol.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:31"]
+    },
+    "random-scenario": {
+      "gsi_ids": ["GSI-01.04", "GSI-01.07", "GSI-01.08", "GSI-01.09", "GSI-01.10", "GSI-04.16"],
+      "roles": ["owns_state", "provides"],
+      "detail": "Scenario singleton, three RNG streams, time substrate, waypoints, and start anchors.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:32"]
+    },
+    "rules-class": {
+      "gsi_ids": ["GSI-02.04"],
+      "roles": ["owns_state", "provides"],
+      "detail": "Global parsed gameplay tunables and type registries.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:33"]
+    },
+    "cell-map": {
+      "gsi_ids": ["GSI-04.01", "GSI-04.04", "GSI-04.05", "GSI-04.06", "GSI-04.18", "GSI-04.23"],
+      "roles": ["owns_state", "provides"],
+      "detail": "Map grid, lookup, passability, occupancy, zones, shroud, and crate cell services.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:34"]
+    },
+    "factory-house": {
+      "gsi_ids": ["GSI-05.16", "GSI-09.01", "GSI-09.07", "GSI-09.08", "GSI-09.09", "GSI-09.10"],
+      "roles": ["owns_state", "drives"],
+      "detail": "House authority/wallet/power/prerequisites plus factory queue and production progress.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:35"]
+    },
+    "damage-helpers": {
+      "gsi_ids": ["GSI-08.09", "GSI-08.10", "GSI-08.33"],
+      "roles": ["owns_algorithm", "handoff"],
+      "detail": "Area distributor, armor/Verses damage kernel, and warhead-special handoffs.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:36"]
+    },
+    "cell-validation": {
+      "gsi_ids": ["GSI-04.01", "GSI-04.04", "GSI-04.05", "GSI-06.01", "GSI-06.02", "GSI-09.11"],
+      "roles": ["owns_algorithm", "provides"],
+      "detail": "Read-only lookup, passability/occupancy, movement admission, reachable-cell, and placement predicates.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:37"]
+    },
+    "bridge-helpers": {
+      "gsi_ids": ["GSI-04.12", "GSI-04.13", "GSI-06.07", "GSI-08.09", "GSI-12.03", "GSI-13.05"],
+      "roles": ["owns_algorithm", "provides"],
+      "detail": "Bridge topology/deck predicates feed traversal, occupancy, area damage, visibility, and drawing.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:38"]
+    },
+    "ini-parsing": {
+      "gsi_ids": ["GSI-02.03"],
+      "roles": ["owns_algorithm"],
+      "detail": "Typed CCINI accessors, defaults, and exact value parsing.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:39"]
+    },
+    "pathfinding-helpers": {
+      "gsi_ids": ["GSI-04.06", "GSI-06.02", "GSI-06.03", "GSI-06.04", "GSI-06.05"],
+      "roles": ["owns_algorithm", "provides"],
+      "detail": "Zone queries, A-star search, edge cost, and blocked-path fallback.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:40"]
+    },
+    "target-scoring": {
+      "gsi_ids": ["GSI-08.01", "GSI-10.05"],
+      "roles": ["owns_algorithm"],
+      "detail": "Per-unit legality/threat selection and shared AI targeting primitives.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:41"]
+    },
+    "drawing-helpers": {
+      "gsi_ids": ["GSI-08.04", "GSI-13.02", "GSI-13.03", "GSI-13.08", "GSI-13.09", "GSI-13.22"],
+      "roles": ["owns_algorithm", "presents"],
+      "detail": "FLH/screen math, layer ordering, remap/blending, clipping, and DrawExtras.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:42"]
+    },
+    "lookup-tables": {
+      "gsi_ids": ["GSI-01.11", "GSI-02.13", "GSI-06.03", "GSI-06.04", "GSI-06.11", "GSI-08.09"],
+      "roles": ["provides"],
+      "detail": "Static coordinate/facing, palette, A-star, passability, drive-track, and spread tables.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:43"]
+    },
+    "gadget-dialog": {
+      "gsi_ids": ["GSI-13.23", "GSI-13.24", "GSI-14.02", "GSI-14.10", "GSI-14.11", "GSI-14.13"],
+      "roles": ["drives", "presents"],
+      "detail": "In-game gadget dispatch for radar/sidebar presentation, mouse input, production UI, and chat.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:44"]
+    },
+    "shell-dialog": {
+      "gsi_ids": ["GSI-01.03", "GSI-03.01", "GSI-03.02", "GSI-03.08", "GSI-03.10", "GSI-13.26"],
+      "roles": ["drives", "presents"],
+      "detail": "Top-level shell state machine and menu/options/save/skirmish presentation.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:45"]
+    },
+    "frontier-render-tactical": {
+      "gsi_ids": ["GSI-13.01", "GSI-13.02", "GSI-13.03", "GSI-13.04", "GSI-13.05", "GSI-13.21"],
+      "roles": ["drives", "presents"],
+      "detail": "Tactical frame composition, projection, traversal, terrain/overlay, and shroud passes.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:51"]
+    },
+    "frontier-render-layer": {
+      "gsi_ids": ["GSI-13.03"],
+      "roles": ["owns_state", "presents"],
+      "detail": "Five render-layer buckets and Ground-layer Y sorting.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:52"]
+    },
+    "frontier-blitter": {
+      "gsi_ids": ["GSI-13.01", "GSI-13.06", "GSI-13.08", "GSI-13.09"],
+      "roles": ["owns_algorithm", "presents"],
+      "detail": "Framebuffer/raster backend, SHP kernels, remap/blending, and clipping surfaces.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:53"]
+    },
+    "frontier-sidebar": {
+      "gsi_ids": ["GSI-09.01", "GSI-11.12", "GSI-13.24", "GSI-14.08", "GSI-14.10"],
+      "roles": ["consumes", "presents", "drives"],
+      "detail": "Credits, queues, superweapon state, production input, and sidebar mode gadgets.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:54"]
+    },
+    "frontier-radar": {
+      "gsi_ids": ["GSI-04.18", "GSI-04.19", "GSI-12.09", "GSI-12.10", "GSI-13.23", "GSI-14.11"],
+      "roles": ["consumes", "presents", "drives"],
+      "detail": "Consumes map knowledge and presents radar pixels/events plus click-to-recenter.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:55"]
+    },
+    "frontier-audio-voc": {
+      "gsi_ids": ["GSI-15.01", "GSI-15.02", "GSI-15.03", "GSI-15.04", "GSI-15.05", "GSI-15.08"],
+      "roles": ["owns_state", "owns_algorithm", "presents"],
+      "detail": "Sound registry, positioning, channels, mixer cadence, cue routing, and unit voices.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:56"]
+    },
+    "frontier-audio-eva": {
+      "gsi_ids": ["GSI-15.06"],
+      "roles": ["owns_state", "presents"],
+      "detail": "EVA selection, priority/dedup queues, and sequential playback.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:57"]
+    },
+    "frontier-audio-theme": {
+      "gsi_ids": ["GSI-15.07"],
+      "roles": ["owns_state", "presents"],
+      "detail": "Theme catalog, selection, transition, and stream pump.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:58"]
+    },
+    "frontier-anim": {
+      "gsi_ids": ["GSI-05.12", "GSI-13.12", "GSI-15.05"],
+      "roles": ["owns_state", "drives", "presents"],
+      "detail": "Animation lifecycle/frame advance, drawing, and animation-sound handoff.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:59"]
+    },
+    "frontier-bullet": {
+      "gsi_ids": ["GSI-05.11", "GSI-08.06", "GSI-08.07", "GSI-08.08"],
+      "roles": ["owns_state", "drives", "handoff"],
+      "detail": "Projectile identity, creation bookkeeping, flight, collision, fuse, and detonation.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:60"]
+    },
+    "frontier-particle": {
+      "gsi_ids": ["GSI-04.21", "GSI-05.13", "GSI-08.27", "GSI-13.13"],
+      "roles": ["owns_state", "drives", "presents"],
+      "detail": "Particle runtime/rendering plus gameplay-bearing gas, fire, and hazard paths.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:61"]
+    },
+    "frontier-voxelanim": {
+      "gsi_ids": ["GSI-04.09", "GSI-05.14", "GSI-08.09", "GSI-08.11", "GSI-13.12"],
+      "roles": ["owns_state", "drives", "presents"],
+      "detail": "Falling/debris runtime, rendering, impact damage, death effects, and resource edits.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:62"]
+    },
+    "frontier-net-eventqueue": {
+      "gsi_ids": ["GSI-16.01", "GSI-16.02"],
+      "roles": ["owns_state", "orders", "handoff"],
+      "detail": "Event admission plus synchronized frame-stamped queue ordering and dispatch.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:63"]
+    },
+    "frontier-net-transport": {
+      "gsi_ids": ["GSI-16.03", "GSI-16.05", "GSI-16.06", "GSI-16.09", "GSI-16.12"],
+      "roles": ["owns_state", "drives"],
+      "detail": "Network pacing inputs, connection/packet/retry, LAN/WOL transport, and reconnect/drop.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:64"]
+    },
+    "frontier-trigger": {
+      "gsi_ids": ["GSI-04.17", "GSI-05.19", "GSI-10.10", "GSI-10.11", "GSI-10.12", "GSI-10.13"],
+      "roles": ["owns_state", "drives"],
+      "detail": "Tag/variable state, trigger identity, evaluation, predicates, actions, and campaign scripting.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:65"]
+    },
+    "frontier-ai-team": {
+      "gsi_ids": ["GSI-05.18", "GSI-06.10", "GSI-10.07", "GSI-10.08", "GSI-10.09"],
+      "roles": ["owns_state", "drives"],
+      "detail": "Team lifecycle/membership, formation movement, recruitment, and ScriptType execution.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:66"]
+    },
+    "frontier-ai-house": {
+      "gsi_ids": ["GSI-10.01", "GSI-10.02", "GSI-10.03", "GSI-10.04", "GSI-10.05", "GSI-10.14"],
+      "roles": ["owns_state", "drives"],
+      "detail": "House brain, base/economy/production/target policy, and difficulty gates.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:67"]
+    },
+    "frontier-ai-trigger": {
+      "gsi_ids": ["GSI-02.06", "GSI-10.06", "GSI-10.08"],
+      "roles": ["owns_state", "drives", "handoff"],
+      "detail": "AITrigger data, weighted eligibility/selection, and Team creation payload.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:68"]
+    },
+    "frontier-super": {
+      "gsi_ids": ["GSI-05.20", "GSI-11.01", "GSI-11.12"],
+      "roles": ["owns_state", "drives", "handoff"],
+      "detail": "Super runtime/charge ownership, generic launch state machine, and building/sidebar linkage.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:69"]
+    },
+    "frontier-capture": {
+      "gsi_ids": ["GSI-05.21", "GSI-08.28", "GSI-09.15", "GSI-13.22"],
+      "roles": ["owns_state", "drives", "presents"],
+      "detail": "CaptureManager lifecycle, mind-control overload, ownership rehome, and link drawing.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:70"]
+    },
+    "frontier-mix-vfs": {
+      "gsi_ids": ["GSI-02.01", "GSI-02.02", "GSI-02.10", "GSI-02.11", "GSI-02.12", "GSI-02.15"],
+      "roles": ["owns_state", "owns_algorithm", "provides"],
+      "detail": "MIX/loose resolution plus SHP, TMP, voxel, and audio decoders.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:71"]
+    },
+    "frontier-saveload": {
+      "gsi_ids": ["GSI-17.02", "GSI-17.03", "GSI-17.04"],
+      "roles": ["owns_state", "drives"],
+      "detail": "Whole-game serialization, pointer swizzling, and post-load restoration/fixups.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:72"]
+    },
+    "frontier-input-command": {
+      "gsi_ids": ["GSI-14.01", "GSI-14.02", "GSI-14.03", "GSI-14.04", "GSI-14.07", "GSI-16.01"],
+      "roles": ["drives", "handoff"],
+      "detail": "Input sampling, action/selection resolution, semantic order construction, and EventClass handoff.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:73"]
+    }
+  },
+  "edges": [
+    {
+      "id": "EDGE-0001-COMMAND-BEFORE-LOGIC",
+      "plane": "native",
+      "kind": "ordered_before",
+      "from": "GSI-16.02",
+      "to": "GSI-01.05",
+      "context": "Map logic tick",
+      "detail": "The synchronized command queue drains before the global per-tick rung ladder.",
+      "evidence": ["docs/research/CORE_ENGINE_SERVICES_MAP.md:63"]
+    },
+    {
+      "id": "EDGE-0002-SCHEDULER-ACTIVE-ORDER",
+      "plane": "native",
+      "kind": "owns_state",
+      "from": "GSI-05.02",
+      "to": "GSI-01.05",
+      "state": "active-object membership and deterministic iteration order",
+      "context": "Per-tick object fan-out",
+      "detail": "The scheduler consumes the active-object vector in native order.",
+      "evidence": ["docs/research/core-services-map/logicclass.md"]
+    },
+    {
+      "id": "EDGE-0003-RUST-ORDER-ADMISSION",
+      "plane": "rust",
+      "kind": "emits_to",
+      "from": "GSI-14.07",
+      "to": "GSI-07.01",
+      "context": "Production command path",
+      "detail": "Local semantic orders become owned simulation command admissions.",
+      "evidence": ["src/app_commands.rs", "src/sim/world/world_commands.rs"],
+      "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+    },
+    {
+      "id": "EDGE-0004-HARVEST-ORE-STATE",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-07.39",
+      "to": "GSI-04.09",
+      "context": "Harvest-return-dock-credit loop",
+      "detail": "Dock/credit closure depends on canonical resource overlay identity and amount state.",
+      "evidence": ["docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:639"]
+    },
+    {
+      "id": "EDGE-0005-HARVEST-ECONOMY",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-07.39",
+      "to": "GSI-09.03",
+      "context": "Harvest-return-dock-credit loop",
+      "detail": "Dock unloading depends on resource value, cargo capacity, and conversion authority.",
+      "evidence": ["docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:639"]
+    },
+    {
+      "id": "EDGE-0006-DOCK-RADIO",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-07.39",
+      "to": "GSI-07.37",
+      "context": "Harvest-return-dock-credit loop",
+      "detail": "Refinery docking uses the shared radio contact protocol.",
+      "evidence": ["docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md"]
+    },
+    {
+      "id": "EDGE-0007-DOCK-RESERVATION",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-07.39",
+      "to": "GSI-07.38",
+      "context": "Harvest-return-dock-credit loop",
+      "detail": "Refinery docking consumes generic queue/reservation authority.",
+      "evidence": ["docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md"]
+    },
+    {
+      "id": "EDGE-0008-DAMAGE-DEATH-HANDOFF",
+      "plane": "native",
+      "kind": "handoff_to",
+      "from": "GSI-08.10",
+      "to": "GSI-08.11",
+      "context": "Fatal damage",
+      "detail": "Signed vitality update hands fatal results to death/destruction consequences.",
+      "evidence": ["docs/research/DAMAGE_SIGNED_VITALITY_WRITER_AND_FATAL_HANDOFF_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0009-DEATH-RENDER",
+      "plane": "routing",
+      "kind": "renders",
+      "from": "GSI-08.11",
+      "to": "GSI-13.12",
+      "context": "Attack-death presentation",
+      "detail": "Death consequences produce explosion, debris, and transient effect presentation.",
+      "evidence": ["docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:640"]
+    },
+    {
+      "id": "EDGE-0010-DEATH-AUDIO",
+      "plane": "routing",
+      "kind": "plays_audio",
+      "from": "GSI-08.11",
+      "to": "GSI-15.05",
+      "context": "Attack-death presentation",
+      "detail": "Death and impact consequences route gameplay sound triggers.",
+      "evidence": ["docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:640"]
+    },
+    {
+      "id": "EDGE-0011-REVEAL-MAP-KNOWLEDGE",
+      "plane": "native",
+      "kind": "handoff_to",
+      "from": "GSI-12.02",
+      "to": "GSI-04.18",
+      "context": "Reveal update",
+      "detail": "Object reveal/conceal updates mutate persisted per-cell map knowledge.",
+      "evidence": ["docs/research/SHROUD_REVEAL_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0012-KNOWLEDGE-SHROUD-RENDER",
+      "plane": "routing",
+      "kind": "renders",
+      "from": "GSI-04.18",
+      "to": "GSI-13.21",
+      "context": "Tactical frame",
+      "detail": "Persisted map knowledge drives tactical shroud composition.",
+      "evidence": ["docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:643"]
+    },
+    {
+      "id": "EDGE-0013-KNOWLEDGE-RADAR",
+      "plane": "routing",
+      "kind": "handoff_to",
+      "from": "GSI-04.18",
+      "to": "GSI-12.10",
+      "context": "Radar knowledge",
+      "detail": "Per-cell knowledge feeds radar availability and minimap visibility policy.",
+      "evidence": ["docs/research/GAMEMD_SYSTEM_INVENTORY_COVERAGE_MAP_GHIDRA_REPORT.md:643"]
+    },
+    {
+      "id": "EDGE-0014-RADAR-PIXELS",
+      "plane": "native",
+      "kind": "renders",
+      "from": "GSI-12.10",
+      "to": "GSI-13.23",
+      "context": "Radar draw",
+      "detail": "Radar policy and events are consumed by minimap terrain/object/shroud pixels.",
+      "evidence": ["docs/research/RADAR_OBJECT_DOT_PRIORITY_VISIBILITY_GATES_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0015-POWER-RADAR-GATE",
+      "plane": "native",
+      "kind": "gated_by",
+      "from": "GSI-12.10",
+      "to": "GSI-09.07",
+      "context": "Powered radar",
+      "detail": "Radar availability is gated by the house power state.",
+      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0016-POWER-SIDEBAR",
+      "plane": "routing",
+      "kind": "renders",
+      "from": "GSI-09.07",
+      "to": "GSI-13.24",
+      "context": "Power presentation",
+      "detail": "Power output/drain and low-power state feed sidebar power presentation.",
+      "evidence": ["docs/research/POWER_BAR_RENDERING.md"]
+    },
+    {
+      "id": "EDGE-0017-POWER-EVA",
+      "plane": "routing",
+      "kind": "plays_audio",
+      "from": "GSI-09.07",
+      "to": "GSI-15.06",
+      "context": "Low-power transition",
+      "detail": "Power-state transitions produce EVA feedback.",
+      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0018-FACTORY-EXIT-MOVEMENT",
+      "plane": "routing",
+      "kind": "handoff_to",
+      "from": "GSI-07.41",
+      "to": "GSI-06.01",
+      "context": "Factory delivery",
+      "detail": "A delivered unit enters movement admission and blocked-exit recovery.",
+      "evidence": ["docs/research/GRIZZLY_PRODUCTION_COMPLETE_TO_WAR_FACTORY_EXIT_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0019-CAPTURE-HOUSE-AUTHORITY",
+      "plane": "native",
+      "kind": "handoff_to",
+      "from": "GSI-07.13",
+      "to": "GSI-09.15",
+      "context": "Engineer capture",
+      "detail": "Capture mission completion hands the building to ownership-transfer consequences.",
+      "evidence": ["docs/research/ENGINEER_CAPTURE_GHIDRA_REPORT.md", "docs/research/BUILDING_CHANGE_OWNER_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0020-LOAD-RESTORES-ORDER",
+      "plane": "native",
+      "kind": "handoff_to",
+      "from": "GSI-17.04",
+      "to": "GSI-05.02",
+      "context": "Post-load restoration",
+      "detail": "Load restoration must reconstruct active-object membership and ordering before the next tick.",
+      "evidence": ["docs/research/SAVELOAD_LOGIC_ACTIVE_VECTOR_RECONSTRUCTION_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0021-SKIRMISH-VFS",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-03.10",
+      "to": "GSI-02.01",
+      "loop": "LOOP-001-SKIRMISH-LAUNCH",
+      "context": "Skirmish-launch loop",
+      "detail": "Launching the selected stock map depends on retail asset resolution and MIX precedence.",
+      "evidence": ["docs/research/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md"]
+    },
+    {
+      "id": "EDGE-0022-SKIRMISH-MAP-DECODE",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-03.10",
+      "to": "GSI-02.09",
+      "loop": "LOOP-001-SKIRMISH-LAUNCH",
+      "context": "Skirmish-launch loop",
+      "detail": "The accepted map must decode before scenario construction can begin.",
+      "evidence": ["docs/research/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md"]
+    },
+    {
+      "id": "EDGE-0023-SKIRMISH-SCENARIO-CONSTRUCTION",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-03.10",
+      "to": "GSI-17.01",
+      "loop": "LOOP-001-SKIRMISH-LAUNCH",
+      "context": "Skirmish-launch loop",
+      "detail": "The first playable frame depends on native-compatible scenario object construction order.",
+      "evidence": ["docs/research/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md"]
+    },
+    {
+      "id": "EDGE-0024-DRIVE-ADMISSION",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-06.13",
+      "to": "GSI-06.01",
+      "context": "Ground-movement loop",
+      "detail": "Drive locomotion consumes an admitted destination and cell-entry decision.",
+      "evidence": ["docs/research/DRIVE_PROCESS_MOVEMENT_TICK_ORDER_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0025-DRIVE-PATH",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-06.13",
+      "to": "GSI-06.03",
+      "context": "Ground-movement loop",
+      "detail": "Drive locomotion needs a path with native tie-breaking and reconstruction semantics.",
+      "evidence": ["docs/research/DRIVE_PROCESS_MOVEMENT_TICK_ORDER_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0026-DRIVE-OCCUPANCY",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-06.13",
+      "to": "GSI-06.07",
+      "context": "Ground-movement loop",
+      "detail": "Each accepted step must commit occupancy and layer transitions in native order.",
+      "evidence": ["docs/research/DRIVE_PROCESS_MOVEMENT_TICK_ORDER_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0027-DAMAGE-RULES",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-08.10",
+      "to": "GSI-02.04",
+      "context": "Attack-death loop",
+      "detail": "Armor, warhead, Verses, and type authority must be resolved before the damage kernel can match native semantics.",
+      "evidence": ["docs/research/DAMAGE_RECEIVER_CORE_REINVESTIGATION_2026-07-13.md"]
+    },
+    {
+      "id": "EDGE-0028-DAMAGE-DETONATION",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-08.10",
+      "to": "GSI-08.08",
+      "loop": "LOOP-003-ATTACK-DEATH",
+      "context": "Attack-death loop",
+      "detail": "The selected closed loop reaches damage through projectile collision, fuse, and detonation authority.",
+      "evidence": ["docs/research/DAMAGE_PROJECTILE_IMPACT_TIMING_REINVESTIGATION_2026-07-13.md"]
+    },
+    {
+      "id": "EDGE-0029-DAMAGE-DISTRIBUTION",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-08.10",
+      "to": "GSI-08.09",
+      "loop": "LOOP-003-ATTACK-DEATH",
+      "context": "Attack-death loop",
+      "detail": "Area-target collection, ordering, and falloff determine which receivers enter the kernel.",
+      "evidence": ["docs/research/DAMAGE_PROJECTILE_IMPACT_TIMING_REINVESTIGATION_2026-07-13.md"]
+    },
+    {
+      "id": "EDGE-0030-PLACEMENT-LAND",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-09.11",
+      "to": "GSI-04.04",
+      "context": "Build-place loop",
+      "detail": "Foundation acceptance consumes land, slope, overlay, and buildability state before placement commits.",
+      "evidence": ["docs/research/pathfinding/BUILDING_CAN_ENTER_CELL_PLACEMENT_PASSABILITY_BODY_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0031-PLACEMENT-OCCUPANCY",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-09.11",
+      "to": "GSI-04.05",
+      "context": "Build-place loop",
+      "detail": "Foundation acceptance depends on blocker, occupancy, and reservation state.",
+      "evidence": ["docs/research/pathfinding/BUILDING_CAN_ENTER_CELL_PLACEMENT_PASSABILITY_BODY_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0032-PLACEMENT-LIFECYCLE",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-09.11",
+      "to": "GSI-05.03",
+      "loop": "LOOP-005-BUILD-PLACE",
+      "context": "Build-place loop",
+      "detail": "Accepted placement must create, reveal, and register the building without splitting lifecycle authority.",
+      "evidence": ["docs/research/FACTORYCLASS_PRODUCTION_DEEP_DIVE.md"]
+    },
+    {
+      "id": "EDGE-0033-FACTORY-EXIT-QUEUE",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-07.41",
+      "to": "GSI-09.09",
+      "context": "Factory-exit loop",
+      "detail": "Exit handling starts from a completed object owned by the correct factory queue.",
+      "evidence": ["docs/research/GRIZZLY_PRODUCTION_COMPLETE_TO_WAR_FACTORY_EXIT_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0034-FACTORY-EXIT-OCCUPANCY",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-07.41",
+      "to": "GSI-04.05",
+      "context": "Factory-exit loop",
+      "detail": "Clear, blocked, and retried exits depend on authoritative cell occupancy.",
+      "evidence": ["docs/research/HOUSE_PLACE_PRODUCTION_BLOCKED_WAR_FACTORY_EXIT_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0035-FACTORY-EXIT-ADMISSION",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-07.41",
+      "to": "GSI-06.01",
+      "loop": "LOOP-006-FACTORY-EXIT",
+      "context": "Factory-exit loop",
+      "detail": "A delivered unit must enter movement admission without duplication or loss.",
+      "evidence": ["docs/research/GRIZZLY_PRODUCTION_COMPLETE_TO_WAR_FACTORY_EXIT_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0036-CAPTURE-APPROACH",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-07.13",
+      "to": "GSI-06.01",
+      "loop": "LOOP-007-ENGINEER-CAPTURE",
+      "context": "Engineer-capture loop",
+      "detail": "Capture execution depends on native approach admission when the engineer starts outside capture range.",
+      "evidence": ["docs/research/ENGINEER_CAPTURE_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0037-CAPTURE-OWNERSHIP-EFFECTS",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-07.13",
+      "to": "GSI-09.15",
+      "loop": "LOOP-007-ENGINEER-CAPTURE",
+      "context": "Engineer-capture loop",
+      "detail": "The player-visible loop is not closed until power, tech, radar, and production ownership effects transfer.",
+      "evidence": ["docs/research/BUILDING_CHANGE_OWNER_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0038-CAPTURE-LIFECYCLE",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-07.13",
+      "to": "GSI-05.03",
+      "loop": "LOOP-007-ENGINEER-CAPTURE",
+      "context": "Engineer-capture loop",
+      "detail": "The capturing engineer's removal and the building's continued identity use shared lifecycle authority.",
+      "evidence": ["docs/research/ENGINEER_CAPTURE_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0039-REVEAL-FOOTPRINT",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-12.02",
+      "to": "GSI-12.01",
+      "context": "Reveal-radar loop",
+      "detail": "Reveal mutation consumes the object's native sight range and footprint.",
+      "evidence": ["docs/research/SHROUD_REVEAL_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0040-REVEAL-REFERENCE-FRAMES",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-12.02",
+      "to": "GSI-12.03",
+      "context": "Reveal-radar loop",
+      "detail": "Elevation, cliff, bridge, and building reference frames shape the reveal footprint.",
+      "evidence": ["docs/research/SHROUD_REVEAL_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0041-REVEAL-CELL-STATE",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-12.02",
+      "to": "GSI-04.18",
+      "context": "Reveal-radar loop",
+      "detail": "The protocol must mutate the canonical per-cell knowledge state consumed by tactical and radar rendering.",
+      "evidence": ["docs/research/SHROUD_REVEAL_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0042-TRANSPORT-RADIO",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-07.42",
+      "to": "GSI-07.37",
+      "context": "Transport-load-unload loop",
+      "detail": "Boarding and deploy handoffs consume the shared contact/radio protocol.",
+      "evidence": ["docs/research/TRANSPORT_DOOR_TIMING_RADIO_0X11_DEPLOY_TRACKER_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0043-TRANSPORT-MOVEMENT",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-07.42",
+      "to": "GSI-06.01",
+      "loop": "LOOP-009-TRANSPORT-LOAD-UNLOAD",
+      "context": "Transport-load-unload loop",
+      "detail": "Passengers need approach admission and valid exit destinations for the closed loop.",
+      "evidence": ["docs/research/GENERIC_TRANSPORT_MANUAL_UNLOAD_MAPPING_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0044-TRANSPORT-LIFECYCLE",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-07.42",
+      "to": "GSI-05.03",
+      "context": "Transport-load-unload loop",
+      "detail": "Boarding and unloading must limbo/unlimbo passengers without duplicate active membership.",
+      "evidence": ["docs/research/GENERIC_TRANSPORT_CARGO_INSERTION_ORDER_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0045-NUKE-SUPER-RUNTIME",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-11.02",
+      "to": "GSI-05.20",
+      "context": "Nuke-launch loop",
+      "detail": "Nuclear launch depends on house-owned super runtime identity and charge-state authority.",
+      "evidence": ["docs/research/SUPERCLASS_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0046-NUKE-PROJECTILE-CREATION",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-11.02",
+      "to": "GSI-08.06",
+      "loop": "LOOP-010-NUKE-LAUNCH",
+      "context": "Nuke-launch loop",
+      "detail": "The nuclear state machine hands off through native projectile creation and bookkeeping.",
+      "evidence": ["docs/research/NUKE_SUPERWEAPON_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0047-NUKE-DAMAGE",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-11.02",
+      "to": "GSI-08.10",
+      "loop": "LOOP-010-NUKE-LAUNCH",
+      "context": "Nuke-launch loop",
+      "detail": "The player-visible blast is incomplete without native damage and fatal handoff semantics.",
+      "evidence": ["docs/research/NUKE_SUPERWEAPON_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0048-LOAD-SERIALIZATION",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-17.04",
+      "to": "GSI-17.02",
+      "context": "Save-load-resume loop",
+      "detail": "Restoration can only be correct for state serialized under the native class/version contracts.",
+      "evidence": ["docs/research/SAVELOAD_LOGIC_ACTIVE_VECTOR_RECONSTRUCTION_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0049-LOAD-SWIZZLING",
+      "plane": "routing",
+      "kind": "requires",
+      "from": "GSI-17.04",
+      "to": "GSI-17.03",
+      "context": "Save-load-resume loop",
+      "detail": "Object references must be swizzled before post-load fixups and resume.",
+      "evidence": ["docs/research/SAVELOAD_LOGIC_ACTIVE_VECTOR_RECONSTRUCTION_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0050-LOAD-ACTIVE-ORDER",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-17.04",
+      "to": "GSI-05.02",
+      "loop": "LOOP-011-SAVE-LOAD-RESUME",
+      "context": "Save-load-resume loop",
+      "detail": "Resume depends on reconstructing active-object membership and deterministic order.",
+      "evidence": ["docs/research/SAVELOAD_LOGIC_ACTIVE_VECTOR_RECONSTRUCTION_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0051-POWER-SELL",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-09.07",
+      "to": "GSI-09.14",
+      "loop": "LOOP-012-POWER-OUTAGE-RECOVERY",
+      "context": "Power-outage-recovery loop",
+      "detail": "The selected outage fixture begins with authoritative sell/refund/teardown effects.",
+      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0052-POWER-REBUILD-ACTIVATION",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-09.07",
+      "to": "GSI-09.12",
+      "loop": "LOOP-012-POWER-OUTAGE-RECOVERY",
+      "context": "Power-outage-recovery loop",
+      "detail": "Recovery is incomplete until the replacement producer finishes buildup and becomes active.",
+      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"]
+    },
+    {
+      "id": "EDGE-0053-POWER-REPLACEMENT-PLACEMENT",
+      "plane": "routing",
+      "kind": "loop_requires",
+      "from": "GSI-09.07",
+      "to": "GSI-09.11",
+      "loop": "LOOP-012-POWER-OUTAGE-RECOVERY",
+      "context": "Power-outage-recovery loop",
+      "detail": "The replacement power producer must pass and commit stock placement before power can recover.",
+      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"]
+    }
+  ],
+  "loops": {
+    "LOOP-001-SKIRMISH-LAUNCH": {
+      "name": "Skirmish setup to first playable tactical frame",
+      "owner": "GSI-03.10",
+      "stock_fixture": "Fixed-seed stock Battle map; one human and one AI; explicit sides, colors, teams, start slots, bases, credits, and unit count.",
+      "player_visible_result": "Start accepts, loading activates, the selected map and houses load at assigned starts, and the first playable tactical frame appears.",
+      "native_entrypoints": [
+        "skirmish acceptance 0x006ACEE0",
+        "launch path 0x006AE2C0",
+        "loading transition 0x006AE3F0",
+        "ScenarioClass::Full_Init 0x00686B20"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/skirmish_launch.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app_skirmish_session.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app_skirmish.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app_init.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-03.10", "action": "Accept skirmish configuration."},
+        {"order": 2, "system": "GSI-03.11", "action": "Resolve selected map and start-position metadata."},
+        {"order": 3, "system": "GSI-03.17", "action": "Commit mode policy, slots, houses, and launch handoff."},
+        {"order": 4, "system": "GSI-03.09", "action": "Activate loading-screen transition."},
+        {"order": 5, "system": "GSI-02.01", "action": "Resolve retail assets through VFS precedence."},
+        {"order": 6, "system": "GSI-02.09", "action": "Decode scenario/map data."},
+        {"order": 7, "system": "GSI-17.01", "action": "Construct scenario objects in load order."},
+        {"order": 8, "system": "GSI-01.04", "action": "Start scenario lifecycle."},
+        {"order": 9, "system": "GSI-04.16", "action": "Resolve player starts and navigation anchors."},
+        {"order": 10, "system": "GSI-05.03", "action": "Reveal/unlimbo starting objects."},
+        {"order": 11, "system": "GSI-13.01", "action": "Compose first playable tactical frame."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "No active-retail executable end-to-end differential is recorded."
+      },
+      "evidence": [
+        "docs/research/SKIRMISH_START_TO_LOADING_SCREEN_ACTIVATION_GHIDRA_REPORT.md",
+        "docs/research/skirmish-ui/SKIRMISH_SELECTED_MPMODE_START_LAUNCH_SESSION_GHIDRA_REPORT.md",
+        "docs/research/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md"
+      ]
+    },
+    "LOOP-002-GROUND-MOVE": {
+      "name": "Ground move order through path, occupancy, reveal, and render",
+      "owner": "GSI-06.13",
+      "stock_fixture": "Stock MTNK commanded five flat clear cells away; repeat with one controlled blocking unit.",
+      "player_visible_result": "Route, crossings, facing, drive-track cadence, occupancy, arrival, reveal, and pixels occur at native ticks.",
+      "native_entrypoints": [
+        "DriveLocomotionClass::Process 0x004B0500",
+        "Process_Movement 0x004B2630",
+        "Process_Drive_Track 0x004B0F20"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/pathfinding", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/movement/movement_tick.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/movement/movement_step.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/movement/drive_locomotion.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/movement/drive_track.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-14.04", "action": "Resolve selected unit."},
+        {"order": 2, "system": "GSI-14.03", "action": "Resolve move action and destination."},
+        {"order": 3, "system": "GSI-14.07", "action": "Build deterministic move order."},
+        {"order": 4, "system": "GSI-07.01", "action": "Validate ownership and admit order."},
+        {"order": 5, "system": "GSI-07.03", "action": "Assign move mission."},
+        {"order": 6, "system": "GSI-07.07", "action": "Run Mission Move handler."},
+        {"order": 7, "system": "GSI-06.01", "action": "Admit movement request and destination."},
+        {"order": 8, "system": "GSI-06.03", "action": "Search and reconstruct path."},
+        {"order": 9, "system": "GSI-06.06", "action": "Reserve and commit path traffic."},
+        {"order": 10, "system": "GSI-06.13", "action": "Consume route through Drive locomotion."},
+        {"order": 11, "system": "GSI-06.07", "action": "Commit occupancy leave/enter."},
+        {"order": 12, "system": "GSI-12.02", "action": "Update reveal from new position."},
+        {"order": 13, "system": "GSI-13.03", "action": "Submit object in layer/depth order."},
+        {"order": 14, "system": "GSI-13.07", "action": "Render voxel facing and transform."}
+      ],
+      "oracle": {
+        "status": "BLOCKED",
+        "gate": "Native executable capture preflight is explicitly NO-GO; Rust tests remain regression evidence."
+      },
+      "evidence": [
+        "docs/research/DRIVE_PROCESS_MOVEMENT_TICK_ORDER_GHIDRA_REPORT.md",
+        "docs/research/pathfinding/FOOTCLASS_PATHFINDING_AND_MOVEMENT.md",
+        "docs/research/GROUND_MOVEMENT_EXECUTABLE_NATIVE_ORACLE_CAPTURE_REPORT.md"
+      ]
+    },
+    "LOOP-003-ATTACK-DEATH": {
+      "name": "Attack order through projectile, damage, death, visuals, and audio",
+      "owner": "GSI-08.10",
+      "stock_fixture": "Stock MTNK attacks a stock armored target from a fixed five-cell position until fatal damage.",
+      "player_visible_result": "Aim/fire timing, projectile flight, impact, HP, death/removal, explosion, animation, and sound match.",
+      "native_entrypoints": [
+        "TechnoClass::Fire_At 0x006FDD50",
+        "BulletClass::Fire 0x00468670",
+        "bullet detonation 0x00468D80",
+        "Apply_area_damage 0x00489280",
+        "TechnoClass::ReceiveDamage 0x00701900",
+        "ObjectClass::ReceiveDamage 0x005F5390"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/combat/mod.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/combat/damage", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/world/lifecycle.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-14.03", "action": "Resolve attack action and target."},
+        {"order": 2, "system": "GSI-14.07", "action": "Build deterministic attack order."},
+        {"order": 3, "system": "GSI-07.01", "action": "Admit owned order."},
+        {"order": 4, "system": "GSI-07.03", "action": "Assign attack mission."},
+        {"order": 5, "system": "GSI-07.06", "action": "Run Mission Attack."},
+        {"order": 6, "system": "GSI-08.01", "action": "Validate/acquire target."},
+        {"order": 7, "system": "GSI-08.02", "action": "Select weapon."},
+        {"order": 8, "system": "GSI-08.03", "action": "Evaluate fire gates."},
+        {"order": 9, "system": "GSI-08.04", "action": "Resolve range, facing, and FLH."},
+        {"order": 10, "system": "GSI-08.05", "action": "Apply ROF/burst cadence."},
+        {"order": 11, "system": "GSI-08.06", "action": "Create projectile and launch side effects."},
+        {"order": 12, "system": "GSI-08.07", "action": "Advance projectile flight."},
+        {"order": 13, "system": "GSI-08.08", "action": "Collide/fuse/detonate."},
+        {"order": 14, "system": "GSI-08.09", "action": "Collect and distribute area damage."},
+        {"order": 15, "system": "GSI-08.10", "action": "Apply exact damage kernel."},
+        {"order": 16, "system": "GSI-08.11", "action": "Apply fatal handoff and destruction."},
+        {"order": 17, "system": "GSI-05.03", "action": "Conceal/uninit/delete object."},
+        {"order": 18, "system": "GSI-13.12", "action": "Render explosion/debris effects."},
+        {"order": 19, "system": "GSI-15.05", "action": "Route impact/death sound cues."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "Strong static slices exist; no native executable whole-loop differential exists."
+      },
+      "evidence": [
+        "docs/research/DAMAGE_PROJECTILE_IMPACT_TIMING_REINVESTIGATION_2026-07-13.md",
+        "docs/research/DAMAGE_RECEIVER_CORE_REINVESTIGATION_2026-07-13.md",
+        "docs/research/DAMAGE_SIGNED_VITALITY_WRITER_AND_FATAL_HANDOFF_GHIDRA_REPORT.md"
+      ]
+    },
+    "LOOP-004-HARVEST-CREDIT": {
+      "name": "Harvest, return, dock, unload, credit, exit, and resume",
+      "owner": "GSI-07.39",
+      "stock_fixture": "Stock HARV, NAREFN, and controlled ore patch through full cargo, return, complete unload, exit, and resumed harvesting.",
+      "player_visible_result": "Ore decreases, cargo fills, miner docks, credits rise at native cadence, then the miner exits and resumes.",
+      "native_entrypoints": [
+        "Harvest_Ore_Tick 0x0073D450",
+        "Mission_Harvest 0x0073E5E0",
+        "BuildingClass::Receive_Radio 0x0043C2D0",
+        "UnitClass::Receive_Radio 0x00737430",
+        "unload FSM 0x0073D630"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/sim/miner/miner_system.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/miner/miner_dock.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/miner/miner_dock_sequence.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/movement", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/radio", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-07.15", "action": "Run harvest mission."},
+        {"order": 2, "system": "GSI-09.05", "action": "Select work site and return policy."},
+        {"order": 3, "system": "GSI-04.09", "action": "Read/decrement resource overlay state."},
+        {"order": 4, "system": "GSI-09.03", "action": "Convert ore/gem amount into cargo."},
+        {"order": 5, "system": "GSI-07.17", "action": "Assign return mission."},
+        {"order": 6, "system": "GSI-06.01", "action": "Admit refinery destination."},
+        {"order": 7, "system": "GSI-06.03", "action": "Path to refinery."},
+        {"order": 8, "system": "GSI-06.13", "action": "Drive to dock."},
+        {"order": 9, "system": "GSI-07.37", "action": "Negotiate radio contact."},
+        {"order": 10, "system": "GSI-07.38", "action": "Reserve dock and queue authority."},
+        {"order": 11, "system": "GSI-07.39", "action": "Hand dock authority to the stock refinery unload path."},
+        {"order": 12, "system": "GSI-07.21", "action": "Run the state-3 dump gate and drain one populated storage slot."},
+        {"order": 13, "system": "GSI-09.03", "action": "Convert the drained ore/gem slot through its native resource value."},
+        {"order": 14, "system": "GSI-09.01", "action": "Award credits and advance displayed money during state 3."},
+        {"order": 15, "system": "GSI-07.21", "action": "On the later empty gate, enter state 4, clear unload state, and queue Harvest."},
+        {"order": 16, "system": "GSI-07.37", "action": "Release valid radio contact through the conditional BREAK handoff."},
+        {"order": 17, "system": "GSI-07.15", "action": "Resume harvesting."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "No active-retail executable full-loop oracle is recorded."
+      },
+      "evidence": [
+        "docs/research/HARVEST_ORE_TICK_TIMING_PARTIAL_FULL_EDGE_CASES_ORE_GEMS_GHIDRA_REPORT.md",
+        "docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md",
+        "docs/research/miner/STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md"
+      ]
+    },
+    "LOOP-005-BUILD-PLACE": {
+      "name": "Build queue through placement preview and activated building",
+      "owner": "GSI-09.11",
+      "stock_fixture": "Build stock GAPOWR; attempt one blocked foundation, then place on a valid adjacent foundation.",
+      "player_visible_result": "Cameo/progress, credits, ready state, placement ghost, rejection, buildup, occupancy, and power update match.",
+      "native_entrypoints": [
+        "FactoryClass::AI 0x004C9B20",
+        "HouseClass::Place_Production 0x004FB0E0",
+        "BuildingClass::Can_Enter_Cell 0x00449440",
+        "placement helper 0x0047C620"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/app_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/production/factory.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/production/production_queue.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/production/production_placement.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-14.10", "action": "Select production cameo."},
+        {"order": 2, "system": "GSI-09.08", "action": "Check prerequisites and availability."},
+        {"order": 3, "system": "GSI-09.09", "action": "Own factory queue."},
+        {"order": 4, "system": "GSI-09.10", "action": "Advance cost/time progress."},
+        {"order": 5, "system": "GSI-09.01", "action": "Commit spending."},
+        {"order": 6, "system": "GSI-13.24", "action": "Present ready/queue state."},
+        {"order": 7, "system": "GSI-14.08", "action": "Enter placement mode."},
+        {"order": 8, "system": "GSI-13.25", "action": "Draw placement feedback."},
+        {"order": 9, "system": "GSI-09.11", "action": "Walk the candidate foundation and evaluate placement policy."},
+        {"order": 10, "system": "GSI-04.04", "action": "Read each foundation cell's land, slope, overlay, and buildability state."},
+        {"order": 11, "system": "GSI-04.05", "action": "Reject blocking objects, occupancy flags, and reservations."},
+        {"order": 12, "system": "GSI-09.11", "action": "Reject the invalid attempt or accept and commit the valid placement."},
+        {"order": 13, "system": "GSI-05.03", "action": "Create/reveal the accepted building and commit occupancy."},
+        {"order": 14, "system": "GSI-09.12", "action": "Run buildup and activation."},
+        {"order": 15, "system": "GSI-09.07", "action": "Update power authority."},
+        {"order": 16, "system": "GSI-13.06", "action": "Render building sprite state."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "No active-retail input/pixel differential oracle is recorded."
+      },
+      "evidence": [
+        "docs/research/FACTORYCLASS_PRODUCTION_DEEP_DIVE.md",
+        "docs/research/pathfinding/BUILDING_CAN_ENTER_CELL_PLACEMENT_PASSABILITY_BODY_GHIDRA_REPORT.md",
+        "docs/research/SIDEBAR_SYSTEM_GHIDRA_REPORT.md"
+      ]
+    },
+    "LOOP-006-FACTORY-EXIT": {
+      "name": "Unit production through clear or blocked factory exit",
+      "owner": "GSI-07.41",
+      "stock_fixture": "Stock GAWEAP builds MTNK; run clear exit and blocked exit followed by obstruction removal.",
+      "player_visible_result": "Queue/credits advance, the unit delivers once, exits natively, or waits/retries without duplication or loss.",
+      "native_entrypoints": [
+        "FactoryClass::AI 0x004C9B20",
+        "StripClass::AI 0x006A8B30",
+        "HouseClass::Place_Production 0x004FB0E0",
+        "BuildingClass::ExitObject_Main 0x00443C60"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/sim/production/production_queue.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/production/production_spawn.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/production/war_factory_exit.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/movement", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/pathfinding", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-14.10", "action": "Select unit production."},
+        {"order": 2, "system": "GSI-09.08", "action": "Check availability."},
+        {"order": 3, "system": "GSI-09.09", "action": "Own queue/factory."},
+        {"order": 4, "system": "GSI-09.10", "action": "Advance production."},
+        {"order": 5, "system": "GSI-09.01", "action": "Commit spending."},
+        {"order": 6, "system": "GSI-07.41", "action": "Select spawn/exit and blocked retry."},
+        {"order": 7, "system": "GSI-04.05", "action": "Check/commit exit occupancy."},
+        {"order": 8, "system": "GSI-05.03", "action": "Reveal delivered unit."},
+        {"order": 9, "system": "GSI-06.01", "action": "Admit exit movement."},
+        {"order": 10, "system": "GSI-06.03", "action": "Build exit path."},
+        {"order": 11, "system": "GSI-06.13", "action": "Drive from factory."},
+        {"order": 12, "system": "GSI-06.07", "action": "Commit cell transition."},
+        {"order": 13, "system": "GSI-13.07", "action": "Render delivered voxel."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "No active-retail executable production/exit loop oracle is recorded."
+      },
+      "evidence": [
+        "docs/research/GRIZZLY_FACTORY_STEP_CADENCE_GHIDRA_REPORT.md",
+        "docs/research/GRIZZLY_PRODUCTION_COMPLETE_TO_WAR_FACTORY_EXIT_GHIDRA_REPORT.md",
+        "docs/research/HOUSE_PLACE_PRODUCTION_BLOCKED_WAR_FACTORY_EXIT_GHIDRA_REPORT.md"
+      ]
+    },
+    "LOOP-007-ENGINEER-CAPTURE": {
+      "name": "Engineer approach, capture, ownership transfer, and downstream authority",
+      "owner": "GSI-07.13",
+      "stock_fixture": "Stock ENGINEER captures enemy GAPOWR from outside capture range, forcing an approach first.",
+      "player_visible_result": "Engineer approaches/disappears; ownership/remap, power, availability, radar, and feedback update.",
+      "native_entrypoints": [
+        "InfantryClass::Mission_Capture 0x005202F0",
+        "BuildingClass::ChangeOwner 0x00448260"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/world/world_orders.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/entity_store.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/power_system.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-14.03", "action": "Resolve capture action."},
+        {"order": 2, "system": "GSI-14.07", "action": "Build capture order."},
+        {"order": 3, "system": "GSI-07.01", "action": "Admit owned order."},
+        {"order": 4, "system": "GSI-07.03", "action": "Assign capture mission."},
+        {"order": 5, "system": "GSI-07.13", "action": "Run capture mission/approach."},
+        {"order": 6, "system": "GSI-06.01", "action": "Admit approach movement."},
+        {"order": 7, "system": "GSI-06.03", "action": "Path to target."},
+        {"order": 8, "system": "GSI-06.07", "action": "Commit arrival."},
+        {"order": 9, "system": "GSI-07.13", "action": "Clear competing targeting and set the building mission to Guard."},
+        {"order": 10, "system": "GSI-05.03", "action": "Temporarily limbo the captured building."},
+        {"order": 11, "system": "GSI-15.06", "action": "Notify the capturing human house before ownership transfer."},
+        {"order": 12, "system": "GSI-09.15", "action": "Call the announced ChangeOwner path."},
+        {"order": 13, "system": "GSI-05.16", "action": "Move typed house authority and registries."},
+        {"order": 14, "system": "GSI-09.07", "action": "Apply old/new owner power consequences."},
+        {"order": 15, "system": "GSI-09.08", "action": "Recompute prerequisites."},
+        {"order": 16, "system": "GSI-09.09", "action": "Abandon or reconcile factory ownership."},
+        {"order": 17, "system": "GSI-12.10", "action": "Update radar consequences."},
+        {"order": 18, "system": "GSI-05.03", "action": "Restore the building from temporary limbo."},
+        {"order": 19, "system": "GSI-07.13", "action": "Copy the engineer type tag to the building."},
+        {"order": 20, "system": "GSI-05.03", "action": "Destroy the consumed engineer after ChangeOwner returns."},
+        {"order": 21, "system": "GSI-13.08", "action": "Render the new house remap."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "Static capture/ChangeOwner evidence exists; no end-to-end native oracle exists."
+      },
+      "evidence": [
+        "docs/research/ENGINEER_CAPTURE_GHIDRA_REPORT.md",
+        "docs/research/BUILDING_CHANGE_OWNER_GHIDRA_REPORT.md"
+      ]
+    },
+    "LOOP-008-REVEAL-RADAR": {
+      "name": "Movement reveal through tactical shroud and radar pixels",
+      "owner": "GSI-12.02",
+      "stock_fixture": "Local E1 moves across flat terrain into black unexplored shroud while powered radar is active.",
+      "player_visible_result": "Tactical shroud opens with native footprint/edges and corresponding minimap pixels appear at native cadence.",
+      "native_entrypoints": [
+        "MapClass::RevealShroud 0x005673A0",
+        "TechnoClass::UpdateReveal 0x0070AF50",
+        "RadarClass::RenderCellPixel 0x00655C50",
+        "RadarClass::Draw 0x00653100"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/sim/vision/mod.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/render/minimap.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/render/minimap_helpers.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-06.07", "action": "Commit new occupied cell."},
+        {"order": 2, "system": "GSI-12.01", "action": "Compute sight footprint."},
+        {"order": 3, "system": "GSI-12.03", "action": "Apply elevation/bridge reference frame."},
+        {"order": 4, "system": "GSI-12.02", "action": "Mutate reveal/conceal state."},
+        {"order": 5, "system": "GSI-04.18", "action": "Persist per-cell map knowledge."},
+        {"order": 6, "system": "GSI-13.21", "action": "Compose tactical shroud."},
+        {"order": 7, "system": "GSI-12.10", "action": "Apply radar visibility policy."},
+        {"order": 8, "system": "GSI-13.23", "action": "Render minimap terrain/object pixels."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "No retail pixel oracle covers both tactical shroud and minimap output."
+      },
+      "evidence": [
+        "docs/research/SHROUD_REVEAL_SYSTEM_GHIDRA_REPORT.md",
+        "docs/research/RADAR_MINIMAP_RENDERING.md",
+        "docs/research/RADAR_OBJECT_DOT_PRIORITY_VISIBILITY_GATES_GHIDRA_REPORT.md"
+      ]
+    },
+    "LOOP-009-TRANSPORT-LOAD-UNLOAD": {
+      "name": "Transport boarding, cargo order, manual unload, and blocked retry",
+      "owner": "GSI-07.42",
+      "stock_fixture": "Stock HTK boards infantry A then B, manually unloads on flat terrain, and repeats with a blocked exit.",
+      "player_visible_result": "Boarding cadence, capacity, deploy timing, unload destination, B-before-A order, retry, and movement match.",
+      "native_entrypoints": [
+        "CargoClass::AddPassenger 0x004733A0",
+        "UnitClass::PerCellProcess 0x00739EC0",
+        "manual unload FSM 0x0073D630",
+        "cargo head pop 0x00473430"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/sim/passenger.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/radio", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/movement", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/pathfinding", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-14.03", "action": "Resolve enter action."},
+        {"order": 2, "system": "GSI-14.07", "action": "Build board order."},
+        {"order": 3, "system": "GSI-07.01", "action": "Admit owned order."},
+        {"order": 4, "system": "GSI-07.12", "action": "Run Mission Enter."},
+        {"order": 5, "system": "GSI-06.01", "action": "Admit approach movement."},
+        {"order": 6, "system": "GSI-06.03", "action": "Path to transport."},
+        {"order": 7, "system": "GSI-06.07", "action": "Commit boarding cell transition."},
+        {"order": 8, "system": "GSI-07.37", "action": "Negotiate boarding radio."},
+        {"order": 9, "system": "GSI-07.42", "action": "Insert passenger/cargo order."},
+        {"order": 10, "system": "GSI-14.08", "action": "Issue deploy/unload input."},
+        {"order": 11, "system": "GSI-07.21", "action": "Run unload mission."},
+        {"order": 12, "system": "GSI-07.42", "action": "Pop passenger and select destination."},
+        {"order": 13, "system": "GSI-06.01", "action": "Admit unload destination."},
+        {"order": 14, "system": "GSI-06.07", "action": "Commit passenger exit occupancy."},
+        {"order": 15, "system": "GSI-13.06", "action": "Render unloaded infantry sequence."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "Static reports prove concrete drift; no native executable closed-loop oracle exists."
+      },
+      "evidence": [
+        "docs/research/GENERIC_TRANSPORT_CARGO_INSERTION_ORDER_GHIDRA_REPORT.md",
+        "docs/research/GENERIC_TRANSPORT_MANUAL_UNLOAD_MAPPING_GHIDRA_REPORT.md",
+        "docs/research/TRANSPORT_DOOR_TIMING_RADIO_0X11_DEPLOY_TRACKER_GHIDRA_REPORT.md"
+      ]
+    },
+    "LOOP-010-NUKE-LAUNCH": {
+      "name": "Nuclear superweapon readiness, launch, impact, and presentation",
+      "owner": "GSI-11.02",
+      "stock_fixture": "Charged stock NukeSpecial from NAMISL targets a controlled enemy cluster.",
+      "player_visible_result": "Readiness/cursor, silo handoff, warning, flight phases, flash, impact, damage/deaths, visuals, and sounds match.",
+      "native_entrypoints": [
+        "SuperClass::Launch 0x006CC390",
+        "BulletClass::Fire 0x00468670",
+        "BulletClass::AI 0x004666E0",
+        "nuke maker 0x0046B310",
+        "ground zero 0x004251F0",
+        "screen flash 0x0053AB70"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/app_input.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/world/world_commands.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/superweapon", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-14.10", "action": "Expose ready superweapon cameo."},
+        {"order": 2, "system": "GSI-11.12", "action": "Maintain building/sidebar link."},
+        {"order": 3, "system": "GSI-11.01", "action": "Own charge/ready state."},
+        {"order": 4, "system": "GSI-14.09", "action": "Resolve target mode and legality."},
+        {"order": 5, "system": "GSI-14.07", "action": "Build launch command."},
+        {"order": 6, "system": "GSI-11.02", "action": "Begin phase one and store the selected target."},
+        {"order": 7, "system": "GSI-11.12", "action": "Set the silo fire animation and pending superweapon handoff."},
+        {"order": 8, "system": "GSI-15.05", "action": "Play the nuclear launch sound at the silo."},
+        {"order": 9, "system": "GSI-15.06", "action": "Queue the single-player nuclear-launch EVA when applicable."},
+        {"order": 10, "system": "GSI-11.02", "action": "Resume the enabled post-click phase after the silo callback."},
+        {"order": 11, "system": "GSI-08.06", "action": "Create the upward GiantNukeUp carrier projectile."},
+        {"order": 12, "system": "GSI-08.07", "action": "Advance GiantNukeUp to its NukeMaker transition."},
+        {"order": 13, "system": "GSI-08.08", "action": "Detonate the carrier into the NukeMaker handoff."},
+        {"order": 14, "system": "GSI-08.06", "action": "Spawn GiantNukeDown at altitude over the stored target."},
+        {"order": 15, "system": "GSI-08.07", "action": "Advance the downward GiantNukeDown flight."},
+        {"order": 16, "system": "GSI-08.08", "action": "Recognize the special NUKE-warhead impact path."},
+        {"order": 17, "system": "GSI-13.20", "action": "Create the screen nuke flash."},
+        {"order": 18, "system": "GSI-12.10", "action": "Create the impact radar event."},
+        {"order": 19, "system": "GSI-13.20", "action": "Create NUKEBALL and register native nuke-detonation tracking."},
+        {"order": 20, "system": "GSI-08.09", "action": "Distribute ground-zero area damage."},
+        {"order": 21, "system": "GSI-08.10", "action": "Apply the damage kernel."},
+        {"order": 22, "system": "GSI-08.11", "action": "Apply deaths and destruction."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "Native mechanism is contracted; Rust remains scaffolded and lacks an executable differential."
+      },
+      "evidence": [
+        "docs/research/NUKE_SUPERWEAPON_GHIDRA_REPORT.md",
+        "docs/research/MISSING_SUPERWEAPONS_GHIDRA_REPORT.md",
+        "docs/research/SUPERCLASS_SYSTEM_GHIDRA_REPORT.md"
+      ]
+    },
+    "LOOP-011-SAVE-LOAD-RESUME": {
+      "name": "Save, mutate, load, restore authority, and resume",
+      "owner": "GSI-17.04",
+      "stock_fixture": "Mid-match non-stable active order, moving units, factory queue, and miner/refinery state; save, advance, load, then run fixed ticks.",
+      "player_visible_result": "Positions, missions, queue, credits, cargo, active ordering, rendering, and next-tick behavior resume.",
+      "native_entrypoints": [
+        "Save_Game 0x0067D300",
+        "Load_Game 0x0067E730",
+        "vector save/load 0x00551B20/0x00551B90",
+        "swizzle registrar 0x006CF240"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/app_save_load_panel.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/snapshot.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/world/mod.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/world/world_hash.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-14.12", "action": "Invoke in-game save/load flow."},
+        {"order": 2, "system": "GSI-03.08", "action": "Select slot and metadata."},
+        {"order": 3, "system": "GSI-17.02", "action": "Serialize object/class state."},
+        {"order": 4, "system": "GSI-17.03", "action": "Persist/fix references and identity."},
+        {"order": 5, "system": "GSI-17.04", "action": "Restore globals, caches, and registrations."},
+        {"order": 6, "system": "GSI-05.02", "action": "Restore active-object order."},
+        {"order": 7, "system": "GSI-05.03", "action": "Restore lifecycle membership."},
+        {"order": 8, "system": "GSI-01.05", "action": "Run first resumed tick in correct order."},
+        {"order": 9, "system": "GSI-13.01", "action": "Render resumed frame."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "Rust bincode snapshot regression is not native SAV parity; membership-byte restoration remains unresolved."
+      },
+      "evidence": [
+        "docs/research/SAVELOAD_LOGIC_ACTIVE_VECTOR_RECONSTRUCTION_GHIDRA_REPORT.md",
+        "docs/research/OBJECT_ACTIVE_VECTOR_SAVE_LOAD_REBUILD_OWNER_RESWARM_20260528.md"
+      ]
+    },
+    "LOOP-012-POWER-OUTAGE-RECOVERY": {
+      "name": "Power loss through radar/sidebar/EVA and recovery",
+      "owner": "GSI-09.07",
+      "stock_fixture": "Powered radar house sells the GAPOWR that supplies its positive margin, then rebuilds/restores power.",
+      "player_visible_result": "Refund, power transition, bar animation, low-power EVA, radar loss, minimap state, and recovery match.",
+      "native_entrypoints": [
+        "HouseClass::AI_AssessPower 0x00508C30",
+        "CheckPoweredRadar 0x00508DF0"
+      ],
+      "rust_touchpoints": [
+        {"path": "src/sim/power_system.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/production/production_sell.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app_sidebar_render.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/render/minimap.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/app_sim_tick.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"}
+      ],
+      "stages": [
+        {"order": 1, "system": "GSI-14.08", "action": "Issue sell mode/action."},
+        {"order": 2, "system": "GSI-09.14", "action": "Sell building and apply teardown."},
+        {"order": 3, "system": "GSI-09.01", "action": "Commit refund."},
+        {"order": 4, "system": "GSI-05.03", "action": "Remove power producer."},
+        {"order": 5, "system": "GSI-09.07", "action": "Reassess output/drain and low-power state."},
+        {"order": 6, "system": "GSI-12.10", "action": "Apply powered-radar gate."},
+        {"order": 7, "system": "GSI-13.24", "action": "Render power bar/sidebar state."},
+        {"order": 8, "system": "GSI-13.23", "action": "Render radar/minimap consequence."},
+        {"order": 9, "system": "GSI-15.06", "action": "Queue low-power EVA."},
+        {"order": 10, "system": "GSI-14.10", "action": "Select and queue a replacement GAPOWR."},
+        {"order": 11, "system": "GSI-09.08", "action": "Recheck prerequisites and availability."},
+        {"order": 12, "system": "GSI-09.09", "action": "Own the replacement factory queue."},
+        {"order": 13, "system": "GSI-09.10", "action": "Advance replacement cost/time progress."},
+        {"order": 14, "system": "GSI-09.01", "action": "Commit replacement spending."},
+        {"order": 15, "system": "GSI-14.08", "action": "Place the completed replacement."},
+        {"order": 16, "system": "GSI-09.11", "action": "Validate and commit the replacement foundation."},
+        {"order": 17, "system": "GSI-05.03", "action": "Create/reveal the replacement power producer."},
+        {"order": 18, "system": "GSI-09.12", "action": "Complete buildup and activate the replacement."},
+        {"order": 19, "system": "GSI-09.07", "action": "Reassess output/drain and leave low-power state."},
+        {"order": 20, "system": "GSI-12.10", "action": "Restore powered radar availability."},
+        {"order": 21, "system": "GSI-13.24", "action": "Animate the power bar/sidebar recovery."},
+        {"order": 22, "system": "GSI-13.23", "action": "Restore radar/minimap presentation without inventing a generic power-restored EVA."}
+      ],
+      "oracle": {
+        "status": "UNVERIFIED",
+        "gate": "No native tick/audio/pixel differential covers the full outage and recovery loop."
+      },
+      "evidence": [
+        "docs/research/POWER_SYSTEM_GHIDRA_REPORT.md",
+        "docs/research/POWER_SPYSAT_RADAR_CURRENT_SYSTEM_MODEL_SYNTHESIS.md",
+        "docs/research/POWER_BAR_RENDERING.md"
+      ]
+    }
+  },
+  "coupled_sets": []
+}
