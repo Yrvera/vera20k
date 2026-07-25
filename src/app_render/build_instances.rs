@@ -40,12 +40,15 @@ pub(super) struct WorldInstances {
     pub bridge_railing: Vec<SpriteInstance>,
     pub wall: Vec<SpriteInstance>,
     pub unit: Vec<SpriteInstance>,
+    pub unit_pages: Vec<usize>,
     pub bridge_unit: Vec<SpriteInstance>,
+    pub bridge_unit_pages: Vec<usize>,
     pub unit_transition_paged: Vec<Vec<SpriteInstance>>,
     pub bridge_unit_transition_paged: Vec<Vec<SpriteInstance>>,
     pub shp_paged: Vec<Vec<SpriteInstance>>,
     pub bridge_shp_paged: Vec<Vec<SpriteInstance>>,
     pub building_turret: Vec<SpriteInstance>,
+    pub building_turret_pages: Vec<usize>,
     /// Per-particle SpriteInstances (Layer 3). Drawn at Step 7.5 — above
     /// all ground objects + cliffs, below debug/shroud/UI.
     pub particle_paged: Vec<Vec<SpriteInstance>>,
@@ -211,7 +214,10 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // correct sprite atlas page instead of the voxel unit instance list.
     let mut unit: Vec<SpriteInstance> = std::mem::take(&mut state.cached_unit_instances);
     unit.clear();
+    let mut unit_pages: Vec<usize> = std::mem::take(&mut state.cached_unit_pages);
+    unit_pages.clear();
     let mut bridge_unit: Vec<SpriteInstance> = Vec::new();
+    let mut bridge_unit_pages: Vec<usize> = Vec::new();
     let transition_page_count = state
         .vxl_slope_transition_cache
         .borrow()
@@ -224,13 +230,15 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     app_instances::build_unit_instances(
         state,
         &mut unit,
+        &mut unit_pages,
         &mut bridge_unit,
+        &mut bridge_unit_pages,
         &mut unit_transition_paged,
         &mut bridge_unit_transition_paged,
         &mut shp_paged,
     );
-    sort_by_depth_desc(&mut unit);
-    sort_by_depth_desc(&mut bridge_unit);
+    sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
+    sort_by_depth_desc_with_pages(&mut bridge_unit, &mut bridge_unit_pages);
     for page in &mut unit_transition_paged {
         sort_by_depth_desc(page);
     }
@@ -240,11 +248,13 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // Building turret VXLs use the unit atlas texture but must draw AFTER all
     // layer-2 objects (separate turret pass after layer 2).
     let mut building_turret: Vec<SpriteInstance> = Vec::new();
+    let mut building_turret_pages: Vec<usize> = Vec::new();
     app_instances::build_shp_instances(
         state,
         &mut shp_paged,
         &mut bridge_shp_paged,
         &mut building_turret,
+        &mut building_turret_pages,
     );
     app_instances::build_world_effect_instances(state, &mut shp_paged);
     // Damage fires Y-sort with buildings (Layer 2).
@@ -300,12 +310,15 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         bridge_railing,
         wall,
         unit,
+        unit_pages,
         bridge_unit,
+        bridge_unit_pages,
         unit_transition_paged,
         bridge_unit_transition_paged,
         shp_paged,
         bridge_shp_paged,
         building_turret,
+        building_turret_pages,
         particle_paged,
         cell_sparkles,
     }
@@ -809,4 +822,66 @@ fn sort_by_depth_desc(instances: &mut [SpriteInstance]) {
             .partial_cmp(&a.depth)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+}
+
+/// Sort a flat UnitAtlas stream without letting texture-page assignment become
+/// a new ordering authority. `sort_by` is stable, preserving insertion order at
+/// equal depth (notably body → barrel/turret).
+fn sort_by_depth_desc_with_pages(instances: &mut Vec<SpriteInstance>, pages: &mut Vec<usize>) {
+    assert_eq!(
+        instances.len(),
+        pages.len(),
+        "every stable UnitAtlas instance must carry one page tag"
+    );
+    let mut paired: Vec<(SpriteInstance, usize)> =
+        instances.drain(..).zip(pages.drain(..)).collect();
+    paired.sort_by(|(a, _), (b, _)| {
+        b.depth
+            .partial_cmp(&a.depth)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    instances.reserve(paired.len());
+    pages.reserve(paired.len());
+    for (instance, page) in paired {
+        instances.push(instance);
+        pages.push(page);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paired_unit_sort_keeps_page_tags_and_equal_depth_order() {
+        let mut instances = vec![
+            SpriteInstance {
+                depth: 0.5,
+                fx_flags: 10,
+                ..Default::default()
+            },
+            SpriteInstance {
+                depth: 0.8,
+                fx_flags: 20,
+                ..Default::default()
+            },
+            SpriteInstance {
+                depth: 0.8,
+                fx_flags: 30,
+                ..Default::default()
+            },
+        ];
+        let mut pages = vec![1usize, 0, 2];
+
+        sort_by_depth_desc_with_pages(&mut instances, &mut pages);
+
+        assert_eq!(
+            instances
+                .iter()
+                .map(|instance| instance.fx_flags)
+                .collect::<Vec<_>>(),
+            vec![20, 30, 10]
+        );
+        assert_eq!(pages, vec![0, 2, 1]);
+    }
 }

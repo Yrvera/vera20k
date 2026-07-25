@@ -539,6 +539,8 @@ pub(crate) struct AppState {
     pub(crate) cached_overlay_instances: Vec<crate::render::batch::SpriteInstance>,
     /// Unit (voxel) instance scratch vec — cleared and refilled each frame.
     pub(crate) cached_unit_instances: Vec<crate::render::batch::SpriteInstance>,
+    /// UnitAtlas texture-page tags aligned with `cached_unit_instances`.
+    pub(crate) cached_unit_pages: Vec<usize>,
 }
 
 impl AppState {
@@ -3862,6 +3864,7 @@ impl App {
             displayed_credits: HashMap::new(),
             cached_overlay_instances: Vec::new(),
             cached_unit_instances: Vec::new(),
+            cached_unit_pages: Vec::new(),
         };
 
         // Seed the live music volume from the user's saved RA2MD.INI

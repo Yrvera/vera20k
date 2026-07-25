@@ -104,12 +104,15 @@ pub(crate) fn render_game(
         view,
         &draw_passes::DrawPassData {
             bridge_unit_instances: &world.bridge_unit,
+            bridge_unit_pages: &world.bridge_unit_pages,
             bridge_unit_transition_paged: &world.bridge_unit_transition_paged,
             bridge_shp_paged: &world.bridge_shp_paged,
             unit_instances: &world.unit,
+            unit_pages: &world.unit_pages,
             unit_transition_paged: &world.unit_transition_paged,
             shp_paged: &world.shp_paged,
             wall_instances: &world.wall,
+            building_turret_pages: &world.building_turret_pages,
             particle_paged: &world.particle_paged,
             ghost_page: ui.ghost_page,
         },
@@ -118,6 +121,7 @@ pub(crate) fn render_game(
     // Return unit instances vec to AppState (deferred until after the draw pass
     // because the multi-way merge needs the CPU-side Y values).
     state.cached_unit_instances = world.unit;
+    state.cached_unit_pages = world.unit_pages;
     Ok(sidebar.view)
 }
 

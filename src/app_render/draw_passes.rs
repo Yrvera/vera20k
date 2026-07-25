@@ -25,12 +25,15 @@ use super::merge_passes;
 /// depth values that match the uploaded GPU buffers.
 pub(super) struct DrawPassData<'a> {
     pub bridge_unit_instances: &'a [SpriteInstance],
+    pub bridge_unit_pages: &'a [usize],
     pub bridge_unit_transition_paged: &'a [Vec<SpriteInstance>],
     pub bridge_shp_paged: &'a [Vec<SpriteInstance>],
     pub unit_instances: &'a [SpriteInstance],
+    pub unit_pages: &'a [usize],
     pub unit_transition_paged: &'a [Vec<SpriteInstance>],
     pub shp_paged: &'a [Vec<SpriteInstance>],
     pub wall_instances: &'a [SpriteInstance],
+    pub building_turret_pages: &'a [usize],
     pub particle_paged: &'a [Vec<SpriteInstance>],
     pub ghost_page: u8,
 }
@@ -140,6 +143,7 @@ pub(super) fn dispatch_draw_passes(
         &state.batch_renderer,
         pool,
         data.bridge_unit_instances,
+        data.bridge_unit_pages,
         data.bridge_unit_transition_paged,
         data.bridge_shp_paged,
         state.unit_atlas.as_ref(),
@@ -158,6 +162,7 @@ pub(super) fn dispatch_draw_passes(
         &state.batch_renderer,
         pool,
         data.unit_instances,
+        data.unit_pages,
         data.unit_transition_paged,
         data.shp_paged,
         data.wall_instances,
@@ -192,11 +197,13 @@ pub(super) fn dispatch_draw_passes(
         (state.unit_atlas.as_ref(), state.palette_set.as_ref())
     {
         if let Some((buf, count)) = pool.get("building_turret") {
-            state.batch_renderer.draw_voxel_sprites_range(
+            merge_passes::draw_unit_atlas_page_runs(
                 &mut pass,
-                &unit_atlas.texture,
-                &palette_set.bind_group,
+                &state.batch_renderer,
+                unit_atlas,
+                palette_set,
                 buf,
+                data.building_turret_pages,
                 0,
                 count,
             );

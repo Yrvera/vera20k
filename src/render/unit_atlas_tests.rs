@@ -34,6 +34,44 @@ fn test_unit_sprite_key_hash_equality() {
 }
 
 #[test]
+fn every_unit_sprite_key_dimension_remains_distinct() {
+    let base = UnitSpriteKey {
+        type_id: "HTNK".into(),
+        facing: 64,
+        layer: VxlLayer::Body,
+        frame: 2,
+        slope_type: 3,
+    };
+    let mut variants = vec![base.clone()];
+
+    let mut different_type = base.clone();
+    different_type.type_id = "CMIN".into();
+    variants.push(different_type);
+
+    let mut different_facing = base.clone();
+    different_facing.facing = 66;
+    variants.push(different_facing);
+
+    let mut different_layer = base.clone();
+    different_layer.layer = VxlLayer::Turret;
+    variants.push(different_layer);
+
+    let mut different_frame = base.clone();
+    different_frame.frame = 3;
+    variants.push(different_frame);
+
+    let mut different_slope = base;
+    different_slope.slope_type = 4;
+    variants.push(different_slope);
+
+    assert_eq!(
+        variants.into_iter().collect::<HashSet<_>>().len(),
+        6,
+        "type, facing, layer, frame, and slope are all cache identity"
+    );
+}
+
+#[test]
 fn test_empty_world_returns_none() {
     let needed: HashSet<UnitSpriteKey> = HashSet::new();
     assert!(needed.is_empty());
@@ -182,4 +220,119 @@ fn test_facing_config_for_layer() {
     let (step, buckets) = super::facing_config_for_layer(VxlLayer::Barrel);
     assert_eq!(step, 2);
     assert_eq!(buckets, 128);
+}
+
+#[test]
+fn forced_overflow_plan_keeps_every_sprite_in_bounds() {
+    let dimensions = vec![(6, 4); 4];
+    let plan = plan_sprite_pages(&dimensions, 8).expect("forced overflow must be pageable");
+
+    assert!(plan.page_heights.len() >= 2);
+    assert_eq!(plan.placements.len(), dimensions.len());
+
+    assert!(plan.page_width <= 8);
+    assert!(plan.page_heights.iter().all(|&height| height <= 8));
+
+    let mut seen = vec![false; dimensions.len()];
+    for (placement_index, placement) in plan.placements.iter().enumerate() {
+        let (width, height) = dimensions[placement.sprite_index];
+        assert!(!seen[placement.sprite_index]);
+        seen[placement.sprite_index] = true;
+        assert!(placement.x + width <= plan.page_width);
+        assert!(placement.y + height <= plan.page_heights[placement.page]);
+        for other in plan.placements.iter().skip(placement_index + 1) {
+            if placement.page != other.page {
+                continue;
+            }
+            let (other_width, other_height) = dimensions[other.sprite_index];
+            let separated = placement.x + width <= other.x
+                || other.x + other_width <= placement.x
+                || placement.y + height <= other.y
+                || other.y + other_height <= placement.y;
+            assert!(separated, "page placements must not overlap");
+        }
+
+        let page_width = plan.page_width as f32;
+        let page_height = plan.page_heights[placement.page] as f32;
+        let uv_origin = [
+            placement.x as f32 / page_width,
+            placement.y as f32 / page_height,
+        ];
+        let uv_size = [width as f32 / page_width, height as f32 / page_height];
+        assert!(uv_origin.into_iter().all(f32::is_finite));
+        assert!(uv_size.into_iter().all(f32::is_finite));
+        assert!(uv_origin[0] >= 0.0 && uv_origin[1] >= 0.0);
+        assert!(uv_origin[0] + uv_size[0] <= 1.0);
+        assert!(uv_origin[1] + uv_size[1] <= 1.0);
+    }
+    assert!(seen.into_iter().all(|value| value));
+}
+
+#[test]
+fn wide_short_sprite_expands_page_width_before_placement() {
+    let dimensions = [(100, 1), (4, 4)];
+    let plan = plan_sprite_pages(&dimensions, 128).expect("both sprites fit the device limit");
+
+    assert!(plan.page_width >= 100);
+    for placement in &plan.placements {
+        let (width, height) = dimensions[placement.sprite_index];
+        assert!(placement.x + width <= plan.page_width);
+        assert!(placement.y + height <= plan.page_heights[placement.page]);
+    }
+}
+
+#[test]
+fn incremental_repack_plan_retains_old_unloading_referent() {
+    let make_cached = |type_id: &str| CachedUnitSprite {
+        key: UnitSpriteKey {
+            type_id: type_id.into(),
+            facing: 0,
+            layer: VxlLayer::Composite,
+            frame: 0,
+            slope_type: 0,
+        },
+        pixels: vec![1; 24],
+        width: 6,
+        height: 4,
+        offset_x: 0.0,
+        offset_y: 0.0,
+    };
+    // CMON is CMIN's stock UnloadingClass referent. It may be absent from the
+    // current live-key collector but must remain in the rendered cache.
+    let cached = vec![make_cached("CMON"), make_cached("CMIN")];
+    let plan = plan_cached_sprite_pages(&cached, 8).expect("both cached sprites must repack");
+    let retained = plan
+        .placements
+        .iter()
+        .map(|placement| cached[placement.sprite_index].key.type_id.as_str())
+        .collect::<HashSet<_>>();
+
+    assert_eq!(retained, HashSet::from(["CMON", "CMIN"]));
+}
+
+#[test]
+fn page_plan_has_no_u8_page_cap() {
+    let dimensions = vec![(8, 8); 257];
+    let plan = plan_sprite_pages(&dimensions, 8).expect("257 pages must remain addressable");
+
+    assert_eq!(plan.page_heights.len(), 257);
+    assert_eq!(
+        plan.placements.iter().map(|placement| placement.page).max(),
+        Some(256)
+    );
+    assert_eq!(plan.placements.len(), dimensions.len());
+}
+
+#[test]
+fn page_plan_rejects_an_individually_oversized_sprite() {
+    let err = plan_sprite_pages(&[(9, 1)], 8).expect_err("oversized sprite must not be clipped");
+    assert_eq!(
+        err,
+        UnitAtlasPackError::SpriteExceedsTextureLimit {
+            sprite_index: 0,
+            width: 9,
+            height: 1,
+            limit: 8,
+        }
+    );
 }

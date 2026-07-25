@@ -34,6 +34,7 @@ pub(crate) fn build_shp_instances(
     paged: &mut [Vec<SpriteInstance>],
     bridge_paged: &mut [Vec<SpriteInstance>],
     unit_instances: &mut Vec<SpriteInstance>,
+    unit_instance_pages: &mut Vec<usize>,
 ) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -323,6 +324,7 @@ pub(crate) fn build_shp_instances(
                     if let Some(turret_id) = &rules_obj.turret_anim {
                         emit_building_turret_vxl(
                             unit_instances,
+                            unit_instance_pages,
                             state,
                             turret_id,
                             entity
@@ -353,6 +355,7 @@ pub(crate) fn build_shp_instances(
 /// positioned at the building's screen origin + pixel offset from TurretAnimX/Y.
 fn emit_building_turret_vxl(
     instances: &mut Vec<SpriteInstance>,
+    instance_pages: &mut Vec<usize>,
     state: &AppState,
     turret_id: &str,
     turret_facing: u16,
@@ -406,6 +409,7 @@ fn emit_building_turret_vxl(
         alpha: 1.0,
         ..Default::default()
     });
+    instance_pages.push(entry.page);
 }
 
 /// Emit the BibShape SpriteInstance for a building's ground-level pad.
