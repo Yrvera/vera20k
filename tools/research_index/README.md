@@ -26,6 +26,7 @@ tools/research_index/
   handoff.py
   map.py
   brief.py
+  navigate.py
   validate.py
   health.py
   research_index/
@@ -35,6 +36,8 @@ tools/research_index/
     lifecycle.py
     locking.py
     metadata.py
+    navigator.py
+    navigator_formatting.py
     ranking.py
     touchpoints.py
 ```
@@ -75,7 +78,9 @@ cannot replace a valid database.
 
 Rebuilds use unique sibling temporary databases plus atomic replacement. A
 cross-process lock serializes publication, and the new generation is certified
-only when the corpus is unchanged across the rebuild.
+only when the corpus is unchanged across the rebuild. Already-fresh reads use a
+lock-free inspection path; stale reads recheck under the publication lock before
+rebuilding, so multiple MCP sessions do not serialize ordinary lookups.
 
 ## Freshness Health
 
@@ -212,6 +217,31 @@ python -m tools.system_map loop LOOP-004-HARVEST-CREDIT
 Neither map is parity proof. Research-index results navigate evidence; System
 Map v2 navigates owners and connections.
 
+## Unified Navigator
+
+Use the navigator when a topic needs both cited research evidence and
+dependency-aware routing:
+
+```powershell
+python tools/research_index/navigate.py "power outage recovery"
+python tools/research_index/navigate.py "GSI-09.07"
+python tools/research_index/navigate.py "harvest credit" --system-id GSI-07.39 --loop-id LOOP-004-HARVEST-CREDIT
+python tools/research_index/navigate.py --json "bridge collapse"
+```
+
+The navigator is a thin façade, not a combined store. Its `research` field is
+the existing evidence brief; its `system_map` field contains live topology,
+freshness, exact selections, and ranked candidates. Natural-language candidates
+are always labelled as navigation candidates rather than verified owners,
+parity evidence, or completion claims.
+
+Exact `GSI-*` and `LOOP-*` queries select their canonical object. Unknown exact
+IDs fail instead of falling back to fuzzy results. Zero matches return
+`matched=false`; the CLI exits nonzero when neither domain matched or when
+matched research fails live validation. Text output is bounded, while JSON
+retains the structured bundle within fixed limits of 20 rows per section, eight
+anchors, and 40 diagnostics.
+
 ## Pre-Implementation Brief
 
 Build a compact planning bundle before editing Rust:
@@ -251,15 +281,19 @@ python tools/research_index/mcp_server.py
 
 It exposes `research_search`, `research_related`, `research_graph`,
 `research_map`, `research_handoff`, `research_validate`, `research_brief`,
-`research_reindex`, and `research_health`. Text is the compact default; request
-JSON only when a caller needs the full structured rows.
+`research_navigate`, `research_reindex`, and `research_health`. Text is the
+compact default; request JSON only when a caller needs the full structured
+rows.
 
 Every evidence-reading MCP tool checks freshness before opening the index. If
 the corpus changed, the call waits for one synchronous, locked rebuild and then
 continues against the certified generation. Failures are surfaced instead of
 serving stale evidence. `research_health(refresh=false)` is the non-mutating way
 to inspect pending changes; `research_validate` refreshes first and then checks
-the requested scope and live local links.
+the requested scope and live local links. `research_navigate` also validates
+canonical System Map sources and recomputes live Git freshness on every call.
+Restart an MCP process that predates the tool before expecting it to appear in
+tool discovery.
 
 ## Ranking Model
 
