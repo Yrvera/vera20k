@@ -195,6 +195,9 @@ pub struct GeneratedMap {
     pub start_waypoints: Vec<(u8, u16, u16)>,
     /// Stages actually executed, in order.
     pub stages_run: Vec<Stage>,
+    /// Start slots no region could fill. Non-zero means this map is short of
+    /// spawns: fewer usable start positions than the player count implies.
+    pub unfilled_start_slots: usize,
 }
 
 /// Walk `STAGE_ORDER`, dropping the stages this configuration skips: the island
