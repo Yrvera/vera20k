@@ -12,6 +12,7 @@ use crate::map::rmg::tiles::TileIds;
 use crate::map::rmg::x87::{self, TruncF64, approx_sqrt};
 
 use super::blob::{self, BlobCtx, BlobParams};
+use super::lake;
 use super::shore::{self, ShoreCtx};
 
 /// Land-fraction endpoints and cap factor per shape (doubles by value; the
@@ -100,11 +101,6 @@ pub fn run(ctx: &mut BlobCtx<'_>, args: &WaterArgs) {
     // and the original then seeds no water whatsoever. That case is complete
     // here.
     //
-    // For a non-zero water amount the carving itself is not modelled yet, so the
-    // map comes out short of water. That is a declared gap, and a far smaller
-    // one than inverting land and sea, which is what routing these types into
-    // the sea-shaping path produced.
-    //
     // The return is the map-type branch itself, not an optimization. The five
     // phases below are the sea-shaping seeder's body; the carved types never
     // enter that seeder. Running the tail anyway is not harmless even on a map
@@ -118,6 +114,13 @@ pub fn run(ctx: &mut BlobCtx<'_>, args: &WaterArgs) {
     // resets on entry, matching the generator's own teardown ahead of the
     // region partition.
     if CARVED_WATER_MAP_TYPES.contains(&args.map_type) {
+        // A zero water amount is not a degenerate input for these two types: the
+        // option is rolled from a per-map-type range whose minimum is zero for
+        // both, and the original then does not enter the carved seeder at all.
+        // That case is complete here, and it must stay draw-free.
+        if args.water_percent != 0 {
+            lake::seed_water_carved(ctx, args);
+        }
         return;
     }
 
@@ -740,21 +743,36 @@ mod tests {
     /// take. Flooding first leaves the carver nothing to admit, so the map comes
     /// out with land and sea inverted. Routing them into the sea-shaping path is
     /// what this pins against.
+    /// Now that lakes are carved, "not flooded" can no longer mean "no water at
+    /// all" — it means water stays a minority that was cut into land, rather
+    /// than land being the leftover of a full sea. Zero water is still exactly
+    /// zero.
     #[test]
     fn carved_water_types_never_flood_the_map() {
         for map_type in CARVED_WATER_MAP_TYPES {
             for water_percent in [0, 50, 100] {
                 let (grid, identity) = run_water_with(map_type, 4242, water_percent);
+                let total = grid.native_cells().count();
                 let flooded = grid
                     .native_cells()
                     .filter(|&(x, y)| {
                         grid.get(x, y).expect("native cell").tile == identity.water_base
                     })
                     .count();
-                assert_eq!(
-                    flooded, 0,
-                    "map type {map_type} at water {water_percent} must not be flooded"
-                );
+                if water_percent == 0 {
+                    assert_eq!(
+                        flooded, 0,
+                        "map type {map_type} with no water must have none at all"
+                    );
+                } else {
+                    assert!(
+                        flooded * 2 < total,
+                        "map type {map_type} at water {water_percent}: {flooded} of \
+                         {total} cells are water — land and sea look inverted, which \
+                         is what routing these types through the sea-shaping prefill \
+                         produced"
+                    );
+                }
             }
         }
     }
@@ -850,23 +868,46 @@ mod tests {
     /// reads the stream from the wrong place. Comparing a used generator against
     /// a fresh one of the same seed is exact: the two agree on the next value
     /// only if the stage consumed nothing.
+    ///
+    /// Zero water is the whole of the draw-free case: the original does not
+    /// enter the carved seeder at all unless the amount is non-zero, so a
+    /// zero-water inland map must still cost nothing. Non-zero amounts do draw
+    /// — see `carved_water_types_draw_once_the_seeder_runs`.
     #[test]
-    fn carved_water_types_consume_no_draws_at_any_water_amount() {
+    fn carved_water_types_consume_no_draws_at_zero_water() {
         for map_type in CARVED_WATER_MAP_TYPES {
-            for water_percent in [0, 1, 20, 21, 50, 100] {
+            let mut used = water_stage_rng_after(map_type, 4242, 0);
+            let mut fresh = RmgRng::new(4242);
+            // A single value could collide by chance; a run of them cannot.
+            for index in 0..8 {
+                assert_eq!(
+                    used.next_u32(),
+                    fresh.next_u32(),
+                    "map type {map_type}: the stage moved the generator at draw \
+                     {index} with no water to place. The carved types must not \
+                     enter the sea-shaping seeder, whose shore pass alone draws \
+                     once per cell across two full sweeps, and must not enter \
+                     their own seeder either at a zero amount.",
+                );
+            }
+        }
+    }
+
+    /// The other half of the gate: once there *is* water to place, the carved
+    /// seeder runs and must consume draws. Without this, the zero-water
+    /// assertion above could be satisfied by a seeder that never runs at all.
+    #[test]
+    fn carved_water_types_draw_once_the_seeder_runs() {
+        for map_type in CARVED_WATER_MAP_TYPES {
+            for water_percent in [1, 20, 50] {
                 let mut used = water_stage_rng_after(map_type, 4242, water_percent);
                 let mut fresh = RmgRng::new(4242);
-                // A single value could collide by chance; a run of them cannot.
-                for index in 0..8 {
-                    assert_eq!(
-                        used.next_u32(),
-                        fresh.next_u32(),
-                        "map type {map_type}, water {water_percent}: the stage moved \
-                         the generator at draw {index}. The carved types must not \
-                         enter the sea-shaping seeder, and its shore pass alone \
-                         draws once per cell across two full sweeps.",
-                    );
-                }
+                assert_ne!(
+                    used.next_u32(),
+                    fresh.next_u32(),
+                    "map type {map_type}, water {water_percent}: the carved \
+                     seeder must draw",
+                );
             }
         }
     }
