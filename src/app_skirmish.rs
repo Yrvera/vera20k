@@ -1315,6 +1315,110 @@ mod tests {
     }
 
     #[test]
+    fn explicit_launch_local_owner_drives_production_sidebar_theme() {
+        use crate::render::sidebar_chrome::SidebarTheme;
+
+        let terrain = test_terrain(64, 64);
+        let starts = test_launch_starts();
+        let map = test_map_with_starts(&starts);
+        let rules = test_standard_launch_rules();
+        let roster = roster_with_neutral_and_playable();
+
+        for (country, expected_theme) in [
+            (LaunchCountry::America, SidebarTheme::Allied),
+            (LaunchCountry::Russia, SidebarTheme::Soviet),
+            (LaunchCountry::Yuri, SidebarTheme::Yuri),
+        ] {
+            let mut sim = Simulation::new();
+            let mut session = test_session();
+            session.player_name = "Commander".to_string();
+            session.local.country = country;
+            session.options.bases = false;
+            session.options.unit_count = 0;
+
+            let result = apply_explicit_skirmish_launch_session(
+                &mut sim,
+                &map,
+                &roster,
+                &rules,
+                &test_height_map(),
+                &terrain,
+                &session,
+            );
+            let owner = result
+                .local_owner
+                .as_deref()
+                .expect("explicit launch must return its pinned local owner");
+            assert_eq!(owner, "Commander");
+
+            let actual = crate::app_sidebar_render::sidebar_theme_for_owner_sources(
+                Some(&sim),
+                &roster,
+                owner,
+            )
+            .unwrap_or(SidebarTheme::Allied);
+            assert_eq!(
+                actual, expected_theme,
+                "{country:?} launch owner must reach its live side theme"
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_theme_sources_preserve_roster_path_on_owner_name_collision() {
+        use crate::render::sidebar_chrome::SidebarTheme;
+
+        let roster = HouseRoster {
+            houses: vec![HouseDefinition {
+                name: "MapPlayer".to_string(),
+                color: HouseColorIndex(4),
+                country: Some("Russians".to_string()),
+                side: Some("Soviet".to_string()),
+                player_control: Some(true),
+                allies: Vec::new(),
+            }],
+        };
+
+        assert_eq!(
+            crate::app_sidebar_render::sidebar_theme_for_owner_sources(None, &roster, "MapPlayer",),
+            Some(SidebarTheme::Soviet),
+            "an absent live owner must preserve the existing roster resolver"
+        );
+
+        let mut sim = Simulation::new();
+        let owner_id = sim.interner.intern("MapPlayer");
+        sim.houses
+            .insert(owner_id, HouseState::new(owner_id, 2, None, true, 0, 10));
+        assert_eq!(
+            crate::app_sidebar_render::sidebar_theme_for_owner_sources(
+                Some(&sim),
+                &roster,
+                "MapPlayer",
+            ),
+            Some(SidebarTheme::Soviet),
+            "an explicit-name collision must preserve the roster-resolved map path"
+        );
+    }
+
+    #[test]
+    fn sidebar_theme_sources_reject_unknown_live_side() {
+        let mut sim = Simulation::new();
+        let owner_id = sim.interner.intern("DynamicOwner");
+        sim.houses
+            .insert(owner_id, HouseState::new(owner_id, 7, None, true, 0, 10));
+
+        assert_eq!(
+            crate::app_sidebar_render::sidebar_theme_for_owner_sources(
+                Some(&sim),
+                &HouseRoster::default(),
+                "DynamicOwner",
+            ),
+            None,
+            "unknown live side must defer to the caller's explicit fallback"
+        );
+    }
+
+    #[test]
     fn explicit_skirmish_application_bypasses_legacy_resolver_even_with_poison_random_flag() {
         let mut sim = Simulation::new();
         let mut session = test_session();
