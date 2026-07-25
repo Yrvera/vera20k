@@ -16,10 +16,10 @@ use crate::rules::terrain_rules::TerrainRules;
 use super::phases::shore::TileBlocks;
 use super::phases::tech_buildings::TechType;
 use super::pipeline::{self, LAND_TYPES, PipelineInputs};
-use super::rng::RmgRng;
+use super::rng::{RANGE_K_BITS, RmgRng};
 use super::scratch::RmgScratch;
 use super::tiles::TileIds;
-use super::x87::Gaussian;
+use super::x87::{Gaussian, TruncF64};
 use super::{
     GeneratedMap, MapGeometry, RmgOptions, RmgSettings, Stage, emit, executed_stages, grid,
 };
@@ -162,6 +162,23 @@ pub fn generate_map(
     generate_map_observed(options, settings, resolved, blocks, tech_types, &mut |_| {})
 }
 
+/// Chance that a map is even allowed to grow a river bridge.
+const BRIDGE_ENABLE_CHANCE: f32 = 0.25;
+
+/// The generation's first random draw, taken during map bring-up.
+///
+/// It decides one thing — whether a river on this map may carry a bridge — and
+/// only the river reads the answer. The **draw itself** is what matters to every
+/// other map type: it happens before any terrain work, unconditionally, whatever
+/// the map type or the water amount, so a generator that skips it starts every
+/// map one value out of step and nothing downstream can ever line up again.
+fn draw_bridge_enable(rng: &mut RmgRng) -> bool {
+    let scale = TruncF64::from_f64(f64::from_bits(RANGE_K_BITS));
+    let draw = TruncF64::from_f64(f64::from(rng.next_u32()));
+    draw.mul(scale)
+        .lt(TruncF64::from_f64(f64::from(BRIDGE_ENABLE_CHANCE)))
+}
+
 /// As [`generate_map`], calling `observe` at every generation boundary.
 ///
 /// The observer sees the run; it cannot alter it. Everything that decides the
@@ -180,6 +197,7 @@ pub fn generate_map_observed(
 
     let geometry = MapGeometry::from_options(&options);
     let mut rng = RmgRng::new(options.seed_u16());
+    let bridge_enabled = draw_bridge_enable(&mut rng);
     let mut scratch = RmgScratch::new(geometry.stride, geometry.diamond_min, geometry.diamond_max);
     let mut grid = grid::RmgGrid::new(geometry.stride, geometry.diamond_min, geometry.diamond_max);
     let mut gauss = Gaussian::default();
@@ -195,6 +213,7 @@ pub fn generate_map_observed(
         map_type: options.map_type,
         theater: options.theater,
         num_players: options.num_players,
+        bridge_enabled,
         water_percent: options.water_amount,
         resources: options.resources,
         tib_option: options.tiberium,
@@ -738,6 +757,65 @@ mod tests {
                  has landed, delete this test — it exists to make that visible."
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod bridge_enable_coin_tests {
+    use super::*;
+
+    /// The coin is the generation's first draw, and it is taken before any
+    /// terrain work regardless of map type or water amount.
+    ///
+    /// Nothing in the port reads the result yet — only the river will — so the
+    /// value is not what this pins. What it pins is the **cursor**: the draw
+    /// happens, exactly once, so every stage after it reads the stream from the
+    /// position the original reads it from. A generator that skips it is one
+    /// value out of step on every map it will ever make, and no amount of
+    /// correct terrain logic downstream can recover that.
+    #[test]
+    fn the_coin_consumes_exactly_one_draw() {
+        for seed in [0u16, 1, 4242, 30011, 0xFFFF] {
+            let mut coined = RmgRng::new(seed);
+            let _ = draw_bridge_enable(&mut coined);
+
+            let mut manual = RmgRng::new(seed);
+            manual.next_u32();
+
+            for index in 0..8 {
+                assert_eq!(
+                    coined.next_u32(),
+                    manual.next_u32(),
+                    "seed {seed}: the coin did not leave the cursor exactly one \
+                     draw in, diverging at {index}"
+                );
+            }
+        }
+    }
+
+    /// Both outcomes must be reachable, or the comparison is against a constant
+    /// and the threshold could be anything.
+    #[test]
+    fn the_coin_lands_both_ways_at_roughly_one_in_four() {
+        let mut enabled = 0usize;
+        const TRIALS: usize = 400;
+        for seed in 0..TRIALS {
+            let mut rng = RmgRng::new(seed as u16);
+            if draw_bridge_enable(&mut rng) {
+                enabled += 1;
+            }
+        }
+        assert!(
+            enabled > 0 && enabled < TRIALS,
+            "the coin never varies: {enabled}/{TRIALS}"
+        );
+        // Generous band — this is a sanity check on the threshold, not a
+        // distribution test on the generator.
+        assert!(
+            (TRIALS / 10..TRIALS / 2).contains(&enabled),
+            "{enabled}/{TRIALS} enabled — nowhere near the one-in-four the \
+             threshold should give"
+        );
     }
 }
 

@@ -518,6 +518,7 @@ mod tests {
             map_type,
             water_percent,
             num_players: 4,
+            bridge_enabled: false,
             playable: PlayableRect {
                 x: 2,
                 y: 5,
@@ -610,6 +611,7 @@ mod tests {
             map_type: 3,
             water_percent: 20,
             num_players: 4,
+            bridge_enabled: false,
             playable: PlayableRect {
                 x: 2,
                 y: 5,
@@ -674,6 +676,7 @@ mod tests {
                 map_type: 3,
                 water_percent,
                 num_players: 4,
+                bridge_enabled: false,
                 playable: PlayableRect {
                     x: 2,
                     y: 5,
