@@ -1306,3 +1306,173 @@ fn setup_ai_players(
         log::info!("AI player registered: {}", house.name);
     }
 }
+
+#[cfg(test)]
+mod random_map_retail_tests {
+    //! Retail-input pass over the real `.SED` load path.
+    //!
+    //! This is the only place retail theater data meets the generator's
+    //! emitted tile indices. The in-crate matrix cannot reach that clause at
+    //! all: its synthetic tile-block stub answers every id, so resolvability
+    //! is true there by construction rather than by generation being correct.
+    //!
+    //! It drives `load_map_initial_with_assets` — the production loop — instead
+    //! of reassembling that function's resolution steps in test code. A
+    //! mirrored sequence keeps passing after the production callsite drifts,
+    //! which is exactly how every generated map shipped without a single
+    //! neutral tech building while the phase itself was fully implemented and
+    //! tested.
+    //!
+    //! Still not parity evidence. It shows the emitted surface is *loadable*,
+    //! never that it matches the original.
+
+    use super::*;
+    use crate::map::entities::EntityCategory;
+    use crate::map::rmg::RmgOptions;
+
+    struct SilentProgress;
+    impl crate::app_loading::LoadingProgressSink for SilentProgress {
+        fn milestone(&mut self, _percent: u32) {}
+    }
+
+    /// The configurations the dialog itself can emit.
+    const RETAIL_MAP_TYPES: [i32; 4] = [1, 2, 3, 4];
+    const RETAIL_THEATERS: [i32; 2] = [0, 1];
+
+    /// A generated map must carry far more than this; the bar exists only to
+    /// catch a run that emitted nothing real and would therefore pass the
+    /// resolvability check without testing anything.
+    const MIN_REAL_TILES_PER_MAP: usize = 1_000;
+
+    fn retail_dir() -> Option<PathBuf> {
+        let dir = PathBuf::from(std::env::var("RA2_DIR").ok()?);
+        dir.is_dir().then_some(dir)
+    }
+
+    /// Write a `.SED` for `options` into a scratch dir, returning the dir the
+    /// loader should read from and the seed file's name.
+    ///
+    /// The scratch dir is deliberately *not* the retail install: the loader
+    /// takes `ra2_dir` and the asset manager as separate parameters, so the
+    /// seed can come from a temp dir while the assets come from the real game.
+    fn write_seed(options: &RmgOptions, tag: &str) -> (PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("vera20k-rmg-retail-{tag}"));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let name = format!("{tag}.sed");
+        std::fs::write(dir.join(&name), options.to_sed_bytes()).expect("write .SED");
+        (dir, name)
+    }
+
+    #[test]
+    #[ignore] // Requires RA2_DIR (retail game files).
+    fn generated_maps_resolve_every_tile_against_retail_theaters() {
+        let Some(ra2) = retail_dir() else {
+            panic!("set RA2_DIR to the retail RA2/YR install directory");
+        };
+
+        let mut structures_placed = 0usize;
+        let mut configurations = 0usize;
+        for map_type in RETAIL_MAP_TYPES {
+            for theater in RETAIL_THEATERS {
+                configurations += 1;
+                let tag = format!("t{map_type}-th{theater}");
+                let options = RmgOptions {
+                    map_type,
+                    theater,
+                    num_players: 4,
+                    seed: 4242,
+                    ..Default::default()
+                };
+                let (seed_dir, seed_name) = write_seed(&options, &tag);
+
+                let asset_manager = AssetManager::new(&ra2).expect("AssetManager::new");
+                let mut initial = load_map_initial_with_assets(
+                    seed_dir,
+                    asset_manager,
+                    Some(&seed_name),
+                    &mut SilentProgress,
+                )
+                .unwrap_or_else(|err| panic!("{tag}: the .SED branch failed: {err}"));
+
+                assert!(
+                    !initial.map_data.cells.is_empty(),
+                    "{tag}: the generated map has no cells"
+                );
+
+                let theater_name = crate::map::rmg::emit::theater_name(theater);
+                let data =
+                    crate::map::theater::load_theater(&mut initial.asset_manager, theater_name)
+                        .unwrap_or_else(|| panic!("{tag}: theater {theater_name} unavailable"));
+
+                // Guard against a vacuous pass: if every cell were NO_TILE the
+                // resolvability filter below would empty and the assertion
+                // would hold without ever having looked at a tile.
+                let real_tiles: Vec<i32> = initial
+                    .map_data
+                    .cells
+                    .iter()
+                    .map(|cell| cell.tile_index)
+                    .filter(|index| *index >= 0)
+                    .collect();
+                assert!(
+                    real_tiles.len() > MIN_REAL_TILES_PER_MAP,
+                    "{tag}: only {} cell(s) carry a real tile — the resolvability \
+                     check below would be vacuous",
+                    real_tiles.len()
+                );
+
+                // The completion-gate clause. `filename` returns None both for
+                // out-of-range ids and for blank tileset slots, and either one
+                // renders as a hole in the map, so both count as unresolved.
+                let mut unresolved: Vec<i32> = real_tiles
+                    .iter()
+                    .copied()
+                    .filter(|index| !data.lookup.filename(*index).is_some_and(|f| !f.is_empty()))
+                    .collect();
+                unresolved.sort_unstable();
+                unresolved.dedup();
+                let mut distinct = real_tiles.clone();
+                distinct.sort_unstable();
+                distinct.dedup();
+                println!(
+                    "{tag}: {} cells, {} real tiles ({} distinct), {} unresolved",
+                    initial.map_data.cells.len(),
+                    real_tiles.len(),
+                    distinct.len(),
+                    unresolved.len()
+                );
+                assert!(
+                    unresolved.is_empty(),
+                    "{tag}: {} distinct tile index(es) do not resolve against {theater_name}: {:?}",
+                    unresolved.len(),
+                    unresolved
+                );
+
+                structures_placed += initial
+                    .map_data
+                    .entities
+                    .iter()
+                    .filter(|entity| entity.category == EntityCategory::Structure)
+                    .count();
+            }
+        }
+
+        // The first check that the real `NeutralTechBuildings` catalog reaches
+        // the generator through the app's own resolution rather than a test
+        // stub. Asserted over the tier: how many a given map places is
+        // configuration-dependent, but a starved catalog places none anywhere.
+        assert!(
+            structures_placed > 0,
+            "no neutral tech building was placed on any retail configuration"
+        );
+        assert_eq!(
+            configurations,
+            RETAIL_MAP_TYPES.len() * RETAIL_THEATERS.len(),
+            "the matrix did not visit every configuration"
+        );
+        println!(
+            "{configurations} retail configurations checked, {structures_placed} neutral \
+             structure(s) placed"
+        );
+    }
+}
