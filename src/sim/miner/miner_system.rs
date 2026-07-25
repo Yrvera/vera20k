@@ -485,11 +485,27 @@ fn handle_search_ore(
 
 fn handle_move_to_ore(
     sim: &mut Simulation,
-    _rules: &RuleSet,
+    rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
 ) {
+    let has_destination_or_movement =
+        sim.substrate
+            .entities
+            .get(snap.entity_id)
+            .is_some_and(|entity| {
+                entity.navigation.nav_com.is_some() || entity.movement_target.is_some()
+            });
+
+    // Native Search_For_Tiberium_And_Move returns immediately for a non-null
+    // owner NavCom before target validation, arrival, or scan. MovementTarget
+    // remains Rust's transitional second owner until the broader Drive host is
+    // migrated.
+    if has_destination_or_movement {
+        return;
+    }
+
     let Some(current_target) = snap.miner.target_ore_cell else {
         snap.miner.state = MinerState::SearchOre;
         return;
@@ -500,7 +516,7 @@ fn handle_move_to_ore(
         .production
         .resource_nodes
         .get(&current_target)
-        .is_some_and(|n| n.remaining > 0);
+        .is_some_and(|node| node.remaining > 0);
     if !still_has_ore {
         snap.miner.target_ore_cell = None;
         snap.miner.state = MinerState::SearchOre;
@@ -542,10 +558,6 @@ fn handle_move_to_ore(
     let target = new_target.unwrap_or(current_target);
     if target != current_target {
         snap.miner.target_ore_cell = Some(target);
-        // Clear existing movement so it gets re-issued to the new target.
-        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
-            entity.movement_target = None;
-        }
     }
 
     // Arrived?
@@ -561,52 +573,8 @@ fn handle_move_to_ore(
         return;
     }
 
-    // Check if entity still has an active movement target (may have just
-    // been cleared above on retarget).
-    let has_movement = sim
-        .substrate
-        .entities
-        .get(snap.entity_id)
-        .is_some_and(|e| e.movement_target.is_some());
-    // Adjacent to ore? The passability matrix blocks Tiberium terrain for
-    // Track-type units, so A* can't path onto the ore cell itself. Use a
-    // direct (non-pathfinding) move for the final step — harvesters must
-    // be able to reach ore regardless of terrain passability rules.
-    // Only issue the move if not already heading there (avoid re-issuing
-    // every tick before the entity physically arrives).
-    let dx = (snap.rx as i32 - target.0 as i32).unsigned_abs();
-    let dy = (snap.ry as i32 - target.1 as i32).unsigned_abs();
-
-    if dx <= 1 && dy <= 1 {
-        if !has_movement {
-            movement::issue_direct_move(
-                &mut sim.substrate.entities,
-                snap.entity_id,
-                target,
-                snap.speed,
-            );
-        }
-        return;
-    }
-
-    // Issue movement if not already pathing.
-    // After issuing the A* move, mark it as ignore_terrain_cost so the
-    // movement tick doesn't block at Tiberium cells along the path.
-    // Harvesters must be able to traverse ore fields freely.
-    if !has_movement && let Some(grid) = path_grid {
-        issue_move_if_idle(
-            &mut sim.substrate.entities,
-            grid,
-            snap.entity_id,
-            target,
-            snap.speed,
-        );
-        // Mark the newly created movement as terrain-cost-exempt.
-        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id)
-            && let Some(ref mut mt) = entity.movement_target
-        {
-            mt.ignore_terrain_cost = true;
-        }
+    if let Some(grid) = path_grid {
+        let _ = issue_outbound_ore_move(sim, rules, grid, snap.entity_id, target);
     }
 }
 
@@ -1484,6 +1452,86 @@ pub(crate) fn search_local_ore(
     }
 
     None
+}
+
+/// Hand a selected outbound ore cell to the normal Drive command authority.
+fn issue_outbound_ore_move(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    grid: &PathGrid,
+    entity_id: u64,
+    target: (u16, u16),
+) -> bool {
+    if target.0 >= grid.width() || target.1 >= grid.height() {
+        return false;
+    }
+    let Some(info) = sim.resolve_move_info(entity_id, Some(rules)) else {
+        return false;
+    };
+
+    let activation_snapshot = if info.is_teleporter && info.is_harvester {
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .and_then(|entity| entity.locomotor.as_mut())
+            .map(|locomotor| {
+                let snapshot = (
+                    locomotor.kind,
+                    locomotor.primary_kind,
+                    locomotor.piggyback,
+                    locomotor.layer,
+                    locomotor.phase,
+                );
+                let _ = locomotor.begin_drive_piggyback_for_teleporter();
+                snapshot
+            })
+    } else {
+        None
+    };
+
+    let terrain_costs = sim.terrain_costs.get(&info.speed_type);
+    let issued = movement::issue_move_command_with_layered(
+        &mut sim.substrate.entities,
+        grid,
+        entity_id,
+        target,
+        info.speed,
+        false,
+        terrain_costs,
+        None,
+        sim.resolved_terrain.as_ref(),
+        sim.zone_grid.as_ref(),
+        None,
+        info.mover_is_crusher,
+    );
+    if !issued {
+        if let Some((kind, primary_kind, piggyback, layer, phase)) = activation_snapshot
+            && let Some(locomotor) = sim
+                .substrate
+                .entities
+                .get_mut(entity_id)
+                .and_then(|entity| entity.locomotor.as_mut())
+        {
+            locomotor.kind = kind;
+            locomotor.primary_kind = primary_kind;
+            locomotor.piggyback = piggyback;
+            locomotor.layer = layer;
+            locomotor.phase = phase;
+        }
+        return false;
+    }
+
+    if let Some(movement) = sim
+        .substrate
+        .entities
+        .get_mut(entity_id)
+        .and_then(|entity| entity.movement_target.as_mut())
+    {
+        movement.accel_factor = info.accel_factor;
+        movement.decel_factor = info.decel_factor;
+        movement.slowdown_distance = info.slowdown_distance;
+    }
+    true
 }
 
 /// Issue a move command only if the entity isn't already pathing to this target.

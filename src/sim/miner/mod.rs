@@ -17,6 +17,10 @@ pub(crate) mod miner_system;
 #[path = "miner_tests.rs"]
 mod miner_tests;
 
+#[cfg(test)]
+#[path = "outbound_drive_tests.rs"]
+mod outbound_drive_tests;
+
 pub(crate) use self::miner_dock_sequence::interrupt_refinery_docked_miners;
 // Generic nearby-passable-cell search, reused by the tank-bunker exit placement.
 pub(crate) use self::miner_dock_sequence::find_nearby_passable_cell_with_index;
