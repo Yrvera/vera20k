@@ -28,9 +28,11 @@ pub struct BlobCtx<'a> {
     pub ids: &'a TileIds,
     pub blocks: &'a dyn TileBlocks,
     pub rng: &'a mut RmgRng,
-    /// The generation-wide Box-Muller state — the cached twin persists
-    /// across blobs, so the driver owns it.
+    /// The generation-wide Gaussian state — Marsaglia polar, and its cached
+    /// twin persists across blobs, so the driver owns it.
     pub gauss: &'a mut Gaussian,
+    /// The retail sine table, for the river's heading.
+    pub trig: &'a crate::map::rmg::trig::TrigTable,
     /// Map rect dims (the +0xF4/+0xF8 pair): seed draws scale by these.
     pub map_w: i32,
     pub map_h: i32,
@@ -449,6 +451,7 @@ mod tests {
             blocks: &block_table,
             rng: &mut rng,
             gauss: &mut gauss,
+            trig: ctx_trig_placeholder,
             map_w: 30,
             map_h: 24,
             rollback_level: 4,
@@ -497,6 +500,7 @@ mod tests {
                 blocks: &block_table,
                 rng: &mut rng,
                 gauss: &mut gauss,
+                trig: ctx_trig_placeholder,
                 map_w: 30,
                 map_h: 24,
                 rollback_level: 4,
@@ -568,6 +572,7 @@ mod tests {
             blocks: &block_table,
             rng: &mut rng,
             gauss: &mut gauss,
+            trig: ctx_trig_placeholder,
             map_w: 20,
             map_h: 16,
             rollback_level: 4,

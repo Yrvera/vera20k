@@ -19,6 +19,8 @@
 
 use std::fmt;
 
+use crate::map::rmg::x87;
+
 /// Virtual address of the table in the retail image.
 const TABLE_VA: u32 = 0x0084_F084;
 /// Entries. The extra quarter period past a full turn is what lets the cosine
@@ -173,6 +175,28 @@ impl TrigTable {
     /// Cosine of an angle given in caller units.
     pub fn cos(&self, angle_units: i32) -> f32 {
         self.entries[cos_index(angle_units) as usize]
+    }
+
+    /// Sine of an angle in radians. The scaling and the truncation to an integer
+    /// index are the caller's job in the original, so they happen here.
+    pub fn sin_radians(&self, radians: f64) -> f32 {
+        self.sin(x87::ftol(radians_to_units(radians)))
+    }
+
+    /// Cosine of an angle in radians.
+    pub fn cos_radians(&self, radians: f64) -> f32 {
+        self.cos(x87::ftol(radians_to_units(radians)))
+    }
+
+    /// A table of the right shape but not the retail contents, for tests that
+    /// need geometry rather than exactness.
+    #[cfg(test)]
+    pub fn synthetic() -> Self {
+        Self {
+            entries: (0..TABLE_LEN)
+                .map(|i| (i as f64 * std::f64::consts::TAU / PERIOD as f64).sin() as f32)
+                .collect(),
+        }
     }
 }
 
