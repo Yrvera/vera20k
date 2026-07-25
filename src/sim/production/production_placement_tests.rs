@@ -18,6 +18,7 @@ use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::Health;
 use crate::sim::game_entity::GameEntity;
+use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::power_system::has_active_radar;
 use crate::sim::world::Simulation;
@@ -141,6 +142,43 @@ fn build_off_ally_rules() -> RuleSet {
          Adjacent=0\n",
     );
     RuleSet::from_ini(&ini).expect("BuildOffAlly placement rules should parse")
+}
+
+fn ground_occupant_placement_rules() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         0=E1\n\
+         [VehicleTypes]\n\
+         0=MTNK\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GACNST\n\
+         1=GAPOWR\n\
+         2=GAWALL\n\
+         [E1]\n\
+         Strength=100\n\
+         Armor=flak\n\
+         [MTNK]\n\
+         Strength=300\n\
+         Armor=heavy\n\
+         [GACNST]\n\
+         Strength=1000\n\
+         Armor=wood\n\
+         Foundation=2x2\n\
+         BaseNormal=yes\n\
+         [GAPOWR]\n\
+         Strength=750\n\
+         Armor=wood\n\
+         Foundation=2x2\n\
+         Adjacent=0\n\
+         [GAWALL]\n\
+         Strength=300\n\
+         Armor=concrete\n\
+         Foundation=1x1\n\
+         Adjacent=0\n\
+         Wall=yes\n",
+    );
+    RuleSet::from_ini(&ini).expect("ground-occupant placement rules should parse")
 }
 
 fn mark_allied(sim: &mut Simulation, a: &str, b: &str) {
@@ -652,6 +690,321 @@ fn place_ready_building_rejects_blocked_or_overlapping_cells() {
         ready_buildings_for_owner(&sim, &rules, "Americans").len(),
         2,
         "invalid placement must not consume the ready building"
+    );
+}
+
+#[test]
+fn placement_command_rejects_marked_ground_mobiles_until_they_are_unmarked() {
+    let rules = ground_occupant_placement_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+
+    for blocker_type in ["MTNK", "E1"] {
+        let mut sim = Simulation::new();
+        spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+        let blocker_id = sim
+            .spawn_object(blocker_type, "Americans", 13, 11, 0, &rules, &height_map)
+            .expect("real spawn/unlimbo should mark the mobile occupant");
+        assert!(
+            sim.substrate.occupancy.contains_entity(13, 11, blocker_id),
+            "{blocker_type} must enter the authoritative Ground object list"
+        );
+
+        // A dying infantry remains visible and marked until the app completes
+        // its death animation and calls UnInit. Native placement reads the cell
+        // object list, so this state must continue to block.
+        if blocker_type == "E1" {
+            sim.substrate
+                .entities
+                .get_mut(blocker_id)
+                .expect("spawned infantry")
+                .dying = true;
+        }
+
+        ready_building(&mut sim, "Americans", "GAPOWR");
+        let preview = placement_preview_for_owner(
+            &sim,
+            &rules,
+            "Americans",
+            "GAPOWR",
+            12,
+            10,
+            Some(&grid),
+            &height_map,
+        )
+        .expect("ready building should have a preview");
+        assert!(!preview.valid, "{blocker_type} must reject the preview");
+        assert_eq!(
+            preview.cell_valid,
+            vec![true, true, true, false],
+            "only the non-origin foundation cell occupied by {blocker_type} should reject"
+        );
+
+        let americans = sim.interner.get("Americans").expect("owner interned");
+        let gapowr = sim.interner.get("GAPOWR").expect("type interned");
+        let entities_before = sim.substrate.entities.len();
+        let next_id_before = sim.substrate.next_stable_object_id;
+        let occupancy_generation_before = sim.substrate.occupancy.generation();
+        let rejected = CommandEnvelope::new(
+            americans,
+            sim.session.tick + 1,
+            Command::PlaceReadyBuilding {
+                owner: americans,
+                type_id: gapowr,
+                rx: 12,
+                ry: 10,
+            },
+        );
+        let tick = sim.advance_tick(
+            &[rejected],
+            Some(&rules),
+            &height_map,
+            Some(&grid),
+            None,
+            67,
+        );
+
+        assert_eq!(tick.executed_commands, 1);
+        assert!(
+            !tick.spawned_entities,
+            "rejected placement must not report a spawned entity"
+        );
+        assert_eq!(sim.substrate.entities.len(), entities_before);
+        assert_eq!(sim.substrate.next_stable_object_id, next_id_before);
+        assert_eq!(
+            sim.substrate.occupancy.generation(),
+            occupancy_generation_before,
+            "rejected placement must not mutate CellClass-style membership"
+        );
+        assert_eq!(
+            ready_buildings_for_owner(&sim, &rules, "Americans").len(),
+            1,
+            "rejected placement must preserve the ready building"
+        );
+
+        let _ = sim.conceal(blocker_id);
+        assert!(
+            !sim.substrate.occupancy.contains_entity(13, 11, blocker_id),
+            "Conceal must remove the blocker before placement becomes legal"
+        );
+        let preview = placement_preview_for_owner(
+            &sim,
+            &rules,
+            "Americans",
+            "GAPOWR",
+            12,
+            10,
+            Some(&grid),
+            &height_map,
+        )
+        .expect("ready building should retain its preview after rejection");
+        assert!(
+            preview.valid,
+            "the same foundation must become legal after {blocker_type} is unmarked"
+        );
+
+        let accepted = CommandEnvelope::new(
+            americans,
+            sim.session.tick + 1,
+            Command::PlaceReadyBuilding {
+                owner: americans,
+                type_id: gapowr,
+                rx: 12,
+                ry: 10,
+            },
+        );
+        let tick = sim.advance_tick(
+            &[accepted],
+            Some(&rules),
+            &height_map,
+            Some(&grid),
+            None,
+            67,
+        );
+        assert!(tick.spawned_entities);
+        assert!(ready_buildings_for_owner(&sim, &rules, "Americans").is_empty());
+        assert!(sim.substrate.entities.values().any(|entity| {
+            entity.type_ref == gapowr
+                && entity.position.rx == 12
+                && entity.position.ry == 10
+                && entity.building_up.is_some()
+        }));
+    }
+}
+
+#[test]
+fn placement_command_rejects_nonblocking_overlay_and_preserves_ready_building() {
+    let mut sim = Simulation::new();
+    let rules = ground_occupant_placement_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+
+    let mut overlay_grid = OverlayGrid::new(64, 64);
+    overlay_grid.place_overlay(13, 11, 7, 4);
+    sim.overlay_grid = Some(overlay_grid);
+    ready_building(&mut sim, "Americans", "GAPOWR");
+
+    let preview = placement_preview_for_owner(
+        &sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    )
+    .expect("ready building should have a preview");
+    assert!(!preview.valid, "any ordinary nonempty overlay must reject");
+    assert_eq!(preview.cell_valid, vec![true, true, true, false]);
+
+    let americans = sim.interner.get("Americans").expect("owner interned");
+    let gapowr = sim.interner.get("GAPOWR").expect("type interned");
+    let entities_before = sim.substrate.entities.len();
+    let next_id_before = sim.substrate.next_stable_object_id;
+    let occupancy_generation_before = sim.substrate.occupancy.generation();
+    let rejected = CommandEnvelope::new(
+        americans,
+        sim.session.tick + 1,
+        Command::PlaceReadyBuilding {
+            owner: americans,
+            type_id: gapowr,
+            rx: 12,
+            ry: 10,
+        },
+    );
+    let tick = sim.advance_tick(
+        &[rejected],
+        Some(&rules),
+        &height_map,
+        Some(&grid),
+        None,
+        67,
+    );
+
+    assert_eq!(tick.executed_commands, 1);
+    assert!(!tick.spawned_entities);
+    assert_eq!(sim.substrate.entities.len(), entities_before);
+    assert_eq!(sim.substrate.next_stable_object_id, next_id_before);
+    assert_eq!(
+        sim.substrate.occupancy.generation(),
+        occupancy_generation_before
+    );
+    assert_eq!(
+        ready_buildings_for_owner(&sim, &rules, "Americans").len(),
+        1,
+        "rejected overlay placement must preserve the ready building"
+    );
+    let overlay = sim
+        .overlay_grid
+        .as_ref()
+        .expect("overlay grid retained")
+        .cell(13, 11);
+    assert_eq!((overlay.overlay_id, overlay.overlay_data), (Some(7), 4));
+
+    sim.overlay_grid
+        .as_mut()
+        .expect("overlay grid retained")
+        .clear_overlay(13, 11);
+    let preview = placement_preview_for_owner(
+        &sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    )
+    .expect("ready building should retain its preview after rejection");
+    assert!(
+        preview.valid,
+        "the same foundation must become legal after the overlay is cleared"
+    );
+
+    let accepted = CommandEnvelope::new(
+        americans,
+        sim.session.tick + 1,
+        Command::PlaceReadyBuilding {
+            owner: americans,
+            type_id: gapowr,
+            rx: 12,
+            ry: 10,
+        },
+    );
+    let tick = sim.advance_tick(
+        &[accepted],
+        Some(&rules),
+        &height_map,
+        Some(&grid),
+        None,
+        67,
+    );
+    assert!(tick.spawned_entities);
+    assert!(ready_buildings_for_owner(&sim, &rules, "Americans").is_empty());
+}
+
+#[test]
+fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
+    let rules = ground_occupant_placement_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+
+    let mut clear_sim = Simulation::new();
+    spawn_structure(&mut clear_sim, 1, "Americans", "GACNST", 10, 10);
+    ready_building(&mut clear_sim, "Americans", "GAWALL");
+    let preview = placement_preview_for_owner(
+        &clear_sim,
+        &rules,
+        "Americans",
+        "GAWALL",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    )
+    .expect("ready wall should have a preview");
+    assert!(
+        preview.valid,
+        "the ordinary empty-cell wall preview must remain accepted: {:?}",
+        preview.reason
+    );
+    assert!(
+        place_ready_building(
+            &mut clear_sim,
+            &rules,
+            "Americans",
+            "GAWALL",
+            12,
+            10,
+            Some(&grid),
+            &height_map,
+        ),
+        "the ordinary empty-cell wall commit must remain accepted"
+    );
+
+    let mut overlay_sim = Simulation::new();
+    spawn_structure(&mut overlay_sim, 1, "Americans", "GACNST", 10, 10);
+    let mut overlay_grid = OverlayGrid::new(64, 64);
+    overlay_grid.place_overlay(12, 10, 7, 4);
+    overlay_sim.overlay_grid = Some(overlay_grid);
+    ready_building(&mut overlay_sim, "Americans", "GAWALL");
+    let preview = placement_preview_for_owner(
+        &overlay_sim,
+        &rules,
+        "Americans",
+        "GAWALL",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    )
+    .expect("ready wall should have a preview");
+    assert!(!preview.valid, "an ordinary wall must not replace ore");
+    assert_eq!(
+        ready_buildings_for_owner(&overlay_sim, &rules, "Americans").len(),
+        1
     );
 }
 
