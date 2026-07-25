@@ -574,7 +574,7 @@ fn handle_move_to_ore(
     }
 
     if let Some(grid) = path_grid {
-        let _ = issue_outbound_ore_move(sim, rules, grid, snap.entity_id, target);
+        let _ = issue_stock_miner_drive_move(sim, rules, grid, snap.entity_id, target);
     }
 }
 
@@ -703,6 +703,20 @@ fn handle_return(
         .get(snap.entity_id)
         .is_some_and(|e| e.teleport_state.is_some());
     if has_teleport {
+        return;
+    }
+
+    // Active-YR HARV state 2 checks its NavCom before refinery selection.
+    // MovementTarget remains Rust's transitional duplicate movement owner.
+    let has_destination_or_movement = snap.miner.kind == MinerKind::War
+        && sim
+            .substrate
+            .entities
+            .get(snap.entity_id)
+            .is_some_and(|entity| {
+                entity.navigation.nav_com.is_some() || entity.movement_target.is_some()
+            });
+    if has_destination_or_movement {
         return;
     }
 
@@ -1120,13 +1134,7 @@ fn try_issue_standard_far_return_drive(
         return false;
     };
 
-    issue_move_if_idle(
-        &mut sim.substrate.entities,
-        grid,
-        snap.entity_id,
-        staging,
-        snap.speed,
-    );
+    let _ = issue_stock_miner_drive_move(sim, rules, grid, snap.entity_id, staging);
     snap.miner.state = MinerState::ReturnToRefinery;
     true
 }
@@ -1454,8 +1462,8 @@ pub(crate) fn search_local_ore(
     None
 }
 
-/// Hand a selected outbound ore cell to the normal Drive command authority.
-fn issue_outbound_ore_move(
+/// Hand a selected stock-miner destination to the normal Drive command authority.
+fn issue_stock_miner_drive_move(
     sim: &mut Simulation,
     rules: &RuleSet,
     grid: &PathGrid,
