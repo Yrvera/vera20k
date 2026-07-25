@@ -16,8 +16,8 @@ use crate::render::shell_paint::{
 use crate::render::shell_text::ShellAlign;
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::ui::main_menu_shell::{
-    MainMenuControlId, MainMenuShellLayout, RectPx, compute_layout, csf_key_for_control,
-    tooltip_csf_key_for_control,
+    MainMenuControlId, MainMenuMovieBase, MainMenuShellLayout, RectPx, compute_layout,
+    csf_key_for_control, tooltip_csf_key_for_control,
 };
 
 /// Screen-size thresholds above which the centered 800x600 shell is letterboxed
@@ -43,6 +43,34 @@ const MAIN_MENU_STATUS_ALIGN: ShellAlign = ShellAlign::V_CENTER;
 pub(crate) enum MainMenuShellRenderResult {
     Rendered,
     Fallback,
+}
+
+/// Dialog whose child static `0x71A` owns the active RA2TS movie handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ra2tsDialogOwner {
+    MainMenu0xE2,
+    SinglePlayer0x100,
+}
+
+fn ra2ts_movie_session_is_reusable(
+    movie_loaded: bool,
+    active_owner: Option<Ra2tsDialogOwner>,
+    requested_owner: Ra2tsDialogOwner,
+    active_base: Option<MainMenuMovieBase>,
+    requested_base: MainMenuMovieBase,
+) -> bool {
+    movie_loaded && active_owner == Some(requested_owner) && active_base == Some(requested_base)
+}
+
+/// Drop the one active RA2TS decoder/texture and all of its cache identity.
+///
+/// This models destruction of the owning dialog's child static `0x71A`. The
+/// next movie-bearing dialog reconstructs its own session lazily on first paint.
+pub(crate) fn clear_ra2ts_movie_session(state: &mut AppState) {
+    state.main_menu_movie = None;
+    state.main_menu_movie_owner = None;
+    state.main_menu_movie_base = None;
+    state.main_menu_movie_last_step = Instant::now();
 }
 
 fn push_entry_sized(
@@ -232,11 +260,21 @@ fn build_movie_instances(layout: &MainMenuShellLayout) -> Vec<SpriteInstance> {
     vec![movie_instance(layout)]
 }
 
-pub(crate) fn ensure_movie_for_current_layout(state: &mut AppState) -> Result<()> {
+pub(crate) fn ensure_movie_for_current_layout(
+    state: &mut AppState,
+    requested_owner: Ra2tsDialogOwner,
+) -> Result<()> {
     let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
-    if state.main_menu_movie_base == Some(layout.movie_base) && state.main_menu_movie.is_some() {
+    if ra2ts_movie_session_is_reusable(
+        state.main_menu_movie.is_some(),
+        state.main_menu_movie_owner,
+        requested_owner,
+        state.main_menu_movie_base,
+        layout.movie_base,
+    ) {
         return Ok(());
     }
+    clear_ra2ts_movie_session(state);
 
     let Some(assets) = state.asset_manager.as_ref() else {
         state.main_menu_shell_failed = true;
@@ -275,6 +313,7 @@ pub(crate) fn ensure_movie_for_current_layout(state: &mut AppState) -> Result<()
         movie.source_archive()
     );
     state.main_menu_movie = Some(movie);
+    state.main_menu_movie_owner = Some(requested_owner);
     state.main_menu_movie_base = Some(layout.movie_base);
     state.main_menu_movie_last_step = Instant::now();
     Ok(())
@@ -326,7 +365,7 @@ pub(crate) fn render_main_menu_shell_to_target(
     encoder: &mut wgpu::CommandEncoder,
     target: ShellRenderTarget<'_>,
 ) -> Result<MainMenuShellRenderResult> {
-    ensure_movie_for_current_layout(state)?;
+    ensure_movie_for_current_layout(state, Ra2tsDialogOwner::MainMenu0xE2)?;
     if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
         state.main_menu_shell_failed = true;
         return Ok(MainMenuShellRenderResult::Fallback);
@@ -783,5 +822,48 @@ mod tests {
     fn parent_background_renders_behind_movie() {
         // Background depth must be greater (farther back) than the movie's.
         assert!(PARENT_BACKGROUND_DEPTH > MOVIE_DEPTH);
+    }
+
+    #[test]
+    fn changing_dialog_owner_restarts_ra2ts_even_when_asset_base_matches() {
+        assert!(!ra2ts_movie_session_is_reusable(
+            true,
+            Some(Ra2tsDialogOwner::MainMenu0xE2),
+            Ra2tsDialogOwner::SinglePlayer0x100,
+            Some(MainMenuMovieBase::Ra2tsL),
+            MainMenuMovieBase::Ra2tsL,
+        ));
+        assert!(!ra2ts_movie_session_is_reusable(
+            true,
+            Some(Ra2tsDialogOwner::SinglePlayer0x100),
+            Ra2tsDialogOwner::MainMenu0xE2,
+            Some(MainMenuMovieBase::Ra2tsL),
+            MainMenuMovieBase::Ra2tsL,
+        ));
+    }
+
+    #[test]
+    fn matching_owner_and_base_reuses_only_a_loaded_ra2ts_session() {
+        assert!(ra2ts_movie_session_is_reusable(
+            true,
+            Some(Ra2tsDialogOwner::MainMenu0xE2),
+            Ra2tsDialogOwner::MainMenu0xE2,
+            Some(MainMenuMovieBase::Ra2tsL),
+            MainMenuMovieBase::Ra2tsL,
+        ));
+        assert!(!ra2ts_movie_session_is_reusable(
+            false,
+            Some(Ra2tsDialogOwner::MainMenu0xE2),
+            Ra2tsDialogOwner::MainMenu0xE2,
+            Some(MainMenuMovieBase::Ra2tsL),
+            MainMenuMovieBase::Ra2tsL,
+        ));
+        assert!(!ra2ts_movie_session_is_reusable(
+            true,
+            Some(Ra2tsDialogOwner::MainMenu0xE2),
+            Ra2tsDialogOwner::MainMenu0xE2,
+            Some(MainMenuMovieBase::Ra2tsS),
+            MainMenuMovieBase::Ra2tsL,
+        ));
     }
 }
