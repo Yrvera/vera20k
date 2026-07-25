@@ -236,7 +236,7 @@
           "evidence": "docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"
         },
         {
-          "symbol": "CheckPoweredRadar",
+          "symbol": "HouseClass::UpdateTacticalRadarAvailability",
           "address": "0x00508DF0",
           "evidence": "docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"
         }
@@ -244,12 +244,27 @@
       "rust_surfaces": [
         {
           "path": "src/sim/power_system.rs",
-          "symbol": "tick_power_states",
+          "symbol": "recalculate_power_for_owner / tick_power_states / has_active_radar",
           "coverage": "representative",
-          "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"
+          "observed_at_commit": "84991f1404cd804f1ea8252afe4da3e0943898bd"
+        },
+        {
+          "path": "src/sim/production/production_placement.rs",
+          "symbol": "place_ready_building",
+          "coverage": "representative",
+          "observed_at_commit": "84991f1404cd804f1ea8252afe4da3e0943898bd"
+        },
+        {
+          "path": "src/sim/radar.rs",
+          "symbol": "has_radar_for_owner",
+          "coverage": "representative",
+          "observed_at_commit": "84991f1404cd804f1ea8252afe4da3e0943898bd"
         }
       ],
-      "notes": ["Power authority feeds radar, sidebar, production, EVA, and multiple same-tick consumers."]
+      "notes": [
+        "Power authority feeds radar, sidebar, production, EVA, and multiple same-tick consumers.",
+        "Merged slice 84991f14 closes live replacement-plant output and Radar=yes recovery during buildup; full sell/audio/pixel loop and exact command-frame reassessment order remain unverified."
+      ]
     },
     "GSI-09.11": {
       "native_anchors": [
@@ -1146,8 +1161,8 @@
       "to": "GSI-09.12",
       "loop": "LOOP-012-POWER-OUTAGE-RECOVERY",
       "context": "Power-outage-recovery loop",
-      "detail": "Recovery is incomplete until the replacement producer finishes buildup and becomes active.",
-      "evidence": ["docs/research/POWER_SYSTEM_GHIDRA_REPORT.md"]
+      "detail": "The replacement producer must enter its live construction presentation, but native power authority begins while buildup remains active rather than after it finishes.",
+      "evidence": ["docs/research/traces/2026-07-25-loop-012-power-outage-recovery-trace.md"]
     },
     {
       "id": "EDGE-0053-POWER-REPLACEMENT-PLACEMENT",
@@ -1653,14 +1668,16 @@
     "LOOP-012-POWER-OUTAGE-RECOVERY": {
       "name": "Power loss through radar/sidebar/EVA and recovery",
       "owner": "GSI-09.07",
-      "stock_fixture": "Powered radar house sells the GAPOWR that supplies its positive margin, then rebuilds/restores power.",
+      "stock_fixture": "American stock base with AMRADR sells the GAPOWR that supplies its positive margin, then rebuilds/restores power.",
       "player_visible_result": "Refund, power transition, bar animation, low-power EVA, radar loss, minimap state, and recovery match.",
       "native_entrypoints": [
         "HouseClass::AI_AssessPower 0x00508C30",
-        "CheckPoweredRadar 0x00508DF0"
+        "HouseClass::UpdateTacticalRadarAvailability 0x00508DF0"
       ],
       "rust_touchpoints": [
-        {"path": "src/sim/power_system.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
+        {"path": "src/sim/power_system.rs", "coverage": "representative", "observed_at_commit": "84991f1404cd804f1ea8252afe4da3e0943898bd"},
+        {"path": "src/sim/production/production_placement.rs", "coverage": "representative", "observed_at_commit": "84991f1404cd804f1ea8252afe4da3e0943898bd"},
+        {"path": "src/sim/radar.rs", "coverage": "representative", "observed_at_commit": "84991f1404cd804f1ea8252afe4da3e0943898bd"},
         {"path": "src/sim/production/production_sell.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/app_sidebar_render.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
         {"path": "src/render/minimap.rs", "coverage": "representative", "observed_at_commit": "5130d139db4db4ba0246744fbd8058df9853d005"},
@@ -1684,20 +1701,21 @@
         {"order": 15, "system": "GSI-14.08", "action": "Place the completed replacement."},
         {"order": 16, "system": "GSI-09.11", "action": "Validate and commit the replacement foundation."},
         {"order": 17, "system": "GSI-05.03", "action": "Create/reveal the replacement power producer."},
-        {"order": 18, "system": "GSI-09.12", "action": "Complete buildup and activate the replacement."},
-        {"order": 19, "system": "GSI-09.07", "action": "Reassess output/drain and leave low-power state."},
-        {"order": 20, "system": "GSI-12.10", "action": "Restore powered radar availability."},
+        {"order": 18, "system": "GSI-09.12", "action": "Begin the live replacement's construction presentation; buildup is not power authority."},
+        {"order": 19, "system": "GSI-09.07", "action": "Reassess live-building output/drain and leave low-power state."},
+        {"order": 20, "system": "GSI-12.10", "action": "Apply the aggregate house-power gate and restore Radar=yes availability."},
         {"order": 21, "system": "GSI-13.24", "action": "Animate the power bar/sidebar recovery."},
         {"order": 22, "system": "GSI-13.23", "action": "Restore radar/minimap presentation without inventing a generic power-restored EVA."}
       ],
       "oracle": {
         "status": "UNVERIFIED",
-        "gate": "No native tick/audio/pixel differential covers the full outage and recovery loop."
+        "gate": "Merged-retail production coverage closes placement through next-guaranteed-assessment radar recovery, but no native tick/audio/pixel differential covers the full sell, outage, and presentation loop."
       },
       "evidence": [
         "docs/research/POWER_SYSTEM_GHIDRA_REPORT.md",
         "docs/research/POWER_SPYSAT_RADAR_CURRENT_SYSTEM_MODEL_SYNTHESIS.md",
-        "docs/research/POWER_BAR_RENDERING.md"
+        "docs/research/POWER_BAR_RENDERING.md",
+        "docs/research/traces/2026-07-25-loop-012-power-outage-recovery-trace.md"
       ]
     }
   },

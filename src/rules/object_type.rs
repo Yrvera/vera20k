@@ -335,7 +335,7 @@ pub struct ObjectType {
     pub gap_generator: bool,
     /// When true, this building activates the owner's radar display (minimap).
     /// Radar=yes in rules.ini. Used by GARADR (Allied), NARADR (Soviet), YARADR (Yuri).
-    /// SpySat=yes buildings also implicitly provide radar.
+    /// SpySat=yes is a separate full-map reveal authority and does not imply Radar=yes.
     pub radar: bool,
     /// When true, this unit does NOT appear on enemy radar even when in line of sight.
     /// RadarInvisible= in rules.ini. Used by subs, Night Hawk, dolphins, giant squid.
