@@ -27,10 +27,13 @@ tools/research_index/
   map.py
   brief.py
   validate.py
+  health.py
   research_index/
     chunking.py
     database.py
     formatting.py
+    lifecycle.py
+    locking.py
     metadata.py
     ranking.py
     touchpoints.py
@@ -40,7 +43,12 @@ Generated state is written to:
 
 ```text
 tools/research_index/.cache/research.db
+tools/research_index/.cache/research.db.meta.json
 ```
+
+The sidecar manifest records the exact indexed roots, corpus file identities,
+index-builder source signature, tool format, and published database identity.
+Both files are generated and ignored by Git.
 
 ## Build The Index
 
@@ -59,6 +67,35 @@ You can override roots:
 ```powershell
 python tools/research_index/index.py docs/research/bridges
 ```
+
+Explicit root overrides are persisted in the generation manifest, so automatic
+MCP refreshes keep the same scope. Roots must stay inside the workspace and
+contain at least one indexable Markdown or INI file; an unsafe or empty request
+cannot replace a valid database.
+
+Rebuilds use unique sibling temporary databases plus atomic replacement. A
+cross-process lock serializes publication, and the new generation is certified
+only when the corpus is unchanged across the rebuild.
+
+## Freshness Health
+
+Inspect the database, manifest, and current corpus without changing anything:
+
+```powershell
+python tools/research_index/health.py
+python tools/research_index/health.py --json
+```
+
+Synchronously rebuild only when stale:
+
+```powershell
+python tools/research_index/health.py --refresh
+```
+
+The health command reports added, changed, and removed files with bounded text
+output. It exits nonzero when inspection is stale or not ready. Freshness uses
+file size plus nanosecond modification time; an unusual same-size edit that
+also preserves the exact timestamp requires an explicit reindex.
 
 ## Search
 
@@ -197,9 +234,11 @@ python tools/research_index/validate.py --system bridges collapse
 python tools/research_index/validate.py --system miner "Mission_Harvest State 2"
 ```
 
-Validation failures mean the index is stale or a cited local link is broken.
-Rebuild with `python tools/research_index/index.py` after intentional doc edits.
-An explicitly scoped validation that matches zero documents is also invalid:
+The CLI validation command is deliberately non-mutating and detects changed,
+missing, and newly added files plus local links against the live filesystem.
+Rebuild with `python tools/research_index/index.py` or
+`python tools/research_index/health.py --refresh` after intentional edits. An
+explicitly scoped validation that matches zero documents is also invalid:
 validating nothing must not certify a research scope.
 
 ## MCP Server
@@ -211,9 +250,16 @@ python tools/research_index/mcp_server.py
 ```
 
 It exposes `research_search`, `research_related`, `research_graph`,
-`research_map`, `research_handoff`, `research_validate`, `research_brief`, and
-`research_reindex`. Text is the compact default; request JSON only when a
-caller needs the full structured rows.
+`research_map`, `research_handoff`, `research_validate`, `research_brief`,
+`research_reindex`, and `research_health`. Text is the compact default; request
+JSON only when a caller needs the full structured rows.
+
+Every evidence-reading MCP tool checks freshness before opening the index. If
+the corpus changed, the call waits for one synchronous, locked rebuild and then
+continues against the certified generation. Failures are surfaced instead of
+serving stale evidence. `research_health(refresh=false)` is the non-mutating way
+to inspect pending changes; `research_validate` refreshes first and then checks
+the requested scope and live local links.
 
 ## Ranking Model
 
@@ -237,4 +283,3 @@ remain the source of truth.
 - Add a `contract.py` command that emits implementation-checklist drafts from
   cited chunks.
 - Add optional semantic retrieval after FTS and metadata ranking are trusted.
-- Add an MCP wrapper only after CLI outputs are stable.

@@ -357,14 +357,59 @@ def format_validation(result: dict) -> str:
         f"missing_files={counts['missing_files']} "
         f"checksum_mismatches={counts['checksum_mismatches']} "
         f"missing_links={counts['missing_links']} "
-        f"stale_or_unknown={counts['stale_or_unknown']}"
+        f"stale_or_unknown={counts['stale_or_unknown']} "
+        f"unindexed_files={counts.get('unindexed_files', 0)} "
+        f"corpus_errors={counts.get('corpus_errors', 0)}"
     )
 
     append_validation_section(lines, "Missing files", result["missing_files"], "path")
     append_validation_section(lines, "Checksum mismatches", result["checksum_mismatches"], "path")
     append_validation_section(lines, "Missing links", result["missing_links"], "target")
     append_validation_section(lines, "Stale or unknown docs", result["stale_or_unknown"], "path")
+    append_string_section(lines, "Unindexed files", result.get("unindexed_files", []))
+    append_string_section(lines, "Corpus errors", result.get("corpus_errors", []))
     return "\n".join(lines).rstrip()
+
+
+def format_index_health(result: dict) -> str:
+    """Render one bounded freshness and generation summary."""
+    state = "fresh" if result["fresh"] else "stale"
+    readiness = "ready" if result["ready"] else "not-ready"
+    counts = result["changes"]["counts"]
+    lines = [
+        f"Research index: {state} ({readiness})",
+        (
+            f"workspace={result['workspace']} db={result['db_path']} "
+            f"documents={result['document_count']} chunks={result['chunk_count']} "
+            f"current_files={result['current_file_count']}"
+        ),
+        (
+            f"format={result['format_version']} tool={result['tool_version']} "
+            f"generation={result['generation'] or 'none'}"
+        ),
+        (
+            "builder="
+            + (result.get("builder_signature") or "unavailable")
+        ),
+        "roots: " + (", ".join(result["roots"]) or "(none)"),
+        (
+            f"changes: added={counts['added']} changed={counts['changed']} "
+            f"removed={counts['removed']}"
+        ),
+    ]
+    if result.get("refreshed"):
+        lines.append("refresh: rebuilt and certified this call")
+    if result["reasons"]:
+        lines.append("Reasons:")
+        lines.extend(f"  - {reason}" for reason in result["reasons"])
+    for label in ("added", "changed", "removed"):
+        rows = result["changes"][label]
+        if not rows:
+            continue
+        lines.append(f"{label.title()} files:")
+        lines.extend(f"  - {path}" for path in rows)
+        append_omitted_count(lines, counts[label], len(rows))
+    return "\n".join(lines)
 
 
 def append_validation_section(lines: list[str], title: str, rows: list[dict], detail_key: str) -> None:
@@ -378,6 +423,14 @@ def append_validation_section(lines: list[str], title: str, rows: list[dict], de
             lines.append(f"  - {row['path']} -> {detail} [{row['source_kind']}/{row['status']}]")
         else:
             lines.append(f"  - {detail} [{row['source_kind']}/{row['status']}]")
+
+
+def append_string_section(lines: list[str], title: str, rows: list[str]) -> None:
+    if not rows:
+        return
+    lines.append("")
+    lines.append(f"{title}:")
+    lines.extend(f"  - {row}" for row in rows)
 
 
 def format_research_brief(result: dict) -> str:
@@ -396,7 +449,9 @@ def format_research_brief(result: dict) -> str:
         f"scope_matched={validation.get('scope_matched', validation['documents_checked'] > 0)} "
         f"docs={validation['documents_checked']} "
         f"missing={counts['missing_files']} changed={counts['checksum_mismatches']} "
-        f"links={counts['missing_links']} stale_or_unknown={counts['stale_or_unknown']}"
+        f"links={counts['missing_links']} stale_or_unknown={counts['stale_or_unknown']} "
+        f"unindexed={counts.get('unindexed_files', 0)} "
+        f"corpus_errors={counts.get('corpus_errors', 0)}"
     )
 
     research_map = result["map"]

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+import os
+import secrets
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 TOOL_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +22,7 @@ from research_index.brief import research_brief
 from research_index.formatting import (
     format_document_graph,
     format_graph_view,
+    format_index_health,
     format_parity_handoff,
     format_research_brief,
     format_system_map,
@@ -25,13 +30,17 @@ from research_index.formatting import (
 )
 from research_index.graph import document_graph, evidence_view, graph_document_score, implementation_view
 from research_index.handoff import implementation_handoff_candidates, parity_handoff
+from research_index.lifecycle import (
+    IndexLifecycleError,
+    ensure_fresh,
+    inspect_index,
+    manifest_path,
+    refresh_index,
+)
 from research_index.metadata import document_metadata, extract_terms
 from research_index.ranking import final_score
 from research_index.system_map import system_map
 from research_index.validation import validate_index
-
-import json
-import secrets
 
 
 class ExtractionTests(unittest.TestCase):
@@ -735,6 +744,346 @@ class ReliabilityContractTests(unittest.TestCase):
                 self.assertEqual(completed.returncode, 1, completed.stdout)
 
 
+class LifecycleTests(unittest.TestCase):
+    def test_refresh_detects_and_repairs_changed_added_and_removed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / "docs/research"
+            doc = root / "SYSTEM_GHIDRA_REPORT.md"
+            doc.parent.mkdir(parents=True)
+            doc.write_text("# System\nInitial evidence.\n", encoding="utf-8")
+            db_path = workspace / "research.db"
+
+            refreshed = refresh_index(
+                db_path,
+                workspace,
+                roots=["docs/research"],
+            )
+            self.assertTrue(refreshed["fresh"])
+            self.assertTrue(refreshed["refreshed"])
+            self.assertTrue(manifest_path(db_path).is_file())
+
+            doc.write_text(
+                "# System\nInitial evidence with a material change.\n",
+                encoding="utf-8",
+            )
+            changed = inspect_index(db_path, workspace)
+            self.assertFalse(changed["fresh"])
+            self.assertEqual(changed["changes"]["counts"]["changed"], 1)
+
+            repaired = ensure_fresh(db_path, workspace)
+            self.assertTrue(repaired["fresh"])
+            self.assertTrue(repaired["refreshed"])
+
+            added_doc = root / "ADDED_TRACE.md"
+            added_doc.write_text("# Added\nTrace evidence.\n", encoding="utf-8")
+            added = inspect_index(db_path, workspace)
+            self.assertEqual(added["changes"]["counts"]["added"], 1)
+
+            added_doc.unlink()
+            doc.unlink()
+            removed = inspect_index(db_path, workspace)
+            self.assertEqual(removed["changes"]["counts"]["removed"], 1)
+
+    def test_custom_root_persists_and_ignores_out_of_scope_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            custom = workspace / "notes"
+            custom.mkdir()
+            (custom / "CUSTOM.md").write_text(
+                "# Custom\nScoped evidence.\n",
+                encoding="utf-8",
+            )
+            db_path = workspace / "research.db"
+
+            refresh_index(db_path, workspace, roots=["notes"])
+            unrelated = workspace / "docs/research/UNRELATED.md"
+            unrelated.parent.mkdir(parents=True)
+            unrelated.write_text("# Unrelated\nNot in scope.\n", encoding="utf-8")
+
+            health = inspect_index(db_path, workspace)
+            self.assertTrue(health["fresh"])
+            self.assertEqual(health["roots"], ["notes"])
+            self.assertEqual(health["current_file_count"], 1)
+
+    def test_unsafe_and_empty_roots_cannot_replace_a_valid_generation(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as outside_tmp,
+        ):
+            workspace = Path(tmp)
+            root = workspace / "docs/research"
+            root.mkdir(parents=True)
+            (root / "VALID.md").write_text(
+                "# Valid\nEvidence.\n",
+                encoding="utf-8",
+            )
+            db_path = workspace / "research.db"
+            refresh_index(db_path, workspace, roots=["docs/research"])
+            original_db = db_path.read_bytes()
+            original_manifest = manifest_path(db_path).read_bytes()
+
+            outside = Path(outside_tmp) / "OUTSIDE.md"
+            outside.write_text("# Outside\nEvidence.\n", encoding="utf-8")
+            with self.assertRaises(IndexLifecycleError):
+                refresh_index(db_path, workspace, roots=[outside])
+
+            empty = workspace / "empty"
+            empty.mkdir()
+            with self.assertRaises(IndexLifecycleError):
+                refresh_index(db_path, workspace, roots=[empty])
+
+            self.assertEqual(db_path.read_bytes(), original_db)
+            self.assertEqual(
+                manifest_path(db_path).read_bytes(),
+                original_manifest,
+            )
+
+    def test_failed_build_keeps_last_good_database_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / "docs/research"
+            root.mkdir(parents=True)
+            doc = root / "VALID.md"
+            doc.write_text("# Valid\nEvidence.\n", encoding="utf-8")
+            db_path = workspace / "research.db"
+            refresh_index(db_path, workspace, roots=["docs/research"])
+            original_db = db_path.read_bytes()
+            original_manifest = manifest_path(db_path).read_bytes()
+            doc.write_text("# Valid\nChanged evidence.\n", encoding="utf-8")
+
+            with (
+                mock.patch(
+                    "research_index.database.insert_document",
+                    side_effect=sqlite3.OperationalError("fixture failure"),
+                ),
+                self.assertRaises(IndexLifecycleError),
+            ):
+                refresh_index(db_path, workspace)
+
+            self.assertEqual(db_path.read_bytes(), original_db)
+            self.assertEqual(
+                manifest_path(db_path).read_bytes(),
+                original_manifest,
+            )
+
+    def test_database_identity_change_invalidates_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / "docs/research"
+            root.mkdir(parents=True)
+            (root / "VALID.md").write_text(
+                "# Valid\nEvidence.\n",
+                encoding="utf-8",
+            )
+            db_path = workspace / "research.db"
+            refresh_index(db_path, workspace, roots=["docs/research"])
+
+            stat = db_path.stat()
+            os.utime(
+                db_path,
+                ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000),
+            )
+            health = inspect_index(db_path, workspace)
+
+            self.assertFalse(health["fresh"])
+            self.assertIn("database identity differs", health["reasons"])
+
+    def test_builder_signature_change_invalidates_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / "docs/research"
+            root.mkdir(parents=True)
+            (root / "VALID.md").write_text(
+                "# Valid\nEvidence.\n",
+                encoding="utf-8",
+            )
+            db_path = workspace / "research.db"
+            refresh_index(db_path, workspace, roots=["docs/research"])
+            metadata_path = manifest_path(db_path)
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["builder_signature"] = "obsolete-builder"
+            metadata_path.write_text(
+                json.dumps(metadata),
+                encoding="utf-8",
+            )
+
+            health = inspect_index(db_path, workspace)
+
+            self.assertFalse(health["fresh"])
+            self.assertIn(
+                "index builder signature differs",
+                health["reasons"],
+            )
+
+    def test_validation_checks_links_against_live_filesystem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / "docs/research/links"
+            root.mkdir(parents=True)
+            source = root / "SOURCE_GHIDRA_REPORT.md"
+            target = root / "TARGET.md"
+            source.write_text(
+                "# Source\nSee [target](TARGET.md).\n",
+                encoding="utf-8",
+            )
+            target.write_text("# Target\nEvidence.\n", encoding="utf-8")
+            db_path = workspace / "research.db"
+            refresh_index(db_path, workspace, roots=["docs/research"])
+
+            target.unlink()
+            missing = validate_index(
+                db_path,
+                workspace,
+                topic="Source",
+            )
+            self.assertEqual(missing["counts"]["missing_links"], 1)
+
+            target.write_text("# Target\nRestored.\n", encoding="utf-8")
+            restored = validate_index(
+                db_path,
+                workspace,
+                topic="Source",
+            )
+            self.assertEqual(restored["counts"]["missing_links"], 0)
+
+    def test_unscoped_validation_reports_unindexed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / "docs/research"
+            root.mkdir(parents=True)
+            (root / "INDEXED.md").write_text(
+                "# Indexed\nEvidence.\n",
+                encoding="utf-8",
+            )
+            db_path = workspace / "research.db"
+            refresh_index(db_path, workspace, roots=["docs/research"])
+            (root / "NEW.md").write_text(
+                "# New\nNot indexed yet.\n",
+                encoding="utf-8",
+            )
+
+            result = validate_index(db_path, workspace)
+            text = format_validation(result)
+
+            self.assertFalse(result["valid"])
+            self.assertEqual(result["counts"]["unindexed_files"], 1)
+            self.assertIn("Unindexed files:", text)
+
+    def test_health_cli_is_read_only_unless_refresh_is_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / "docs/research"
+            root.mkdir(parents=True)
+            doc = root / "INDEXED.md"
+            doc.write_text("# Indexed\nEvidence.\n", encoding="utf-8")
+            db_path = workspace / "research.db"
+            refresh_index(db_path, workspace, roots=["docs/research"])
+            doc.write_text("# Indexed\nChanged evidence.\n", encoding="utf-8")
+
+            base_command = [
+                sys.executable,
+                str(TOOL_ROOT / "health.py"),
+                "--db",
+                str(db_path),
+                "--workspace",
+                str(workspace),
+                "--json",
+            ]
+            stale = subprocess.run(
+                base_command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(stale.returncode, 1)
+            self.assertFalse(json.loads(stale.stdout)["fresh"])
+
+            repaired = subprocess.run(
+                [*base_command, "--refresh"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(repaired.returncode, 0, repaired.stderr)
+            self.assertTrue(json.loads(repaired.stdout)["fresh"])
+
+    def test_concurrent_health_refreshes_publish_one_valid_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / "docs/research"
+            root.mkdir(parents=True)
+            (root / "INDEXED.md").write_text(
+                "# Indexed\nEvidence.\n",
+                encoding="utf-8",
+            )
+            db_path = workspace / "research.db"
+            command = [
+                sys.executable,
+                str(TOOL_ROOT / "health.py"),
+                "--db",
+                str(db_path),
+                "--workspace",
+                str(workspace),
+                "--root",
+                "docs/research",
+                "--refresh",
+                "--json",
+            ]
+
+            processes = [
+                subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                )
+                for _ in range(2)
+            ]
+            completed = [
+                (process.communicate(timeout=30), process.returncode)
+                for process in processes
+            ]
+
+            payloads = []
+            for ((stdout, stderr), returncode) in completed:
+                self.assertEqual(returncode, 0, stderr)
+                payloads.append(json.loads(stdout))
+            self.assertTrue(all(payload["fresh"] for payload in payloads))
+            self.assertEqual(
+                {payload["generation"] for payload in payloads},
+                {inspect_index(db_path, workspace)["generation"]},
+            )
+
+    def test_health_formatter_names_state_and_changes(self) -> None:
+        result = {
+            "fresh": False,
+            "ready": True,
+            "workspace": "workspace",
+            "db_path": "research.db",
+            "document_count": 1,
+            "chunk_count": 2,
+            "current_file_count": 2,
+            "format_version": 1,
+            "tool_version": "2.0.0",
+            "generation": "abc",
+            "roots": ["docs/research"],
+            "changes": {
+                "added": ["docs/research/NEW.md"],
+                "changed": [],
+                "removed": [],
+                "counts": {"added": 1, "changed": 0, "removed": 0},
+            },
+            "reasons": ["1 unindexed file(s) added"],
+        }
+        text = format_index_health(result)
+        self.assertIn("Research index: stale (ready)", text)
+        self.assertIn("Added files:", text)
+
+
 def _documents(workspace: Path, paths: list[Path]) -> list[tuple[str, object, object]]:
     return [
         (path.relative_to(workspace).as_posix(), document_metadata(path, workspace), chunk_file(path))
@@ -767,7 +1116,11 @@ class MCPWrapperContractTests(unittest.TestCase):
             doc.parent.mkdir(parents=True)
             doc.write_text("# Bridge\nBridge evidence.\n", encoding="utf-8")
             db_path = workspace / "research.db"
-            rebuild_database(db_path, workspace, _documents(workspace, [doc]))
+            refresh_index(
+                db_path,
+                workspace,
+                roots=["docs/research"],
+            )
 
             original_db = self.mcp_server.DEFAULT_DB
             original_workspace = self.mcp_server.WORKSPACE
@@ -787,6 +1140,9 @@ class MCPWrapperContractTests(unittest.TestCase):
                     )
                 )
                 blank_search = self.mcp_server.research_search(query="")
+                health = json.loads(
+                    self.mcp_server.research_health(format="json")
+                )
             finally:
                 self.mcp_server.DEFAULT_DB = original_db
                 self.mcp_server.WORKSPACE = original_workspace
@@ -796,6 +1152,8 @@ class MCPWrapperContractTests(unittest.TestCase):
             self.assertFalse(handoff["matched"])
             self.assertEqual(handoff["evidence"], [])
             self.assertTrue(blank_search.startswith("No results for"))
+            self.assertTrue(health["fresh"])
+            self.assertEqual(health["roots"], ["docs/research"])
 
 
 class MCPServerSmokeTests(unittest.TestCase):
@@ -892,6 +1250,12 @@ class MCPServerSmokeTests(unittest.TestCase):
         # anchors=None should normalize to [] without exception.
         out = self.mcp_server.research_brief(query="BridgeRepairHut", anchors=None, limit=3)
         self.assertNotEqual(out.strip(), "")
+
+    def test_research_health_reports_live_generation(self) -> None:
+        out = self.mcp_server.research_health(format="json")
+        result = json.loads(out)
+        self.assertTrue(result["fresh"])
+        self.assertGreater(result["document_count"], 0)
 
 
 if __name__ == "__main__":

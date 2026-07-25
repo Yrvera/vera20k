@@ -5,24 +5,32 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 from research_index.database import DEFAULT_DB
-from research_index.indexing import DEFAULT_ROOTS, rebuild_index
+from research_index.indexing import DEFAULT_ROOTS
+from research_index.lifecycle import IndexLifecycleError, refresh_index
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build the VERA20k research SQLite FTS index.")
     parser.add_argument("roots", nargs="*", default=list(DEFAULT_ROOTS), help="Roots to index")
     parser.add_argument("--db", default=str(DEFAULT_DB), help="Output SQLite database path")
+    parser.add_argument("--workspace", default=".", help="Workspace root")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    workspace = Path.cwd()
+    workspace = Path(args.workspace).resolve()
     roots = [workspace / root for root in args.roots]
     db_path = Path(args.db)
-    print(rebuild_index(workspace, roots, db_path))
+    try:
+        result = refresh_index(db_path, workspace, roots)
+    except IndexLifecycleError as exc:
+        print(f"research-index rebuild failed: {exc}", file=sys.stderr)
+        return 1
+    print(result["summary"])
     return 0
 
 

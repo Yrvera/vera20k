@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -39,6 +40,7 @@ from research_index.formatting import (
     format_backlinks,
     format_document_graph,
     format_graph_view,
+    format_index_health,
     format_parity_handoff,
     format_related_results,
     format_research_brief,
@@ -53,7 +55,12 @@ from research_index.graph import (
     implementation_view,
 )
 from research_index.handoff import parity_handoff
-from research_index.indexing import DEFAULT_ROOTS, rebuild_index
+from research_index.indexing import DEFAULT_ROOTS
+from research_index.lifecycle import (
+    ensure_fresh,
+    inspect_index,
+    refresh_index,
+)
 from research_index.system_map import system_map
 from research_index.validation import validate_index
 
@@ -68,6 +75,13 @@ logger = logging.getLogger("research-index-mcp")
 WORKSPACE = _SERVER_DIR.parents[1]
 
 mcp = FastMCP("research-index")
+_LIFECYCLE_LOCK = threading.RLock()
+
+
+def _ensure_fresh_index() -> dict:
+    """Certify one current generation before serving indexed evidence."""
+    with _LIFECYCLE_LOCK:
+        return ensure_fresh(DEFAULT_DB, WORKSPACE)
 
 
 @mcp.tool()
@@ -91,6 +105,7 @@ def research_search(
         source: Filter by source kind (e.g. "ghidra", "trace", "synthesis").
         format: "text" for formatted output, "json" for structured.
     """
+    _ensure_fresh_index()
     rows = search(DEFAULT_DB, query, limit=limit, system=system, source_kind=source)
 
     if not rows:
@@ -133,6 +148,7 @@ def research_related(
         limit: Max results (default 20, matches related.py CLI).
         format: "text" for formatted output, "json" for structured.
     """
+    _ensure_fresh_index()
     if by == "term":
         rows = related_by_term(DEFAULT_DB, target, limit)
     else:
@@ -174,6 +190,7 @@ def research_graph(
             for parity with the CLI).
         format: "text" for formatted output, "json" for structured.
     """
+    _ensure_fresh_index()
     if mode == "doc":
         result = document_graph(DEFAULT_DB, target, limit)
         text = format_document_graph(result)
@@ -223,6 +240,7 @@ def research_map(
         limit: Max rows per section (default 80, matches map.py CLI).
         format: "text" for formatted output, "json" for structured.
     """
+    _ensure_fresh_index()
     result = system_map(
         DEFAULT_DB,
         system=system,
@@ -259,6 +277,7 @@ def research_handoff(
         limit: Max rows per section (default 8, matches handoff.py CLI).
         format: "text" for formatted output, "json" for structured.
     """
+    _ensure_fresh_index()
     result = parity_handoff(
         DEFAULT_DB,
         query,
@@ -281,12 +300,11 @@ def research_validate(
     limit: int = 40,
     format: Literal["text", "json"] = "text",
 ) -> str:
-    """Check the index against current files; report stale chunks and broken links.
+    """Refresh the generation, then validate a scope and live local links.
 
-    Returns missing files, checksum mismatches (docs changed since
-    indexing), missing markdown link targets, and stale/unknown-status
-    docs. Use before relying on the index for a high-stakes lookup, or
-    after a doc rewrite to confirm the index is fresh.
+    Returns missing files, checksum mismatches, missing markdown link
+    targets, and stale/unknown-status docs. Use research_health without
+    refresh when you need to inspect pending corpus changes before mutation.
 
     Args:
         topic: Optional topic phrase to validate within.
@@ -297,6 +315,7 @@ def research_validate(
             CLI).
         format: "text" for formatted output, "json" for structured.
     """
+    _ensure_fresh_index()
     result = validate_index(
         DEFAULT_DB,
         WORKSPACE,
@@ -340,6 +359,7 @@ def research_brief(
         limit: Max rows per section (default 8, matches brief.py CLI).
         format: "text" for formatted output, "json" for structured.
     """
+    _ensure_fresh_index()
     anchors_list = anchors if anchors else []
     result = _research_brief_lib(
         DEFAULT_DB,
@@ -359,13 +379,12 @@ def research_brief(
 def research_reindex(
     roots: list[str] | None = None,
 ) -> str:
-    """Rebuild the FTS index from disk.
+    """Force a safe FTS rebuild and publish its generation manifest.
 
-    Walks the given roots (markdown + ini files), chunks them, and writes
-    a fresh SQLite DB atomically (tmp file + os.replace). Concurrent
-    research_search calls during a reindex see the previous DB until the
-    swap. Use after large doc rewrites, after pulling new research, or
-    after research_validate reports widespread checksum mismatches.
+    Walks the given roots (markdown + ini files), chunks them, and writes a
+    fresh SQLite DB with a unique temporary file plus atomic replacement.
+    A cross-process lock serializes publication. Unsafe, missing, or empty
+    roots fail before replacing the current generation.
 
     Args:
         roots: Optional repo-relative paths to walk. Defaults to
@@ -375,8 +394,48 @@ def research_reindex(
         One-line summary: ``indexed documents=N chunks=M db=<path>``.
     """
     root_strs = roots if roots else list(DEFAULT_ROOTS)
-    root_paths = [WORKSPACE / root for root in root_strs]
-    return rebuild_index(WORKSPACE, root_paths, DEFAULT_DB)
+    with _LIFECYCLE_LOCK:
+        result = refresh_index(
+            DEFAULT_DB,
+            WORKSPACE,
+            roots=root_strs,
+        )
+    return result["summary"]
+
+
+@mcp.tool()
+def research_health(
+    refresh: bool = False,
+    limit: int = 40,
+    format: Literal["text", "json"] = "text",
+) -> str:
+    """Inspect index generation freshness, optionally rebuilding if stale.
+
+    Unlike every evidence-reading tool, inspection is non-mutating by
+    default. Use this to see pending corpus changes. Set ``refresh=True`` to
+    synchronously publish and certify a current generation.
+
+    Args:
+        refresh: Rebuild when stale. Defaults to read-only inspection.
+        limit: Max changed-file rows per category.
+        format: "text" for compact health, "json" for structured details.
+    """
+    if refresh:
+        with _LIFECYCLE_LOCK:
+            result = ensure_fresh(
+                DEFAULT_DB,
+                WORKSPACE,
+                limit=limit,
+            )
+    else:
+        result = inspect_index(
+            DEFAULT_DB,
+            WORKSPACE,
+            limit=limit,
+        )
+    if format == "json":
+        return json.dumps(result, indent=2)
+    return format_index_health(result)
 
 
 if __name__ == "__main__":

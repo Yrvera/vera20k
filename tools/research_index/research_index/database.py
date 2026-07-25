@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import re
 import sqlite3
+import tempfile
+from pathlib import Path
 
 from .chunking import Chunk
 from .metadata import DocumentMetadata, extract_terms
@@ -49,26 +50,34 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
 def rebuild_database(db_path: Path, workspace: Path, documents: list[tuple[str, DocumentMetadata, list[Chunk]]]) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = db_path.with_suffix(db_path.suffix + ".tmp")
-    if tmp_path.exists():
-        tmp_path.unlink()
+    descriptor, tmp_name = tempfile.mkstemp(
+        prefix=f"{db_path.name}.",
+        suffix=".tmp",
+        dir=db_path.parent,
+    )
+    os.close(descriptor)
+    tmp_path = Path(tmp_name)
 
-    conn = connect(tmp_path)
     try:
-        conn.executescript(SCHEMA.read_text(encoding="utf-8"))
-        doc_ids: dict[str, int] = {}
-        with conn:
-            for relpath, meta, chunks in documents:
-                doc_id = insert_document(conn, relpath, meta)
-                doc_ids[relpath] = doc_id
-                for chunk in chunks:
-                    chunk_id = insert_chunk(conn, doc_id, relpath, chunk)
-                    insert_terms(conn, doc_id, chunk_id, chunk.text, Path(relpath).suffix)
-                insert_links(conn, doc_id, workspace, relpath, "\n".join(chunk.text for chunk in chunks), Path(relpath).suffix)
-            insert_edges(conn, workspace, documents, doc_ids)
+        conn = connect(tmp_path)
+        try:
+            conn.executescript(SCHEMA.read_text(encoding="utf-8"))
+            doc_ids: dict[str, int] = {}
+            with conn:
+                for relpath, meta, chunks in documents:
+                    doc_id = insert_document(conn, relpath, meta)
+                    doc_ids[relpath] = doc_id
+                    for chunk in chunks:
+                        chunk_id = insert_chunk(conn, doc_id, relpath, chunk)
+                        insert_terms(conn, doc_id, chunk_id, chunk.text, Path(relpath).suffix)
+                    insert_links(conn, doc_id, workspace, relpath, "\n".join(chunk.text for chunk in chunks), Path(relpath).suffix)
+                insert_edges(conn, workspace, documents, doc_ids)
+        finally:
+            conn.close()
+        os.replace(tmp_path, db_path)
     finally:
-        conn.close()
-    os.replace(tmp_path, db_path)
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def insert_document(conn: sqlite3.Connection, relpath: str, meta: DocumentMetadata) -> int:

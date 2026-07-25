@@ -60,7 +60,7 @@ def iter_indexable_files(roots: list[Path]) -> list[Path]:
                 path = Path(dirpath) / filename
                 if path.suffix.lower() in INDEX_EXTENSIONS:
                     files.append(path)
-    return sorted(files)
+    return sorted(set(files))
 
 
 def document_metadata(path: Path, workspace: Path) -> DocumentMetadata:
