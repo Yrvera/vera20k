@@ -278,6 +278,7 @@ struct MainMenuCaptureSnapshot {
 
 impl MainMenuCaptureSnapshot {
     fn from_state(state: &AppState) -> Self {
+        let movie_identity = state.main_menu_movie_identity;
         Self {
             width: state.gpu.config.width,
             height: state.gpu.config.height,
@@ -293,9 +294,10 @@ impl MainMenuCaptureSnapshot {
             active_slide_is_main_menu: state.shell_slide_active_shell
                 == Some(ShellSlideKind::MainMenu),
             movie_loaded: state.main_menu_movie.is_some(),
-            movie_owner_is_main_menu: state.main_menu_movie_owner
-                == Some(Ra2tsDialogOwner::MainMenu0xE2),
-            movie_base_is_large: state.main_menu_movie_base == Some(MainMenuMovieBase::Ra2tsL),
+            movie_owner_is_main_menu: movie_identity
+                .is_some_and(|identity| identity.owner() == Ra2tsDialogOwner::MainMenu0xE2),
+            movie_base_is_large: movie_identity
+                .is_some_and(|identity| identity.base() == MainMenuMovieBase::Ra2tsL),
             chrome_loaded: state.main_menu_shell_chrome.is_some(),
             software_cursor_active: state.use_software_cursor(),
             cursor_x: state.cursor_x,
