@@ -13,6 +13,7 @@ use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BuildingUp;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding;
 use crate::sim::world::Simulation;
 
@@ -361,7 +362,12 @@ fn cell_placeable(
     cy: u16,
     water_bound: bool,
 ) -> bool {
-    let no_overlap = !structure_occupies_cell(entities, rules, cx, cy, &sim.interner);
+    let no_overlap = !structure_occupies_cell(entities, rules, cx, cy, &sim.interner)
+        && !ground_non_structure_occupies_cell(sim, cx, cy);
+    let no_overlay = sim
+        .overlay_grid
+        .as_ref()
+        .map_or(true, |grid| grid.cell(cx, cy).overlay_id.is_none());
 
     if water_bound {
         let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
@@ -388,7 +394,7 @@ fn cell_placeable(
                 )
             })
         };
-        cell_ok && no_overlap
+        cell_ok && no_overlap && no_overlay
     } else {
         let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
             terrain.cell(cx, cy).is_some_and(|cell| {
@@ -405,8 +411,26 @@ fn cell_placeable(
             let not_blocked = !sim.effective_build_blocked(cx, cy).unwrap_or(false);
             walkable && not_blocked
         };
-        cell_ok && no_overlap
+        cell_ok && no_overlap && no_overlay
     }
+}
+
+fn ground_non_structure_occupies_cell(sim: &Simulation, rx: u16, ry: u16) -> bool {
+    sim.substrate.occupancy.get(rx, ry).is_some_and(|cell| {
+        cell.iter_layer(MovementLayer::Ground).any(|occupant| {
+            match sim.substrate.entities.get(occupant.entity_id) {
+                Some(entity) => entity.category != EntityCategory::Structure,
+                None => {
+                    debug_assert!(
+                        false,
+                        "occupancy cell ({rx},{ry}) references missing entity {}",
+                        occupant.entity_id
+                    );
+                    true
+                }
+            }
+        })
+    })
 }
 
 pub(crate) fn structure_occupies_cell(

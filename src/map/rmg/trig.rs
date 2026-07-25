@@ -18,6 +18,10 @@
 //! period further along, so there is a single array and two index derivations.
 
 use std::fmt;
+use std::path::Path;
+use std::sync::OnceLock;
+
+use crate::map::rmg::x87;
 
 /// Virtual address of the table in the retail image.
 const TABLE_VA: u32 = 0x0084_F084;
@@ -173,6 +177,28 @@ impl TrigTable {
     /// Cosine of an angle given in caller units.
     pub fn cos(&self, angle_units: i32) -> f32 {
         self.entries[cos_index(angle_units) as usize]
+    }
+
+    /// Sine of an angle in radians. The scaling and the truncation to an integer
+    /// index are the caller's job in the original, so they happen here.
+    pub fn sin_radians(&self, radians: f64) -> f32 {
+        self.sin(x87::ftol(radians_to_units(radians)))
+    }
+
+    /// Cosine of an angle in radians.
+    pub fn cos_radians(&self, radians: f64) -> f32 {
+        self.cos(x87::ftol(radians_to_units(radians)))
+    }
+
+    /// A table of the right shape but not the retail contents, for tests that
+    /// need geometry rather than exactness.
+    #[cfg(test)]
+    pub fn synthetic() -> Self {
+        Self {
+            entries: (0..TABLE_LEN)
+                .map(|i| (i as f64 * std::f64::consts::TAU / PERIOD as f64).sin() as f32)
+                .collect(),
+        }
     }
 }
 
@@ -352,4 +378,45 @@ mod tests {
             TrigTableError::NotPeFile
         );
     }
+}
+
+/// Process-wide table, installed once from the retail install.
+///
+/// A global because the two entry points that build a generation's inputs sit
+/// at different layers and only one of them knows where the install is. It is
+/// written once and read-only thereafter, so it cannot make a run
+/// non-deterministic.
+static TABLE: OnceLock<Option<TrigTable>> = OnceLock::new();
+
+/// Read the table out of `<ra2_dir>/gamemd.exe` and install it. Later calls are
+/// ignored; the first one wins.
+pub fn install_from_dir(ra2_dir: &Path) {
+    TABLE.get_or_init(|| {
+        let path = ra2_dir.join("gamemd.exe");
+        match std::fs::read(&path) {
+            Ok(image) => match TrigTable::from_executable(&image) {
+                Ok(table) if table.matches_retail() => Some(table),
+                Ok(_) => {
+                    log::warn!(
+                        "random map: {} holds a sine table this build does not                          recognise; rivers will be skipped",
+                        path.display()
+                    );
+                    None
+                }
+                Err(err) => {
+                    log::warn!("random map: {}: {err}; rivers will be skipped", path.display());
+                    None
+                }
+            },
+            Err(err) => {
+                log::warn!("random map: cannot read {}: {err}; rivers will be skipped", path.display());
+                None
+            }
+        }
+    });
+}
+
+/// The installed table, if there is one.
+pub fn global() -> Option<&'static TrigTable> {
+    TABLE.get().and_then(|slot| slot.as_ref())
 }

@@ -373,13 +373,18 @@ pub(crate) fn load_map_initial_with_assets(
         // start-placement time, before any rock/rough/cliff terrain exists), but
         // it is resolved faithfully from `rulesmd.ini` when present; a missing
         // file falls back to the passable defaults.
+        crate::map::rmg::trig::install_from_dir(&ra2_dir);
         let terrain_rules = asset_manager
             .get_ref("rulesmd.ini")
             .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
             .map(|ini| crate::rules::terrain_rules::TerrainRules::from_ini(&ini))
             .unwrap_or_default();
         let resolved =
-            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(&theater, &terrain_rules);
+            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(
+                &theater,
+                &terrain_rules,
+                crate::map::rmg::trig::global().cloned(),
+            );
 
         // Tile-block layouts (sub-cell height/terrain grids) from the theater's
         // real TMP data — the shore tiler and zone classifier read these.
@@ -1337,6 +1342,10 @@ mod random_map_retail_tests {
 
     /// The configurations the dialog itself can emit.
     const RETAIL_MAP_TYPES: [i32; 4] = [1, 2, 3, 4];
+    /// Comfortably above the river gate of 20, so the carved map types seed a
+    /// lake *and* a river and both get their tiles resolved against retail
+    /// theater data.
+    const RETAIL_WATER_AMOUNT: i32 = 50;
     const RETAIL_THEATERS: [i32; 2] = [0, 1];
 
     /// A generated map must carry far more than this; the bar exists only to
@@ -1381,6 +1390,11 @@ mod random_map_retail_tests {
                     theater,
                     num_players: 4,
                     seed: 4242,
+                    // Above the river gate, so the carved map types actually
+                    // seed water. The default is zero, which skips their whole
+                    // seeder — this pass validated neither lakes nor rivers
+                    // until that was noticed.
+                    water_amount: RETAIL_WATER_AMOUNT,
                     ..Default::default()
                 };
                 let (seed_dir, seed_name) = write_seed(&options, &tag);
