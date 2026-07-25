@@ -249,6 +249,7 @@ pub fn generate_map_observed(
         map_file,
         start_waypoints: output.waypoints,
         stages_run: executed_stages(&options),
+        unfilled_start_slots: output.unfilled_start_slots,
     }
 }
 

@@ -407,6 +407,15 @@ pub(crate) fn load_map_initial_with_assets(
             options.seed,
             options.num_players
         );
+        if generated.unfilled_start_slots > 0 {
+            log::warn!(
+                "Random map is short of spawns: {} start slot(s) could not be \
+                 filled (seed={}, players={}); those players have no start position",
+                generated.unfilled_start_slots,
+                options.seed,
+                options.num_players
+            );
+        }
 
         progress.milestone(8);
         return Ok(MapLoadInitial {

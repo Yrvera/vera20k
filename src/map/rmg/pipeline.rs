@@ -106,6 +106,8 @@ pub struct PipelineOutput {
     pub terrain: Vec<(String, i16, i16)>,
     /// Placed `(name, x, y)` neutral tech buildings.
     pub structures: Vec<(String, i16, i16)>,
+    /// Start slots no region could fill. See `StartsOutcome`.
+    pub unfilled_start_slots: usize,
 }
 
 /// Run the whole deterministic pipeline in place over `grid`/`scratch`, drawing
@@ -222,6 +224,10 @@ pub fn run_pipeline(
         };
         starts::run(&mut ctx, &args, &zones)
     };
+    // Captured before `outcome` moves into the tiberium phase, which is also
+    // the phase that turns each unfilled slot into a field seeded at the map
+    // origin.
+    let unfilled_start_slots = outcome.unfilled_start_slots;
     waypoints = outcome
         .waypoints
         .iter()
@@ -365,6 +371,7 @@ pub fn run_pipeline(
         waypoints,
         terrain,
         structures,
+        unfilled_start_slots,
     }
 }
 
@@ -588,6 +595,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Start starvation is reachable, and the port now stops short and counts
+    /// instead of aborting the run.
+    ///
+    /// This pins a DELIBERATE DIVERGENCE, not parity. The original cannot fail
+    /// here — its two start routines hardcode success — so on starvation it
+    /// either walks a null array pointer and faults, or reads uninitialised
+    /// heap whose contents follow the process's allocation history rather than
+    /// the seed. There is nothing reproducible to copy.
+    #[test]
+    fn a_starved_map_counts_its_unfilled_start_slots() {
+        let (_, output) = run(9, 0, 0);
+        assert!(
+            output.unfilled_start_slots > 0,
+            "the 1x1 synthetic tile block starves the selector on this fixture"
+        );
+        // Conservation: every quota slot is either written or counted. This is
+        // what pins the counter to the whole remaining tail rather than to 1.
+        assert_eq!(
+            output.waypoints.len() + output.unfilled_start_slots,
+            STANDARD_START_QUOTA as usize,
+            "written + unfilled must account for every start slot"
+        );
+    }
+
+    /// A starved region cannot leak a tiberium field onto the map origin, and
+    /// the reason is structural rather than lucky.
+    ///
+    /// The tiberium phase substitutes `(0, 0)` for an unwritten waypoint, so
+    /// starvation looks like it should stack fields in the map corner. It
+    /// cannot: starvation means the selection was shorter than the quota, so
+    /// the drain's `min(quota, selection.len())` consumes the whole selection
+    /// and leaves the region's field-slot list empty; the tiberium phase then
+    /// takes its `field_count == 0` early-out and skips the region entirely,
+    /// before pass 2 — the only place the origin substitution happens — is ever
+    /// reached.
+    ///
+    /// Pinned because it is a coupling between two phases that no single file
+    /// states: widening the drain, or moving the early-out, would silently put
+    /// tiberium in the corner of every starved map.
+    #[test]
+    fn a_starved_slot_never_seeds_tiberium_at_the_origin() {
+        let (_, output) = run(9, 0, 0);
+        assert!(output.unfilled_start_slots > 0, "fixture starves");
+        assert!(
+            !output.terrain.iter().any(|(_, x, y)| *x == 0 && *y == 0),
+            "no terrain object may land on the map origin; terrain was {:?}",
+            output.terrain
+        );
     }
 
     #[test]

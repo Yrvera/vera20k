@@ -79,6 +79,15 @@ pub struct StartsOutcome {
     /// Ids of zero-quota regions that won the map-type-0 tech-building coin
     /// flip, in bucket order. Consumed by the tech-building phase.
     pub tech_regions: Vec<i32>,
+    /// How many waypoint slots a region could not fill because its selection
+    /// came up shorter than its quota.
+    ///
+    /// Non-zero means the map is short of spawns: those slots stay `None` and
+    /// no start is placed for them. Carried out to `GeneratedMap` so a release
+    /// build reports the condition rather than shipping it silently — without
+    /// this the shortfall is invisible, because the only other signal was a
+    /// `debug_assert!` that vanishes in release.
+    pub unfilled_start_slots: usize,
 }
 
 pub fn run(ctx: &mut StartsCtx<'_>, args: &StartsArgs, zones: &ZoneField) -> StartsOutcome {
@@ -147,6 +156,7 @@ pub fn run(ctx: &mut StartsCtx<'_>, args: &StartsArgs, zones: &ZoneField) -> Sta
     let mut outcome = StartsOutcome {
         waypoints: vec![None; args.start_quota.max(0) as usize],
         tech_regions: Vec::new(),
+        unfilled_start_slots: 0,
     };
     let mut offset = 0i32;
     for &(_, index) in &order {
@@ -320,6 +330,9 @@ fn place_region_starts(
         buffer.push((cx, cy));
     }
 
+    // Returning here cannot desynchronise the draw stream: `select_candidates`
+    // borrows `ctx` immutably, so it is incapable of drawing at all — the type
+    // system enforces that, not a convention that could quietly be broken.
     let Some(mut selection) = select_candidates(ctx, args, region_index, &buffer) else {
         return;
     };
@@ -327,9 +340,14 @@ fn place_region_starts(
     for slot_index in 0..quota {
         let slot = (offset + slot_index) as usize;
         let Some(&cell) = selection.get(slot_index as usize) else {
-            // The original would read past the selection buffer here
-            // (uninitialised heap); there is no defined output to match.
-            debug_assert!(false, "quota exceeded the selection size");
+            // The original has nothing here worth copying, and its two starved
+            // cases differ. Selecting nothing at all walks a null array pointer
+            // and faults; a short selection reads uninitialised heap, whose
+            // contents follow the process's allocation history rather than the
+            // seed, so even two generations in one session disagree. Neither is
+            // reproducible, so stopping short is a deliberate divergence —
+            // counted and reported, never claimed as parity.
+            outcome.unfilled_start_slots += (quota - slot_index) as usize;
             break;
         };
         if let Some(way) = outcome.waypoints.get_mut(slot) {

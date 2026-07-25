@@ -1499,6 +1499,13 @@ impl App {
                         let _ = sender.send(RandomMapUpdate::Progress(Box::new(view.snapshot())));
                     },
                 );
+                if generated.unfilled_start_slots > 0 {
+                    log::warn!(
+                        "Random map is short of spawns: {} start slot(s) could \
+                         not be filled; those players have no start position",
+                        generated.unfilled_start_slots
+                    );
+                }
                 let _ = sender.send(RandomMapUpdate::Finished(Box::new(generated)));
             });
         match spawned {
