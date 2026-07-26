@@ -79,6 +79,33 @@ overwrites an output or mutates the guard/run tree. A RED report exits with
 status 1 because the current capture is still drift; an invalid evidence input
 exits with 2.
 
+The additive `main-menu-0xe2-entry-sequence` path is separate from the sealed
+steady schema and comparator. It validates exactly 14 final-swapchain BGRA
+frames (ticks `0..13`) after the RGB565 presenter:
+
+```powershell
+python -m tools.shell_certification validate-entry-sequence `
+  --capture C:\path\to\immutable-entry-sequence
+
+python -m tools.shell_certification capture-entry-sequence `
+  --executable C:\path\to\vera20k.exe `
+  --working-directory C:\Users\enok\Documents\ra2-rust-game `
+  --run-dir C:\path\to\brand-new-entry-sequence
+```
+
+The bundle inventory is exactly `capture.json` and `frames.bgra`. The payload
+is 26,880,000 bytes: fourteen contiguous 800x600 BGRA frames of 1,920,000
+bytes each. Validation requires one generation, ordered ticks and offsets,
+completion after tick 13, neutral software cursor identity, bare dialog
+`0xE2`, and presenter domain `final-swapchain-after-rgb565`. The validator
+reports manifest, payload, and per-frame SHA-256 values as provenance.
+
+A valid Rust sequence is not native pixel parity evidence. Until comparable
+native transition frames exist, movie phase, child text, cursor/focus behavior,
+and every native sequence row remain `UNVERIFIED`. The capture command must not
+be launched when the enrolled Oracle/capture safety status is invalid,
+unenrolled, stale, or ambiguous.
+
 The working directory is required because VERA20k loads `config.toml` and
 other relative resources from its process working directory. The wrapper
 requires an absolute non-link directory and a regular non-link `config.toml`,

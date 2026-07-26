@@ -6,7 +6,9 @@ use std::time::Instant;
 use anyhow::Result;
 
 use crate::app::AppState;
-use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
+use crate::app_shell_transition::{
+    ButtonGroup, MainMenuEntryPaintFrame, MainMenuEntryPresentToken,
+};
 use crate::render::batch::SpriteInstance;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_paint::{
@@ -46,6 +48,11 @@ pub(crate) enum MainMenuShellRenderResult {
     Rendered {
         title_receipt: Option<Kind1RevealReceipt>,
     },
+    Fallback,
+}
+
+pub(crate) enum MainMenuEntryRenderResult {
+    Rendered { token: MainMenuEntryPresentToken },
     Fallback,
 }
 
@@ -124,14 +131,14 @@ fn push_entry_sized(
 fn main_menu_paint_buttons(
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
-    wave: Option<&ShellFrameWave>,
+    entry_frame: Option<MainMenuEntryPaintFrame>,
 ) -> Vec<PaintButton> {
     layout
         .buttons
         .iter()
-        .enumerate()
-        .map(|(slot, button)| {
-            let wave_frame = wave.map(|w| w.sdbtnanm_frame(slot as u32, ButtonGroup::A) as usize);
+        .map(|button| {
+            let wave_frame = entry_frame
+                .and_then(|frame| frame.sdbtnanm_frame(button.id.resource_id(), ButtonGroup::A));
             PaintButton {
                 rect: button.rect,
                 pressed: pressed_button == Some(button.id),
@@ -389,9 +396,8 @@ fn menu_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
 
 /// Paint the normal 0xE2 route through its active-retail presentation boundary.
 ///
-/// First-paint transition callers intentionally use
-/// [`render_main_menu_shell_to_target`] so their shared transition target is
-/// not post-processed as a steady native primary surface.
+/// First-paint callers use [`render_main_menu_first_paint_frame`] so entry and
+/// steady paint share this exact RGB565 presentation boundary.
 pub(crate) fn render_main_menu_shell(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
@@ -413,6 +419,7 @@ pub(crate) fn render_main_menu_shell(
             depth: &depth,
         },
         title_window,
+        None,
     )?;
     match result {
         MainMenuShellRenderResult::Rendered { .. } => {
@@ -425,12 +432,40 @@ pub(crate) fn render_main_menu_shell(
     }
 }
 
-pub(crate) fn render_main_menu_shell_to_target(
+pub(crate) fn render_main_menu_first_paint_frame(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    target: ShellRenderTarget<'_>,
-) -> Result<MainMenuShellRenderResult> {
-    render_main_menu_shell_to_target_inner(state, encoder, target, None)
+    destination: &wgpu::Texture,
+    frame: MainMenuEntryPaintFrame,
+) -> Result<MainMenuEntryRenderResult> {
+    let color = state.shell_surface_presenter.source_render_view();
+    let depth = state.depth_view.clone();
+    let result = render_main_menu_shell_to_target_inner(
+        state,
+        encoder,
+        ShellRenderTarget {
+            color: &color,
+            depth: &depth,
+        },
+        None,
+        Some(frame),
+    )?;
+    match result {
+        MainMenuShellRenderResult::Rendered { .. } => {
+            state
+                .shell_surface_presenter
+                .encode_present(encoder, destination);
+            let token = state
+                .shell_first_paint_slide
+                .as_ref()
+                .and_then(|wave| wave.mint_present_token(frame))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("main-menu entry frame changed before presenter token mint")
+                })?;
+            Ok(MainMenuEntryRenderResult::Rendered { token })
+        }
+        MainMenuShellRenderResult::Fallback => Ok(MainMenuEntryRenderResult::Fallback),
+    }
 }
 
 fn render_main_menu_shell_to_target_inner(
@@ -438,6 +473,7 @@ fn render_main_menu_shell_to_target_inner(
     encoder: &mut wgpu::CommandEncoder,
     target: ShellRenderTarget<'_>,
     title_window: Option<Kind1RevealWindow>,
+    entry_frame: Option<MainMenuEntryPaintFrame>,
 ) -> Result<MainMenuShellRenderResult> {
     ensure_movie_for_current_layout(state, Ra2tsDialogOwner::MainMenu0xE2)?;
     if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
@@ -459,9 +495,6 @@ fn render_main_menu_shell_to_target_inner(
     }
 
     let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
-    // While a first-paint slide is live the buttons animate through their
-    // SDBTNANM ramp frames; off-slide this is None and they paint steady-state.
-    let wave = state.shell_first_paint_slide.clone();
     let chrome = state
         .main_menu_shell_chrome
         .as_ref()
@@ -484,7 +517,7 @@ fn render_main_menu_shell_to_target_inner(
     let buttons = main_menu_paint_buttons(
         &layout,
         state.main_menu_shell_state.pressed_owner_draw_button,
-        wave.as_ref(),
+        entry_frame,
     );
     // 0xE2 never flashes, so the hover clock is unused (None) — keep the call
     // shape uniform with 0x100, which threads its hover_started_at.
@@ -825,6 +858,44 @@ fn owner_draw_button_label_rect(rect: RectPx, pressed: bool) -> RectPx {
 mod tests {
     use super::*;
     use crate::ui::main_menu_shell::compute_layout;
+    use crate::ui::shell::slide::{PresentedPoll, ShellFrameWave};
+    use std::time::Duration;
+
+    #[test]
+    fn options_and_exit_share_the_fifth_main_menu_entry_tick() {
+        let start = Instant::now();
+        let mut wave = ShellFrameWave::new_presented_main_menu(1);
+        assert!(wave.activate_after_acquire());
+        for tick in 0..6_u64 {
+            let frame = wave.current_main_menu_frame().expect("ready frame");
+            let token = wave.mint_present_token(frame).expect("matching token");
+            let accepted_at = start + Duration::from_millis(30 * tick);
+            wave.record_presented(token, accepted_at).expect("accept");
+            assert_eq!(
+                wave.poll_presented(accepted_at + Duration::from_millis(30)),
+                Some(PresentedPoll::Acquire)
+            );
+        }
+        let frame = wave.current_main_menu_frame().expect("tick 6");
+        let buttons = main_menu_paint_buttons(&compute_layout(800, 600), None, Some(frame));
+        assert_eq!(buttons[4].wave_frame, buttons[5].wave_frame);
+    }
+
+    #[test]
+    fn main_menu_entry_schedule_is_resource_keyed_not_vector_keyed() {
+        let mut layout = compute_layout(800, 600);
+        layout.buttons.reverse();
+        let mut wave = ShellFrameWave::new_presented_main_menu(2);
+        assert!(wave.activate_after_acquire());
+        let frame = wave.current_main_menu_frame().expect("tick 0");
+        let painted = main_menu_paint_buttons(&layout, None, Some(frame));
+        for (button, paint) in layout.buttons.iter().zip(painted.iter()) {
+            assert_eq!(
+                paint.wave_frame,
+                frame.sdbtnanm_frame(button.id.resource_id(), ButtonGroup::A)
+            );
+        }
+    }
 
     #[test]
     fn owner_draw_label_rect_matches_native_boundaries() {

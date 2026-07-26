@@ -16,6 +16,10 @@ from .core import (
     ValidationError,
     compare_to_file,
 )
+from .entry_sequence import (
+    capture_entry_sequence,
+    validate_entry_sequence_bundle,
+)
 from .orchestrator import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_TIMEOUT_SECONDS,
@@ -84,6 +88,26 @@ def build_parser() -> argparse.ArgumentParser:
     title.add_argument("--guard", required=True, type=Path)
     title.add_argument("--oracle-runs", required=True, type=Path)
     title.add_argument("--output", required=True, type=Path)
+
+    validate_sequence = commands.add_parser(
+        "validate-entry-sequence",
+        help="validate an immutable 14-frame 0xE2 entry-sequence bundle",
+    )
+    validate_sequence.add_argument("--capture", required=True, type=Path)
+
+    capture_sequence = commands.add_parser(
+        "capture-entry-sequence",
+        help="launch one hidden child and validate its 0xE2 entry sequence",
+    )
+    capture_sequence.add_argument("--executable", required=True, type=Path)
+    capture_sequence.add_argument("--working-directory", required=True, type=Path)
+    capture_sequence.add_argument("--run-dir", required=True, type=Path)
+    capture_sequence.add_argument(
+        "--timeout",
+        type=_timeout,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=f"child timeout in seconds (default {DEFAULT_TIMEOUT_SECONDS:g})",
+    )
     return parser
 
 
@@ -130,13 +154,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
-        else:
+        elif arguments.command_name == "title-differential":
             report = write_title_differential(
                 arguments.capture,
                 arguments.guard,
                 arguments.oracle_runs,
                 arguments.output,
             )
+        elif arguments.command_name == "validate-entry-sequence":
+            validation = validate_entry_sequence_bundle(arguments.capture)
+            print(json.dumps(validation, sort_keys=True))
+            return 0
+        else:
+            run = capture_entry_sequence(
+                arguments.executable,
+                arguments.run_dir,
+                working_directory=arguments.working_directory,
+                timeout_seconds=arguments.timeout,
+            )
+            print(json.dumps(run, sort_keys=True))
+            return 0
     except (ValidationError, OutputExistsError, OSError) as exc:
         print(f"shell certification error: {exc}", file=sys.stderr)
         return 2

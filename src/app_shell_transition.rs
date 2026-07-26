@@ -16,27 +16,29 @@
 
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::app::AppState;
 use crate::ui::shell::descriptor::DialogId;
 
 // Re-export the render-agnostic schedule types from the shared substrate so the
 // shell renderers (and the `AppState` field) keep their existing import paths.
-pub(crate) use crate::ui::shell::slide::{ButtonGroup, ShellFrameWave};
-
-/// Proof that the terminal main-menu slide frame was encoded. The app consumes
-/// it only after that frame is submitted and presented.
-#[derive(Debug)]
-pub(crate) struct MainMenuEntryPresentReceipt {
-    _private: (),
-}
+pub(crate) use crate::ui::shell::slide::{
+    ButtonGroup, MainMenuEntryPaintFrame, MainMenuEntryPresentToken, PresentedPoll, ShellFrameWave,
+};
 
 pub(crate) enum ShellFirstPaintRenderResult {
     NotRendered,
     Rendered {
-        main_menu_entry_receipt: Option<MainMenuEntryPresentReceipt>,
+        main_menu_entry_token: Option<MainMenuEntryPresentToken>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MainMenuFirstPaintPoll {
+    Acquire,
+    WaitUntil(Instant),
+    Completed,
 }
 
 /// Which shell dialog a first-paint slide belongs to. Every allow-listed shell
@@ -82,7 +84,6 @@ enum ShellEntryEffect {
 
 #[derive(Debug)]
 enum ShellWaveCompletion {
-    MainMenu(MainMenuEntryPresentReceipt),
     SinglePlayer,
     Skirmish,
 }
@@ -95,6 +96,7 @@ enum ShellWaveCompletion {
 struct ShellLifecycleReducer<'a> {
     active_shell: &'a mut Option<ShellSlideKind>,
     first_paint_slide: &'a mut Option<ShellFrameWave>,
+    slide_generation: &'a mut u64,
     title_reveal: &'a mut crate::ui::shell::static_reveal::Kind1StaticReveal,
 }
 
@@ -103,6 +105,7 @@ impl<'a> ShellLifecycleReducer<'a> {
         Self {
             active_shell: &mut state.shell_slide_active_shell,
             first_paint_slide: &mut state.shell_first_paint_slide,
+            slide_generation: &mut state.shell_slide_generation,
             title_reveal: &mut state.main_menu_shell_state.title_reveal,
         }
     }
@@ -125,10 +128,15 @@ impl<'a> ShellLifecycleReducer<'a> {
         *self.active_shell = target;
         match target {
             Some(kind) => {
-                *self.first_paint_slide = Some(ShellFrameWave::new_first_paint_slide(
-                    kind.slot_count(),
-                    now,
-                ));
+                *self.first_paint_slide = Some(if kind == ShellSlideKind::MainMenu {
+                    *self.slide_generation = self.slide_generation.wrapping_add(1);
+                    if *self.slide_generation == 0 {
+                        *self.slide_generation = 1;
+                    }
+                    ShellFrameWave::new_presented_main_menu(*self.slide_generation)
+                } else {
+                    ShellFrameWave::new_first_paint_slide(kind.slot_count(), now)
+                });
                 ShellEntryEffect::Started(kind)
             }
             None => {
@@ -154,25 +162,37 @@ impl<'a> ShellLifecycleReducer<'a> {
         }
         *self.first_paint_slide = None;
         Some(match kind {
-            ShellSlideKind::MainMenu => {
-                ShellWaveCompletion::MainMenu(MainMenuEntryPresentReceipt { _private: () })
-            }
+            ShellSlideKind::MainMenu => return None,
             ShellSlideKind::SinglePlayer => ShellWaveCompletion::SinglePlayer,
             ShellSlideKind::Skirmish => ShellWaveCompletion::Skirmish,
         })
     }
 
-    fn record_main_menu_entry_presented(
-        &mut self,
-        _receipt: MainMenuEntryPresentReceipt,
-        title: &str,
-        now: Instant,
-    ) -> bool {
-        if *self.active_shell != Some(ShellSlideKind::MainMenu) || self.first_paint_slide.is_some()
+    fn complete_presented_main_menu(&mut self, generation: u64, title: &str, now: Instant) -> bool {
+        if *self.active_shell != Some(ShellSlideKind::MainMenu)
+            || !self
+                .first_paint_slide
+                .as_ref()
+                .is_some_and(|wave| wave.is_presented_completing(generation))
         {
+            if let Some(wave) = self.first_paint_slide.as_mut() {
+                wave.poison_presented();
+            }
             return false;
         }
-        self.title_reveal.start(title, now)
+        if !self.title_reveal.start(title, now)
+            || !self
+                .first_paint_slide
+                .as_ref()
+                .is_some_and(|wave| wave.is_presented_completing(generation))
+        {
+            if let Some(wave) = self.first_paint_slide.as_mut() {
+                wave.poison_presented();
+            }
+            return false;
+        }
+        *self.first_paint_slide = None;
+        true
     }
 }
 
@@ -212,20 +232,37 @@ pub(crate) fn poll_main_menu_title_reveal(state: &mut AppState) {
     }
 }
 
-/// Apply the SHOW-completion edge after the terminal slide frame presents.
+pub(crate) fn current_main_menu_entry_frame(state: &AppState) -> Option<MainMenuEntryPaintFrame> {
+    state
+        .shell_first_paint_slide
+        .as_ref()
+        .and_then(ShellFrameWave::current_main_menu_frame)
+}
+
+/// Commit one exact main-menu generation/tick after `output.present()`.
+/// Any impossible mismatch poisons the already-visible wave before returning.
 pub(crate) fn record_main_menu_entry_presented(
     state: &mut AppState,
-    receipt: MainMenuEntryPresentReceipt,
-) -> bool {
+    token: MainMenuEntryPresentToken,
+) -> Result<()> {
+    let generation = token.generation();
+    let tick = token.tick();
     if current_shell_slide_target(state) != Some(ShellSlideKind::MainMenu) {
-        return false;
+        if let Some(wave) = state.shell_first_paint_slide.as_mut() {
+            wave.poison_presented();
+        }
+        bail!(
+            "main-menu present token {generation}:{tick} committed after route ownership changed"
+        );
     }
-    let title = crate::app_main_menu_shell_render::main_menu_title_text(state).to_owned();
-    ShellLifecycleReducer::from_state(state).record_main_menu_entry_presented(
-        receipt,
-        &title,
-        Instant::now(),
-    )
+    let Some(wave) = state.shell_first_paint_slide.as_mut() else {
+        bail!("main-menu present token {generation}:{tick} has no active wave");
+    };
+    if let Err(error) = wave.record_presented(token, Instant::now()) {
+        wave.poison_presented();
+        bail!("main-menu present token {generation}:{tick} rejected: {error}");
+    }
+    Ok(())
 }
 
 pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
@@ -238,6 +275,20 @@ pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
 
 pub(crate) fn transition_blocks_shell_input(transition: Option<&ShellFrameWave>) -> bool {
     transition.is_some()
+}
+
+pub(crate) fn main_menu_presented_wake_deadline(state: &AppState) -> Option<Instant> {
+    state
+        .shell_first_paint_slide
+        .as_ref()
+        .and_then(ShellFrameWave::presented_wake_deadline)
+}
+
+pub(crate) fn main_menu_presented_is_poisoned(state: &AppState) -> bool {
+    state
+        .shell_first_paint_slide
+        .as_ref()
+        .is_some_and(ShellFrameWave::is_presented_poisoned)
 }
 
 /// Which allow-listed shell dialog is currently showing, if any. Mirrors the
@@ -264,18 +315,71 @@ pub(crate) fn current_shell_slide_target(state: &AppState) -> Option<ShellSlideK
     crate::ui::shell::slide::is_slide_eligible(candidate.dialog_id()).then_some(candidate)
 }
 
-/// Detect entry into an allow-listed shell dialog and (re)start its first-paint
-/// slide. Run once per frame: when the showing shell changes to an eligible one
-/// (launch, navigation, return-from-game) a fresh wave begins and the slide-in
-/// start cue plays; leaving all shells cancels any in-flight wave. Mirrors the
-/// original, where each dialog is re-created on entry and slides on its own first
-/// WM_PAINT, with `GUIMoveInSound` played at the start of that slide.
-pub(crate) fn update_shell_first_paint_slide_trigger(state: &mut AppState) {
+/// Arm a newly created `0xE2` before swapchain acquisition. This deliberately
+/// does not play the entry cue or expose tick 0.
+pub(crate) fn prepare_main_menu_first_paint_before_acquire(state: &mut AppState) {
     let target = current_shell_slide_target(state);
+    if target == Some(ShellSlideKind::MainMenu) {
+        if state.shell_slide_active_shell != target {
+            ShellLifecycleReducer::from_state(state).observe_target(target, Instant::now());
+        }
+    } else if state.shell_slide_active_shell == Some(ShellSlideKind::MainMenu) {
+        ShellLifecycleReducer::from_state(state).observe_target(None, Instant::now());
+    }
+}
+
+/// Poll the exact `0xE2` clock before acquiring another surface.
+pub(crate) fn poll_main_menu_first_paint_before_acquire(
+    state: &mut AppState,
+    now: Instant,
+) -> Result<MainMenuFirstPaintPoll> {
+    if current_shell_slide_target(state) != Some(ShellSlideKind::MainMenu) {
+        return Ok(MainMenuFirstPaintPoll::Acquire);
+    }
+    let Some(wave) = state.shell_first_paint_slide.as_mut() else {
+        return Ok(MainMenuFirstPaintPoll::Acquire);
+    };
+    let Some(poll) = wave.poll_presented(now) else {
+        return Ok(MainMenuFirstPaintPoll::Acquire);
+    };
+    match poll {
+        PresentedPoll::Acquire => Ok(MainMenuFirstPaintPoll::Acquire),
+        PresentedPoll::WaitUntil(deadline) => Ok(MainMenuFirstPaintPoll::WaitUntil(deadline)),
+        PresentedPoll::Poisoned => bail!("main-menu first-paint wave is poisoned"),
+        PresentedPoll::Complete => {
+            let generation = wave
+                .presented_generation()
+                .expect("presented poll has generation");
+            // Active-retail stock leaves ShellButtonSlideSound empty, but the
+            // completion hook remains a named lifecycle edge.
+            crate::app::App::play_shell_slide_completion_sound(state);
+            let title = crate::app_main_menu_shell_render::main_menu_title_text(state).to_owned();
+            if !ShellLifecycleReducer::from_state(state)
+                .complete_presented_main_menu(generation, &title, now)
+            {
+                bail!("main-menu generation {generation} failed its completion transaction");
+            }
+            Ok(MainMenuFirstPaintPoll::Completed)
+        }
+    }
+}
+
+/// Activate an armed `0xE2` only after successful swapchain acquisition.
+/// Compatibility dialogs retain their prior post-acquisition entry behavior.
+pub(crate) fn activate_shell_first_paint_after_acquire(state: &mut AppState) {
+    let target = current_shell_slide_target(state);
+    if target == Some(ShellSlideKind::MainMenu) {
+        if state
+            .shell_first_paint_slide
+            .as_mut()
+            .is_some_and(ShellFrameWave::activate_after_acquire)
+        {
+            crate::app::App::play_shell_slide_in_sound(state);
+        }
+        return;
+    }
     let effect = ShellLifecycleReducer::from_state(state).observe_target(target, Instant::now());
     if let ShellEntryEffect::Started(_) = effect {
-        // The slide-in trigger plays GUIMoveInSound (stock MenuSlideIn) at
-        // the start of the controls-reveal animation, on each shell entry.
         crate::app::App::play_shell_slide_in_sound(state);
     }
 }
@@ -288,6 +392,7 @@ pub(crate) fn update_shell_first_paint_slide_trigger(state: &mut AppState) {
 pub(crate) fn render_shell_first_paint_slide(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
+    destination: &wgpu::Texture,
     target: &wgpu::TextureView,
 ) -> Result<ShellFirstPaintRenderResult> {
     if state.shell_first_paint_slide.is_none() {
@@ -299,6 +404,27 @@ pub(crate) fn render_shell_first_paint_slide(
         state.shell_first_paint_slide = None;
         return Ok(ShellFirstPaintRenderResult::NotRendered);
     };
+
+    if kind == ShellSlideKind::MainMenu {
+        let frame = current_main_menu_entry_frame(state)
+            .ok_or_else(|| anyhow::anyhow!("main-menu entry acquired without a ready frame"))?;
+        return match crate::app_main_menu_shell_render::render_main_menu_first_paint_frame(
+            state,
+            encoder,
+            destination,
+            frame,
+        )? {
+            crate::app_main_menu_shell_render::MainMenuEntryRenderResult::Rendered { token } => {
+                Ok(ShellFirstPaintRenderResult::Rendered {
+                    main_menu_entry_token: Some(token),
+                })
+            }
+            crate::app_main_menu_shell_render::MainMenuEntryRenderResult::Fallback => {
+                state.shell_first_paint_slide = None;
+                Ok(ShellFirstPaintRenderResult::NotRendered)
+            }
+        };
+    }
 
     ShellLifecycleReducer::from_state(state).advance_wave(Instant::now());
 
@@ -328,22 +454,7 @@ pub(crate) fn render_shell_first_paint_slide(
             )?,
             crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Rendered
         ),
-        ShellSlideKind::MainMenu => {
-            // The wave owns a shared transition target, not the native steady
-            // primary-surface boundary finalized by render_main_menu_shell.
-            let depth = state.depth_view.clone();
-            matches!(
-                crate::app_main_menu_shell_render::render_main_menu_shell_to_target(
-                    state,
-                    encoder,
-                    crate::render::shell_transition_pass::ShellRenderTarget {
-                        color: target,
-                        depth: &depth,
-                    },
-                )?,
-                crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered { .. }
-            )
-        }
+        ShellSlideKind::MainMenu => unreachable!("handled above"),
     };
 
     if !rendered {
@@ -354,7 +465,6 @@ pub(crate) fn render_shell_first_paint_slide(
     }
 
     let completion = ShellLifecycleReducer::from_state(state).finish_completed_wave(kind);
-    let mut main_menu_entry_receipt = None;
     match completion {
         // The slide completion edge kicks off the Skirmish right-panel statics'
         // character reveal. Start it here, on the same edge that clears the
@@ -367,14 +477,11 @@ pub(crate) fn render_shell_first_paint_slide(
                 .skirmish_shell_state
                 .start_right_panel_static_reveals(&title, &game_type, &map_label, now);
         }
-        Some(ShellWaveCompletion::MainMenu(receipt)) => {
-            main_menu_entry_receipt = Some(receipt);
-        }
         Some(ShellWaveCompletion::SinglePlayer) | None => {}
     }
 
     Ok(ShellFirstPaintRenderResult::Rendered {
-        main_menu_entry_receipt,
+        main_menu_entry_token: None,
     })
 }
 
@@ -393,7 +500,7 @@ mod tests {
 
     #[test]
     fn shell_kinds_resolve_data_driven_slot_counts() {
-        assert_eq!(ShellSlideKind::MainMenu.slot_count(), 6);
+        assert_eq!(ShellSlideKind::MainMenu.slot_count(), 5);
         assert_eq!(ShellSlideKind::SinglePlayer.slot_count(), 4);
         assert_eq!(ShellSlideKind::Skirmish.slot_count(), 3);
     }
@@ -419,12 +526,14 @@ mod tests {
 
         let mut active_shell = Some(ShellSlideKind::MainMenu);
         let mut first_paint_slide = None;
+        let mut slide_generation = 41;
         let mut slide_sound_edges = Vec::new();
 
         // Open 0x100: 0xE2 is destroyed, but no 0x100 frame is allowed to run.
         ShellLifecycleReducer {
             active_shell: &mut active_shell,
             first_paint_slide: &mut first_paint_slide,
+            slide_generation: &mut slide_generation,
             title_reveal: &mut title_reveal,
         }
         .invalidate_main_menu_dialog_instance();
@@ -437,6 +546,7 @@ mod tests {
         ShellLifecycleReducer {
             active_shell: &mut active_shell,
             first_paint_slide: &mut first_paint_slide,
+            slide_generation: &mut slide_generation,
             title_reveal: &mut title_reveal,
         }
         .invalidate_main_menu_dialog_instance();
@@ -448,55 +558,124 @@ mod tests {
         let effect = ShellLifecycleReducer {
             active_shell: &mut active_shell,
             first_paint_slide: &mut first_paint_slide,
+            slide_generation: &mut slide_generation,
             title_reveal: &mut title_reveal,
         }
         .observe_target(Some(ShellSlideKind::MainMenu), start);
-        if let ShellEntryEffect::Started(kind) = effect {
-            slide_sound_edges.push(kind);
-        }
-        assert_eq!(slide_sound_edges, [ShellSlideKind::MainMenu]);
+        assert_eq!(effect, ShellEntryEffect::Started(ShellSlideKind::MainMenu));
+        assert_eq!(slide_generation, 42);
+        assert!(slide_sound_edges.is_empty(), "arming must remain silent");
         assert_eq!(title_reveal.paint_window(), Kind1PaintWindow::Hidden);
         assert!(first_paint_slide.is_some());
         assert_eq!(active_shell, Some(ShellSlideKind::MainMenu));
 
-        // Drive the same reducer used by the production renderer through all 15
-        // 0xE2 wave ticks, then commit its opaque receipt after presentation.
-        let mut entry_receipt = None;
-        for tick in 1..=15 {
-            let now = start + Duration::from_millis(30 * tick);
-            let mut reducer = ShellLifecycleReducer {
-                active_shell: &mut active_shell,
-                first_paint_slide: &mut first_paint_slide,
-                title_reveal: &mut title_reveal,
-            };
-            reducer.advance_wave(now);
-            match reducer.finish_completed_wave(ShellSlideKind::MainMenu) {
-                Some(ShellWaveCompletion::MainMenu(receipt)) => {
-                    assert_eq!(tick, 15);
-                    entry_receipt = Some(receipt);
-                }
-                Some(_) => panic!("wrong shell completed"),
-                None => assert!(tick < 15),
+        // Successful acquisition activates tick 0 and is the one sound edge.
+        let wave = first_paint_slide.as_mut().expect("armed main-menu wave");
+        assert!(wave.activate_after_acquire());
+        slide_sound_edges.push(ShellSlideKind::MainMenu);
+        assert_eq!(
+            wave.current_main_menu_frame().map(|frame| frame.tick()),
+            Some(0)
+        );
+
+        let mut accepted_at = start;
+        for expected_tick in 0..=crate::ui::shell::slide::MAIN_MENU_TERMINAL_TICK {
+            let wave = first_paint_slide.as_mut().expect("active main-menu wave");
+            let frame = wave.current_main_menu_frame().expect("ready frame");
+            assert_eq!((frame.generation(), frame.tick()), (42, expected_tick));
+            let token = wave.mint_present_token(frame).expect("matching token");
+            wave.record_presented(token, accepted_at).expect("commit");
+            if expected_tick < crate::ui::shell::slide::MAIN_MENU_TERMINAL_TICK {
+                accepted_at += Duration::from_millis(30);
+                assert_eq!(
+                    wave.poll_presented(accepted_at),
+                    Some(PresentedPoll::Acquire)
+                );
             }
         }
-        assert!(first_paint_slide.is_none());
+        let wave = first_paint_slide
+            .as_mut()
+            .expect("terminal hold remains active");
+        assert_eq!(
+            wave.poll_presented(accepted_at + Duration::from_millis(29)),
+            Some(PresentedPoll::WaitUntil(
+                accepted_at + Duration::from_millis(30)
+            ))
+        );
+        assert_eq!(
+            wave.poll_presented(accepted_at + Duration::from_millis(30)),
+            Some(PresentedPoll::Complete)
+        );
+        assert!(first_paint_slide.is_some(), "completing still blocks input");
         assert_eq!(title_reveal.paint_window(), Kind1PaintWindow::Hidden);
+
+        let completion_at = accepted_at + Duration::from_millis(30);
+        let mut completion_events = vec!["ShellButtonSlideSound"];
         assert!(
             ShellLifecycleReducer {
                 active_shell: &mut active_shell,
                 first_paint_slide: &mut first_paint_slide,
+                slide_generation: &mut slide_generation,
                 title_reveal: &mut title_reveal,
             }
-            .record_main_menu_entry_presented(
-                entry_receipt.expect("terminal 0xE2 receipt"),
-                "Main Menu",
-                start + Duration::from_millis(450),
-            )
+            .complete_presented_main_menu(42, "Main Menu", completion_at)
         );
+        completion_events.push("title-start");
+        completion_events.push("clear");
+        assert_eq!(
+            completion_events,
+            ["ShellButtonSlideSound", "title-start", "clear"]
+        );
+        assert!(first_paint_slide.is_none());
         let Kind1PaintWindow::Due { window, .. } = title_reveal.paint_window() else {
             panic!("recreated title did not begin a fresh reveal");
         };
         assert_eq!(window.count, 1);
         assert_eq!(slide_sound_edges, [ShellSlideKind::MainMenu]);
+    }
+
+    #[test]
+    fn completion_generation_mismatch_poison_prevents_retry() {
+        let start = Instant::now();
+        let mut active_shell = Some(ShellSlideKind::MainMenu);
+        let mut first_paint_slide = Some(ShellFrameWave::new_presented_main_menu(52));
+        let mut slide_generation = 52;
+        let mut title_reveal = Kind1StaticReveal::default();
+
+        let wave = first_paint_slide.as_mut().expect("presented wave");
+        assert!(wave.activate_after_acquire());
+        let mut accepted_at = start;
+        for expected_tick in 0..=crate::ui::shell::slide::MAIN_MENU_TERMINAL_TICK {
+            let frame = wave.current_main_menu_frame().expect("ready frame");
+            assert_eq!(frame.tick(), expected_tick);
+            let token = wave.mint_present_token(frame).expect("matching token");
+            wave.record_presented(token, accepted_at).expect("commit");
+            accepted_at += Duration::from_millis(30);
+            let expected_poll = if expected_tick < crate::ui::shell::slide::MAIN_MENU_TERMINAL_TICK
+            {
+                PresentedPoll::Acquire
+            } else {
+                PresentedPoll::Complete
+            };
+            assert_eq!(wave.poll_presented(accepted_at), Some(expected_poll));
+        }
+
+        assert!(
+            !ShellLifecycleReducer {
+                active_shell: &mut active_shell,
+                first_paint_slide: &mut first_paint_slide,
+                slide_generation: &mut slide_generation,
+                title_reveal: &mut title_reveal,
+            }
+            .complete_presented_main_menu(51, "Main Menu", accepted_at)
+        );
+        let wave = first_paint_slide.as_mut().expect("poisoned wave remains");
+        assert!(wave.is_presented_poisoned());
+        assert_eq!(
+            wave.poll_presented(accepted_at),
+            Some(PresentedPoll::Poisoned),
+            "a failed completion transaction must never replay its hook"
+        );
+        assert_eq!(title_reveal.paint_window(), Kind1PaintWindow::Hidden);
     }
 }
