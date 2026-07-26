@@ -73,13 +73,107 @@ impl ShellSlideKind {
     }
 }
 
-/// Start a shell dialog's first-paint slide. `slot_count` is the number of
-/// animated owner-draw button slots, which sets the stagger length.
-pub(crate) fn start_shell_first_paint_slide(state: &mut AppState, slot_count: u32) {
-    state.shell_first_paint_slide = Some(ShellFrameWave::new_first_paint_slide(
-        slot_count,
-        Instant::now(),
-    ));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellEntryEffect {
+    Unchanged,
+    LeftShells,
+    Started(ShellSlideKind),
+}
+
+#[derive(Debug)]
+enum ShellWaveCompletion {
+    MainMenu(MainMenuEntryPresentReceipt),
+    SinglePlayer,
+    Skirmish,
+}
+
+/// Render-agnostic reducer for dialog-instance, entry-wave, and title state.
+///
+/// Production route mutations and the frame driver both use this reducer, so a
+/// dialog destroyed between paints cannot be hidden from an edge detector that
+/// only remembers the last rendered target.
+struct ShellLifecycleReducer<'a> {
+    active_shell: &'a mut Option<ShellSlideKind>,
+    first_paint_slide: &'a mut Option<ShellFrameWave>,
+    title_reveal: &'a mut crate::ui::shell::static_reveal::Kind1StaticReveal,
+}
+
+impl<'a> ShellLifecycleReducer<'a> {
+    fn from_state(state: &'a mut AppState) -> Self {
+        Self {
+            active_shell: &mut state.shell_slide_active_shell,
+            first_paint_slide: &mut state.shell_first_paint_slide,
+            title_reveal: &mut state.main_menu_shell_state.title_reveal,
+        }
+    }
+
+    fn invalidate_main_menu_dialog_instance(&mut self) {
+        self.title_reveal.reset_waiting();
+        *self.active_shell = None;
+        *self.first_paint_slide = None;
+    }
+
+    fn observe_target(&mut self, target: Option<ShellSlideKind>, now: Instant) -> ShellEntryEffect {
+        if target == *self.active_shell {
+            return ShellEntryEffect::Unchanged;
+        }
+        if target == Some(ShellSlideKind::MainMenu)
+            || *self.active_shell == Some(ShellSlideKind::MainMenu)
+        {
+            self.title_reveal.reset_waiting();
+        }
+        *self.active_shell = target;
+        match target {
+            Some(kind) => {
+                *self.first_paint_slide = Some(ShellFrameWave::new_first_paint_slide(
+                    kind.slot_count(),
+                    now,
+                ));
+                ShellEntryEffect::Started(kind)
+            }
+            None => {
+                *self.first_paint_slide = None;
+                ShellEntryEffect::LeftShells
+            }
+        }
+    }
+
+    fn advance_wave(&mut self, now: Instant) {
+        if let Some(wave) = self.first_paint_slide.as_mut() {
+            wave.advance(now);
+        }
+    }
+
+    fn finish_completed_wave(&mut self, kind: ShellSlideKind) -> Option<ShellWaveCompletion> {
+        if !self
+            .first_paint_slide
+            .as_ref()
+            .is_some_and(ShellFrameWave::is_complete)
+        {
+            return None;
+        }
+        *self.first_paint_slide = None;
+        Some(match kind {
+            ShellSlideKind::MainMenu => {
+                ShellWaveCompletion::MainMenu(MainMenuEntryPresentReceipt { _private: () })
+            }
+            ShellSlideKind::SinglePlayer => ShellWaveCompletion::SinglePlayer,
+            ShellSlideKind::Skirmish => ShellWaveCompletion::Skirmish,
+        })
+    }
+
+    fn record_main_menu_entry_presented(
+        &mut self,
+        _receipt: MainMenuEntryPresentReceipt,
+        title: &str,
+        now: Instant,
+    ) -> bool {
+        if *self.active_shell != Some(ShellSlideKind::MainMenu) || self.first_paint_slide.is_some()
+        {
+            return false;
+        }
+        self.title_reveal.start(title, now)
+    }
 }
 
 /// Advance the Skirmish right-panel static text reveals by one cadence step.
@@ -92,6 +186,16 @@ pub(crate) fn advance_shell_static_reveals(state: &mut AppState) {
     state
         .skirmish_shell_state
         .advance_right_panel_static_reveals(Instant::now());
+}
+
+/// Invalidate the destroyed/recreated 0xE2 dialog instance at an actual route
+/// boundary, even when the destination never reaches a paint.
+///
+/// `shell_slide_active_shell` remembers the last target observed by the frame
+/// driver. Clearing it here makes a collapsed 0xE2 -> 0x100 -> Back round trip
+/// produce a fresh 0xE2 entry edge instead of inheriting the old terminal title.
+pub(crate) fn invalidate_main_menu_dialog_instance(state: &mut AppState) {
+    ShellLifecycleReducer::from_state(state).invalidate_main_menu_dialog_instance();
 }
 
 /// Deliver the kind-1 timer only while the bare 0xE2 dialog owns steady paint.
@@ -111,18 +215,17 @@ pub(crate) fn poll_main_menu_title_reveal(state: &mut AppState) {
 /// Apply the SHOW-completion edge after the terminal slide frame presents.
 pub(crate) fn record_main_menu_entry_presented(
     state: &mut AppState,
-    _receipt: MainMenuEntryPresentReceipt,
+    receipt: MainMenuEntryPresentReceipt,
 ) -> bool {
-    if current_shell_slide_target(state) != Some(ShellSlideKind::MainMenu)
-        || state.shell_first_paint_slide.is_some()
-    {
+    if current_shell_slide_target(state) != Some(ShellSlideKind::MainMenu) {
         return false;
     }
     let title = crate::app_main_menu_shell_render::main_menu_title_text(state).to_owned();
-    state
-        .main_menu_shell_state
-        .title_reveal
-        .start(&title, Instant::now())
+    ShellLifecycleReducer::from_state(state).record_main_menu_entry_presented(
+        receipt,
+        &title,
+        Instant::now(),
+    )
 }
 
 pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
@@ -169,23 +272,11 @@ pub(crate) fn current_shell_slide_target(state: &AppState) -> Option<ShellSlideK
 /// WM_PAINT, with `GUIMoveInSound` played at the start of that slide.
 pub(crate) fn update_shell_first_paint_slide_trigger(state: &mut AppState) {
     let target = current_shell_slide_target(state);
-    if target == state.shell_slide_active_shell {
-        return;
-    }
-    if target == Some(ShellSlideKind::MainMenu)
-        || state.shell_slide_active_shell == Some(ShellSlideKind::MainMenu)
-    {
-        state.main_menu_shell_state.title_reveal.reset_waiting();
-    }
-    state.shell_slide_active_shell = target;
-    match target {
-        Some(kind) => {
-            start_shell_first_paint_slide(state, kind.slot_count());
-            // The slide-in trigger plays GUIMoveInSound (stock MenuSlideIn) at
-            // the start of the controls-reveal animation, on each shell entry.
-            crate::app::App::play_shell_slide_in_sound(state);
-        }
-        None => state.shell_first_paint_slide = None,
+    let effect = ShellLifecycleReducer::from_state(state).observe_target(target, Instant::now());
+    if let ShellEntryEffect::Started(_) = effect {
+        // The slide-in trigger plays GUIMoveInSound (stock MenuSlideIn) at
+        // the start of the controls-reveal animation, on each shell entry.
+        crate::app::App::play_shell_slide_in_sound(state);
     }
 }
 
@@ -209,9 +300,7 @@ pub(crate) fn render_shell_first_paint_slide(
         return Ok(ShellFirstPaintRenderResult::NotRendered);
     };
 
-    if let Some(wave) = state.shell_first_paint_slide.as_mut() {
-        wave.advance(Instant::now());
-    }
+    ShellLifecycleReducer::from_state(state).advance_wave(Instant::now());
 
     let rendered = match kind {
         ShellSlideKind::Skirmish => {
@@ -264,28 +353,24 @@ pub(crate) fn render_shell_first_paint_slide(
         return Ok(ShellFirstPaintRenderResult::NotRendered);
     }
 
+    let completion = ShellLifecycleReducer::from_state(state).finish_completed_wave(kind);
     let mut main_menu_entry_receipt = None;
-    // Wave finished at its terminal frame; hand back to the steady idle paint by
-    // clearing the slide. The shell is already the active screen.
-    if state
-        .shell_first_paint_slide
-        .as_ref()
-        .is_some_and(ShellFrameWave::is_complete)
-    {
+    match completion {
         // The slide completion edge kicks off the Skirmish right-panel statics'
         // character reveal. Start it here, on the same edge that clears the
         // slide, using the strings the renderer will draw.
-        if matches!(kind, ShellSlideKind::Skirmish) {
+        Some(ShellWaveCompletion::Skirmish) => {
             let now = Instant::now();
             let (title, game_type, map_label) =
                 crate::app_skirmish_shell_render::skirmish_right_panel_label_strings(state);
             state
                 .skirmish_shell_state
                 .start_right_panel_static_reveals(&title, &game_type, &map_label, now);
-        } else if matches!(kind, ShellSlideKind::MainMenu) {
-            main_menu_entry_receipt = Some(MainMenuEntryPresentReceipt { _private: () });
         }
-        state.shell_first_paint_slide = None;
+        Some(ShellWaveCompletion::MainMenu(receipt)) => {
+            main_menu_entry_receipt = Some(receipt);
+        }
+        Some(ShellWaveCompletion::SinglePlayer) | None => {}
     }
 
     Ok(ShellFirstPaintRenderResult::Rendered {
@@ -296,6 +381,8 @@ pub(crate) fn render_shell_first_paint_slide(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::shell::static_reveal::{Kind1PaintWindow, Kind1StaticReveal};
+    use std::time::Duration;
 
     #[test]
     fn shell_kinds_map_to_their_dialog_ids() {
@@ -309,5 +396,107 @@ mod tests {
         assert_eq!(ShellSlideKind::MainMenu.slot_count(), 6);
         assert_eq!(ShellSlideKind::SinglePlayer.slot_count(), 4);
         assert_eq!(ShellSlideKind::Skirmish.slot_count(), 3);
+    }
+
+    #[test]
+    fn collapsed_e2_to_100_back_before_paint_rearms_title_and_entry_wave() {
+        let start = Instant::now();
+        let mut title_reveal = Kind1StaticReveal::default();
+        assert!(title_reveal.start("Main Menu", start));
+        for count in 1..=17 {
+            let Kind1PaintWindow::Due { window, receipt } = title_reveal.paint_window() else {
+                panic!("expected dirty title paint {count}");
+            };
+            assert_eq!(window.count, count);
+            assert!(title_reveal.record_presented(receipt));
+            if count < 17 {
+                assert!(
+                    title_reveal.poll_timer(start + Duration::from_millis(30 * u64::from(count)))
+                );
+            }
+        }
+        assert!(title_reveal.is_terminal_persistent());
+
+        let mut active_shell = Some(ShellSlideKind::MainMenu);
+        let mut first_paint_slide = None;
+        let mut slide_sound_edges = Vec::new();
+
+        // Open 0x100: 0xE2 is destroyed, but no 0x100 frame is allowed to run.
+        ShellLifecycleReducer {
+            active_shell: &mut active_shell,
+            first_paint_slide: &mut first_paint_slide,
+            title_reveal: &mut title_reveal,
+        }
+        .invalidate_main_menu_dialog_instance();
+        assert_eq!(title_reveal.paint_window(), Kind1PaintWindow::Hidden);
+        assert_eq!(active_shell, None);
+        assert!(first_paint_slide.is_none());
+        assert!(slide_sound_edges.is_empty());
+
+        // Queued Back destroys 0x100 and recreates 0xE2 before the frame driver.
+        ShellLifecycleReducer {
+            active_shell: &mut active_shell,
+            first_paint_slide: &mut first_paint_slide,
+            title_reveal: &mut title_reveal,
+        }
+        .invalidate_main_menu_dialog_instance();
+        assert!(first_paint_slide.is_none());
+        assert!(slide_sound_edges.is_empty());
+
+        // The next production frame observes only the recreated 0xE2. No 0x100
+        // wave or sound ever existed; exactly one fresh 0xE2 entry edge does.
+        let effect = ShellLifecycleReducer {
+            active_shell: &mut active_shell,
+            first_paint_slide: &mut first_paint_slide,
+            title_reveal: &mut title_reveal,
+        }
+        .observe_target(Some(ShellSlideKind::MainMenu), start);
+        if let ShellEntryEffect::Started(kind) = effect {
+            slide_sound_edges.push(kind);
+        }
+        assert_eq!(slide_sound_edges, [ShellSlideKind::MainMenu]);
+        assert_eq!(title_reveal.paint_window(), Kind1PaintWindow::Hidden);
+        assert!(first_paint_slide.is_some());
+        assert_eq!(active_shell, Some(ShellSlideKind::MainMenu));
+
+        // Drive the same reducer used by the production renderer through all 15
+        // 0xE2 wave ticks, then commit its opaque receipt after presentation.
+        let mut entry_receipt = None;
+        for tick in 1..=15 {
+            let now = start + Duration::from_millis(30 * tick);
+            let mut reducer = ShellLifecycleReducer {
+                active_shell: &mut active_shell,
+                first_paint_slide: &mut first_paint_slide,
+                title_reveal: &mut title_reveal,
+            };
+            reducer.advance_wave(now);
+            match reducer.finish_completed_wave(ShellSlideKind::MainMenu) {
+                Some(ShellWaveCompletion::MainMenu(receipt)) => {
+                    assert_eq!(tick, 15);
+                    entry_receipt = Some(receipt);
+                }
+                Some(_) => panic!("wrong shell completed"),
+                None => assert!(tick < 15),
+            }
+        }
+        assert!(first_paint_slide.is_none());
+        assert_eq!(title_reveal.paint_window(), Kind1PaintWindow::Hidden);
+        assert!(
+            ShellLifecycleReducer {
+                active_shell: &mut active_shell,
+                first_paint_slide: &mut first_paint_slide,
+                title_reveal: &mut title_reveal,
+            }
+            .record_main_menu_entry_presented(
+                entry_receipt.expect("terminal 0xE2 receipt"),
+                "Main Menu",
+                start + Duration::from_millis(450),
+            )
+        );
+        let Kind1PaintWindow::Due { window, .. } = title_reveal.paint_window() else {
+            panic!("recreated title did not begin a fresh reveal");
+        };
+        assert_eq!(window.count, 1);
+        assert_eq!(slide_sound_edges, [ShellSlideKind::MainMenu]);
     }
 }

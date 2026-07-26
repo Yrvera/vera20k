@@ -260,10 +260,23 @@ mod tests {
         assert_eq!(rect_for(&laid, 0x0683), RectPx::new(644, 199, 156, 42));
         // Exit: same column, in the final tile immediately above the bottom cap.
         assert_eq!(rect_for(&laid, 0x03EE), RectPx::new(644, 535, 156, 42));
-        // Title: right-anchor (635,2,162,16) then +7y/+1h.
-        assert_eq!(rect_for(&laid, 0x0694), RectPx::new(635, 9, 162, 17));
+        // Title: compatibility +1w/+1h, right-anchor (635,2,163,17),
+        // then the title finalizer adds +7y/+1h.
+        assert_eq!(rect_for(&laid, 0x0694), RectPx::new(635, 9, 163, 18));
         // Website static: right-anchor of (671,47,92,54) -> x=800-38-92.
         assert_eq!(rect_for(&laid, 0x071B), RectPx::new(670, 47, 92, 54));
+    }
+
+    #[test]
+    fn production_main_menu_title_uses_exact_runtime_rect_at_required_resolutions() {
+        for (screen_w, screen_h, expected) in [
+            (640, 480, RectPx::new(475, 9, 163, 18)),
+            (800, 600, RectPx::new(635, 9, 163, 18)),
+            (1024, 768, RectPx::new(747, 93, 163, 18)),
+        ] {
+            let actual = crate::ui::main_menu_shell::compute_layout(screen_w, screen_h).title;
+            assert_eq!(actual, expected, "{screen_w}x{screen_h}");
+        }
     }
 
     /// Modal-centered dialogs are NOT re-anchored — they keep their DLU->pixel
