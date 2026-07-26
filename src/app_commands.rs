@@ -764,17 +764,37 @@ fn pick_building_for_owner(
     None
 }
 
-pub(crate) fn schedule_command(state: &mut AppState, owner: &str, payload: Command) {
-    let execute_tick = state
+fn schedule_command_in_sim(
+    sim: &mut crate::sim::world::Simulation,
+    owner: &str,
+    payload: Command,
+) -> u64 {
+    let execute_tick = sim.session.tick.saturating_add(sim.input_delay_ticks);
+    let owner_id = sim.interner.intern(owner);
+    sim.queue_command(CommandEnvelope::new(owner_id, execute_tick, payload));
+    execute_tick
+}
+
+/// Queue one ordinary deterministic command and return its actual execute tick.
+///
+/// Tactical certification records this value rather than reconstructing it
+/// from app configuration: the live simulation owns the input-delay value used
+/// by the command queue. Absence of a simulation is a rejected schedule, not a
+/// synthetic future tick.
+pub(crate) fn try_schedule_command(
+    state: &mut AppState,
+    owner: &str,
+    payload: Command,
+) -> Option<u64> {
+    state
         .simulation
-        .as_ref()
-        .map_or(state.configured_input_delay_ticks, |s| {
-            s.session.tick.saturating_add(s.input_delay_ticks)
-        });
-    if let Some(sim) = &mut state.simulation {
-        let owner_id = sim.interner.intern(owner);
-        sim.queue_command(CommandEnvelope::new(owner_id, execute_tick, payload));
-    }
+        .as_mut()
+        .map(|sim| schedule_command_in_sim(sim, owner, payload))
+}
+
+/// Preserve the existing unit-returning command boundary for ordinary callers.
+pub(crate) fn schedule_command(state: &mut AppState, owner: &str, payload: Command) {
+    let _ = try_schedule_command(state, owner, payload);
 }
 
 pub(crate) fn is_playable_house_name(name: &str) -> bool {
@@ -783,4 +803,46 @@ pub(crate) fn is_playable_house_name(name: &str) -> bool {
         up.as_str(),
         "NEUTRAL" | "SPECIAL" | "CIVILIAN" | "GOODGUY" | "BADGUY" | "JP"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::schedule_command_in_sim;
+    use crate::sim::command::Command;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn recorded_scheduler_uses_live_tick_and_live_input_delay() {
+        let mut sim = Simulation::new();
+        sim.session.tick = 41;
+        sim.input_delay_ticks = 7;
+
+        let execute_tick =
+            schedule_command_in_sim(&mut sim, "Russians", Command::DeployMcv { entity_id: 99 });
+
+        assert_eq!(execute_tick, 48);
+        assert_eq!(sim.pending_commands.len(), 1);
+        assert_eq!(sim.pending_commands[0].execute_tick, execute_tick);
+        assert_eq!(
+            sim.interner.resolve(sim.pending_commands[0].owner),
+            "Russians"
+        );
+        assert_eq!(
+            sim.pending_commands[0].payload,
+            Command::DeployMcv { entity_id: 99 }
+        );
+    }
+
+    #[test]
+    fn recorded_scheduler_saturates_at_tick_space_end() {
+        let mut sim = Simulation::new();
+        sim.session.tick = u64::MAX - 1;
+        sim.input_delay_ticks = 8;
+
+        let execute_tick =
+            schedule_command_in_sim(&mut sim, "YuriCountry", Command::DeployMcv { entity_id: 7 });
+
+        assert_eq!(execute_tick, u64::MAX);
+        assert_eq!(sim.pending_commands[0].execute_tick, u64::MAX);
+    }
 }

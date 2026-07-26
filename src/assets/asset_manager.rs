@@ -27,6 +27,18 @@ struct AssetLocation {
     entry_id: i32,
 }
 
+/// Borrowed first-match resolution from the production archive stack.
+///
+/// This is observational only: callers receive the same bytes that `get_ref`
+/// would return plus the archive-chain identity and hashed entry ID that
+/// selected them. It must not be used to bypass normal lookup precedence.
+#[derive(Clone, Copy, Debug)]
+pub struct AssetResolutionRef<'a> {
+    pub bytes: &'a [u8],
+    pub source_archive: &'a str,
+    pub entry_id: i32,
+}
+
 /// Manages loaded MIX archives and provides name-based lookups.
 ///
 /// Archives are searched in priority order. Earlier archives win.
@@ -294,11 +306,21 @@ impl AssetManager {
 
     /// Look up a file by name and return both the borrowed bytes and source archive name.
     pub fn get_with_source_ref(&self, name: &str) -> Option<(&[u8], &str)> {
+        let resolved = self.resolve_ref(name)?;
+        Some((resolved.bytes, resolved.source_archive))
+    }
+
+    /// Resolve one file through the normal first-match archive lookup.
+    pub fn resolve_ref(&self, name: &str) -> Option<AssetResolutionRef<'_>> {
         let (named, entry_id) = self.lookup_asset_entry(name)?;
         named
             .archive
             .get_by_id(entry_id)
-            .map(|data| (data, named.name.as_str()))
+            .map(|bytes| AssetResolutionRef {
+                bytes,
+                source_archive: named.name.as_str(),
+                entry_id,
+            })
     }
 
     /// Load an additional nested archive from within already-loaded archives.
@@ -565,6 +587,13 @@ mod tests {
             .expect("indexed lookup should find audio.idx");
         assert_eq!(bytes, b"westwood");
         assert_eq!(source, "theme.mix");
+
+        let resolved = manager
+            .resolve_ref("audio.idx")
+            .expect("observational resolution should preserve first match");
+        assert_eq!(resolved.bytes, b"westwood");
+        assert_eq!(resolved.source_archive, "theme.mix");
+        assert_eq!(resolved.entry_id, westwood_hash("audio.idx"));
     }
 
     #[test]
