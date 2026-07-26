@@ -110,12 +110,19 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// lifecycle bookkeeping, and ordered pending deletion now join the hash. The
 /// current-tree legacy-schema probe reproduces the prior value, record/replay
 /// equality remains exact, and all three absolute RNG pins are unchanged.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 1952953649455887606;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 5770877639486444278;
-// Snapshot/hash schema v29 adds the exact Mission/readiness state. Historical
-// probes and the absolute RNG pins below prove this one-time shift is hash
-// composition only; it remains a Rust regression ratchet, not gamemd evidence.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x5AE7_95B9_F380_92F3;
+/// Re-baselined after the reviewed outbound and far-return miner Drive
+/// authority changes (`932fc5e8`, `3ff8f43c`). Parent/child isolation proved
+/// that each change moved this fixture's hashed navigation/Drive state while
+/// record/replay equality and all three absolute RNG pins stayed unchanged.
+/// This is a behavior-bearing Rust regression ratchet, not gamemd parity
+/// evidence.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xCE3C_9630_D271_5BC9;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x4039_EA00_857F_241B;
+// Snapshot/hash schema v29 originally added the exact Mission/readiness state.
+// Its schema shift was composition-only; the later behavior-bearing Drive
+// re-baseline is documented immediately above. Both remain Rust regression
+// ratchets, not gamemd evidence.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xB86B_AFD0_F6AA_ACE0;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

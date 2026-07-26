@@ -58,6 +58,17 @@ fn footprint_for(art: &IniFile, name: &str) -> Vec<(i16, i16)> {
 }
 
 #[cfg(test)]
+pub(crate) fn stock_contract_catalog() -> Vec<TechType> {
+    let rules = IniFile::from_str(include_str!(
+        "../../../tests/fixtures/ini/rmg_neutral_tech_rules_contract.ini"
+    ));
+    let art = IniFile::from_str(include_str!(
+        "../../../tests/fixtures/ini/rmg_neutral_tech_art_contract.ini"
+    ));
+    resolve(&rules, &art)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -65,12 +76,10 @@ mod tests {
         IniFile::from_str(&format!("[AI]\nNeutralTechBuildings={list}\n"))
     }
 
-    /// The stock YR list and the stock YR footprints, read from the real INIs.
+    /// The verified stock YR list and footprints through a narrow INI fixture.
     #[test]
     fn stock_yr_list_resolves_every_type_with_its_art_footprint() {
-        let rules = IniFile::from_str(include_str!("../../../ini/rulesmd.ini"));
-        let art = IniFile::from_str(include_str!("../../../ini/artmd.ini"));
-        let catalog = resolve(&rules, &art);
+        let catalog = stock_contract_catalog();
 
         let names: Vec<&str> = catalog.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(

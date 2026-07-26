@@ -147,43 +147,46 @@ mod tests {
     use super::*;
     use crate::map::theater::{RmgTileKeys, parse_tileset_ini};
 
-    /// Retail theater INI: the tile-identity keys and their set bounds are
-    /// the ground truth these predicates are checked against.
-    const TEMPERATE_INI: &str = include_str!("../../../ini/temperatmd.ini");
-
-    fn temperate_ids() -> TileIds {
-        let lookup = parse_tileset_ini(TEMPERATE_INI.as_bytes(), "tem").unwrap();
+    fn contract_ids() -> TileIds {
+        let lookup = parse_tileset_ini(
+            include_bytes!("../../../tests/fixtures/ini/rmg_theater_tiles_contract.ini"),
+            "tem",
+        )
+        .expect("parse synthetic theater contract");
         let bounds = lookup.bounds();
-        let start = |set: usize| Some(bounds[set].start);
-        // Ordinals verbatim from temperatmd.ini [General].
+        let start = |ordinal: usize| Some(bounds[ordinal].start);
+
+        // The cumulative parser-derived starts keep every predicate boundary
+        // visible without making default CI depend on the private retail INI.
         let keys = RmgTileKeys {
             clear_tile: start(0),
-            ramp_base: start(9),
-            rough_tile: start(13),
-            clear_to_rough_lat: start(14),
-            sand_tile: start(33),
-            clear_to_sand_lat: start(34),
-            green_tile: start(41),
-            clear_to_green_lat: start(42),
-            pave_tile: start(46),
-            misc_pave_tile: start(38),
-            clear_to_pave_lat: start(39),
-            water_set: start(21),
+            ramp_base: start(1),
+            rough_tile: start(2),
+            clear_to_rough_lat: start(3),
+            sand_tile: start(4),
+            clear_to_sand_lat: start(5),
+            green_tile: start(6),
+            clear_to_green_lat: start(7),
+            pave_tile: start(8),
+            misc_pave_tile: start(9),
+            clear_to_pave_lat: start(10),
+            water_set: start(11),
             shore_pieces: start(12),
-            // WaterBridge ordinal not needed by these predicate tests.
-            water_bridge: None,
-            paved_roads: start(20),
-            paved_road_ends: start(36),
-            medians: start(40),
+            water_bridge: start(13),
+            paved_roads: start(14),
+            paved_road_ends: start(15),
+            medians: start(16),
         };
         let ids = TileIds::from_keys(&keys);
-        assert!(ids.green > 0 && ids.water_base > 0, "retail sets resolve");
+        assert_eq!(ids.clear, 0);
+        assert_eq!(ids.ramp_base, 64);
+        assert_eq!(ids.medians, 16 * 64);
         ids
     }
 
     #[test]
     fn clear_test_is_exact_not_set_membership() {
-        let ids = temperate_ids();
+        let ids = contract_ids();
         assert!(ids.is_clear(0));
         assert!(ids.is_clear(TILE_UNASSIGNED));
         assert!(!ids.is_clear(1), "tile 1 is in the clear SET but not clear");
@@ -192,7 +195,7 @@ mod tests {
 
     #[test]
     fn green_lat_membership_covers_base_and_transition_range() {
-        let ids = temperate_ids();
+        let ids = contract_ids();
         assert!(ids.is_green_lat(ids.green));
         assert!(ids.is_green_lat(ids.green_lat));
         assert!(ids.is_green_lat(ids.green_lat + 0xF));
@@ -203,7 +206,7 @@ mod tests {
 
     #[test]
     fn sand_lat_membership_mirrors_green() {
-        let ids = temperate_ids();
+        let ids = contract_ids();
         assert!(ids.is_sand_lat(ids.sand));
         assert!(ids.is_sand_lat(ids.sand_lat + 0xF));
         assert!(!ids.is_sand_lat(ids.sand_lat + 0x10));
@@ -241,7 +244,7 @@ mod tests {
 
     #[test]
     fn shore_and_gate_ranges_use_fixed_spans() {
-        let ids = temperate_ids();
+        let ids = contract_ids();
         assert!(ids.is_shore_piece(ids.shore));
         assert!(ids.is_shore_piece(ids.shore + 41));
         assert!(!ids.is_shore_piece(ids.shore + 42));

@@ -6,8 +6,7 @@
 and `GSI-15.10`
 **Status:** SELF-APPROVED
 **Branch:** `feature/exact-shell-e2-rgb565-presentation-20260725-2250`
-**Worktree:**
-`C:/Users/enok/Documents/ra2-rust-game-exact-shell-e2-rgb565-presentation-20260725-2250`
+**Worktree:** isolated feature worktree
 **Validated base:** `5e8b4eaf2c141913b6d6d9a2e984f3602c84407e`
 
 ## Goal

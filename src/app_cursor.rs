@@ -733,21 +733,43 @@ mod tests {
     use crate::sim::world::Simulation;
     use std::collections::BTreeMap;
 
+    fn cursor_contract_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             0=GHOST\n\
+             [VehicleTypes]\n\
+             0=CMIN\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=NAPOWR\n\
+             1=GAREFN\n\
+             [GHOST]\n\
+             Strength=100\n\
+             C4=yes\n\
+             [CMIN]\n\
+             Strength=1000\n\
+             Harvester=yes\n\
+             Dock=GAREFN\n\
+             [NAPOWR]\n\
+             Strength=750\n\
+             CanC4=yes\n\
+             [GAREFN]\n\
+             Strength=1000\n\
+             Refinery=yes\n",
+        );
+        RuleSet::from_ini(&ini).expect("cursor contract rules")
+    }
+
     /// Repro for "SEAL right-click on enemy buildings does nothing".
-    /// Loads the actual retail INIs the runtime uses, spawns a SEAL via
+    /// Loads a narrow stock-shaped rules contract, spawns a SEAL via
     /// `spawn_object` (the same code path the barracks uses on production
     /// completion), then calls `capability_cursor_for_hover` and asserts
     /// the returned cursor is `Demolish`. If it isn't, the body of the
     /// function prints which gate condition rejected it.
     #[test]
     fn seal_hovering_enemy_building_shows_demolish() {
-        // 1. Load and merge retail INIs (same as app_init_helpers::load_rules_ini).
-        let base = std::fs::read_to_string("ini/rules.ini").expect("ini/rules.ini");
-        let patch = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
-        let mut ini = IniFile::from_str(&base);
-        let patch_ini = IniFile::from_str(&patch);
-        ini.merge(&patch_ini);
-        let mut rules = RuleSet::from_ini(&ini).expect("parse merged rules");
+        // 1. Load the narrow stock-shaped contract consumed by this cursor path.
+        let mut rules = cursor_contract_rules();
 
         // 2. Build a Simulation. resolve_bridge_warheads is required by the
         //    c4 tick path even though we don't tick here — keeps the sim in a
@@ -804,12 +826,7 @@ mod tests {
     /// for any harvester targeting a same-owner refinery.
     #[test]
     fn chrono_miner_hovering_own_refinery_shows_enter() {
-        let base = std::fs::read_to_string("ini/rules.ini").expect("ini/rules.ini");
-        let patch = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
-        let mut ini = IniFile::from_str(&base);
-        let patch_ini = IniFile::from_str(&patch);
-        ini.merge(&patch_ini);
-        let mut rules = RuleSet::from_ini(&ini).expect("parse merged rules");
+        let mut rules = cursor_contract_rules();
 
         let mut sim = Simulation::new();
         rules.resolve_bridge_warheads(&mut sim.interner);

@@ -1829,11 +1829,16 @@ mod tests {
 
     #[test]
     fn weapons_factory_flag_includes_stock_land_factories_and_naval_yards() {
-        let base_text = std::fs::read_to_string("ini/rules.ini").expect("stock rules.ini missing");
-        let patch_text =
-            std::fs::read_to_string("ini/rulesmd.ini").expect("stock rulesmd.ini missing");
-        let mut merged = IniFile::from_str(&base_text);
-        merged.merge(&IniFile::from_str(&patch_text));
+        let merged = IniFile::from_str(
+            "[GAWEAP]\nWeaponsFactory=yes\n\
+             [NAWEAP]\nWeaponsFactory=yes\n\
+             [GAYARD]\nWeaponsFactory=yes\n\
+             [NAYARD]\nWeaponsFactory=yes\n\
+             [YAWEAP]\nWeaponsFactory=yes\n\
+             [YAYARD]\nWeaponsFactory=yes\n\
+             [GAPILE]\nFactory=InfantryType\n\
+             [GAPOWR]\nPower=200\n",
+        );
 
         for id in ["GAWEAP", "NAWEAP", "GAYARD", "NAYARD", "YAWEAP", "YAYARD"] {
             let object = ObjectType::from_ini_section(
@@ -2395,8 +2400,7 @@ mod tests {
     fn parse_retail_weight_apocalypse_is_three_point_five() {
         // Retail rulesmd.ini: APOC (Apocalypse Tank) has Weight=3.5.
         // The heaviest unit in stock retail is CARRIER (Aircraft Carrier) at Weight=5.
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
-        let ini = IniFile::from_str(&ini_text);
+        let ini = IniFile::from_str("[APOC]\nWeight=3.5\n");
         let apoc = ObjectType::from_ini_section(
             "APOC",
             ini.section("APOC").expect("APOC section"),
@@ -2409,8 +2413,7 @@ mod tests {
     fn parse_retail_weight_grizzly_defaults_to_two() {
         // Retail rulesmd.ini: MTNK (Grizzly) has no Weight= line, so it should
         // fall back to the engine default 2.0.
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
-        let ini = IniFile::from_str(&ini_text);
+        let ini = IniFile::from_str("[MTNK]\nStrength=300\n");
         let mtnk = ObjectType::from_ini_section(
             "MTNK",
             ini.section("MTNK").expect("MTNK section"),

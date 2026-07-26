@@ -1,8 +1,6 @@
-//! Merged-retail production oracles for stock miner outbound Drive commands.
+//! Hermetic stock-contract production oracles for miner outbound Drive commands.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
 
 use crate::map::bridge_facts::BridgeCellFacts;
 use crate::map::overlay_types::OverlayTypeRegistry;
@@ -28,7 +26,7 @@ const GRID_SIZE: u16 = 64;
 const START: (u16, u16) = (32, 32);
 const ONE_ORE_LEVEL: u16 = 120;
 
-struct RetailOutboundOracle {
+struct OutboundContractOracle {
     rules: RuleSet,
     overlays: OverlayTypeRegistry,
     tib01: u8,
@@ -36,23 +34,14 @@ struct RetailOutboundOracle {
     tiberium_speed_costs: SpeedCostProfile,
 }
 
-fn merged_ini(base: &str, patch: &str) -> IniFile {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut ini = IniFile::from_str(
-        &fs::read_to_string(root.join(base)).unwrap_or_else(|error| panic!("read {base}: {error}")),
-    );
-    let patch_ini = IniFile::from_str(
-        &fs::read_to_string(root.join(patch))
-            .unwrap_or_else(|error| panic!("read {patch}: {error}")),
-    );
-    ini.merge(&patch_ini);
-    ini
-}
-
-fn retail_outbound_oracle() -> RetailOutboundOracle {
-    let rules_ini = merged_ini("ini/rules.ini", "ini/rulesmd.ini");
-    let mut rules = RuleSet::from_ini(&rules_ini).expect("merged retail rules");
-    let art_ini = merged_ini("ini/art.ini", "ini/artmd.ini");
+fn outbound_contract_oracle() -> OutboundContractOracle {
+    let rules_ini = IniFile::from_str(include_str!(
+        "../../../tests/fixtures/ini/miner_outbound_rules_contract.ini"
+    ));
+    let mut rules = RuleSet::from_ini(&rules_ini).expect("outbound contract rules");
+    let art_ini = IniFile::from_str(include_str!(
+        "../../../tests/fixtures/ini/miner_outbound_art_contract.ini"
+    ));
     rules.merge_art_data(&ArtRegistry::from_ini(&art_ini));
     let overlays = OverlayTypeRegistry::from_ini(&rules_ini, None);
     let tib01 = overlays.id_for_name("TIB01").expect("retail TIB01");
@@ -90,7 +79,7 @@ fn retail_outbound_oracle() -> RetailOutboundOracle {
         assert_eq!(object.slowdown_distance, 500);
     }
 
-    RetailOutboundOracle {
+    OutboundContractOracle {
         rules,
         overlays,
         tib01,
@@ -99,7 +88,7 @@ fn retail_outbound_oracle() -> RetailOutboundOracle {
     }
 }
 
-fn production_sim(seed: u64, oracle: &RetailOutboundOracle) -> Simulation {
+fn production_sim(seed: u64, oracle: &OutboundContractOracle) -> Simulation {
     let mut sim = Simulation::with_seed(seed);
     oracle.rules.intern_all_ids(&mut sim.interner);
     sim.resolve_type_handles(&oracle.rules);
@@ -167,7 +156,10 @@ fn resolved_cell(
     }
 }
 
-fn staged_terrain(oracle: &RetailOutboundOracle, ore_cells: &[(u16, u16)]) -> ResolvedTerrainGrid {
+fn staged_terrain(
+    oracle: &OutboundContractOracle,
+    ore_cells: &[(u16, u16)],
+) -> ResolvedTerrainGrid {
     let clear_land_type = LandType::Clear.as_index();
     let mut terrain = ResolvedTerrainGrid::from_cells(
         GRID_SIZE,
@@ -200,7 +192,7 @@ fn staged_terrain(oracle: &RetailOutboundOracle, ore_cells: &[(u16, u16)]) -> Re
 
 fn install_world(
     sim: &mut Simulation,
-    oracle: &RetailOutboundOracle,
+    oracle: &OutboundContractOracle,
     grid: &PathGrid,
     ore_cells: &[(u16, u16)],
     nodes: &[(u16, u16)],
@@ -253,7 +245,7 @@ fn install_world(
 
 fn spawn_stock_miner(
     sim: &mut Simulation,
-    oracle: &RetailOutboundOracle,
+    oracle: &OutboundContractOracle,
     type_id: &str,
     expected_kind: MinerKind,
 ) -> u64 {
@@ -291,7 +283,7 @@ fn spawn_stock_miner(
 
 fn spawn_stock_refinery(
     sim: &mut Simulation,
-    oracle: &RetailOutboundOracle,
+    oracle: &OutboundContractOracle,
     anchor: (u16, u16),
 ) -> u64 {
     let id = sim
@@ -343,7 +335,7 @@ fn arm_search(sim: &mut Simulation, entity_id: u64) {
     miner.harvest_timer.clear();
 }
 
-fn advance(sim: &mut Simulation, oracle: &RetailOutboundOracle, grid: &PathGrid) {
+fn advance(sim: &mut Simulation, oracle: &OutboundContractOracle, grid: &PathGrid) {
     let _ = sim.advance_tick(
         &[],
         Some(&oracle.rules),
@@ -364,7 +356,7 @@ fn position_tuple(sim: &Simulation, entity_id: u64) -> (u16, u16, SimFixed, SimF
     (position.rx, position.ry, position.sub_x, position.sub_y)
 }
 
-fn assert_ore_intact(sim: &Simulation, oracle: &RetailOutboundOracle, target: (u16, u16)) {
+fn assert_ore_intact(sim: &Simulation, oracle: &OutboundContractOracle, target: (u16, u16)) {
     let node = sim
         .production
         .resource_nodes
@@ -383,7 +375,7 @@ fn assert_ore_intact(sim: &Simulation, oracle: &RetailOutboundOracle, target: (u
 
 fn assert_command_state(
     sim: &Simulation,
-    oracle: &RetailOutboundOracle,
+    oracle: &OutboundContractOracle,
     entity_id: u64,
     type_id: &str,
     target: (u16, u16),
@@ -453,7 +445,7 @@ fn locomotor_tuple(
 
 #[test]
 fn production_stock_miners_use_drive_command_for_adjacent_ore() {
-    let oracle = retail_outbound_oracle();
+    let oracle = outbound_contract_oracle();
     let target = (32, 31);
     for (type_id, kind) in [("HARV", MinerKind::War), ("CMIN", MinerKind::Chrono)] {
         let mut sim = production_sim(0x0715_D001, &oracle);
@@ -556,7 +548,7 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
 
 #[test]
 fn production_harv_outbound_drive_uses_rule_profile() {
-    let oracle = retail_outbound_oracle();
+    let oracle = outbound_contract_oracle();
     let target = (32, 29);
     let mut sim = production_sim(0x0715_D002, &oracle);
     let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
@@ -584,7 +576,7 @@ fn production_harv_outbound_drive_uses_rule_profile() {
 
 #[test]
 fn production_stock_harv_far_return_drive_uses_rule_profile() {
-    let oracle = retail_outbound_oracle();
+    let oracle = outbound_contract_oracle();
     let config = MinerConfig::from_rules(&oracle.rules);
     let refinery_anchor = (10, 10);
     let refinery_type = oracle.rules.object("GAREFN").expect("GAREFN");
@@ -667,7 +659,7 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
 
 #[test]
 fn production_stock_harv_far_return_preserves_existing_navcom_owner() {
-    let oracle = retail_outbound_oracle();
+    let oracle = outbound_contract_oracle();
     let config = MinerConfig::from_rules(&oracle.rules);
     let refinery_anchor = (10, 10);
     let original = (32, 29);
@@ -814,7 +806,7 @@ fn production_stock_harv_far_return_preserves_existing_navcom_owner() {
 
 #[test]
 fn production_cmin_outbound_drive_keeps_teleport_primary() {
-    let oracle = retail_outbound_oracle();
+    let oracle = outbound_contract_oracle();
     let target = (32, 29);
     let mut sim = production_sim(0x0715_D003, &oracle);
     let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
@@ -876,7 +868,7 @@ fn production_cmin_outbound_drive_keeps_teleport_primary() {
 
 #[test]
 fn production_cmin_failed_outbound_issue_restores_locomotor_exactly() {
-    let oracle = retail_outbound_oracle();
+    let oracle = outbound_contract_oracle();
     let target = (32, 29);
     let mut sim = production_sim(0x0715_D004, &oracle);
     let mut grid = PathGrid::test_all_blocked(GRID_SIZE, GRID_SIZE);
@@ -912,7 +904,7 @@ fn production_cmin_failed_outbound_issue_restores_locomotor_exactly() {
 
 #[test]
 fn production_harv_navcom_without_movement_target_is_not_reissued() {
-    let oracle = retail_outbound_oracle();
+    let oracle = outbound_contract_oracle();
     let original = (32, 29);
     let preferable = (32, 31);
     let mut sim = production_sim(0x0715_D005, &oracle);
@@ -972,7 +964,7 @@ fn production_harv_navcom_without_movement_target_is_not_reissued() {
 
 #[test]
 fn production_harv_navcom_defers_removed_target_revalidation() {
-    let oracle = retail_outbound_oracle();
+    let oracle = outbound_contract_oracle();
     let original = (32, 29);
     let replacement = (32, 31);
     let mut sim = production_sim(0x0715_D006, &oracle);
@@ -1029,7 +1021,7 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
 
 #[test]
 fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
-    let oracle = retail_outbound_oracle();
+    let oracle = outbound_contract_oracle();
     let target = (32, 31);
     let mut sim = production_sim(0x0715_D007, &oracle);
     let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);

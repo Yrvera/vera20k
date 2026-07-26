@@ -421,8 +421,7 @@ mod tests {
 
     #[test]
     fn parse_retail_v3wh_has_rocker() {
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
-        let ini = IniFile::from_str(&ini_text);
+        let ini = IniFile::from_str("[V3WH]\nRocker=yes\n");
         let section = ini.section("V3WH").expect("V3WH missing from rulesmd.ini");
         let wh = WarheadType::from_ini_section("V3WH", section);
         assert!(wh.rocker, "V3WH should have Rocker=yes");
