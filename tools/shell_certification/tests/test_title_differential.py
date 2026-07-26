@@ -20,15 +20,14 @@ from tools.shell_certification.title_differential import (
 )
 
 
-SEALED_GUARD = Path(
-    r"C:\Users\enok\AppData\Local\VERA20k\oracle\guards\sha256"
-    r"\fe\32\fe32f218137b76a91dc3bac07bc96372a61c22e48ea083519f1ecbdbd97d601c.shell-guard.json"
-)
-ORACLE_RUNS = Path(r"C:\Users\enok\AppData\Local\VERA20k\oracle\runs")
-CURRENT_CAPTURE = Path(
-    r"C:\Users\enok\Documents\ra2-rust-game\target\shell-certification"
-    r"\e2-rgb565-dev-1-20260726-001800"
-)
+def _configured_path(variable: str) -> Path:
+    value = os.environ.get(variable)
+    return Path(value) if value else Path(f"__unconfigured_{variable.lower()}__")
+
+
+SEALED_GUARD = _configured_path("VERA20K_SHELL_GUARD")
+ORACLE_RUNS = _configured_path("VERA20K_ORACLE_RUNS")
+CURRENT_CAPTURE = _configured_path("VERA20K_SHELL_CAPTURE")
 
 
 class _SyntheticGuard:

@@ -8,6 +8,7 @@ Requires unicorn >= 2.1.1 (2.0.x imports `distutils`, gone in Python 3.12+).
 """
 
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -27,9 +28,26 @@ from unicorn.x86_const import (
 # 0x037F (64-bit extended, round-to-nearest) produces different low bits.
 NATIVE_FPCW = 0x0E7F
 
-GAMEMD = Path(
-    r"C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe"
-)
+def _configured_gamemd() -> Path:
+    if explicit := os.environ.get("VERA20K_GAMEMD_EXE"):
+        candidate = Path(explicit)
+        source = "VERA20K_GAMEMD_EXE"
+    elif ra2_dir := os.environ.get("RA2_DIR"):
+        candidate = Path(ra2_dir) / "gamemd.exe"
+        source = "RA2_DIR"
+    else:
+        raise RuntimeError(
+            "RMG oracle requires VERA20K_GAMEMD_EXE or RA2_DIR; "
+            "refusing to use an unverified current-directory gamemd.exe"
+        )
+
+    resolved = candidate.expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"{source} resolved to missing gamemd.exe: {resolved}")
+    return resolved
+
+
+GAMEMD = _configured_gamemd()
 IMAGE_BASE = 0x00400000
 IMAGE_SIZE = 0x00A00000  # covers .text/.rdata/.data of gamemd
 STACK_BASE = 0x10000000

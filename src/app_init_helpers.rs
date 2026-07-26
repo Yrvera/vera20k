@@ -815,11 +815,10 @@ mod tests {
     }
 
     fn retail_assets() -> AssetManager {
-        let path = std::env::var_os("RA2_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from("C:/Users/enok/Documents/Command and Conquer Red Alert II")
-            });
+        let path = PathBuf::from(
+            std::env::var_os("RA2_DIR")
+                .expect("set RA2_DIR to the installed retail RA2/YR directory"),
+        );
         assert!(
             path.is_dir(),
             "retail RA2/YR directory does not exist: {}",

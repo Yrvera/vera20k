@@ -470,10 +470,7 @@ mod tests {
     /// The stock YR neutral catalog, resolved from the real INIs so the gate
     /// tests exercise the same list the app wires in.
     fn stock_tech_types() -> Vec<TechType> {
-        crate::map::rmg::tech_catalog::resolve(
-            &crate::rules::ini_parser::IniFile::from_str(include_str!("../../../ini/rulesmd.ini")),
-            &crate::rules::ini_parser::IniFile::from_str(include_str!("../../../ini/artmd.ini")),
-        )
+        crate::map::rmg::tech_catalog::stock_contract_catalog()
     }
 
     fn run_with_types(

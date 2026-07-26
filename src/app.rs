@@ -3883,8 +3883,16 @@ impl App {
             .collect();
         let skirmish_modes = startup_asset_manager
             .as_ref()
-            .map(crate::skirmish_modes::skirmish_modes_from_assets)
-            .unwrap_or_else(crate::skirmish_modes::stock_skirmish_modes);
+            .and_then(
+                |assets| match crate::skirmish_modes::skirmish_modes_from_assets(assets) {
+                    Ok(modes) => Some(modes),
+                    Err(err) => {
+                        log::warn!("Could not load Skirmish mode roster: {err}");
+                        None
+                    }
+                },
+            )
+            .unwrap_or_default();
         let mut skirmish_shell_state = crate::ui::skirmish_shell::SkirmishShellState::default();
         // Seed the Credits/Unit Count slider ranges from rulesmd's
         // [MultiplayerDialogSettings] so a mod that changes the money/unit bounds

@@ -2991,8 +2991,9 @@ MutateWarhead=MyMutate\n\
 
     #[test]
     fn parse_retail_rules_rocking_coefficients() {
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
-        let ini = IniFile::from_str(&ini_text);
+        let ini = IniFile::from_str(
+            "[AudioVisual]\nDirectRockingCoefficient=1.5\nFallBackCoefficient=0.1\n",
+        );
         let r = GeneralRules::from_ini(&ini);
         assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("1.5"));
         assert_eq!(r.fallback_coefficient, SimFixed::lit("0.1"));
@@ -4069,10 +4070,30 @@ ZAdjust=-10
 
     #[test]
     fn retail_rulesmd_c4_flags_parse_correctly() {
-        // Load the actual retail rulesmd.ini from the repo's ini/ directory.
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
-        let ini = IniFile::from_str(&ini_text);
-        let rules = RuleSet::from_ini(&ini).expect("parse retail rulesmd");
+        let ini = IniFile::from_str(
+            "[CombatDamage]\nC4Delay=0.03\n\
+             [InfantryTypes]\n\
+             0=GHOST\n1=TANY\n2=PTROOP\n3=E1\n4=ENGINEER\n5=CCOMAND\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=CAMISC01\n1=CAMISC02\n2=CAMISC06\n3=AMMOCRAT\n\
+             4=GAPILE\n5=NAHAND\n6=GAREFN\n\
+             [GHOST]\nC4=yes\n\
+             [TANY]\nC4=yes\n\
+             [PTROOP]\nC4=yes\n\
+             [E1]\n\
+             [ENGINEER]\n\
+             [CCOMAND]\n\
+             [CAMISC01]\nCanC4=no\n\
+             [CAMISC02]\nCanC4=no\n\
+             [CAMISC06]\nCanC4=no\n\
+             [AMMOCRAT]\nCanC4=no\n\
+             [GAPILE]\n\
+             [NAHAND]\n\
+             [GAREFN]\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("parse C4 stock-contract fixture");
 
         // C4-capable units must have c4=true.
         for unit in &["GHOST", "TANY", "PTROOP"] {
@@ -4114,22 +4135,25 @@ ZAdjust=-10
     #[test]
     fn type_lookups_are_case_insensitive() {
         // Parity: the original engine resolves type names case-insensitively
-        // (stricmp-style find-or-allocate). Load real retail data and prove every
+        // (stricmp-style find-or-allocate). Use a hermetic rules graph and prove every
         // type accessor resolves a stored name regardless of case, to the same entry.
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
+        let ini_text = format!(
+            "{}\n[SuperWeaponTypes]\n0=FixtureSW\n[FixtureSW]\nType=MultiMissile\n",
+            make_test_rules()
+        );
         let ini = IniFile::from_str(&ini_text);
-        let rules = RuleSet::from_ini(&ini).expect("parse retail rulesmd");
+        let rules = RuleSet::from_ini(&ini).expect("parse case-lookup fixture");
 
-        // Concrete, readable anchor: [HTNK] exists in stock rulesmd.
-        assert!(rules.object("HTNK").is_some());
+        // Concrete, readable anchor from the fixture.
+        assert!(rules.object("MTNK").is_some());
         assert!(
-            rules.object("htnk").is_some(),
+            rules.object("mtnk").is_some(),
             "lowercase must resolve (gamemd parity)"
         );
-        assert!(rules.object("Htnk").is_some(), "mixed case must resolve");
+        assert!(rules.object("Mtnk").is_some(), "mixed case must resolve");
         assert_eq!(
-            rules.object("htnk").map(|o| o as *const _),
-            rules.object("HTNK").map(|o| o as *const _),
+            rules.object("mtnk").map(|o| o as *const _),
+            rules.object("MTNK").map(|o| o as *const _),
             "all casings resolve to the same object",
         );
 

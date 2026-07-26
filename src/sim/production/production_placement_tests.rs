@@ -199,10 +199,35 @@ fn ready_building(sim: &mut Simulation, owner: &str, type_id: &str) {
         .insert(owner_id, VecDeque::from([type_id]));
 }
 
-fn merged_stock_power_rules() -> RuleSet {
-    let mut stock = IniFile::from_str(include_str!("../../../ini/rules.ini"));
-    stock.merge(&IniFile::from_str(include_str!("../../../ini/rulesmd.ini")));
-    RuleSet::from_ini(&stock).expect("merged stock RA2/YR rules should parse")
+fn stock_power_contract_rules() -> RuleSet {
+    let fixture = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GACNST\n\
+         1=GAPOWR\n\
+         2=AMRADR\n\
+         [GACNST]\n\
+         Strength=1000\n\
+         Armor=concrete\n\
+         Adjacent=2\n\
+         Power=0\n\
+         [GAPOWR]\n\
+         BuildCat=Power\n\
+         Strength=750\n\
+         Armor=wood\n\
+         Adjacent=2\n\
+         Power=200\n\
+         [AMRADR]\n\
+         BuildCat=Tech\n\
+         Strength=600\n\
+         Armor=steel\n\
+         Adjacent=2\n\
+         Power=-50\n\
+         Radar=yes\n",
+    );
+    RuleSet::from_ini(&fixture).expect("stock power-contract fixture should parse")
 }
 
 #[test]
@@ -292,7 +317,7 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
 #[test]
 fn stock_gapowr_placement_restores_power_and_radar_during_buildup() {
     let mut sim = Simulation::new();
-    let rules = merged_stock_power_rules();
+    let rules = stock_power_contract_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let grid = PathGrid::new(64, 64);
 

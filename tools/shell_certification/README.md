@@ -18,7 +18,7 @@ Compare an existing bundle:
 ```powershell
 python -m tools.shell_certification compare `
   --capture C:\path\to\new-run `
-  --guard C:\Users\enok\AppData\Local\VERA20k\oracle\guards\sha256\fe\32\fe32f218137b76a91dc3bac07bc96372a61c22e48ea083519f1ecbdbd97d601c.shell-guard.json `
+  --guard $env:VERA20K_SHELL_GUARD `
   --output C:\path\to\new-run\comparison.json
 ```
 
@@ -27,8 +27,8 @@ Run the explicit hidden capture child and compare it:
 ```powershell
 python -m tools.shell_certification capture-and-compare `
   --executable C:\path\to\vera20k.exe `
-  --working-directory C:\Users\enok\Documents\ra2-rust-game `
-  --guard C:\Users\enok\AppData\Local\VERA20k\oracle\guards\sha256\fe\32\fe32f218137b76a91dc3bac07bc96372a61c22e48ea083519f1ecbdbd97d601c.shell-guard.json `
+  --working-directory $env:VERA20K_REPO_ROOT `
+  --guard $env:VERA20K_SHELL_GUARD `
   --run-dir C:\path\to\brand-new-run-directory
 ```
 
@@ -37,8 +37,8 @@ named by the sealed guard:
 
 ```powershell
 python -m tools.shell_certification derive-presentation-profile `
-  --guard C:\Users\enok\AppData\Local\VERA20k\oracle\guards\sha256\fe\32\fe32f218137b76a91dc3bac07bc96372a61c22e48ea083519f1ecbdbd97d601c.shell-guard.json `
-  --oracle-runs C:\Users\enok\AppData\Local\VERA20k\oracle\runs `
+  --guard $env:VERA20K_SHELL_GUARD `
+  --oracle-runs $env:VERA20K_ORACLE_RUNS `
   --output C:\path\to\brand-new-presentation-profile.json
 ```
 
@@ -66,8 +66,8 @@ capture and all three native source frames named by the guard:
 ```powershell
 python -m tools.shell_certification title-differential `
   --capture C:\path\to\immutable-rust-capture `
-  --guard C:\Users\enok\AppData\Local\VERA20k\oracle\guards\sha256\fe\32\fe32f218137b76a91dc3bac07bc96372a61c22e48ea083519f1ecbdbd97d601c.shell-guard.json `
-  --oracle-runs C:\Users\enok\AppData\Local\VERA20k\oracle\runs `
+  --guard $env:VERA20K_SHELL_GUARD `
+  --oracle-runs $env:VERA20K_ORACLE_RUNS `
   --output C:\path\to\brand-new-title-differential.json
 ```
 
@@ -89,7 +89,7 @@ python -m tools.shell_certification validate-entry-sequence `
 
 python -m tools.shell_certification capture-entry-sequence `
   --executable C:\path\to\vera20k.exe `
-  --working-directory C:\Users\enok\Documents\ra2-rust-game `
+  --working-directory $env:VERA20K_REPO_ROOT `
   --run-dir C:\path\to\brand-new-entry-sequence
 ```
 
@@ -105,6 +105,11 @@ native transition frames exist, movie phase, child text, cursor/focus behavior,
 and every native sequence row remain `UNVERIFIED`. The capture command must not
 be launched when the enrolled Oracle/capture safety status is invalid,
 unenrolled, stale, or ambiguous.
+
+The examples use `VERA20K_REPO_ROOT`, `VERA20K_SHELL_GUARD`, and
+`VERA20K_ORACLE_RUNS` so paths remain explicit and portable. The optional
+sealed-evidence unit test also reads `VERA20K_SHELL_CAPTURE`; it skips unless
+all three evidence paths are configured.
 
 The working directory is required because VERA20k loads `config.toml` and
 other relative resources from its process working directory. The wrapper
