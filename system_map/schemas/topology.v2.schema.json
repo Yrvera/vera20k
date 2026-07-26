@@ -625,6 +625,9 @@
         "player_visible_result": {
           "$ref": "#/$defs/nonEmptyString"
         },
+        "ordering_note": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
         "native_entrypoints": {
           "type": "array",
           "items": {

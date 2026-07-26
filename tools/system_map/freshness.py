@@ -154,6 +154,86 @@ def build_freshness(
     return result
 
 
+def build_mechanism_freshness(
+    repo: Path,
+    mechanisms: dict,
+) -> dict[str, dict]:
+    """Compare each mechanism's explicit Rust surfaces independently."""
+
+    inspector = _GitInspector(repo)
+    default_commit = mechanisms.get("observed_at_commit")
+    result: dict[str, dict] = {}
+    blocks = mechanisms.get("blocks", {})
+    if not isinstance(blocks, dict):
+        return result
+    surfaces_by_block = collect_mechanism_surfaces(mechanisms)
+    for block_id, block in sorted(blocks.items()):
+        surfaces = surfaces_by_block.get(block_id, [])
+        result[block_id] = compare_surfaces(
+            repo,
+            surfaces if isinstance(surfaces, list) else [],
+            default_commit,
+            inspector=inspector,
+            prefer_surface_commits=True,
+        )
+    return result
+
+
+def collect_mechanism_surfaces(
+    mechanisms: dict,
+) -> dict[str, list[dict]]:
+    """Collect direct block mappings and Rust relationship evidence."""
+
+    result: dict[str, list[dict]] = {}
+    blocks = mechanisms.get("blocks", {})
+    if isinstance(blocks, dict):
+        for block_id, block in blocks.items():
+            if not isinstance(block, dict):
+                continue
+            _add_surfaces(
+                result,
+                block_id,
+                block.get("rust_surfaces", []),
+                default_coverage="representative",
+            )
+    edges = mechanisms.get("edges", [])
+    if isinstance(edges, list):
+        for edge in edges:
+            if not isinstance(edge, dict) or edge.get("plane") != "rust":
+                continue
+            observed = edge.get("observed_at_commit")
+            surfaces: list[dict] = []
+            for item in edge.get("evidence", []):
+                path = item.get("path") if isinstance(item, dict) else item
+                normalized = _rust_evidence_path(path)
+                if normalized is not None:
+                    surfaces.append(
+                        {
+                            "coverage": "representative",
+                            "observed_at_commit": observed,
+                            "path": normalized,
+                        }
+                    )
+            for endpoint in {edge.get("from"), edge.get("to")}:
+                _add_surfaces(
+                    result,
+                    endpoint,
+                    surfaces,
+                    default_coverage="representative",
+                )
+    for block_id, surfaces in result.items():
+        unique: dict[tuple[str, str, str], dict] = {}
+        for surface in surfaces:
+            key = (
+                surface["path"],
+                surface.get("observed_at_commit", ""),
+                surface.get("coverage", "representative"),
+            )
+            unique[key] = surface
+        result[block_id] = [unique[key] for key in sorted(unique)]
+    return result
+
+
 def compare_surfaces(
     repo: Path,
     surfaces: list[dict],

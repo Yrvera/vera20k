@@ -31,6 +31,27 @@ def format_research_navigator(result: dict) -> str:
             len(result["warnings"]),
             len(shown_warnings),
         )
+    research_seed = result.get("research_seed", {})
+    effective_query = research_seed.get("effective_query")
+    if effective_query and (
+        effective_query != result["query"]
+        or research_seed.get("derived_anchors")
+    ):
+        lines.extend(
+            [
+                "",
+                "Research seed:",
+                f"  effective query: {effective_query}",
+                "  derived anchors: "
+                + (
+                    ", ".join(research_seed.get("derived_anchors", []))
+                    or "(none)"
+                ),
+            ]
+        )
+        omitted = research_seed.get("mechanism_anchor_omissions", 0)
+        if omitted:
+            lines.append(f"  mechanism anchors omitted by cap: {omitted}")
 
     system_map = result["system_map"]
     summary = system_map["summary"]
@@ -47,6 +68,8 @@ def format_research_navigator(result: dict) -> str:
                 f"annotated={summary['annotated_systems']} "
                 f"loops={summary['loop_count']} "
                 f"edges={summary['typed_edge_count']} "
+                f"mechanisms={summary.get('mechanism_count', 0)} "
+                f"mechanism_edges={summary.get('mechanism_edge_count', 0)} "
                 f"warnings={summary['warning_count']}"
             ),
             f"  Rust mapping freshness: {mapping or '(none)'}",
@@ -94,6 +117,32 @@ def format_research_navigator(result: dict) -> str:
                         selected_loop.get("ordered_systems", [])
                     )
                 ),
+            ]
+        )
+
+    selected_mechanism = system_map.get("selected_mechanism")
+    if selected_mechanism:
+        memberships = "; ".join(
+            f"{item.get('loop')}:"
+            + ",".join(
+                str(order) for order in item.get("stage_orders", [])
+            )
+            for item in selected_mechanism.get("loop_memberships", [])
+        )
+        lines.extend(
+            [
+                "",
+                "Selected mechanism:",
+                f"  {selected_mechanism['id']} - "
+                f"{selected_mechanism['name']}",
+                (
+                    f"  owner={selected_mechanism['owner']} "
+                    f"freshness={selected_mechanism['freshness']} "
+                    f"open_questions="
+                    f"{selected_mechanism['open_question_count']}"
+                ),
+                f"  loops/stages: {memberships or '(none)'}",
+                f"  contract: {selected_mechanism['contract']}",
             ]
         )
 
@@ -149,6 +198,33 @@ def format_research_navigator(result: dict) -> str:
     if not shown_loops:
         lines.append("  No loops matched.")
     append_omitted_count(lines, len(loop_candidates), len(shown_loops))
+
+    mechanism_candidates = system_map.get("mechanism_candidates", [])
+    lines.append("")
+    lines.append(
+        f"Mechanism candidates: {len(mechanism_candidates)} "
+        "(candidate only; semantic navigation, not parity proof)"
+    )
+    shown_mechanisms = mechanism_candidates[:NAVIGATOR_CANDIDATE_LIMIT]
+    for index, candidate in enumerate(shown_mechanisms, start=1):
+        reasons = "; ".join(candidate.get("match_reasons", [])[:3])
+        lines.append(
+            f"{index}. {candidate['id']} - {candidate['name']} "
+            f"score={candidate['score']} "
+            f"coverage={candidate['query_coverage']:.3f}"
+        )
+        lines.append(
+            f"   owner={candidate['owner']} "
+            f"freshness={candidate['freshness']} "
+            f"loops={','.join(candidate.get('loops', [])) or '(none)'}"
+        )
+        if reasons:
+            lines.append(f"   why: {reasons}")
+    if not shown_mechanisms:
+        lines.append("  No mechanisms matched.")
+    append_omitted_count(
+        lines, len(mechanism_candidates), len(shown_mechanisms)
+    )
 
     lines.extend(["", format_research_brief(result["research"])])
     return "\n".join(lines).rstrip()

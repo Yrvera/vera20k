@@ -22,6 +22,7 @@ from .edge_validation import validate_edges
 from .graph_validation import validate_requires_cycles
 from .jsonio import load_json_strict
 from .loop_validation import validate_loops
+from .mechanism_validation import validate_mechanisms
 from .model import (
     COMMIT_RE,
     Diagnostic,
@@ -64,6 +65,7 @@ def validate_all(
     source_lock: dict,
     topology: dict,
     *,
+    mechanisms: dict | None = None,
     require_sources: bool = False,
     ci: bool = False,
 ) -> list[Diagnostic]:
@@ -90,6 +92,16 @@ def validate_all(
         diagnostics,
         require_paths=require_sources and not ci,
     )
+    if mechanisms is not None:
+        validate_mechanisms(
+            repo,
+            mechanisms,
+            known_systems,
+            group_systems,
+            topology,
+            diagnostics,
+            require_paths=require_sources and not ci,
+        )
     if require_sources and not ci:
         validate_live_sources(repo, registry, source_lock, diagnostics)
     return sorted(diagnostics)

@@ -206,12 +206,13 @@ present.
 This document/topic map is distinct from the engine execution topology under
 `system_map/`. Use the standalone System Map v2 CLI for canonical GSI systems,
 typed dependency/authority edges, service crosswalks, production loops, and
-Git-aware Rust-surface freshness:
+semantic mechanism blocks with Git-aware Rust-surface freshness:
 
 ```powershell
 python -m tools.system_map owners --limit 20
 python -m tools.system_map show GSI-07.15
 python -m tools.system_map loop LOOP-004-HARVEST-CREDIT
+python -m tools.system_map mechanism MBLK-004-POWERED-RADAR-GATE
 ```
 
 Neither map is parity proof. Research-index results navigate evidence; System
@@ -225,7 +226,9 @@ dependency-aware routing:
 ```powershell
 python tools/research_index/navigate.py "power outage recovery"
 python tools/research_index/navigate.py "GSI-09.07"
+python tools/research_index/navigate.py "MBLK-004-POWERED-RADAR-GATE"
 python tools/research_index/navigate.py "harvest credit" --system-id GSI-07.39 --loop-id LOOP-004-HARVEST-CREDIT
+python tools/research_index/navigate.py "radar recovery" --mechanism-id MBLK-004-POWERED-RADAR-GATE
 python tools/research_index/navigate.py --json "bridge collapse"
 ```
 
@@ -235,8 +238,13 @@ freshness, exact selections, and ranked candidates. Natural-language candidates
 are always labelled as navigation candidates rather than verified owners,
 parity evidence, or completion claims.
 
-Exact `GSI-*` and `LOOP-*` queries select their canonical object. Unknown exact
-IDs fail instead of falling back to fuzzy results. Zero matches return
+Exact `GSI-*`, `LOOP-*`, and `MBLK-*` queries select their canonical object.
+An exact mechanism query uses the block's bounded `research_query` plus its
+verified native anchors to seed the research brief, while preserving the
+original outer query and disclosing the effective seed. An explicit
+`--mechanism-id` alongside natural language selects the mechanism without
+replacing that natural-language research query. Unknown exact IDs fail instead
+of falling back to fuzzy results. Zero matches return
 `matched=false`; the CLI exits nonzero when neither domain matched or when
 matched research fails live validation. Text output is bounded, while JSON
 retains the structured bundle within fixed limits of 20 rows per section, eight

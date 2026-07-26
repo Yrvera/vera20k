@@ -1813,6 +1813,7 @@
       "owner": "GSI-09.07",
       "stock_fixture": "American stock base with AMRADR sells the GAPOWR that supplies its positive margin, then rebuilds/restores power.",
       "player_visible_result": "Refund, power transition, bar animation, low-power EVA, radar loss, minimap state, and recovery match.",
+      "ordering_note": "Stage order is the player-journey route, not proof of renderer/audio-relative frame order. Native evidence orders power assessment before radar reassessment and notification logic; relative presentation order among stages 7-9 and stages 21-22 remains UNCHECKED. Mechanism edges carry the verified ordering claims.",
       "native_entrypoints": [
         "HouseClass::AI_AssessPower 0x00508C30",
         "HouseClass::UpdateTacticalRadarAvailability 0x00508DF0"
@@ -1828,7 +1829,7 @@
       ],
       "stages": [
         {"order": 1, "system": "GSI-14.08", "action": "Issue sell mode/action."},
-        {"order": 2, "system": "GSI-09.14", "action": "Sell building and apply teardown."},
+        {"order": 2, "system": "GSI-09.14", "action": "Advance the durable sell mission through reverse buildup and authorize completion."},
         {"order": 3, "system": "GSI-09.01", "action": "Commit refund."},
         {"order": 4, "system": "GSI-05.03", "action": "Remove power producer."},
         {"order": 5, "system": "GSI-09.07", "action": "Reassess output/drain and low-power state."},

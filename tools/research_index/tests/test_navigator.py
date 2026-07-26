@@ -86,6 +86,7 @@ class NavigatorCompositionTests(unittest.TestCase):
         self.assertIn("matched: False", text)
         self.assertIn("No systems matched.", text)
         self.assertIn("No loops matched.", text)
+        self.assertIn("No mechanisms matched.", text)
 
     def test_exact_query_selects_system_and_unknown_id_fails(self) -> None:
         with _indexed_workspace() as (workspace, db_path):
@@ -132,6 +133,99 @@ class NavigatorCompositionTests(unittest.TestCase):
                     ],
                 )
 
+    def test_exact_mechanism_seeds_research_without_exposing_full_block(
+        self,
+    ) -> None:
+        with _indexed_workspace() as (workspace, db_path):
+            selected = research_navigate(
+                db_path,
+                workspace,
+                self.report,
+                "mblk-004-powered-radar-gate",
+                limit=2,
+            )
+
+        mechanism = selected["system_map"]["selected_mechanism"]
+        self.assertEqual(mechanism["id"], "MBLK-004-POWERED-RADAR-GATE")
+        self.assertNotIn("steps", mechanism)
+        self.assertNotIn("evidence", mechanism)
+        self.assertNotEqual(
+            selected["research_seed"]["effective_query"],
+            selected["query"],
+        )
+        self.assertTrue(selected["research_seed"]["derived_anchors"])
+        self.assertLessEqual(len(selected["anchors"]), NAVIGATOR_MAX_ANCHORS)
+        text = format_research_navigator(selected)
+        self.assertIn("Selected mechanism:", text)
+        self.assertIn("Research seed:", text)
+
+    def test_explicit_mechanism_does_not_replace_natural_query(self) -> None:
+        with _indexed_workspace() as (workspace, db_path):
+            selected = research_navigate(
+                db_path,
+                workspace,
+                self.report,
+                "power outage recovery",
+                mechanism_id="MBLK-003-HOUSE-POWER-REASSESSMENT",
+                limit=2,
+            )
+
+        self.assertEqual(
+            selected["research_seed"]["effective_query"],
+            "power outage recovery",
+        )
+        self.assertFalse(
+            selected["research_seed"]["query_substituted_from_mechanism"]
+        )
+
+    def test_formatter_accepts_pre_mechanism_result_shape(self) -> None:
+        with _indexed_workspace() as (workspace, db_path):
+            result = research_navigate(
+                db_path,
+                workspace,
+                self.report,
+                "power outage recovery",
+                limit=2,
+            )
+        result.pop("research_seed")
+        result["system_map"].pop("mechanism_candidates")
+        result["system_map"].pop("selected_mechanism")
+        result["system_map"]["summary"].pop("mechanism_count")
+        result["system_map"]["summary"].pop("mechanism_edge_count")
+
+        text = format_research_navigator(result)
+
+        self.assertIn("Research navigator:", text)
+        self.assertIn("mechanisms=0", text)
+
+    def test_conflicting_exact_mechanism_selector_fails(self) -> None:
+        with _indexed_workspace() as (workspace, db_path):
+            with self.assertRaisesRegex(ValueError, "conflicts"):
+                research_navigate(
+                    db_path,
+                    workspace,
+                    self.report,
+                    "MBLK-004-POWERED-RADAR-GATE",
+                    mechanism_id="MBLK-003-HOUSE-POWER-REASSESSMENT",
+                )
+
+    def test_mechanism_anchor_seeding_respects_global_cap(self) -> None:
+        with _indexed_workspace() as (workspace, db_path):
+            result = research_navigate(
+                db_path,
+                workspace,
+                self.report,
+                "MBLK-004-POWERED-RADAR-GATE",
+                anchors=[f"explicit-{index}" for index in range(7)],
+                limit=2,
+            )
+
+        self.assertEqual(len(result["anchors"]), NAVIGATOR_MAX_ANCHORS)
+        self.assertEqual(
+            result["research_seed"]["mechanism_anchor_omissions"],
+            1,
+        )
+
 
 class NavigatorCliTests(unittest.TestCase):
     def test_exact_selection_round_trips_as_json(self) -> None:
@@ -167,6 +261,21 @@ class NavigatorCliTests(unittest.TestCase):
         self.assertEqual(
             result["diagnostics"][0]["code"],
             "UNKNOWN_SYSTEM",
+        )
+
+    def test_exact_mechanism_selection_round_trips_as_json(self) -> None:
+        completed = self._run(
+            "--json",
+            "--limit",
+            "2",
+            "MBLK-004-POWERED-RADAR-GATE",
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            result["system_map"]["selected_mechanism"]["id"],
+            "MBLK-004-POWERED-RADAR-GATE",
         )
 
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:

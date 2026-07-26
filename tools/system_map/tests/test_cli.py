@@ -20,6 +20,7 @@ class CliSmokeTests(unittest.TestCase):
             cls.repo / "system_map/registry.v2.json",
             cls.repo / "system_map/source-lock.v2.json",
             cls.repo / "system_map/topology.v2.json",
+            cls.repo / "system_map/mechanisms.v1.json",
         )
         if not all(path.exists() for path in required):
             raise unittest.SkipTest("canonical System Map v2 data is unavailable")
@@ -30,6 +31,8 @@ class CliSmokeTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(result["systems"], 336)
+        self.assertEqual(result["mechanism_blocks"], 7)
+        self.assertEqual(result["mechanism_edges"], 6)
         self.assertEqual(result["warnings"], len(result["diagnostics"]))
         self.assertTrue(
             all(item["severity"] == "warning" for item in result["diagnostics"])
@@ -50,6 +53,28 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("historical pseudo-GSI alias", completed.stdout)
         self.assertIn("GSI-04.09", completed.stdout)
 
+    def test_mechanism_lookup_shows_contract_and_handoffs(self) -> None:
+        completed = self._run(
+            "mechanism", "mblk-004-powered-radar-gate"
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Powered tactical-radar availability gate", completed.stdout)
+        self.assertIn("MBEDGE-0003-POWER-BEFORE-RADAR", completed.stdout)
+        self.assertIn("inputs:", completed.stdout)
+        self.assertIn("outputs:", completed.stdout)
+        self.assertIn("loop-stage memberships:", completed.stdout)
+        self.assertIn("open questions:", completed.stdout)
+
+    def test_loop_view_exposes_unchecked_presentation_order(self) -> None:
+        completed = self._run(
+            "loop", "LOOP-012-POWER-OUTAGE-RECOVERY"
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("ordering note:", completed.stdout)
+        self.assertIn("relative presentation order", completed.stdout)
+
     def test_unknown_system_returns_structured_error(self) -> None:
         completed = self._run("show", "GSI-99.99")
         result = json.loads(completed.stderr)
@@ -57,6 +82,15 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 4)
         self.assertEqual(
             result["diagnostics"][0]["code"], "UNKNOWN_SYSTEM"
+        )
+
+    def test_unknown_mechanism_returns_structured_error(self) -> None:
+        completed = self._run("mechanism", "MBLK-999-MISSING")
+        result = json.loads(completed.stderr)
+
+        self.assertEqual(completed.returncode, 4)
+        self.assertEqual(
+            result["diagnostics"][0]["code"], "UNKNOWN_MECHANISM"
         )
 
     def test_render_records_exact_input_provenance_and_checks_fresh_output(
@@ -77,12 +111,13 @@ class CliSmokeTests(unittest.TestCase):
             provenance = report["provenance"]
             self.assertEqual(
                 provenance["generator"],
-                {"id": "vera20k-system-map", "version": "1.0.0"},
+                {"id": "vera20k-system-map", "version": "1.1.0"},
             )
             canonical_inputs = {
                 "registry": "system_map/registry.v2.json",
                 "source_lock": "system_map/source-lock.v2.json",
                 "topology": "system_map/topology.v2.json",
+                "mechanisms": "system_map/mechanisms.v1.json",
             }
             for name, relative_path in canonical_inputs.items():
                 source = self.repo / relative_path
@@ -93,7 +128,7 @@ class CliSmokeTests(unittest.TestCase):
                 )
 
             markdown = markdown_path.read_text(encoding="utf-8")
-            self.assertIn("`vera20k-system-map` `1.0.0`", markdown)
+            self.assertIn("`vera20k-system-map` `1.1.0`", markdown)
             for item in provenance["inputs"].values():
                 self.assertIn(f"`{item['sha256']}`", markdown)
 

@@ -11,6 +11,7 @@ from tools.system_map.api import (
     load_report,
     report_summary,
     require_loop,
+    require_mechanism,
     require_system,
 )
 from tools.system_map.model import SystemMapError
@@ -27,6 +28,7 @@ class PublicApiTests(unittest.TestCase):
 
         self.assertEqual(summary["system_count"], 336)
         self.assertGreater(summary["loop_count"], 0)
+        self.assertEqual(summary["mechanism_count"], 7)
         self.assertEqual(summary["error_count"], 0)
         self.assertEqual(
             sum(summary["mapping_freshness"].values()),
@@ -71,10 +73,69 @@ class PublicApiTests(unittest.TestCase):
             self.report,
             "loop-004-harvest-credit",
         )
+        mechanism = require_mechanism(
+            self.report,
+            "mblk-004-powered-radar-gate",
+        )
 
         self.assertEqual(system["system"]["id"], "GSI-07.15")
         self.assertEqual(loop["id"], "LOOP-004-HARVEST-CREDIT")
+        self.assertEqual(
+            mechanism["mechanism"]["id"],
+            "MBLK-004-POWERED-RADAR-GATE",
+        )
         self.assertEqual(loop["ordered_systems"][0], "GSI-07.15")
+
+    def test_mechanism_candidates_are_independent_and_bounded(self) -> None:
+        result = find_candidates(
+            self.report,
+            "power radar handoff",
+            limit=2,
+        )
+
+        self.assertEqual(len(result["mechanism_candidates"]), 2)
+        self.assertEqual(
+            result["mechanism_candidates"][0]["id"],
+            "MBLK-004-POWERED-RADAR-GATE",
+        )
+        self.assertTrue(
+            all(
+                candidate["candidate_only"]
+                for candidate in result["mechanism_candidates"]
+            )
+        )
+        self.assertNotIn("steps", result["mechanism_candidates"][0])
+
+    def test_mechanism_namespace_and_loop_residuals_stay_separate(self) -> None:
+        self.assertTrue(
+            all(edge["id"].startswith("EDGE-") for edge in self.report["edges"])
+        )
+        self.assertTrue(
+            all(
+                edge["id"].startswith("MBEDGE-")
+                for edge in self.report["mechanism_edges"]
+            )
+        )
+        loop = self.report["loops"]["LOOP-012-POWER-OUTAGE-RECOVERY"]
+        self.assertEqual(
+            loop["mechanisms"],
+            [
+                "MBLK-001-SELL-MISSION-AUTHORITY",
+                "MBLK-002-SELL-REFUND-COMMIT",
+                "MBLK-003-HOUSE-POWER-REASSESSMENT",
+                "MBLK-004-POWERED-RADAR-GATE",
+                "MBLK-006-POWER-BAR-PRESENTATION-HANDOFF",
+                "MBLK-007-RADAR-PRESENTATION-HANDOFF",
+                "MBLK-005-LOW-POWER-NOTIFICATION-GUARD",
+            ],
+        )
+        self.assertEqual(
+            loop["unmapped_mechanism_stage_orders"],
+            list(range(10, 19)),
+        )
+        untouched = self.report["loops"]["LOOP-004-HARVEST-CREDIT"]
+        self.assertEqual(untouched["mechanisms"], [])
+        self.assertEqual(untouched["unmapped_mechanism_stage_orders"], [])
 
     def test_unknown_exact_id_raises_structured_error(self) -> None:
         with self.assertRaises(SystemMapError) as raised:

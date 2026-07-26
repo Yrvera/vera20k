@@ -7,7 +7,11 @@ import subprocess
 import tempfile
 import unittest
 
-from tools.system_map.freshness import build_freshness, compare_surfaces
+from tools.system_map.freshness import (
+    build_freshness,
+    build_mechanism_freshness,
+    compare_surfaces,
+)
 from tools.system_map.report import stale_rows
 
 
@@ -251,6 +255,49 @@ class FreshnessTests(unittest.TestCase):
                     freshness[system_id]["rust_mapping_freshness"]["state"],
                     "STALE",
                 )
+
+    def test_rust_mechanism_edge_participates_in_both_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _git(repo, "init", "-q")
+            _git(repo, "config", "user.email", "system-map@example.invalid")
+            _git(repo, "config", "user.name", "System Map Test")
+            source = repo / "src/handoff.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text("// observed handoff\n", encoding="utf-8")
+            _git(repo, "add", "src/handoff.rs")
+            _git(repo, "commit", "-q", "-m", "observed")
+            observed = _git(repo, "rev-parse", "HEAD").strip()
+            mechanisms = {
+                "blocks": {
+                    "MBLK-001-A": {"rust_surfaces": []},
+                    "MBLK-002-B": {"rust_surfaces": []},
+                },
+                "edges": [
+                    {
+                        "evidence": ["src/handoff.rs:1"],
+                        "from": "MBLK-001-A",
+                        "observed_at_commit": observed,
+                        "plane": "rust",
+                        "to": "MBLK-002-B",
+                    }
+                ],
+                "observed_at_commit": observed,
+            }
+
+            freshness = build_mechanism_freshness(repo, mechanisms)
+            for block_id in ("MBLK-001-A", "MBLK-002-B"):
+                self.assertEqual(
+                    freshness[block_id]["paths"], ["src/handoff.rs"]
+                )
+                self.assertEqual(
+                    freshness[block_id]["state"], "UNRESOLVED"
+                )
+
+            source.write_text("// dirty handoff\n", encoding="utf-8")
+            freshness = build_mechanism_freshness(repo, mechanisms)
+            for block_id in ("MBLK-001-A", "MBLK-002-B"):
+                self.assertEqual(freshness[block_id]["state"], "STALE")
 
 
 def _git(repo: Path, *args: str) -> str:

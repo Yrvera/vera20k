@@ -161,3 +161,96 @@ def topology_fixture(repo: Path) -> dict:
             }
         },
     }
+
+
+def mechanisms_fixture() -> dict:
+    return {
+        "blocks": {
+            "MBLK-001-TEST": {
+                "activation": {
+                    "guards": [],
+                    "mode": "scheduled",
+                    "stock_fixture": "stock test fixture",
+                    "stock_status": "STOCK_ACTIVE",
+                    "trigger": "test tick",
+                },
+                "authority": [
+                    {
+                        "aspect": "state",
+                        "detail": "owns test state",
+                        "owner": "GSI-01.01",
+                    }
+                ],
+                "contract": "Commit the visible test result.",
+                "critical_semantics": [
+                    {
+                        "basis": "native-binary",
+                        "detail": "The test order is native-evidenced.",
+                        "evidence": ["docs/research/core_services.md:1"],
+                        "kind": "ordering",
+                        "status": "VERIFIED",
+                    }
+                ],
+                "evidence": ["docs/research/core_services.md:1"],
+                "inputs": [
+                    {
+                        "detail": "the scheduled tick",
+                        "external_source": "test scheduler",
+                        "name": "tick",
+                    }
+                ],
+                "loop_memberships": [
+                    {
+                        "loop": "LOOP-001-TEST",
+                        "stage_orders": [1, 2],
+                    }
+                ],
+                "name": "test mechanism",
+                "native_anchors": [
+                    {
+                        "address": "0x0055AFB0",
+                        "evidence": "docs/research/core_services.md:1",
+                        "symbol": "LogicClass::AI",
+                    }
+                ],
+                "open_questions": [],
+                "outputs": [
+                    {
+                        "detail": "the player sees the test result",
+                        "name": "visible result",
+                        "player_visible": True,
+                    }
+                ],
+                "owner": "GSI-01.01",
+                "participants": ["GSI-01.01"],
+                "research_query": "LogicClass AI test tick",
+                "rust_surfaces": [
+                    {
+                        "coverage": "representative",
+                        "observed_at_commit": "2" * 40,
+                        "path": "src/lib.rs",
+                    }
+                ],
+                "steps": [
+                    {
+                        "action": "enter fixture",
+                        "order": 1,
+                        "system": "GSI-01.01",
+                    },
+                    {
+                        "action": "complete fixture",
+                        "order": 2,
+                        "system": "GSI-01.01",
+                    },
+                ],
+            }
+        },
+        "edges": [],
+        "id_policy": {
+            "block_pattern": "^MBLK-[0-9]{3}-[A-Z0-9-]+$",
+            "edge_pattern": "^MBEDGE-[0-9]{4}-[A-Z0-9-]+$",
+            "rule": "Test mechanism IDs do not create GSI systems.",
+        },
+        "observed_at_commit": "2" * 40,
+        "schema_version": 1,
+    }

@@ -554,6 +554,25 @@ class ValidationTests(unittest.TestCase):
 
             self.assertEqual(errors(diagnostics), [])
 
+    def test_loop_ordering_note_must_be_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            registry = registry_fixture()
+            topology = topology_fixture(repo)
+            topology["loops"]["LOOP-001-TEST"]["ordering_note"] = ["unchecked"]
+
+            diagnostics = validate_all(
+                repo,
+                registry,
+                source_lock_fixture(registry),
+                topology,
+            )
+
+            self.assertIn(
+                "INVALID_LOOP_ORDERING_NOTE",
+                {item.code for item in errors(diagnostics)},
+            )
+
 
 def _git(repo: Path, *args: str) -> str:
     completed = subprocess.run(

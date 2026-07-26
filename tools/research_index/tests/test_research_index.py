@@ -1304,6 +1304,25 @@ class MCPServerSmokeTests(unittest.TestCase):
             "GSI-07.15",
         )
 
+    def test_research_navigate_exact_mechanism_round_trips_json(self) -> None:
+        out = asyncio.run(
+            self.mcp_server.research_navigate(
+                query="power radar gate",
+                mechanism_id="MBLK-004-POWERED-RADAR-GATE",
+                limit=2,
+                format="json",
+            )
+        )
+        result = json.loads(out)
+        self.assertEqual(
+            result["system_map"]["selected_mechanism"]["id"],
+            "MBLK-004-POWERED-RADAR-GATE",
+        )
+        self.assertEqual(
+            result["research_seed"]["effective_query"],
+            "power radar gate",
+        )
+
     def test_research_health_reports_live_generation(self) -> None:
         out = self.mcp_server.research_health(format="json")
         result = json.loads(out)

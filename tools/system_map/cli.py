@@ -14,6 +14,7 @@ from .jsonio import (
     validate_relative_path,
 )
 from .model import Diagnostic, REGISTRY_PATH, SOURCE_LOCK_PATH, SystemMapError
+from .mechanism_validation import load_mechanisms
 from .registry import (
     build_registry,
     find_repo_root,
@@ -24,12 +25,14 @@ from .registry import (
 from .report import (
     build_report,
     format_loop_view,
+    format_mechanism_view,
     format_owner_rows,
     format_stale_rows,
     format_system_view,
     owner_rows,
     render_markdown,
     show_system,
+    show_mechanism,
     stale_rows,
 )
 from .validation import (
@@ -102,6 +105,13 @@ def _parser() -> argparse.ArgumentParser:
     loop.add_argument("loop_id")
     loop.add_argument("--json", action="store_true")
 
+    mechanism = commands.add_parser(
+        "mechanism",
+        help="show one semantic mechanism block with evidence and handoffs",
+    )
+    mechanism.add_argument("mechanism_id")
+    mechanism.add_argument("--json", action="store_true")
+
     owners = commands.add_parser(
         "owners",
         help="rank mapped owner/connectivity coverage (not work priority)",
@@ -171,7 +181,7 @@ def main(
             )
             return 0
 
-        registry, source_lock, topology, diagnostics = _load(
+        registry, source_lock, topology, mechanisms, diagnostics = _load(
             root,
             require_sources=(
                 arguments.command == "check" and arguments.require_sources
@@ -190,6 +200,8 @@ def main(
                     "errors": 0,
                     "families": len(registry["families"]),
                     "loops": len(topology["loops"]),
+                    "mechanism_blocks": len(mechanisms["blocks"]),
+                    "mechanism_edges": len(mechanisms["edges"]),
                     "services": len(topology["services"]),
                     "systems": len(registry["systems"]),
                     "warnings": sum(
@@ -202,7 +214,12 @@ def main(
             return 0
 
         report = build_report(
-            root, registry, source_lock, topology, diagnostics
+            root,
+            registry,
+            source_lock,
+            topology,
+            diagnostics,
+            mechanisms=mechanisms,
         )
         if arguments.command == "render":
             output_value = validate_relative_path(arguments.output)
@@ -240,6 +257,7 @@ def main(
                         "json": json_path.relative_to(root).as_posix(),
                         "markdown": markdown_path.relative_to(root).as_posix(),
                         "systems": len(report["systems"]),
+                        "mechanisms": len(report["mechanisms"]),
                     }
                 )
                 return 0
@@ -250,6 +268,7 @@ def main(
                     "json": json_path.relative_to(root).as_posix(),
                     "markdown": markdown_path.relative_to(root).as_posix(),
                     "systems": len(report["systems"]),
+                    "mechanisms": len(report["mechanisms"]),
                 }
             )
             return 0
@@ -271,6 +290,19 @@ def main(
                 pretty_json(selected)
                 if arguments.json
                 else format_loop_view(selected)
+            )
+            return 0
+
+        if arguments.command == "mechanism":
+            selected = show_mechanism(
+                report, arguments.mechanism_id.strip().upper()
+            )
+            if selected is None:
+                raise _not_found("mechanism", arguments.mechanism_id)
+            sys.stdout.write(
+                pretty_json(selected)
+                if arguments.json
+                else format_mechanism_view(selected)
             )
             return 0
 
@@ -336,19 +368,21 @@ def main(
 
 def _load(
     repo: Path, *, require_sources: bool, ci: bool
-) -> tuple[dict, dict, dict, list[Diagnostic]]:
+) -> tuple[dict, dict, dict, dict, list[Diagnostic]]:
     registry = load_registry(repo)
     source_lock = load_source_lock(repo)
     topology = load_topology(repo)
+    mechanisms = load_mechanisms(repo)
     diagnostics = validate_all(
         repo,
         registry,
         source_lock,
         topology,
+        mechanisms=mechanisms,
         require_sources=require_sources,
         ci=ci,
     )
-    return registry, source_lock, topology, diagnostics
+    return registry, source_lock, topology, mechanisms, diagnostics
 
 
 def _not_found(kind: str, value: str) -> SystemMapError:

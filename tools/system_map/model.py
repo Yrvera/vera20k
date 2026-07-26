@@ -20,6 +20,7 @@ DATA_DIR = Path("system_map")
 REGISTRY_PATH = DATA_DIR / "registry.v2.json"
 TOPOLOGY_PATH = DATA_DIR / "topology.v2.json"
 SOURCE_LOCK_PATH = DATA_DIR / "source-lock.v2.json"
+MECHANISMS_PATH = DATA_DIR / "mechanisms.v1.json"
 
 CANONICAL_ID_RE = re.compile(r"^GSI-\d{2}\.\d{2}$")
 FAMILY_ID_RE = re.compile(r"^GSI-\d{2}$")
@@ -27,6 +28,8 @@ LEGACY_PSEUDO_GSI_RE = re.compile(r"^GSI-\d{2}\.\d{2}[A-Z]$")
 SLICE_ID_RE = re.compile(r"^SLICE-\d{8}-[A-Z0-9-]+$")
 LOOP_ID_RE = re.compile(r"^LOOP-\d{3}-[A-Z0-9-]+$")
 EDGE_ID_RE = re.compile(r"^EDGE-\d{4}-[A-Z0-9-]+$")
+MECHANISM_ID_RE = re.compile(r"^MBLK-\d{3}-[A-Z0-9-]+$")
+MECHANISM_EDGE_ID_RE = re.compile(r"^MBEDGE-\d{4}-[A-Z0-9-]+$")
 COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 ADDRESS_RE = re.compile(r"^0x[0-9A-Fa-f]{4,8}$")
 

@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "query",
-        help="Natural-language topic or exact canonical GSI/LOOP ID",
+        help="Natural-language topic or exact canonical GSI/LOOP/MBLK ID",
     )
     parser.add_argument(
         "--anchor",
@@ -50,6 +50,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--loop-id",
         help="Exact canonical LOOP-NNN-SLUG selection",
+    )
+    parser.add_argument(
+        "--mechanism-id",
+        help="Exact canonical MBLK-NNN-SLUG selection",
     )
     parser.add_argument(
         "--limit",
@@ -83,6 +87,7 @@ def main() -> int:
             anchors=args.anchor,
             system_id=args.system_id,
             loop_id=args.loop_id,
+            mechanism_id=args.mechanism_id,
             limit=args.limit,
         )
     except SystemMapError as exc:

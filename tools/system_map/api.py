@@ -12,9 +12,16 @@ from copy import deepcopy
 from pathlib import Path
 import re
 
-from .model import CANONICAL_ID_RE, LOOP_ID_RE, Diagnostic, SystemMapError
+from .mechanism_validation import load_mechanisms
+from .model import (
+    CANONICAL_ID_RE,
+    LOOP_ID_RE,
+    MECHANISM_ID_RE,
+    Diagnostic,
+    SystemMapError,
+)
 from .registry import load_registry, load_source_lock
-from .report import build_report, show_system
+from .report import build_report, show_mechanism, show_system
 from .validation import load_topology, raise_for_errors, validate_all
 
 
@@ -30,6 +37,8 @@ _STOP_TERMS = frozenset(
         "implementation",
         "index",
         "map",
+        "mechanism",
+        "block",
         "mcp",
         "navigator",
         "of",
@@ -59,11 +68,13 @@ def load_report(
     registry = load_registry(resolved_repo)
     source_lock = load_source_lock(resolved_repo)
     topology = load_topology(resolved_repo)
+    mechanisms = load_mechanisms(resolved_repo)
     diagnostics = validate_all(
         resolved_repo,
         registry,
         source_lock,
         topology,
+        mechanisms=mechanisms,
         require_sources=require_sources,
         ci=ci,
     )
@@ -74,6 +85,7 @@ def load_report(
         source_lock,
         topology,
         diagnostics,
+        mechanisms=mechanisms,
     )
 
 
@@ -101,6 +113,18 @@ def require_loop(report: dict, loop_id: str) -> dict:
     return deepcopy(result)
 
 
+def require_mechanism(report: dict, mechanism_id: str) -> dict:
+    """Return one exact semantic mechanism or raise a structured error."""
+
+    normalized = mechanism_id.strip().upper()
+    if not MECHANISM_ID_RE.fullmatch(normalized):
+        raise _not_found("mechanism", mechanism_id)
+    result = show_mechanism(report, normalized)
+    if result is None:
+        raise _not_found("mechanism", normalized)
+    return result
+
+
 def find_candidates(report: dict, query: str, limit: int = 8) -> dict:
     """Rank bounded System Map candidates without asserting ownership."""
 
@@ -123,12 +147,19 @@ def find_candidates(report: dict, query: str, limit: int = 8) -> dict:
         terms,
         limit,
     )
+    mechanisms = _mechanism_candidates(
+        report,
+        normalized_query,
+        terms,
+        limit,
+    )
     return {
-        "matched": bool(systems or loops),
+        "matched": bool(systems or loops or mechanisms),
         "query": normalized_query,
         "query_terms": terms,
         "system_candidates": systems,
         "loop_candidates": loops,
+        "mechanism_candidates": mechanisms,
     }
 
 
@@ -162,6 +193,12 @@ def report_summary(report: dict) -> dict:
             item.get("severity") == "error" for item in diagnostics
         ),
         "loop_count": len(report.get("loops", {})),
+        "mechanism_count": len(report.get("mechanisms", {})),
+        "mechanism_edge_count": len(report.get("mechanism_edges", [])),
+        "mechanism_observed_at_commit": report.get(
+            "mechanism_observed_at_commit"
+        ),
+        "mechanism_schema_version": report.get("mechanism_schema_version"),
         "mapping_freshness": dict(sorted(freshness.items())),
         "observed_at_commit": report.get("observed_at_commit"),
         "repository": {
@@ -405,6 +442,133 @@ def _loop_candidates(
     return rows[:limit]
 
 
+def _mechanism_candidates(
+    report: dict,
+    query: str,
+    terms: list[str],
+    limit: int,
+) -> list[dict]:
+    """Rank mechanism contracts independently of systems and loops."""
+
+    rows: list[dict] = []
+    query_folded = query.casefold()
+    query_ids = {
+        item.upper()
+        for item in re.findall(
+            r"\bMBLK-\d{3}-[A-Z0-9-]+\b",
+            query,
+            flags=re.IGNORECASE,
+        )
+    }
+    for block_id, block in report.get("mechanisms", {}).items():
+        score, matched_terms, reasons = _score_fields(
+            query_folded,
+            terms,
+            [
+                (
+                    "mechanism",
+                    180,
+                    [
+                        block.get("name", ""),
+                        block.get("contract", ""),
+                        block.get("research_query", ""),
+                    ],
+                ),
+                (
+                    "activation",
+                    125,
+                    [
+                        str(block.get("activation", {}).get("trigger", "")),
+                        str(
+                            block.get("activation", {}).get(
+                                "stock_fixture", ""
+                            )
+                        ),
+                    ],
+                ),
+                (
+                    "ordered step",
+                    110,
+                    [
+                        f"{step.get('system', '')} "
+                        f"{step.get('action', '')}"
+                        for step in block.get("steps", [])
+                        if isinstance(step, dict)
+                    ],
+                ),
+                (
+                    "semantic contract",
+                    100,
+                    [
+                        str(item.get("detail", ""))
+                        for item in block.get("critical_semantics", [])
+                        if isinstance(item, dict)
+                    ],
+                ),
+                (
+                    "native/rust surface",
+                    90,
+                    [
+                        *(
+                            f"{anchor.get('symbol', '')} "
+                            f"{anchor.get('address', '')}"
+                            if isinstance(anchor, dict)
+                            else str(anchor)
+                            for anchor in block.get("native_anchors", [])
+                        ),
+                        *(
+                            f"{surface.get('path', '')} "
+                            f"{surface.get('symbol', '')}"
+                            for surface in block.get("rust_surfaces", [])
+                            if isinstance(surface, dict)
+                        ),
+                    ],
+                ),
+            ],
+        )
+        if block_id in query_ids:
+            score += 10_000
+            reasons.insert(0, f"canonical ID: {block_id}")
+        if query_folded == block_id.casefold():
+            score += 20_000
+        if score <= 0 or not _enough_coverage(terms, matched_terms, reasons):
+            continue
+        rows.append(
+            {
+                "candidate_only": True,
+                "freshness": block.get("freshness", {}).get(
+                    "state", "UNMAPPED"
+                ),
+                "id": block_id,
+                "loops": sorted(
+                    {
+                        item.get("loop")
+                        for item in block.get("loop_memberships", [])
+                        if isinstance(item, dict)
+                        and isinstance(item.get("loop"), str)
+                    }
+                )[:8],
+                "match_reasons": reasons[:8],
+                "matched_terms": sorted(matched_terms),
+                "name": _bounded_text(block.get("name"), 240),
+                "owner": block.get("owner"),
+                "participant_count": len(block.get("participants", [])),
+                "participants": list(block.get("participants", []))[:12],
+                "query_coverage": _coverage(terms, matched_terms),
+                "score": score,
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            -row["score"],
+            -row["query_coverage"],
+            row["id"],
+            str(row["name"]),
+        )
+    )
+    return rows[:limit]
+
+
 def _score_fields(
     query_folded: str,
     terms: list[str],
@@ -440,7 +604,8 @@ def _score_fields(
 
 def _significant_terms(query: str) -> list[str]:
     without_ids = re.sub(
-        r"\b(?:GSI-\d{2}\.\d{2}|LOOP-\d{3}-[A-Z0-9-]+)\b",
+        r"\b(?:GSI-\d{2}\.\d{2}|LOOP-\d{3}-[A-Z0-9-]+|"
+        r"MBLK-\d{3}-[A-Z0-9-]+)\b",
         " ",
         query,
         flags=re.IGNORECASE,
@@ -525,3 +690,12 @@ def _not_found(kind: str, value: str) -> SystemMapError:
         ],
         exit_code=4,
     )
+
+
+def _bounded_text(value: object, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."

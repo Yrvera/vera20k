@@ -25,6 +25,7 @@ _LOOP_FIELDS = frozenset(
         "name",
         "native_entrypoints",
         "oracle",
+        "ordering_note",
         "owner",
         "player_visible_result",
         "rust_touchpoints",
@@ -207,6 +208,17 @@ def _validate_loop(
             "MISSING_VISIBLE_RESULT",
             "loop requires a player-visible result/assertion",
             record_id=loop_id,
+        )
+    ordering_note = loop.get("ordering_note")
+    if ordering_note is not None and (
+        not isinstance(ordering_note, str) or not ordering_note.strip()
+    ):
+        _error(
+            diagnostics,
+            "INVALID_LOOP_ORDERING_NOTE",
+            "loop ordering_note must be non-empty when present",
+            record_id=loop_id,
+            field="ordering_note",
         )
     oracle = loop.get("oracle")
     if not isinstance(oracle, dict):

@@ -393,6 +393,7 @@ async def research_navigate(
     source: str | None = None,
     system_id: str | None = None,
     loop_id: str | None = None,
+    mechanism_id: str | None = None,
     limit: int = 8,
     format: Literal["text", "json"] = "text",
 ) -> str:
@@ -401,15 +402,17 @@ async def research_navigate(
     This is a thin façade over two independent navigation domains. Research
     results remain cited evidence hints; System Map lexical matches remain
     candidates rather than verified owners or parity claims. Use exact
-    ``system_id`` or ``loop_id`` selectors to pin a canonical route.
+    ``system_id``, ``loop_id``, or ``mechanism_id`` selectors to pin a
+    canonical route.
 
     Args:
-        query: Natural-language topic or an exact canonical GSI/LOOP ID.
+        query: Natural-language topic or an exact canonical GSI/LOOP/MBLK ID.
         anchors: Optional exact symbols or addresses, limited to eight.
         system: Optional research-index system filter.
         source: Optional research source-kind filter.
         system_id: Optional exact canonical ``GSI-NN.NN`` selection.
         loop_id: Optional exact canonical ``LOOP-NNN-SLUG`` selection.
+        mechanism_id: Optional exact canonical ``MBLK-NNN-SLUG`` selection.
         limit: Candidate/brief rows per section, from 1 through 20.
         format: "text" for a bounded handoff, "json" for structured data.
     """
@@ -421,6 +424,7 @@ async def research_navigate(
             source=source,
             system_id=system_id,
             loop_id=loop_id,
+            mechanism_id=mechanism_id,
             limit=limit,
             format=format,
         )
@@ -435,6 +439,7 @@ def _research_navigate_request(
     source: str | None,
     system_id: str | None,
     loop_id: str | None,
+    mechanism_id: str | None,
     limit: int,
     format: Literal["text", "json"],
 ) -> str:
@@ -451,6 +456,7 @@ def _research_navigate_request(
         anchors=anchors,
         system_id=system_id,
         loop_id=loop_id,
+        mechanism_id=mechanism_id,
         limit=limit,
     )
     if format == "json":

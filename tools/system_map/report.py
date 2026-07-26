@@ -5,10 +5,15 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-from .freshness import build_freshness, repository_state
+from .freshness import (
+    build_freshness,
+    build_mechanism_freshness,
+    repository_state,
+)
 from .jsonio import sha256_file
 from .model import (
     Diagnostic,
+    MECHANISMS_PATH,
     REGISTRY_PATH,
     SCHEMA_VERSION,
     SOURCE_LOCK_PATH,
@@ -18,7 +23,7 @@ from .model import (
 
 
 GENERATOR_ID = "vera20k-system-map"
-GENERATOR_VERSION = "1.0.0"
+GENERATOR_VERSION = "1.1.0"
 
 
 def build_report(
@@ -27,6 +32,8 @@ def build_report(
     source_lock: dict,
     topology: dict,
     diagnostics: list[Diagnostic],
+    *,
+    mechanisms: dict,
 ) -> dict:
     """Build the complete navigation report without mutating canonical inputs."""
 
@@ -42,10 +49,24 @@ def build_report(
             "topology": deepcopy(annotations.get(system_id, {})),
         }
 
+    mechanism_source = mechanisms
+    mechanism_freshness = build_mechanism_freshness(repo, mechanism_source)
+    mechanism_blocks = {
+        block_id: {
+            "id": block_id,
+            **deepcopy(block),
+            "freshness": mechanism_freshness.get(block_id, {}),
+        }
+        for block_id, block in sorted(
+            mechanism_source.get("blocks", {}).items()
+        )
+        if isinstance(block, dict)
+    }
     loops = {
         loop_id: normalize_loop(loop_id, loop, systems)
         for loop_id, loop in sorted(topology.get("loops", {}).items())
     }
+    _attach_loop_mechanisms(loops, mechanism_blocks)
     edges = sorted(
         deepcopy(topology.get("edges", [])),
         key=lambda edge: (
@@ -54,6 +75,32 @@ def build_report(
             str(edge.get("kind", "")),
         ),
     )
+    mechanism_edges = sorted(
+        deepcopy(mechanism_source.get("edges", [])),
+        key=lambda edge: (
+            str(edge.get("id", "")),
+            str(edge.get("plane", "")),
+            str(edge.get("kind", "")),
+        ),
+    )
+    provenance_inputs = {
+        "registry": {
+            "path": REGISTRY_PATH.as_posix(),
+            "sha256": sha256_file(repo / REGISTRY_PATH),
+        },
+        "source_lock": {
+            "path": SOURCE_LOCK_PATH.as_posix(),
+            "sha256": sha256_file(repo / SOURCE_LOCK_PATH),
+        },
+        "topology": {
+            "path": TOPOLOGY_PATH.as_posix(),
+            "sha256": sha256_file(repo / TOPOLOGY_PATH),
+        },
+    }
+    provenance_inputs["mechanisms"] = {
+        "path": MECHANISMS_PATH.as_posix(),
+        "sha256": sha256_file(repo / MECHANISMS_PATH),
+    }
     return {
         "coupled_sets": deepcopy(topology.get("coupled_sets", [])),
         "diagnostics": [item.to_document() for item in sorted(diagnostics)],
@@ -63,26 +110,19 @@ def build_report(
             topology.get("legacy_slice_aliases", [])
         ),
         "loops": loops,
+        "mechanism_edges": mechanism_edges,
+        "mechanism_observed_at_commit": mechanism_source.get(
+            "observed_at_commit"
+        ),
+        "mechanism_schema_version": mechanism_source.get("schema_version"),
+        "mechanisms": mechanism_blocks,
         "observed_at_commit": topology.get("observed_at_commit"),
         "provenance": {
             "generator": {
                 "id": GENERATOR_ID,
                 "version": GENERATOR_VERSION,
             },
-            "inputs": {
-                "registry": {
-                    "path": REGISTRY_PATH.as_posix(),
-                    "sha256": sha256_file(repo / REGISTRY_PATH),
-                },
-                "source_lock": {
-                    "path": SOURCE_LOCK_PATH.as_posix(),
-                    "sha256": sha256_file(repo / SOURCE_LOCK_PATH),
-                },
-                "topology": {
-                    "path": TOPOLOGY_PATH.as_posix(),
-                    "sha256": sha256_file(repo / TOPOLOGY_PATH),
-                },
-            },
+            "inputs": provenance_inputs,
         },
         "repository": repository_state(repo),
         "schema_version": SCHEMA_VERSION,
@@ -173,6 +213,68 @@ def normalize_loop(loop_id: str, loop: dict, systems: dict[str, dict]) -> dict:
     return result
 
 
+def _attach_loop_mechanisms(
+    loops: dict[str, dict],
+    mechanisms: dict[str, dict],
+) -> None:
+    """Expose mapped and explicitly unmapped loop stages without scoring them."""
+
+    mapped: dict[str, dict[int, list[str]]] = {}
+    for block_id, block in mechanisms.items():
+        for membership in block.get("loop_memberships", []):
+            if not isinstance(membership, dict):
+                continue
+            loop_id = membership.get("loop")
+            if loop_id not in loops:
+                continue
+            for order in membership.get("stage_orders", []):
+                if isinstance(order, int):
+                    mapped.setdefault(loop_id, {}).setdefault(order, []).append(
+                        block_id
+                    )
+    for loop_id, loop in loops.items():
+        stage_ids, orders = loop_stage_ids(loop)
+        normalized_orders = [
+            order if order is not None else index + 1
+            for index, order in enumerate(orders)
+        ]
+        stage_map = mapped.get(loop_id, {})
+        loop["mechanism_stage_map"] = [
+            {
+                "mechanisms": sorted(stage_map.get(order, [])),
+                "order": order,
+                "system": system_id,
+            }
+            for order, system_id in zip(
+                normalized_orders, stage_ids, strict=True
+            )
+            if stage_map.get(order)
+        ]
+        mechanism_ids = {
+            block_id
+            for block_ids in stage_map.values()
+            for block_id in block_ids
+        }
+        loop["mechanisms"] = sorted(
+            mechanism_ids,
+            key=lambda block_id: (
+                min(
+                    order
+                    for order, block_ids in stage_map.items()
+                    if block_id in block_ids
+                ),
+                block_id,
+            ),
+        )
+        # Untouched loops are simply not mapped by this pilot. Enumerating every
+        # stage there would turn navigation metadata into a missingness backlog.
+        loop["unmapped_mechanism_stage_orders"] = (
+            [order for order in normalized_orders if order not in stage_map]
+            if stage_map
+            else []
+        )
+
+
 def owner_rows(report: dict, limit: int | None = None) -> list[dict]:
     rows = []
     for system_id, system in report.get("systems", {}).items():
@@ -260,12 +362,42 @@ def show_system(report: dict, system_id: str) -> dict | None:
         if system_id
         in service.get("systems", service.get("gsi_ids", []))
     ]
+    mechanisms = [
+        block_id
+        for block_id, block in report.get("mechanisms", {}).items()
+        if system_id == block.get("owner")
+        or system_id in block.get("participants", [])
+    ]
     return {
         "incoming_edges": incoming,
         "loops": loops,
+        "mechanisms": mechanisms,
         "outgoing_edges": outgoing,
         "services": services,
         "system": {"id": system_id, **deepcopy(system)},
+    }
+
+
+def show_mechanism(report: dict, block_id: str) -> dict | None:
+    """Return one mechanism with its same-namespace relationships."""
+
+    block = report.get("mechanisms", {}).get(block_id)
+    if not isinstance(block, dict):
+        return None
+    edges = report.get("mechanism_edges", [])
+    return {
+        "incoming_edges": [
+            deepcopy(edge) for edge in edges if edge.get("to") == block_id
+        ],
+        "loops": [
+            membership.get("loop")
+            for membership in block.get("loop_memberships", [])
+            if isinstance(membership, dict)
+        ],
+        "mechanism": deepcopy(block),
+        "outgoing_edges": [
+            deepcopy(edge) for edge in edges if edge.get("from") == block_id
+        ],
     }
 
 
@@ -333,8 +465,9 @@ def render_markdown(report: dict) -> str:
     lines = [
         "# VERA20k System Map v2",
         "",
-        "> GENERATED from `system_map/registry.v2.json` and "
-        "`system_map/topology.v2.json`. Do not hand-edit this output.",
+        "> GENERATED from `system_map/registry.v2.json`, "
+        "`system_map/topology.v2.json`, and "
+        "`system_map/mechanisms.v1.json`. Do not hand-edit this output.",
         "> Baseline matrix fields are historical source statements, not current "
         "parity or completion claims.",
         "",
@@ -348,9 +481,13 @@ def render_markdown(report: dict) -> str:
         f"| Source lock SHA-256 | "
         f"`{_md(inputs['source_lock']['sha256'])}` |",
         f"| Topology SHA-256 | `{_md(inputs['topology']['sha256'])}` |",
+        f"| Mechanisms SHA-256 | "
+        f"`{_md(inputs['mechanisms']['sha256'])}` |",
         f"| Repository head | `{_md(report['repository']['head'])}` |",
         f"| Branch | `{_md(report['repository']['branch'])}` |",
         f"| Topology observed at | `{_md(str(report['observed_at_commit']))}` |",
+        f"| Mechanisms observed at | "
+        f"`{_md(str(report['mechanism_observed_at_commit']))}` |",
         f"| Status-matrix Rust baseline | "
         f"`{_md(str(report['source_baseline']['baseline_rust_snapshot']))}` |",
         f"| Dirty paths | {len(report['repository']['dirty_paths'])} |",
@@ -359,6 +496,8 @@ def render_markdown(report: dict) -> str:
         f"| Rust-mapped systems | {rust_mapped_count} |",
         f"| Typed edges | {len(report['edges'])} |",
         f"| Player loops | {len(report['loops'])} |",
+        f"| Mechanism blocks | {len(report['mechanisms'])} |",
+        f"| Mechanism edges | {len(report['mechanism_edges'])} |",
         "",
         "Mapped connectivity is a routing aid only. It is biased toward the "
         "currently annotated portion of the graph and is not work priority or "
@@ -391,6 +530,54 @@ def render_markdown(report: dict) -> str:
         lines.append(
             f"| `{_md(loop_id)}` | `{_md(owner)}` | {_md(route)} | "
             f"{_md(_compact(visible))} | {_md(_compact(oracle))} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Semantic mechanism blocks",
+            "",
+            "Mechanisms connect native evidence, canonical GSI systems, Rust "
+            "surfaces, and selected loop stages. They are navigation contracts, "
+            "not parity or completion claims.",
+            "",
+            "| Block | Owner | Participants | Loops/stages | Rust freshness | Contract |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
+    for block_id, block in report["mechanisms"].items():
+        memberships = "; ".join(
+            f"{item.get('loop')}:"
+            + ",".join(str(order) for order in item.get("stage_orders", []))
+            for item in block.get("loop_memberships", [])
+            if isinstance(item, dict)
+        )
+        lines.append(
+            f"| `{_md(block_id)}` | `{_md(str(block.get('owner', '')) )}` | "
+            f"{_md(', '.join(block.get('participants', [])))} | "
+            f"{_md(memberships)} | "
+            f"`{_md(str(block.get('freshness', {}).get('state', 'UNMAPPED')) )}` | "
+            f"{_md(_compact(block.get('contract', '')))} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Typed mechanism edges",
+            "",
+            "| ID | Plane | Kind | From | To | Loop | Detail |",
+            "|---|---|---|---|---|---|---|",
+        ]
+    )
+    for edge in report["mechanism_edges"]:
+        lines.append(
+            f"| `{_md(str(edge.get('id', '')) )}` | "
+            f"`{_md(str(edge.get('plane', '')) )}` | "
+            f"`{_md(str(edge.get('kind', '')) )}` | "
+            f"`{_md(str(edge.get('from', '')) )}` | "
+            f"`{_md(str(edge.get('to', '')) )}` | "
+            f"`{_md(str(edge.get('loop', '')) )}` | "
+            f"{_md(_compact(edge.get('detail', '')))} |"
         )
 
     lines.extend(
@@ -553,6 +740,7 @@ def format_system_view(view: dict) -> str:
         + "; ".join(freshness["reasons"]),
         f"services: {', '.join(view['services']) or '(none)'}",
         f"loops: {', '.join(view['loops']) or '(none)'}",
+        f"mechanisms: {', '.join(view.get('mechanisms', [])) or '(none)'}",
         "incoming edges:",
     ]
     lines.extend(_edge_text(edge) for edge in view["incoming_edges"])
@@ -589,6 +777,9 @@ def format_loop_view(loop: dict) -> str:
     )
     if visible is not None:
         lines.append("visible result: " + _compact(visible))
+    ordering_note = loop.get("ordering_note")
+    if ordering_note is not None:
+        lines.append("ordering note: " + _compact(ordering_note))
     oracle = loop.get(
         "oracle",
         loop.get(
@@ -598,6 +789,26 @@ def format_loop_view(loop: dict) -> str:
     )
     if oracle is not None:
         lines.append("oracle status: " + _compact(oracle))
+    if loop.get("mechanisms"):
+        lines.append("mechanisms: " + ", ".join(loop["mechanisms"]))
+    stage_map = loop.get("mechanism_stage_map", [])
+    if stage_map:
+        lines.append("mechanism stage mappings:")
+        for item in stage_map:
+            lines.append(
+                "  "
+                + str(item.get("order", "?"))
+                + ". "
+                + str(item.get("system", "?"))
+                + " -> "
+                + ", ".join(item.get("mechanisms", []))
+            )
+    unmapped = loop.get("unmapped_mechanism_stage_orders", [])
+    if unmapped:
+        lines.append(
+            "mechanism-unmapped stages: "
+            + ", ".join(str(order) for order in unmapped)
+        )
     stages = loop.get("ordered_stages", loop.get("stages", []))
     if isinstance(stages, list) and stages:
         lines.append("stages:")
@@ -626,6 +837,56 @@ def format_loop_view(loop: dict) -> str:
     )
     _append_items(lines, "Rust touchpoints", loop.get("rust_touchpoints", []))
     _append_items(lines, "evidence", loop.get("evidence", []))
+    return "\n".join(lines) + "\n"
+
+
+def format_mechanism_view(view: dict) -> str:
+    """Format one semantic mechanism without implying parity completion."""
+
+    block = view["mechanism"]
+    activation = block.get("activation", {})
+    freshness = block.get("freshness", {})
+    lines = [
+        f"{block['id']} - {block.get('name', 'unnamed mechanism')}",
+        f"owner: {block.get('owner', 'UNKNOWN')}",
+        "participants: " + ", ".join(block.get("participants", [])),
+        "contract: " + _compact(block.get("contract", "")),
+        "activation: " + _compact(activation),
+        "Rust mapping freshness: "
+        + str(freshness.get("state", "UNMAPPED"))
+        + " - "
+        + "; ".join(freshness.get("reasons", [])),
+        "loops: " + ", ".join(view.get("loops", [])),
+        "research query: " + _compact(block.get("research_query", "")),
+        "steps:",
+    ]
+    for step in block.get("steps", []):
+        if isinstance(step, dict):
+            lines.append(
+                f"  {step.get('order', '?')}. {step.get('system', '?')} "
+                f"- {_compact(step.get('action', ''))}"
+            )
+    _append_items(lines, "inputs", block.get("inputs", []))
+    _append_items(lines, "outputs", block.get("outputs", []))
+    _append_items(
+        lines, "loop-stage memberships", block.get("loop_memberships", [])
+    )
+    lines.append("incoming mechanism edges:")
+    lines.extend(_edge_text(edge) for edge in view["incoming_edges"])
+    if not view["incoming_edges"]:
+        lines.append("  (none)")
+    lines.append("outgoing mechanism edges:")
+    lines.extend(_edge_text(edge) for edge in view["outgoing_edges"])
+    if not view["outgoing_edges"]:
+        lines.append("  (none)")
+    _append_items(lines, "authority", block.get("authority", []))
+    _append_items(
+        lines, "critical semantics", block.get("critical_semantics", [])
+    )
+    _append_items(lines, "native anchors", block.get("native_anchors", []))
+    _append_items(lines, "Rust surfaces", block.get("rust_surfaces", []))
+    _append_items(lines, "open questions", block.get("open_questions", []))
+    _append_items(lines, "evidence", block.get("evidence", []))
     return "\n".join(lines) + "\n"
 
 

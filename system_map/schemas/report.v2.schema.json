@@ -15,6 +15,10 @@
     "services",
     "edges",
     "loops",
+    "mechanism_schema_version",
+    "mechanism_observed_at_commit",
+    "mechanisms",
+    "mechanism_edges",
     "coupled_sets",
     "diagnostics"
   ],
@@ -71,6 +75,27 @@
     "loops": {
       "type": "object"
     },
+    "mechanism_schema_version": {
+      "const": 1
+    },
+    "mechanism_observed_at_commit": {
+      "$ref": "#/$defs/commit"
+    },
+    "mechanisms": {
+      "type": "object",
+      "patternProperties": {
+        "^MBLK-[0-9]{3}-[A-Z0-9-]+$": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mechanism_edges": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
     "coupled_sets": {
       "type": "array"
     },
@@ -111,7 +136,7 @@
               "const": "vera20k-system-map"
             },
             "version": {
-              "const": "1.0.0"
+              "const": "1.1.0"
             }
           },
           "additionalProperties": false
@@ -121,7 +146,8 @@
           "required": [
             "registry",
             "source_lock",
-            "topology"
+            "topology",
+            "mechanisms"
           ],
           "properties": {
             "registry": {
@@ -161,6 +187,20 @@
                   "properties": {
                     "path": {
                       "const": "system_map/topology.v2.json"
+                    }
+                  }
+                }
+              ]
+            },
+            "mechanisms": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/inputArtifact"
+                },
+                {
+                  "properties": {
+                    "path": {
+                      "const": "system_map/mechanisms.v1.json"
                     }
                   }
                 }
