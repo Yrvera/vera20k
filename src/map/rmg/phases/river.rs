@@ -14,11 +14,17 @@
 //! river 90° and no test in this repo would notice.
 //!
 //! A finished river then usually cuts a **canyon**: its region is grown across
-//! the map by [`meander`], those cells are stamped at the current base level,
-//! and the base itself rises by four. Nothing around the river is raised — the
-//! river is simply left behind as everything generated afterwards sits higher.
-//! That also means only the first river can cut one, since the gate is an exact
-//! test against the starting base level.
+//! the map by [`meander`], then six unstamped dilation rings widen it, and
+//! every cell *outside* that region is raised four levels — the river's valley
+//! is what stays low. The base level rises with it, so later rollback fills
+//! land at the new height. Only the first river can cut one, since the gate is
+//! an exact test against the starting base level.
+//!
+//! An earlier version of this module had the canyon backwards — two stamped
+//! rings and no outside raise, read off the *bridge's* finish dilation, which
+//! sits a hundred bytes later and really is two stamped rings. The two calls
+//! are easy to conflate; the fix was verified against the canyon path's own
+//! bytes, not the neighbouring one.
 //!
 //! Not modelled yet, and recorded rather than hidden:
 //! - **Bridges.** The gate consumes no randomness of its own, so leaving them
@@ -26,11 +32,6 @@
 //!   taken. Rivers simply never carry one. The original also skips the canyon
 //!   entirely once a bridge has been placed, so that interaction is untested
 //!   here.
-//! - **The raised base level stops at this stage.** Nothing later in this port
-//!   reads it yet, so a canyon currently shows up as the river's own region
-//!   sitting at the old level and as the level later rollbacks fill with — not
-//!   as raised terrain across the rest of the map. The phases that would read it
-//!   (hills, cliffs) are not ported.
 
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
@@ -77,8 +78,10 @@ const CANYON_BASE_LEVEL: u8 = 4;
 const CANYON_LEVEL_STEP: u8 = 4;
 /// Step density for the canyon's growth arm: lower means a wider spread.
 const CANYON_STEP_DENSITY: f32 = 0.01;
-/// Rings the canyon's region is grown by, stamping the old base level as it goes.
-const CANYON_DILATE_RINGS: i32 = 2;
+/// Rings the canyon's region is grown by. Six, unstamped — this was first
+/// ported as two rings with a level stamp, a misreading that belonged to the
+/// bridge's finish dilation, not the canyon's.
+const CANYON_DILATE_RINGS: i32 = 6;
 /// The canyon's clamp rect covers everything — it is not really a clamp.
 const WHOLE_MAP: i32 = 0x200;
 
@@ -444,14 +447,22 @@ pub fn carve(
             // A canyon that cannot be grown takes the river down with it.
             walk.alive = meander::grow_meander_arm(ctx, &arm);
             if walk.alive {
-                let base = ctx.rollback_level;
-                walk.alive = meander::dilate_chained(ctx, region, CANYON_DILATE_RINGS, Some(base));
+                walk.alive = meander::dilate_chained(ctx, region, CANYON_DILATE_RINGS, None);
             }
             if walk.alive {
-                // The surroundings are not raised — the *base* is. Everything
-                // generated after this sits four levels above the river, which
-                // is what makes it a canyon, and is also why only the first
+                // The canyon is made twice over: every cell *outside* the
+                // river's grown region is raised four levels here, and the
+                // base level rises with it, so later rollback fills and
+                // whatever terrain is generated afterwards sit at the new
+                // height. The exact-equality gate above is why only the first
                 // river can cut one.
+                for &(x, y) in &cells {
+                    if ctx.scratch.get(x, y).region == region {
+                        continue;
+                    }
+                    let cell = ctx.grid.get_mut(x, y).expect("native cell");
+                    cell.level = cell.level.wrapping_add(CANYON_LEVEL_STEP);
+                }
                 ctx.rollback_level += CANYON_LEVEL_STEP;
             }
         } else {
@@ -622,6 +633,50 @@ mod tests {
                 "base climbed past one step: {base}"
             );
         }
+    }
+
+    #[test]
+    fn a_canyon_raises_the_terrain_outside_the_river() {
+        // The valley stays low; everything else goes up by four. The first
+        // port of this had it backwards (nothing raised, only the base bumped),
+        // so this asserts on the actual cell levels, not the base.
+        let mut checked = 0;
+        for seed in [11u16, 42, 777, 1234, 4242, 9001, 31337, 60000] {
+            for map_type in [3, 4] {
+                let (base, grid, identity) = run_carved_levels(map_type, seed);
+                if base == CANYON_BASE_LEVEL {
+                    continue; // no canyon on this seed
+                }
+                checked += 1;
+                let raised = grid
+                    .native_cells()
+                    .filter(|&(x, y)| {
+                        let cell = grid.get(x, y).expect("native cell");
+                        cell.tile != identity.water_base
+                            && cell.level >= CANYON_BASE_LEVEL + CANYON_LEVEL_STEP
+                    })
+                    .count();
+                let low = grid
+                    .native_cells()
+                    .filter(|&(x, y)| {
+                        grid.get(x, y).expect("native cell").level
+                            < CANYON_BASE_LEVEL + CANYON_LEVEL_STEP
+                    })
+                    .count();
+                assert!(
+                    raised > 0,
+                    "seed {seed} type {map_type}: canyon fired but nothing was raised"
+                );
+                assert!(
+                    low > 0,
+                    "seed {seed} type {map_type}: the valley itself was raised too"
+                );
+            }
+        }
+        assert!(
+            checked > 0,
+            "no canyon fired across any seed — nothing was checked"
+        );
     }
 
     #[test]
