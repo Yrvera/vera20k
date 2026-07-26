@@ -16,7 +16,9 @@ use crate::app_init_helpers::{
     load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
     spawn_entities, theater_ext_for,
 };
-use crate::app_list_maps::{load_map_by_name_or_path_with_assets, try_load_mmx};
+use crate::app_list_maps::{
+    LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
+};
 use crate::app_skirmish::{
     apply_explicit_skirmish_launch_session, build_overlay_atlas_from_map,
     house_color_map_for_launch_session, seed_skirmish_opening_if_needed,
@@ -64,6 +66,7 @@ use crate::sim::world::Simulation;
 /// All data produced by loading a map: terrain, tile atlas, entities, and camera.
 pub struct MapLoadResult {
     pub(crate) startup: LoadingStartup,
+    pub(crate) map_source: LoadedMapSource,
     pub basic: BasicSection,
     pub tile_atlas: Option<TileAtlas>,
     pub terrain_grid: Option<TerrainGrid>,
@@ -143,6 +146,7 @@ pub struct MapLoadResult {
 pub(crate) struct MapLoadInitial {
     asset_manager: AssetManager,
     map_data: MapFile,
+    map_source: LoadedMapSource,
 }
 
 pub(crate) fn load_csf(asset_manager: &AssetManager) -> Option<crate::assets::csf_file::CsfFile> {
@@ -379,12 +383,11 @@ pub(crate) fn load_map_initial_with_assets(
             .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
             .map(|ini| crate::rules::terrain_rules::TerrainRules::from_ini(&ini))
             .unwrap_or_default();
-        let resolved =
-            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(
-                &theater,
-                &terrain_rules,
-                crate::map::rmg::trig::global().cloned(),
-            );
+        let resolved = crate::map::rmg::build::ResolvedTheaterInputs::from_theater(
+            &theater,
+            &terrain_rules,
+            crate::map::rmg::trig::global().cloned(),
+        );
 
         // Tile-block layouts (sub-cell height/terrain grids) from the theater's
         // real TMP data — the shore tiler and zone classifier read these.
@@ -426,10 +429,13 @@ pub(crate) fn load_map_initial_with_assets(
         return Ok(MapLoadInitial {
             asset_manager,
             map_data: generated.map_file,
+            map_source: LoadedMapSource::Generated {
+                seed_name: seed_name.to_string(),
+            },
         });
     }
 
-    let map_data: MapFile =
+    let loaded_map: LoadedMap =
         if let Some(map_name) = requested_map.filter(|m| !m.eq_ignore_ascii_case("auto")) {
             load_map_by_name_or_path_with_assets(&ra2_dir, map_name, &asset_manager)?
         } else if let Some(ref map_name) = quickplay_map {
@@ -437,7 +443,13 @@ pub(crate) fn load_map_initial_with_assets(
         } else if Path::new("testmap1.map").exists() {
             let bytes: Vec<u8> = std::fs::read("testmap1.map")?;
             log::info!("Loading default map: testmap1.map");
-            MapFile::from_bytes(&bytes)?
+            LoadedMap {
+                map: MapFile::from_bytes(&bytes)?,
+                source: LoadedMapSource::Loose {
+                    path: PathBuf::from("testmap1.map"),
+                    payload_len: bytes.len(),
+                },
+            }
         } else {
             let mmx_names: &[&str] = &[
                 "Dustbowl.mmx",
@@ -455,6 +467,10 @@ pub(crate) fn load_map_initial_with_assets(
             ];
             try_load_mmx(&ra2_dir, mmx_names)?
         };
+    let LoadedMap {
+        map: map_data,
+        source: map_source,
+    } = loaded_map;
     log::info!(
         "Map loaded: title={:?}, theater={}, {}x{}, {} cells, {} entities",
         map_data.basic.name,
@@ -474,6 +490,7 @@ pub(crate) fn load_map_initial_with_assets(
     Ok(MapLoadInitial {
         asset_manager,
         map_data,
+        map_source,
     })
 }
 
@@ -489,6 +506,7 @@ pub(crate) fn load_map_from_initial(
     let MapLoadInitial {
         mut asset_manager,
         map_data,
+        map_source,
     } = initial;
     let skirmish_launch_session = startup.launch_session();
 
@@ -1234,6 +1252,7 @@ pub(crate) fn load_map_from_initial(
     let theater_name = map_data.header.theater;
     Ok(MapLoadResult {
         startup,
+        map_source,
         basic: map_data.basic,
         tile_atlas,
         terrain_grid: Some(grid),

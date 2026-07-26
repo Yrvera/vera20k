@@ -99,6 +99,17 @@ pub(super) struct SidebarInstances {
     pub view: Option<SidebarView>,
 }
 
+impl SidebarInstances {
+    /// Observe the exact vectors that the upload and draw phases consume.
+    pub(super) fn emitted_instance_counts(&self) -> super::GameRenderInstanceCounts {
+        super::GameRenderInstanceCounts::from_lengths(
+            self.minimap.len(),
+            self.viewport_rect.len(),
+            self.radar_anim.len(),
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1: Game world (terrain, overlays, entities)
 // ---------------------------------------------------------------------------

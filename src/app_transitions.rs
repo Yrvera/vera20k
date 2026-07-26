@@ -33,6 +33,9 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         startup: crate::match_bootstrap::LoadingStartup::Generic {
             selected_map_file: "fallback".to_string(),
         },
+        map_source: crate::app_list_maps::LoadedMapSource::LegacyFallback {
+            label: "fallback".to_string(),
+        },
         basic: BasicSection::default(),
         tile_atlas: None,
         terrain_grid: None,
@@ -90,6 +93,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.tile_atlas = result.tile_atlas;
     crate::app_loading::clear_loading_state(state);
     state.map_basic = result.basic;
+    state.loaded_map_source = Some(result.map_source);
     state.terrain_grid = result.terrain_grid;
     state.resolved_terrain = result.resolved_terrain;
     state.simulation = result.simulation;
@@ -112,24 +116,33 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // Initialize radar animation from the default (Allied) sidebar chrome atlas.
     // Uses pre-rendered radar.shp frames for the 33-frame open/close animation.
     // Also extract content insets derived from the transparent opening in frame 0.
-    let allied_atlas = state
+    let allied_radar = state
         .sidebar_chrome
         .as_ref()
-        .and_then(|set| set.for_theme(crate::render::sidebar_chrome::SidebarTheme::Allied));
-    state.radar_anim = allied_atlas.and_then(|atlas| {
-        if atlas.radar_frames.is_empty() {
-            return None;
-        }
-        let [w, h] = atlas.radar_frame_size;
-        crate::render::radar_anim::RadarAnimState::new(
+        .and_then(|set| set.resolve_theme(crate::render::sidebar_chrome::SidebarTheme::Allied))
+        .map(|resolved| {
+            (
+                resolved.identity(),
+                resolved.atlas.radar_frames.clone(),
+                resolved.atlas.radar_frame_size,
+                resolved.atlas.radar_content_insets,
+            )
+        });
+    if let Some((identity, frames, [w, h], insets)) = allied_radar {
+        state.radar_animation_source = Some(identity);
+        state.radar_anim = crate::render::radar_anim::RadarAnimState::new(
             &state.gpu,
             &state.batch_renderer,
-            atlas.radar_frames.clone(),
+            frames,
             w,
             h,
-        )
-    });
-    state.radar_content_insets = allied_atlas.map(|atlas| atlas.radar_content_insets);
+        );
+        state.radar_content_insets = Some(insets);
+    } else {
+        state.radar_animation_source = None;
+        state.radar_anim = None;
+        state.radar_content_insets = None;
+    }
     state.has_radar = false;
 
     state.software_cursor = result.software_cursor;

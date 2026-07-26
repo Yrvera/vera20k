@@ -12,6 +12,27 @@ use winit::window::Window;
 
 use crate::render::gpu::GpuContext;
 
+const VERDANA_FONT_PATH: &str = "C:/Windows/Fonts/verdana.ttf";
+const CALIBRI_FONT_PATH: &str = "C:/Windows/Fonts/calibri.ttf";
+
+/// Immutable identity of the font source selected during egui initialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SelectedSystemFontIdentity {
+    SystemFile {
+        path: &'static str,
+        byte_length: usize,
+    },
+    EguiBuiltIn,
+}
+
+/// Capture-only observation of the scale and font inputs used by egui.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct EguiCaptureObservation<'a> {
+    pub selected_font: &'a SelectedSystemFontIdentity,
+    pub window_scale_factor: f64,
+    pub pixels_per_point: Option<f32>,
+}
+
 /// All egui state needed for input handling and rendering.
 ///
 /// Created once in App::initialize() alongside the GpuContext.
@@ -29,6 +50,12 @@ pub struct EguiIntegration {
     /// egui-wgpu renderer. Manages GPU buffers and textures for egui output.
     /// Does NOT use a depth buffer — egui renders flat UI elements.
     renderer: egui_wgpu::Renderer,
+
+    /// Font identity chosen once during initialization.
+    selected_font: SelectedSystemFontIdentity,
+
+    /// Exact value returned by egui for the most recently completed pass.
+    last_pixels_per_point: Option<f32>,
 }
 
 impl EguiIntegration {
@@ -64,12 +91,24 @@ impl EguiIntegration {
         );
 
         // Load Verdana as the proportional font for a cleaner UI look.
-        load_system_font(&ctx);
+        let selected_font = load_system_font(&ctx);
 
         Self {
             ctx,
             state,
             renderer,
+            selected_font,
+            last_pixels_per_point: None,
+        }
+    }
+
+    /// Observe immutable font provenance and the scale factors actually used by
+    /// the current window and most recently completed egui pass.
+    pub(crate) fn capture_observation(&self, window: &Window) -> EguiCaptureObservation<'_> {
+        EguiCaptureObservation {
+            selected_font: &self.selected_font,
+            window_scale_factor: window.scale_factor(),
+            pixels_per_point: self.last_pixels_per_point,
         }
     }
 
@@ -115,6 +154,7 @@ impl EguiIntegration {
         has_software_cursor: bool,
     ) {
         let full_output: egui::FullOutput = self.ctx.end_pass();
+        self.last_pixels_per_point = Some(full_output.pixels_per_point);
 
         // Handle platform output (clipboard, open URL, IME, etc.).
         let mut platform_output = full_output.platform_output;
@@ -194,25 +234,19 @@ impl EguiIntegration {
 
 /// Load Verdana (or Calibri fallback) as the default proportional font.
 /// Falls back silently to egui's built-in font if neither is found.
-fn load_system_font(ctx: &egui::Context) {
-    let font_path = if std::path::Path::new("C:/Windows/Fonts/verdana.ttf").exists() {
-        "C:/Windows/Fonts/verdana.ttf"
-    } else if std::path::Path::new("C:/Windows/Fonts/calibri.ttf").exists() {
-        "C:/Windows/Fonts/calibri.ttf"
-    } else {
+fn load_system_font(ctx: &egui::Context) -> SelectedSystemFontIdentity {
+    let Some(font_path) = preferred_system_font_path(|path| std::path::Path::new(path).exists())
+    else {
         log::info!("No Verdana/Calibri found — using egui default font");
-        return;
+        return SelectedSystemFontIdentity::EguiBuiltIn;
     };
 
     let Ok(font_bytes) = std::fs::read(font_path) else {
         log::warn!("Failed to read font file: {}", font_path);
-        return;
+        return SelectedSystemFontIdentity::EguiBuiltIn;
     };
-    log::info!(
-        "Loaded system font: {} ({} bytes)",
-        font_path,
-        font_bytes.len()
-    );
+    let byte_length = font_bytes.len();
+    log::info!("Loaded system font: {} ({} bytes)", font_path, byte_length);
 
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -226,4 +260,36 @@ fn load_system_font(ctx: &egui::Context) {
         .or_default()
         .insert(0, "sidebar_font".to_string());
     ctx.set_fonts(fonts);
+    SelectedSystemFontIdentity::SystemFile {
+        path: font_path,
+        byte_length,
+    }
+}
+
+fn preferred_system_font_path(path_exists: impl Fn(&str) -> bool) -> Option<&'static str> {
+    if path_exists(VERDANA_FONT_PATH) {
+        Some(VERDANA_FONT_PATH)
+    } else if path_exists(CALIBRI_FONT_PATH) {
+        Some(CALIBRI_FONT_PATH)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CALIBRI_FONT_PATH, VERDANA_FONT_PATH, preferred_system_font_path};
+
+    #[test]
+    fn system_font_selection_keeps_verdana_then_calibri_precedence() {
+        assert_eq!(
+            preferred_system_font_path(|_| true),
+            Some(VERDANA_FONT_PATH)
+        );
+        assert_eq!(
+            preferred_system_font_path(|path| path == CALIBRI_FONT_PATH),
+            Some(CALIBRI_FONT_PATH)
+        );
+        assert_eq!(preferred_system_font_path(|_| false), None);
+    }
 }

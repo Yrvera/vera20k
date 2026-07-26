@@ -159,6 +159,8 @@ pub(crate) struct AppState {
     pub(crate) instance_pool: crate::render::batch::InstanceBufferPool,
     pub(crate) tile_atlas: Option<TileAtlas>,
     pub(crate) map_basic: BasicSection,
+    /// Exact source whose bytes produced the active parsed map.
+    pub(crate) loaded_map_source: Option<crate::app_list_maps::LoadedMapSource>,
     pub(crate) terrain_grid: Option<TerrainGrid>,
     pub(crate) resolved_terrain: Option<ResolvedTerrainGrid>,
     pub(crate) simulation: Option<Simulation>,
@@ -307,6 +309,12 @@ pub(crate) struct AppState {
     pub(crate) middle_mouse_anchor_y: f32,
     /// Animated radar chrome — plays 33-frame open/close animation when radar gained/lost.
     pub(crate) radar_anim: Option<crate::render::radar_anim::RadarAnimState>,
+    /// Requested-versus-resolved atlas identity used to construct `radar_anim`.
+    ///
+    /// Kept beside the animation so tactical evidence never reconstructs
+    /// provenance from the currently selected sidebar theme.
+    pub(crate) radar_animation_source:
+        Option<crate::render::sidebar_chrome::ResolvedSidebarChromeIdentity>,
     /// Animated power bar — segment-by-segment transition matching original PowerClass.
     pub(crate) power_bar_anim: crate::sidebar::PowerBarAnimState,
     /// Persistent flash + mode state for in-game sidebar gadgets. Ticked from
@@ -568,6 +576,14 @@ impl AppState {
             && !self.main_menu_dialog_open()
     }
 
+    /// Capture-only observation of the exact font and scale inputs consumed by
+    /// the most recently completed egui pass.
+    pub(crate) fn capture_egui_observation(
+        &self,
+    ) -> crate::render::egui_integration::EguiCaptureObservation<'_> {
+        self.egui.capture_observation(&self.window)
+    }
+
     /// Whether any main-menu modal dialog (exit confirm, options, movies,
     /// campaign select) is currently open.
     pub(crate) fn main_menu_dialog_open(&self) -> bool {
@@ -598,6 +614,7 @@ impl AppState {
 pub struct App {
     state: Option<AppState>,
     shell_capture: Option<crate::app_shell_capture::ShellCaptureSession>,
+    tactical_capture: Option<crate::app_tactical_capture::session::TacticalCaptureSession>,
 }
 
 impl Default for App {
@@ -1486,12 +1503,11 @@ impl App {
             .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
             .map(|ini| crate::rules::terrain_rules::TerrainRules::from_ini(&ini))
             .unwrap_or_default();
-        let resolved_inputs =
-            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(
-                &theater,
-                &terrain_rules,
-                crate::map::rmg::trig::global().cloned(),
-            );
+        let resolved_inputs = crate::map::rmg::build::ResolvedTheaterInputs::from_theater(
+            &theater,
+            &terrain_rules,
+            crate::map::rmg::trig::global().cloned(),
+        );
         let blocks =
             crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
                 asset_manager.get(name)
@@ -3176,6 +3192,7 @@ impl App {
         Self {
             state: None,
             shell_capture: None,
+            tactical_capture: None,
         }
     }
 
@@ -3183,13 +3200,26 @@ impl App {
         Self {
             state: None,
             shell_capture: Some(crate::app_shell_capture::ShellCaptureSession::new(request)),
+            tactical_capture: None,
         }
     }
 
-    pub fn finish_shell_capture(&mut self) -> Result<()> {
-        match self.shell_capture.as_mut() {
-            Some(session) => session.take_outcome(),
-            None => Ok(()),
+    pub fn new_tactical_capture(request: crate::app_launch::TacticalCaptureRequest) -> Self {
+        Self {
+            state: None,
+            shell_capture: None,
+            tactical_capture: Some(
+                crate::app_tactical_capture::session::TacticalCaptureSession::new(request),
+            ),
+        }
+    }
+
+    pub fn finish_capture(&mut self) -> Result<()> {
+        match (self.shell_capture.as_mut(), self.tactical_capture.as_mut()) {
+            (Some(session), None) => session.take_outcome(),
+            (None, Some(session)) => session.take_outcome(),
+            (None, None) => Ok(()),
+            (Some(_), Some(_)) => anyhow::bail!("multiple capture modes were active"),
         }
     }
 }
@@ -3200,14 +3230,29 @@ impl ApplicationHandler for App {
             return;
         }
         log::info!("Application resumed — creating window and GPU context");
-        let capture_request = self
-            .shell_capture
-            .as_ref()
-            .map(|session| session.request().clone());
-        match Self::initialize(event_loop, capture_request.as_ref()) {
+        let capture_dimensions = match (self.shell_capture.as_ref(), self.tactical_capture.as_ref())
+        {
+            (Some(session), None) => Some((session.request().width(), session.request().height())),
+            (None, Some(session)) => Some((session.request().width(), session.request().height())),
+            (None, None) => None,
+            (Some(_), Some(_)) => {
+                log::error!("Shell and tactical capture modes are mutually exclusive");
+                event_loop.exit();
+                return;
+            }
+        };
+        match Self::initialize(event_loop, capture_dimensions) {
             Ok(mut state) => {
                 if let Some(session) = self.shell_capture.as_mut() {
                     session.prepare_state(&mut state);
+                }
+                if let Some(session) = self.tactical_capture.as_mut()
+                    && let Err(err) = session.prepare_state(&mut state)
+                {
+                    log::error!("Tactical capture preparation failed: {err:#}");
+                    session.fail(format!("tactical capture preparation failed: {err:#}"));
+                    event_loop.exit();
+                    return;
                 }
                 self.state = Some(state);
                 log::info!("Initialization complete — showing main menu");
@@ -3217,18 +3262,77 @@ impl ApplicationHandler for App {
                 if let Some(session) = self.shell_capture.as_mut() {
                     session.fail(format!("shell capture initialization failed: {err:#}"));
                 }
+                if let Some(session) = self.tactical_capture.as_mut() {
+                    session.fail(format!("tactical capture initialization failed: {err:#}"));
+                }
                 event_loop.exit();
             }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let capture_active = self.shell_capture.is_some();
+        let shell_capture_active = self.shell_capture.is_some();
+        let tactical_capture_active = self.tactical_capture.is_some();
         let Some(state) = &mut self.state else { return };
+
+        // This checkpoint is driven entirely from `about_to_wait`. Focused
+        // input would contaminate its hidden, no-input production oracle.
+        if tactical_capture_active {
+            let session = self
+                .tactical_capture
+                .as_mut()
+                .expect("tactical capture session exists");
+            match event {
+                WindowEvent::CloseRequested => {
+                    session.fail("tactical-capture window closed before bundle completion");
+                    event_loop.exit();
+                }
+                WindowEvent::Resized(size) => {
+                    let expected =
+                        PhysicalSize::new(session.request().width(), session.request().height());
+                    if size != expected {
+                        session.fail(format!(
+                            "tactical-capture surface resized to {}x{}, expected {}x{}",
+                            size.width, size.height, expected.width, expected.height
+                        ));
+                        event_loop.exit();
+                    } else {
+                        Self::resize_surface_for_window_size(state, size);
+                    }
+                }
+                WindowEvent::Focused(true) => {
+                    session.record_focus_violation();
+                    event_loop.exit();
+                }
+                WindowEvent::KeyboardInput { .. }
+                | WindowEvent::ModifiersChanged(_)
+                | WindowEvent::Ime(_)
+                | WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorEntered { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::PinchGesture { .. }
+                | WindowEvent::PanGesture { .. }
+                | WindowEvent::DoubleTapGesture { .. }
+                | WindowEvent::RotationGesture { .. }
+                | WindowEvent::TouchpadPressure { .. }
+                | WindowEvent::AxisMotion { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::DroppedFile(_)
+                | WindowEvent::HoveredFile(_)
+                | WindowEvent::HoveredFileCancelled => {
+                    session.record_input_violation("window");
+                    event_loop.exit();
+                }
+                _ => {}
+            }
+            return;
+        }
 
         // A hidden Windows HWND is not guaranteed to receive WM_PAINT, so
         // capture frames are pumped from `about_to_wait`, never window input.
-        if capture_active {
+        if shell_capture_active {
             match event {
                 WindowEvent::CloseRequested => {
                     log::info!("Shell-capture window close requested");
@@ -3516,7 +3620,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Err(err) = Self::render_frame(state, event_loop, None) {
+                if let Err(err) = Self::render_frame(state, event_loop, None, None) {
                     log::error!("Render: {:#}", err);
                 }
             }
@@ -3525,8 +3629,21 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let (Some(state), Some(session)) = (self.state.as_mut(), self.shell_capture.as_mut()) {
-            if let Err(err) = Self::render_frame(state, event_loop, Some(&mut *session)) {
+        if let (Some(state), Some(session)) = (self.state.as_mut(), self.tactical_capture.as_mut())
+        {
+            if let Err(err) = Self::render_frame(state, event_loop, None, Some(&mut *session)) {
+                log::error!("Tactical capture render: {err:#}");
+                session.fail(format!("tactical capture render failed: {err:#}"));
+                event_loop.exit();
+                return;
+            }
+            if !session.is_finished() {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(session.next_wake_deadline()));
+            }
+        } else if let (Some(state), Some(session)) =
+            (self.state.as_mut(), self.shell_capture.as_mut())
+        {
+            if let Err(err) = Self::render_frame(state, event_loop, Some(&mut *session), None) {
                 log::error!("Shell capture render: {err:#}");
                 session.fail(format!("shell capture render failed: {err:#}"));
                 event_loop.exit();
@@ -3547,11 +3664,11 @@ impl App {
     /// clicks "Quick Play".
     fn initialize(
         event_loop: &ActiveEventLoop,
-        capture_request: Option<&crate::app_shell_capture::ShellCaptureRequest>,
+        capture_dimensions: Option<(u32, u32)>,
     ) -> Result<AppState> {
-        let (window_width, window_height, window_visible) = capture_request
-            .map_or((SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT, true), |request| {
-                (request.width(), request.height(), false)
+        let (window_width, window_height, window_visible) = capture_dimensions
+            .map_or((SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT, true), |size| {
+                (size.0, size.1, false)
             });
         let window_attrs: WindowAttributes = WindowAttributes::default()
             .with_title("RA2 Engine")
@@ -3846,6 +3963,7 @@ impl App {
             middle_mouse_anchor_x: 0.0,
             middle_mouse_anchor_y: 0.0,
             radar_anim: None,
+            radar_animation_source: None,
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
             sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
             in_game_gadgets: crate::app_gadget_input::InGameGadgets::new(),
@@ -3867,6 +3985,7 @@ impl App {
             bit_font,
             software_cursor: startup_software_cursor,
             selection_state: SelectionState::new(),
+            loaded_map_source: None,
             path_grid: None,
             animation_sequences: BTreeMap::new(),
             rules: startup_rules,
@@ -3989,7 +4108,17 @@ impl App {
         state: &mut AppState,
         event_loop: &ActiveEventLoop,
         mut shell_capture: Option<&mut crate::app_shell_capture::ShellCaptureSession>,
+        mut tactical_capture: Option<
+            &mut crate::app_tactical_capture::session::TacticalCaptureSession,
+        >,
     ) -> Result<()> {
+        anyhow::ensure!(
+            shell_capture.is_none() || tactical_capture.is_none(),
+            "shell and tactical capture cannot share a render"
+        );
+        if let Some(session) = tactical_capture.as_deref_mut() {
+            session.drive_before_render(state)?;
+        }
         state.frame_timer.sample(Instant::now());
         crate::app_tooltips::update(state);
         crate::app_messages::update(state);
@@ -4053,7 +4182,7 @@ impl App {
             }
         }
 
-        if matches!(state.screen, GameScreen::InGame) {
+        if tactical_capture.is_none() && matches!(state.screen, GameScreen::InGame) {
             let now = Instant::now();
             let elapsed_ms = app_sim_tick::update_elapsed_ms(state, now);
             app_sim_tick::advance_in_game_runtime(state, elapsed_ms);
@@ -4083,10 +4212,11 @@ impl App {
         // slide's completion edge). 30 ms-gated internally; a no-op when idle.
         crate::app_shell_transition::advance_shell_static_reveals(state);
         crate::app_shell_transition::poll_main_menu_title_reveal(state);
-        let capture_current_frame = match shell_capture.as_deref_mut() {
+        let shell_capture_current_frame = match shell_capture.as_deref_mut() {
             Some(session) => session.should_capture_current_frame(state)?,
             None => false,
         };
+        let mut game_render_output: Option<crate::app_render::GameRenderOutput> = None;
 
         match &state.screen {
             GameScreen::MainMenu => {
@@ -4246,7 +4376,7 @@ impl App {
                 }
             }
             GameScreen::InGame => {
-                let sidebar_view = if state.upscale_pass.is_some() {
+                let game_output = if state.upscale_pass.is_some() {
                     // Render game to intermediate texture, then upscale to swapchain.
                     let up = state.upscale_pass.as_ref().unwrap();
                     let game_view = up.color_view().clone();
@@ -4254,16 +4384,17 @@ impl App {
                     let saved_depth = std::mem::replace(&mut state.depth_view, game_depth);
                     let result = app_render::render_game(state, &mut encoder, &game_view);
                     state.depth_view = saved_depth;
-                    let sv = result?;
+                    let render_output = result?;
                     state
                         .upscale_pass
                         .as_ref()
                         .unwrap()
                         .draw(&mut encoder, &view);
-                    sv
+                    render_output
                 } else {
                     app_render::render_game(state, &mut encoder, &view)?
                 };
+                let sidebar_view = game_output.sidebar_view.as_ref();
                 // Paused: draw the native in-game Options (0xBBB) overlay over the
                 // frozen battlefield before egui. The egui pause card is retired;
                 // egui below now only carries the sidebar text + dev overlay.
@@ -4273,12 +4404,12 @@ impl App {
                         state,
                         &mut encoder,
                         &view,
-                        sidebar_view.as_ref(),
+                        sidebar_view,
                     )?;
                 }
                 // Always run egui in-game for sidebar text overlay (Ready labels, credits).
                 state.egui.begin_frame(&state.window);
-                if let Some(ref sv) = sidebar_view {
+                if let Some(sv) = sidebar_view {
                     crate::app_sidebar_text::draw_sidebar_text_overlay(
                         &state.egui.ctx,
                         sv,
@@ -4325,6 +4456,7 @@ impl App {
                     &state.window,
                     state.use_software_cursor(),
                 );
+                game_render_output = Some(game_output);
             }
             GameScreen::MissionResult { title, detail } => {
                 app_transitions::clear_screen(&mut encoder, &view);
@@ -4367,6 +4499,14 @@ impl App {
             }
         }
 
+        let tactical_capture_current_frame =
+            match (tactical_capture.as_deref_mut(), game_render_output.as_ref()) {
+                (Some(session), Some(render_output)) => {
+                    session.observe_after_render(state, render_output)?
+                }
+                (Some(_), None) | (None, _) => false,
+            };
+        let capture_current_frame = shell_capture_current_frame || tactical_capture_current_frame;
         let pending_capture = if capture_current_frame {
             Some(crate::render::frame_readback::PendingBgra8Readback::encode(
                 &state.gpu.device,
@@ -4380,12 +4520,17 @@ impl App {
             None
         };
         let capture_timeout = if capture_current_frame {
-            Some(
+            Some(if shell_capture_current_frame {
                 shell_capture
                     .as_deref()
-                    .expect("capture session exists when readback is requested")
-                    .readback_timeout()?,
-            )
+                    .expect("shell capture session exists when readback is requested")
+                    .readback_timeout()?
+            } else {
+                tactical_capture
+                    .as_deref()
+                    .expect("tactical capture session exists when readback is requested")
+                    .readback_timeout()?
+            })
         } else {
             None
         };
@@ -4412,10 +4557,18 @@ impl App {
                 submission,
                 capture_timeout.expect("capture timeout exists with pending readback"),
             )?;
-            shell_capture
-                .as_deref_mut()
-                .expect("capture session exists when readback completes")
-                .complete(state, state.gpu.config.format, &pixels)?;
+            let surface_format = state.gpu.config.format;
+            if shell_capture_current_frame {
+                shell_capture
+                    .as_deref_mut()
+                    .expect("shell capture session exists when readback completes")
+                    .complete(state, surface_format, &pixels)?;
+            } else {
+                tactical_capture
+                    .as_deref_mut()
+                    .expect("tactical capture session exists when readback completes")
+                    .complete_after_readback(state, surface_format, &pixels)?;
+            }
             event_loop.exit();
         }
 
