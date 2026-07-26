@@ -21,6 +21,34 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use winit::window::Window;
 
+/// Borrowed, serialization-ready identity of the adapter selected for this GPU
+/// context. This is observation only: it mirrors the immutable `AdapterInfo`
+/// captured during adapter selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GpuAdapterObservation<'a> {
+    pub name: &'a str,
+    pub vendor: u32,
+    pub device: u32,
+    pub device_type: wgpu::DeviceType,
+    pub driver: &'a str,
+    pub driver_info: &'a str,
+    pub backend: wgpu::Backend,
+}
+
+impl<'a> From<&'a wgpu::AdapterInfo> for GpuAdapterObservation<'a> {
+    fn from(info: &'a wgpu::AdapterInfo) -> Self {
+        Self {
+            name: info.name.as_str(),
+            vendor: info.vendor,
+            device: info.device,
+            device_type: info.device_type,
+            driver: info.driver.as_str(),
+            driver_info: info.driver_info.as_str(),
+            backend: info.backend,
+        }
+    }
+}
+
 /// Holds all wgpu state needed for rendering.
 ///
 /// Created once during app initialization when the window becomes available.
@@ -36,6 +64,8 @@ pub struct GpuContext {
     pub config: wgpu::SurfaceConfiguration,
     /// The texture format the surface uses (needed when creating pipelines).
     pub surface_format: wgpu::TextureFormat,
+    /// Exact identity returned by the adapter that backs this context.
+    adapter_info: wgpu::AdapterInfo,
 }
 
 impl GpuContext {
@@ -71,7 +101,8 @@ impl GpuContext {
             .await
             .context("No suitable GPU adapter found — is a GPU available?")?;
 
-        log::info!("Using GPU adapter: {}", adapter.get_info().name);
+        let adapter_info = adapter.get_info();
+        log::info!("Using GPU adapter: {}", adapter_info.name);
 
         // Request a logical device and command queue from the adapter.
         // We don't need any special features or limits for now.
@@ -140,7 +171,13 @@ impl GpuContext {
             queue,
             config,
             surface_format,
+            adapter_info,
         })
+    }
+
+    /// Return a borrowed capture-only view of the selected adapter identity.
+    pub(crate) fn capture_adapter_observation(&self) -> GpuAdapterObservation<'_> {
+        GpuAdapterObservation::from(&self.adapter_info)
     }
 
     /// Handle window resize — reconfigure the surface with new dimensions.
@@ -229,5 +266,33 @@ impl GpuContext {
         output.present();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GpuAdapterObservation;
+
+    #[test]
+    fn adapter_observation_preserves_every_adapter_info_field() {
+        let info = wgpu::AdapterInfo {
+            name: "fixture adapter".to_string(),
+            vendor: 0x1234,
+            device: 0x5678,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            driver: "fixture driver".to_string(),
+            driver_info: "fixture driver info".to_string(),
+            backend: wgpu::Backend::Vulkan,
+        };
+
+        let observed = GpuAdapterObservation::from(&info);
+
+        assert_eq!(observed.name, "fixture adapter");
+        assert_eq!(observed.vendor, 0x1234);
+        assert_eq!(observed.device, 0x5678);
+        assert_eq!(observed.device_type, wgpu::DeviceType::IntegratedGpu);
+        assert_eq!(observed.driver, "fixture driver");
+        assert_eq!(observed.driver_info, "fixture driver info");
+        assert_eq!(observed.backend, wgpu::Backend::Vulkan);
     }
 }

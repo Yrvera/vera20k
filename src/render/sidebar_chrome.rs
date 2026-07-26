@@ -53,6 +53,49 @@ pub enum SidebarTheme {
     Yuri,
 }
 
+/// One logical sidebar input and the archive selected by the existing resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarChromeAssetIdentity {
+    pub logical_name: String,
+    pub source_archive: Option<String>,
+}
+
+/// Immutable source identity captured when one theme atlas is constructed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarChromeAtlasIdentity {
+    pub atlas_theme: SidebarTheme,
+    pub parent_archive: String,
+    pub radar: SidebarChromeAssetIdentity,
+    pub theme_palette: SidebarChromeAssetIdentity,
+    pub generic_palette: SidebarChromeAssetIdentity,
+    pub backgrounds: Option<[SidebarChromeAssetIdentity; 3]>,
+}
+
+/// Requested-versus-actual identity for one atlas lookup, including fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSidebarChromeIdentity {
+    pub requested_theme: SidebarTheme,
+    pub actual_theme: SidebarTheme,
+    pub atlas: SidebarChromeAtlasIdentity,
+}
+
+/// Borrowed atlas resolution used to keep selection and provenance atomic.
+pub struct ResolvedSidebarChrome<'a> {
+    pub requested_theme: SidebarTheme,
+    pub actual_theme: SidebarTheme,
+    pub atlas: &'a SidebarChromeAtlas,
+}
+
+impl ResolvedSidebarChrome<'_> {
+    pub fn identity(&self) -> ResolvedSidebarChromeIdentity {
+        ResolvedSidebarChromeIdentity {
+            requested_theme: self.requested_theme,
+            actual_theme: self.actual_theme,
+            atlas: self.atlas.source_identity().clone(),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct SidebarSideRoute<'a> {
     asset_manager: &'a AssetManager,
@@ -134,6 +177,7 @@ pub struct SidebarChromeExtraEntry {
 
 /// All sidebar chrome art for one faction theme, packed into a single texture.
 pub struct SidebarChromeAtlas {
+    source_identity: SidebarChromeAtlasIdentity,
     pub texture: BatchTexture,
     pub top_strip_left: Option<SidebarChromeEntry>,
     pub top_strip_sidebar: Option<SidebarChromeEntry>,
@@ -183,6 +227,12 @@ pub struct SidebarChromeAtlas {
     pub gclock_frames: Vec<SidebarChromeEntry>,
 }
 
+impl SidebarChromeAtlas {
+    pub fn source_identity(&self) -> &SidebarChromeAtlasIdentity {
+        &self.source_identity
+    }
+}
+
 pub struct SidebarChromeSet {
     pub allied: Option<SidebarChromeAtlas>,
     pub soviet: Option<SidebarChromeAtlas>,
@@ -191,15 +241,44 @@ pub struct SidebarChromeSet {
 
 impl SidebarChromeSet {
     pub fn for_theme(&self, theme: SidebarTheme) -> Option<&SidebarChromeAtlas> {
-        match theme {
-            SidebarTheme::Allied => self.allied.as_ref(),
-            SidebarTheme::Soviet => self.soviet.as_ref().or(self.allied.as_ref()),
-            SidebarTheme::Yuri => self
-                .yuri
-                .as_ref()
-                .or(self.soviet.as_ref())
-                .or(self.allied.as_ref()),
-        }
+        self.resolve_theme(theme).map(|resolved| resolved.atlas)
+    }
+
+    /// Resolve the atlas through the production fallback order while retaining
+    /// both the requested and actual theme identities.
+    pub fn resolve_theme(
+        &self,
+        requested_theme: SidebarTheme,
+    ) -> Option<ResolvedSidebarChrome<'_>> {
+        let (actual_theme, atlas) = select_sidebar_theme(
+            requested_theme,
+            self.allied.as_ref(),
+            self.soviet.as_ref(),
+            self.yuri.as_ref(),
+        )?;
+        Some(ResolvedSidebarChrome {
+            requested_theme,
+            actual_theme,
+            atlas,
+        })
+    }
+}
+
+fn select_sidebar_theme<'a, T>(
+    requested_theme: SidebarTheme,
+    allied: Option<&'a T>,
+    soviet: Option<&'a T>,
+    yuri: Option<&'a T>,
+) -> Option<(SidebarTheme, &'a T)> {
+    match requested_theme {
+        SidebarTheme::Allied => allied.map(|atlas| (SidebarTheme::Allied, atlas)),
+        SidebarTheme::Soviet => soviet
+            .map(|atlas| (SidebarTheme::Soviet, atlas))
+            .or_else(|| allied.map(|atlas| (SidebarTheme::Allied, atlas))),
+        SidebarTheme::Yuri => yuri
+            .map(|atlas| (SidebarTheme::Yuri, atlas))
+            .or_else(|| soviet.map(|atlas| (SidebarTheme::Soviet, atlas)))
+            .or_else(|| allied.map(|atlas| (SidebarTheme::Allied, atlas))),
     }
 }
 
@@ -363,6 +442,43 @@ fn build_gclock_texture(
     Some((texture, atlas.frames))
 }
 
+fn resolve_theme_palette_with_source(
+    asset_manager: &AssetManager,
+    mix: &MixArchive,
+    mix_name: &str,
+    palette_name: &str,
+) -> Option<(Palette, String)> {
+    if let Some(bytes) = mix.get_by_name(palette_name) {
+        if let Ok(palette) = Palette::from_bytes(bytes) {
+            return Some((palette, mix_name.to_string()));
+        }
+    }
+
+    let (bytes, source_archive) = asset_manager.get_with_source_ref(palette_name)?;
+    Palette::from_bytes(bytes)
+        .ok()
+        .map(|palette| (palette, source_archive.to_string()))
+}
+
+fn theme_asset_identity(
+    asset_manager: &AssetManager,
+    mix: &MixArchive,
+    mix_name: &str,
+    logical_name: &str,
+) -> SidebarChromeAssetIdentity {
+    let source_archive = if mix.get_by_name(logical_name).is_some() {
+        Some(mix_name.to_string())
+    } else {
+        asset_manager
+            .get_with_source_ref(logical_name)
+            .map(|(_, archive_name)| archive_name.to_string())
+    };
+    SidebarChromeAssetIdentity {
+        logical_name: logical_name.to_string(),
+        source_archive,
+    }
+}
+
 fn build_theme_atlas(
     gpu: &GpuContext,
     batch: &BatchRenderer,
@@ -374,16 +490,11 @@ fn build_theme_atlas(
     background_names: Option<(&str, &str, &str)>,
 ) -> Option<SidebarChromeAtlas> {
     let mix = asset_manager.archive(mix_name)?;
-    let theme_palette = mix
-        .get_by_name(palette_name)
-        .and_then(|bytes| Palette::from_bytes(bytes).ok())
-        .or_else(|| {
-            asset_manager
-                .get_ref(palette_name)
-                .and_then(|bytes| Palette::from_bytes(bytes).ok())
-        })?;
+    let (theme_palette, theme_palette_source_archive) =
+        resolve_theme_palette_with_source(asset_manager, &mix, mix_name, palette_name)?;
     let side_route = SidebarSideRoute::for_theme(asset_manager, theme);
-    let generic_palette_source = side_route.resolve("SIDEBAR.PAL")?;
+    let generic_palette_name = "SIDEBAR.PAL";
+    let generic_palette_source = side_route.resolve(generic_palette_name)?;
     let generic_palette = Palette::from_bytes(generic_palette_source.bytes).ok()?;
     log::debug!(
         "{theme:?} generic sidebar palette resolved from {}",
@@ -402,6 +513,7 @@ fn build_theme_atlas(
         &theme_palette,
         RADAR_DEFAULT_FRAME,
     )?;
+    let radar_identity = theme_asset_identity(asset_manager, &mix, mix_name, radar_name);
 
     // Pre-render all radar.shp frames for the opening/closing animation.
     let (radar_frames, radar_frame_size, radar_content_insets) =
@@ -503,6 +615,27 @@ fn build_theme_atlas(
         } else {
             (None, None, None)
         };
+    let background_identities = background_names.map(|(large, medium, small)| {
+        [
+            theme_asset_identity(asset_manager, &mix, mix_name, large),
+            theme_asset_identity(asset_manager, &mix, mix_name, medium),
+            theme_asset_identity(asset_manager, &mix, mix_name, small),
+        ]
+    });
+    let source_identity = SidebarChromeAtlasIdentity {
+        atlas_theme: theme,
+        parent_archive: mix_name.to_string(),
+        radar: radar_identity,
+        theme_palette: SidebarChromeAssetIdentity {
+            logical_name: palette_name.to_string(),
+            source_archive: Some(theme_palette_source_archive),
+        },
+        generic_palette: SidebarChromeAssetIdentity {
+            logical_name: generic_palette_name.to_string(),
+            source_archive: Some(generic_palette_source.archive_name.to_string()),
+        },
+        backgrounds: background_identities,
+    };
     let excluded_extra_ids = known_loose_piece_ids(radar_name);
     let extra_rendered = collect_extra_entries(
         &mix,
@@ -750,6 +883,7 @@ fn build_theme_atlas(
 
     let texture = batch.create_texture(gpu, &rgba, atlas_width, atlas_height);
     Some(SidebarChromeAtlas {
+        source_identity,
         texture,
         top_strip_left: top_strip_left_uv,
         top_strip_sidebar: top_strip_sidebar_uv,
@@ -1098,3 +1232,52 @@ fn blit_entry(
 #[cfg(test)]
 #[path = "sidebar_chrome_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::{SidebarTheme, select_sidebar_theme};
+
+    #[test]
+    fn atlas_resolution_reports_actual_fallback_without_changing_order() {
+        let allied_source = "sidec01.mix";
+        let soviet_source = "sidec02.mix";
+        let yuri_source = "sidec02md.mix";
+
+        let (actual, source) = select_sidebar_theme(
+            SidebarTheme::Yuri,
+            Some(&allied_source),
+            Some(&soviet_source),
+            Some(&yuri_source),
+        )
+        .expect("Yuri atlas should resolve");
+        assert_eq!(actual, SidebarTheme::Yuri);
+        assert_eq!(*source, yuri_source);
+
+        let (actual, source) = select_sidebar_theme(
+            SidebarTheme::Yuri,
+            Some(&allied_source),
+            Some(&soviet_source),
+            None,
+        )
+        .expect("Yuri should fall back to Soviet before Allied");
+        assert_eq!(actual, SidebarTheme::Soviet);
+        assert_eq!(*source, soviet_source);
+
+        let (actual, source) =
+            select_sidebar_theme(SidebarTheme::Soviet, Some(&allied_source), None, None)
+                .expect("Soviet should fall back to Allied");
+        assert_eq!(actual, SidebarTheme::Allied);
+        assert_eq!(*source, allied_source);
+
+        assert!(
+            select_sidebar_theme(
+                SidebarTheme::Allied,
+                None,
+                Some(&soviet_source),
+                Some(&yuri_source),
+            )
+            .is_none(),
+            "Allied must not reverse-fallback to another faction",
+        );
+    }
+}

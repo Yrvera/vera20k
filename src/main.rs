@@ -31,7 +31,7 @@ fn main() -> Result<()> {
         log::info!("Log file: {}", path.display());
     }
 
-    let launch_mode = vera20k::app_shell_capture::parse_launch_args(std::env::args_os().skip(1))?;
+    let launch_mode = vera20k::app_launch::parse_launch_args(std::env::args_os().skip(1))?;
 
     // Create the OS event loop. This drives the entire application:
     // window events, input, redraws, lifecycle events.
@@ -40,14 +40,18 @@ fn main() -> Result<()> {
     // Create the app and hand control to the event loop.
     // This blocks until the window is closed.
     let mut app: vera20k::app::App = match launch_mode {
-        vera20k::app_shell_capture::AppLaunchMode::Interactive => vera20k::app::App::new(),
-        vera20k::app_shell_capture::AppLaunchMode::ShellCapture(request) => {
+        vera20k::app_launch::AppLaunchMode::Interactive => vera20k::app::App::new(),
+        vera20k::app_launch::AppLaunchMode::ShellCapture(request) => {
             request.validate_runtime_environment()?;
             vera20k::app::App::new_shell_capture(request)
         }
+        vera20k::app_launch::AppLaunchMode::TacticalCapture(request) => {
+            request.validate_runtime_environment()?;
+            vera20k::app::App::new_tactical_capture(request)
+        }
     };
     event_loop.run_app(&mut app)?;
-    app.finish_shell_capture()?;
+    app.finish_capture()?;
 
     log::info!("RA2 Engine shut down cleanly");
     Ok(())
