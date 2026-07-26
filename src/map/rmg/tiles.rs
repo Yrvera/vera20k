@@ -18,6 +18,8 @@ const LAT_SPAN: i32 = 0x10;
 /// Shore-piece set span: 42 tiles, the same length the LAT pass uses for its
 /// green-group shore exemption.
 const SHORE_SPAN: i32 = 42;
+/// The water tiles the generator itself writes: the base and five variants.
+const WATER_VARIANT_SPAN: i32 = 6;
 /// Fixed spans of the start-placement 6x6 gate ranges.
 const PAVED_ROADS_SPAN: i32 = 15;
 const PAVED_ROAD_ENDS_SPAN: i32 = 4;
@@ -96,6 +98,16 @@ impl TileIds {
     /// Shore-piece set membership.
     pub fn is_shore_piece(&self, tile: i32) -> bool {
         in_span(tile, self.shore, SHORE_SPAN)
+    }
+
+    /// The families the original's bridge-overlay test matches, as far as the
+    /// generator writes them: water (the base tile and its five variants) and
+    /// shore pieces. The stamped dilation uses this to absorb a previous river
+    /// segment through its own water. The native test also matches the four
+    /// bridge-deck tilesets; nothing in this port stamps those yet, so they
+    /// are deferred with the deck.
+    pub fn is_bridge_absorbable(&self, tile: i32) -> bool {
+        in_span(tile, self.water_base, WATER_VARIANT_SPAN) || self.is_shore_piece(tile)
     }
 
     /// Paved-road range used by the start 6x6 passability gate.

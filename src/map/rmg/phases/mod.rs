@@ -5,6 +5,7 @@
 //! in `super::generate`.
 
 pub mod blob;
+pub mod bridge;
 pub mod green_spread;
 pub mod hills;
 pub mod hills_corners;
