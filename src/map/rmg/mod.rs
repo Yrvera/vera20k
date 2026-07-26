@@ -14,6 +14,7 @@ pub mod preview;
 pub mod randomize;
 pub mod rng;
 pub mod saved_seeds;
+pub mod sqrt_table;
 pub mod scratch;
 pub mod settings;
 pub mod tech_catalog;
