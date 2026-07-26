@@ -417,8 +417,13 @@ fn in_rect(rect: [i32; 4], x: i32, y: i32) -> bool {
 ///
 /// Passing a level also widens what counts as claimable: cells belonging to the
 /// immediately preceding region are taken as well as unowned ones. The
-/// original's bridge-overlay escape on that arm is not modelled, because
-/// nothing in this port places a bridge yet.
+/// original's bridge-overlay escape on that arm is not modelled — the deck
+/// tiles it would match are not stamped yet.
+///
+/// `rect` clamps which neighbours may be claimed at all: an out-of-rect
+/// neighbour is skipped silently, exactly like an out-of-diamond one. The
+/// river and canyon pass the whole map, which makes it a no-op there; the
+/// bridge passes the half-plane behind itself.
 ///
 /// Returns false the moment it meets a cell owned by another region. Cells
 /// already claimed at that point stay claimed — the original does not unwind
@@ -428,6 +433,7 @@ pub(crate) fn dilate_chained(
     region: i32,
     rings: i32,
     level: Option<u8>,
+    rect: [i32; 4],
 ) -> bool {
     let mut frontier = region_border_row_major(ctx.scratch, region);
     for _ in 0..rings {
@@ -435,17 +441,26 @@ pub(crate) fn dilate_chained(
         for &(x, y) in &frontier {
             for dir in 0..8usize {
                 let (nx, ny) = RmgGrid::step(x, y, dir);
-                if !ctx.scratch.in_diamond(nx, ny) {
+                if !ctx.scratch.in_diamond(nx, ny) || !in_rect(rect, nx, ny) {
                     continue;
                 }
                 let owner = ctx.scratch.get(nx, ny).region;
                 let previous = level.is_some() && owner == region - 1;
-                let clear = ctx.ids.is_clear(ctx.grid.cell_native(nx, ny).tile);
-                if (owner == 0 || previous) && clear {
+                let tile = ctx.grid.cell_native(nx, ny).tile;
+                let clear = ctx.ids.is_clear(tile);
+                // A previous-region cell may also be water or shore — that
+                // escape is what lets the absorption cross the old river
+                // segment rather than failing on its own water.
+                let absorbable = previous && ctx.ids.is_bridge_absorbable(tile);
+                if (owner == 0 || previous) && (clear || absorbable) {
                     claimed.push((nx, ny));
                     ctx.scratch.get_mut(nx, ny).region = region;
                     if let Some(level) = level {
-                        ctx.grid.cell_native_mut(nx, ny).level = level;
+                        // Only bare ground takes the stamp; absorbed water
+                        // keeps the level it already had.
+                        if clear {
+                            ctx.grid.cell_native_mut(nx, ny).level = level;
+                        }
                     }
                 } else if owner != region {
                     return false;
