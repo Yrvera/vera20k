@@ -408,7 +408,7 @@ pub fn carve(
         if ok {
             // The green sweep runs whether or not the dilation succeeded; only
             // the shore pass gates it.
-            walk.alive = lake::dilate_region_rings(ctx, &cells, region, 1);
+            walk.alive = lake::dilate_region_rings(ctx, region, 1);
             for &(x, y) in &cells {
                 if ctx.scratch.get(x, y).region != region {
                     continue;
@@ -445,7 +445,7 @@ pub fn carve(
             walk.alive = meander::grow_meander_arm(ctx, &arm);
             if walk.alive {
                 let base = ctx.rollback_level;
-                walk.alive = meander::dilate_stamped(ctx, region, CANYON_DILATE_RINGS, base);
+                walk.alive = meander::dilate_chained(ctx, region, CANYON_DILATE_RINGS, Some(base));
             }
             if walk.alive {
                 // The surroundings are not raised — the *base* is. Everything
@@ -455,7 +455,7 @@ pub fn carve(
                 ctx.rollback_level += CANYON_LEVEL_STEP;
             }
         } else {
-            walk.alive = lake::dilate_region_rings(ctx, &cells, region, PLAIN_DILATE_RINGS);
+            walk.alive = lake::dilate_region_rings(ctx, region, PLAIN_DILATE_RINGS);
         }
     }
 

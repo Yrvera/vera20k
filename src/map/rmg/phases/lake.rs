@@ -170,31 +170,13 @@ fn retag_border_band(
 ///
 /// Returns false as soon as a neighbour belongs to a different region or is not
 /// clear — the caller treats that as the whole lake failing.
-pub(crate) fn dilate_region_rings(
-    ctx: &mut BlobCtx<'_>,
-    cells: &[(i32, i32)],
-    region: i32,
-    rings: i32,
-) -> bool {
-    for _ in 0..rings {
-        let border = region_border(ctx.scratch, cells, region);
-        for &(x, y) in &border {
-            for dir in 0..8usize {
-                let (nx, ny) = crate::map::rmg::grid::RmgGrid::step(x, y, dir);
-                if !ctx.scratch.in_diamond(nx, ny) {
-                    continue;
-                }
-                let owner = ctx.scratch.get(nx, ny).region;
-                let clear = ctx.ids.is_clear(ctx.grid.cell_native(nx, ny).tile);
-                if owner == 0 && clear {
-                    ctx.scratch.get_mut(nx, ny).region = region;
-                } else if owner != region {
-                    return false;
-                }
-            }
-        }
-    }
-    true
+///
+/// The growth itself lives in [`super::meander::dilate_chained`], because the
+/// ring-to-ring frontier is shared with the canyon's stamping variant. This once
+/// re-collected the region's whole border every ring; the original chains, and
+/// the difference shows from the second ring on.
+pub(crate) fn dilate_region_rings(ctx: &mut BlobCtx<'_>, region: i32, rings: i32) -> bool {
+    super::meander::dilate_chained(ctx, region, rings, None)
 }
 
 /// The growth key, as a single-precision value.
@@ -443,7 +425,7 @@ pub(crate) fn grow_lake(
             };
             shore::run(&mut shore_ctx, region, false)
         })
-        && (!is_driver_call || dilate_region_rings(ctx, &cells, region, 1));
+        && (!is_driver_call || dilate_region_rings(ctx, region, 1));
 
     if !committed {
         rollback(ctx, &cells, region);

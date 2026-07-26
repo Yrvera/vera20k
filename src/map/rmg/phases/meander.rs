@@ -406,25 +406,29 @@ fn in_rect(rect: [i32; 4], x: i32, y: i32) -> bool {
     rect[0] <= x && x < rect[0] + rect[2] && rect[1] <= y && y < rect[1] + rect[3]
 }
 
-/// Grow `region` outward by `rings`, stamping every newly claimed clear cell to
-/// `level`.
+/// Grow `region` outward by `rings`, optionally stamping each newly claimed
+/// clear cell to `level`.
 ///
-/// This is deliberately *not* [`super::lake::dilate_region_rings`]. Two things
-/// differ, and both matter once more than one ring is grown:
+/// **The frontier chains.** Each ring expands only the cells the previous ring
+/// claimed — not a freshly collected border of the whole region. With a single
+/// ring the two are the same, which is why re-collecting went unnoticed for as
+/// long as it did; from the second ring on, re-collecting also re-expands cells
+/// claimed earlier and grows a wider region than the original does.
 ///
-/// - **The frontier chains.** Each ring expands only the cells the previous ring
-///   claimed, not a freshly collected border of the whole region. The lake's
-///   helper recollects, which also re-expands cells claimed rings ago.
-/// - **It stamps a level**, and it accepts cells belonging to the immediately
-///   preceding region as well as unowned ones.
+/// Passing a level also widens what counts as claimable: cells belonging to the
+/// immediately preceding region are taken as well as unowned ones. The
+/// original's bridge-overlay escape on that arm is not modelled, because
+/// nothing in this port places a bridge yet.
 ///
-/// The original's bridge-overlay escape on that preceding-region arm is not
-/// modelled, because nothing in this port places a bridge yet.
-///
-/// Returns false the moment it meets a cell owned by another region, exactly
-/// like the arm itself. Cells already claimed at that point stay claimed — the
-/// original does not unwind either.
-pub(crate) fn dilate_stamped(ctx: &mut BlobCtx<'_>, region: i32, rings: i32, level: u8) -> bool {
+/// Returns false the moment it meets a cell owned by another region. Cells
+/// already claimed at that point stay claimed — the original does not unwind
+/// either, and its callers roll the whole feature back instead.
+pub(crate) fn dilate_chained(
+    ctx: &mut BlobCtx<'_>,
+    region: i32,
+    rings: i32,
+    level: Option<u8>,
+) -> bool {
     let mut frontier = region_border_row_major(ctx.scratch, region);
     for _ in 0..rings {
         let mut claimed = Vec::new();
@@ -435,12 +439,14 @@ pub(crate) fn dilate_stamped(ctx: &mut BlobCtx<'_>, region: i32, rings: i32, lev
                     continue;
                 }
                 let owner = ctx.scratch.get(nx, ny).region;
-                let previous = owner == region - 1;
+                let previous = level.is_some() && owner == region - 1;
                 let clear = ctx.ids.is_clear(ctx.grid.cell_native(nx, ny).tile);
                 if (owner == 0 || previous) && clear {
                     claimed.push((nx, ny));
                     ctx.scratch.get_mut(nx, ny).region = region;
-                    ctx.grid.cell_native_mut(nx, ny).level = level;
+                    if let Some(level) = level {
+                        ctx.grid.cell_native_mut(nx, ny).level = level;
+                    }
                 } else if owner != region {
                     return false;
                 }
