@@ -234,8 +234,13 @@ fn narrow_to_f32_bits(value: TruncF64) -> u32 {
 ///
 /// The table is pure arithmetic, so it is computed rather than shipped: index
 /// `i` encodes a significand, and the entry is the truncated mantissa of its
-/// square root. Verified to reproduce all 16384 entries of the original table.
-fn sqrt_table_entry(index: u32) -> u32 {
+/// square root. Not shipping it also keeps the retail bytes out of this repo.
+///
+/// That all 16384 entries come out identical to the original's table is checked
+/// by `map::rmg::sqrt_table`, exhaustively, against the player's own
+/// `gamemd.exe`. It needs `RA2_DIR` and so is `#[ignore]`d; the spot values in
+/// this module's tests guard the formula on a plain `cargo test`.
+pub(crate) fn sqrt_table_entry(index: u32) -> u32 {
     let significand = if index < 8192 {
         // Even exponent: the significand lies in [1, 2).
         1.0 + f64::from(index) / 8192.0
@@ -354,10 +359,10 @@ mod tests {
     /// Retail entries read from the game binary's 16384-entry square-root
     /// mantissa table (data section at 0x008650BC). Spot values chosen to pin
     /// the boundaries: entry 0, the first buckets, a mid-range value, the
-    /// even/odd-exponent seam at 8192, and the final entry. The full table was
-    /// verified byte-for-byte against the retail dump when this port landed;
-    /// these fixed points guard the generator formula without redistributing
-    /// the copyrighted table.
+    /// even/odd-exponent seam at 8192, and the final entry. These fixed points
+    /// guard the formula on a plain `cargo test` without redistributing the
+    /// copyrighted table; the whole 16384 entries are checked against the
+    /// player's own executable by `map::rmg::sqrt_table`, which needs `RA2_DIR`.
     const RETAIL_SQRT_SPOT: &[(u32, u32)] = &[
         (0, 0x0000_0000),
         (1, 0x0000_01FF),

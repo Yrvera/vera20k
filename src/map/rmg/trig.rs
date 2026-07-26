@@ -83,7 +83,7 @@ pub struct TrigTable {
 /// Parsed rather than hardcoded: a hardcoded offset silently reads the wrong
 /// bytes if the executable is ever a different build, whereas a section walk
 /// either finds the address or says it could not.
-fn file_offset_of(image: &[u8], va: u32) -> Result<usize, TrigTableError> {
+pub(crate) fn file_offset_of(image: &[u8], va: u32) -> Result<usize, TrigTableError> {
     let u16_at = |off: usize| -> Option<u16> {
         Some(u16::from_le_bytes(
             image.get(off..off + 2)?.try_into().ok()?,
