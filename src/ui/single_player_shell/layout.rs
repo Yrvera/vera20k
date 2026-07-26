@@ -3,16 +3,17 @@
 use super::state::SinglePlayerControlId;
 use crate::ui::main_menu_shell::{MainMenuMovieBase, movie_base_for_screen_width};
 use crate::ui::shell::geom::{
-    RectPx, RightPanelRects, center_offset, dlu_rect, lower_strip_rect, right_panel_rects,
-    snap_button_biased_truncate,
+    RectPx, RightPanelRects, SDBTNANM_CELL_H, SDBTNANM_CELL_W_NARROW, center_offset, dlu_rect,
+    lower_strip_rect, right_panel_rects, snap_button_biased_truncate,
 };
 
 const SHELL_BASE_W: i32 = 800;
 const SHELL_BASE_H: i32 = 600;
 const RIGHT_PANEL_WIDTH: i32 = crate::ui::shell::geom::RIGHT_PANEL_WIDTH;
 const RIGHT_PANEL_TILE_H: i32 = crate::ui::shell::geom::RIGHT_PANEL_TILE_H;
-const SDBTNANM_W: i32 = 168;
-const SDBTNANM_H: i32 = 42;
+const STATUS_HELP_W: i32 = 456;
+const STATUS_HELP_H: i32 = 21;
+const STATUS_HELP_BOTTOM_INSET: i32 = 1;
 const RA2TS_L_W: i32 = 632;
 const RA2TS_L_H: i32 = 570;
 const RA2TS_S_W: i32 = 472;
@@ -33,7 +34,6 @@ pub struct SinglePlayerShellLayout {
     pub status_help: RectPx,
     pub side_image_static: RectPx,
     pub buttons: [SinglePlayerButtonRect; 4],
-    pub pressed_content_offset_x: i32,
     pub right_panel: RightPanelRects,
     pub lower_strip: RectPx,
 }
@@ -67,16 +67,21 @@ fn right_anchor(screen_w: i32, screen_h: i32, original: RectPx) -> RectPx {
 fn status_help_rect(screen_w: i32, screen_h: i32) -> RectPx {
     let offset_x = center_offset(screen_w, SHELL_BASE_W);
     let offset_y = center_offset(screen_h, SHELL_BASE_H);
-    RectPx::new(offset_x + 10, screen_h - offset_y - 21, 455, 20)
+    RectPx::new(
+        offset_x + 10,
+        screen_h - offset_y - STATUS_HELP_H - STATUS_HELP_BOTTOM_INSET,
+        STATUS_HELP_W,
+        STATUS_HELP_H,
+    )
 }
 
 fn back_rect(screen_w: i32, panel: RightPanelRects) -> RectPx {
     let offset_x = center_offset(screen_w, SHELL_BASE_W);
     RectPx::new(
-        screen_w - offset_x - SDBTNANM_W,
+        screen_w - offset_x - SDBTNANM_CELL_W_NARROW,
         panel.tile.y + (panel.tile_count - 1).max(0) * RIGHT_PANEL_TILE_H,
-        SDBTNANM_W,
-        SDBTNANM_H,
+        SDBTNANM_CELL_W_NARROW,
+        SDBTNANM_CELL_H,
     )
 }
 
@@ -111,7 +116,7 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SinglePlayerShellLayout {
                     screen_h,
                     dlu_rect(425, 122, 108, 23),
                     panel,
-                    SDBTNANM_W,
+                    SDBTNANM_CELL_W_NARROW,
                 ),
             },
             SinglePlayerButtonRect {
@@ -121,7 +126,7 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SinglePlayerShellLayout {
                     screen_h,
                     dlu_rect(425, 149, 108, 23),
                     panel,
-                    SDBTNANM_W,
+                    SDBTNANM_CELL_W_NARROW,
                 ),
             },
             SinglePlayerButtonRect {
@@ -131,7 +136,7 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SinglePlayerShellLayout {
                     screen_h,
                     dlu_rect(425, 176, 108, 23),
                     panel,
-                    SDBTNANM_W,
+                    SDBTNANM_CELL_W_NARROW,
                 ),
             },
             SinglePlayerButtonRect {
@@ -139,7 +144,6 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SinglePlayerShellLayout {
                 rect: back_rect(screen_w, panel),
             },
         ],
-        pressed_content_offset_x: 1,
         right_panel: panel,
         lower_strip: lower_strip_rect(screen_w, screen_h),
     }
@@ -155,11 +159,11 @@ mod tests {
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(0, 0, 632, 570));
         assert_eq!(layout.title, RectPx::new(635, 3, 162, 16));
-        assert_eq!(layout.buttons[0].rect, RectPx::new(632, 199, 168, 42));
-        assert_eq!(layout.buttons[1].rect, RectPx::new(632, 241, 168, 42));
-        assert_eq!(layout.buttons[2].rect, RectPx::new(632, 283, 168, 42));
-        assert_eq!(layout.buttons[3].rect, RectPx::new(632, 535, 168, 42));
-        assert_eq!(layout.status_help, RectPx::new(10, 579, 455, 20));
+        assert_eq!(layout.buttons[0].rect, RectPx::new(644, 199, 156, 42));
+        assert_eq!(layout.buttons[1].rect, RectPx::new(644, 241, 156, 42));
+        assert_eq!(layout.buttons[2].rect, RectPx::new(644, 283, 156, 42));
+        assert_eq!(layout.buttons[3].rect, RectPx::new(644, 535, 156, 42));
+        assert_eq!(layout.status_help, RectPx::new(10, 578, 456, 21));
     }
 
     #[test]
@@ -167,8 +171,16 @@ mod tests {
         let layout = compute_layout(1024, 768);
         assert_eq!(layout.movie, RectPx::new(112, 84, 632, 570));
         assert_eq!(layout.right_panel.top, RectPx::new(744, 84, 168, 199));
-        assert_eq!(layout.buttons[2].rect, RectPx::new(744, 367, 168, 42));
-        assert_eq!(layout.buttons[3].rect, RectPx::new(744, 619, 168, 42));
-        assert_eq!(layout.status_help, RectPx::new(122, 663, 455, 20));
+        assert_eq!(layout.buttons[2].rect, RectPx::new(756, 367, 156, 42));
+        assert_eq!(layout.buttons[3].rect, RectPx::new(756, 619, 156, 42));
+        assert_eq!(layout.status_help, RectPx::new(122, 662, 456, 21));
+    }
+
+    #[test]
+    fn small_screen_keeps_native_button_and_status_extents() {
+        let layout = compute_layout(640, 480);
+        assert_eq!(layout.buttons[0].rect, RectPx::new(484, 199, 156, 42));
+        assert_eq!(layout.buttons[3].rect, RectPx::new(484, 409, 156, 42));
+        assert_eq!(layout.status_help, RectPx::new(10, 458, 456, 21));
     }
 }
