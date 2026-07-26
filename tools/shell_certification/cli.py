@@ -22,6 +22,7 @@ from .orchestrator import (
     capture_and_compare,
 )
 from .presentation_profile import write_presentation_profile
+from .title_differential import write_title_differential
 
 
 def _timeout(value: str) -> float:
@@ -74,6 +75,15 @@ def build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--guard", required=True, type=Path)
     profile.add_argument("--oracle-runs", required=True, type=Path)
     profile.add_argument("--output", required=True, type=Path)
+
+    title = commands.add_parser(
+        "title-differential",
+        help="prove the 0x694 title position/tint mismatch from sealed sources",
+    )
+    title.add_argument("--capture", required=True, type=Path)
+    title.add_argument("--guard", required=True, type=Path)
+    title.add_argument("--oracle-runs", required=True, type=Path)
+    title.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -103,7 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 working_directory=arguments.working_directory,
                 timeout_seconds=arguments.timeout,
             )
-        else:
+        elif arguments.command_name == "derive-presentation-profile":
             profile = write_presentation_profile(
                 arguments.guard,
                 arguments.oracle_runs,
@@ -120,6 +130,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
+        else:
+            report = write_title_differential(
+                arguments.capture,
+                arguments.guard,
+                arguments.oracle_runs,
+                arguments.output,
+            )
     except (ValidationError, OutputExistsError, OSError) as exc:
         print(f"shell certification error: {exc}", file=sys.stderr)
         return 2

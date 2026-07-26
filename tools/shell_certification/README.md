@@ -60,6 +60,25 @@ packed-domain behavior. The artifact therefore records
 `parity_certification` as `NONE`; it is executable input evidence, not a
 completion or parity certificate.
 
+Generate the title-specific RED differential from an existing immutable Rust
+capture and all three native source frames named by the guard:
+
+```powershell
+python -m tools.shell_certification title-differential `
+  --capture C:\path\to\immutable-rust-capture `
+  --guard C:\Users\enok\AppData\Local\VERA20k\oracle\guards\sha256\fe\32\fe32f218137b76a91dc3bac07bc96372a61c22e48ea083519f1ecbdbd97d601c.shell-guard.json `
+  --oracle-runs C:\Users\enok\AppData\Local\VERA20k\oracle\runs `
+  --output C:\path\to\brand-new-title-differential.json
+```
+
+The title report validates stable source reads and hashes, collapses the sealed
+point-scaled crop only after proving every replica of each logical pixel
+agrees, searches every in-bounds glyph-mask translation, and derives the
+terminal Path-A tint through native-source RGB565 codebooks. It never
+overwrites an output or mutates the guard/run tree. A RED report exits with
+status 1 because the current capture is still drift; an invalid evidence input
+exits with 2.
+
 The working directory is required because VERA20k loads `config.toml` and
 other relative resources from its process working directory. The wrapper
 requires an absolute non-link directory and a regular non-link `config.toml`,
