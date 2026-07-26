@@ -13,14 +13,24 @@
 //! report with `c → sin` and `s → cos`. Getting this backwards rotates every
 //! river 90° and no test in this repo would notice.
 //!
-//! Not modelled yet, and both are recorded rather than hidden:
+//! A finished river then usually cuts a **canyon**: its region is grown across
+//! the map by [`meander`], those cells are stamped at the current base level,
+//! and the base itself rises by four. Nothing around the river is raised — the
+//! river is simply left behind as everything generated afterwards sits higher.
+//! That also means only the first river can cut one, since the gate is an exact
+//! test against the starting base level.
+//!
+//! Not modelled yet, and recorded rather than hidden:
 //! - **Bridges.** The gate consumes no randomness of its own, so leaving them
 //!   out costs no stream drift; the minimum-step draw that feeds it is still
-//!   taken. Rivers simply never carry one.
-//! - **The canyon.** Its coin *is* drawn, so the stream stays aligned, but the
-//!   meander arm it depends on is not ported. Since the coin passes about 70% of
-//!   the time, most rivers are visibly missing the level change that turns the
-//!   surrounding map into a canyon.
+//!   taken. Rivers simply never carry one. The original also skips the canyon
+//!   entirely once a bridge has been placed, so that interaction is untested
+//!   here.
+//! - **The raised base level stops at this stage.** Nothing later in this port
+//!   reads it yet, so a canyon currently shows up as the river's own region
+//!   sitting at the old level and as the level later rollbacks fill with — not
+//!   as raised terrain across the rest of the map. The phases that would read it
+//!   (hills, cliffs) are not ported.
 
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
@@ -28,6 +38,7 @@ use crate::map::rmg::x87::{self, Gaussian, TruncF64};
 
 use super::blob::{BlobCtx, seed_draw};
 use super::lake::{self, WaterQuota};
+use super::meander;
 use super::shore::{self, ShoreCtx};
 use super::water::WaterArgs;
 
@@ -58,6 +69,18 @@ const BRANCH_CHANCE: f64 = 0.01;
 const STOP_CHANCE: f64 = 0.005;
 /// Chance the river cuts a canyon once it has finished.
 const CANYON_CHANCE: f64 = 0.7;
+/// The base level a map starts at, and the only value that lets a canyon form —
+/// once one has been cut the base has moved on, so no later river can cut a
+/// second.
+const CANYON_BASE_LEVEL: u8 = 4;
+/// How far the base level rises around a canyon.
+const CANYON_LEVEL_STEP: u8 = 4;
+/// Step density for the canyon's growth arm: lower means a wider spread.
+const CANYON_STEP_DENSITY: f32 = 0.01;
+/// Rings the canyon's region is grown by, stamping the old base level as it goes.
+const CANYON_DILATE_RINGS: i32 = 2;
+/// The canyon's clamp rect covers everything — it is not really a clamp.
+const WHOLE_MAP: i32 = 0x200;
 
 /// Steps a river must reach to survive.
 const MIN_STEPS: i32 = 0x28;
@@ -400,14 +423,40 @@ pub fn carve(
         }
     }
 
-    // Canyon coin. Drawn so the stream stays aligned; the meander arm it needs
-    // is not ported, so the level change never happens.
-    if !is_branch && walk.alive && ctx.rollback_level == 4 {
-        let _would_cut_a_canyon = draw_below(ctx.rng, CANYON_CHANCE);
+    // The canyon and the plain finish are the same dilation with different
+    // arguments — one stamps a level, the other does not — so exactly one of
+    // the two runs.
+    let mut cut_a_canyon = false;
+    if !is_branch && walk.alive && ctx.rollback_level == CANYON_BASE_LEVEL {
+        cut_a_canyon = draw_below(ctx.rng, CANYON_CHANCE);
     }
 
     if !is_branch && walk.alive {
-        walk.alive = lake::dilate_region_rings(ctx, &cells, region, PLAIN_DILATE_RINGS);
+        if cut_a_canyon {
+            let arm = meander::MeanderArgs {
+                tag: region,
+                step_density: CANYON_STEP_DENSITY,
+                rect: [0, 0, WHOLE_MAP, WHOLE_MAP],
+                reference: origin,
+                claim_frontier: true,
+                pool_dims: (args.playable.w, args.playable.h),
+            };
+            // A canyon that cannot be grown takes the river down with it.
+            walk.alive = meander::grow_meander_arm(ctx, &arm);
+            if walk.alive {
+                let base = ctx.rollback_level;
+                walk.alive = meander::dilate_stamped(ctx, region, CANYON_DILATE_RINGS, base);
+            }
+            if walk.alive {
+                // The surroundings are not raised — the *base* is. Everything
+                // generated after this sits four levels above the river, which
+                // is what makes it a canyon, and is also why only the first
+                // river can cut one.
+                ctx.rollback_level += CANYON_LEVEL_STEP;
+            }
+        } else {
+            walk.alive = lake::dilate_region_rings(ctx, &cells, region, PLAIN_DILATE_RINGS);
+        }
     }
 
     if !walk.alive {
@@ -430,6 +479,165 @@ pub fn carries_a_river(water_percent: i32) -> bool {
 mod tests {
     use super::*;
     use crate::map::rmg::grid::RmgGrid as Grid;
+    use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
+    use crate::map::rmg::phases::water::PlayableRect;
+    use crate::map::rmg::scratch::RmgScratch;
+    use crate::map::rmg::tiles::TileIds;
+    use crate::map::rmg::x87::Gaussian;
+
+    /// Water amount well above the river gate, so every run carries a river.
+    const RIVERED_WATER: i32 = 60;
+
+    struct OneByOne(TileBlock);
+
+    impl TileBlocks for OneByOne {
+        fn block(&self, _tile: i32) -> Option<&TileBlock> {
+            Some(&self.0)
+        }
+    }
+
+    fn blocks() -> OneByOne {
+        OneByOne(TileBlock {
+            width: 1,
+            height: 1,
+            subtiles: vec![Some(SubTile {
+                height: 0,
+                terrain: 0,
+            })],
+        })
+    }
+
+    fn ids() -> TileIds {
+        TileIds {
+            clear: 0,
+            ramp_base: -1,
+            rough: -1,
+            sand: -1,
+            green: 100,
+            rough_lat: -1,
+            sand_lat: -1,
+            green_lat: 110,
+            pave_lat: -1,
+            pave: -1,
+            water_base: 500,
+            shore: 400,
+            water_bridge: -1,
+            misc_pave: -1,
+            paved_roads: -1,
+            paved_road_ends: -1,
+            medians: -1,
+        }
+    }
+
+    /// Drive the carved seeder and report what the base level ended up as,
+    /// together with the water the run produced.
+    ///
+    /// This goes through `seed_water_carved`, the same entry the water stage
+    /// uses, rather than calling `carve` directly — a canyon that only fires
+    /// from a hand-built call would prove nothing about the real path.
+    fn run_carved_levels(map_type: i32, seed: u16) -> (u8, Grid, TileIds) {
+        let (map_w, map_h) = (34, 42);
+        let stride = (map_w + map_h + 1) as usize;
+        let (dmin, dmax) = (map_w, map_w + 2 * map_h);
+        let mut grid = Grid::new(stride, dmin, dmax);
+        let mut scratch = RmgScratch::new(stride, dmin, dmax);
+        let identity = ids();
+        let blocks = blocks();
+        let mut rng = RmgRng::new(seed);
+        let mut gauss = Gaussian::default();
+
+        for (x, y) in grid.native_cells().collect::<Vec<_>>() {
+            grid.get_mut(x, y).expect("native cell").tile = identity.clear;
+        }
+
+        let args = WaterArgs {
+            map_type,
+            water_percent: RIVERED_WATER,
+            num_players: 4,
+            bridge_enabled: false,
+            playable: PlayableRect {
+                x: 2,
+                y: 5,
+                w: 30,
+                h: 30,
+            },
+        };
+        let base;
+        {
+            let trig = crate::map::rmg::trig::TrigTable::synthetic();
+            let mut ctx = BlobCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                gauss: &mut gauss,
+                trig: Some(&trig),
+                map_w,
+                map_h,
+                rollback_level: CANYON_BASE_LEVEL,
+            };
+            lake::seed_water_carved(&mut ctx, &args);
+            base = ctx.rollback_level;
+        }
+        (base, grid, identity)
+    }
+
+    #[test]
+    fn some_rivers_cut_a_canyon_and_raise_the_base() {
+        // The coin passes about 70% of the time and the arm has to succeed on
+        // top of that, so this asserts over a spread of seeds rather than one.
+        // Before the canyon was wired the base could never move, so this fails
+        // outright against the previous code — which is the point of it.
+        let mut raised = 0;
+        let mut seeds = 0;
+        for seed in [11u16, 42, 777, 1234, 4242, 9001, 31337, 60000] {
+            for map_type in [3, 4] {
+                seeds += 1;
+                let (base, _, _) = run_carved_levels(map_type, seed);
+                assert!(
+                    base == CANYON_BASE_LEVEL || base == CANYON_BASE_LEVEL + CANYON_LEVEL_STEP,
+                    "base level moved somewhere unexpected: {base}"
+                );
+                if base > CANYON_BASE_LEVEL {
+                    raised += 1;
+                }
+            }
+        }
+        assert!(
+            raised > 0,
+            "no canyon fired across {seeds} runs — the arm never succeeds"
+        );
+    }
+
+    #[test]
+    fn the_base_never_rises_twice() {
+        // The gate is an exact test against the starting base, so once a canyon
+        // has been cut no later river can add another step. A `>=` gate here
+        // would let the base climb run away.
+        for seed in [11u16, 4242, 60000] {
+            let (base, _, _) = run_carved_levels(3, seed);
+            assert!(
+                base <= CANYON_BASE_LEVEL + CANYON_LEVEL_STEP,
+                "base climbed past one step: {base}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_canyon_run_still_produces_water() {
+        // The canyon path replaces the plain dilation, and a failed arm rolls
+        // the river back. If that wiring were wrong the whole water output
+        // would vanish on the seeds where the coin passes.
+        for seed in [11u16, 42, 4242] {
+            let (_, grid, identity) = run_carved_levels(3, seed);
+            let water = grid
+                .native_cells()
+                .filter(|&(x, y)| grid.get(x, y).expect("native cell").tile == identity.water_base)
+                .count();
+            assert!(water > 0, "seed {seed} produced no water at all");
+        }
+    }
 
     #[test]
     fn the_gate_matches_the_documented_threshold() {

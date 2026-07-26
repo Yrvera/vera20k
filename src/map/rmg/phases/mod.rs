@@ -11,6 +11,7 @@ pub mod hills_corners;
 pub mod lake;
 pub mod lat_fixup;
 pub mod lat_patches;
+pub mod meander;
 pub mod regions;
 pub mod river;
 pub mod rocks;
