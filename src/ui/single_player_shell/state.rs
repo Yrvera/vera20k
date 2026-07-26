@@ -37,6 +37,16 @@ impl SinglePlayerControlId {
             _ => return None,
         })
     }
+
+    /// Status-help CSF key written to static 0x695 immediately on hover.
+    pub fn tooltip_csf_key(self) -> &'static str {
+        match self {
+            Self::NewCampaign0x688 => "STT:SingleButtonNewCampaign",
+            Self::LoadSavedGame0x689 => "STT:SingleButtonLoadSavedGame",
+            Self::Skirmish0x579 => "STT:SingleButtonSkirmish",
+            Self::MainMenu0x686 => "STT:SingleButtonBack",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,22 +139,44 @@ mod tests {
     }
 
     #[test]
+    fn status_help_keys_match_dialog_0x100_control_mapping() {
+        assert_eq!(
+            SinglePlayerControlId::NewCampaign0x688.tooltip_csf_key(),
+            "STT:SingleButtonNewCampaign"
+        );
+        assert_eq!(
+            SinglePlayerControlId::LoadSavedGame0x689.tooltip_csf_key(),
+            "STT:SingleButtonLoadSavedGame"
+        );
+        assert_eq!(
+            SinglePlayerControlId::Skirmish0x579.tooltip_csf_key(),
+            "STT:SingleButtonSkirmish"
+        );
+        assert_eq!(
+            SinglePlayerControlId::MainMenu0x686.tooltip_csf_key(),
+            "STT:SingleButtonBack"
+        );
+    }
+
+    #[test]
     fn controller_hits_dialog_0x100_buttons_by_geometry() {
         let layout = compute_layout(800, 600);
         let feed = button_feed(&layout);
         let mut c = DialogController::default();
         c.ensure_active(DialogId(0x0100), false);
         c.on_pointer_down(639, 204, &feed);
+        assert_eq!(c.pressed(), None);
+        c.on_pointer_down(644, 204, &feed);
         assert_eq!(
             c.pressed(),
             Some(SinglePlayerControlId::NewCampaign0x688.resource_id())
         );
-        c.on_pointer_down(639, 290, &feed);
+        c.on_pointer_down(644, 290, &feed);
         assert_eq!(
             c.pressed(),
             Some(SinglePlayerControlId::Skirmish0x579.resource_id())
         );
-        c.on_pointer_down(639, 540, &feed);
+        c.on_pointer_down(644, 540, &feed);
         assert_eq!(
             c.pressed(),
             Some(SinglePlayerControlId::MainMenu0x686.resource_id())
@@ -163,14 +195,18 @@ mod tests {
         c.on_pointer_down(639, 248, &feed);
         assert_eq!(c.pressed(), None);
         assert_eq!(c.on_pointer_up(639, 248, &feed), None);
-        // ...but the disabled button still hover-tracks and arms its timer.
         c.on_pointer_move(639, 248, &feed);
+        assert_eq!(c.hovered(), None);
+        // ...but the disabled button still hover-tracks at its native boundary.
+        c.on_pointer_move(644, 248, &feed);
         assert_eq!(c.hovered(), Some(load));
+        // The controller still records hover timing even though dialog 0x100
+        // must not turn mouse hover into SDBTNANM frame 3.
         assert!(c.hover_started_at().is_some());
         // Enabled: press-and-release fires Load Saved Game.
         c.set_disabled(load, false);
-        c.on_pointer_down(639, 248, &feed);
-        let activated = c.on_pointer_up(639, 248, &feed);
+        c.on_pointer_down(644, 248, &feed);
+        let activated = c.on_pointer_up(644, 248, &feed);
         assert_eq!(
             activated
                 .and_then(SinglePlayerControlId::from_resource_id)

@@ -11,31 +11,24 @@ use crate::render::shell_paint::{
     self, ArtFit, ButtonPolicy, CURSOR_DEPTH, MOVIE_DEPTH, PaintButton, PaintLabel,
     SHELL_TEXT_RGB_DISABLED, SHELL_TEXT_RGB_ENABLED,
 };
+use crate::render::shell_text::ShellAlign;
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::ui::main_menu_shell::RectPx;
 use crate::ui::single_player_shell::{
     SinglePlayerControlId, SinglePlayerShellLayout, compute_layout, csf_key_for_control,
 };
 
-/// SDBTNANM canvas fit divisors for the 0x100 fit-scaled art (rect.w/168,
-/// rect.h/42, then right-anchor + v-center).
-const RIGHT_PANEL_WIDTH: f32 = 168.0;
-const RIGHT_PANEL_TILE_H: f32 = 42.0;
-
-/// Dialog 0x100 owner-draw button policy: art fit-scaled into the cell and
-/// right-anchored / v-centered, ~1 Hz hover flash, NO art Y sink on press
-/// (only the text shifts +1 px), and disabled controls dimmed (alpha 0.502 +
-/// #9F0000 text). The disabled state fires when no save games exist
-/// (LoadSavedGame).
+/// Dialog 0x100 paints the native 156x42 SDBTNANM frame at the control origin.
+/// Mouse hover updates static 0x695 but does not select frame 3. Press selects
+/// frame 4 without moving the art; disabled LoadSavedGame remains dimmed.
 const SP_BUTTON_POLICY: ButtonPolicy = ButtonPolicy {
-    art_fit: ArtFit::FitRightAnchored {
-        panel_w: RIGHT_PANEL_WIDTH,
-        tile_h: RIGHT_PANEL_TILE_H,
-    },
-    hover_flash: true,
+    art_fit: ArtFit::Native,
+    hover_flash: false,
     art_sink_y: 0.0,
     disabled_dim: true,
 };
+const SP_BUTTON_ALIGN: ShellAlign = ShellAlign(ShellAlign::H_CENTER.0 | ShellAlign::V_CENTER.0);
+const SP_STATUS_ALIGN: ShellAlign = ShellAlign::V_CENTER;
 
 pub(crate) enum SinglePlayerShellRenderResult {
     Rendered,
@@ -51,10 +44,10 @@ fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
 }
 
 /// Map the layout + shell state into the owner-draw button list for the paint
-/// pass. A disabled LoadSavedGame control can never paint pressed (frame 4) or
-/// hover (frame 3): pressed/hovered are gated on `enabled`, matching the prior
-/// emitter. During a first-paint slide each button rides Group A's ramp (a
-/// disabled button still slides in, dimmed, via the policy).
+/// pass. A disabled LoadSavedGame control can never paint pressed; the raw
+/// controller hover remains available separately for static 0x695. During a
+/// first-paint slide each button rides Group A's ramp (a disabled button still
+/// slides in, dimmed, via the policy).
 fn sp_paint_buttons(
     layout: &SinglePlayerShellLayout,
     pressed_button: Option<SinglePlayerControlId>,
@@ -81,39 +74,39 @@ fn sp_paint_buttons(
         .collect()
 }
 
-/// Build the owner-draw button labels + the single title static. Reproduces the
-/// prior `build_text_draws`: button labels h+v-centered in a rect inset by
-/// top+=1 / right-=2, shifted +x_offset on press (NO Y sink on 0x100), colored
-/// #FFFF00 when enabled / #9F0000 when disabled; the title is h-centered
-/// top-anchored #FFFF00. The SP `status_help` / `side_image_static` rects exist
-/// in the layout but are NOT drawn — kept that way.
+/// Native owner-draw label clip: unpressed `(x, y+1, w-2, h-1)`, pressed
+/// `(x+2, y+5, w-4, h-5)`.
+fn owner_draw_button_label_rect(rect: RectPx, pressed: bool) -> RectPx {
+    let (dx, dy) = if pressed { (2, 5) } else { (0, 1) };
+    RectPx::new(
+        rect.x + dx,
+        rect.y + dy,
+        (rect.w - 2 - dx).max(0),
+        (rect.h - dy).max(0),
+    )
+}
+
+fn single_player_status_csf_key(hovered: Option<SinglePlayerControlId>) -> Option<&'static str> {
+    hovered.map(SinglePlayerControlId::tooltip_csf_key)
+}
+
+/// Build the owner-draw button labels, title, and immediate 0x695 hover-help
+/// static. Button labels use the disabled color for unavailable LoadSavedGame;
+/// status help remains enabled yellow when that disabled control is hovered.
 fn sp_paint_labels<'a>(
     state: &'a AppState,
     layout: &SinglePlayerShellLayout,
 ) -> Vec<PaintLabel<'a>> {
-    use crate::render::shell_text::ShellAlign;
-    let mut out = Vec::new();
-    let button_align = ShellAlign::H_CENTER | ShellAlign::V_CENTER;
+    let mut out = Vec::with_capacity(layout.buttons.len() + 2);
     for button in &layout.buttons {
         let enabled = button.id != SinglePlayerControlId::LoadSavedGame0x689
             || state.single_player_shell_state.load_saved_game_enabled;
-        let x_offset = if state.single_player_shell_state.pressed_owner_draw_button
-            == Some(button.id)
-            && enabled
-        {
-            layout.pressed_content_offset_x
-        } else {
-            0
-        };
+        let pressed =
+            enabled && state.single_player_shell_state.pressed_owner_draw_button == Some(button.id);
         out.push(PaintLabel {
             text: resolve_csf(state, csf_key_for_control(button.id)),
-            rect: RectPx::new(
-                button.rect.x + x_offset,
-                button.rect.y + 1,
-                (button.rect.w - 2).max(0),
-                (button.rect.h - 1).max(0),
-            ),
-            align: button_align,
+            rect: owner_draw_button_label_rect(button.rect, pressed),
+            align: SP_BUTTON_ALIGN,
             rgb: if enabled {
                 SHELL_TEXT_RGB_ENABLED
             } else {
@@ -129,6 +122,17 @@ fn sp_paint_labels<'a>(
         rgb: SHELL_TEXT_RGB_ENABLED,
         path_a_reveal: None,
     });
+    if let Some(key) =
+        single_player_status_csf_key(state.single_player_shell_state.hovered_owner_draw_button)
+    {
+        out.push(PaintLabel {
+            text: resolve_csf(state, key),
+            rect: layout.status_help,
+            align: SP_STATUS_ALIGN,
+            rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
+        });
+    }
     out
 }
 
@@ -231,13 +235,8 @@ pub(crate) fn render_single_player_shell(
         state.single_player_shell_state.load_saved_game_enabled,
         wave.as_ref(),
     );
-    let button_instances = shell_paint::paint_buttons(
-        chrome,
-        &buttons,
-        SP_BUTTON_POLICY,
-        Instant::now(),
-        state.single_player_shell_state.hover_started_at,
-    );
+    let button_instances =
+        shell_paint::paint_buttons(chrome, &buttons, SP_BUTTON_POLICY, Instant::now(), None);
     let labels = sp_paint_labels(state, &layout);
     let text_draws = shell_paint::paint_labels(&state.bit_font, &labels);
 
@@ -348,4 +347,41 @@ pub(crate) fn render_single_player_shell(
     drop(pass);
 
     Ok(SinglePlayerShellRenderResult::Rendered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_player_policy_uses_native_art_without_mouse_hover_flash() {
+        assert!(matches!(SP_BUTTON_POLICY.art_fit, ArtFit::Native));
+        assert!(!SP_BUTTON_POLICY.hover_flash);
+        assert_eq!(SP_BUTTON_POLICY.art_sink_y, 0.0);
+        assert!(SP_BUTTON_POLICY.disabled_dim);
+    }
+
+    #[test]
+    fn owner_draw_label_clip_matches_native_up_and_pressed_rects() {
+        let button = RectPx::new(644, 199, 156, 42);
+        assert_eq!(
+            owner_draw_button_label_rect(button, false),
+            RectPx::new(644, 200, 154, 41)
+        );
+        assert_eq!(
+            owner_draw_button_label_rect(button, true),
+            RectPx::new(646, 204, 152, 37)
+        );
+    }
+
+    #[test]
+    fn status_help_is_immediate_and_includes_disabled_load() {
+        assert_eq!(single_player_status_csf_key(None), None);
+        assert_eq!(
+            single_player_status_csf_key(Some(SinglePlayerControlId::LoadSavedGame0x689)),
+            Some("STT:SingleButtonLoadSavedGame")
+        );
+        assert!(SP_STATUS_ALIGN.contains(ShellAlign::V_CENTER));
+        assert!(!SP_STATUS_ALIGN.contains(ShellAlign::H_CENTER));
+    }
 }
