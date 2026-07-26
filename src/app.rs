@@ -854,9 +854,9 @@ impl App {
         // a queued Back/Escape can otherwise return to 0xE2 before 0x100 draws
         // and incorrectly preserve the old main-menu movie timeline.
         crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
+        crate::app_shell_transition::invalidate_main_menu_dialog_instance(state);
         state.main_menu_show_single_player_shell = true;
         state.main_menu_show_native_skirmish_shell = false;
-        state.shell_first_paint_slide = None;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
@@ -869,6 +869,7 @@ impl App {
         // 0xE2. Clear immediately so a same-event-loop round trip cannot reuse
         // the source dialog's movie session.
         crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
+        crate::app_shell_transition::invalidate_main_menu_dialog_instance(state);
         state.main_menu_show_single_player_shell = false;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
