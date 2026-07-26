@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use crate::assets::fnt_file::{FntFile, FntGlyph};
 use crate::render::batch::{BatchRenderer, BatchTexture, SpriteInstance};
 use crate::render::gpu::GpuContext;
+use crate::render::shell_text_reveal::{PathAReveal, encoded_srgb_to_linear, encoded_unit_rgb};
 
 /// Hardcoded inter-glyph spacing.
 pub const CHAR_SPACING: u32 = 1;
@@ -194,6 +195,90 @@ impl BitFont {
                 }
             } else {
                 (self.missing_glyph, true)
+            };
+            let Some(entry) = entry else { continue };
+            if emitted > 0 {
+                cursor_x += spacing;
+            }
+            let w = entry.pixel_width * scale;
+            instances.push(SpriteInstance {
+                position: [cursor_x + camera_offset[0], y + camera_offset[1]],
+                size: [w, h],
+                uv_origin: entry.uv_origin,
+                uv_size: entry.uv_size,
+                depth,
+                tint: if use_missing_tint { missing_tint } else { tint },
+                alpha: 1.0,
+                ..Default::default()
+            });
+            cursor_x += w;
+            emitted += 1;
+        }
+        (instances, consumed)
+    }
+
+    /// Glyph emission for the verified BITFONT Path-A UTF-16 reveal/tint path.
+    ///
+    /// This is deliberately separate from [`Self::build_text_revealed`], whose
+    /// scalar wipe remains the existing Skirmish implementation. Every UTF-16
+    /// code unit consumes a one-based reveal position; spaces/tabs consume a
+    /// unit without emitting a quad, and surrogate halves independently take
+    /// the existing missing-glyph path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_text_path_a(
+        &self,
+        text: &str,
+        x: f32,
+        y: f32,
+        scale: f32,
+        depth: f32,
+        camera_offset: [f32; 2],
+        already_consumed: u32,
+        reveal: PathAReveal,
+    ) -> (Vec<SpriteInstance>, u32) {
+        let mut instances = Vec::with_capacity(text.len());
+        let mut cursor_x = x;
+        let spacing = self.char_spacing as f32 * scale;
+        let h = self.bitmap_rows as f32 * scale;
+        let mut emitted = 0u32;
+        let mut consumed = already_consumed;
+
+        for code_unit in text.encode_utf16() {
+            let Some(unit_position) = consumed.checked_add(1) else {
+                break;
+            };
+            let Some(encoded_rgb) = encoded_unit_rgb(unit_position, reveal) else {
+                break;
+            };
+            consumed = unit_position;
+            if code_unit == u16::from(b'\r') || code_unit == u16::from(b'\n') {
+                continue;
+            }
+            match code_unit {
+                value if value == u16::from(b'\t') => {
+                    let cell_x = ((cursor_x - x) / scale) as u32;
+                    let advanced = cell_x + self.tab_width;
+                    let next_cell =
+                        advanced - ((advanced.saturating_sub(self.tab_origin)) % self.tab_width);
+                    cursor_x = x + next_cell as f32 * scale;
+                    continue;
+                }
+                value if value == u16::from(b' ') => {
+                    if emitted > 0 {
+                        cursor_x += spacing;
+                    }
+                    cursor_x += self.space_width as f32 * scale;
+                    emitted += 1;
+                    continue;
+                }
+                _ => {}
+            }
+
+            let tint = encoded_srgb_to_linear(encoded_rgb);
+            let missing_tint = Self::missing_color_xor(tint);
+            let (entry, use_missing_tint) = match self.glyphs.get(&code_unit) {
+                Some(glyph) => (Some(*glyph), false),
+                None => (self.missing_glyph, true),
             };
             let Some(entry) = entry else { continue };
             if emitted > 0 {

@@ -27,6 +27,7 @@ use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_text::{ShellAlign, ShellTextDraw};
+use crate::render::shell_text_reveal::PathAReveal;
 use crate::render::skirmish_shell_chrome::SkirmishShellChromeEntry;
 use crate::ui::shell::geom::{RectPx, RightPanelRects};
 
@@ -93,6 +94,8 @@ pub struct PaintLabel<'a> {
     pub rect: RectPx,
     pub align: ShellAlign,
     pub rgb: [f32; 3],
+    /// Opt-in BITFONT Path-A reveal/tint. Ordinary labels keep this `None`.
+    pub path_a_reveal: Option<PathAReveal>,
 }
 
 fn push_entry_sized(
@@ -344,16 +347,27 @@ pub fn paint_labels_at_depth(
                 w: label.rect.w.max(0) as u32,
                 h: label.rect.h.max(0) as u32,
             };
-            crate::render::shell_text::draw_in_rect(
-                font,
-                label.text,
-                text_rect,
-                label.rgb,
-                label.align,
-                [0.0, 0.0],
-                depth,
-                None,
-            )
+            match label.path_a_reveal {
+                Some(reveal) => crate::render::shell_text::draw_in_rect_path_a(
+                    font,
+                    label.text,
+                    text_rect,
+                    label.align,
+                    [0.0, 0.0],
+                    depth,
+                    reveal,
+                ),
+                None => crate::render::shell_text::draw_in_rect(
+                    font,
+                    label.text,
+                    text_rect,
+                    label.rgb,
+                    label.align,
+                    [0.0, 0.0],
+                    depth,
+                    None,
+                ),
+            }
         })
         .collect()
 }
@@ -505,6 +519,7 @@ fn push_skirmish_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::bit_font::tests::make_test_font;
     use std::time::Duration;
 
     const SP_PANEL_W: f32 = 168.0;
@@ -526,6 +541,53 @@ mod tests {
             enabled: true,
             wave_frame: None,
         }
+    }
+
+    #[test]
+    fn plain_label_path_remains_byte_identical_to_direct_shell_text() {
+        let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6)], 4);
+        let rect = RectPx::new(9, 11, 80, 20);
+        let labels = [PaintLabel {
+            text: "aba",
+            rect,
+            align: ShellAlign::H_CENTER,
+            rgb: [1.0, 1.0, 0.0],
+            path_a_reveal: None,
+        }];
+        let actual = paint_labels(&font, &labels).pop().expect("one label");
+        let expected = crate::render::shell_text::draw_in_rect(
+            &font,
+            "aba",
+            crate::render::shell_text::TextRect {
+                x: rect.x,
+                y: rect.y,
+                w: rect.w as u32,
+                h: rect.h as u32,
+            },
+            [1.0, 1.0, 0.0],
+            ShellAlign::H_CENTER,
+            [0.0, 0.0],
+            TEXT_DEPTH,
+            None,
+        );
+        assert_eq!(
+            bytemuck::cast_slice::<SpriteInstance, u8>(&actual.instances),
+            bytemuck::cast_slice::<SpriteInstance, u8>(&expected.instances)
+        );
+        assert_eq!(
+            (
+                actual.scissor.x,
+                actual.scissor.y,
+                actual.scissor.w,
+                actual.scissor.h,
+            ),
+            (
+                expected.scissor.x,
+                expected.scissor.y,
+                expected.scissor.w,
+                expected.scissor.h,
+            )
+        );
     }
 
     const NATIVE_POLICY: ButtonPolicy = ButtonPolicy {

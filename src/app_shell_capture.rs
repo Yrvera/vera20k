@@ -29,7 +29,7 @@ const EXPECTED_CURSOR_Y: u32 = 300;
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(15);
 const CAPTURE_FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const MAX_CAPTURE_FRAMES: u32 = 10_000;
-const CAPTURE_SCHEMA: &str = "vera20k.shell-capture.v1";
+const CAPTURE_SCHEMA: &str = "vera20k.shell-capture.v2";
 const FRAME_FILE_NAME: &str = "frame.bgra";
 const MANIFEST_FILE_NAME: &str = "capture.json";
 
@@ -267,6 +267,7 @@ struct MainMenuCaptureSnapshot {
     quit_active: bool,
     first_paint_slide_active: bool,
     active_slide_is_main_menu: bool,
+    title_terminal_persistent: bool,
     movie_loaded: bool,
     movie_owner_is_main_menu: bool,
     movie_base_is_large: bool,
@@ -293,6 +294,10 @@ impl MainMenuCaptureSnapshot {
             first_paint_slide_active: state.shell_first_paint_slide.is_some(),
             active_slide_is_main_menu: state.shell_slide_active_shell
                 == Some(ShellSlideKind::MainMenu),
+            title_terminal_persistent: state
+                .main_menu_shell_state
+                .title_reveal
+                .is_terminal_persistent(),
             movie_loaded: state.main_menu_movie.is_some(),
             movie_owner_is_main_menu: movie_identity
                 .is_some_and(|identity| identity.owner() == Ra2tsDialogOwner::MainMenu0xE2),
@@ -354,6 +359,9 @@ fn steady_main_menu_capture_ready(snapshot: MainMenuCaptureSnapshot) -> Result<b
         snapshot.software_cursor_active,
         "retail software cursor is unavailable"
     );
+    if !snapshot.title_terminal_persistent {
+        return Ok(false);
+    }
     Ok(true)
 }
 
@@ -531,6 +539,7 @@ fn capture_manifest<'a>(
             modal_open: false,
             quit_active: false,
             first_paint_slide_active: false,
+            title_terminal_persistent: true,
         },
         frame: FrameManifest {
             path: FRAME_FILE_NAME,
@@ -592,6 +601,7 @@ struct ShellManifest {
     modal_open: bool,
     quit_active: bool,
     first_paint_slide_active: bool,
+    title_terminal_persistent: bool,
 }
 
 #[derive(Serialize)]
@@ -676,7 +686,7 @@ mod tests {
 
         assert_eq!(
             value["schema_version"].as_str(),
-            Some("vera20k.shell-capture.v1")
+            Some("vera20k.shell-capture.v2")
         );
         assert_eq!(value["checkpoint"].as_str(), Some("main-menu-0xe2-steady"));
         assert_eq!(value["surface"]["width"].as_u64(), Some(800));
@@ -699,6 +709,10 @@ mod tests {
             Some("main-menu-0xe2")
         );
         assert_eq!(value["shell"]["movie_base"].as_str(), Some("ra2ts-l"));
+        assert_eq!(
+            value["shell"]["title_terminal_persistent"].as_bool(),
+            Some(true)
+        );
         assert_eq!(value["frame"]["path"].as_str(), Some("frame.bgra"));
         assert_eq!(value["frame"]["byte_length"].as_u64(), Some(1_920_000));
     }
@@ -747,6 +761,7 @@ mod tests {
             quit_active: false,
             first_paint_slide_active: false,
             active_slide_is_main_menu: true,
+            title_terminal_persistent: true,
             movie_loaded: true,
             movie_owner_is_main_menu: true,
             movie_base_is_large: true,
@@ -769,6 +784,13 @@ mod tests {
     #[test]
     fn first_ordinary_steady_frame_is_capture_ready() {
         assert!(steady_main_menu_capture_ready(ready_snapshot()).expect("ready"));
+    }
+
+    #[test]
+    fn running_title_waits_for_the_retained_terminal_frame() {
+        let mut snapshot = ready_snapshot();
+        snapshot.title_terminal_persistent = false;
+        assert!(!steady_main_menu_capture_ready(snapshot).expect("wait"));
     }
 
     #[test]

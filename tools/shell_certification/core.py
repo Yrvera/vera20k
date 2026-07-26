@@ -21,7 +21,8 @@ MATCH = "MATCH"
 DRIFT = "DRIFT"
 INVALID = "INVALID"
 
-CAPTURE_SCHEMA_VERSION = "vera20k.shell-capture.v1"
+CAPTURE_SCHEMA_VERSION_V1 = "vera20k.shell-capture.v1"
+CAPTURE_SCHEMA_VERSION = "vera20k.shell-capture.v2"
 COMPARISON_SCHEMA_VERSION = "vera20k.shell-comparison.v1"
 GUARD_SCHEMA_VERSION = "vera20k.shell-presentation-guard.v4"
 SEALED_MAIN_MENU_GUARD_SHA256 = (
@@ -891,9 +892,15 @@ def _validate_capture_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
         ("schema_version", "checkpoint", "surface", "cursor", "shell", "frame"),
         "capture",
     )
-    _require_value(
-        document["schema_version"], CAPTURE_SCHEMA_VERSION, "capture.schema_version"
+    schema_version = _require_string(
+        document["schema_version"], "capture.schema_version"
     )
+    if schema_version not in (CAPTURE_SCHEMA_VERSION_V1, CAPTURE_SCHEMA_VERSION):
+        raise ValidationError(
+            "capture.schema_version must be "
+            f"{CAPTURE_SCHEMA_VERSION_V1!r} or {CAPTURE_SCHEMA_VERSION!r}, "
+            f"got {schema_version!r}"
+        )
     _require_value(document["checkpoint"], CHECKPOINT, "capture.checkpoint")
 
     surface = _require_object(document["surface"], "capture.surface")
@@ -946,22 +953,21 @@ def _validate_capture_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
     )
 
     shell = _require_object(document["shell"], "capture.shell")
-    _require_exact_keys(
-        shell,
-        (
-            "screen",
-            "dialog_resource_id",
-            "movie_owner",
-            "movie_base",
-            "main_menu_shell_failed",
-            "single_player_active",
-            "skirmish_active",
-            "modal_open",
-            "quit_active",
-            "first_paint_slide_active",
-        ),
-        "capture.shell",
+    shell_keys = (
+        "screen",
+        "dialog_resource_id",
+        "movie_owner",
+        "movie_base",
+        "main_menu_shell_failed",
+        "single_player_active",
+        "skirmish_active",
+        "modal_open",
+        "quit_active",
+        "first_paint_slide_active",
     )
+    if schema_version == CAPTURE_SCHEMA_VERSION:
+        shell_keys += ("title_terminal_persistent",)
+    _require_exact_keys(shell, shell_keys, "capture.shell")
     _require_value(shell["screen"], "main-menu", "capture.shell.screen")
     _require_value(
         shell["dialog_resource_id"],
@@ -984,6 +990,16 @@ def _validate_capture_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
         if value:
             raise ValidationError(
                 f"capture.shell.{field} must be false for a steady 0xE2 frame"
+            )
+    if schema_version == CAPTURE_SCHEMA_VERSION:
+        title_terminal = _require_bool(
+            shell["title_terminal_persistent"],
+            "capture.shell.title_terminal_persistent",
+        )
+        if not title_terminal:
+            raise ValidationError(
+                "capture.shell.title_terminal_persistent must be true "
+                "for a steady 0xE2 frame"
             )
 
     frame = _require_object(document["frame"], "capture.frame")
@@ -1008,6 +1024,8 @@ def _validate_capture_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_capture_bundle(
     capture_directory: str | os.PathLike[str],
+    *,
+    required_schema_version: str | None = None,
 ) -> ValidatedCapture:
     """Validate one immutable Rust capture bundle and recompute its digests."""
 
@@ -1034,6 +1052,15 @@ def validate_capture_bundle(
     manifest_sha256 = sha256_bytes(manifest_raw)
     manifest = _parse_json_bytes(manifest_raw, "capture manifest")
     values = _validate_capture_manifest(manifest)
+    if (
+        required_schema_version is not None
+        and manifest["schema_version"] != required_schema_version
+    ):
+        raise ValidationError(
+            "capture.schema_version must be current for this operation: "
+            f"expected {required_schema_version!r}, "
+            f"got {manifest['schema_version']!r}"
+        )
 
     frame_path = directory / FRAME_FILENAME
     frame_bytes = _read_regular_bytes(
