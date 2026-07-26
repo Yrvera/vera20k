@@ -26,18 +26,20 @@
 //! are easy to conflate; the fix was verified against the canyon path's own
 //! bytes, not the neighbouring one.
 //!
-//! Not modelled yet, and recorded rather than hidden:
-//! - **Bridges.** The gate consumes no randomness of its own, so leaving them
-//!   out costs no stream drift; the minimum-step draw that feeds it is still
-//!   taken. Rivers simply never carry one. The original also skips the canyon
-//!   entirely once a bridge has been placed, so that interaction is untested
-//!   here.
+//! A straight-enough section may also throw a **bridge** across the river —
+//! see [`bridge`]. The gate needs a straight cross-section, a small heading
+//! drift, the generation-start coin, and the drawn minimum step; a placed
+//! bridge widens the channel ahead, jumps the walk twelve cells, and the river
+//! continues under a new region id whose finish absorbs the old one. Bridges
+//! currently never *survive* — the deck stamping that resolves the junction
+//! for the finish pass is not ported, and its module doc carries the details.
 
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
 use crate::map::rmg::x87::{self, Gaussian, TruncF64};
 
 use super::blob::{BlobCtx, seed_draw};
+use super::bridge;
 use super::lake::{self, WaterQuota};
 use super::meander;
 use super::shore::{self, ShoreCtx};
@@ -187,7 +189,18 @@ struct Walk {
     rolled_to_a_stop: bool,
 }
 
-/// Stamp one cross-section. Returns whether the walk survives it.
+/// What one cross-section reports back to the walk: its end cells, and whether
+/// it ran straight. The bridge gate reads all four.
+struct Section {
+    first: (i32, i32),
+    last: (i32, i32),
+    /// Every position shared one `ftol(x)` — the section lies in one column.
+    column_straight: bool,
+    /// Every position shared one `ftol(y)` — one row.
+    row_straight: bool,
+}
+
+/// Stamp one cross-section.
 fn carve_section(
     ctx: &mut BlobCtx<'_>,
     walk: &mut Walk,
@@ -196,13 +209,20 @@ fn carve_section(
     span: i32,
     sin: f64,
     cos: f64,
-) {
+) -> Section {
     let step_back = f64::from(span - 1) * HALF;
     let mut x = fx - step_back * sin;
     let mut y = fy - step_back * cos;
+    let mut section = Section {
+        first: (x87::ftol(x), x87::ftol(y)),
+        last: (0, 0),
+        column_straight: true,
+        row_straight: true,
+    };
 
     for _ in 0..span {
         let (cx, cy) = (x87::ftol(x), x87::ftol(y));
+        section.last = (cx, cy);
         if ctx.scratch.in_diamond(cx, cy) {
             let owner = ctx.scratch.get(cx, cy).region;
             if owner == walk.region {
@@ -224,10 +244,21 @@ fn carve_section(
                 walk.alive = false;
             }
         }
+        // The straightness comparison runs current-versus-advanced, so it
+        // spans one position past the section's end — a section that would
+        // leave its column on the very next substep does not count as
+        // straight.
+        if x87::ftol(x + sin) != cx {
+            section.column_straight = false;
+        }
+        if x87::ftol(y + cos) != cy {
+            section.row_straight = false;
+        }
         // The section always completes, even once the walk is doomed.
         x += sin;
         y += cos;
     }
+    section
 }
 
 /// Undo every cell this river claimed.
@@ -262,7 +293,12 @@ pub fn carve(
         return false;
     };
     let cells: Vec<(i32, i32)> = ctx.grid.native_cells().collect();
-    let region = quota.region_id;
+    let mut region = quota.region_id;
+    // The original mutates its own is-branch argument when a branch spawns, so
+    // one flag serves both "I am a branch" and "I have spawned one" — and a
+    // river that has done either can never bridge.
+    let mut no_more_branches = is_branch;
+    let mut bridges_placed = 0i32;
 
     let (origin, mut heading) = match start {
         Some((x, y, h)) => ((x, y), h),
@@ -298,8 +334,8 @@ pub fn carve(
     let half_width = width / 2;
     let mut width_walk = f64::from(width);
 
-    // Drawn even though bridges are not built: the draw is part of the stream.
-    let _bridge_min_step = loop {
+    // The earliest step at which this river may bridge itself.
+    let bridge_min_step = loop {
         let value = x87::ftol(
             TruncF64::from_f64(f64::from(ctx.rng.next_u32()))
                 .mul(TruncF64::from_f64(BRIDGE_STEP_SPAN_SCALED))
@@ -332,7 +368,52 @@ pub fn carve(
         let cos = f64::from(trig.cos_radians(heading));
 
         let span = x87::ftol(width_walk + HALF);
-        carve_section(ctx, &mut walk, fx, fy, span, sin, cos);
+        let section = carve_section(ctx, &mut walk, fx, fy, span, sin, cos);
+
+        // Exactly one straightness flag survives a step: whichever axis
+        // dominates travel kills the other's flag.
+        let (mut column_straight, mut row_straight) =
+            (section.column_straight, section.row_straight);
+        if cos.abs() <= sin.abs() {
+            column_straight = false;
+        } else {
+            row_straight = false;
+        }
+
+        // Bridge attempt — before the travel advance, reading this section's
+        // endpoints and the heading as they stand. A river that is a branch or
+        // has spawned one never bridges, and one bridge is the lifetime cap.
+        if !no_more_branches && (column_straight || row_straight) && bridges_placed < 1 {
+            let drift = x87::ftol(heading - heading0).abs();
+            if f64::from(drift) < EIGHTH_TURN && args.bridge_enabled && walk.steps > bridge_min_step
+            {
+                let dir = if column_straight {
+                    if cos <= 0.0 { 6 } else { 2 }
+                } else if sin <= 0.0 {
+                    4
+                } else {
+                    0
+                };
+                let attempt = bridge::BridgeArgs {
+                    region,
+                    heading_dir: dir,
+                    first: section.first,
+                    last: section.last,
+                    pool_dims: (args.playable.w, args.playable.h),
+                };
+                if bridge::build(ctx, &attempt) {
+                    // The river continues on the far bank under a new region
+                    // id; the finish dilation later absorbs the old one.
+                    bridges_placed += 1;
+                    quota.region_id += 1;
+                    region = quota.region_id;
+                    walk.region = region;
+                    let (jx, jy) = bridge::jump(dir);
+                    fx += f64::from(jx);
+                    fy += f64::from(jy);
+                }
+            }
+        }
 
         // Travel is perpendicular to the carve line.
         fx += cos;
@@ -340,7 +421,8 @@ pub fn carve(
 
         // Branch spawn. The draw is unconditional; only the spawn is gated.
         let branch = draw_below(ctx.rng, BRANCH_CHANCE);
-        if branch && walk.alive && !is_branch {
+        if branch && walk.alive && !no_more_branches && bridges_placed == 0 {
+            no_more_branches = true;
             let mean = heading + QUARTER_TURN;
             let angle = bounded_gaussian(
                 ctx.gauss,
@@ -430,7 +512,8 @@ pub fn carve(
     // arguments — one stamps a level, the other does not — so exactly one of
     // the two runs.
     let mut cut_a_canyon = false;
-    if !is_branch && walk.alive && ctx.rollback_level == CANYON_BASE_LEVEL {
+    if !is_branch && walk.alive && bridges_placed == 0 && ctx.rollback_level == CANYON_BASE_LEVEL {
+        // A bridged river never rolls the canyon coin at all.
         cut_a_canyon = draw_below(ctx.rng, CANYON_CHANCE);
     }
 
@@ -447,7 +530,13 @@ pub fn carve(
             // A canyon that cannot be grown takes the river down with it.
             walk.alive = meander::grow_meander_arm(ctx, &arm);
             if walk.alive {
-                walk.alive = meander::dilate_chained(ctx, region, CANYON_DILATE_RINGS, None);
+                walk.alive = meander::dilate_chained(
+                    ctx,
+                    region,
+                    CANYON_DILATE_RINGS,
+                    None,
+                    [0, 0, WHOLE_MAP, WHOLE_MAP],
+                );
             }
             if walk.alive {
                 // The canyon is made twice over: every cell *outside* the
@@ -465,6 +554,18 @@ pub fn carve(
                 }
                 ctx.rollback_level += CANYON_LEVEL_STEP;
             }
+        } else if bridges_placed > 0 {
+            // A bridged river finishes by absorbing its own pre-bridge id: the
+            // stamped dilation accepts cells of region − 1 and writes the
+            // current base level onto everything it claims.
+            let base = ctx.rollback_level;
+            walk.alive = meander::dilate_chained(
+                ctx,
+                region,
+                PLAIN_DILATE_RINGS,
+                Some(base),
+                [0, 0, WHOLE_MAP, WHOLE_MAP],
+            );
         } else {
             walk.alive = lake::dilate_region_rings(ctx, region, PLAIN_DILATE_RINGS);
         }
@@ -472,6 +573,10 @@ pub fn carve(
 
     if !walk.alive {
         rollback(ctx, &cells, region);
+        if bridges_placed > 0 {
+            // The pre-bridge half of the river lives under the previous id.
+            rollback(ctx, &cells, region - 1);
+        }
         return false;
     }
     quota.placed += walk.steps;
@@ -538,6 +643,104 @@ mod tests {
             paved_road_ends: -1,
             medians: -1,
         }
+    }
+
+    /// Like `run_carved_levels`, but with the bridge coin on, reporting how
+    /// far the region counter moved — a placed bridge adds one extra id.
+    fn run_bridged(map_type: i32, seed: u16) -> (i32, Grid, TileIds) {
+        let (map_w, map_h) = (34, 42);
+        let stride = (map_w + map_h + 1) as usize;
+        let (dmin, dmax) = (map_w, map_w + 2 * map_h);
+        let mut grid = Grid::new(stride, dmin, dmax);
+        let mut scratch = RmgScratch::new(stride, dmin, dmax);
+        let identity = ids();
+        let blocks = blocks();
+        let mut rng = RmgRng::new(seed);
+        let mut gauss = Gaussian::default();
+
+        for (x, y) in grid.native_cells().collect::<Vec<_>>() {
+            grid.get_mut(x, y).expect("native cell").tile = identity.clear;
+        }
+
+        let args = WaterArgs {
+            map_type: 3,
+            water_percent: RIVERED_WATER,
+            num_players: 4,
+            bridge_enabled: true,
+            playable: PlayableRect {
+                x: 2,
+                y: 5,
+                w: 30,
+                h: 30,
+            },
+        };
+        let _ = map_type;
+        let quota;
+        {
+            let trig = crate::map::rmg::trig::TrigTable::synthetic();
+            let mut ctx = BlobCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &blocks,
+                rng: &mut rng,
+                gauss: &mut gauss,
+                trig: Some(&trig),
+                map_w,
+                map_h,
+                rollback_level: CANYON_BASE_LEVEL,
+            };
+            quota = lake::seed_water_carved(&mut ctx, &args);
+        }
+        (quota.region_id, grid, identity)
+    }
+
+    #[test]
+    fn some_rivers_carry_a_bridge_when_the_coin_allows_it() {
+        // A placed bridge shows two ways: the region counter advances one
+        // extra id, and the fills paint varied water tiles (water_base+1..+5),
+        // which nothing else in the carved path produces. The counter alone is
+        // not proof of surviving water — a bridge can place and the river
+        // still die later, in which case the rollback erases the varied tiles
+        // while the counter stays bumped, exactly like the original's
+        // never-decremented region field. So the assertion wants one seed
+        // where both agree.
+        let mut attempted = 0;
+        let mut survived = 0;
+        for seed in (0u16..96).map(|i| i * 683 + 11) {
+            let (final_region, grid, identity) = run_bridged(3, seed);
+            let varied = grid
+                .native_cells()
+                .filter(|&(x, y)| {
+                    let tile = grid.get(x, y).expect("native cell").tile;
+                    tile > identity.water_base && tile <= identity.water_base + 5
+                })
+                .count();
+            // region_id without a bridge tops out at 3: the river's id, its
+            // success bump, and the lake's.
+            if final_region > 3 {
+                attempted += 1;
+                if varied > 0 {
+                    survived += 1;
+                }
+            }
+        }
+        assert!(
+            attempted > 0,
+            "no bridge even placed across any seed — the gate never opens"
+        );
+        // KNOWN GAP, pinned deliberately: placements never survive the river
+        // finish yet. The finish's shore pass hard-refuses where the two
+        // region generations' shorelines meet, and the original resolves that
+        // junction through the deck stamping (its 0xffff tile sentinels and
+        // level adjustments change what the pass accepts) — which is not
+        // ported. When the deck lands this assertion must flip to
+        // `survived > 0`; failing here on a survivor is that reminder.
+        assert_eq!(
+            survived, 0,
+            "a bridge survived — the deck must have landed, so flip this test \
+             to assert survival and update the module docs"
+        );
     }
 
     /// Drive the carved seeder and report what the base level ended up as,
