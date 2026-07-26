@@ -14,11 +14,13 @@ use crate::render::shell_paint::{
     PaintLabel, SHELL_TEXT_RGB_ENABLED,
 };
 use crate::render::shell_text::ShellAlign;
+use crate::render::shell_text_reveal::PathAReveal;
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::ui::main_menu_shell::{
     MainMenuControlId, MainMenuMovieBase, MainMenuShellLayout, RectPx, compute_layout,
     csf_key_for_control, tooltip_csf_key_for_control,
 };
+use crate::ui::shell::static_reveal::{Kind1PaintWindow, Kind1RevealReceipt, Kind1RevealWindow};
 
 /// Screen-size thresholds above which the centered 800x600 shell is letterboxed
 /// (background and chrome offset by ((w-800)/2, (h-600)/2) instead of (0,0)).
@@ -41,7 +43,9 @@ const MAIN_MENU_BUTTON_POLICY: ButtonPolicy = ButtonPolicy {
 const MAIN_MENU_STATUS_ALIGN: ShellAlign = ShellAlign::V_CENTER;
 
 pub(crate) enum MainMenuShellRenderResult {
-    Rendered,
+    Rendered {
+        title_receipt: Option<Kind1RevealReceipt>,
+    },
     Fallback,
 }
 
@@ -147,8 +151,21 @@ fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
         .unwrap_or(key)
 }
 
+pub(crate) fn main_menu_title_text(state: &AppState) -> &str {
+    resolve_csf(state, "GUI:MainMenu")
+}
+
 fn main_menu_status_csf_key(hovered_button: Option<MainMenuControlId>) -> Option<&'static str> {
     hovered_button.map(tooltip_csf_key_for_control)
+}
+
+fn main_menu_title_path_a(window: Kind1RevealWindow) -> PathAReveal {
+    PathAReveal {
+        count: window.count,
+        range: window.range,
+        base_rgb: [255, 255, 0],
+        highlight_rgb: [255, 255, 255],
+    }
 }
 
 /// Build the owner-draw button labels and dialog statics consumed by
@@ -161,6 +178,7 @@ fn main_menu_paint_labels<'a>(
     pressed_button: Option<MainMenuControlId>,
     hovered_button: Option<MainMenuControlId>,
     version_text: &'a str,
+    title_window: Option<Kind1RevealWindow>,
 ) -> Vec<PaintLabel<'a>> {
     use crate::render::shell_text::ShellAlign;
     let mut out = Vec::new();
@@ -172,20 +190,25 @@ fn main_menu_paint_labels<'a>(
             rect: owner_draw_button_label_rect(button.rect, pressed),
             align: button_align,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         });
     }
     // Statics: title heading, version, tooltip — top-anchored, h-centered.
-    out.push(PaintLabel {
-        text: resolve_csf(state, "GUI:MainMenu"),
-        rect: layout.title,
-        align: ShellAlign::H_CENTER,
-        rgb: SHELL_TEXT_RGB_ENABLED,
-    });
+    if let Some(window) = title_window {
+        out.push(PaintLabel {
+            text: main_menu_title_text(state),
+            rect: layout.title,
+            align: ShellAlign::H_CENTER,
+            rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: Some(main_menu_title_path_a(window)),
+        });
+    }
     out.push(PaintLabel {
         text: version_text,
         rect: layout.version_line,
         align: ShellAlign::H_CENTER,
         rgb: SHELL_TEXT_RGB_ENABLED,
+        path_a_reveal: None,
     });
     if let Some(key) = main_menu_status_csf_key(hovered_button) {
         out.push(PaintLabel {
@@ -193,6 +216,7 @@ fn main_menu_paint_labels<'a>(
             rect: layout.tooltip_line,
             align: MAIN_MENU_STATUS_ALIGN,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         });
     }
     out
@@ -373,22 +397,29 @@ pub(crate) fn render_main_menu_shell(
     encoder: &mut wgpu::CommandEncoder,
     destination: &wgpu::Texture,
 ) -> Result<MainMenuShellRenderResult> {
+    let (title_window, title_receipt) =
+        match state.main_menu_shell_state.title_reveal.paint_window() {
+            Kind1PaintWindow::Hidden => (None, None),
+            Kind1PaintWindow::Retained(window) => (Some(window), None),
+            Kind1PaintWindow::Due { window, receipt } => (Some(window), Some(receipt)),
+        };
     let color = state.shell_surface_presenter.source_render_view();
     let depth = state.depth_view.clone();
-    let result = render_main_menu_shell_to_target(
+    let result = render_main_menu_shell_to_target_inner(
         state,
         encoder,
         ShellRenderTarget {
             color: &color,
             depth: &depth,
         },
+        title_window,
     )?;
     match result {
-        MainMenuShellRenderResult::Rendered => {
+        MainMenuShellRenderResult::Rendered { .. } => {
             state
                 .shell_surface_presenter
                 .encode_present(encoder, destination);
-            Ok(MainMenuShellRenderResult::Rendered)
+            Ok(MainMenuShellRenderResult::Rendered { title_receipt })
         }
         MainMenuShellRenderResult::Fallback => Ok(MainMenuShellRenderResult::Fallback),
     }
@@ -398,6 +429,15 @@ pub(crate) fn render_main_menu_shell_to_target(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
     target: ShellRenderTarget<'_>,
+) -> Result<MainMenuShellRenderResult> {
+    render_main_menu_shell_to_target_inner(state, encoder, target, None)
+}
+
+fn render_main_menu_shell_to_target_inner(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    target: ShellRenderTarget<'_>,
+    title_window: Option<Kind1RevealWindow>,
 ) -> Result<MainMenuShellRenderResult> {
     ensure_movie_for_current_layout(state, Ra2tsDialogOwner::MainMenu0xE2)?;
     if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
@@ -466,6 +506,7 @@ pub(crate) fn render_main_menu_shell_to_target(
         state.main_menu_shell_state.pressed_owner_draw_button,
         state.main_menu_shell_state.hovered_owner_draw_button,
         &version_text,
+        title_window,
     );
     let text_draws = shell_paint::paint_labels(&state.bit_font, &labels);
 
@@ -685,7 +726,9 @@ pub(crate) fn render_main_menu_shell_to_target(
     }
     drop(pass);
 
-    Ok(MainMenuShellRenderResult::Rendered)
+    Ok(MainMenuShellRenderResult::Rendered {
+        title_receipt: None,
+    })
 }
 
 /// Back-to-front depths for the quit-confirm modal overlay. They sit in the clear
@@ -738,18 +781,21 @@ fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::Mod
             rect: layout.body,
             align: ShellAlign::NONE,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         },
         PaintLabel {
             text: &modal_state.confirm,
             rect: owner_draw_button_label_rect(layout.ok, ok_pressed),
             align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         },
         PaintLabel {
             text: &modal_state.cancel,
             rect: owner_draw_button_label_rect(layout.cancel, cancel_pressed),
             align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         },
     ];
     Some(shell_paint::paint_modal_shp(
@@ -810,6 +856,23 @@ mod tests {
     fn status_static_is_left_aligned_and_vertically_centered() {
         assert_eq!(MAIN_MENU_STATUS_ALIGN, ShellAlign::V_CENTER);
         assert!(!MAIN_MENU_STATUS_ALIGN.contains(ShellAlign::H_CENTER));
+    }
+
+    #[test]
+    fn terminal_title_metadata_is_content_agnostic_path_a() {
+        let reveal = main_menu_title_path_a(Kind1RevealWindow {
+            count: 17,
+            range: 8,
+        });
+        assert_eq!(
+            reveal,
+            PathAReveal {
+                count: 17,
+                range: 8,
+                base_rgb: [255, 255, 0],
+                highlight_rgb: [255, 255, 255],
+            }
+        );
     }
 
     #[test]

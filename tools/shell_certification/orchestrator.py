@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .core import (
+    CAPTURE_SCHEMA_VERSION,
     CHECKPOINT,
     CURSOR_POINT,
     INVALID,
@@ -331,7 +332,10 @@ def capture_and_compare(
 
     capture_validation: dict[str, Any]
     try:
-        capture = validate_capture_bundle(run_dir)
+        capture = validate_capture_bundle(
+            run_dir,
+            required_schema_version=CAPTURE_SCHEMA_VERSION,
+        )
         capture_validation = {
             "status": "VALID",
             "errors": [],

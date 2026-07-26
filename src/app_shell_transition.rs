@@ -25,6 +25,20 @@ use crate::ui::shell::descriptor::DialogId;
 // shell renderers (and the `AppState` field) keep their existing import paths.
 pub(crate) use crate::ui::shell::slide::{ButtonGroup, ShellFrameWave};
 
+/// Proof that the terminal main-menu slide frame was encoded. The app consumes
+/// it only after that frame is submitted and presented.
+#[derive(Debug)]
+pub(crate) struct MainMenuEntryPresentReceipt {
+    _private: (),
+}
+
+pub(crate) enum ShellFirstPaintRenderResult {
+    NotRendered,
+    Rendered {
+        main_menu_entry_receipt: Option<MainMenuEntryPresentReceipt>,
+    },
+}
+
 /// Which shell dialog a first-paint slide belongs to. Every allow-listed shell
 /// dialog slides on its own first paint; this identifies the one currently
 /// showing so the trigger can detect entry edges and look up the control count.
@@ -80,6 +94,37 @@ pub(crate) fn advance_shell_static_reveals(state: &mut AppState) {
         .advance_right_panel_static_reveals(Instant::now());
 }
 
+/// Deliver the kind-1 timer only while the bare 0xE2 dialog owns steady paint.
+/// Waiting state is inert, so the terminal slide frame cannot begin the title
+/// before its own successful presentation.
+pub(crate) fn poll_main_menu_title_reveal(state: &mut AppState) {
+    if current_shell_slide_target(state) == Some(ShellSlideKind::MainMenu)
+        && state.shell_first_paint_slide.is_none()
+    {
+        state
+            .main_menu_shell_state
+            .title_reveal
+            .poll_timer(Instant::now());
+    }
+}
+
+/// Apply the SHOW-completion edge after the terminal slide frame presents.
+pub(crate) fn record_main_menu_entry_presented(
+    state: &mut AppState,
+    _receipt: MainMenuEntryPresentReceipt,
+) -> bool {
+    if current_shell_slide_target(state) != Some(ShellSlideKind::MainMenu)
+        || state.shell_first_paint_slide.is_some()
+    {
+        return false;
+    }
+    let title = crate::app_main_menu_shell_render::main_menu_title_text(state).to_owned();
+    state
+        .main_menu_shell_state
+        .title_reveal
+        .start(&title, Instant::now())
+}
+
 pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
     // The graceful quit cascade also freezes shell input (the original processes
     // no input during its blocking teardown), so a stray click can't re-enter the
@@ -127,6 +172,11 @@ pub(crate) fn update_shell_first_paint_slide_trigger(state: &mut AppState) {
     if target == state.shell_slide_active_shell {
         return;
     }
+    if target == Some(ShellSlideKind::MainMenu)
+        || state.shell_slide_active_shell == Some(ShellSlideKind::MainMenu)
+    {
+        state.main_menu_shell_state.title_reveal.reset_waiting();
+    }
     state.shell_slide_active_shell = target;
     match target {
         Some(kind) => {
@@ -140,7 +190,7 @@ pub(crate) fn update_shell_first_paint_slide_trigger(state: &mut AppState) {
 }
 
 /// Render the currently-showing shell while its first-paint slide is live, then
-/// advance/complete the wave. Returns `true` when it owned the frame. The shell
+/// advance/complete the wave. Returns `Rendered` when it owned the frame. The shell
 /// renderer reads `state.shell_first_paint_slide` and swaps each owner-draw
 /// button's SDBTNANM frame index — controls are never repositioned, and the rest
 /// of the shell paints exactly as it does steady-state.
@@ -148,15 +198,15 @@ pub(crate) fn render_shell_first_paint_slide(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
-) -> Result<bool> {
+) -> Result<ShellFirstPaintRenderResult> {
     if state.shell_first_paint_slide.is_none() {
-        return Ok(false);
+        return Ok(ShellFirstPaintRenderResult::NotRendered);
     }
     let Some(kind) = current_shell_slide_target(state) else {
         // No eligible shell is showing; drop the stale wave and let the normal
         // dispatch paint this frame.
         state.shell_first_paint_slide = None;
-        return Ok(false);
+        return Ok(ShellFirstPaintRenderResult::NotRendered);
     };
 
     if let Some(wave) = state.shell_first_paint_slide.as_mut() {
@@ -169,7 +219,7 @@ pub(crate) fn render_shell_first_paint_slide(
             if state.skirmish_shell_chrome.is_none() {
                 log::warn!("Skirmish shell chrome unavailable; cancelling first-paint slide");
                 state.shell_first_paint_slide = None;
-                return Ok(false);
+                return Ok(ShellFirstPaintRenderResult::NotRendered);
             }
             let depth = state.depth_view.clone();
             crate::app_skirmish_shell_render::render_skirmish_shell_to_target(
@@ -202,7 +252,7 @@ pub(crate) fn render_shell_first_paint_slide(
                         depth: &depth,
                     },
                 )?,
-                crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered
+                crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered { .. }
             )
         }
     };
@@ -211,9 +261,10 @@ pub(crate) fn render_shell_first_paint_slide(
         // Shell fell back (assets missing): abandon the slide so the normal
         // dispatch can render the fallback path with its egui overlays.
         state.shell_first_paint_slide = None;
-        return Ok(false);
+        return Ok(ShellFirstPaintRenderResult::NotRendered);
     }
 
+    let mut main_menu_entry_receipt = None;
     // Wave finished at its terminal frame; hand back to the steady idle paint by
     // clearing the slide. The shell is already the active screen.
     if state
@@ -231,11 +282,15 @@ pub(crate) fn render_shell_first_paint_slide(
             state
                 .skirmish_shell_state
                 .start_right_panel_static_reveals(&title, &game_type, &map_label, now);
+        } else if matches!(kind, ShellSlideKind::MainMenu) {
+            main_menu_entry_receipt = Some(MainMenuEntryPresentReceipt { _private: () });
         }
         state.shell_first_paint_slide = None;
     }
 
-    Ok(true)
+    Ok(ShellFirstPaintRenderResult::Rendered {
+        main_menu_entry_receipt,
+    })
 }
 
 #[cfg(test)]

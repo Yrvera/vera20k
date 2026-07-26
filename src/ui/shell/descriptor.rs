@@ -51,9 +51,15 @@ pub enum AnchorRule {
     /// variant when they migrate. Do NOT collapse this to one convention — that
     /// would silently shift the shipped 0xE2 title/website pixels.
     RightAnchor,
-    /// `RightAnchor` then a fixed post-pass nudge `(dy, dh)` — the 1-px
-    /// finalizer family. (0xE2 0x694 heading: +7 y, +1 h.)
-    RightAnchorNudge { dy: i32, dh: i32 },
+    /// Apply a runtime size correction to the converted resource rect before
+    /// right-anchoring it, then apply the final `(dy, dh)` adjustment.
+    /// (0xE2 0x694 heading: +1w/+1h before anchor, then +7y/+1h.)
+    RightAnchorRuntimeAdjust {
+        resource_dw: i32,
+        resource_dh: i32,
+        dy: i32,
+        dh: i32,
+    },
 }
 
 /// Background composition mode (study §C8): mode-1 right-panel shells vs mode-2

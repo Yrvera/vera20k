@@ -4071,6 +4071,8 @@ impl App {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Frame"),
                 });
+        let mut pending_main_menu_entry_receipt = None;
+        let mut pending_main_menu_title_receipt = None;
 
         // Start/cancel the shell first-paint controls-reveal slide on entry into
         // (or exit from) each shell dialog. Edge-detected once per frame so launch,
@@ -4079,6 +4081,7 @@ impl App {
         // Advance the Skirmish right-panel static text reveals (started at the
         // slide's completion edge). 30 ms-gated internally; a no-op when idle.
         crate::app_shell_transition::advance_shell_static_reveals(state);
+        crate::app_shell_transition::poll_main_menu_title_reveal(state);
         let capture_current_frame = match shell_capture.as_deref_mut() {
             Some(session) => session.should_capture_current_frame(state)?,
             None => false,
@@ -4101,11 +4104,14 @@ impl App {
                         player.update(assets);
                     }
                 }
-                if crate::app_shell_transition::render_shell_first_paint_slide(
+                if let crate::app_shell_transition::ShellFirstPaintRenderResult::Rendered {
+                    main_menu_entry_receipt,
+                } = crate::app_shell_transition::render_shell_first_paint_slide(
                     state,
                     &mut encoder,
                     &view,
                 )? {
+                    pending_main_menu_entry_receipt = main_menu_entry_receipt;
                 } else if Self::native_skirmish_shell_active(state) {
                     crate::app_skirmish_shell_render::render_skirmish_shell(
                         state,
@@ -4150,7 +4156,10 @@ impl App {
                         &mut encoder,
                         &output.texture,
                     )? {
-                        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered => {
+                        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered {
+                            title_receipt,
+                        } => {
+                            pending_main_menu_title_receipt = title_receipt;
                             state.egui.begin_frame(&state.window);
                             // The SHP shell renders the quit-confirm as an SHP
                             // overlay (and OK exits via its hit-test), so the egui
@@ -4167,6 +4176,27 @@ impl App {
                             if confirm_quit {
                                 state.gpu.queue.submit(std::iter::once(encoder.finish()));
                                 output.present();
+                                if let Some(receipt) =
+                                    pending_main_menu_entry_receipt.take()
+                                {
+                                    anyhow::ensure!(
+                                        crate::app_shell_transition::record_main_menu_entry_presented(
+                                            state, receipt,
+                                        ),
+                                        "main-menu entry receipt was stale at present commit"
+                                    );
+                                }
+                                if let Some(receipt) =
+                                    pending_main_menu_title_receipt.take()
+                                {
+                                    anyhow::ensure!(
+                                        state
+                                            .main_menu_shell_state
+                                            .title_reveal
+                                            .record_presented(receipt),
+                                        "main-menu title receipt was stale at present commit"
+                                    );
+                                }
                                 event_loop.exit();
                                 return Ok(());
                             }
@@ -4360,6 +4390,21 @@ impl App {
         };
         let submission = state.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+        if let Some(receipt) = pending_main_menu_entry_receipt.take() {
+            anyhow::ensure!(
+                crate::app_shell_transition::record_main_menu_entry_presented(state, receipt),
+                "main-menu entry receipt was stale at present commit"
+            );
+        }
+        if let Some(receipt) = pending_main_menu_title_receipt.take() {
+            anyhow::ensure!(
+                state
+                    .main_menu_shell_state
+                    .title_reveal
+                    .record_presented(receipt),
+                "main-menu title receipt was stale at present commit"
+            );
+        }
         if let Some(pending_capture) = pending_capture {
             let pixels = pending_capture.finish(
                 &state.gpu.device,

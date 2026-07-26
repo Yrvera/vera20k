@@ -15,3 +15,4 @@ pub mod in_game_options_state;
 pub mod layout;
 pub mod modal;
 pub mod slide;
+pub mod static_reveal;

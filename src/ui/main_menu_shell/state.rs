@@ -67,6 +67,8 @@ pub struct MainMenuShellState {
     /// armed for a network-dialog control that does not exist on this dialog,
     /// so hovering produces no visual change (default frame stays selected).
     pub hovered_owner_draw_button: Option<MainMenuControlId>,
+    /// Retained, paint-driven kind-1 state for title static 0x694.
+    pub(crate) title_reveal: crate::ui::shell::static_reveal::Kind1StaticReveal,
 }
 
 pub fn action_for_control(id: MainMenuControlId) -> MainMenuShellAction {

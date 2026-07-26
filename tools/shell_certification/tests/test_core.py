@@ -50,7 +50,7 @@ def _frame() -> bytes:
 
 def _capture_manifest() -> dict[str, object]:
     return {
-        "schema_version": "vera20k.shell-capture.v1",
+        "schema_version": "vera20k.shell-capture.v2",
         "checkpoint": "main-menu-0xe2-steady",
         "surface": {
             "width": LOGICAL_WIDTH,
@@ -73,6 +73,7 @@ def _capture_manifest() -> dict[str, object]:
             "modal_open": False,
             "quit_active": False,
             "first_paint_slide_active": False,
+            "title_terminal_persistent": True,
         },
         "frame": {
             "path": "frame.bgra",
@@ -280,6 +281,49 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(validated.width, 800)
             self.assertEqual(validated.height, 600)
             self.assertEqual(validated.surface_format, "Bgra8Unorm")
+
+    def test_legacy_v1_capture_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frame = _frame()
+            capture = root / "capture"
+            capture.mkdir()
+            manifest = _capture_manifest()
+            manifest["schema_version"] = "vera20k.shell-capture.v1"
+            del manifest["shell"]["title_terminal_persistent"]
+            _write_json(capture / "capture.json", manifest)
+            (capture / "frame.bgra").write_bytes(frame)
+            self.assertEqual(validate_capture_bundle(capture).width, 800)
+
+    def test_current_capture_operation_rejects_legacy_v1(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frame = _frame()
+            capture = root / "capture"
+            capture.mkdir()
+            manifest = _capture_manifest()
+            manifest["schema_version"] = "vera20k.shell-capture.v1"
+            del manifest["shell"]["title_terminal_persistent"]
+            _write_json(capture / "capture.json", manifest)
+            (capture / "frame.bgra").write_bytes(frame)
+            with self.assertRaisesRegex(ValidationError, "must be current"):
+                validate_capture_bundle(
+                    capture,
+                    required_schema_version="vera20k.shell-capture.v2",
+                )
+
+    def test_v2_capture_requires_terminal_retained_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frame = _frame()
+            capture = root / "capture"
+            capture.mkdir()
+            manifest = _capture_manifest()
+            manifest["shell"]["title_terminal_persistent"] = False
+            _write_json(capture / "capture.json", manifest)
+            (capture / "frame.bgra").write_bytes(frame)
+            with self.assertRaisesRegex(ValidationError, "must be true"):
+                validate_capture_bundle(capture)
 
     def test_capture_rejects_unknown_schema_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

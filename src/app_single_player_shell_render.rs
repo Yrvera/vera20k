@@ -119,6 +119,7 @@ fn sp_paint_labels<'a>(
             } else {
                 SHELL_TEXT_RGB_DISABLED
             },
+            path_a_reveal: None,
         });
     }
     out.push(PaintLabel {
@@ -126,6 +127,7 @@ fn sp_paint_labels<'a>(
         rect: layout.title,
         align: ShellAlign::H_CENTER,
         rgb: SHELL_TEXT_RGB_ENABLED,
+        path_a_reveal: None,
     });
     out
 }

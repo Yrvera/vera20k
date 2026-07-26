@@ -196,12 +196,17 @@ fn dialog_descriptor() -> DialogDescriptor {
                 "GUI:ExitGame",
                 "STT:MainButtonExitGamemd",
             ),
-            // 0x694 heading: right-anchor then the +7y/+1h finalizer nudge.
+            // 0x694 heading: runtime +1w/+1h, right-anchor, then +7y/+1h.
             ControlDescriptor {
                 id: 0x0694,
                 kind: ControlKind::Static,
                 dlu_rect: RectPx::new(425, 1, 108, 10),
-                anchor: AnchorRule::RightAnchorNudge { dy: 7, dh: 1 },
+                anchor: AnchorRule::RightAnchorRuntimeAdjust {
+                    resource_dw: 1,
+                    resource_dh: 1,
+                    dy: 7,
+                    dh: 1,
+                },
                 csf_key: None,
                 tooltip_key: None,
                 group: 0,
@@ -365,10 +370,15 @@ mod tests {
     }
 
     #[test]
-    fn title_rect_matches_dlu_at_800x600() {
-        // Right-anchor helper then main-menu heading nudge: top += 7, height += 1.
-        let layout = compute_layout(800, 600);
-        assert_eq!(layout.title, RectPx::new(635, 9, 162, 17));
+    fn title_rect_matches_enrolled_runtime_at_required_resolutions() {
+        // Resource 162x16 -> compatibility 163x17 -> right-anchor ->
+        // finalizer +7y/+1h. Only 800x600 has a sealed native pixel guard.
+        assert_eq!(compute_layout(640, 480).title, RectPx::new(475, 9, 163, 18));
+        assert_eq!(compute_layout(800, 600).title, RectPx::new(635, 9, 163, 18));
+        assert_eq!(
+            compute_layout(1024, 768).title,
+            RectPx::new(747, 93, 163, 18)
+        );
     }
 
     #[test]
@@ -406,7 +416,7 @@ mod tests {
         assert_eq!(layout.right_panel.tile, RectPx::new(744, 283, 168, 42));
         assert_eq!(layout.right_panel.bottom, RectPx::new(744, 661, 168, 23));
         assert_eq!(layout.lower_strip, RectPx::new(112, 652, 632, 32));
-        assert_eq!(layout.title, RectPx::new(747, 93, 162, 17));
+        assert_eq!(layout.title, RectPx::new(747, 93, 163, 18));
     }
 
     #[test]

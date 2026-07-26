@@ -151,8 +151,20 @@ fn apply_anchor(rule: AnchorRule, dlu: RectPx, screen_w: i32, panel: RightPanelR
         AnchorRule::RightAnchor => {
             right_anchor(screen_w, panel, geom::dlu_rect(dlu.x, dlu.y, dlu.w, dlu.h))
         }
-        AnchorRule::RightAnchorNudge { dy, dh } => {
-            let a = right_anchor(screen_w, panel, geom::dlu_rect(dlu.x, dlu.y, dlu.w, dlu.h));
+        AnchorRule::RightAnchorRuntimeAdjust {
+            resource_dw,
+            resource_dh,
+            dy,
+            dh,
+        } => {
+            let resource = geom::dlu_rect(dlu.x, dlu.y, dlu.w, dlu.h);
+            let adjusted = RectPx::new(
+                resource.x,
+                resource.y,
+                resource.w + resource_dw,
+                resource.h + resource_dh,
+            );
+            let a = right_anchor(screen_w, panel, adjusted);
             RectPx::new(a.x, a.y + dy, a.w, a.h + dh)
         }
     }
@@ -228,7 +240,12 @@ mod tests {
                     0x0694,
                     ControlKind::Static,
                     RectPx::new(425, 1, 108, 10),
-                    AnchorRule::RightAnchorNudge { dy: 7, dh: 1 },
+                    AnchorRule::RightAnchorRuntimeAdjust {
+                        resource_dw: 1,
+                        resource_dh: 1,
+                        dy: 7,
+                        dh: 1,
+                    },
                 ),
                 ctrl(
                     0x071B,

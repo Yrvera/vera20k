@@ -1096,6 +1096,7 @@ pub(super) fn push_validation_modal_text_draws(
         rect: layout.message,
         rgb: SHELL_LABEL_TEXT_RGB,
         align: validation_modal_body_text_align(),
+        path_a_reveal: None,
     }];
     out.extend(shell_paint::paint_labels_at_depth(
         &state.bit_font,
@@ -1107,6 +1108,7 @@ pub(super) fn push_validation_modal_text_draws(
         rect: button_label_rect_px(layout.ok_button, pressed),
         rgb: SHELL_LABEL_TEXT_RGB,
         align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+        path_a_reveal: None,
     }];
     out.extend(shell_paint::paint_labels_at_depth(
         &state.bit_font,

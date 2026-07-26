@@ -38,6 +38,7 @@ pub mod selection_overlay;
 pub mod shell_paint;
 pub mod shell_surface_present;
 pub mod shell_text;
+pub mod shell_text_reveal;
 pub mod shell_transition_pass;
 pub mod shroud_buffer;
 pub mod sidebar_cameo_atlas;
