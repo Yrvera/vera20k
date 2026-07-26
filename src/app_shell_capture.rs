@@ -16,12 +16,15 @@ use serde::Serialize;
 
 use crate::app::AppState;
 use crate::app_main_menu_shell_render::Ra2tsDialogOwner;
-use crate::app_shell_transition::ShellSlideKind;
+use crate::app_shell_transition::{MainMenuEntryPresentToken, ShellSlideKind};
+use crate::render::frame_readback::PendingBgra8Readback;
 use crate::ui::game_screen::GameScreen;
 use crate::ui::main_menu_shell::MainMenuMovieBase;
+use crate::ui::shell::static_reveal::Kind1PaintWindow;
 
 const CAPTURE_FLAG: &str = "--shell-capture";
 const CHECKPOINT_MAIN_MENU_0XE2_STEADY: &str = "main-menu-0xe2-steady";
+const CHECKPOINT_MAIN_MENU_0XE2_ENTRY_SEQUENCE: &str = "main-menu-0xe2-entry-sequence";
 const EXPECTED_WIDTH: u32 = 800;
 const EXPECTED_HEIGHT: u32 = 600;
 const EXPECTED_CURSOR_X: u32 = 400;
@@ -30,8 +33,13 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(15);
 const CAPTURE_FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const MAX_CAPTURE_FRAMES: u32 = 10_000;
 const CAPTURE_SCHEMA: &str = "vera20k.shell-capture.v2";
+const ENTRY_SEQUENCE_SCHEMA: &str = "vera20k.shell-entry-sequence-capture.v1";
 const FRAME_FILE_NAME: &str = "frame.bgra";
+const ENTRY_SEQUENCE_FRAMES_FILE_NAME: &str = "frames.bgra";
 const MANIFEST_FILE_NAME: &str = "capture.json";
+const FRAME_BYTE_LENGTH: u64 = EXPECTED_WIDTH as u64 * EXPECTED_HEIGHT as u64 * 4;
+const ENTRY_SEQUENCE_BYTE_LENGTH: u64 =
+    FRAME_BYTE_LENGTH * crate::ui::shell::slide::MAIN_MENU_ENTRY_FRAME_COUNT as u64;
 
 #[derive(Debug)]
 pub enum AppLaunchMode {
@@ -42,12 +50,14 @@ pub enum AppLaunchMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellCaptureCheckpoint {
     MainMenu0xE2Steady,
+    MainMenu0xE2EntrySequence,
 }
 
 impl ShellCaptureCheckpoint {
     fn parse(value: &str) -> Result<Self> {
         match value {
             CHECKPOINT_MAIN_MENU_0XE2_STEADY => Ok(Self::MainMenu0xE2Steady),
+            CHECKPOINT_MAIN_MENU_0XE2_ENTRY_SEQUENCE => Ok(Self::MainMenu0xE2EntrySequence),
             _ => bail!("unsupported shell-capture checkpoint {value:?}"),
         }
     }
@@ -55,6 +65,7 @@ impl ShellCaptureCheckpoint {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MainMenu0xE2Steady => CHECKPOINT_MAIN_MENU_0XE2_STEADY,
+            Self::MainMenu0xE2EntrySequence => CHECKPOINT_MAIN_MENU_0XE2_ENTRY_SEQUENCE,
         }
     }
 }
@@ -183,13 +194,14 @@ where
 
     ensure!(
         width == EXPECTED_WIDTH && height == EXPECTED_HEIGHT,
-        "checkpoint {CHECKPOINT_MAIN_MENU_0XE2_STEADY} requires exactly \
-         {EXPECTED_WIDTH}x{EXPECTED_HEIGHT}, got {width}x{height}"
+        "checkpoint {} requires exactly {EXPECTED_WIDTH}x{EXPECTED_HEIGHT}, got {width}x{height}",
+        checkpoint.as_str()
     );
     ensure!(
         cursor_x == EXPECTED_CURSOR_X && cursor_y == EXPECTED_CURSOR_Y,
-        "checkpoint {CHECKPOINT_MAIN_MENU_0XE2_STEADY} requires neutral cursor \
-         ({EXPECTED_CURSOR_X},{EXPECTED_CURSOR_Y}), got ({cursor_x},{cursor_y})"
+        "checkpoint {} requires neutral cursor ({EXPECTED_CURSOR_X},{EXPECTED_CURSOR_Y}), got \
+         ({cursor_x},{cursor_y})",
+        checkpoint.as_str()
     );
     validate_new_output_dir(&output_dir)?;
 
@@ -365,27 +377,115 @@ fn steady_main_menu_capture_ready(snapshot: MainMenuCaptureSnapshot) -> Result<b
     Ok(true)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EntrySequenceFrameIdentity {
+    generation: u64,
+    tick: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShellCompletionHandoff {
+    Continue,
+    FinalizeExitReturnBeforeAcquire,
+}
+
+struct PendingSequenceReadback {
+    identity: EntrySequenceFrameIdentity,
+    readback: PendingBgra8Readback,
+    submission: wgpu::SubmissionIndex,
+}
+
+#[derive(Default)]
+struct EntrySequenceState {
+    expected_next_tick: u8,
+    generation: Option<u64>,
+    pending: Vec<PendingSequenceReadback>,
+    completion_observed: bool,
+}
+
+impl EntrySequenceState {
+    fn validate_next(&self, identity: EntrySequenceFrameIdentity) -> Result<()> {
+        ensure!(
+            self.pending.len() < usize::from(crate::ui::shell::slide::MAIN_MENU_ENTRY_FRAME_COUNT),
+            "entry sequence attempted a fifteenth frame"
+        );
+        ensure!(
+            identity.tick == self.expected_next_tick,
+            "entry sequence tick gap/duplicate: expected {}, got {}",
+            self.expected_next_tick,
+            identity.tick
+        );
+        ensure!(
+            identity.tick <= crate::ui::shell::slide::MAIN_MENU_TERMINAL_TICK,
+            "entry sequence tick {} exceeds terminal tick",
+            identity.tick
+        );
+        if let Some(generation) = self.generation {
+            ensure!(
+                identity.generation == generation,
+                "entry sequence generation changed from {generation} to {}",
+                identity.generation
+            );
+        }
+        Ok(())
+    }
+
+    fn record(
+        &mut self,
+        identity: EntrySequenceFrameIdentity,
+        readback: PendingBgra8Readback,
+        submission: wgpu::SubmissionIndex,
+    ) -> Result<()> {
+        self.validate_next(identity)?;
+        self.generation.get_or_insert(identity.generation);
+        self.expected_next_tick = self.expected_next_tick.saturating_add(1);
+        self.pending.push(PendingSequenceReadback {
+            identity,
+            readback,
+            submission,
+        });
+        Ok(())
+    }
+}
+
 pub(crate) struct ShellCaptureSession {
     request: ShellCaptureRequest,
     started_at: Option<Instant>,
     frames_seen: u32,
     readback_started: bool,
+    entry_sequence: Option<EntrySequenceState>,
     outcome: Option<std::result::Result<(), String>>,
 }
 
 impl ShellCaptureSession {
     pub(crate) fn new(request: ShellCaptureRequest) -> Self {
+        let entry_sequence = (request.checkpoint
+            == ShellCaptureCheckpoint::MainMenu0xE2EntrySequence)
+            .then(EntrySequenceState::default);
         Self {
             request,
             started_at: None,
             frames_seen: 0,
             readback_started: false,
+            entry_sequence,
             outcome: None,
         }
     }
 
     pub(crate) fn request(&self) -> &ShellCaptureRequest {
         &self.request
+    }
+
+    pub(crate) fn is_entry_sequence(&self) -> bool {
+        self.entry_sequence.is_some()
+    }
+
+    pub(crate) fn completion_handoff(&self) -> ShellCompletionHandoff {
+        if self.is_entry_sequence() {
+            ShellCompletionHandoff::FinalizeExitReturnBeforeAcquire
+        } else {
+            ShellCompletionHandoff::Continue
+        }
     }
 
     pub(crate) fn prepare_state(&mut self, state: &mut AppState) {
@@ -396,8 +496,8 @@ impl ShellCaptureSession {
 
     pub(crate) fn should_capture_current_frame(&mut self, state: &AppState) -> Result<bool> {
         ensure!(
-            self.outcome.is_none() && !self.readback_started,
-            "shell capture attempted more than one readback"
+            self.outcome.is_none(),
+            "shell capture attempted after its outcome was recorded"
         );
         let started_at = self
             .started_at
@@ -413,11 +513,109 @@ impl ShellCaptureSession {
             CAPTURE_TIMEOUT.as_secs()
         );
 
+        if self.is_entry_sequence() {
+            return Ok(false);
+        }
+        ensure!(
+            !self.readback_started,
+            "shell capture attempted more than one readback"
+        );
         let ready = steady_main_menu_capture_ready(MainMenuCaptureSnapshot::from_state(state))?;
         if ready {
             self.readback_started = true;
         }
         Ok(ready)
+    }
+
+    pub(crate) fn observe_entry_sequence_after_render(
+        &mut self,
+        state: &AppState,
+        token: &MainMenuEntryPresentToken,
+    ) -> Result<Option<EntrySequenceFrameIdentity>> {
+        let Some(sequence) = self.entry_sequence.as_ref() else {
+            return Ok(None);
+        };
+        ensure!(
+            self.outcome.is_none(),
+            "entry sequence already has an outcome"
+        );
+        let started_at = self
+            .started_at
+            .context("shell capture was not initialized")?;
+        ensure!(
+            started_at.elapsed() <= CAPTURE_TIMEOUT,
+            "shell capture timed out after {} seconds",
+            CAPTURE_TIMEOUT.as_secs()
+        );
+
+        let snapshot = MainMenuCaptureSnapshot::from_state(state);
+        ensure!(
+            snapshot.width == EXPECTED_WIDTH && snapshot.height == EXPECTED_HEIGHT,
+            "entry sequence surface changed from 800x600"
+        );
+        ensure!(
+            snapshot.main_menu_screen,
+            "entry sequence left the main menu"
+        );
+        ensure!(!snapshot.shell_failed, "native main-menu shell fell back");
+        ensure!(
+            !snapshot.single_player_active
+                && !snapshot.skirmish_active
+                && !snapshot.legacy_skirmish_setup_active,
+            "entry sequence is not on bare dialog 0xE2"
+        );
+        ensure!(
+            !snapshot.modal_open && !snapshot.quit_active,
+            "entry sequence cannot run with a modal or quit cascade"
+        );
+        ensure!(
+            snapshot.cursor_x == EXPECTED_CURSOR_X as f32
+                && snapshot.cursor_y == EXPECTED_CURSOR_Y as f32,
+            "entry sequence cursor moved from the sealed neutral point"
+        );
+        ensure!(
+            snapshot.first_paint_slide_active && snapshot.active_slide_is_main_menu,
+            "entry sequence lost the active 0xE2 wave"
+        );
+        ensure!(
+            snapshot.movie_loaded
+                && snapshot.movie_owner_is_main_menu
+                && snapshot.movie_base_is_large
+                && snapshot.chrome_loaded
+                && snapshot.software_cursor_active,
+            "entry sequence production shell identity is incomplete"
+        );
+        ensure!(
+            matches!(
+                state.main_menu_shell_state.title_reveal.paint_window(),
+                Kind1PaintWindow::Hidden
+            ),
+            "entry sequence title became visible"
+        );
+        let frame = crate::app_shell_transition::current_main_menu_entry_frame(state)
+            .context("entry sequence rendered without a ready frame")?;
+        let identity = EntrySequenceFrameIdentity {
+            generation: token.generation(),
+            tick: token.tick(),
+        };
+        ensure!(
+            (frame.generation(), frame.tick()) == (identity.generation, identity.tick),
+            "entry sequence token does not match the rendered wave frame"
+        );
+        sequence.validate_next(identity)?;
+        Ok(Some(identity))
+    }
+
+    pub(crate) fn record_entry_sequence_submission(
+        &mut self,
+        identity: EntrySequenceFrameIdentity,
+        readback: PendingBgra8Readback,
+        submission: wgpu::SubmissionIndex,
+    ) -> Result<()> {
+        self.entry_sequence
+            .as_mut()
+            .context("entry-sequence submission used for steady capture")?
+            .record(identity, readback, submission)
     }
 
     pub(crate) fn readback_timeout(&self) -> Result<Duration> {
@@ -491,6 +689,105 @@ impl ShellCaptureSession {
         Ok(())
     }
 
+    pub(crate) fn complete_entry_sequence_after_wave(&mut self, state: &AppState) -> Result<()> {
+        ensure!(
+            self.request.checkpoint == ShellCaptureCheckpoint::MainMenu0xE2EntrySequence,
+            "entry-sequence completion used for steady capture"
+        );
+        ensure!(
+            self.outcome.is_none(),
+            "capture outcome was already recorded"
+        );
+        ensure!(
+            state.shell_first_paint_slide.is_none(),
+            "entry sequence completion ran before the wave cleared"
+        );
+        let started_at = self
+            .started_at
+            .context("shell capture was not initialized")?;
+        let sequence = self
+            .entry_sequence
+            .as_mut()
+            .context("entry-sequence state is unavailable")?;
+        ensure!(
+            sequence.expected_next_tick == crate::ui::shell::slide::MAIN_MENU_ENTRY_FRAME_COUNT,
+            "entry sequence completed with {} accepted ticks",
+            sequence.expected_next_tick
+        );
+        ensure!(
+            sequence.pending.len()
+                == usize::from(crate::ui::shell::slide::MAIN_MENU_ENTRY_FRAME_COUNT),
+            "entry sequence completed with {} retained readbacks",
+            sequence.pending.len()
+        );
+        let generation = sequence
+            .generation
+            .context("entry sequence has no generation")?;
+        sequence.completion_observed = true;
+        let pending = std::mem::take(&mut sequence.pending);
+
+        let mut payload = Vec::with_capacity(
+            usize::try_from(ENTRY_SEQUENCE_BYTE_LENGTH)
+                .context("entry-sequence payload length does not fit usize")?,
+        );
+        for (expected_tick, item) in pending.into_iter().enumerate() {
+            ensure!(
+                item.identity
+                    == (EntrySequenceFrameIdentity {
+                        generation,
+                        tick: expected_tick as u8,
+                    }),
+                "entry-sequence retained readback identity changed"
+            );
+            let remaining = CAPTURE_TIMEOUT
+                .checked_sub(started_at.elapsed())
+                .context("entry sequence timeout expired during deferred readback")?;
+            ensure!(
+                !remaining.is_zero(),
+                "entry sequence timeout expired during deferred readback"
+            );
+            let pixels = item
+                .readback
+                .finish(&state.gpu.device, item.submission, remaining)?;
+            ensure!(
+                pixels.len() as u64 == FRAME_BYTE_LENGTH,
+                "entry-sequence tick {expected_tick} length mismatch: expected \
+                 {FRAME_BYTE_LENGTH}, got {}",
+                pixels.len()
+            );
+            payload.extend_from_slice(&pixels);
+        }
+        ensure!(
+            payload.len() as u64 == ENTRY_SEQUENCE_BYTE_LENGTH,
+            "entry-sequence payload length mismatch: expected {ENTRY_SEQUENCE_BYTE_LENGTH}, got {}",
+            payload.len()
+        );
+
+        fs::create_dir(self.request.output_dir()).with_context(|| {
+            format!(
+                "create immutable entry-sequence directory {}",
+                self.request.output_dir().display()
+            )
+        })?;
+        write_new_file(
+            &self
+                .request
+                .output_dir()
+                .join(ENTRY_SEQUENCE_FRAMES_FILE_NAME),
+            &payload,
+        )?;
+        let manifest = entry_sequence_manifest(&self.request, state.gpu.config.format, generation);
+        let mut manifest_bytes =
+            serde_json::to_vec_pretty(&manifest).context("serialize entry-sequence manifest")?;
+        manifest_bytes.push(b'\n');
+        write_new_file(
+            &self.request.output_dir().join(MANIFEST_FILE_NAME),
+            &manifest_bytes,
+        )?;
+        self.outcome = Some(Ok(()));
+        Ok(())
+    }
+
     pub(crate) fn fail(&mut self, error: impl std::fmt::Display) {
         if self.outcome.is_none() {
             self.outcome = Some(Err(error.to_string()));
@@ -545,6 +842,53 @@ fn capture_manifest<'a>(
             path: FRAME_FILE_NAME,
             byte_length,
         },
+    }
+}
+
+fn entry_sequence_manifest(
+    request: &ShellCaptureRequest,
+    surface_format: wgpu::TextureFormat,
+    generation: u64,
+) -> EntrySequenceManifest {
+    let frames = (0..crate::ui::shell::slide::MAIN_MENU_ENTRY_FRAME_COUNT)
+        .map(|tick| EntrySequenceFrameManifest {
+            tick,
+            byte_offset: u64::from(tick) * FRAME_BYTE_LENGTH,
+            byte_length: FRAME_BYTE_LENGTH,
+        })
+        .collect();
+    EntrySequenceManifest {
+        schema_version: ENTRY_SEQUENCE_SCHEMA,
+        checkpoint: request.checkpoint.as_str(),
+        surface: SurfaceManifest {
+            width: request.width,
+            height: request.height,
+            format: format!("{surface_format:?}"),
+            pixel_layout: "BGRA8",
+            row_order: "top-left",
+            bytes_per_pixel: 4,
+            row_stride: request.width * 4,
+        },
+        cursor: CursorManifest {
+            x: request.cursor_x,
+            y: request.cursor_y,
+            policy: "software-composited",
+        },
+        shell: EntrySequenceShellManifest {
+            screen: "main-menu",
+            dialog_resource_id: 0x00E2,
+            movie_owner: "main-menu-0xe2",
+            movie_base: "ra2ts-l",
+            title_hidden_during_frames: true,
+        },
+        presenter_domain: "final-swapchain-after-rgb565",
+        generation,
+        completion_observed: true,
+        payload: EntrySequencePayloadManifest {
+            path: ENTRY_SEQUENCE_FRAMES_FILE_NAME,
+            byte_length: ENTRY_SEQUENCE_BYTE_LENGTH,
+        },
+        frames,
     }
 }
 
@@ -610,6 +954,42 @@ struct FrameManifest<'a> {
     byte_length: u64,
 }
 
+#[derive(Serialize)]
+struct EntrySequenceManifest {
+    schema_version: &'static str,
+    checkpoint: &'static str,
+    surface: SurfaceManifest,
+    cursor: CursorManifest,
+    shell: EntrySequenceShellManifest,
+    presenter_domain: &'static str,
+    generation: u64,
+    completion_observed: bool,
+    payload: EntrySequencePayloadManifest,
+    frames: Vec<EntrySequenceFrameManifest>,
+}
+
+#[derive(Serialize)]
+struct EntrySequenceShellManifest {
+    screen: &'static str,
+    dialog_resource_id: u32,
+    movie_owner: &'static str,
+    movie_base: &'static str,
+    title_hidden_during_frames: bool,
+}
+
+#[derive(Serialize)]
+struct EntrySequencePayloadManifest {
+    path: &'static str,
+    byte_length: u64,
+}
+
+#[derive(Serialize)]
+struct EntrySequenceFrameManifest {
+    tick: u8,
+    byte_offset: u64,
+    byte_length: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,6 +1048,111 @@ mod tests {
         assert_eq!((request.width(), request.height()), (800, 600));
         assert_eq!((request.cursor_x(), request.cursor_y()), (400, 300));
         assert_eq!(request.output_dir(), output);
+    }
+
+    #[test]
+    fn strict_capture_args_accept_main_menu_entry_sequence() {
+        let output = new_output_path("entry-sequence");
+        let mut values = valid_args(&output);
+        values[1] = OsString::from("main-menu-0xe2-entry-sequence");
+        let AppLaunchMode::ShellCapture(request) =
+            parse_launch_args(values).expect("entry sequence checkpoint must parse")
+        else {
+            panic!("expected capture");
+        };
+        assert_eq!(
+            request.checkpoint().as_str(),
+            "main-menu-0xe2-entry-sequence"
+        );
+    }
+
+    #[test]
+    fn entry_sequence_manifest_has_exact_ticks_offsets_and_presenter_domain() {
+        let output = new_output_path("entry-manifest");
+        let mut values = valid_args(&output);
+        values[1] = OsString::from(CHECKPOINT_MAIN_MENU_0XE2_ENTRY_SEQUENCE);
+        let AppLaunchMode::ShellCapture(request) = parse_launch_args(values).expect("parse") else {
+            panic!("expected capture");
+        };
+        let value = serde_json::to_value(entry_sequence_manifest(
+            &request,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            73,
+        ))
+        .expect("serialize");
+        assert_eq!(
+            value["schema_version"].as_str(),
+            Some("vera20k.shell-entry-sequence-capture.v1")
+        );
+        assert_eq!(
+            value["presenter_domain"].as_str(),
+            Some("final-swapchain-after-rgb565")
+        );
+        assert_eq!(value["generation"].as_u64(), Some(73));
+        assert_eq!(value["completion_observed"].as_bool(), Some(true));
+        assert_eq!(value["payload"]["byte_length"].as_u64(), Some(26_880_000));
+        let frames = value["frames"].as_array().expect("frames");
+        assert_eq!(frames.len(), 14);
+        for (tick, frame) in frames.iter().enumerate() {
+            assert_eq!(frame["tick"].as_u64(), Some(tick as u64));
+            assert_eq!(frame["byte_offset"].as_u64(), Some(tick as u64 * 1_920_000));
+            assert_eq!(frame["byte_length"].as_u64(), Some(1_920_000));
+        }
+    }
+
+    #[test]
+    fn entry_sequence_ledger_rejects_gap_duplicate_and_generation_change() {
+        let mut sequence = EntrySequenceState::default();
+        let first = EntrySequenceFrameIdentity {
+            generation: 5,
+            tick: 0,
+        };
+        sequence.validate_next(first).expect("first");
+        sequence.generation = Some(5);
+        sequence.expected_next_tick = 1;
+        assert!(sequence.validate_next(first).is_err());
+        assert!(
+            sequence
+                .validate_next(EntrySequenceFrameIdentity {
+                    generation: 5,
+                    tick: 2,
+                })
+                .is_err()
+        );
+        assert!(
+            sequence
+                .validate_next(EntrySequenceFrameIdentity {
+                    generation: 6,
+                    tick: 1,
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn sequence_completion_handoff_returns_before_another_acquire() {
+        let steady_output = new_output_path("steady-handoff");
+        let AppLaunchMode::ShellCapture(steady) =
+            parse_launch_args(valid_args(&steady_output)).expect("steady")
+        else {
+            panic!("expected steady capture");
+        };
+        assert_eq!(
+            ShellCaptureSession::new(steady).completion_handoff(),
+            ShellCompletionHandoff::Continue
+        );
+
+        let sequence_output = new_output_path("sequence-handoff");
+        let mut values = valid_args(&sequence_output);
+        values[1] = OsString::from(CHECKPOINT_MAIN_MENU_0XE2_ENTRY_SEQUENCE);
+        let AppLaunchMode::ShellCapture(sequence) = parse_launch_args(values).expect("sequence")
+        else {
+            panic!("expected sequence capture");
+        };
+        assert_eq!(
+            ShellCaptureSession::new(sequence).completion_handoff(),
+            ShellCompletionHandoff::FinalizeExitReturnBeforeAcquire
+        );
     }
 
     #[test]

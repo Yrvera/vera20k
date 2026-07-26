@@ -23,6 +23,9 @@ use super::descriptor::DialogId;
 
 /// One animation tick per 30 ms, advancing exactly one frame (never skipped).
 pub(crate) const WAVE_TICK_MS: u32 = 30;
+/// Active-retail dialog `0xE2` presents exactly ticks `0..13`.
+pub(crate) const MAIN_MENU_ENTRY_FRAME_COUNT: u8 = 14;
+pub(crate) const MAIN_MENU_TERMINAL_TICK: u8 = MAIN_MENU_ENTRY_FRAME_COUNT - 1;
 /// Extra ticks after the last schedule entry so the ramp completes. The loop
 /// bound is `max(schedule entry) + WAVE_TAIL_TICKS`.
 pub(crate) const WAVE_TAIL_TICKS: u32 = 6;
@@ -110,13 +113,13 @@ pub(crate) struct ShellSlideSpec {
 }
 
 /// Front-end shell dialogs we render today, with their animated slot counts.
-/// `0xE2` main menu: Single Player / WW Online / Network / Movies / Options /
-/// Exit (6). `0x100` single player: 4 owner-draw buttons. `0x102` skirmish
-/// setup: Start Game / Choose Map / Back (3 right-panel buttons).
+/// `0xE2` main menu: five regular schedule entries; Exit shares Options' fifth
+/// entry. `0x100` single player: 4 owner-draw buttons. `0x102` skirmish setup:
+/// Start Game / Choose Map / Back (3 right-panel buttons).
 pub(crate) const RENDERED_SHELL_SLIDES: &[ShellSlideSpec] = &[
     ShellSlideSpec {
         dialog_id: 0x00E2,
-        slot_count: 6,
+        slot_count: 5,
     },
     ShellSlideSpec {
         dialog_id: 0x0100,
@@ -157,15 +160,120 @@ pub(crate) fn slot_count_for(id: DialogId) -> Option<u32> {
 
 // --- Frame schedule (the wave) -----------------------------------------------
 
+const MAIN_MENU_GROUP_A_ENTRY_TICKS: &[(u16, i32)] = &[
+    (0x0683, 1),
+    (0x0684, 2),
+    (0x0578, 3),
+    (0x0686, 4),
+    (0x055C, 5),
+    (0x03EE, 5),
+];
+
+#[derive(Debug, Clone)]
+enum WaveClock {
+    Compatibility {
+        last_step_at: Instant,
+        tick: u32,
+    },
+    PresentedMainMenu {
+        generation: u64,
+        tick: u8,
+        phase: PresentedPhase,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresentedPhase {
+    Armed,
+    Ready,
+    WaitingUntil(Instant),
+    Completing,
+    Poisoned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PresentedPoll {
+    Acquire,
+    WaitUntil(Instant),
+    Complete,
+    Poisoned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MainMenuEntryPaintFrame {
+    generation: u64,
+    tick: u8,
+}
+
+impl MainMenuEntryPaintFrame {
+    pub(crate) fn generation(self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn tick(self) -> u8 {
+        self.tick
+    }
+
+    pub(crate) fn sdbtnanm_frame(self, resource_id: u16, group: ButtonGroup) -> Option<usize> {
+        let entry_tick = MAIN_MENU_GROUP_A_ENTRY_TICKS
+            .iter()
+            .find_map(|&(id, tick)| (id == resource_id).then_some(tick))?;
+        Some(frame_for_tick(
+            i32::from(self.tick),
+            entry_tick,
+            group,
+            WaveDirection::SlideIn,
+        ))
+    }
+}
+
+/// Single-use proof that one exact generation/tick was encoded through the
+/// final main-menu presenter. Deliberately neither `Clone` nor `Copy`.
+#[derive(Debug)]
+pub(crate) struct MainMenuEntryPresentToken {
+    generation: u64,
+    tick: u8,
+}
+
+impl MainMenuEntryPresentToken {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn tick(&self) -> u8 {
+        self.tick
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PresentedCommitError {
+    CompatibilityMode,
+    NotReady,
+    GenerationMismatch,
+    TickMismatch,
+}
+
+impl std::fmt::Display for PresentedCommitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::CompatibilityMode => "present token used with compatibility wave",
+            Self::NotReady => "present token committed outside the ready phase",
+            Self::GenerationMismatch => "present token generation mismatch",
+            Self::TickMismatch => "present token tick mismatch",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for PresentedCommitError {}
+
 /// Per-dialog first-paint slide state. `None` (Idle) → `Some(running)` →
 /// `Some(complete)` mirrors the original's `1→2→3` slide state machine: the wave
 /// is created on the dialog's entry edge, advances one frame per 30 ms tick, and
 /// signals completion via [`ShellFrameWave::is_complete`].
 #[derive(Debug, Clone)]
 pub(crate) struct ShellFrameWave {
-    last_step_at: Instant,
-    /// 0-based current tick.
-    tick: u32,
+    clock: WaveClock,
     /// number of animated control slots (N).
     #[allow(dead_code)]
     slot_count: u32,
@@ -177,10 +285,26 @@ pub(crate) struct ShellFrameWave {
 impl ShellFrameWave {
     pub(crate) fn new_first_paint_slide(slot_count: u32, now: Instant) -> Self {
         Self {
-            last_step_at: now,
-            tick: 0,
+            clock: WaveClock::Compatibility {
+                last_step_at: now,
+                tick: 0,
+            },
             slot_count,
             total_ticks: Self::total_ticks_for(slot_count),
+            direction: WaveDirection::SlideIn,
+        }
+    }
+
+    pub(crate) fn new_presented_main_menu(generation: u64) -> Self {
+        assert_ne!(generation, 0, "main-menu wave generation must be nonzero");
+        Self {
+            clock: WaveClock::PresentedMainMenu {
+                generation,
+                tick: 0,
+                phase: PresentedPhase::Armed,
+            },
+            slot_count: 5,
+            total_ticks: u32::from(MAIN_MENU_ENTRY_FRAME_COUNT),
             direction: WaveDirection::SlideIn,
         }
     }
@@ -204,16 +328,22 @@ impl ShellFrameWave {
     }
 
     pub(crate) fn is_complete(&self) -> bool {
-        self.tick >= self.total_ticks
+        match self.clock {
+            WaveClock::Compatibility { tick, .. } => tick >= self.total_ticks,
+            WaveClock::PresentedMainMenu { .. } => false,
+        }
     }
 
     /// Advance at most ONE tick per call, only once >= 30 ms has elapsed.
     /// Never collapses multiple indices (faithful to one-frame-per-Sleep).
     pub(crate) fn advance(&mut self, now: Instant) {
         let step = Duration::from_millis(u64::from(WAVE_TICK_MS));
-        if self.tick < self.total_ticks && now.duration_since(self.last_step_at) >= step {
-            self.tick += 1;
-            self.last_step_at += step;
+        let WaveClock::Compatibility { last_step_at, tick } = &mut self.clock else {
+            return;
+        };
+        if *tick < self.total_ticks && now.duration_since(*last_step_at) >= step {
+            *tick += 1;
+            *last_step_at += step;
         }
     }
 
@@ -221,23 +351,177 @@ impl ShellFrameWave {
     /// 4-case: held-before / linear ramp (base + delta*dir) / held-after.
     /// Terminal frames are DISTINCT constants, not `base` (verified from binary).
     pub(crate) fn sdbtnanm_frame(&self, slot: u32, group: ButtonGroup) -> usize {
-        let f = match (group, self.direction) {
-            (ButtonGroup::A, WaveDirection::SlideIn) => GROUP_A_IN,
-            (ButtonGroup::A, WaveDirection::SlideOut) => GROUP_A_OUT,
-            (ButtonGroup::B, WaveDirection::SlideIn) => GROUP_B_IN,
-            (ButtonGroup::B, WaveDirection::SlideOut) => GROUP_B_OUT,
+        let WaveClock::Compatibility { tick, .. } = self.clock else {
+            panic!("slot-index frame lookup is invalid for a presented main-menu wave");
         };
-        let dir = self.direction.dir();
-        let delta = self.tick as i32 - Self::entry_tick(slot);
-        let frame = if delta < 0 {
-            f.before // held at the group's "before" terminal
-        } else if delta < WAVE_RAMP_STEPS {
-            f.base + delta * dir // 6-step ramp
-        } else {
-            f.after // held at the group's "after" terminal
-        };
-        frame.max(0) as usize
+        frame_for_tick(tick as i32, Self::entry_tick(slot), group, self.direction)
     }
+
+    pub(crate) fn activate_after_acquire(&mut self) -> bool {
+        let WaveClock::PresentedMainMenu { phase, .. } = &mut self.clock else {
+            return false;
+        };
+        if *phase != PresentedPhase::Armed {
+            return false;
+        }
+        *phase = PresentedPhase::Ready;
+        true
+    }
+
+    pub(crate) fn poll_presented(&mut self, now: Instant) -> Option<PresentedPoll> {
+        let WaveClock::PresentedMainMenu { tick, phase, .. } = &mut self.clock else {
+            return None;
+        };
+        Some(match *phase {
+            PresentedPhase::Armed | PresentedPhase::Ready => PresentedPoll::Acquire,
+            PresentedPhase::WaitingUntil(deadline) if now < deadline => {
+                PresentedPoll::WaitUntil(deadline)
+            }
+            PresentedPhase::WaitingUntil(_) if *tick < MAIN_MENU_TERMINAL_TICK => {
+                *tick += 1;
+                *phase = PresentedPhase::Ready;
+                PresentedPoll::Acquire
+            }
+            PresentedPhase::WaitingUntil(_) => {
+                *phase = PresentedPhase::Completing;
+                PresentedPoll::Complete
+            }
+            PresentedPhase::Completing => PresentedPoll::Complete,
+            PresentedPhase::Poisoned => PresentedPoll::Poisoned,
+        })
+    }
+
+    pub(crate) fn current_main_menu_frame(&self) -> Option<MainMenuEntryPaintFrame> {
+        let WaveClock::PresentedMainMenu {
+            generation,
+            tick,
+            phase: PresentedPhase::Ready,
+        } = self.clock
+        else {
+            return None;
+        };
+        Some(MainMenuEntryPaintFrame { generation, tick })
+    }
+
+    pub(crate) fn mint_present_token(
+        &self,
+        frame: MainMenuEntryPaintFrame,
+    ) -> Option<MainMenuEntryPresentToken> {
+        (self.current_main_menu_frame() == Some(frame)).then_some(MainMenuEntryPresentToken {
+            generation: frame.generation,
+            tick: frame.tick,
+        })
+    }
+
+    pub(crate) fn record_presented(
+        &mut self,
+        token: MainMenuEntryPresentToken,
+        now: Instant,
+    ) -> Result<(), PresentedCommitError> {
+        let WaveClock::PresentedMainMenu {
+            generation,
+            tick,
+            phase,
+        } = &mut self.clock
+        else {
+            return Err(PresentedCommitError::CompatibilityMode);
+        };
+        if *phase != PresentedPhase::Ready {
+            return Err(PresentedCommitError::NotReady);
+        }
+        if token.generation != *generation {
+            return Err(PresentedCommitError::GenerationMismatch);
+        }
+        if token.tick != *tick {
+            return Err(PresentedCommitError::TickMismatch);
+        }
+        *phase = PresentedPhase::WaitingUntil(now + Duration::from_millis(u64::from(WAVE_TICK_MS)));
+        Ok(())
+    }
+
+    pub(crate) fn poison_presented(&mut self) {
+        if let WaveClock::PresentedMainMenu { phase, .. } = &mut self.clock {
+            *phase = PresentedPhase::Poisoned;
+        }
+    }
+
+    pub(crate) fn presented_wake_deadline(&self) -> Option<Instant> {
+        let WaveClock::PresentedMainMenu {
+            phase: PresentedPhase::WaitingUntil(deadline),
+            ..
+        } = self.clock
+        else {
+            return None;
+        };
+        Some(deadline)
+    }
+
+    pub(crate) fn presented_generation(&self) -> Option<u64> {
+        let WaveClock::PresentedMainMenu { generation, .. } = self.clock else {
+            return None;
+        };
+        Some(generation)
+    }
+
+    pub(crate) fn is_presented_completing(&self, generation: u64) -> bool {
+        matches!(
+            self.clock,
+            WaveClock::PresentedMainMenu {
+                generation: actual,
+                phase: PresentedPhase::Completing,
+                ..
+            } if actual == generation
+        )
+    }
+
+    pub(crate) fn is_presented_poisoned(&self) -> bool {
+        matches!(
+            self.clock,
+            WaveClock::PresentedMainMenu {
+                phase: PresentedPhase::Poisoned,
+                ..
+            }
+        )
+    }
+
+    #[cfg(test)]
+    fn compatibility_tick_for_test(&self) -> u32 {
+        let WaveClock::Compatibility { tick, .. } = self.clock else {
+            panic!("expected compatibility wave");
+        };
+        tick
+    }
+
+    #[cfg(test)]
+    fn add_compatibility_ticks_for_test(&mut self, amount: u32) {
+        let WaveClock::Compatibility { tick, .. } = &mut self.clock else {
+            panic!("expected compatibility wave");
+        };
+        *tick += amount;
+    }
+}
+
+fn frame_for_tick(
+    tick: i32,
+    entry_tick: i32,
+    group: ButtonGroup,
+    direction: WaveDirection,
+) -> usize {
+    let f = match (group, direction) {
+        (ButtonGroup::A, WaveDirection::SlideIn) => GROUP_A_IN,
+        (ButtonGroup::A, WaveDirection::SlideOut) => GROUP_A_OUT,
+        (ButtonGroup::B, WaveDirection::SlideIn) => GROUP_B_IN,
+        (ButtonGroup::B, WaveDirection::SlideOut) => GROUP_B_OUT,
+    };
+    let delta = tick - entry_tick;
+    let frame = if delta < 0 {
+        f.before
+    } else if delta < WAVE_RAMP_STEPS {
+        f.base + delta * direction.dir()
+    } else {
+        f.after
+    };
+    frame.max(0) as usize
 }
 
 #[cfg(test)]
@@ -268,12 +552,12 @@ mod tests {
         let t0 = Instant::now();
         let mut w = ShellFrameWave::new_first_paint_slide(4, t0);
         w.advance(t0 + Duration::from_millis(29));
-        assert_eq!(w.tick, 0);
+        assert_eq!(w.compatibility_tick_for_test(), 0);
         w.advance(t0 + Duration::from_millis(30));
-        assert_eq!(w.tick, 1);
+        assert_eq!(w.compatibility_tick_for_test(), 1);
         // A 1-second gap must still advance only ONE index (no catch-up).
         w.advance(t0 + Duration::from_millis(1030));
-        assert_eq!(w.tick, 2);
+        assert_eq!(w.compatibility_tick_for_test(), 2);
     }
 
     #[test]
@@ -283,12 +567,12 @@ mod tests {
         // slot 1 enters at tick 2; before that it holds at the "before" terminal = 10.
         assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 10);
         for _ in 0..2 {
-            w.tick += 1;
+            w.add_compatibility_ticks_for_test(1);
         } // tick = 2 => delta 0 => base 10
         assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 10);
-        w.tick += 5; // delta 5 => 10 + 5*-1 = 5 (last ramp step)
+        w.add_compatibility_ticks_for_test(5); // delta 5 => last ramp step
         assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 5);
-        w.tick += 3; // delta >= 6 => held "after" terminal = 1
+        w.add_compatibility_ticks_for_test(3); // held "after" terminal
         assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 1);
     }
 
@@ -297,11 +581,11 @@ mod tests {
         let t0 = Instant::now();
         let mut w = ShellFrameWave::new_first_paint_slide(3, t0);
         assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 10); // before-entry (slot 0 enters tick 1)
-        w.tick += 1; // delta 0 => base 16
+        w.add_compatibility_ticks_for_test(1); // delta 0 => base 16
         assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 16);
-        w.tick += 5; // delta 5 => 16 + 5*-1 = 11
+        w.add_compatibility_ticks_for_test(5); // delta 5 => 11
         assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 11);
-        w.tick += 3; // delta >= 6 => held "after" = 0
+        w.add_compatibility_ticks_for_test(3); // held "after" = 0
         assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 0);
     }
 
@@ -318,6 +602,169 @@ mod tests {
                 Some(spec.slot_count)
             );
         }
+    }
+
+    #[test]
+    fn main_menu_uses_five_regular_schedule_entries() {
+        assert_eq!(slot_count_for(DialogId(0x00E2)), Some(5));
+    }
+
+    #[test]
+    fn main_menu_resource_schedule_is_exact_for_ticks_zero_through_thirteen() {
+        let expected = [
+            (0x0683, [10, 10, 9, 8, 7, 6, 5, 1, 1, 1, 1, 1, 1, 1]),
+            (0x0684, [10, 10, 10, 9, 8, 7, 6, 5, 1, 1, 1, 1, 1, 1]),
+            (0x0578, [10, 10, 10, 10, 9, 8, 7, 6, 5, 1, 1, 1, 1, 1]),
+            (0x0686, [10, 10, 10, 10, 10, 9, 8, 7, 6, 5, 1, 1, 1, 1]),
+            (0x055C, [10, 10, 10, 10, 10, 10, 9, 8, 7, 6, 5, 1, 1, 1]),
+            (0x03EE, [10, 10, 10, 10, 10, 10, 9, 8, 7, 6, 5, 1, 1, 1]),
+        ];
+        for (resource_id, frames) in expected {
+            for (tick, expected_frame) in frames.into_iter().enumerate() {
+                let frame = MainMenuEntryPaintFrame {
+                    generation: 1,
+                    tick: tick as u8,
+                };
+                assert_eq!(
+                    frame.sdbtnanm_frame(resource_id, ButtonGroup::A),
+                    Some(expected_frame),
+                    "resource {resource_id:#06x}, tick {tick}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn presented_wave_advances_only_after_matching_present_and_deadline() {
+        let start = Instant::now();
+        let mut wave = ShellFrameWave::new_presented_main_menu(7);
+        assert_eq!(wave.poll_presented(start), Some(PresentedPoll::Acquire));
+        assert_eq!(wave.current_main_menu_frame(), None);
+        assert!(wave.activate_after_acquire());
+        let frame0 = wave.current_main_menu_frame().expect("tick 0");
+        assert_eq!((frame0.generation(), frame0.tick()), (7, 0));
+        let token0 = wave.mint_present_token(frame0).expect("token 0");
+        wave.record_presented(token0, start).expect("accept tick 0");
+        assert_eq!(
+            wave.poll_presented(start + Duration::from_millis(29)),
+            Some(PresentedPoll::WaitUntil(start + Duration::from_millis(30)))
+        );
+        assert_eq!(
+            wave.poll_presented(start + Duration::from_millis(30)),
+            Some(PresentedPoll::Acquire)
+        );
+        assert_eq!(wave.current_main_menu_frame().map(|f| f.tick()), Some(1));
+
+        let frame1 = wave.current_main_menu_frame().expect("tick 1");
+        wave.record_presented(
+            wave.mint_present_token(frame1).expect("token 1"),
+            start + Duration::from_millis(30),
+        )
+        .expect("accept tick 1");
+        assert_eq!(
+            wave.poll_presented(start + Duration::from_secs(1)),
+            Some(PresentedPoll::Acquire)
+        );
+        assert_eq!(wave.current_main_menu_frame().map(|f| f.tick()), Some(2));
+        assert_eq!(
+            wave.poll_presented(start + Duration::from_secs(1)),
+            Some(PresentedPoll::Acquire),
+            "a stall must not release a second unpresented tick"
+        );
+        assert_eq!(wave.current_main_menu_frame().map(|f| f.tick()), Some(2));
+    }
+
+    #[test]
+    fn presented_wave_rejects_stale_wrong_and_double_tokens() {
+        let start = Instant::now();
+        let mut wave = ShellFrameWave::new_presented_main_menu(9);
+        assert!(wave.activate_after_acquire());
+        assert_eq!(
+            wave.record_presented(
+                MainMenuEntryPresentToken {
+                    generation: 8,
+                    tick: 0,
+                },
+                start,
+            ),
+            Err(PresentedCommitError::GenerationMismatch)
+        );
+        assert_eq!(
+            wave.record_presented(
+                MainMenuEntryPresentToken {
+                    generation: 9,
+                    tick: 1,
+                },
+                start,
+            ),
+            Err(PresentedCommitError::TickMismatch)
+        );
+        wave.record_presented(
+            MainMenuEntryPresentToken {
+                generation: 9,
+                tick: 0,
+            },
+            start,
+        )
+        .expect("matching token");
+        assert_eq!(
+            wave.record_presented(
+                MainMenuEntryPresentToken {
+                    generation: 9,
+                    tick: 0,
+                },
+                start,
+            ),
+            Err(PresentedCommitError::NotReady)
+        );
+    }
+
+    #[test]
+    fn terminal_tick_holds_then_completes_without_a_tick_fourteen() {
+        let start = Instant::now();
+        let mut wave = ShellFrameWave::new_presented_main_menu(11);
+        assert!(wave.activate_after_acquire());
+        let mut accepted_at = start;
+        for expected_tick in 0..=MAIN_MENU_TERMINAL_TICK {
+            let frame = wave.current_main_menu_frame().expect("ready frame");
+            assert_eq!(frame.tick(), expected_tick);
+            let token = wave.mint_present_token(frame).expect("matching token");
+            wave.record_presented(token, accepted_at)
+                .expect("accepted present");
+            if expected_tick < MAIN_MENU_TERMINAL_TICK {
+                accepted_at += Duration::from_millis(30);
+                assert_eq!(
+                    wave.poll_presented(accepted_at),
+                    Some(PresentedPoll::Acquire)
+                );
+            }
+        }
+        assert_eq!(
+            wave.poll_presented(accepted_at + Duration::from_millis(29)),
+            Some(PresentedPoll::WaitUntil(
+                accepted_at + Duration::from_millis(30)
+            ))
+        );
+        assert_eq!(
+            wave.poll_presented(accepted_at + Duration::from_millis(30)),
+            Some(PresentedPoll::Complete)
+        );
+        assert!(wave.is_presented_completing(11));
+        assert_eq!(wave.current_main_menu_frame(), None);
+    }
+
+    #[test]
+    fn poisoned_presented_wave_exposes_no_frame_or_wake() {
+        let mut wave = ShellFrameWave::new_presented_main_menu(13);
+        assert!(wave.activate_after_acquire());
+        wave.poison_presented();
+        assert!(wave.is_presented_poisoned());
+        assert_eq!(
+            wave.poll_presented(Instant::now()),
+            Some(PresentedPoll::Poisoned)
+        );
+        assert_eq!(wave.current_main_menu_frame(), None);
+        assert_eq!(wave.presented_wake_deadline(), None);
     }
 
     #[test]

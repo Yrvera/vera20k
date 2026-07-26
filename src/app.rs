@@ -68,6 +68,17 @@ use crate::ui::shell::controller::ShellKey;
 use crate::ui::skirmish_shell::{SavedSeedBrowserState, SavedSeedMode};
 use crate::util::config::GameConfig;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellFramePreludeStep {
+    MaintainIntro,
+    ObserveEntry,
+}
+
+const MAIN_MENU_SHELL_PRELUDE: &[ShellFramePreludeStep] = &[
+    ShellFramePreludeStep::MaintainIntro,
+    ShellFramePreludeStep::ObserveEntry,
+];
+
 /// The random-map seed file the `.SED` launch branch recognises. Written into
 /// the RA2 directory so `map_load` finds it where the original puts it.
 const RANDMAP_SED_FILE: &str = "RandMap.Sed";
@@ -295,6 +306,8 @@ pub(crate) struct AppState {
     /// edge detection so the slide (re)starts on entry into each shell and is
     /// cancelled on leaving all of them.
     pub(crate) shell_slide_active_shell: Option<crate::app_shell_transition::ShellSlideKind>,
+    /// Monotonic identity for each newly armed exact Main Menu `0xE2` instance.
+    pub(crate) shell_slide_generation: u64,
     /// Active graceful quit cascade (music fade → trailing-voice wait → hard stop
     /// → exit). Some only between Exit-confirm OK and window close; freezes shell
     /// input while it runs.
@@ -2915,6 +2928,21 @@ impl App {
         Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
     }
 
+    /// Active-retail `ShellButtonSlideSound` completion hook. The stock key is
+    /// empty in both rules layers, so this named edge intentionally has no
+    /// audible output in the exact stock route.
+    pub(crate) fn play_shell_slide_completion_sound(_state: &mut AppState) {}
+
+    fn maintain_main_menu_intro(state: &mut AppState) {
+        if state.screen != GameScreen::MainMenu || state.quit_cascade.is_some() {
+            return;
+        }
+        if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
+            player.play_menu_theme(assets);
+            player.update(assets);
+        }
+    }
+
     fn drain_skirmish_shell_ui_sounds(state: &mut AppState) {
         let _trackbar_parent_notifications =
             state.skirmish_shell_state.drain_pending_trackbar_hscrolls();
@@ -3333,17 +3361,50 @@ impl ApplicationHandler for App {
         // A hidden Windows HWND is not guaranteed to receive WM_PAINT, so
         // capture frames are pumped from `about_to_wait`, never window input.
         if shell_capture_active {
+            let session = self.shell_capture.as_mut().expect("capture session exists");
             match event {
                 WindowEvent::CloseRequested => {
                     log::info!("Shell-capture window close requested");
-                    self.shell_capture
-                        .as_mut()
-                        .expect("capture session exists")
-                        .fail("shell-capture window closed before bundle completion");
+                    session.fail("shell-capture window closed before bundle completion");
                     event_loop.exit();
                 }
                 WindowEvent::Resized(size) => {
-                    Self::resize_surface_for_window_size(state, size);
+                    let expected =
+                        PhysicalSize::new(session.request().width(), session.request().height());
+                    if size != expected {
+                        session.fail(format!(
+                            "shell-capture surface resized to {}x{}, expected {}x{}",
+                            size.width, size.height, expected.width, expected.height
+                        ));
+                        event_loop.exit();
+                    } else {
+                        Self::resize_surface_for_window_size(state, size);
+                    }
+                }
+                WindowEvent::Focused(true) => {
+                    session.fail("shell-capture window unexpectedly received focus");
+                    event_loop.exit();
+                }
+                WindowEvent::KeyboardInput { .. }
+                | WindowEvent::ModifiersChanged(_)
+                | WindowEvent::Ime(_)
+                | WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorEntered { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::PinchGesture { .. }
+                | WindowEvent::PanGesture { .. }
+                | WindowEvent::DoubleTapGesture { .. }
+                | WindowEvent::RotationGesture { .. }
+                | WindowEvent::TouchpadPressure { .. }
+                | WindowEvent::AxisMotion { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::DroppedFile(_)
+                | WindowEvent::HoveredFile(_)
+                | WindowEvent::HoveredFileCancelled => {
+                    session.fail("shell-capture received unexpected window input");
+                    event_loop.exit();
                 }
                 _ => {}
             }
@@ -3650,10 +3711,28 @@ impl ApplicationHandler for App {
                 return;
             }
             if !session.is_finished() {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(session.next_wake_deadline()));
+                let mut deadline = session.next_wake_deadline();
+                if let Some(wave_deadline) =
+                    crate::app_shell_transition::main_menu_presented_wake_deadline(state)
+                {
+                    deadline = deadline.max(wave_deadline);
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             }
         } else if let Some(state) = &self.state {
-            state.window.request_redraw();
+            if crate::app_shell_transition::main_menu_presented_is_poisoned(state) {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else if let Some(deadline) =
+                crate::app_shell_transition::main_menu_presented_wake_deadline(state)
+            {
+                if Instant::now() >= deadline {
+                    state.window.request_redraw();
+                } else {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                }
+            } else {
+                state.window.request_redraw();
+            }
         }
     }
 }
@@ -3956,6 +4035,7 @@ impl App {
             skirmish_shell_return_to_single_player_shell: false,
             shell_first_paint_slide: None,
             shell_slide_active_shell: None,
+            shell_slide_generation: 0,
             quit_cascade: None,
             minimap: None,
             minimap_dragging: false,
@@ -4188,6 +4268,37 @@ impl App {
             app_sim_tick::advance_in_game_runtime(state, elapsed_ms);
         }
 
+        // Native queues/maintains [INTRO] before arming the 0xE2 first-paint
+        // owner. An arm stays silent until the matching surface is acquired.
+        for step in MAIN_MENU_SHELL_PRELUDE {
+            match step {
+                ShellFramePreludeStep::MaintainIntro => Self::maintain_main_menu_intro(state),
+                ShellFramePreludeStep::ObserveEntry => {
+                    crate::app_shell_transition::prepare_main_menu_first_paint_before_acquire(state)
+                }
+            }
+        }
+        match crate::app_shell_transition::poll_main_menu_first_paint_before_acquire(
+            state,
+            Instant::now(),
+        )? {
+            crate::app_shell_transition::MainMenuFirstPaintPoll::WaitUntil(_) => {
+                return Ok(());
+            }
+            crate::app_shell_transition::MainMenuFirstPaintPoll::Completed => {
+                if let Some(session) = shell_capture.as_deref_mut()
+                    && session.completion_handoff()
+                        == crate::app_shell_capture::ShellCompletionHandoff::
+                            FinalizeExitReturnBeforeAcquire
+                {
+                    session.complete_entry_sequence_after_wave(state)?;
+                    event_loop.exit();
+                    return Ok(());
+                }
+            }
+            crate::app_shell_transition::MainMenuFirstPaintPoll::Acquire => {}
+        }
+
         let output: wgpu::SurfaceTexture = state
             .gpu
             .surface
@@ -4201,13 +4312,10 @@ impl App {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Frame"),
                 });
-        let mut pending_main_menu_entry_receipt = None;
+        let mut pending_main_menu_entry_token = None;
         let mut pending_main_menu_title_receipt = None;
 
-        // Start/cancel the shell first-paint controls-reveal slide on entry into
-        // (or exit from) each shell dialog. Edge-detected once per frame so launch,
-        // navigation, and return-from-game all (re)trigger the slide uniformly.
-        crate::app_shell_transition::update_shell_first_paint_slide_trigger(state);
+        crate::app_shell_transition::activate_shell_first_paint_after_acquire(state);
         // Advance the Skirmish right-panel static text reveals (started at the
         // slide's completion edge). 30 ms-gated internally; a no-op when idle.
         crate::app_shell_transition::advance_shell_static_reveals(state);
@@ -4220,29 +4328,15 @@ impl App {
 
         match &state.screen {
             GameScreen::MainMenu => {
-                // The shell loops the menu [INTRO] theme the whole time the
-                // player is on the main menu. Idempotent start + per-frame
-                // update (the sim tick that normally pumps music does not run
-                // on the menu) keeps the looping theme alive on every entry
-                // path: initial launch, return-from-game, and mission result.
-                // Suppressed during the quit cascade so the hard music stop is not
-                // immediately undone by the per-frame menu-theme re-assert.
-                if state.quit_cascade.is_none() {
-                    if let (Some(player), Some(assets)) =
-                        (&mut state.music_player, &state.asset_manager)
-                    {
-                        player.play_menu_theme(assets);
-                        player.update(assets);
-                    }
-                }
                 if let crate::app_shell_transition::ShellFirstPaintRenderResult::Rendered {
-                    main_menu_entry_receipt,
+                    main_menu_entry_token,
                 } = crate::app_shell_transition::render_shell_first_paint_slide(
                     state,
                     &mut encoder,
+                    &output.texture,
                     &view,
                 )? {
-                    pending_main_menu_entry_receipt = main_menu_entry_receipt;
+                    pending_main_menu_entry_token = main_menu_entry_token;
                 } else if Self::native_skirmish_shell_active(state) {
                     crate::app_skirmish_shell_render::render_skirmish_shell(
                         state,
@@ -4307,15 +4401,12 @@ impl App {
                             if confirm_quit {
                                 state.gpu.queue.submit(std::iter::once(encoder.finish()));
                                 output.present();
-                                if let Some(receipt) =
-                                    pending_main_menu_entry_receipt.take()
+                                if let Some(token) =
+                                    pending_main_menu_entry_token.take()
                                 {
-                                    anyhow::ensure!(
-                                        crate::app_shell_transition::record_main_menu_entry_presented(
-                                            state, receipt,
-                                        ),
-                                        "main-menu entry receipt was stale at present commit"
-                                    );
+                                    crate::app_shell_transition::record_main_menu_entry_presented(
+                                        state, token,
+                                    )?;
                                 }
                                 if let Some(receipt) =
                                     pending_main_menu_title_receipt.take()
@@ -4499,6 +4590,27 @@ impl App {
             }
         }
 
+        let entry_sequence_identity = match shell_capture.as_deref_mut() {
+            Some(session) if session.is_entry_sequence() => {
+                let token = pending_main_menu_entry_token
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("entry-sequence frame produced no token"))?;
+                session.observe_entry_sequence_after_render(state, token)?
+            }
+            _ => None,
+        };
+        let pending_entry_sequence = if entry_sequence_identity.is_some() {
+            Some(crate::render::frame_readback::PendingBgra8Readback::encode(
+                &state.gpu.device,
+                &mut encoder,
+                &output.texture,
+                state.gpu.config.format,
+                state.gpu.config.width,
+                state.gpu.config.height,
+            )?)
+        } else {
+            None
+        };
         let tactical_capture_current_frame =
             match (tactical_capture.as_deref_mut(), game_render_output.as_ref()) {
                 (Some(session), Some(render_output)) => {
@@ -4536,11 +4648,15 @@ impl App {
         };
         let submission = state.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-        if let Some(receipt) = pending_main_menu_entry_receipt.take() {
-            anyhow::ensure!(
-                crate::app_shell_transition::record_main_menu_entry_presented(state, receipt),
-                "main-menu entry receipt was stale at present commit"
-            );
+        if let Some(token) = pending_main_menu_entry_token.take() {
+            crate::app_shell_transition::record_main_menu_entry_presented(state, token)?;
+        }
+        if let (Some(identity), Some(readback)) = (entry_sequence_identity, pending_entry_sequence)
+        {
+            shell_capture
+                .as_deref_mut()
+                .expect("entry-sequence session exists for retained readback")
+                .record_entry_sequence_submission(identity, readback, submission.clone())?;
         }
         if let Some(receipt) = pending_main_menu_title_receipt.take() {
             anyhow::ensure!(
@@ -4911,6 +5027,17 @@ fn auto_detect_ui_scale(screen_width: u32, screen_height: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_menu_intro_precedes_entry_observation() {
+        assert_eq!(
+            MAIN_MENU_SHELL_PRELUDE,
+            [
+                ShellFramePreludeStep::MaintainIntro,
+                ShellFramePreludeStep::ObserveEntry,
+            ]
+        );
+    }
 
     #[test]
     fn six_preview_boundaries_cover_the_originals_eight_redraws() {
