@@ -42,20 +42,25 @@ pub fn is_non_player_house(owner: &str) -> bool {
 /// Number of shades per house color band (matches palette indices 16–31).
 const RAMP_SIZE: usize = 16;
 
-/// gamemd's per-scheme 16-shade team band (palette indices 16..31): fixed hue H; V rides a cosine
-/// 50°→90°, S rides a sine 20°→90° (shade 0 sine = π/16); each (modS, modV) goes through the
-/// 6-sextant integer HSV→RGB. Shade 0 is the brightest (the radar/UI/target-line color). `f64` trig
-/// is acceptable here (rules/render, not lockstep sim); bit-exact values come from the emulation
-/// reference (gamemd uses table/x87 trig, so an `f64` port can drift ±1 per channel).
+/// gamemd's per-scheme 16-shade team band (palette indices 16..31): fixed hue H;
+/// S rides a sine 50°→90°, while V rides a cosine 20°→90° with the shade-0
+/// cosine angle overridden to π/16. Each (modS, modV) goes through the
+/// 6-sextant integer HSV→RGB. Shade 0 is the brightest
+/// (the radar/UI/target-line color).
+///
+/// `f64` trig is acceptable here (rules/render, not lockstep sim), but it is an
+/// approximation of gamemd's lookup-table/x87 path. Native live `ftol`
+/// rounding at this constructor call remains unverified, so these bytes are a
+/// regression result rather than an exact-parity claim.
 pub fn build_scheme_ramp(hsv: [u8; 3]) -> [Color; RAMP_SIZE] {
     use std::f64::consts::PI;
     let h = hsv[0];
     let s = hsv[1] as f64;
     let v = hsv[2] as f64;
-    let cos_base = 50.0_f64.to_radians();
-    let cos_step = (40.0_f64 / 15.0).to_radians();
-    let sin_base = 20.0_f64.to_radians();
-    let sin_step = (70.0_f64 / 15.0).to_radians();
+    let sin_base = 50.0_f64.to_radians();
+    let sin_step = (40.0_f64 / 15.0).to_radians();
+    let cos_base = 20.0_f64.to_radians();
+    let cos_step = (70.0_f64 / 15.0).to_radians();
     let mut ramp = [Color {
         r: 0,
         g: 0,
@@ -63,15 +68,16 @@ pub fn build_scheme_ramp(hsv: [u8; 3]) -> [Color; RAMP_SIZE] {
         a: 255,
     }; RAMP_SIZE];
     for (i, slot) in ramp.iter_mut().enumerate() {
-        let cos_angle = cos_base + (i as f64) * cos_step;
-        let sin_angle = if i == 0 {
+        let sin_angle = sin_base + (i as f64) * sin_step;
+        let cos_angle = if i == 0 {
             PI / 16.0
         } else {
-            sin_base + (i as f64) * sin_step
+            cos_base + (i as f64) * cos_step
         };
-        // gamemd ftol = truncate toward zero, then clamp into a palette byte.
-        let mod_v = (cos_angle.cos() * v).trunc().clamp(0.0, 255.0) as u8;
+        // Truncation preserves the current Rust approximation. Native live
+        // `ftol` rounding at this constructor call remains UNCHECKED.
         let mod_s = (sin_angle.sin() * s).trunc().clamp(0.0, 255.0) as u8;
+        let mod_v = (cos_angle.cos() * v).trunc().clamp(0.0, 255.0) as u8;
         let [r, g, b] = hsv_to_rgb([h, mod_s, mod_v]);
         *slot = Color { r, g, b, a: 255 };
     }
@@ -167,37 +173,35 @@ mod tests {
         );
     }
 
-    /// Golden per-shade RGB for stock schemes — locks the current `f64` trig output.
+    /// Per-shade RGB for stock schemes — locks the current Rust approximation.
     ///
-    /// gamemd builds these via an 8192-step `float32` cos/sin lookup table, so an
-    /// `f64` port can differ by up to ±1 per channel on some shades (dominated by
-    /// the table's angle quantization, ~0.000767 rad/step). Per the project
-    /// decision we accept that ≤±1 tolerance — it is below the RGBA8-vs-RGB565
-    /// display-precision delta — and lock these values as a regression guard.
-    /// HSV→RGB and the angle/ftol math are bit-identical to gamemd; only the
-    /// table-vs-`f64` trig is the (bounded) residual. If `build_scheme_ramp`
-    /// changes intentionally, regenerate with a temporary dump test.
+    /// gamemd builds these via an 8192-step `float32` sine/cosine lookup table,
+    /// while Rust uses `f64` libm, so the channel bytes can differ. The exact
+    /// bound is not claimed because the live constructor's x87 `ftol` rounding
+    /// mode remains UNCHECKED. These values are only a Rust regression guard,
+    /// not a gamemd parity oracle. If `build_scheme_ramp` changes intentionally,
+    /// regenerate from the reviewed Rust approximation.
     #[test]
     fn build_scheme_ramp_matches_golden_stock_values() {
         #[rustfmt::skip]
         let cases: &[(&str, [u8; 3], [[u8; 3]; 16])] = &[
             ("Gold", [43, 239, 255], [
-                [163,163,133],[153,154,94],[144,145,78],[134,135,64],
-                [123,124,51],[113,114,40],[102,103,31],[91,92,23],
-                [80,81,17],[69,70,12],[57,58,8],[46,47,5],
-                [34,35,3],[22,23,1],[10,11,0],[0,0,0],
+                [248,250,70],[229,231,58],[220,222,51],[209,211,43],
+                [197,199,36],[183,185,30],[168,170,24],[152,154,19],
+                [135,137,15],[118,119,12],[100,101,9],[80,81,6],
+                [60,61,4],[40,41,2],[19,20,1],[0,0,0],
             ]),
             ("DarkRed", [0, 230, 255], [
-                [163,134,134],[154,96,96],[145,81,81],[135,67,67],
-                [124,54,54],[114,43,43],[103,34,34],[92,26,26],
-                [81,19,19],[70,14,14],[58,10,10],[47,7,7],
-                [35,4,4],[23,2,2],[11,1,1],[0,0,0],
+                [250,77,77],[231,66,66],[222,57,57],[211,49,49],
+                [199,42,42],[185,36,36],[170,30,30],[154,24,24],
+                [137,20,20],[119,15,15],[101,12,12],[81,9,9],
+                [61,6,6],[41,4,4],[20,2,2],[0,0,0],
             ]),
             ("DarkBlue", [153, 214, 212], [
-                [114,123,136],[83,101,128],[71,90,120],[59,80,112],
-                [49,71,103],[40,62,95],[32,53,86],[25,46,77],
-                [19,38,67],[15,32,58],[11,25,48],[8,20,39],
-                [5,14,29],[3,9,19],[1,4,9],[0,0,0],
+                [74,128,207],[64,115,192],[57,108,184],[50,100,175],
+                [44,93,165],[38,85,154],[33,76,141],[28,68,128],
+                [23,59,114],[19,51,99],[15,42,83],[11,33,67],
+                [8,25,51],[5,17,34],[2,8,17],[0,0,0],
             ]),
         ];
         for (name, hsv, expected) in cases {
