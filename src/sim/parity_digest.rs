@@ -179,10 +179,7 @@ impl ParityDigestSink {
             .to_json_line()
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         self.writer.write_all(line.as_bytes())?;
-        self.writer.write_all(
-            b"
-",
-        )?;
+        self.writer.write_all(b"\n")?;
         self.writer.flush()?;
         self.written += 1;
         Ok(())
