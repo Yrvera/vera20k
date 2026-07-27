@@ -594,6 +594,7 @@ pub fn carries_a_river(water_percent: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::grid::RmgGrid as Grid;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::phases::water::PlayableRect;
@@ -642,7 +643,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 
@@ -660,7 +661,7 @@ mod tests {
         let mut identity = ids();
         // The deck needs waterfall sets; four synthetic bases, disjoint from
         // everything else the test ids use.
-        identity.waterfalls = [600, 610, 620, 630];
+        identity.special.waterfalls = [600, 610, 620, 630];
         let blocks = blocks();
         let mut rng = RmgRng::new(seed);
         let mut gauss = Gaussian::default();

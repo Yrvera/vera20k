@@ -454,6 +454,7 @@ pub(crate) fn grow_lake(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::grid::RmgGrid;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::phases::water::PlayableRect;
@@ -503,7 +504,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 

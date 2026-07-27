@@ -95,6 +95,7 @@ fn place_block(grid: &mut RmgGrid, blocks: &dyn TileBlocks, tile: i32, anchor: (
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
 
     struct TwoByTwo(TileBlock);
@@ -132,7 +133,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 

@@ -9,6 +9,7 @@ pub mod bridge;
 pub mod green_spread;
 pub mod hills;
 pub mod hills_corners;
+pub mod island_passes;
 pub mod lake;
 pub mod lat_fixup;
 pub mod lat_patches;

@@ -339,7 +339,7 @@ fn flank(ctx: &mut BlobCtx<'_>, x: i32, y: i32, region: i32) {
 /// every ok-flag on this path, so a deck that could not fully stamp still
 /// counts as placed.
 fn deck(ctx: &mut BlobCtx<'_>, args: &BridgeArgs, layout: &Layout) {
-    let base = ctx.ids.waterfalls[args.heading_dir / 2];
+    let base = ctx.ids.special.waterfalls[args.heading_dir / 2];
     if base < 0 {
         // No waterfall set in this theater: nothing to stamp. The placement
         // itself stands, exactly as if every stamp had refused.
@@ -475,6 +475,7 @@ pub(crate) fn jump(heading_dir: usize) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::grid::RmgGrid;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::rng::RmgRng;
@@ -512,9 +513,9 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         };
-        ids.waterfalls = [600, 610, 620, 630];
+        ids.special.waterfalls = [600, 610, 620, 630];
         for (x, y) in grid.native_cells().collect::<Vec<_>>() {
             grid.get_mut(x, y).expect("native cell").tile = ids.clear;
         }

@@ -146,6 +146,7 @@ fn lat_group(grid: &mut RmgGrid, x: i32, y: i32, base: i32, lat_base: i32, exemp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::tiles::SpecialTerrain;
 
     /// Synthetic ids: distinct bases and LAT ranges per group.
     fn ids() -> TileIds {
@@ -167,7 +168,7 @@ mod tests {
             paved_roads: 1200,
             medians: 1300,
             paved_road_ends: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 
