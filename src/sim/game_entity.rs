@@ -543,11 +543,12 @@ pub struct GameEntity {
 }
 
 impl GameEntity {
-    /// Ground-truth current mission + sub-phase derived from the authoritative
-    /// `Option<T>` machines. Priority: miner → aircraft → dock → attack → move →
-    /// idle. The `mission` component's `current`/`substate` are refreshed from
-    /// this each tick; a later slice makes `mission` authoritative and this
-    /// becomes the cross-check.
+    /// Debug/test classifier: the mission + sub-phase the legacy `Option<T>`
+    /// machines imply. Since the authority flip, `mission` advances only
+    /// through the exact verbs — this derivation is no longer projected into
+    /// it and survives purely as the cross-check the harvest seam and the
+    /// passive-acquire shadow assert against.
+    #[cfg(any(test, debug_assertions))]
     pub fn derived_mission(&self) -> (MissionType, u8) {
         if let Some(miner) = &self.miner {
             // The whole harvest loop is one mission; the FSM state is its sub-phase.

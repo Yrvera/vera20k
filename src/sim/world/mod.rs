@@ -61,7 +61,6 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
 use crate::sim::lifecycle_request::LifecycleRequest;
-use crate::sim::mission::compatibility::legacy_tick_tail_projection;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::droppod_movement;
@@ -112,12 +111,6 @@ pub struct TickResult {
     /// starting next tick. Matches gamemd's one-tick-delayed visibility.
     pub bridge_state_changed: bool,
     pub movement: movement::MovementTickStats,
-    /// Debug/test-only S2a measurement: how many live non-miner Units had their
-    /// dispatch family differ between host-time (top-of-tick, the gamemd-faithful
-    /// dispatch input) and the end-of-tick re-derivation this tick. Always 0 in
-    /// release (the proof that fills it is debug/test only). NOT hashed, NOT
-    /// serialized — pure instrumentation for the S2 go/no-go churn signal.
-    pub dispatch_churn: u32,
 }
 
 /// A sound event produced during simulation (combat, death, production).
@@ -990,32 +983,6 @@ impl Simulation {
                     );
                 }
             }
-        }
-    }
-
-    /// Refresh the `mission` component's `current`/`substate` on every entity
-    /// from the authoritative `Option<T>` machines, and advance its per-entity
-    /// `tick_counter`. As of Slice 8 `mission` IS folded into `world_hash`, so
-    /// this is the canonical projection writer: `current`/`substate` are a
-    /// deterministic function of the authoritative machines (the verbs own
-    /// `queued`/`suspended`/`timer`). Runs before `state_hash()` each tick tail,
-    /// so the folded value reflects the current tick. BTreeMap `values_mut()`
-    /// yields deterministic ascending-id order.
-    pub(crate) fn refresh_mission_shadow(&mut self) {
-        self.refresh_mission_shadow_except(&BTreeSet::new());
-    }
-
-    /// Tail projection with an S2 skip set: ids dispatched in-loop this tick
-    /// already committed `current`/`substate` and incremented `tick_counter` at
-    /// host time (authoritative); rewriting them here would clobber the
-    /// dispatch-time value and double-count the counter.
-    pub(crate) fn refresh_mission_shadow_except(&mut self, dispatched: &BTreeSet<u64>) {
-        for entity in self.substrate.entities.values_mut() {
-            if dispatched.contains(&entity.stable_id) {
-                continue;
-            }
-            let (current, substate) = entity.derived_mission();
-            legacy_tick_tail_projection(&mut entity.mission, current, substate);
         }
     }
 
@@ -2100,26 +2067,14 @@ impl Simulation {
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
 
-        // Object-AI stage (S4a): AUTHORITATIVE per-object mission commit walk over
-        // the live object order, run immediately BEFORE Phase-1 ground movement.
-        // This is the per-object dispatch site that must precede the locomotor —
-        // gamemd decides each object's mission, then moves it, within
-        // one pass — so a later slice (S2b) can absorb the ground-movement loop
-        // into this stage. The stage is still a strict no-op here, so the
-        // relocation is hash-neutral (proven by the no-hash-change tests).
-        // Movement stays before the Phase-3 vision recompute, so sight is
-        // unaffected. The S1 shadow PROOF stays at end-of-tick, where the mission
-        // shadow is fresh.
-        //
-        // S2a: bind the host-time Unit dispatch trace (debug/test only). S4a
-        // (Option B): the object-AI stage now AUTHORITATIVELY commits each live
-        // non-miner Unit's mission (`+0xC4` tick_counter + `derived_mission`) at
-        // this gamemd-faithful per-object point (pre-movement, LogicVector order);
-        // `host_dispatched` collects those ids so the Phase-9 tail projection
-        // skips them (no double-commit / double-count). Miners, passengers, dying
-        // units, and non-Units fall to the tail.
-        let mut host_dispatched: BTreeSet<u64> = BTreeSet::new();
-        let dispatch_trace = self.object_ai_stage(rules, &mut host_dispatched);
+        // Object-AI stage: the authoritative per-object Mission host, run
+        // immediately BEFORE Phase-1 ground movement — gamemd decides each
+        // object's mission, then moves it, within one pass. Each live object
+        // gets its `+0xC4` AI-counter tick and its owner-local queued-mission
+        // promotion (Ready→Commence) here; player commands queued the mission
+        // in the command phase above (the event-execute shape). Movement stays
+        // before the Phase-3 vision recompute, so sight is unaffected.
+        self.object_ai_stage(rules);
 
         // --- Phase 1: Ground movement ---
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.
@@ -2851,39 +2806,12 @@ impl Simulation {
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
         self.debug_assert_lifecycle_consistent();
-        // Mission projection runs after all systems and before the hash, so the
-        // folded `mission` reflects the current tick. As of Slice 8 `mission` is
-        // canonical hashed state; the Slice-2 shadow-agreement assert is retired.
-        // S4a: live non-miner Units already committed at the host (`host_dispatched`);
-        // the tail projects only the rest (miners, passengers, dying units, non-Units).
-        self.refresh_mission_shadow_except(&host_dispatched);
         // P1+P2 production+economy shadow: mirror credits + purifier_count and
         // rebuild the factory registry from the legacy queues, after all
         // authoritative systems and before the hash. Writes only non-hashed shadow
         // fields, so state_hash stays bit-identical (proven by the *_no_hash_change
         // tests). `rules` is the advance_tick `Option<&RuleSet>` tail param.
         self.refresh_production_shadow(rules);
-        // Object-AI Slice S1 shadow: for one bounded moving-UnitClass scenario,
-        // assert mission dispatch is observed before the locomotor Process within
-        // one object pass (the verified gamemd ordering). Read-only, unhashed,
-        // debug-only — the authority flip is a later slice.
-        #[cfg(debug_assertions)]
-        self.debug_assert_s1_shadow();
-        // S2a: end-of-tick Unit dispatch proof — router determinism + AttackMove-
-        // unreachable + Skip-never asserts, plus the host-vs-tail churn metric.
-        // Read-only, debug/test only; the binding is consumed (or discarded in
-        // release) so the host-time trace never leaks past the tick.
-        #[cfg(any(test, debug_assertions))]
-        let dispatch_churn = self.debug_assert_unit_dispatch_shadow(&dispatch_trace);
-        #[cfg(not(any(test, debug_assertions)))]
-        let dispatch_churn = {
-            let _ = dispatch_trace;
-            0u32
-        };
-        // S2a: live-set coverage (T5) — surface any Unit a legacy dispatch phase
-        // would touch that is absent from the host's LogicVector set.
-        #[cfg(any(test, debug_assertions))]
-        self.debug_check_dispatch_live_set_coverage();
         // S4c: passive/opportunity-acquire eligibility shadow (read-only,
         // hash-neutral). Counts Units that would reach the passive-acquire
         // scanner per the verified gate; the authority flip (running the scanner)
@@ -2902,7 +2830,6 @@ impl Simulation {
             ownership_changed: passenger_ownership_changed,
             bridge_state_changed,
             movement: movement_stats,
-            dispatch_churn,
         }
     }
 }

@@ -116,13 +116,21 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// record/replay equality and all three absolute RNG pins stayed unchanged.
 /// This is a behavior-bearing Rust regression ratchet, not gamemd parity
 /// evidence.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xCE3C_9630_D271_5BC9;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x4039_EA00_857F_241B;
+/// Re-baselined for the Mission authority flip: MissionCom is verb-owned
+/// (commands queue via the event-execute shape; the object-AI host ticks
+/// `+0xC4` for every live category and promotes queued missions
+/// Ready→Commence; the per-tick legacy projection is deleted). Every hashed
+/// mission field changes value — including under the legacy pre-v29
+/// composition, which folds the reduced mission subset — so all three
+/// constants shift together while record/replay equality and all three
+/// absolute RNG pins stay unchanged (the verbs draw nothing).
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xD55F_13B3_EEE1_0CC8;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xF7DA_A64F_1DE4_E6CA;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
-// Its schema shift was composition-only; the later behavior-bearing Drive
-// re-baseline is documented immediately above. Both remain Rust regression
-// ratchets, not gamemd evidence.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xB86B_AFD0_F6AA_ACE0;
+// Its schema shift was composition-only; the later behavior-bearing Drive and
+// authority-flip re-baselines are documented immediately above. All remain
+// Rust regression ratchets, not gamemd evidence.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x560C_C5C9_213C_A007;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -410,56 +418,6 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     );
 }
 
-/// S2 go/no-go measurement (not a gate): run the same realistic skirmish and sum the
-/// per-tick dispatch churn — live non-miner Units whose dispatch family at the
-/// gamemd-faithful host-time point (top-of-tick, post-command, pre-movement) differs
-/// from the end-of-tick re-derivation. High churn means our phase-split structure
-/// diverges from gamemd's per-object interleaving often enough that the S2 authority
-/// flip must dispatch by the host-time value, not the tail projection. The number is
-/// the deliverable — printed below; run with `--nocapture` to read it.
-#[test]
-fn dispatch_churn_measurement_over_global_skirmish() {
-    let rules = harness_rules();
-    let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    let grid = PathGrid::new(64, 64);
-    let script = harness_script();
-
-    let mut sim = Simulation::with_seed(HARNESS_SEED);
-    seed_scenario(&mut sim, &rules, &heights);
-
-    let mut total_churn: u64 = 0;
-    let mut ticks_with_churn: u32 = 0;
-    let mut max_per_tick: u32 = 0;
-    let mut iterations: u64 = 0;
-    for tick in 0..HARNESS_TICKS {
-        let due = due_commands(&sim, &script, tick);
-        let result = sim.advance_tick(
-            &due,
-            Some(&rules),
-            &heights,
-            Some(&grid),
-            None,
-            HARNESS_TICK_MS,
-        );
-        if result.dispatch_churn > 0 {
-            ticks_with_churn += 1;
-            total_churn += result.dispatch_churn as u64;
-            max_per_tick = max_per_tick.max(result.dispatch_churn);
-        }
-        iterations += 1;
-    }
-
-    println!(
-        "[S2 churn] {HARNESS_TICKS}-tick skirmish: total_unit_tick_churn={total_churn}, \
-         ticks_with_churn={ticks_with_churn}/{HARNESS_TICKS}, max_per_tick={max_per_tick}"
-    );
-    // Guard only that the full span ran (a panic/early-return would void the number).
-    assert_eq!(
-        iterations, HARNESS_TICKS,
-        "churn measurement must run the full skirmish span"
-    );
-}
-
 const DENSE_SEED: u64 = 0x00BA771E_5EED;
 const DENSE_TICKS: u64 = 300;
 const DENSE_ROWS: u16 = 10;
@@ -534,55 +492,6 @@ fn dense_converging_setup() -> (
         ));
     }
     (sim, rules, heights, grid, script)
-}
-
-#[test]
-fn dispatch_churn_measurement_dense_converging_battle() {
-    let (mut sim, rules, heights, grid, script) = dense_converging_setup();
-
-    let mut hist = [0u32; 8]; // per-tick churn buckets; index = churn count clamped to 7
-    let mut total_churn: u64 = 0;
-    let mut ticks_with_churn: u32 = 0;
-    let mut max_per_tick: u32 = 0;
-    for tick in 0..DENSE_TICKS {
-        let due: Vec<CommandEnvelope> = script
-            .iter()
-            .filter(|(t, _, _)| *t == tick + 1)
-            .map(|(t, owner, c)| CommandEnvelope::new(*owner, *t, c.clone()))
-            .collect();
-        let result = sim.advance_tick(
-            &due,
-            Some(&rules),
-            &heights,
-            Some(&grid),
-            None,
-            HARNESS_TICK_MS,
-        );
-        let c = result.dispatch_churn;
-        if c > 0 {
-            ticks_with_churn += 1;
-            total_churn += c as u64;
-            max_per_tick = max_per_tick.max(c);
-        }
-        hist[(c as usize).min(7)] += 1;
-    }
-
-    let survivors = sim
-        .substrate
-        .entities
-        .iter_sorted()
-        .filter(|(_, e)| e.category == EntityCategory::Unit && !e.dying)
-        .count();
-    println!(
-        "[S2 churn DENSE] {DENSE_TICKS}-tick converging battle (20 tanks): \
-         total_unit_tick_churn={total_churn}, ticks_with_churn={ticks_with_churn}/{DENSE_TICKS}, \
-         max_per_tick={max_per_tick}, survivors={survivors}/20"
-    );
-    println!("[S2 churn DENSE] per-tick churn histogram [churn=0..=7+]: {hist:?}");
-    assert!(
-        total_churn >= 1,
-        "a 20-tank converging battle must produce churn (arrivals + target acquisition)"
-    );
 }
 
 /// S2 movement-neutrality tripwire: per-tick position fingerprint of the dense

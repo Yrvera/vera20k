@@ -1,12 +1,23 @@
-//! Dormant exact Mission authority and category-aware wrapper transactions.
+//! Exact Mission authority and category-aware wrapper transactions.
 //!
-//! Current gameplay remains on `compatibility`; these methods have no
-//! production callers.  They preserve native base transitions, Aircraft leaf
-//! policy, synchronous Queue/Ready/Commence order, and the verified
-//! Target/NavCom wrapper order.  Concrete setters use a two-phase provider so
-//! unavailable effects cannot leave a partially-written transaction.
+//! LIVE since the authority flip: player commands queue through
+//! [`Simulation::mission_queue_exact`] (the event-execute shape), and the
+//! per-object AI host promotes queued missions through
+//! [`Simulation::mission_host_promote`] (the per-category AI Ready→Commence
+//! shape). The methods preserve native base transitions, Aircraft leaf policy,
+//! synchronous Queue/Ready/Commence order, and the verified Target/NavCom
+//! wrapper order.  Concrete setters use a two-phase provider so unavailable
+//! effects cannot leave a partially-written transaction.
+//!
+//! Readiness inputs: the Unit world lookups (Radio contact slot 0, the
+//! building-under stored-order lookup, `WeaponsFactory=`) are live through
+//! [`LiveReadyInputProvider`]. The exact locomotor family states and the
+//! signed object height have no live producers yet; the host promotion maps
+//! that unavailability to a permissive moving-defer gate (recorded residual)
+//! rather than stalling queued missions forever.
 
 use crate::map::entities::EntityCategory;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
 use crate::sim::world::Simulation;
@@ -73,17 +84,100 @@ pub(crate) trait ReadyInputProvider: ready_private::Sealed {
     fn ready_to_commence(&self, sim: &Simulation, receiver: u64, mission: &MissionCom) -> bool;
 }
 
-/// Production view over currently represented exact inputs.
+/// Production view over currently represented exact inputs, without rules.
 ///
-/// Unit factory/contact lookup and signed-height ownership are not available
-/// through this narrow provider yet, so branches that reach those reads return
-/// an explicit error. Early native false branches still short-circuit normally.
+/// Unit factory/contact lookups need parsed rules data, so this rules-free
+/// provider reports them unavailable. Use [`LiveReadyInputProvider`] wherever
+/// a `RuleSet` is in scope. Early native false branches still short-circuit
+/// normally.
 #[derive(Debug, Default)]
 pub(crate) struct EntityReadyInputProvider;
 
+/// Production view with the Unit world lookups live (rules in scope).
+#[derive(Debug)]
+pub(crate) struct LiveReadyInputProvider<'r> {
+    pub(crate) rules: &'r RuleSet,
+}
+
 struct UnavailableUnitWorld;
 
+/// Live Unit-readiness world: Radio contact slot 0 identity and the
+/// building-under lookup in the existing per-cell stored list order.
+struct LiveUnitWorld<'a> {
+    sim: &'a Simulation,
+    rules: &'a RuleSet,
+    entity: &'a crate::sim::game_entity::GameEntity,
+}
+
+impl LiveUnitWorld<'_> {
+    fn weapons_factory(&self, entity: &crate::sim::game_entity::GameEntity) -> bool {
+        self.rules
+            .object(self.sim.interner.resolve(entity.type_ref))
+            .is_some_and(|obj| obj.weapons_factory)
+    }
+}
+
+impl UnitReadyWorld for LiveUnitWorld<'_> {
+    fn contact_slot_zero(&self) -> Result<Option<UnitReadyContact>, ReadyUnavailable> {
+        let Some(contact_id) = self.entity.radio_contacts.slot(0) else {
+            return Ok(None);
+        };
+        let Some(contact) = self.sim.substrate.entities.get(contact_id) else {
+            // A live native slot always resolves; a stale id cannot be a
+            // weapons-factory Building, so it classifies as a non-Building
+            // contact rather than erroring the whole predicate.
+            return Ok(Some(UnitReadyContact::Other));
+        };
+        if contact.category != EntityCategory::Structure {
+            return Ok(Some(UnitReadyContact::Other));
+        }
+        Ok(Some(UnitReadyContact::Building {
+            weapons_factory: self.weapons_factory(contact),
+        }))
+    }
+
+    fn building_under_in_stored_order(
+        &self,
+        _unit_position: ReadyLeptonPoint,
+    ) -> Result<Option<UnitReadyBuilding>, ReadyUnavailable> {
+        let (rx, ry) = (self.entity.position.rx, self.entity.position.ry);
+        let Some(cell) = self.sim.substrate.occupancy.get(rx, ry) else {
+            return Ok(None);
+        };
+        // The per-cell occupant list already keeps the gamemd insertion order
+        // (non-buildings prepend, buildings append); take the first Building
+        // in that stored order — no sort, no rebuilt candidate list.
+        for occupant in &cell.occupants {
+            let Some(entity) = self.sim.substrate.entities.get(occupant.entity_id) else {
+                continue;
+            };
+            if entity.category != EntityCategory::Structure {
+                continue;
+            }
+            // Anchor: the Building's footprint-NW cell as a lepton point whose
+            // native lepton→cell conversion lands on that cell. UNCHECKED
+            // whether the native building coordinate is NW-cell-anchored for
+            // multi-cell foundations; the affected branch is the narrow
+            // no-contact factory-cell hold.
+            let anchor = ReadyLeptonPoint::new(
+                i32::from(entity.position.rx)
+                    .wrapping_mul(256)
+                    .wrapping_add(128),
+                i32::from(entity.position.ry)
+                    .wrapping_mul(256)
+                    .wrapping_add(128),
+            );
+            return Ok(Some(UnitReadyBuilding::new(
+                self.weapons_factory(entity),
+                anchor,
+            )));
+        }
+        Ok(None)
+    }
+}
+
 impl ready_private::Sealed for EntityReadyInputProvider {}
+impl ready_private::Sealed for LiveReadyInputProvider<'_> {}
 
 impl UnitReadyWorld for UnavailableUnitWorld {
     fn contact_slot_zero(&self) -> Result<Option<UnitReadyContact>, ReadyUnavailable> {
@@ -98,8 +192,28 @@ impl UnitReadyWorld for UnavailableUnitWorld {
     }
 }
 
-impl EntityReadyInputProvider {
-    fn evaluate(&self, sim: &Simulation, receiver: u64, mission: &MissionCom) -> ReadyResult {
+/// Degraded moving-gate input: no locomotor family has a live exact producer
+/// for its readiness state yet, so the host promotion substitutes a
+/// "not moving now" input — the moving-defer branch never defers, and every
+/// later exact gate (tracker bytes, Radio slot-0 hold, building-under hold,
+/// Infantry Doing table) still evaluates. Recorded residual; superseded the
+/// moment real producers write `mission_ready_state`.
+const DEGRADED_NOT_MOVING: crate::sim::movement::locomotor_ready::LocomotorReadyState =
+    crate::sim::movement::locomotor_ready::LocomotorReadyState::Drive {
+        turning_active: false,
+        slot_moving: false,
+        head_to_nonnull: false,
+        owner_speed: 0,
+    };
+
+fn evaluate_ready(
+    sim: &Simulation,
+    receiver: u64,
+    mission: &MissionCom,
+    rules: Option<&RuleSet>,
+    degraded_moving_gate: bool,
+) -> ReadyResult {
+    {
         let entity = sim
             .substrate
             .entities
@@ -108,7 +222,12 @@ impl EntityReadyInputProvider {
         let locomotor = entity
             .locomotor
             .as_ref()
-            .and_then(|locomotor| locomotor.mission_ready_state);
+            .and_then(|locomotor| locomotor.mission_ready_state)
+            .or(if degraded_moving_gate {
+                Some(DEGRADED_NOT_MOVING)
+            } else {
+                None
+            });
         let attack_target_present = entity.attack_target.is_some();
 
         match entity.category {
@@ -125,21 +244,34 @@ impl EntityReadyInputProvider {
                         .wrapping_mul(256)
                         .wrapping_add(entity.position.sub_y.to_num::<i32>()),
                 );
-                unit_ready_to_commence(UnitReadyView {
-                    mission,
-                    leaf,
-                    unload_active: entity
-                        .miner
-                        .as_ref()
-                        .is_some_and(|miner| miner.unload_active),
-                    locomotor,
-                    // The current u8 terrain level is not the verified signed
-                    // ObjectClass height dword.
-                    signed_height: None,
-                    attack_target_present,
-                    position,
-                    world: &UnavailableUnitWorld,
-                })
+                let unload_active = entity
+                    .miner
+                    .as_ref()
+                    .is_some_and(|miner| miner.unload_active);
+                match rules {
+                    Some(rules) => unit_ready_to_commence(UnitReadyView {
+                        mission,
+                        leaf,
+                        unload_active,
+                        locomotor,
+                        // The current u8 terrain level is not the verified
+                        // signed ObjectClass height dword.
+                        signed_height: None,
+                        attack_target_present,
+                        position,
+                        world: &LiveUnitWorld { sim, rules, entity },
+                    }),
+                    None => unit_ready_to_commence(UnitReadyView {
+                        mission,
+                        leaf,
+                        unload_active,
+                        locomotor,
+                        signed_height: None,
+                        attack_target_present,
+                        position,
+                        world: &UnavailableUnitWorld,
+                    }),
+                }
             }
             EntityCategory::Infantry => {
                 let leaf = entity
@@ -179,11 +311,27 @@ impl ReadyInputProvider for EntityReadyInputProvider {
         receiver: u64,
         preview: &MissionCom,
     ) -> Result<(), ReadyUnavailable> {
-        self.evaluate(sim, receiver, preview).map(|_| ())
+        evaluate_ready(sim, receiver, preview, None, false).map(|_| ())
     }
 
     fn ready_to_commence(&self, sim: &Simulation, receiver: u64, mission: &MissionCom) -> bool {
-        self.evaluate(sim, receiver, mission)
+        evaluate_ready(sim, receiver, mission, None, false)
+            .expect("successful readiness preflight must make the fresh read available")
+    }
+}
+
+impl ReadyInputProvider for LiveReadyInputProvider<'_> {
+    fn validate_ready_inputs(
+        &self,
+        sim: &Simulation,
+        receiver: u64,
+        preview: &MissionCom,
+    ) -> Result<(), ReadyUnavailable> {
+        evaluate_ready(sim, receiver, preview, Some(self.rules), false).map(|_| ())
+    }
+
+    fn ready_to_commence(&self, sim: &Simulation, receiver: u64, mission: &MissionCom) -> bool {
+        evaluate_ready(sim, receiver, mission, Some(self.rules), false)
             .expect("successful readiness preflight must make the fresh read available")
     }
 }
@@ -237,6 +385,47 @@ impl Simulation {
             .get_mut(receiver)
             .ok_or(MissionAuthorityError::MissingReceiver(receiver))?;
         Ok(commence_leaf(entity, now))
+    }
+
+    /// Host-time queued-mission promotion at the per-object AI position.
+    ///
+    /// Native shape: each per-category AI update calls ReadyToCommence and, on
+    /// true, Commence — Unit AI (`0x00736473`/`0x007366FD`), Infantry AI
+    /// (`0x0051BC51`/`0x0051BF03`), Aircraft AI (`0x00415058`), Building
+    /// Update (`0x0043FE43`/`0x0043FFA3`); verified via
+    /// `decompile_function 0x007360c0` / `0x0051bab0` and the Queue/Commence
+    /// active-caller census. Commence is a fieldwise no-op on an empty queue,
+    /// so the Ready read is skipped there (pure, result unused).
+    ///
+    /// Readiness degradation (recorded residual): the exact locomotor family
+    /// states and the signed object height have no live producers, so the
+    /// native moving-defer branch cannot be evaluated; that unavailability is
+    /// mapped to "promote" (the branch's pass outcome). Every other gate —
+    /// excluded missions, deploy/unload latches, tracker bytes, the Radio
+    /// slot-0 weapons-factory hold, the no-contact factory-cell hold, the
+    /// Infantry firing/falling/Doing gates, the Aircraft and Building latches
+    /// — evaluates exactly. Any other unavailable input blocks promotion.
+    pub(crate) fn mission_host_promote(&mut self, receiver: u64, now: u32, rules: &RuleSet) {
+        let Some(entity) = self.substrate.entities.get(receiver) else {
+            return;
+        };
+        if entity.mission.queued() == MissionId::NONE {
+            return;
+        }
+        // Degraded moving-gate: absent locomotor producers read as "not
+        // moving now" so every later exact gate still evaluates; a residual
+        // Locomotor/SignedHeight error (a live producer without a height
+        // owner) degrades to the branch's pass outcome.
+        let ready = match evaluate_ready(self, receiver, &entity.mission, Some(rules), true) {
+            Ok(ready) => ready,
+            Err(ReadyUnavailable::Locomotor | ReadyUnavailable::SignedHeight) => true,
+            Err(_) => false,
+        };
+        if ready {
+            if let Some(entity) = self.substrate.entities.get_mut(receiver) {
+                commence_leaf(entity, now);
+            }
+        }
     }
 
     pub(crate) fn mission_queue_exact(

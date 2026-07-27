@@ -3,15 +3,17 @@
 //! Models the original engine's mission contract as Rust-native state and
 //! functions rather than reproducing its C++ class tree. `state` owns the
 //! lossless selectors and private common fields, `timer` owns both legacy and
-//! signed dispatch timing, and `authority` owns the dormant exact verb surface.
+//! signed dispatch timing, and `authority` owns the LIVE exact verb surface:
+//! player commands queue through it (the event-execute shape) and the
+//! per-object AI host promotes queued missions (Ready→Commence). The mission
+//! handler bodies remain the legacy per-system state machines — dispatch-time
+//! handler execution (timer/handler-state writes) is the recorded residual.
 //! Depends on `rules/` for the INI control table and otherwise remains in
 //! `sim/` — never render/ui/sidebar/audio/net.
 
 pub(crate) mod authority;
-pub(crate) mod compatibility;
 pub(crate) mod concrete_effects;
 pub mod control;
-pub mod dispatch;
 pub(crate) mod leaf;
 pub(crate) mod readiness;
 pub mod retask;

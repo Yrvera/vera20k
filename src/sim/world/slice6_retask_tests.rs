@@ -103,13 +103,18 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// now join the lockstep hash. The current-tree legacy-schema probe below still
 /// reproduces the prior value exactly; this is a Rust regression ratchet, not
 /// gamemd parity evidence.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 17461624628486653208;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 3364793811093096139;
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 14099801084960151601;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 10767158924782362086;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
 // this live regression value.
-const SLICE6_BASELINE_HASH: u64 = 17647978103130620580;
+// Re-baselined (all three constants) for the Mission authority flip:
+// commands queue through the exact authority and the host promotes; the
+// legacy per-tick projection is deleted, so every hashed mission value —
+// including the reduced subset the legacy pre-v29 composition folds —
+// changes together. Behavior-bearing Rust ratchet, not gamemd evidence.
+const SLICE6_BASELINE_HASH: u64 = 5165059427831540523;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -244,9 +249,9 @@ fn slice6_move_command_retasks_via_mission_substrate_and_clears_state() {
 
     let e = sim.substrate.entities.get(1).expect("unit");
     assert_eq!(
-        e.mission.current(),
+        e.mission.queued(),
         MissionId::from_known(MissionType::Move),
-        "compatibility retask committed Move to the mission substrate (pre-refresh)"
+        "the command queued Move through the exact authority (host promotes later)"
     );
     assert!(
         e.attack_target.is_none(),

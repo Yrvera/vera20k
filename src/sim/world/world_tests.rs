@@ -580,25 +580,26 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
 }
 
 #[test]
-fn mission_refresh_changes_state_hash() {
-    // As of Slice 8 `mission` is folded into world_hash, so refreshing it (which
-    // advances the AI counter and re-derives current/handler state) DOES move the
-    // lockstep hash — the inverse of the retired Slice-2 shadow invariant.
+fn mission_host_counter_changes_state_hash() {
+    // `mission` is folded into world_hash, so the host's per-object AI-counter
+    // tick DOES move the lockstep hash — the mission state is live hashed
+    // state, not a shadow.
     let mut sim = Simulation::new();
     sim.substrate
         .entities
         .insert(GameEntity::test_default(1, "E1", "Americans", 3, 3));
+    sim.set_logic_order_for_test(vec![1]);
     let before = sim.state_hash();
-    sim.refresh_mission_shadow();
+    sim.object_ai_stage(None);
     let after = sim.state_hash();
     assert_ne!(
         before, after,
-        "mission refresh must perturb the state hash now that mission is folded"
+        "the host counter tick must perturb the state hash (mission is folded)"
     );
     assert_eq!(
         sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
         1,
-        "refresh_mission_shadow actually ran (AI counter advanced)"
+        "object_ai_stage actually ran (AI counter advanced)"
     );
 }
 

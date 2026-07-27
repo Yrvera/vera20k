@@ -1,77 +1,40 @@
-//! Per-object AI dispatch scaffold (TechnoClass/FootClass spine, Slice S0).
+//! Per-object AI dispatch host (TechnoClass/FootClass spine).
 //!
 //! Walks the substrate's live-object order and dispatches each live object
-//! through a per-`EntityCategory` shell. THIS SLICE the shell is a strict
-//! no-op: it visits every live, present, non-dying object exactly once in live
-//! order and changes nothing the lockstep hash observes. Later slices replace
-//! the no-op arms with the absorbed per-leaf behavior (movement, turret,
-//! combat, mission dispatch) one at a time.
+//! through a per-`EntityCategory` shell. Since the Mission authority flip the
+//! shell owns the native per-object Mission work: the `+0xC4` AI counter and
+//! the owner-local queued-mission promotion (Ready→Commence) that every
+//! per-category AI update performs. The mission handler *bodies* remain the
+//! legacy per-system state machines (movement, combat, miner, aircraft, …)
+//! running in their existing phases — absorbing them into this walk is the
+//! remaining per-arm work.
 //!
 //! Depends on: `world::Simulation` (substrate live order + entity store).
 //! Must NOT depend on render/ui/sidebar/audio/net (sim invariant #1).
 //! Dispatch is `match category` only — no trait object / dyn / vtable
-//! (invariant #2). No RNG, no hashed-state mutation, no phase reorder.
+//! (invariant #2).
 
 use super::Simulation;
 use crate::map::entities::EntityCategory;
 use crate::rules::particle_system_type::ParticleSystemBehavesLike;
 use crate::rules::ruleset::RuleSet;
-// `DispatchSlot` types the always-defined `UnitDispatchRecord`, so its import is non-gated.
-use crate::sim::mission::compatibility::legacy_unit_host_projection;
-use crate::sim::mission::dispatch::DispatchSlot;
-// `unit_dispatch_family` is consumed only by the gated record pass + proof below.
-#[cfg(any(test, debug_assertions))]
-use crate::sim::mission::dispatch::unit_dispatch_family;
-
-// Slice S1 (shadow) imports — used only by the `#[cfg(any(test, debug_assertions))]`
-// dispatch-before-locomotor observation below; gated to avoid release dead-code.
-#[cfg(any(test, debug_assertions))]
-use crate::sim::game_entity::GameEntity;
 #[cfg(any(test, debug_assertions))]
 use crate::sim::mission::MissionType;
-#[cfg(any(test, debug_assertions))]
-use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
 
 // P3 oracle probe import — used only by the `#[cfg(test)]` factory_oracle_step_trace.
 #[cfg(test)]
 use crate::sim::production::StepOutcome;
 
-/// One live Unit's host-time dispatch routing, recorded at `object_ai_stage` time (top of
-/// tick, after commands) for the end-of-tick churn proof. Copy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UnitDispatchRecord {
-    pub id: u64,
-    /// `derived_mission().0` evaluated fresh at host time (NOT the stale `mission.current`).
-    pub host_mission: crate::sim::mission::MissionType,
-    pub family: DispatchSlot,
-}
-
-/// The per-tick host-time dispatch trace. Populated only in debug/test builds; release
-/// returns an empty `Vec` (lazy `Vec::new()` → no allocation on the hot path).
-pub(crate) type UnitDispatchTrace = Vec<UnitDispatchRecord>;
-
 impl Simulation {
-    /// Object-AI stage (S4a: AUTHORITATIVE per-object mission commit).
+    /// Object-AI stage: the authoritative per-object Mission host.
     ///
     /// Walks the live LogicVector order via `for_each_live_object` — the same
-    /// re-read contract the native scheduler uses — and runs each live, present,
-    /// non-dying object through `techno_ai_shell`. A live non-miner Unit's mission
-    /// (`+0xC4` tick_counter + `derived_mission`) is committed HERE, at the
-    /// gamemd-faithful per-object AI point (pre-movement); its id is inserted into
-    /// `committed` so the Phase-9 tail projection skips it (no double-commit). The
-    /// other arms are still no-ops (their slices land later).
-    ///
-    /// `record` is true only in debug builds, where the recorded visit trace is
-    /// asserted to equal the live (present, non-dying) order — the first
-    /// tripwire for any future arm that mutates live membership mid-pass.
-    /// Release builds pass `false`, so the trace `Vec` is never pushed to and
-    /// never allocates (no per-tick hot-path cost).
-    pub(crate) fn object_ai_stage(
-        &mut self,
-        rules: Option<&RuleSet>,
-        committed: &mut std::collections::BTreeSet<u64>,
-    ) -> UnitDispatchTrace {
-        let visited = self.object_ai_walk(cfg!(debug_assertions), rules, committed);
+    /// re-read contract the native scheduler uses — and runs each live,
+    /// present, non-dying object through `techno_ai_shell`: `+0xC4` AI-counter
+    /// increment plus the owner-local queued-mission promotion at the verified
+    /// per-category AI position (see `Simulation::mission_host_promote`).
+    pub(crate) fn object_ai_stage(&mut self, rules: Option<&RuleSet>) {
+        let visited = self.object_ai_walk(cfg!(debug_assertions), rules);
 
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -86,141 +49,6 @@ impl Simulation {
 
         #[cfg(not(debug_assertions))]
         let _ = visited;
-
-        // Unit dispatch shadow: record host-time routing (debug/test only; empty in
-        // release). The `Unit => {}` arm of `techno_ai_shell` stays a no-op — the shadow
-        // is a parallel pass, exactly like the S1 shadow.
-        self.unit_dispatch_record_pass()
-    }
-
-    /// Host-time Unit dispatch shadow pass (debug/test only). Walks the live-object order
-    /// (the gamemd dispatch set), and for each live, non-dying, NON-miner Unit records its
-    /// fresh-at-host-time mission (`derived_mission().0` — NOT the stale `mission.current`,
-    /// which excludes this tick's commands) and the family it routes to. Read-only: mutates
-    /// no entity, no occupancy, no hash. Miners are skipped — the miner session's Harvest
-    /// seam owns that path.
-    #[cfg(any(test, debug_assertions))]
-    fn unit_dispatch_record_pass(&self) -> UnitDispatchTrace {
-        let mut trace: UnitDispatchTrace = Vec::new();
-        for id in self.live_object_order_snapshot() {
-            let Some(e) = self.substrate.entities.get(id) else {
-                continue;
-            };
-            if e.dying || e.category != EntityCategory::Unit || e.miner.is_some() {
-                continue;
-            }
-            let (host_mission, _substate) = e.derived_mission();
-            trace.push(UnitDispatchRecord {
-                id,
-                host_mission,
-                family: unit_dispatch_family(host_mission),
-            });
-        }
-        trace
-    }
-
-    /// Release stub: the host-time trace is empty and never allocates.
-    #[cfg(not(any(test, debug_assertions)))]
-    fn unit_dispatch_record_pass(&self) -> UnitDispatchTrace {
-        Vec::new()
-    }
-
-    /// End-of-tick Unit dispatch proof (debug/test only). Runs after `refresh_mission_shadow`,
-    /// beside `debug_assert_s1_shadow`. For each host-time record it:
-    ///   1. asserts the routed family is correct for the recorded mission (router determinism),
-    ///   2. asserts a non-miner Unit never routes to `Skip`, and that `AttackMove` is never the
-    ///      host mission of a Unit (unreachable — `derived_mission` cannot yield it),
-    ///   3. re-derives the Unit's mission FRESH now (tail) and, if the family differs from the
-    ///      host-time family, LOGS the churn with tick+id+both missions — it does NOT assert
-    ///      equality (host-time and tail derivations legitimately differ when a Unit's machines
-    ///      change mid-tick). Read-only; never hashed; never silently equalized.
-    ///
-    /// Returns the per-tick churn count (live non-miner Units whose host-time family differs
-    /// from the tail re-derivation) — the S2 go/no-go measurement signal, surfaced to the
-    /// caller via the (unhashed, unserialized) `TickResult`. Read-only.
-    #[cfg(any(test, debug_assertions))]
-    pub(crate) fn debug_assert_unit_dispatch_shadow(&self, trace: &UnitDispatchTrace) -> u32 {
-        let mut churn = 0u32;
-        for rec in trace {
-            // (1) router determinism: the recorded family is exactly the router's output.
-            debug_assert_eq!(
-                rec.family,
-                unit_dispatch_family(rec.host_mission),
-                "dispatch: tick {} unit {}: recorded family must equal the router output",
-                self.session.tick,
-                rec.id,
-            );
-            // (2) a Unit is never on AttackMove (derived_mission cannot yield it).
-            debug_assert_ne!(
-                rec.host_mission,
-                MissionType::AttackMove,
-                "dispatch: tick {} unit {}: a Unit must never derive AttackMove",
-                self.session.tick,
-                rec.id,
-            );
-            debug_assert!(
-                !matches!(rec.family, DispatchSlot::Skip),
-                "dispatch: tick {} unit {}: a live Unit must never route to Skip",
-                self.session.tick,
-                rec.id,
-            );
-            // (3) churn metric: compare host-time family to a fresh tail re-derivation.
-            if let Some(e) = self.substrate.entities.get(rec.id) {
-                if !e.dying && e.miner.is_none() {
-                    let (tail_mission, _) = e.derived_mission();
-                    let tail_family = unit_dispatch_family(tail_mission);
-                    if tail_family != rec.family {
-                        // Surfaced, never equalized — the S2 go/no-go churn signal.
-                        churn += 1;
-                        log::debug!(
-                            "dispatch churn: tick {} unit {}: host {:?} -> tail {:?}",
-                            self.session.tick,
-                            rec.id,
-                            rec.host_mission,
-                            tail_mission,
-                        );
-                    }
-                }
-            }
-        }
-        churn
-    }
-
-    /// Live-set coverage (T5): every Unit that a legacy dispatch phase would touch — i.e. it
-    /// carries a dispatch machine AND passes that phase's own guards — must be in the host's
-    /// live-object set. The legacy phases iterate `iter_sorted()` (all entities); the host
-    /// iterates the LogicVector. With the legacy guards applied (mirroring `tick_attack_pursuit`:
-    /// not dying, not Structure, no aircraft mission, not deployed, not a transport passenger)
-    /// the residual set is expected-empty in normal play. A residual member is a real Rust drift
-    /// to investigate before S2 — LOGGED with tick+id, never hard-asserted.
-    #[cfg(any(test, debug_assertions))]
-    pub(crate) fn debug_check_dispatch_live_set_coverage(&self) {
-        use std::collections::BTreeSet;
-        let live: BTreeSet<u64> = self.live_object_order_snapshot().into_iter().collect();
-        // `iter_sorted()` yields `(u64, &GameEntity)` in ascending-id order (deterministic).
-        for (id, e) in self.substrate.entities.iter_sorted() {
-            if e.dying
-                || e.category == EntityCategory::Structure
-                || e.aircraft_mission.is_some()
-                || e.is_deployed()
-                || e.passenger_role.is_inside_transport()
-            {
-                continue;
-            }
-            // A Unit a legacy dispatch phase would act on: has a movement/attack/dock machine.
-            let touched = e.movement_target.is_some()
-                || e.attack_target.is_some()
-                || e.dock_state.is_some()
-                || e.order_intent.is_some();
-            if touched && !live.contains(&id) {
-                log::debug!(
-                    "dispatch coverage drift: tick {} unit {} touched by a legacy phase but \
-                     absent from live order",
-                    self.session.tick,
-                    id,
-                );
-            }
-        }
     }
 
     /// Slice S4c — passive/opportunity-acquire eligibility SHADOW (read-only,
@@ -277,15 +105,10 @@ impl Simulation {
     }
 
     /// The walk: dispatch every live, present, non-dying object once, in live
-    /// order, through the no-op shell. When `record`, return the dispatched ids
-    /// in order (debug/test observation); otherwise the returned `Vec` is empty
-    /// and unallocated. Reads only — touches no hashed state, consumes no RNG.
-    fn object_ai_walk(
-        &mut self,
-        record: bool,
-        rules: Option<&RuleSet>,
-        committed: &mut std::collections::BTreeSet<u64>,
-    ) -> Vec<u64> {
+    /// order, through the per-category shell. When `record`, return the
+    /// dispatched ids in order (debug/test observation); otherwise the
+    /// returned `Vec` is empty and unallocated.
+    fn object_ai_walk(&mut self, record: bool, rules: Option<&RuleSet>) -> Vec<u64> {
         let mut visited: Vec<u64> = Vec::new();
         self.for_each_live_object(|sim, id| {
             // Tolerate an absent id (the loop's documented contract). The stage
@@ -304,8 +127,7 @@ impl Simulation {
                 return;
             };
             // A dying object is mid death-teardown and is not dispatched (the
-            // closest live `IsActive` analogue today). Dying units are off the
-            // LogicVector anyway and fall to the tail projection.
+            // closest live `IsActive` analogue today).
             if entity.dying {
                 return;
             }
@@ -313,61 +135,75 @@ impl Simulation {
             if record {
                 visited.push(id);
             }
-            // A non-miner live Unit commits its mission in the bracket; record it
-            // so the tail projection skips it (no double-commit / double-count).
-            if techno_ai_shell(sim, id, category, rules) {
-                committed.insert(id);
-            }
+            techno_ai_shell(sim, id, category, rules);
         });
         visited
     }
 }
 
-/// Per-category dispatch shell. Slice S0: every arm is a strict no-op.
+/// Per-category dispatch shell.
 ///
-/// `match category` — NO trait / dyn / vtable (invariant #2). `sim`/`id` are
-/// threaded so later slices can fill an arm with the absorbed behavior without
-/// changing this signature. The match is exhaustive over the four real
-/// variants (no `_` arm), so a future `EntityCategory` addition is a compile
-/// error, intentionally.
-/// Returns `true` iff this object authoritatively committed its mission this
-/// pass (a non-miner live Unit) — the walk adds those ids to the tail skip-set.
+/// `match category` — NO trait / dyn / vtable (invariant #2). Every arm runs
+/// the common per-object Mission work (`+0xC4` counter + owner-local queued
+/// promotion); the Unit arm additionally runs the TechnoClass common bracket
+/// (pre/post blocks). Absorbing the remaining per-leaf behavior (movement,
+/// turret, combat, fear/sequence, aircraft dispatch) is later per-arm work.
+/// The match is exhaustive over the four real variants (no `_` arm), so a
+/// future `EntityCategory` addition is a compile error, intentionally.
 fn techno_ai_shell(
     sim: &mut Simulation,
     id: u64,
     category: EntityCategory,
     rules: Option<&RuleSet>,
-) -> bool {
+) {
     match category {
-        // S4a: run the AUTHORITATIVE TechnoClass common bracket; a non-miner live
-        // Unit commits its mission here (the host owns it; the tail skips it).
         EntityCategory::Unit => {
-            matches!(unit_techno_bracket(sim, id, rules), BracketReach::Committed)
+            unit_techno_bracket(sim, id, rules);
         }
-        EntityCategory::Infantry => false, // S6: absorb fear / sequence / self-removal
+        // InfantryClass::AI promotes queued missions via Ready→Commence
+        // (`0x0051BC51`/`0x0051BF03`); the fear/sequence absorption is later work.
+        EntityCategory::Infantry => {
+            mission_common_step(sim, id, rules);
+        }
         EntityCategory::Structure => {
             if let Some(rules) = rules {
                 sim.update_building_damage_fire(id, rules);
             }
-            false
+            // BuildingClass::Update consumes its ready latch via Ready→Commence
+            // (`0x0043FE43`/`0x0043FFA3`); with no latch writers live the
+            // promotion evaluates to not-ready (recorded residual).
+            mission_common_step(sim, id, rules);
         }
-        EntityCategory::Aircraft => false, // S7: absorb per-object aircraft dispatch
+        // AircraftClass::AI promotes via Ready→Commence (`0x00415058`).
+        EntityCategory::Aircraft => {
+            mission_common_step(sim, id, rules);
+        }
     }
 }
 
-// ===== Slice S4a — TechnoClass common-body bracket (shadow shell) =====
+/// The common per-object Mission step every category's AI update performs:
+/// the `+0xC4` per-mission AI counter tick and the owner-local queued-mission
+/// promotion (Ready→Commence). Promotion needs parsed rules for the Unit
+/// world lookups; a rules-less call (barebones fixtures) ticks the counter and
+/// leaves the queue for a later rules-bearing pass.
+fn mission_common_step(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
+    if let Some(entity) = sim.substrate.entities.get_mut(id) {
+        entity.mission.increment_ai_counter();
+    }
+    if let Some(rules) = rules {
+        let now = sim.session.binary_frame;
+        sim.mission_host_promote(id, now, rules);
+    }
+}
+
+// ===== TechnoClass common-body bracket =====
 //
 // Per live Unit, gamemd's `TechnoClass::AI_Update` body is one contiguous
-// bracket: pre-mission block -> +0xC4 -> Mission_Dispatch -> post-mission block,
-// with two IsAlive early-returns (after the pre-block, after dispatch). THIS
-// SLICE the bracket is a SHADOW SHELL: `techno_common_pre`/`techno_common_post`
-// are no-op stubs and the authoritative `+0xC4`/mission-commit stays in
-// `movement_tick` (only a dispatch MARKER sits between the guards here). The
-// shell runs every tick in the live-object walk and is hash-neutral (stubs do
-// nothing; the guards are read-only). The authoritative flip — relocating the
-// `+0xC4`/commit out of `movement_tick` into this dispatch point and filling the
-// stubs — is the next step, gated on the body decode (U6) + a hash re-baseline.
-// Design: docs/plans/2026-06-10-s4a-common-bracket-design.md.
+// bracket: pre-mission block -> +0xC4/Mission work -> post-mission block, with
+// two IsAlive early-returns (after the pre-block, after dispatch). The mission
+// work at the dispatch point is the flip's counter + owner-local promotion;
+// the handler-body execution (dispatch-timer gate + per-mission handlers)
+// remains with the legacy per-system phases (recorded residual).
 
 /// S4a pre-mission common block (the `TechnoClass::AI_Update` head: one-shot
 /// flag clear, turret-anim loop sound, cloak tick, health smoothing, target
@@ -503,58 +339,36 @@ fn techno_common_post(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
     }
 }
 
-/// Outcome of the S4a bracket for one Unit.
+/// Outcome of the common bracket for one Unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BracketReach {
-    /// Died after the pre-block (health 0); no mission commit.
+    /// Died after the pre-block (health 0); no mission work ran.
     DiedInPre,
-    /// Non-miner live Unit: committed (`+0xC4` tick_counter + `derived_mission`)
-    /// authoritatively at the host.
-    Committed,
-    /// Miner Unit: the host runs the bracket but does NOT commit — the miner
-    /// session / tail projection owns the miner mission (deferred, as before S4a).
-    MinerDeferred,
+    /// Live Unit: ran the `+0xC4` counter + owner-local promotion at the
+    /// dispatch point.
+    Dispatched,
 }
 
-/// S4a per-Unit TechnoClass common bracket (AUTHORITATIVE — Option B flip).
-/// Runs the contiguous `pre -> [IsAlive B] -> +0xC4/Mission_Dispatch ->
-/// [IsAlive E] -> post` structure and commits the Unit's mission HERE, at the
-/// gamemd-faithful per-object AI point (pre-movement, LogicVector order), rather
-/// than in `movement_tick` (scoped movers) or the Phase-9 tail (idle) as before.
-/// Miners stay tail-owned. Returns the outcome; the walk collects `Committed`
-/// ids as the tail's skip-set.
+/// Per-Unit TechnoClass common bracket. Runs the contiguous
+/// `pre -> [IsAlive B] -> +0xC4/promotion -> [IsAlive E] -> post` structure at
+/// the gamemd-faithful per-object AI point (pre-movement, LogicVector order).
+/// The promotion is UnitClass::AI's Ready→Commence (`0x00736473`, the call
+/// before FootClass::AI; the second in-update Ready→Commence at `0x007366FD`
+/// is a recorded residual).
 fn unit_techno_bracket(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) -> BracketReach {
     techno_common_pre(sim, id);
-    // Guard B (post-pre IsAlive): a health-0 Unit makes no commit. No lethal
-    // pre-block step exists yet, so this fires only for an already-dead Unit.
+    // Guard B (post-pre IsAlive): a health-0 Unit runs no mission work. No
+    // lethal pre-block step exists yet, so this fires only for an already-dead
+    // Unit.
     if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
         return BracketReach::DiedInPre;
     }
-    // Miners are deferred to the tail projection (the miner session owns that
-    // path); the host runs the bracket but skips the authoritative commit, so a
-    // miner is NOT added to the skip-set and the tail commits it.
-    if sim
-        .substrate
-        .entities
-        .get(id)
-        .is_some_and(|e| e.miner.is_some())
-    {
-        techno_common_post(sim, id, rules);
-        return BracketReach::MinerDeferred;
-    }
-    // `+0xC4` AI-tick counter + `Mission_Dispatch` (AUTHORITATIVE commit): the
-    // mission is a deterministic projection of the unit's machines, committed at
-    // this per-object AI point. `current`/`substate` mirror `derived_mission`;
-    // the verbs own `queued`/`suspended`/`timer`.
-    if let Some(e) = sim.substrate.entities.get_mut(id) {
-        let (current, substate) = e.derived_mission();
-        legacy_unit_host_projection(&mut e.mission, current, substate);
-    }
-    // Guard E (post-dispatch IsAlive): a mission commit cannot kill the Unit, so
-    // this cannot fire yet; the structure is preserved for the S5 dispatch
-    // handlers that can self-destruct. The Unit is committed regardless.
+    mission_common_step(sim, id, rules);
+    // Guard E (post-dispatch IsAlive): a promotion cannot kill the Unit, so
+    // this cannot fire yet; the structure is preserved for future dispatch
+    // handlers that can self-destruct.
     techno_common_post(sim, id, rules);
-    BracketReach::Committed
+    BracketReach::Dispatched
 }
 
 /// S4c passive-acquire gate predicate (pure; the testable core of
@@ -574,124 +388,6 @@ fn s4c_passive_acquire_eligible(
         MissionType::Move | MissionType::Guard | MissionType::Harvest
     ) && has_weapon
         && (opportunity_fire || mission == MissionType::Guard)
-}
-
-// ===== Slice S1 — first behavior-bearing ordering (shadow) =====
-//
-// For one bounded scenario — a moving drive `UnitClass` on a pure Move mission —
-// observe the mission decision THEN the locomotor `Process` marker within a
-// single object pass, proving `dispatch_seq < process_seq` (the verified gamemd
-// ordering: FootClass::AI runs the locomotor AFTER mission dispatch). Read-only,
-// debug-only, never hashed — the authority flip is a later slice.
-
-/// The bounded S1 scenario: a moving, drive-locomotor `UnitClass` on a pure
-/// Move mission, with no combat, miner, dock, or aircraft concern.
-/// `derived_mission()` yields exactly `(MissionType::Move, 0)` for this set.
-/// Requiring a drive locomotor narrows the scope to the units the dispatch→
-/// process ordering proof targets and makes the `is_drive` marker exact —
-/// avoiding a false agreement-assert on a non-drive mover (ship / hover).
-/// Consumed only by the S1 dispatch-before-Process shadow in this module (the
-/// in-loop movement_tick consumer was retired by the S4a host-commit flip).
-#[cfg(any(test, debug_assertions))]
-pub(crate) fn is_s1_scoped_move_unit(e: &GameEntity) -> bool {
-    e.category == EntityCategory::Unit
-        && e.movement_target.is_some()
-        && e.drive_locomotion.is_some()
-        && e.miner.is_none()
-        && e.dock_state.is_none()
-        && e.attack_target.is_none()
-        && e.aircraft_mission.is_none()
-}
-
-/// Read-only observation of one in-scope object's pass: where the mission
-/// decision was observed relative to the locomotor `Process` marker. Never
-/// committed to live state or the hash.
-#[cfg(any(test, debug_assertions))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ShellTrace {
-    /// Ordinal at which the mission decision was observed this pass.
-    dispatch_seq: u32,
-    /// Ordinal at which the locomotor `Process` marker was observed.
-    process_seq: u32,
-    /// The observed mission (must be `Move` for an in-scope unit).
-    mission: MissionType,
-    /// Whether the locomotor `Process` marker reported a drive unit.
-    is_drive: bool,
-}
-
-/// S1 shadow step: for one in-scope moving Unit, observe the mission decision
-/// and THEN the locomotor `Process` marker within a single object pass, and
-/// return the trace. READ-ONLY — `&Simulation`, mutates nothing (no entity, no
-/// occupancy, no hash). `seq` is a shared monotonic counter across the pass;
-/// `dispatch_seq < process_seq` by construction proves the decision is observed
-/// before Process. Returns `None` for any object outside the bounded scope (the
-/// over-claim guard) — and never rewrites the observed mission (a divergence is
-/// surfaced, never silently equalized).
-#[cfg(any(test, debug_assertions))]
-fn unit_ai_shadow_step(sim: &Simulation, id: u64, seq: &mut u32) -> Option<ShellTrace> {
-    let entity = sim.substrate.entities.get(id)?;
-    if !is_s1_scoped_move_unit(entity) {
-        return None;
-    }
-    // Mission dispatch (decision) FIRST — the fresh per-object decision marker.
-    // S4a: read `derived_mission` (the decision), NOT the committed `mission.current`:
-    // post-flip the latter is the host's Phase-0 commit, which legitimately goes
-    // stale when a unit retasks mid-tick (e.g. Attack at the host, move-scoped by
-    // the Phase-9 read). The S1 proof is dispatch-decision-before-Process; the
-    // decision for an in-scope move unit is `Move` by the scope predicate.
-    let mission = entity.derived_mission().0;
-    let dispatch_seq = *seq;
-    *seq += 1;
-    // Locomotor Process SECOND — the read-only drive presence marker.
-    let outcome = process_drive_locomotion_shell(entity);
-    let process_seq = *seq;
-    *seq += 1;
-    Some(ShellTrace {
-        dispatch_seq,
-        process_seq,
-        mission,
-        is_drive: matches!(outcome, DriveProcessOutcome::Processed),
-    })
-}
-
-impl Simulation {
-    /// Debug-only S1 shadow pass: walk the live order and, for each in-scope
-    /// moving Unit, assert the mission decision is observed before the locomotor
-    /// Process within one object pass (the verified gamemd ordering) and that
-    /// the observed mission is the in-scope `Move`. Read-only; never hashed,
-    /// never serialized; a divergence is asserted with tick + id, never silently
-    /// equalized. (The Slice-2 mission shadow-agreement assert it once mirrored
-    /// was retired in Slice 8 when `mission` became hashed-authoritative.)
-    #[cfg(any(test, debug_assertions))]
-    pub(crate) fn debug_assert_s1_shadow(&self) {
-        let mut seq = 0u32;
-        for id in self.live_object_order_snapshot() {
-            let Some(trace) = unit_ai_shadow_step(self, id, &mut seq) else {
-                continue;
-            };
-            debug_assert!(
-                trace.dispatch_seq < trace.process_seq,
-                "S1: tick {} unit {}: dispatch_seq {} must precede process_seq {}",
-                self.session.tick,
-                id,
-                trace.dispatch_seq,
-                trace.process_seq,
-            );
-            debug_assert_eq!(
-                trace.mission,
-                MissionType::Move,
-                "S1: tick {} unit {}: in-scope unit must derive Move, observed {:?}",
-                self.session.tick,
-                id,
-                trace.mission,
-            );
-            debug_assert!(
-                trace.is_drive,
-                "S1: tick {} unit {}: in-scope unit must be a drive mover",
-                self.session.tick, id,
-            );
-        }
-    }
 }
 
 // ===== P2 (factory substrate) — Structure-arm read-only shadow trace (FIT a) =====
@@ -873,6 +569,7 @@ mod tests {
         LocomotorState, MovementLayer, OverrideKind, OverrideLocomotor, PiggybackLocomotor,
     };
     use crate::sim::movement::tube_movement::{LowBridgeTubeMovementState, LowBridgeTubePhase};
+    use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
     use crate::sim::rng::SimRngLogicalState;
     use crate::sim::snapshot::GameSnapshot;
     use crate::sim::world::SimulationRngState;
@@ -908,10 +605,10 @@ mod tests {
     }
 
     #[test]
-    fn object_ai_stage_commits_live_unit_mission() {
-        // S4a (Option B): the stage AUTHORITATIVELY commits each live non-miner
-        // Unit's mission (+0xC4 ai_counter + derived_mission); non-Units are
-        // untouched here (the Phase-9 tail projects them).
+    fn object_ai_stage_ticks_every_live_object_counter() {
+        // Post-flip: every live, non-dying object gets its `+0xC4` AI-counter
+        // tick at the host; `current` is verb-owned and stays untouched (no
+        // command queued anything here).
         let mut sim = Simulation::new();
         sim.substrate
             .entities
@@ -927,20 +624,19 @@ mod tests {
             .insert(entity_of(4, EntityCategory::Aircraft));
         sim.set_logic_order_for_test(vec![1, 2, 3, 4]);
 
-        let mut committed = std::collections::BTreeSet::new();
-        sim.object_ai_stage(None, &mut committed);
+        sim.object_ai_stage(None);
 
-        // The idle non-miner Unit committed Guard and ticked its counter once.
-        assert_eq!(committed.iter().copied().collect::<Vec<_>>(), vec![1]);
-        let u = sim.substrate.entities.get(1).unwrap();
-        assert_eq!(u.mission.current().known(), Some(MissionType::Guard));
-        assert_eq!(u.mission.ai_counter(), 1);
-        // Non-Units are not committed by the host (tail owns them): counter at 0.
-        for id in [2u64, 3, 4] {
+        for id in [1u64, 2, 3, 4] {
+            let e = sim.substrate.entities.get(id).unwrap();
             assert_eq!(
-                sim.substrate.entities.get(id).unwrap().mission.ai_counter(),
-                0,
-                "non-Unit {id} must not be committed by the host"
+                e.mission.ai_counter(),
+                1,
+                "live object {id} gets exactly one counter tick per stage pass"
+            );
+            assert_eq!(
+                e.mission.current(),
+                MissionId::NONE,
+                "no verb ran, so object {id}'s current selector stays none"
             );
         }
     }
@@ -961,7 +657,7 @@ mod tests {
         // verbatim (no sort).
         sim.set_logic_order_for_test(vec![3, 1, 2]);
 
-        let visited = sim.object_ai_walk(true, None, &mut std::collections::BTreeSet::new());
+        let visited = sim.object_ai_walk(true, None);
         assert_eq!(
             visited,
             sim.live_object_order_snapshot(),
@@ -1019,7 +715,7 @@ mod tests {
         // in the live order.
         sim.substrate.entities.get_mut(2).unwrap().dying = true;
 
-        let visited = sim.object_ai_walk(true, None, &mut std::collections::BTreeSet::new());
+        let visited = sim.object_ai_walk(true, None);
         assert_eq!(
             visited,
             vec![1],
@@ -1027,7 +723,7 @@ mod tests {
         );
         // The internal order-proof assert filters dying members, so the stage
         // must not panic even with a dying member in the live order.
-        sim.object_ai_stage(None, &mut std::collections::BTreeSet::new());
+        sim.object_ai_stage(None);
     }
 
     #[test]
@@ -1045,43 +741,43 @@ mod tests {
             .logic
             .set_order_for_test(vec![absent_id, live_id]);
 
-        let visited = sim.object_ai_walk(true, None, &mut std::collections::BTreeSet::new());
+        let visited = sim.object_ai_walk(true, None);
         assert_eq!(
             visited,
             vec![live_id],
             "absent id skipped without panic; live id still visited"
         );
         // Stage must not panic on the absent member either.
-        sim.object_ai_stage(None, &mut std::collections::BTreeSet::new());
+        sim.object_ai_stage(None);
     }
 
-    // ===== Slice S4a — TechnoClass common bracket (authoritative, Option B) =====
+    // ===== TechnoClass common bracket =====
 
     #[test]
-    fn s4a_bracket_commits_live_non_miner_unit() {
+    fn bracket_ticks_live_unit_counter_without_touching_current() {
         let mut sim = Simulation::new();
         sim.substrate
             .entities
             .insert(entity_of(1, EntityCategory::Unit));
-        // A live non-miner Unit reaches the dispatch point and commits: +0xC4
-        // ai_counter + derived_mission (idle -> Guard).
+        // A live Unit reaches the dispatch point: +0xC4 counter tick; the
+        // verb-owned current selector is untouched.
         assert_eq!(
             unit_techno_bracket(&mut sim, 1, None),
-            BracketReach::Committed
+            BracketReach::Dispatched
         );
         let u = sim.substrate.entities.get(1).unwrap();
         assert_eq!(u.mission.ai_counter(), 1);
-        assert_eq!(u.mission.current().known(), Some(MissionType::Guard));
+        assert_eq!(u.mission.current(), MissionId::NONE);
     }
 
     #[test]
-    fn s4a_bracket_pre_guard_short_circuits_dead_unit() {
+    fn bracket_pre_guard_short_circuits_dead_unit() {
         let mut sim = Simulation::new();
         let mut e = entity_of(1, EntityCategory::Unit);
         e.health.current = 0; // not alive
         sim.substrate.entities.insert(e);
-        // Guard B fires after the (empty) pre-block: a health-0 Unit makes no
-        // commit (counter stays 0) and never reaches the dispatch point.
+        // Guard B fires after the (empty) pre-block: a health-0 Unit runs no
+        // mission work (counter stays 0).
         assert_eq!(
             unit_techno_bracket(&mut sim, 1, None),
             BracketReach::DiedInPre
@@ -1093,20 +789,21 @@ mod tests {
     }
 
     #[test]
-    fn s4a_bracket_defers_miner_to_tail() {
+    fn bracket_ticks_miner_counter_like_any_unit() {
         let mut sim = Simulation::new();
         let mut miner = entity_of(1, EntityCategory::Unit);
         miner.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
         sim.substrate.entities.insert(miner);
-        // A miner runs the bracket but the host does NOT commit it — the miner
-        // session / tail projection owns the miner mission (counter stays 0).
+        // Post-flip there is no miner deferral: the bracket runs the same
+        // common mission step for every live Unit (the miner FSM keeps driving
+        // behavior; its mission commits arrive through the departure verbs).
         assert_eq!(
             unit_techno_bracket(&mut sim, 1, None),
-            BracketReach::MinerDeferred
+            BracketReach::Dispatched
         );
         assert_eq!(
             sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
-            0
+            1
         );
     }
 
@@ -1189,145 +886,13 @@ mod tests {
         assert_eq!(before, after, "S4c shadow must not perturb the state hash");
     }
 
-    // ===== Slice S1 — dispatch-before-locomotor shadow =====
-
-    /// A bounded-S1-scoped unit: a moving drive `UnitClass` with no combat,
-    /// miner, dock, or aircraft concern. `derived_mission()` yields `(Move, 0)`.
+    /// A moving drive `UnitClass` with no combat, miner, dock, or aircraft
+    /// concern (shared fixture for host/verb tests).
     fn scoped_move_unit(id: u64) -> GameEntity {
         let mut e = GameEntity::test_default(id, "TEST", "Americans", 5, 5); // category Unit
         e.movement_target = Some(MovementTarget::default());
         e.drive_locomotion = Some(DriveLocomotionRuntime::default());
         e
-    }
-
-    #[test]
-    fn unit_ai_mission_dispatch_precedes_locomotor_process() {
-        let mut sim = Simulation::new();
-        sim.substrate.entities.insert(scoped_move_unit(1));
-        sim.set_logic_order_for_test(vec![1]);
-        sim.refresh_mission_shadow(); // mission.current = derived_mission() = Move
-
-        let mut seq = 0u32;
-        let trace =
-            unit_ai_shadow_step(&sim, 1, &mut seq).expect("a scoped move unit yields a trace");
-        assert!(
-            trace.dispatch_seq < trace.process_seq,
-            "mission dispatch must be observed before the locomotor Process"
-        );
-        assert_eq!(trace.mission, MissionType::Move);
-        assert!(trace.is_drive);
-    }
-
-    #[test]
-    fn unit_move_dispatch_then_process_shadow_reads_fresh_decision() {
-        let mut sim = Simulation::new();
-        sim.substrate.entities.insert(scoped_move_unit(1));
-        sim.substrate.entities.insert(scoped_move_unit(2));
-        sim.set_logic_order_for_test(vec![1, 2]);
-        sim.refresh_mission_shadow();
-
-        // Agreement: every in-scope unit derives Move / is_drive / dispatch <
-        // process, so the shadow pass asserts cleanly (no divergence, no panic).
-        sim.debug_assert_s1_shadow();
-
-        // S4a: the shadow reads the FRESH per-object decision (`derived_mission`),
-        // NOT the committed `mission.current`. Post-flip the committed value is the
-        // host's Phase-0 commit and can go stale (a unit retasked mid-tick), so a
-        // stale committed value must NOT change what the shadow observes: an
-        // in-scope move unit's decision is `Move` regardless of the stale commit.
-        update_mission_test_fixture(
-            &mut sim.substrate.entities.get_mut(1).unwrap().mission,
-            |fixture| fixture.current = MissionId::from_known(MissionType::Guard),
-        );
-        let mut seq = 0u32;
-        let trace = unit_ai_shadow_step(&sim, 1, &mut seq).expect("still in scope");
-        assert_eq!(
-            trace.mission,
-            MissionType::Move,
-            "shadow reads the fresh decision (Move), not the stale committed mission"
-        );
-    }
-
-    #[test]
-    fn s1_no_hash_change_shadow() {
-        let mut sim = Simulation::new();
-        sim.substrate.entities.insert(scoped_move_unit(1));
-        sim.set_logic_order_for_test(vec![1]);
-        sim.refresh_mission_shadow();
-
-        let before = sim.state_hash();
-        sim.debug_assert_s1_shadow(); // read-only shadow pass
-        let after = sim.state_hash();
-        assert_eq!(
-            before, after,
-            "the S1 shadow pass must not perturb the state hash"
-        );
-    }
-
-    #[test]
-    fn s1_shadow_skips_non_scoped_units() {
-        let mut sim = Simulation::new();
-
-        // Miner (highest derived-mission priority) — disqualified.
-        let mut miner = scoped_move_unit(1);
-        miner.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
-        sim.substrate.entities.insert(miner);
-
-        // Docking unit — disqualified.
-        let mut docking = scoped_move_unit(2);
-        docking.dock_state = Some(DockState {
-            dock_building_id: 99,
-            phase: DockPhase::Approach,
-            service_timer: 0,
-            no_funds_ticks: 0,
-        });
-        sim.substrate.entities.insert(docking);
-
-        // Attacking unit — disqualified.
-        let mut attacking = scoped_move_unit(3);
-        attacking.attack_target = Some(AttackTarget {
-            target: TargetKind::Entity(99),
-            cooldown_ticks: 0,
-            burst_remaining: 1,
-            burst_delay_ticks: 0,
-            pending_infantry_fire: None,
-        });
-        sim.substrate.entities.insert(attacking);
-
-        // Aircraft — disqualified by the category gate.
-        let mut aircraft = scoped_move_unit(4);
-        aircraft.category = EntityCategory::Aircraft;
-        aircraft.aircraft_mission = Some(AircraftMission::Guard);
-        sim.substrate.entities.insert(aircraft);
-
-        let mut seq = 0u32;
-        for id in [1u64, 2, 3, 4] {
-            assert!(
-                unit_ai_shadow_step(&sim, id, &mut seq).is_none(),
-                "non-scoped object {id} must be skipped by the S1 shadow"
-            );
-        }
-        assert_eq!(seq, 0, "skipped objects never advance the ordinal counter");
-    }
-
-    #[test]
-    fn s1_shadow_preserves_advance_tick_phase_order() {
-        // The shadow runs (debug builds) inside advance_tick, between
-        // refresh_mission_shadow and state_hash. Identical fixtures must produce
-        // identical per-tick hash sequences — the read-only shadow perturbs no
-        // phase. Entity-free for the same interner reason as
-        // techno_ai_shell_preserves_advance_tick_phase_order.
-        fn run() -> Vec<u64> {
-            let mut sim = Simulation::new();
-            let heights = std::collections::BTreeMap::new();
-            (0..5)
-                .map(|_| {
-                    sim.advance_tick(&[], None, &heights, None, None, 67);
-                    sim.state_hash()
-                })
-                .collect()
-        }
-        assert_eq!(run(), run());
     }
 
     // ===== Checkpoint A — cloned ordinary-Drive host trace =====
@@ -2841,43 +2406,144 @@ mod tests {
         }
     }
 
-    // ===== Slice S2a — host-time Unit dispatch shadow =====
+    // ===== Host promotion (Ready→Commence at the per-object AI position) =====
 
-    #[test]
-    fn unit_dispatch_record_pass_skips_miner_and_nonunit() {
-        let mut sim = Simulation::new();
-        // A plain moving Unit — recorded.
-        sim.substrate.entities.insert(scoped_move_unit(1));
-        // A miner Unit — skipped (the miner session owns Harvest).
-        let mut miner = scoped_move_unit(2);
-        miner.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
-        sim.substrate.entities.insert(miner);
-        // A non-Unit — skipped by category.
-        sim.substrate
-            .entities
-            .insert(entity_of(3, EntityCategory::Structure));
-        sim.set_logic_order_for_test(vec![1, 2, 3]);
+    /// Minimal rules for host-promotion tests: one vehicle type "TEST" plus a
+    /// weapons-factory building type "FACT".
+    fn promotion_rules() -> RuleSet {
+        let text = "[General]\n\
+BuildSpeed=0.75\nMultipleFactory=0.7\nLowPowerPenaltyModifier=1.25\n\
+MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
+[InfantryTypes]\n[VehicleTypes]\n1=TEST\n[AircraftTypes]\n[BuildingTypes]\n1=FACT\n\n\
+[TEST]\n\n[FACT]\nWeaponsFactory=yes\n";
+        RuleSet::from_ini(&IniFile::from_str(text)).expect("promotion test rules parse")
+    }
 
-        let trace = sim.unit_dispatch_record_pass();
-        assert_eq!(trace.len(), 1, "only the non-miner Unit is recorded");
-        assert_eq!(trace[0].id, 1);
-        assert_eq!(trace[0].host_mission, MissionType::Move);
-        assert_eq!(trace[0].family, DispatchSlot::Move);
+    /// A unit interned through the SIM's interner (survives verb + promotion
+    /// paths that resolve the type name).
+    fn insert_interned_unit(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("TEST");
+        let e = GameEntity::new_at_frame_zero_for_test(
+            id,
+            rx,
+            ry,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        sim.substrate.entities.insert(e);
     }
 
     #[test]
-    fn unit_dispatch_proof_passes_on_scoped_units() {
+    fn host_promotes_queued_mission() {
+        // Queue(Move, 0) at command time, then the host's Ready→Commence
+        // promotes it: current=Move, queue cleared, Commence reset applied.
+        let rules = promotion_rules();
         let mut sim = Simulation::new();
-        sim.substrate.entities.insert(scoped_move_unit(1)); // Move
-        let mut idle = scoped_move_unit(2);
-        idle.movement_target = None; // S3: idle Unit derives Guard -> Guard family
-        sim.substrate.entities.insert(idle);
-        sim.set_logic_order_for_test(vec![1, 2]);
+        insert_interned_unit(&mut sim, 1, 5, 5);
+        sim.mission_queue_exact(
+            1,
+            MissionId::from_known(MissionType::Move),
+            0,
+            0,
+            &crate::sim::mission::authority::EntityReadyInputProvider,
+        )
+        .unwrap();
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(e.mission.current(), MissionId::NONE);
+        assert_eq!(e.mission.queued().known(), Some(MissionType::Move));
 
-        let trace = sim.unit_dispatch_record_pass();
-        sim.debug_assert_unit_dispatch_shadow(&trace); // no panic
-        assert_eq!(trace[0].family, DispatchSlot::Move);
-        assert_eq!(trace[1].family, DispatchSlot::Guard);
+        sim.mission_host_promote(1, 7, &rules);
+
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(e.mission.current().known(), Some(MissionType::Move));
+        assert_eq!(e.mission.queued(), MissionId::NONE);
+        assert_eq!(e.mission.mission_start_frame(), 7);
+    }
+
+    #[test]
+    fn host_promotion_empty_queue_is_noop() {
+        let rules = promotion_rules();
+        let mut sim = Simulation::new();
+        insert_interned_unit(&mut sim, 1, 5, 5);
+        let before = sim.substrate.entities.get(1).unwrap().mission;
+        sim.mission_host_promote(1, 7, &rules);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().mission, before);
+    }
+
+    #[test]
+    fn host_promotion_holds_on_weapons_factory_contact() {
+        // A Unit whose Radio slot 0 is a weapons-factory Building is NOT ready
+        // for a non-Move/Enter queued mission (the exact slot-0 hold).
+        let rules = promotion_rules();
+        let mut sim = Simulation::new();
+        insert_interned_unit(&mut sim, 1, 5, 5);
+        let owner = sim.interner.intern("Americans");
+        let fact_type = sim.interner.intern("FACT");
+        let fact = GameEntity::new_at_frame_zero_for_test(
+            2,
+            6,
+            6,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            fact_type,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        sim.substrate.entities.insert(fact);
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .radio_contacts
+            .insert(2);
+
+        sim.mission_queue_exact(
+            1,
+            MissionId::from_known(MissionType::Guard),
+            0,
+            0,
+            &crate::sim::mission::authority::EntityReadyInputProvider,
+        )
+        .unwrap();
+        sim.mission_host_promote(1, 7, &rules);
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(
+            e.mission.current(),
+            MissionId::NONE,
+            "weapons-factory slot-0 contact holds a queued Guard"
+        );
+        assert_eq!(e.mission.queued().known(), Some(MissionType::Guard));
+
+        // A queued Move is exempt from the slot-0 hold and promotes.
+        sim.mission_queue_exact(
+            1,
+            MissionId::from_known(MissionType::Move),
+            0,
+            0,
+            &crate::sim::mission::authority::EntityReadyInputProvider,
+        )
+        .unwrap();
+        sim.mission_host_promote(1, 9, &rules);
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(e.mission.current().known(), Some(MissionType::Move));
     }
 
     #[test]
@@ -2893,37 +2559,6 @@ mod tests {
             pending_infantry_fire: None,
         });
         assert_ne!(e.derived_mission().0, MissionType::AttackMove);
-    }
-
-    #[test]
-    fn dispatch_live_set_covers_moving_units() {
-        let mut sim = Simulation::new();
-        sim.substrate.entities.insert(scoped_move_unit(1)); // movement_target set, in live order
-        sim.set_logic_order_for_test(vec![1]);
-        // Must not log/panic: the moving Unit is in the live set.
-        sim.debug_check_dispatch_live_set_coverage();
-    }
-
-    #[test]
-    fn unit_dispatch_host_commits_scoped_mover() {
-        // S4a: the host commits the scoped mover's mission (Move) authoritatively
-        // and reports it in the skip-set; the read-only proofs must not panic.
-        let mut sim = Simulation::new();
-        sim.substrate.entities.insert(scoped_move_unit(1));
-        sim.set_logic_order_for_test(vec![1]);
-
-        let mut committed = std::collections::BTreeSet::new();
-        let trace = sim.object_ai_stage(None, &mut committed); // host pass (commits id 1)
-        sim.debug_assert_unit_dispatch_shadow(&trace); // read-only proof (no panic)
-        sim.debug_check_dispatch_live_set_coverage(); // read-only coverage
-
-        assert!(
-            committed.contains(&1),
-            "the scoped mover is committed by the host"
-        );
-        let u = sim.substrate.entities.get(1).unwrap();
-        assert_eq!(u.mission.current().known(), Some(MissionType::Move));
-        assert_eq!(u.mission.ai_counter(), 1);
     }
 
     #[test]
@@ -2945,26 +2580,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unit_dispatch_shadow_counts_churn() {
-        // Guards the churn counter against a stuck-at-zero bug: a unit recorded as
-        // host-time Move whose machine changes before the tail re-derivation (here we
-        // clear movement_target → tail derives None → Sleep) must count as one churn.
-        let mut sim = Simulation::new();
-        sim.substrate.entities.insert(scoped_move_unit(1)); // host: Move
-        sim.set_logic_order_for_test(vec![1]);
-        let trace = sim.unit_dispatch_record_pass(); // captures host = Move
-        assert_eq!(trace[0].family, DispatchSlot::Move);
-        // Simulate the unit's machines changing between host-time and tail.
-        sim.substrate.entities.get_mut(1).unwrap().movement_target = None;
-        let churn = sim.debug_assert_unit_dispatch_shadow(&trace);
-        assert_eq!(
-            churn, 1,
-            "a host Move that became tail Sleep must count as one churn"
-        );
-    }
-
-    // ===== Slice S2 — in-loop dispatch authority =====
+    // ===== In-loop dispatch authority =====
 
     /// Like `scoped_move_unit`, but interned through the SIM's interner so the
     /// unit survives a real `advance_tick` (test_intern ids don't exist in
@@ -2994,11 +2610,11 @@ mod tests {
         sim.substrate.entities.insert(e);
     }
 
-    /// S2: the arrival tick hashes the dispatch-time mission (`Move`); the
-    /// transition away happens on the NEXT tick (gamemd-faithful). S3: the
-    /// post-arrival idle mission is `Guard` — the gamemd Move→Guard sequence.
+    /// Post-flip: mission state advances only through the verbs — the tick
+    /// never invents a mission from the legacy machines. An uncommanded mover
+    /// keeps its selector at none across arrival.
     #[test]
-    fn arrival_tick_mission_is_move_not_sleep() {
+    fn tick_never_projects_a_mission_from_the_machines() {
         let mut sim = Simulation::new();
         insert_s2_scoped_move_unit(&mut sim, 1, 5, 5); // default target: arrives tick 1
         sim.set_logic_order_for_test(vec![1]);
@@ -3008,49 +2624,40 @@ mod tests {
         let e = sim.substrate.entities.get(1).unwrap();
         assert!(e.movement_target.is_none(), "fixture must arrive on tick 1");
         assert_eq!(
-            e.mission.current().known(),
-            Some(MissionType::Move),
-            "arrival tick keeps Move"
+            e.mission.current(),
+            MissionId::NONE,
+            "no verb ran — arrival must not project a mission"
         );
 
         let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
         let e = sim.substrate.entities.get(1).unwrap();
-        // S3 idle→Guard: a machine-less idle Unit derives Guard (gamemd's
-        // post-arrival idle mission), not the legacy None placeholder.
         assert_eq!(
-            e.mission.current().known(),
-            Some(MissionType::Guard),
-            "post-arrival tick → Guard"
+            e.mission.current(),
+            MissionId::NONE,
+            "idle ticks must not project a mission either"
         );
+        assert_eq!(e.mission.ai_counter(), 2, "the host counter still ticks");
     }
 
-    /// S3 (G5 pin): the tail projection treats dying Units uniformly — a dying
-    /// machine-less Unit also projects Guard. Corpse-mission freeze (gamemd
-    /// does not re-derive a corpse's mission) is deferred to the
-    /// deferred-delete substrate. Scope of the divergence window (review-
-    /// corrected): voxel-death corpses are freed by flush_pending_delete
-    /// BEFORE the tail projection and hash, so they never hit this path; only
-    /// SHP-art Units with death animations linger, for the duration of the
-    /// death anim (app-driven despawn). Pre-S3 the same unfiltered projection
-    /// rewrote those corpses to None each tick — S3 changes the value, not
-    /// the window. Pinned here so the choice is intentional, not accidental.
+    /// Post-flip corpse freeze: a dying Unit is skipped by the host walk, so
+    /// its mission state (counter included) freezes at death — the gamemd
+    /// corpse behavior the old per-tick tail projection could not express.
     #[test]
-    fn dying_unit_projection_uniform() {
+    fn dying_unit_mission_state_freezes() {
         let mut sim = Simulation::new();
         insert_s2_scoped_move_unit(&mut sim, 1, 5, 5);
-        sim.substrate.entities.get_mut(1).unwrap().movement_target = None; // idle
-        sim.substrate.entities.get_mut(1).unwrap().dying = true;
-        sim.refresh_mission_shadow();
+        sim.set_logic_order_for_test(vec![1]);
+        sim.object_ai_stage(None);
         assert_eq!(
-            sim.substrate
-                .entities
-                .get(1)
-                .unwrap()
-                .mission
-                .current()
-                .known(),
-            Some(MissionType::Guard),
-            "dying machine-less Unit projects Guard (uniform tail projection)"
+            sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
+            1
+        );
+        sim.substrate.entities.get_mut(1).unwrap().dying = true;
+        sim.object_ai_stage(None);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
+            1,
+            "a dying Unit's mission state freezes (no host visit)"
         );
     }
 
@@ -3087,25 +2694,24 @@ mod tests {
         );
     }
 
-    /// S2 P1 guard: a save taken on the arrival tick (current=Move while a fresh
-    /// derivation says None) must restore an IDENTICAL state hash. Guards the
-    /// deleted post-load re-derive against reintroduction.
+    /// Load trusts serialized MissionCom: a save carrying a verb-committed
+    /// mission that no legacy machine could re-derive (Move current, no
+    /// movement_target) must restore an IDENTICAL state hash and value.
+    /// Guards the deleted post-load re-derive against reintroduction.
     #[test]
-    fn save_load_round_trip_on_arrival_tick() {
+    fn save_load_round_trip_trusts_serialized_mission() {
         use crate::sim::snapshot::GameSnapshot;
         let mut sim = Simulation::new();
         insert_s2_scoped_move_unit(&mut sim, 1, 5, 5);
-        sim.set_logic_order_for_test(vec![1]);
-        let heights = std::collections::BTreeMap::new();
-        let _ = sim.advance_tick(&[], None, &heights, None, None, 67); // arrival tick
-
-        let e = sim.substrate.entities.get(1).unwrap();
-        assert_eq!(
-            e.mission.current().known(),
-            Some(MissionType::Move),
-            "precondition: divergent window"
+        sim.substrate.entities.get_mut(1).unwrap().movement_target = None;
+        update_mission_test_fixture(
+            &mut sim.substrate.entities.get_mut(1).unwrap().mission,
+            |fixture| {
+                fixture.current = MissionId::from_known(MissionType::Move);
+                fixture.ai_counter = 9;
+            },
         );
-        assert!(e.movement_target.is_none());
+        sim.set_logic_order_for_test(vec![1]);
         let hash_before = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);

@@ -136,27 +136,6 @@ impl MissionCom {
         }
     }
 
-    /// Preserve the old Rust full-retask projection during the authority
-    /// migration.  Native-only fields not represented by that projection stay
-    /// untouched.
-    pub(super) fn legacy_full_retask(&mut self, requested: MissionType, now: u32) {
-        self.current = MissionId::from_known(requested);
-        self.queued = MissionId::NONE;
-        self.suspended = MissionId::NONE;
-        self.handler_state = 0;
-        self.dispatch_timer = MissionDispatchTimer::at_frame(now);
-    }
-
-    pub(super) fn legacy_current_only_retask(&mut self, requested: MissionType) {
-        self.current = MissionId::from_known(requested);
-    }
-
-    pub(super) fn legacy_projection(&mut self, current: MissionType, substate: u8) {
-        self.ai_counter = self.ai_counter.wrapping_add(1);
-        self.current = MissionId::from_known(current);
-        self.handler_state = u32::from(substate);
-    }
-
     pub(super) fn assign_transition(&mut self, requested: MissionId, now: u32) {
         self.current = requested;
         self.queued = MissionId::NONE;

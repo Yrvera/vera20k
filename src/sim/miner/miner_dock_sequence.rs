@@ -1416,6 +1416,18 @@ fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnaps
     snap.miner.exit_cell = None;
     snap.miner.dock_phase = RefineryDockPhase::Approach;
     snap.miner.state = MinerState::SearchOre;
+    // Native Mission_Deploy state-4 exit queues Harvest and explicitly
+    // Commences it (Unit DeployBuilding `0x0073E283`: Queue(10,0), contact
+    // work, explicit Commence) — the resumed harvest cycle's mission commit.
+    let now = sim.session.binary_frame;
+    let _ = sim.mission_queue_exact(
+        snap.entity_id,
+        crate::sim::mission::MissionId::from_known(crate::sim::mission::MissionType::Harvest),
+        0,
+        now,
+        &crate::sim::mission::authority::EntityReadyInputProvider,
+    );
+    let _ = sim.mission_commence_exact(snap.entity_id, now);
 }
 
 // ---------------------------------------------------------------------------

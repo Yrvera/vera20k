@@ -8,8 +8,8 @@
 use crate::rules::ruleset::RuleSet;
 use crate::sim::docking::bunker_install::{BunkerRuntime, BunkerState};
 use crate::sim::game_entity::BunkerLink;
-use crate::sim::mission::MissionType;
-use crate::sim::mission::compatibility::legacy_full_retask;
+use crate::sim::mission::authority::EntityReadyInputProvider;
+use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::radio::{RadioMessage, RadioPayload, transmit};
 use crate::sim::world::{
@@ -55,8 +55,20 @@ pub fn install_bunker_link(sim: &mut Simulation, building_id: u64, unit_id: u64)
         u.movement_target = None;
         u.facing_target = None;
         u.forced_drive_track = None;
-        legacy_full_retask(&mut u.mission, MissionType::Guard, now);
     }
+    // Native bunker install queues Guard on the occupant with synchronous
+    // promotion (Queue `0x00459337=5/1`). The exact locomotor readiness
+    // producers are not live, so the flag-1 form cannot validate; the same
+    // outcome is committed as queue + explicit Commence (the occupant is
+    // stationary — the skipped moving-defer gate is the recorded residual).
+    let _ = sim.mission_queue_exact(
+        unit_id,
+        MissionId::from_known(MissionType::Guard),
+        0,
+        now,
+        &EntityReadyInputProvider,
+    );
+    let _ = sim.mission_commence_exact(unit_id, now);
     // Techno Limbo broadcasts BREAK before Object Conceal removes Mark and
     // LogicVector membership. Reciprocal bunker state remains class-owned.
     match sim.techno_limbo(unit_id) {
@@ -135,9 +147,16 @@ pub fn release_normal(
     }
     // Preserve the class-specific release behavior independently of whether
     // the caller-owned placement attempt found or admitted a destination.
-    if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
-        legacy_full_retask(&mut u.mission, MissionType::Move, now);
-    }
+    // Move is queued through the exact authority (the release mission choice
+    // is carried over from the prior Rust behavior; its native counterpart is
+    // UNCHECKED) and promoted by the host's next Ready→Commence.
+    let _ = sim.mission_queue_exact(
+        unit_id,
+        MissionId::from_known(MissionType::Move),
+        0,
+        now,
+        &EntityReadyInputProvider,
+    );
     reset_bunker_idle(sim, building_id);
 }
 
@@ -469,8 +488,9 @@ mod tests {
         assert!(unit.lifecycle.cell_marked);
         // anchor = building NW (10,10) + (-1,+1) = (9,11)
         assert_eq!((unit.position.rx, unit.position.ry), (9, 11));
+        // Release queues Move (the host's Ready→Commence promotes it next pass).
         assert_eq!(
-            unit.mission.current(),
+            unit.mission.queued(),
             MissionId::from_known(MissionType::Move)
         );
         assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
