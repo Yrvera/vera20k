@@ -1094,9 +1094,10 @@ fn accepted_face_sync_handoff_draws_one_scenario_rng() {
     );
 }
 
-/// L10: the Mission_Deploy state-4 exit draws exactly one `RandomRanged(0,2)`
-/// (Scen->Random) and arms the resumed ore search with that jitter, so SearchOre
-/// resumes at `exit_frame + jitter` instead of immediately (0-2f early).
+/// The Mission_Deploy state-4 exit returns through the dispatch epilogue:
+/// one `RandomRanged(0,2)` (Scen->Random) on top of the `[Harvest] Rate`
+/// base, written into the mission dispatch timer — so the resumed ore search
+/// waits the full base + jitter, and the internal harvest timer is untouched.
 #[test]
 fn state_four_exit_draws_and_applies_resume_jitter() {
     let mut sim = Simulation::new();
@@ -1139,21 +1140,35 @@ fn state_four_exit_draws_and_applies_resume_jitter() {
     assert_eq!(
         sim.miner_jitter_rng().state(),
         expected_after_one_draw,
-        "L10: state-4 exit must draw exactly one scenario RandomRanged(0,2)"
+        "state-4 exit must draw exactly one scenario RandomRanged(0,2)"
     );
-    // The resume is paced by that draw: harvest cadence armed at the exit frame
-    // for exactly `jitter` frames → SearchOre resumes at exit_frame + jitter.
+    // The resume is paced through the dispatch epilogue: delay = the
+    // [Harvest] Rate base + the drawn jitter, anchored at the exit frame.
+    let base = super::miner_dock_sequence::mission_base_frames(
+        &rules,
+        crate::sim::mission::MissionType::Harvest,
+        14,
+    );
+    let timer = sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .expect("miner entity")
+        .mission
+        .dispatch_timer();
     assert_eq!(
-        miner.harvest_timer.start_frame, exit_frame,
-        "resume cadence anchored at the state-4 exit frame"
+        timer.start_frame(),
+        exit_frame as i32,
+        "dispatch epilogue anchored at the state-4 exit frame"
     );
     assert_eq!(
-        miner.harvest_timer.duration, jitter,
-        "resume delayed by exactly the drawn RandomRanged(0,2) jitter"
+        timer.delay(),
+        i32::from(base) + jitter as i32,
+        "dispatch delay is the [Harvest] Rate base plus the drawn jitter"
     );
     assert!(
-        (0..=2).contains(&miner.harvest_timer.duration),
-        "resume jitter is in the RandomRanged(0,2) domain"
+        !miner.harvest_timer.is_armed(),
+        "the internal harvest timer is no longer armed at the state-4 exit"
     );
 }
 
@@ -1900,6 +1915,8 @@ fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_
         entity.movement_target = None;
     }
 
+    // Advance the frame so the waiter's per-frame dispatch timer is due again.
+    sim.session.binary_frame += 1;
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
     let waiter_miner = get_miner(&sim, waiter);
     assert_eq!(
@@ -6838,6 +6855,8 @@ fn move_to_ore_retargets_when_blocker_appears() {
     let zone_grid_2 = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
     sim.zone_grid = Some(zone_grid_2);
 
+    // Advance the frame so the per-frame dispatch timer is due again.
+    sim.session.binary_frame += 1;
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
 
     let new_target = get_miner(&sim, miner_id).target_ore_cell;
@@ -6875,6 +6894,8 @@ fn move_to_ore_target_stable_when_world_unchanged() {
     let config = MinerConfig::default();
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
     let t1 = get_miner(&sim, miner_id).target_ore_cell;
+    // Advance the frame so the second dispatch actually runs (per-frame timer).
+    sim.session.binary_frame += 1;
 
     // Several ticks later, with the world unchanged, the target must not
     // have shifted to a different ore cell. (It will only change once the

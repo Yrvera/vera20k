@@ -413,7 +413,10 @@ fn assert_command_state(
         movement.path.len().saturating_sub(1),
     );
     assert!(!drive.path.directions.is_empty());
-    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+    // The Harvest handler dispatches BEFORE Phase-1 ground movement (the
+    // native handler→locomotion order), so by observation time the drive has
+    // already begun accelerating in the same tick the command was issued.
+    assert!(drive.current_speed_fraction > SIM_ZERO);
     assert_eq!(
         entity.locomotor.as_ref().expect("active locomotor").kind,
         LocomotorKind::Drive,
@@ -566,8 +569,13 @@ fn production_harv_outbound_drive_uses_rule_profile() {
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
     let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
     let movement = entity.movement_target.as_ref().expect("movement");
-    assert_eq!(drive.current_speed_fraction, acceleration);
-    assert_eq!(movement.current_speed, movement.speed * acceleration);
+    // Dispatch precedes movement: the issuing tick already accelerated once,
+    // so this (second post-issue) tick sits at two acceleration steps.
+    assert_eq!(drive.current_speed_fraction, acceleration + acceleration);
+    assert_eq!(
+        movement.current_speed,
+        movement.speed * (acceleration + acceleration)
+    );
     assert!(movement.current_speed > SIM_ZERO);
     assert_eq!(sim.rng_state(), rng_before);
 }
@@ -634,14 +642,22 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
         movement.slowdown_distance,
         SimFixed::from_num(harv.slowdown_distance),
     );
-    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+    // Handler dispatch precedes Phase-1 movement, so the issuing tick already
+    // ran the drive's first acceleration step.
+    assert_eq!(drive.current_speed_fraction, harv.accel_factor);
 
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
     let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
     let movement = entity.movement_target.as_ref().expect("movement target");
-    assert_eq!(drive.current_speed_fraction, harv.accel_factor);
-    assert_eq!(movement.current_speed, movement.speed * harv.accel_factor,);
+    assert_eq!(
+        drive.current_speed_fraction,
+        harv.accel_factor + harv.accel_factor
+    );
+    assert_eq!(
+        movement.current_speed,
+        movement.speed * (harv.accel_factor + harv.accel_factor),
+    );
     assert!(movement.current_speed > SIM_ZERO);
 
     let mut departed = position_tuple(&sim, entity_id) != start;
@@ -1064,6 +1080,10 @@ fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
         "must observe track-end owner-NavCom interval"
     );
 
+    advance(&mut sim, &oracle, &grid);
+    // Dispatch precedes movement, so the arrival tick's FSM step still saw
+    // the pre-arrival position; the MoveToOre→Harvest transition lands on the
+    // following dispatch.
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
     assert_eq!(entity.navigation.nav_com, None);

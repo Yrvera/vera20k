@@ -481,11 +481,13 @@ mod tests {
     /// per-house native AI difficulty took 25 -> 26, and scheduler-owned
     /// animation persistence took 26 -> 27, and independent serialized lifecycle
     /// axes plus the pending-delete boundary took 27 -> 28, and exact Mission
-    /// state/readiness schema took 28 -> 29. This pins it so a later accidental
-    /// bump is caught.
+    /// state/readiness schema took 28 -> 29, and the Harvest handler
+    /// absorption (the miner FSM cursor retired into
+    /// `MissionCom.handler_state`) took 29 -> 30. This pins it so a later
+    /// accidental bump is caught.
     #[test]
-    fn snapshot_version_is_29() {
-        assert_eq!(super::SNAPSHOT_VERSION, 29);
+    fn snapshot_version_is_30() {
+        assert_eq!(super::SNAPSHOT_VERSION, 30);
     }
 
     #[test]

@@ -124,13 +124,23 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// composition, which folds the reduced mission subset — so all three
 /// constants shift together while record/replay equality and all three
 /// absolute RNG pins stay unchanged (the verbs draw nothing).
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xD55F_13B3_EEE1_0CC8;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xF7DA_A64F_1DE4_E6CA;
+/// Re-baselined for the Harvest handler absorption (A1): the miner FSM now
+/// dispatches from the per-object AI host BEFORE Phase-1 ground movement (the
+/// native handler→locomotion order) instead of the late production phase, the
+/// FSM cursor moved from the hashed miner block into
+/// `MissionCom.handler_state`, and every miner's dispatch timer advances per
+/// dispatch (post-handler epilogue write). This shifts the harness harvester's
+/// hashed mission/miner state under every schema composition — including the
+/// legacy reconstructions — so all three constants move together. All three
+/// absolute RNG stream pins and record/replay tick equality held unchanged
+/// (this scenario's miner never docks, so no draw moved).
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 17313341738631287269;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 8452853324444810158;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
-// Its schema shift was composition-only; the later behavior-bearing Drive and
-// authority-flip re-baselines are documented immediately above. All remain
-// Rust regression ratchets, not gamemd evidence.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x560C_C5C9_213C_A007;
+// Its schema shift was composition-only; the later behavior-bearing Drive,
+// authority-flip, and Harvest-absorption re-baselines are documented above.
+// All remain Rust regression ratchets, not gamemd evidence.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x6164_15E1_0065_135F;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
