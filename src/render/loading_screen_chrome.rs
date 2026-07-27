@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use crate::assets::asset_manager::AssetManager;
-use crate::assets::pal_file::Palette;
+use crate::assets::pal_file::{Color, Palette};
 use crate::assets::pcx_file::PcxFile;
 use crate::assets::shp_file::ShpFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
@@ -221,12 +221,16 @@ pub fn build_loading_screen_atlas(
     assets: &AssetManager,
     variant: LoadingArtVariant,
     width: LoadingScreenWidth,
+    progress_ramp: &[Color; 16],
 ) -> Option<LoadingScreenAtlas> {
     let manifest = variant.manifest();
     let background_name = manifest.background_asset(width);
     let background_palette = load_named_ui_palette(assets, manifest.palette_name)?;
-    let progress_palette = load_named_ui_palette(assets, "MPLS.PAL")
-        .or_else(|| load_named_ui_palette(assets, manifest.palette_name))?;
+    let progress_palette = progress_palette_with_player_ramp(
+        &load_named_ui_palette(assets, "MPLS.PAL")
+            .or_else(|| load_named_ui_palette(assets, manifest.palette_name))?,
+        progress_ramp,
+    );
 
     let mut rendered = vec![
         mandatory_shp(
@@ -269,6 +273,10 @@ pub fn build_loading_screen_atlas(
         side_icon,
         solid_texel: *by_label.get(SOLID_TEXEL_LABEL)?,
     })
+}
+
+fn progress_palette_with_player_ramp(palette: &Palette, progress_ramp: &[Color; 16]) -> Palette {
+    palette.with_house_colors(progress_ramp)
 }
 
 /// A 1x1 opaque-white texel. Drawn scaled and tinted to produce the G3 solid
@@ -462,8 +470,27 @@ fn pack_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        LoadingArtVariant, LoadingScreenWidth, MmpbRegionRect, mmpb_region_rect, render_shp_entry,
+        LoadingArtVariant, LoadingScreenWidth, MmpbRegionRect, mmpb_region_rect,
+        progress_palette_with_player_ramp, render_shp_entry,
     };
+    use crate::assets::pal_file::{Color, Palette};
+
+    #[test]
+    fn progress_palette_replaces_only_the_house_color_band() {
+        let mut colors = [Color::rgb(3, 4, 5); 256];
+        colors[16] = Color::rgb(7, 8, 9);
+        colors[31] = Color::rgb(10, 11, 12);
+        let palette = Palette { colors };
+        let ramp = std::array::from_fn(|index| {
+            Color::rgb(index as u8, (index as u8) + 32, (index as u8) + 64)
+        });
+
+        let remapped = progress_palette_with_player_ramp(&palette, &ramp);
+
+        assert_eq!(&remapped.colors[16..32], &ramp);
+        assert_eq!(remapped.colors[15], palette.colors[15]);
+        assert_eq!(remapped.colors[32], palette.colors[32]);
+    }
 
     #[test]
     fn mmpb_region_rect_uses_pinned_constants_per_breakpoint() {
