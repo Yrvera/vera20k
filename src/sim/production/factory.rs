@@ -1,15 +1,12 @@
-//! Per-(house, category) factory shadow + deterministic registry.
+//! Per-(house, category) factory + deterministic registry — AUTHORITATIVE.
 //!
-//! P2 introduced these as DERIVED, non-serialized shadow state on `ProductionState`,
-//! rebuilt each tick from the authoritative `queues_by_owner`. P3 adds the per-step
-//! charge state machine (`advance_one_step`) and the rate (`set_rate`), exercised
-//! against an ORACLE (clone) economy — the legacy queue + upfront-charge stay
-//! authoritative through the authority flip (P5, out of scope). Divergence is
-//! SURFACED, never equalized — the unit-AI shadow discipline.
-//!
-//! P2/P3 scope: NO `Serialize`/`Deserialize` derive on any type here, so the registry
-//! field is provably hash-neutral and `SNAPSHOT_VERSION` stays put. The serde derive
-//! + hash fold + the authority flip (oracle -> real wallet) are P5.
+//! Since the P5b authority flip (registry authoritative, per-step charge to the
+//! real house wallet, SNAPSHOT_VERSION 17->18) and P5d (queue-of-record moved
+//! into `Factory.queue`, 18->19), this module owns production charging: enqueue
+//! only checks affordability, `step_all` charges `balance/steps_left` per step
+//! at the tick's production phase, a shortfall rewinds the step onto on-hold,
+//! and cancel refunds exactly the unspent remainder. State here is serialized
+//! and folded into the lockstep hash.
 //!
 //! Determinism: `BTreeMap<(InternedId, ProductionCategory), Factory>` (both key
 //! components derive `Ord`) gives sorted iteration for replay/lockstep; no
