@@ -12,16 +12,13 @@
 //! into one parametric form — the N and W deck cases carry level-adjust loops
 //! the E and S cases lack.
 //!
-//! **Deferred, recorded rather than hidden: the deck itself — and it is not
-//! visual-only.** The stamping consumes no randomness, but its cell writes
-//! (the `0xffff` tile sentinels at the deck ends and the ±4 level loops)
-//! change what the river-finish shore pass later accepts at the junction
-//! between the pre-bridge and post-bridge regions. Without them the finish
-//! hard-refuses where the two shorelines meet, so today **every placement is
-//! placed and then dies with its river** — the fills, growth and draws all
-//! happen, and the rollback then unwinds them, exactly as the original does
-//! when its own finish refuses. The deck is therefore a prerequisite for
-//! surviving bridges, not a cosmetic residual.
+//! The crossing itself is stamped from the theater's four **waterfall
+//! tilesets** — not the bridge sets; the "bridge" naming is inherited drift.
+//! Each set holds four pieces: two ends, a two-cell middle and a one-cell
+//! middle, alternated by span parity. The stamping consumes no randomness,
+//! but it is not cosmetic: its unassigned-tile sentinels and level
+//! adjustments are what let the river-finish shore pass accept the junction
+//! between the pre-bridge and post-bridge regions.
 
 use crate::map::rmg::x87::{self, TruncF64};
 
@@ -241,8 +238,228 @@ pub(crate) fn build(ctx: &mut BlobCtx<'_>, args: &BridgeArgs) -> bool {
 
     fill_water(ctx, layout.fill_far, args.region);
 
-    // Deck stamping would go here: zero draws, deferred (module doc).
+    deck(ctx, args, &layout);
     true
+}
+
+/// The unassigned-tile sentinel the deck writes at its approach cells. It is
+/// the port's own unassigned value, which is what makes those cells read as
+/// bare ground to every later pass — that equivalence is what lets a finished
+/// river's shore pass cross the junction.
+const SENTINEL: i32 = crate::map::rmg::tiles::TILE_UNASSIGNED;
+
+/// One level step, shared by the plateau raise and the deck's adjustments.
+const LEVEL_STEP: u8 = 4;
+
+/// Stamp one waterfall tile block at `anchor`.
+///
+/// This is the iso-tile stamper's deck path: the overwrite range covers every
+/// tile, so water is stamped over freely; unowned or foreign bare ground is
+/// adopted into `region`; a foreign non-clear cell refuses hard unless it
+/// holds an equivalent shore piece, in which case the whole call succeeds
+/// immediately with the rest of the block left unstamped. Each written cell
+/// gets the tile, its sub-tile index, and the block's own height on top of
+/// `level_base`.
+fn stamp_block(
+    ctx: &mut BlobCtx<'_>,
+    anchor: (i32, i32),
+    tile: i32,
+    level_base: i32,
+    region: i32,
+) -> bool {
+    let Some(block) = ctx.blocks.block(tile) else {
+        // Unknown block: the original silently no-ops.
+        return true;
+    };
+    let block = block.clone();
+    for j in 0..block.height {
+        for i in 0..block.width {
+            let (x, y) = (anchor.0 + i, anchor.1 + j);
+            if !ctx.scratch.in_diamond(x, y) {
+                continue;
+            }
+            let index = (block.width * j + i) as usize;
+            let Some(sub) = block.subtiles.get(index).copied().flatten() else {
+                continue;
+            };
+            let owner = ctx.scratch.get(x, y).region;
+            let target = ctx.grid.cell_native(x, y).tile;
+            let clear = ctx.ids.is_clear(target);
+            if owner < 1 {
+                if clear {
+                    ctx.scratch.get_mut(x, y).region = region;
+                } else {
+                    return false;
+                }
+            } else if owner != region {
+                if clear {
+                    ctx.scratch.get_mut(x, y).region = region;
+                } else if ctx.ids.is_shore_piece(target) && ctx.ids.is_shore_piece(tile) {
+                    // Equivalence would compare piece groups here; the deck
+                    // never stamps shore pieces, so this arm cannot be taken
+                    // by any live caller. Kept for shape, refusing is safer
+                    // than guessing a group table result.
+                    return false;
+                } else {
+                    return false;
+                }
+            }
+            let cell = ctx.grid.cell_native_mut(x, y);
+            cell.tile = tile;
+            cell.sub_tile = index as u8;
+            cell.level = (i32::from(sub.height) + level_base) as u8;
+        }
+    }
+    true
+}
+
+/// A flank cell beside a deck end: unassigned tile, one level up, adopted.
+fn flank(ctx: &mut BlobCtx<'_>, x: i32, y: i32, region: i32) {
+    if !ctx.scratch.in_diamond(x, y) {
+        return;
+    }
+    let cell = ctx.grid.cell_native_mut(x, y);
+    cell.tile = SENTINEL;
+    cell.level = cell.level.wrapping_add(LEVEL_STEP);
+    cell.sub_tile = 0;
+    ctx.scratch.get_mut(x, y).region = region;
+}
+
+/// Stamp the crossing out of the heading's waterfall set.
+///
+/// Four pieces per set: ends at +0 and +3, a two-cell middle at +2 and a
+/// one-cell middle at +1, chosen by the parity of the remaining span. The four
+/// heading cases are hand-written in the original and are not rotations: N and
+/// W carry a level-lowering loop along the end row the E and S cases lack, N
+/// and W write bare-tile sentinels E and S do not, and the W case's second
+/// sentinel uses a fixed offset where N's uses the span — transcribed as
+/// found.
+///
+/// The stamp refusals are deliberately ignored here: the original discards
+/// every ok-flag on this path, so a deck that could not fully stamp still
+/// counts as placed.
+fn deck(ctx: &mut BlobCtx<'_>, args: &BridgeArgs, layout: &Layout) {
+    let base = ctx.ids.waterfalls[args.heading_dir / 2];
+    if base < 0 {
+        // No waterfall set in this theater: nothing to stamp. The placement
+        // itself stands, exactly as if every stamp had refused.
+        return;
+    }
+    let region = args.region;
+    let (fx, fy) = args.first;
+    let (lx, ly) = args.last;
+
+    match args.heading_dir {
+        0 => {
+            let (ax, ay) = (fx, fy);
+            let span = lx - ax;
+            let level = i32::from(ctx.grid.cell_native(ax - 2, ay - 8).level as i8);
+            let _ = stamp_block(ctx, (ax - 2, ay - 6), base, level, region);
+            let _ = stamp_block(ctx, (ax + span + 1, ay - 6), base + 3, level, region);
+            ctx.grid.cell_native_mut(ax - 1, ay - 6).tile = SENTINEL;
+            ctx.grid.cell_native_mut(ax + span + 1, ay - 6).tile = SENTINEL;
+            for i in 1..=(span + 3) {
+                let cell = ctx.grid.cell_native_mut(ax - 2 + i, ay - 6);
+                cell.level = cell.level.wrapping_sub(LEVEL_STEP);
+            }
+            flank(ctx, ax - 3, ay - 5, region);
+            flank(ctx, ax + span + 3, ay - 5, region);
+            let mut remaining = span + 1;
+            let mut i = 0;
+            while i < span + 1 {
+                let anchor = (ax + i, ay - 5);
+                if remaining & 1 == 0 {
+                    let _ = stamp_block(ctx, anchor, base + 2, level, region);
+                    i += 2;
+                    remaining -= 2;
+                } else {
+                    let _ = stamp_block(ctx, anchor, base + 1, level, region);
+                    i += 1;
+                    remaining -= 1;
+                }
+            }
+        }
+        2 => {
+            let (ax, ay) = (fx, fy);
+            let span = ly - ay;
+            let south = ay + span + 1;
+            let level = i32::from(ctx.grid.cell_native(ax + 7, south).level as i8);
+            let _ = stamp_block(ctx, (ax + 5, south), base, level, region);
+            let _ = stamp_block(ctx, (ax + 5, ay - 2), base + 3, level, region);
+            flank(ctx, ax + 5, south + 2, region);
+            flank(ctx, ax + 5, ay - 3, region);
+            let mut remaining = span + 1;
+            let mut i = 0;
+            while i < span + 1 {
+                if remaining & 1 == 0 {
+                    let _ = stamp_block(ctx, (ax + 5, south - (i + 2)), base + 2, level, region);
+                    i += 2;
+                    remaining -= 2;
+                } else {
+                    let _ = stamp_block(ctx, (ax + 5, south - (i + 1)), base + 1, level, region);
+                    i += 1;
+                    remaining -= 1;
+                }
+            }
+        }
+        4 => {
+            let (ax, ay) = (lx, ly);
+            let span = fx - ax;
+            let row = ay + 5;
+            let level = i32::from(ctx.grid.cell_native(ax - 2, ay + 7).level as i8);
+            let _ = stamp_block(ctx, (ax - 2, row), base, level, region);
+            let _ = stamp_block(ctx, (ax + span + 1, row), base + 3, level, region);
+            flank(ctx, ax - 3, row, region);
+            flank(ctx, ax + span + 3, row, region);
+            let mut remaining = span + 1;
+            let mut i = 0;
+            while i < span + 1 {
+                let anchor = (ax + i, row);
+                if remaining & 1 == 0 {
+                    let _ = stamp_block(ctx, anchor, base + 2, level, region);
+                    i += 2;
+                    remaining -= 2;
+                } else {
+                    let _ = stamp_block(ctx, anchor, base + 1, level, region);
+                    i += 1;
+                    remaining -= 1;
+                }
+            }
+        }
+        _ => {
+            let (ax, ay) = (lx, ly);
+            let span = fy - ay;
+            let south = ay + span + 1;
+            let col = ax - 6;
+            let level = i32::from(ctx.grid.cell_native(ax - 8, south).level as i8);
+            let _ = stamp_block(ctx, (col, south), base, level, region);
+            let _ = stamp_block(ctx, (col, ay - 2), base + 3, level, region);
+            ctx.grid.cell_native_mut(col, south - 1).tile = SENTINEL;
+            // The original computes this sentinel's offset from the far
+            // fill's fixed width (8) + 2, not from the span like the north
+            // case does — a hand-written asymmetry, kept as found.
+            ctx.grid.cell_native_mut(col, south + 10).tile = SENTINEL;
+            for i in 0..=(span + 2) {
+                let cell = ctx.grid.cell_native_mut(col, south - i);
+                cell.level = cell.level.wrapping_sub(LEVEL_STEP);
+            }
+            flank(ctx, col + 1, south + 2, region);
+            flank(ctx, col + 1, ay - 3, region);
+            let mut remaining = span + 1;
+            let mut i = 0;
+            while i < span + 1 {
+                if remaining & 1 == 0 {
+                    let _ = stamp_block(ctx, (col + 1, south - (i + 2)), base + 2, level, region);
+                    i += 2;
+                    remaining -= 2;
+                } else {
+                    let _ = stamp_block(ctx, (col + 1, south - (i + 1)), base + 1, level, region);
+                    i += 1;
+                    remaining -= 1;
+                }
+            }
+        }
+    }
 }
 
 /// The success jump, per heading: `(dx, dy)` in cells.
@@ -258,6 +475,119 @@ pub(crate) fn jump(heading_dir: usize) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::grid::RmgGrid;
+    use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
+    use crate::map::rmg::rng::RmgRng;
+    use crate::map::rmg::scratch::RmgScratch;
+    use crate::map::rmg::tiles::{TILE_UNASSIGNED, TileIds};
+    use crate::map::rmg::x87::Gaussian;
+
+    struct OneByOne(TileBlock);
+    impl TileBlocks for OneByOne {
+        fn block(&self, _tile: i32) -> Option<&TileBlock> {
+            Some(&self.0)
+        }
+    }
+
+    fn harness() -> (RmgGrid, RmgScratch, TileIds, OneByOne) {
+        let (dmin, dmax) = (34, 34 + 2 * 42);
+        let stride = (34 + 42 + 1) as usize;
+        let mut grid = RmgGrid::new(stride, dmin, dmax);
+        let scratch = RmgScratch::new(stride, dmin, dmax);
+        let mut ids = TileIds {
+            clear: 0,
+            ramp_base: -1,
+            rough: -1,
+            sand: -1,
+            green: 100,
+            rough_lat: -1,
+            sand_lat: -1,
+            green_lat: 110,
+            pave_lat: -1,
+            pave: -1,
+            water_base: 500,
+            shore: 400,
+            water_bridge: -1,
+            misc_pave: -1,
+            paved_roads: -1,
+            paved_road_ends: -1,
+            medians: -1,
+            waterfalls: [-1; 4],
+        };
+        ids.waterfalls = [600, 610, 620, 630];
+        for (x, y) in grid.native_cells().collect::<Vec<_>>() {
+            grid.get_mut(x, y).expect("native cell").tile = ids.clear;
+        }
+        let blocks = OneByOne(TileBlock {
+            width: 1,
+            height: 1,
+            subtiles: vec![Some(SubTile {
+                height: 0,
+                terrain: 0,
+            })],
+        });
+        (grid, scratch, ids, blocks)
+    }
+
+    #[test]
+    fn the_north_deck_stamps_ends_middles_and_sentinels() {
+        // A hand-built north crossing: section from (40,50) to (43,50).
+        // Pins the case-0 geometry cell by cell against the derived contract —
+        // ends at the row two above the near fill, sentinels beside them, the
+        // −4 sweep along that row, flanks one row down, and the middles
+        // alternating by parity along the deck row.
+        let (mut grid, mut scratch, ids, blocks) = harness();
+        let mut rng = RmgRng::new(1);
+        let mut gauss = Gaussian::default();
+        let mut ctx = BlobCtx {
+            grid: &mut grid,
+            scratch: &mut scratch,
+            ids: &ids,
+            blocks: &blocks,
+            rng: &mut rng,
+            gauss: &mut gauss,
+            trig: None,
+            map_w: 34,
+            map_h: 42,
+            rollback_level: 4,
+        };
+        let args = BridgeArgs {
+            region: 5,
+            heading_dir: 0,
+            first: (40, 50),
+            last: (43, 50),
+            pool_dims: (30, 30),
+        };
+        let layout = layout(&args);
+        deck(&mut ctx, &args, &layout);
+
+        // span = 3. End piece A: base+0 at (38,44).
+        assert_eq!(ctx.grid.cell_native(38, 44).tile, 600, "end piece A");
+        // End piece B is stamped at (44,44) and then the second sentinel is
+        // written over the same cell — the original's order, kept as found.
+        // With a real multi-cell block the rest of the piece survives; the
+        // anchor cell always ends unassigned.
+        assert_eq!(
+            ctx.grid.cell_native(44, 44).tile,
+            TILE_UNASSIGNED,
+            "end B anchor"
+        );
+        assert_eq!(
+            ctx.grid.cell_native(39, 44).tile,
+            TILE_UNASSIGNED,
+            "sentinel"
+        );
+        // The −4 sweep ran along row 44 (wrapping below the base of 4).
+        assert_eq!(ctx.grid.cell_native(40, 44).level, 0, "channel row lowered");
+        // Flanks at (37,45) and (46,45): unassigned, one level up, adopted.
+        assert_eq!(ctx.grid.cell_native(37, 45).tile, TILE_UNASSIGNED);
+        assert_eq!(ctx.grid.cell_native(37, 45).level, 8);
+        assert_eq!(ctx.scratch.get(37, 45).region, 5);
+        // Deck row 45: remaining starts at 4 (even) → two 2-cell pieces at
+        // x = 40 and 42.
+        assert_eq!(ctx.grid.cell_native(40, 45).tile, 602, "first middle");
+        assert_eq!(ctx.grid.cell_native(42, 45).tile, 602, "second middle");
+    }
 
     #[test]
     fn the_jump_follows_the_travel_heading() {

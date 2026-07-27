@@ -167,6 +167,7 @@ mod tests {
             paved_roads: 1200,
             medians: 1300,
             paved_road_ends: -1,
+            waterfalls: [-1; 4],
         }
     }
 
