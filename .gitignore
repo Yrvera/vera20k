@@ -46,3 +46,6 @@ tools/research_index/.cache/
 
 /*.js
 /*.py
+
+# throwaway verification build dir (parallel-session exe lock workaround)
+/target-verify/
