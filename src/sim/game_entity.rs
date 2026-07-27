@@ -543,6 +543,19 @@ pub struct GameEntity {
 }
 
 impl GameEntity {
+    /// The Harvest FSM cursor of record, decoded from
+    /// `MissionCom::handler_state`. `None` when the entity has no Miner
+    /// component. An out-of-vocabulary cursor decodes as `SearchOre` (the
+    /// zeroed handler state every mission transition writes) — the only
+    /// writers are the FSM commit and the zeroing transitions, so anything
+    /// else is a logic error surfaced by the dispatch-time debug assert.
+    pub fn miner_state(&self) -> Option<crate::sim::miner::MinerState> {
+        self.miner.as_ref().map(|_| {
+            crate::sim::miner::MinerState::from_cursor(self.mission.handler_state())
+                .unwrap_or(crate::sim::miner::MinerState::SearchOre)
+        })
+    }
+
     /// Debug/test classifier: the mission + sub-phase the legacy `Option<T>`
     /// machines imply. Since the authority flip, `mission` advances only
     /// through the exact verbs — this derivation is no longer projected into
@@ -550,9 +563,10 @@ impl GameEntity {
     /// passive-acquire shadow assert against.
     #[cfg(any(test, debug_assertions))]
     pub fn derived_mission(&self) -> (MissionType, u8) {
-        if let Some(miner) = &self.miner {
-            // The whole harvest loop is one mission; the FSM state is its sub-phase.
-            return (MissionType::Harvest, miner.state as u8);
+        if self.miner.is_some() {
+            // The whole harvest loop is one mission; the FSM cursor of record
+            // (MissionCom.handler_state) is its sub-phase.
+            return (MissionType::Harvest, self.mission.handler_state() as u8);
         }
         if let Some(aircraft) = &self.aircraft_mission {
             return match aircraft {

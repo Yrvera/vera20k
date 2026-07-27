@@ -394,7 +394,10 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                         ))
                         .strong(),
                     );
-                    let state_color = match miner.state {
+                    let miner_state = entity
+                        .miner_state()
+                        .unwrap_or(crate::sim::miner::MinerState::SearchOre);
+                    let state_color = match miner_state {
                         crate::sim::miner::MinerState::Harvest => {
                             egui::Color32::from_rgb(20, 120, 20)
                         }
@@ -415,8 +418,8 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                         }
                         _ => egui::Color32::from_rgb(80, 80, 80),
                     };
-                    ui.colored_label(state_color, format!("State: {:?}", miner.state));
-                    if matches!(miner.state, crate::sim::miner::MinerState::Dock) {
+                    ui.colored_label(state_color, format!("State: {miner_state:?}"));
+                    if matches!(miner_state, crate::sim::miner::MinerState::Dock) {
                         ui.label(format!("  Dock phase: {:?}", miner.dock_phase));
                     }
                     ui.label(format!(

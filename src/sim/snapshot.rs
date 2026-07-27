@@ -79,7 +79,10 @@ use crate::sim::world::Simulation;
 // Bumped 28 -> 29: exact native-width Mission state, category readiness leaves,
 // archived target/falling state, and raw locomotor-readiness inputs replace the
 // reduced Mission schema and are serialized + hashed.
-const SNAPSHOT_VERSION: u32 = 29;
+// Bumped 29 -> 30: the miner FSM cursor (`Miner.state`) retired from the
+// serialized Miner component — `MissionCom.handler_state` is the cursor of
+// record (Harvest handler absorption / substate-authority flip).
+const SNAPSHOT_VERSION: u32 = 30;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.

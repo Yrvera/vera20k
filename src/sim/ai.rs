@@ -1160,13 +1160,13 @@ mod tests {
         for _ in 0..2000 {
             let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
 
-            let miner = sim
+            let entity = sim
                 .substrate
                 .entities
                 .get(miner_sid)
-                .and_then(|e| e.miner.as_ref())
-                .expect("miner component should exist");
-            match miner.state {
+                .expect("miner entity should exist");
+            let miner = entity.miner.as_ref().expect("miner component should exist");
+            match entity.miner_state().expect("miner cursor") {
                 MinerState::Harvest => saw_harvest = true,
                 MinerState::ReturnToRefinery => saw_return = true,
                 MinerState::Dock => {

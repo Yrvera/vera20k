@@ -307,20 +307,22 @@ fn spawn_stock_refinery(
 }
 
 fn arm_full_ore_return(sim: &mut Simulation, entity_id: u64, config: &MinerConfig) {
-    let miner = sim
+    let entity = sim
         .substrate
         .entities
         .get_mut(entity_id)
-        .and_then(|entity| entity.miner.as_mut())
-        .expect("miner component");
+        .expect("miner entity");
+    let miner = entity.miner.as_mut().expect("miner component");
     miner.cargo = (0..miner.capacity_bales)
         .map(|_| CargoBale {
             resource_type: ResourceType::Ore,
             value: config.ore_bale_value,
         })
         .collect();
-    miner.state = MinerState::ReturnToRefinery;
     miner.reserved_refinery = None;
+    entity
+        .mission
+        .set_handler_state(MinerState::ReturnToRefinery.cursor());
 }
 
 fn arm_search(sim: &mut Simulation, entity_id: u64) {
@@ -330,7 +332,7 @@ fn arm_search(sim: &mut Simulation, entity_id: u64) {
         .get_mut(entity_id)
         .expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
-    miner.state = MinerState::SearchOre;
+    entity.mission.set_handler_state(MinerState::SearchOre.cursor());
     miner.target_ore_cell = None;
     miner.harvest_timer.clear();
 }
@@ -458,13 +460,9 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
 
         advance(&mut sim, &oracle, &grid);
         assert_eq!(sim.rng_state(), rng_before_search, "{type_id} search RNG");
-        let miner = sim
-            .substrate
-            .entities
-            .get(entity_id)
-            .and_then(|entity| entity.miner.as_ref())
-            .expect("miner");
-        assert_eq!(miner.state, MinerState::MoveToOre);
+        let entity = sim.substrate.entities.get(entity_id).expect("miner");
+        let miner = entity.miner.as_ref().expect("miner");
+        assert_eq!(entity.miner_state().unwrap(), MinerState::MoveToOre);
         assert_eq!(miner.target_ore_cell, Some(target));
 
         if type_id == "CMIN" {
@@ -514,7 +512,7 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
             advance(&mut sim, &oracle, &grid);
             let entity = sim.substrate.entities.get(entity_id).expect("miner");
             physically_departed |= position_tuple(&sim, entity_id) != start_position;
-            reached_harvest |= entity.miner.as_ref().expect("miner").state == MinerState::Harvest;
+            reached_harvest |= entity.miner_state().expect("miner") == MinerState::Harvest;
             assert!(entity.teleport_state.is_none());
             if type_id == "CMIN" && entity.movement_target.is_some() {
                 let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
@@ -618,7 +616,7 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
     let miner = entity.miner.as_ref().expect("miner");
     let movement = entity.movement_target.as_ref().expect("movement target");
     let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
-    assert_eq!(miner.state, MinerState::ReturnToRefinery);
+    assert_eq!(entity.miner_state().unwrap(), MinerState::ReturnToRefinery);
     assert_eq!(miner.reserved_refinery, Some(refinery_id));
     assert_eq!(movement.final_goal, Some(staging));
     assert_eq!(
@@ -767,7 +765,7 @@ fn production_stock_harv_far_return_preserves_existing_navcom_owner() {
         miner.mission_deploy_timer,
         miner.unload_cluster_timer,
     );
-    assert_eq!(miner.state, MinerState::ReturnToRefinery);
+    assert_eq!(entity.miner_state().unwrap(), MinerState::ReturnToRefinery);
     assert_eq!(miner.reserved_refinery, None);
     assert_eq!(entity.navigation.nav_com, nav_before);
     assert_eq!(entity.drive_locomotion.as_ref(), Some(&drive_before));
@@ -849,7 +847,7 @@ fn production_cmin_outbound_drive_keeps_teleport_primary() {
             assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
             assert!(locomotor.piggyback.is_some());
         }
-        if entity.miner.as_ref().expect("miner").state == MinerState::Harvest {
+        if entity.miner_state().expect("miner") == MinerState::Harvest {
             assert!(entity.movement_target.is_none());
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
             assert_eq!(locomotor.kind, LocomotorKind::Teleport);
@@ -1006,7 +1004,7 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
     let miner = entity.miner.as_ref().expect("miner");
-    assert_eq!(miner.state, MinerState::MoveToOre);
+    assert_eq!(entity.miner_state().unwrap(), MinerState::MoveToOre);
     assert_eq!(miner.target_ore_cell, Some(original));
     assert_eq!(
         entity.navigation.nav_com,
@@ -1047,7 +1045,7 @@ fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
                 Some(NavTargetRef::cell(target.0, target.1)),
             );
             assert_eq!(
-                entity.miner.as_ref().expect("miner").state,
+                entity.miner_state().expect("miner"),
                 MinerState::MoveToOre,
             );
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
@@ -1071,7 +1069,7 @@ fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
     assert_eq!(entity.navigation.nav_com, None);
     assert!(!entity.navigation.pending_arrival_clear);
     assert_eq!(
-        entity.miner.as_ref().expect("miner").state,
+        entity.miner_state().expect("miner"),
         MinerState::Harvest,
     );
     assert!(entity.drive_locomotion.is_none());

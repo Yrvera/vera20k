@@ -2070,11 +2070,28 @@ impl Simulation {
         // Object-AI stage: the authoritative per-object Mission host, run
         // immediately BEFORE Phase-1 ground movement — gamemd decides each
         // object's mission, then moves it, within one pass. Each live object
-        // gets its `+0xC4` AI-counter tick and its owner-local queued-mission
-        // promotion (Ready→Commence) here; player commands queued the mission
-        // in the command phase above (the event-execute shape). Movement stays
+        // gets its `+0xC4` AI-counter tick, its owner-local queued-mission
+        // promotion (Ready→Commence), and its absorbed mission-handler
+        // dispatch (Harvest: the miner FSM, timer-gated with the post-handler
+        // epilogue write) here; player commands queued the mission in the
+        // command phase above (the event-execute shape). Movement stays
         // before the Phase-3 vision recompute, so sight is unaffected.
-        self.object_ai_stage(rules);
+        //
+        // Dock-reservation corpse sweep first (was the global miner tick's
+        // pre-pass): reservations held by/on dying objects release before the
+        // Harvest dispatches run.
+        if rules.is_some() {
+            crate::sim::miner::sweep_dead_dock_reservations(self);
+        }
+        let miner_config = rules.map(crate::sim::miner::MinerConfig::from_rules);
+        self.object_ai_stage_with(
+            rules,
+            techno_ai::ObjectAiCtx {
+                path_grid,
+                overlay_registry,
+                miner_config: miner_config.as_ref(),
+            },
+        );
 
         // --- Phase 1: Ground movement ---
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.

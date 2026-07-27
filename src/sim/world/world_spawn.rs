@@ -241,13 +241,39 @@ impl Simulation {
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.foundation = obj.foundation.clone();
             }
-            let (_, outcome) = self.unlimbo(ge);
+            let (stable_id, outcome) = self.unlimbo(ge);
             debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+            self.commit_spawn_harvest_mission(stable_id);
             count += 1;
         }
 
         log::info!("Spawned {} entities", count);
         count
+    }
+
+    /// Commit the spawn-time Harvest mission for a freshly stored miner so the
+    /// host's mission dispatch has a truthful `current` from birth (cursor
+    /// `SearchOre` == the zeroed handler state a fresh Assign writes).
+    /// UNCHECKED: the native creation-mission family (Enter_Idle_Mode /
+    /// initial-unit assigns, roadmap Track B1) is unverified — this preserves
+    /// the legacy spawn-into-SearchOre behavior. Slave Miners are excluded
+    /// (their own system drives them; never Harvest-dispatched).
+    fn commit_spawn_harvest_mission(&mut self, stable_id: u64) {
+        let is_dispatchable_miner = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|e| e.miner.as_ref())
+            .is_some_and(|m| m.kind != crate::sim::miner::MinerKind::Slave);
+        if !is_dispatchable_miner {
+            return;
+        }
+        let now = self.session.binary_frame;
+        let _ = self.mission_assign_exact(
+            stable_id,
+            crate::sim::mission::MissionId::from_known(crate::sim::mission::MissionType::Harvest),
+            now,
+        );
     }
 
     /// Spawn one object instance (used by production). Returns the stable_id on success.
@@ -400,6 +426,7 @@ impl Simulation {
         ge.foundation = obj.foundation.clone();
         let (stable_id, outcome) = self.unlimbo(ge);
         debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+        self.commit_spawn_harvest_mission(stable_id);
         Some(stable_id)
     }
 
@@ -532,7 +559,9 @@ impl Simulation {
             };
         }
 
-        Some(self.create_limbo(ge))
+        let stable_id = self.create_limbo(ge);
+        self.commit_spawn_harvest_mission(stable_id);
+        Some(stable_id)
     }
 
     /// Store a freshly constructed object in native-style limbo and account for

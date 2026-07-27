@@ -1,8 +1,12 @@
-//! Miner state machine tick — drives the SearchOre→Harvest→Return→Unload loop.
+//! Miner state machine — the Harvest mission handler body
+//! (SearchOre→Harvest→Return→Unload loop).
 //!
-//! Called once per sim tick from `tick_resource_economy()`. Uses the two-phase
-//! snapshot pattern: snapshot all live miners in LogicClass order, process them
-//! in that order, then apply mutations back to the EntityStore.
+//! Since the handler absorption, each live miner is dispatched individually
+//! from the per-object AI host (the Unit arm of `techno_ai_shell`, the
+//! Mission_Dispatch position): snapshot the miner, run one FSM step, commit
+//! the mutations plus the dispatch epilogue back to the entity. The FSM
+//! cursor of record is `MissionCom::handler_state`; the snapshot carries a
+//! decoded working copy in `MinerSnapshot::state`.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/miner, sim/miner_dock, sim/components,
@@ -67,7 +71,13 @@ fn return_exceeds_too_far_threshold(
     Some(distance_sq > threshold * threshold)
 }
 
-/// Snapshot of one miner entity for two-phase processing.
+/// The default handler return: dispatch again next frame — the exact
+/// per-frame cadence the pre-absorption global tick had. Every FSM path
+/// whose native return delay is not Ghidra-verified keeps this value
+/// (recorded UNCHECKED residual); only verified epilogues override it.
+pub(super) const DISPATCH_NEXT_FRAME: i32 = 1;
+
+/// Snapshot of one miner entity for one Harvest dispatch.
 pub(super) struct MinerSnapshot {
     pub(super) entity_id: u64,
     pub(super) owner: InternedId,
@@ -76,117 +86,40 @@ pub(super) struct MinerSnapshot {
     pub(super) ry: u16,
     pub(super) speed: SimFixed,
     pub(super) miner: Miner,
-    /// Buffered miner state change events — flushed to entity in Phase 3.
+    /// FSM cursor working copy — decoded from `MissionCom::handler_state` at
+    /// dispatch entry, committed back through it at dispatch commit.
+    pub(super) state: MinerState,
+    /// Handler return value: frames until the next dispatch, written into the
+    /// mission dispatch timer by the commit (the native post-handler epilogue).
+    pub(super) dispatch_delay: i32,
+    /// Buffered miner state change events — flushed to entity at commit.
     pub(super) debug_events: Vec<(String, String)>,
-    /// Buffered dock phase change events — flushed to entity in Phase 3.
+    /// Buffered dock phase change events — flushed to entity at commit.
     pub(super) debug_dock_events: Vec<(String, String)>,
 }
 
-/// Main entry point: tick all entities with the Miner component.
-///
-/// Deterministic: snapshots follow LogicClass live-object order, mutations
-/// applied in that order.
-pub(crate) fn tick_miners(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    config: &MinerConfig,
-    path_grid: Option<&PathGrid>,
-) {
-    // Focused miner fixtures may insert directly into storage. Preserve that
-    // fallback only when no explicit test LogicVector exists; otherwise honor
-    // its native insertion order. Production always supplies an authoritative
-    // order, including empty, through the entry point below.
-    let live_order = sim.live_object_order_snapshot();
-    let fixture_order = (!live_order.is_empty()).then_some(live_order.as_slice());
-    tick_miners_in_order(sim, rules, config, path_grid, None, fixture_order);
+/// Release dock reservations held by/on dying objects before the Harvest
+/// dispatches run, so queued miners promote without waiting through the death
+/// anim. Gated on a live dispatchable miner existing — matching the legacy
+/// global tick, whose sweep only ran when its snapshot list was non-empty
+/// (hash-identical when no miners are present).
+pub(crate) fn sweep_dead_dock_reservations(sim: &mut Simulation) {
+    let order = sim.live_object_order_snapshot();
+    sweep_dead_dock_reservations_for_keys(sim, &order);
 }
 
-pub(crate) fn tick_miners_with_overlay_registry(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    config: &MinerConfig,
-    path_grid: Option<&PathGrid>,
-    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-) {
-    let live_order = sim.live_object_order_snapshot();
-    tick_miners_in_order(
-        sim,
-        rules,
-        config,
-        path_grid,
-        overlay_registry,
-        Some(&live_order),
-    );
-}
-
-fn tick_miners_in_order(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    config: &MinerConfig,
-    path_grid: Option<&PathGrid>,
-    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    live_order: Option<&[u64]>,
-) {
-    // Phase 1: Snapshot all miners from EntityStore.
-    let fallback_keys;
-    let keys: &[u64] = match live_order {
-        Some(order) => order,
-        None => {
-            fallback_keys = sim.substrate.entities.keys_sorted();
-            &fallback_keys
-        }
-    };
-    let mut snapshots: Vec<MinerSnapshot> = Vec::new();
-    for &id in keys {
-        let Some(entity) = sim.substrate.entities.get(id) else {
-            continue;
-        };
-        // A Dying miner corpse (sold/captured this tick, awaiting the end-of-tick
-        // drain) must not move, harvest, or deposit — exclude it from the tick.
-        if entity.dying {
-            continue;
-        }
-        let Some(ref miner) = entity.miner else {
-            continue;
-        };
-        // Slave Miners use their own system (slave_miner.rs) — skip here.
-        if miner.kind == MinerKind::Slave {
-            continue;
-        }
-        // Use the authentic RA2 speed formula: Speed=4 → ~0.586 cells/sec.
-        let raw_speed: i32 = sim
-            .object_type(entity.type_ref, rules)
-            .map(|obj| obj.speed.max(1))
-            .unwrap_or(4);
-        let speed: SimFixed = ra2_speed_to_leptons_per_second(raw_speed);
-        snapshots.push(MinerSnapshot {
-            entity_id: id,
-            owner: entity.owner,
-            type_id: entity.type_ref,
-            rx: entity.position.rx,
-            ry: entity.position.ry,
-            speed,
-            miner: miner.clone(),
-            debug_events: Vec::new(),
-            debug_dock_events: Vec::new(),
-        });
-    }
-    // Snapshot order already matches the native live-object pass. In direct
-    // unit tests with no live-order setup, the empty-order fallback preserves
-    // the previous stable-id order.
-    log::debug!(
-        "tick_miners: {} miners, {} resource_nodes",
-        snapshots.len(),
-        sim.production.resource_nodes.len(),
-    );
-
-    if snapshots.is_empty() {
+fn sweep_dead_dock_reservations_for_keys(sim: &mut Simulation, order: &[u64]) {
+    let any_miner = order.iter().any(|&id| {
+        sim.substrate.entities.get(id).is_some_and(|e| {
+            !e.dying
+                && e.miner
+                    .as_ref()
+                    .is_some_and(|miner| miner.kind != MinerKind::Slave)
+        })
+    });
+    if !any_miner {
         return;
     }
-
-    // Dying entities are still in `sim.entities` until the death animation
-    // finishes, but their refinery reservation must release immediately so
-    // queued miners can be promoted without waiting through the death anim.
     let alive_sids: BTreeSet<u64> = sim
         .substrate
         .entities
@@ -195,78 +128,147 @@ fn tick_miners_in_order(
         .map(|e| e.stable_id)
         .collect();
     sim.production.dock_reservations.cleanup_dead(&alive_sids);
+}
 
-    // Phase 2: Process each miner through its state machine, dispatched via the
-    // Harvest mission handler seam (Slice L5). `harvest_mission_step` runs the
-    // unchanged `process_miner` body — a pure routing seam, no order/behavior/
-    // hash change — so this loop's per-snapshot, live-order dispatch is
-    // identical to calling `process_miner` directly.
-    for snap in &mut snapshots {
-        super::harvest_mission::harvest_mission_step(
+/// Build the dispatch snapshot for one live, non-dying, non-slave miner.
+/// Returns `None` when the object is not a dispatchable miner.
+pub(super) fn build_miner_snapshot(
+    sim: &Simulation,
+    rules: &RuleSet,
+    id: u64,
+) -> Option<MinerSnapshot> {
+    let entity = sim.substrate.entities.get(id)?;
+    // A Dying miner corpse (sold/captured this tick, awaiting the end-of-tick
+    // drain) must not move, harvest, or deposit.
+    if entity.dying {
+        return None;
+    }
+    let miner = entity.miner.as_ref()?;
+    // Slave Miners use their own system (slave_miner.rs) — never dispatched here.
+    if miner.kind == MinerKind::Slave {
+        return None;
+    }
+    // Use the authentic RA2 speed formula: Speed=4 → ~0.586 cells/sec.
+    let raw_speed: i32 = sim
+        .object_type(entity.type_ref, rules)
+        .map(|obj| obj.speed.max(1))
+        .unwrap_or(4);
+    let speed: SimFixed = ra2_speed_to_leptons_per_second(raw_speed);
+    let cursor = MinerState::from_cursor(entity.mission.handler_state());
+    debug_assert!(
+        cursor.is_some(),
+        "miner {} carries an out-of-vocabulary Harvest cursor {:#x}",
+        id,
+        entity.mission.handler_state(),
+    );
+    Some(MinerSnapshot {
+        entity_id: id,
+        owner: entity.owner,
+        type_id: entity.type_ref,
+        rx: entity.position.rx,
+        ry: entity.position.ry,
+        speed,
+        miner: miner.clone(),
+        state: cursor.unwrap_or(MinerState::SearchOre),
+        dispatch_delay: DISPATCH_NEXT_FRAME,
+        debug_events: Vec::new(),
+        debug_dock_events: Vec::new(),
+    })
+}
+
+/// Commit one dispatched snapshot back to the entity: miner mutations, the
+/// FSM cursor of record (`MissionCom::handler_state`), the post-handler
+/// dispatch-timer epilogue (verified host shape: start = current frame,
+/// delay = handler return), buffered debug events, and the render-side
+/// harvest-visual flags (the former global-tick Phases 3/4/4b for one object).
+pub(super) fn commit_miner_snapshot(sim: &mut Simulation, snap: &MinerSnapshot, now: u32) {
+    let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) else {
+        return;
+    };
+    entity.miner = Some(snap.miner.clone());
+    entity.mission.set_handler_state(snap.state.cursor());
+    entity
+        .mission
+        .write_dispatch_epilogue(now as i32, snap.dispatch_delay);
+    for (from, to) in &snap.debug_events {
+        entity.push_debug_event(
+            sim.session.tick as u32,
+            DebugEventKind::MinerStateChange {
+                from: from.clone(),
+                to: to.clone(),
+            },
+        );
+    }
+    for (from, to) in &snap.debug_dock_events {
+        entity.push_debug_event(
+            sim.session.tick as u32,
+            DebugEventKind::DockPhaseChange {
+                from: from.clone(),
+                to: to.clone(),
+            },
+        );
+    }
+    // Drive VoxelAnimation + HarvestOverlay (oregath.shp) from the Harvest
+    // cursor — render-side flags, never hashed.
+    let is_harvesting: bool = snap.state == MinerState::Harvest;
+    if let Some(ref mut va) = entity.voxel_animation {
+        va.playing = is_harvesting;
+        if !is_harvesting {
+            va.frame = 0;
+            va.elapsed_ms = 0;
+        }
+    }
+    if let Some(ref mut ho) = entity.harvest_overlay {
+        if is_harvesting && !ho.visible {
+            ho.visible = true;
+            ho.frame = 0;
+            ho.elapsed_ms = 0;
+        } else if !is_harvesting && ho.visible {
+            ho.visible = false;
+            ho.frame = 0;
+            ho.elapsed_ms = 0;
+        }
+    }
+}
+
+/// Test-only mirror of the production Harvest dispatch walk: the same
+/// per-entity dispatch (timer gate + epilogue) the host Unit arm performs, in
+/// live-object order, with the legacy stable-id fallback for direct-insert
+/// fixtures that never build a LogicVector.
+#[cfg(test)]
+pub(crate) fn tick_miners(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+) {
+    tick_miners_with_overlay_registry(sim, rules, config, path_grid, None);
+}
+
+#[cfg(test)]
+pub(crate) fn tick_miners_with_overlay_registry(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) {
+    let live_order = sim.live_object_order_snapshot();
+    let keys: Vec<u64> = if live_order.is_empty() {
+        sim.substrate.entities.keys_sorted()
+    } else {
+        live_order
+    };
+    sweep_dead_dock_reservations_for_keys(sim, &keys);
+    for id in keys {
+        super::harvest_mission::dispatch_harvest_for_object(
             sim,
             rules,
             config,
             path_grid,
             overlay_registry,
-            snap,
+            id,
         );
-    }
-
-    // Phase 3: Write miner state back to EntityStore and flush debug events.
-    for snap in &snapshots {
-        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
-            entity.miner = Some(snap.miner.clone());
-            for (from, to) in &snap.debug_events {
-                entity.push_debug_event(
-                    sim.session.tick as u32,
-                    DebugEventKind::MinerStateChange {
-                        from: from.clone(),
-                        to: to.clone(),
-                    },
-                );
-            }
-            for (from, to) in &snap.debug_dock_events {
-                entity.push_debug_event(
-                    sim.session.tick as u32,
-                    DebugEventKind::DockPhaseChange {
-                        from: from.clone(),
-                        to: to.clone(),
-                    },
-                );
-            }
-        }
-    }
-
-    // Phase 4: Drive VoxelAnimation playing state from miner Harvest state.
-    for snap in &snapshots {
-        let is_harvesting: bool = snap.miner.state == MinerState::Harvest;
-        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
-            if let Some(ref mut va) = entity.voxel_animation {
-                va.playing = is_harvesting;
-                if !is_harvesting {
-                    va.frame = 0;
-                    va.elapsed_ms = 0;
-                }
-            }
-        }
-    }
-
-    // Phase 4b: Drive HarvestOverlay (oregath.shp) visibility from miner Harvest state.
-    for snap in &snapshots {
-        let is_harvesting: bool = snap.miner.state == MinerState::Harvest;
-        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
-            if let Some(ref mut ho) = entity.harvest_overlay {
-                if is_harvesting && !ho.visible {
-                    ho.visible = true;
-                    ho.frame = 0;
-                    ho.elapsed_ms = 0;
-                } else if !is_harvesting && ho.visible {
-                    ho.visible = false;
-                    ho.frame = 0;
-                    ho.elapsed_ms = 0;
-                }
-            }
-        }
     }
 }
 
@@ -291,8 +293,8 @@ pub(super) fn process_miner(
         return;
     }
 
-    let state_before = format!("{:?}", snap.miner.state);
-    match snap.miner.state {
+    let state_before = format!("{:?}", snap.state);
+    match snap.state {
         MinerState::SearchOre => handle_search_ore(sim, config, path_grid, snap),
         MinerState::MoveToOre => handle_move_to_ore(sim, rules, config, path_grid, snap),
         MinerState::Harvest => {
@@ -306,12 +308,12 @@ pub(super) fn process_miner(
             // Legacy state — production code never enters this path. If we
             // encounter it (e.g., a save from before the FSM rewrite), fall
             // through to SearchOre.
-            snap.miner.state = MinerState::SearchOre;
+            snap.state = MinerState::SearchOre;
         }
         MinerState::WaitNoOre => handle_wait_no_ore(snap, sim.session.binary_frame),
         MinerState::ForcedReturn => handle_forced_return(sim, rules, config, path_grid, snap),
     }
-    let state_after = format!("{:?}", snap.miner.state);
+    let state_after = format!("{:?}", snap.state);
     if state_before != state_after {
         log::info!(
             "MINER {} state: {} → {} pos=({},{}) target_ore={:?} cargo={} timer={:?}",
@@ -402,7 +404,7 @@ fn handle_search_ore(
     // ore, so a full miner that lost its refinery keeps trying to return.
     if snap.miner.is_full() {
         snap.miner.target_ore_cell = None;
-        snap.miner.state = MinerState::ReturnToRefinery;
+        snap.state = MinerState::ReturnToRefinery;
         return;
     }
 
@@ -430,7 +432,7 @@ fn handle_search_ore(
         let archive_reachable = filter_ref.is_none_or(|f| f(archive));
         if archive_has_ore && archive_reachable {
             snap.miner.target_ore_cell = Some(archive);
-            snap.miner.state = MinerState::MoveToOre;
+            snap.state = MinerState::MoveToOre;
             snap.miner.last_harvest_cell = None;
             return;
         }
@@ -458,7 +460,7 @@ fn handle_search_ore(
         config.gem_bale_value,
     ) {
         snap.miner.target_ore_cell = Some(cell);
-        snap.miner.state = MinerState::MoveToOre;
+        snap.state = MinerState::MoveToOre;
         return;
     }
 
@@ -469,14 +471,14 @@ fn handle_search_ore(
         filter_ref,
     ) {
         snap.miner.target_ore_cell = Some(cell);
-        snap.miner.state = MinerState::MoveToOre;
+        snap.state = MinerState::MoveToOre;
         return;
     }
 
     // No reachable ore anywhere. Arm the no-ore retry gate for exactly
     // rescan_cooldown_ticks (0x69) frames — the gate fires inclusively at
     // start + duration, so the duration IS the frame count (no fencepost).
-    snap.miner.state = MinerState::WaitNoOre;
+    snap.state = MinerState::WaitNoOre;
     snap.miner.rescan_cooldown.arm(
         sim.session.binary_frame,
         u32::from(config.rescan_cooldown_ticks),
@@ -507,7 +509,7 @@ fn handle_move_to_ore(
     }
 
     let Some(current_target) = snap.miner.target_ore_cell else {
-        snap.miner.state = MinerState::SearchOre;
+        snap.state = MinerState::SearchOre;
         return;
     };
 
@@ -519,7 +521,7 @@ fn handle_move_to_ore(
         .is_some_and(|node| node.remaining > 0);
     if !still_has_ore {
         snap.miner.target_ore_cell = None;
-        snap.miner.state = MinerState::SearchOre;
+        snap.state = MinerState::SearchOre;
         return;
     }
 
@@ -562,7 +564,7 @@ fn handle_move_to_ore(
 
     // Arrived?
     if (snap.rx, snap.ry) == target {
-        snap.miner.state = MinerState::Harvest;
+        snap.state = MinerState::Harvest;
         // This physical-arrival anchor is legacy Rust behavior; native initializes
         // the timer when search/move succeeds, a separately tracked acquisition-
         // timing drift. Retain +1 for the verified mission-before-timer observation.
@@ -597,7 +599,7 @@ fn handle_harvest(
         // before choosing the ghost/archive cell; state-2 work waits for the next
         // mission dispatch.
         snap.miner.harvest_timer.reset(sim.session.binary_frame);
-        snap.miner.state = MinerState::ReturnToRefinery;
+        snap.state = MinerState::ReturnToRefinery;
         save_archive_via_short_scan(sim, config, path_grid, snap);
         return;
     }
@@ -659,7 +661,7 @@ fn handle_harvest(
     };
     if let Some(next_cell) = continuation_target {
         snap.miner.target_ore_cell = Some(next_cell);
-        snap.miner.state = MinerState::MoveToOre;
+        snap.state = MinerState::MoveToOre;
         return;
     }
 
@@ -739,7 +741,7 @@ fn handle_return(
                 return;
             }
         } else {
-            snap.miner.state = MinerState::WaitNoOre;
+            snap.state = MinerState::WaitNoOre;
         }
         return;
     };
@@ -755,9 +757,9 @@ fn handle_return(
         snap.miner.exit_cell = None;
         if snap.miner.is_full() {
             snap.miner.target_ore_cell = None;
-            snap.miner.state = MinerState::ReturnToRefinery;
+            snap.state = MinerState::ReturnToRefinery;
         } else {
-            snap.miner.state = MinerState::SearchOre;
+            snap.state = MinerState::SearchOre;
         }
         return;
     };
@@ -799,7 +801,7 @@ fn handle_return(
     };
 
     if contact {
-        snap.miner.state = MinerState::Dock;
+        snap.state = MinerState::Dock;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
         snap.miner.dock_enter_retry.clear();
         return;
@@ -820,7 +822,7 @@ fn handle_wait_no_ore(snap: &mut MinerSnapshot, now: u32) {
     if !snap.miner.rescan_cooldown.due(now) {
         return;
     }
-    snap.miner.state = MinerState::SearchOre;
+    snap.state = MinerState::SearchOre;
 }
 
 fn handle_forced_return(
@@ -852,7 +854,7 @@ fn handle_forced_return(
                 return;
             }
         } else {
-            snap.miner.state = MinerState::WaitNoOre;
+            snap.state = MinerState::WaitNoOre;
             snap.miner.rescan_cooldown.arm(
                 sim.session.binary_frame,
                 u32::from(config.rescan_cooldown_ticks),
@@ -960,9 +962,9 @@ fn begin_return(
         if try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, rsid) {
             return;
         }
-        snap.miner.state = MinerState::ReturnToRefinery;
+        snap.state = MinerState::ReturnToRefinery;
     } else {
-        snap.miner.state = MinerState::WaitNoOre;
+        snap.state = MinerState::WaitNoOre;
     }
 }
 
@@ -1014,7 +1016,7 @@ fn try_begin_close_return_radio(
         entity.movement_target = None;
     }
 
-    snap.miner.state = MinerState::Dock;
+    snap.state = MinerState::Dock;
     snap.miner.dock_queued = admission != ContactAdmission::Accepted;
     if admission == ContactAdmission::Accepted {
         // G5: the accepted close-return HELLO queues Mission_Enter via the
@@ -1135,7 +1137,7 @@ fn try_issue_standard_far_return_drive(
     };
 
     let _ = issue_stock_miner_drive_move(sim, rules, grid, snap.entity_id, staging);
-    snap.miner.state = MinerState::ReturnToRefinery;
+    snap.state = MinerState::ReturnToRefinery;
     true
 }
 

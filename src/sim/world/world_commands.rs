@@ -761,9 +761,25 @@ impl Simulation {
                     }
                 }
                 miner.forced_return = true;
-                miner.state = crate::sim::miner::MinerState::ForcedReturn;
                 // Clear any in-progress movement — the miner system will path to refinery.
                 e.movement_target = None;
+                // Commit the Harvest mission and the ForcedReturn cursor of
+                // record. Assign resets the handler state and dispatch timer
+                // (prompt redispatch); the cursor write lands after it.
+                // UNCHECKED: the native return-order mission shape is
+                // unverified — this preserves the legacy immediate-effect
+                // command behavior.
+                let now = self.session.binary_frame;
+                let _ = self.mission_assign_exact(
+                    *entity_id,
+                    crate::sim::mission::MissionId::from_known(MissionType::Harvest),
+                    now,
+                );
+                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
+                    e.mission.set_handler_state(
+                        crate::sim::miner::MinerState::ForcedReturn.cursor(),
+                    );
+                }
                 true
             }
             Command::RepairAtDepot {
@@ -1006,9 +1022,21 @@ impl Simulation {
                     return false;
                 };
                 miner.target_ore_cell = Some((*target_rx, *target_ry));
-                miner.state = crate::sim::miner::MinerState::MoveToOre;
                 // Clear in-progress movement so the miner re-paths to the new target.
                 e.movement_target = None;
+                // Commit the Harvest mission and the MoveToOre cursor of
+                // record (same shape as MinerReturn above; UNCHECKED native
+                // command mission shape, legacy behavior preserved).
+                let now = self.session.binary_frame;
+                let _ = self.mission_assign_exact(
+                    *entity_id,
+                    crate::sim::mission::MissionId::from_known(MissionType::Harvest),
+                    now,
+                );
+                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
+                    e.mission
+                        .set_handler_state(crate::sim::miner::MinerState::MoveToOre.cursor());
+                }
                 true
             }
             Command::PlantC4 {
@@ -2042,7 +2070,10 @@ mod tests {
             .unwrap();
         assert_eq!(miner.reserved_refinery, Some(3));
         assert!(miner.forced_return);
-        assert_eq!(miner.state, MinerState::ForcedReturn);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().miner_state(),
+            Some(MinerState::ForcedReturn)
+        );
         assert!(!miner.dock_queued);
         assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
         assert!(!sim.production.dock_reservations.is_occupied(2));
@@ -2075,7 +2106,10 @@ mod tests {
             .unwrap();
         assert_eq!(miner.reserved_refinery, None);
         assert!(miner.forced_return);
-        assert_eq!(miner.state, MinerState::ForcedReturn);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().miner_state(),
+            Some(MinerState::ForcedReturn)
+        );
     }
 
     #[test]
@@ -2107,7 +2141,10 @@ mod tests {
             .unwrap();
         assert_eq!(miner.reserved_refinery, None);
         assert!(!miner.forced_return);
-        assert_eq!(miner.state, MinerState::SearchOre);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().miner_state(),
+            Some(MinerState::SearchOre)
+        );
     }
 
     fn bunker_rules() -> RuleSet {

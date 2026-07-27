@@ -882,7 +882,9 @@ impl Simulation {
 
             if let Some(ref miner) = entity.miner {
                 1u8.hash(hasher);
-                (miner.state as u8).hash(hasher);
+                // The FSM cursor retired from this block at the substate-
+                // authority flip: it is MissionCom.handler_state, folded by
+                // `hash_mission_com` (and the pre-v29 reconstruction).
                 (miner.kind as u8).hash(hasher);
                 (miner.cargo.len() as u16).hash(hasher);
                 for bale in &miner.cargo {

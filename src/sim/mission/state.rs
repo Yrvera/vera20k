@@ -185,6 +185,13 @@ impl MissionCom {
         self.dispatch_timer = MissionDispatchTimer::from_raw(start_frame, delay);
     }
 
+    /// Handler-owned FSM cursor write at the dispatch commit. Native mission
+    /// handlers write the handler-state dword directly while executing; this is
+    /// that write, performed by the host when it commits a handler step.
+    pub(crate) fn set_handler_state(&mut self, value: u32) {
+        self.handler_state = value;
+    }
+
     pub(super) fn set_movement_bypass_after_verified_queue(&mut self) {
         self.movement_bypass_latch = 1;
     }

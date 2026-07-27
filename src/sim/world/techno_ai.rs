@@ -16,10 +16,24 @@
 
 use super::Simulation;
 use crate::map::entities::EntityCategory;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::particle_system_type::ParticleSystemBehavesLike;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::miner::MinerConfig;
 #[cfg(any(test, debug_assertions))]
 use crate::sim::mission::MissionType;
+use crate::sim::pathfinding::PathGrid;
+
+/// Non-rules world context the mission handler bodies dispatched from the
+/// host need (grids and per-tick config the spine already owns). Empty in
+/// barebones fixtures — handlers that need an absent piece degrade the same
+/// way the legacy global phases did with `None` arguments.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct ObjectAiCtx<'a> {
+    pub(crate) path_grid: Option<&'a PathGrid>,
+    pub(crate) overlay_registry: Option<&'a OverlayTypeRegistry>,
+    pub(crate) miner_config: Option<&'a MinerConfig>,
+}
 
 // P3 oracle probe import — used only by the `#[cfg(test)]` factory_oracle_step_trace.
 #[cfg(test)]
@@ -34,7 +48,13 @@ impl Simulation {
     /// increment plus the owner-local queued-mission promotion at the verified
     /// per-category AI position (see `Simulation::mission_host_promote`).
     pub(crate) fn object_ai_stage(&mut self, rules: Option<&RuleSet>) {
-        let visited = self.object_ai_walk(cfg!(debug_assertions), rules);
+        self.object_ai_stage_with(rules, ObjectAiCtx::default());
+    }
+
+    /// [`Simulation::object_ai_stage`] with the world context the dispatched
+    /// mission handler bodies need (the production spine entry).
+    pub(crate) fn object_ai_stage_with(&mut self, rules: Option<&RuleSet>, ctx: ObjectAiCtx<'_>) {
+        let visited = self.object_ai_walk(cfg!(debug_assertions), rules, ctx);
 
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -108,7 +128,12 @@ impl Simulation {
     /// order, through the per-category shell. When `record`, return the
     /// dispatched ids in order (debug/test observation); otherwise the
     /// returned `Vec` is empty and unallocated.
-    fn object_ai_walk(&mut self, record: bool, rules: Option<&RuleSet>) -> Vec<u64> {
+    fn object_ai_walk(
+        &mut self,
+        record: bool,
+        rules: Option<&RuleSet>,
+        ctx: ObjectAiCtx<'_>,
+    ) -> Vec<u64> {
         let mut visited: Vec<u64> = Vec::new();
         self.for_each_live_object(|sim, id| {
             // Tolerate an absent id (the loop's documented contract). The stage
@@ -135,7 +160,7 @@ impl Simulation {
             if record {
                 visited.push(id);
             }
-            techno_ai_shell(sim, id, category, rules);
+            techno_ai_shell(sim, id, category, rules, ctx);
         });
         visited
     }
@@ -155,10 +180,11 @@ fn techno_ai_shell(
     id: u64,
     category: EntityCategory,
     rules: Option<&RuleSet>,
+    ctx: ObjectAiCtx<'_>,
 ) {
     match category {
         EntityCategory::Unit => {
-            unit_techno_bracket(sim, id, rules);
+            unit_techno_bracket(sim, id, rules, ctx);
         }
         // InfantryClass::AI promotes queued missions via Ready→Commence
         // (`0x0051BC51`/`0x0051BF03`); the fear/sequence absorption is later work.
@@ -355,7 +381,12 @@ pub(crate) enum BracketReach {
 /// The promotion is UnitClass::AI's Ready→Commence (`0x00736473`, the call
 /// before FootClass::AI; the second in-update Ready→Commence at `0x007366FD`
 /// is a recorded residual).
-fn unit_techno_bracket(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) -> BracketReach {
+fn unit_techno_bracket(
+    sim: &mut Simulation,
+    id: u64,
+    rules: Option<&RuleSet>,
+    ctx: ObjectAiCtx<'_>,
+) -> BracketReach {
     techno_common_pre(sim, id);
     // Guard B (post-pre IsAlive): a health-0 Unit runs no mission work. No
     // lethal pre-block step exists yet, so this fires only for an already-dead
@@ -364,9 +395,25 @@ fn unit_techno_bracket(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) -
         return BracketReach::DiedInPre;
     }
     mission_common_step(sim, id, rules);
-    // Guard E (post-dispatch IsAlive): a promotion cannot kill the Unit, so
-    // this cannot fire yet; the structure is preserved for future dispatch
-    // handlers that can self-destruct.
+    // Mission_Dispatch position: the absorbed handler bodies run here,
+    // timer-gated, ending with the verified post-handler epilogue write
+    // (start = current frame, delay = handler return). Harvest (the miner
+    // FSM) is the first absorbed handler; Move/Guard are Track A2.
+    if let (Some(rules), Some(config)) = (rules, ctx.miner_config) {
+        crate::sim::miner::dispatch_harvest_for_object(
+            sim,
+            rules,
+            config,
+            ctx.path_grid,
+            ctx.overlay_registry,
+            id,
+        );
+    }
+    // Guard E (post-dispatch IsAlive): the dispatched handler may have
+    // destroyed the Unit; a dead Unit runs no post-mission block.
+    if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
+        return BracketReach::Dispatched;
+    }
     techno_common_post(sim, id, rules);
     BracketReach::Dispatched
 }
@@ -657,7 +704,7 @@ mod tests {
         // verbatim (no sort).
         sim.set_logic_order_for_test(vec![3, 1, 2]);
 
-        let visited = sim.object_ai_walk(true, None);
+        let visited = sim.object_ai_walk(true, None, ObjectAiCtx::default());
         assert_eq!(
             visited,
             sim.live_object_order_snapshot(),
@@ -715,7 +762,7 @@ mod tests {
         // in the live order.
         sim.substrate.entities.get_mut(2).unwrap().dying = true;
 
-        let visited = sim.object_ai_walk(true, None);
+        let visited = sim.object_ai_walk(true, None, ObjectAiCtx::default());
         assert_eq!(
             visited,
             vec![1],
@@ -741,7 +788,7 @@ mod tests {
             .logic
             .set_order_for_test(vec![absent_id, live_id]);
 
-        let visited = sim.object_ai_walk(true, None);
+        let visited = sim.object_ai_walk(true, None, ObjectAiCtx::default());
         assert_eq!(
             visited,
             vec![live_id],
@@ -762,7 +809,7 @@ mod tests {
         // A live Unit reaches the dispatch point: +0xC4 counter tick; the
         // verb-owned current selector is untouched.
         assert_eq!(
-            unit_techno_bracket(&mut sim, 1, None),
+            unit_techno_bracket(&mut sim, 1, None, ObjectAiCtx::default()),
             BracketReach::Dispatched
         );
         let u = sim.substrate.entities.get(1).unwrap();
@@ -779,7 +826,7 @@ mod tests {
         // Guard B fires after the (empty) pre-block: a health-0 Unit runs no
         // mission work (counter stays 0).
         assert_eq!(
-            unit_techno_bracket(&mut sim, 1, None),
+            unit_techno_bracket(&mut sim, 1, None, ObjectAiCtx::default()),
             BracketReach::DiedInPre
         );
         assert_eq!(
@@ -798,7 +845,7 @@ mod tests {
         // common mission step for every live Unit (the miner FSM keeps driving
         // behavior; its mission commits arrive through the departure verbs).
         assert_eq!(
-            unit_techno_bracket(&mut sim, 1, None),
+            unit_techno_bracket(&mut sim, 1, None, ObjectAiCtx::default()),
             BracketReach::Dispatched
         );
         assert_eq!(

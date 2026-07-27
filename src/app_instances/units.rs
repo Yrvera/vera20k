@@ -232,9 +232,8 @@ pub(crate) fn build_unit_instances(
         // (not depth-space) so the correction scales naturally with map size.
         // One full tile height pushes the sort point past the foundation bottom.
         let dock_depth_y_offset: f32 = if entity
-            .miner
-            .as_ref()
-            .is_some_and(|m| matches!(m.state, crate::sim::miner::MinerState::Dock))
+            .miner_state()
+            .is_some_and(|s| matches!(s, crate::sim::miner::MinerState::Dock))
         {
             TILE_HEIGHT
         } else {

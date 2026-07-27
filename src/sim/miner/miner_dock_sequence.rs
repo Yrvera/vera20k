@@ -639,7 +639,9 @@ pub(crate) fn interrupt_refinery_docked_miners(
             let Some(miner) = entity.miner.as_ref() else {
                 return None;
             };
-            if miner.reserved_refinery != Some(ref_sid) || miner.state != MinerState::Dock {
+            if miner.reserved_refinery != Some(ref_sid)
+                || entity.miner_state() != Some(MinerState::Dock)
+            {
                 return None;
             }
             let is_on_pad = sim
@@ -689,7 +691,7 @@ pub(crate) fn interrupt_refinery_docked_miners(
         if miner.is_full() {
             miner.target_ore_cell = None;
         }
-        miner.state = next_state;
+        entity.mission.set_handler_state(next_state.cursor());
 
         entity.display_type_override = None;
         entity.movement_target = None;
@@ -729,7 +731,7 @@ fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_si
     if snap.miner.is_full() {
         snap.miner.target_ore_cell = None;
     }
-    snap.miner.state = dock_abort_state(snap);
+    snap.state = dock_abort_state(snap);
 }
 
 fn abort_missing_unload_building(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_sid: u64) {
@@ -759,7 +761,7 @@ fn abort_missing_unload_building(sim: &mut Simulation, snap: &mut MinerSnapshot,
     if snap.miner.is_full() {
         snap.miner.target_ore_cell = None;
     }
-    snap.miner.state = dock_abort_state(snap);
+    snap.state = dock_abort_state(snap);
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,7 +1357,7 @@ fn phase_deposit_cooldown(snap: &mut MinerSnapshot) {
     snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
 
-fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnapshot, ref_sid: u64) {
+fn phase_departing(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot, ref_sid: u64) {
     let teleporting = sim
         .substrate
         .entities
@@ -1396,18 +1398,19 @@ fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnaps
     clear_enter_retry(snap);
     clear_mission_deploy_delay(snap);
     clear_unload_cluster(snap);
-    // L10: gamemd's Mission_Deploy state-4 exit returns through the mission-timer
-    // epilogue — it draws one RandomRanged(0,2) (Scen->Random) and queues
-    // Mission_Harvest with that value as its initial cadence, so the resumed ore
-    // search waits 0-2 frames. Draw + apply the jitter here (arm the harvest
-    // cadence) so both the RNG stream and the resume timing match gamemd
-    // (SearchOre no longer resumes 0-2f early).
+    // The Mission_Deploy state-4 exit returns through the dispatch epilogue:
+    // base = ftol([Harvest] Rate × 900) after the Queue(10,0)+Commence below
+    // promotes Harvest to current, plus one RandomRanged(0,2) on Scen->Random.
+    // The base lookup consumes no RNG, so drawing the jitter here keeps the
+    // stream position unchanged. The value flows out through the dispatch
+    // timer (`snap.dispatch_delay`), so the resumed ore search waits the full
+    // Rate + jitter (~14-16f stock) — the internal harvest-timer arming this
+    // replaced paced it by jitter alone.
+    let resume_base = mission_base_frames(rules, MissionType::Harvest, APPROACH_HELLO_BASE_FRAMES);
     let resume_jitter = sim
         .miner_jitter_rng()
         .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES);
-    snap.miner
-        .harvest_timer
-        .arm(sim.session.binary_frame, resume_jitter);
+    snap.dispatch_delay = i32::from(resume_base) + resume_jitter as i32;
     // Clear the pending ore target and stale exit cache. Preserve
     // `last_harvest_cell`; the ghost-cell archive survives the dock cycle
     // so the next `SearchOre` can return to the productive patch saved when
@@ -1415,10 +1418,13 @@ fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnaps
     snap.miner.target_ore_cell = None;
     snap.miner.exit_cell = None;
     snap.miner.dock_phase = RefineryDockPhase::Approach;
-    snap.miner.state = MinerState::SearchOre;
+    snap.state = MinerState::SearchOre;
     // Native Mission_Deploy state-4 exit queues Harvest and explicitly
     // Commences it (Unit DeployBuilding `0x0073E283`: Queue(10,0), contact
     // work, explicit Commence) — the resumed harvest cycle's mission commit.
+    // Commence zeroes the handler state (== SearchOre) and resets the
+    // dispatch timer; the host's post-handler epilogue write then installs
+    // `dispatch_delay` on top, in the native order.
     let now = sim.session.binary_frame;
     let _ = sim.mission_queue_exact(
         snap.entity_id,
