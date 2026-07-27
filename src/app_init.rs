@@ -518,8 +518,11 @@ pub(crate) fn load_map_from_initial(
         Some(td) => td.extension,
         None => theater_ext_for(&map_data.header.theater),
     };
-    // Theater archives + palettes loaded (gamemd Init_Theater milestones).
+    // Theater archives + palettes loaded. Rust's theater loader is monolithic,
+    // so its internal dynamic 13..25 callbacks remain a documented residual;
+    // preserve the verified finalization boundary before post-theater work.
     progress.milestone(12);
+    progress.milestone(25);
     progress.milestone(30);
 
     let parse_bool_env = |key: &str| -> Option<bool> {
@@ -1239,11 +1242,12 @@ pub(crate) fn load_map_from_initial(
         simulation.as_ref(),
         rules.as_ref(),
     );
-    // Final post-map-init milestones (gamemd cell-attributes, beacon-art [90
-    // coalesced here, no distinct Rust step], post-map-init, tactical cleanup,
-    // final pre-render refresh). 100 is emitted by the pump at Finished.
+    // Final post-map-init milestones (cell attributes, beacon art, post-map
+    // init, tactical cleanup, final pre-render refresh). 100 is emitted by the
+    // pump at Finished.
     progress.milestone(82);
     progress.milestone(86);
+    progress.milestone(90);
     progress.milestone(93);
     progress.milestone(96);
     progress.milestone(98);
