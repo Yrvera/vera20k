@@ -642,18 +642,25 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
+            waterfalls: [-1; 4],
         }
     }
 
     /// Like `run_carved_levels`, but with the bridge coin on, reporting how
     /// far the region counter moved — a placed bridge adds one extra id.
     fn run_bridged(map_type: i32, seed: u16) -> (i32, Grid, TileIds) {
-        let (map_w, map_h) = (34, 42);
+        // A realistic map size: bridges need room — the fills alone span 13
+        // ranks, and the finish's junction only settles when the post-bridge
+        // river can wander without re-touching the old segment.
+        let (map_w, map_h) = (64, 72);
         let stride = (map_w + map_h + 1) as usize;
         let (dmin, dmax) = (map_w, map_w + 2 * map_h);
         let mut grid = Grid::new(stride, dmin, dmax);
         let mut scratch = RmgScratch::new(stride, dmin, dmax);
-        let identity = ids();
+        let mut identity = ids();
+        // The deck needs waterfall sets; four synthetic bases, disjoint from
+        // everything else the test ids use.
+        identity.waterfalls = [600, 610, 620, 630];
         let blocks = blocks();
         let mut rng = RmgRng::new(seed);
         let mut gauss = Gaussian::default();
@@ -670,8 +677,8 @@ mod tests {
             playable: PlayableRect {
                 x: 2,
                 y: 5,
-                w: 30,
-                h: 30,
+                w: 60,
+                h: 60,
             },
         };
         let _ = map_type;
@@ -729,17 +736,22 @@ mod tests {
             attempted > 0,
             "no bridge even placed across any seed — the gate never opens"
         );
-        // KNOWN GAP, pinned deliberately: placements never survive the river
-        // finish yet. The finish's shore pass hard-refuses where the two
-        // region generations' shorelines meet, and the original resolves that
-        // junction through the deck stamping (its 0xffff tile sentinels and
-        // level adjustments change what the pass accepts) — which is not
-        // ported. When the deck lands this assertion must flip to
-        // `survived > 0`; failing here on a survivor is that reminder.
+        // KNOWN GAP, pinned deliberately: placements still never survive the
+        // river finish, even with the waterfall deck stamped. The finish's
+        // shore pass hard-refuses where the two region generations'
+        // shorelines meet — foreign shore pieces whose classes differ,
+        // because the junction geometry changed between the bridge's own
+        // shore pass and the finish, so a different piece family is selected
+        // at the same cell. The refusal gate itself is verified faithful
+        // (both piece tables and the stamper's arms match the binary), so
+        // whether the original tolerates the same geometry can only be
+        // settled by a per-cell comparison against a native run — the
+        // oracle's job. If a survivor ever appears, flip this to
+        // `survived > 0` and update the module docs.
         assert_eq!(
             survived, 0,
-            "a bridge survived — the deck must have landed, so flip this test \
-             to assert survival and update the module docs"
+            "a bridge survived — flip this test to assert survival and \
+             update the module docs"
         );
     }
 
