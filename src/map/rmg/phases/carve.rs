@@ -704,6 +704,139 @@ pub fn carve_straight_ramp_clear_west(
     true
 }
 
+/// Carve a ramp that turns a plateau corner.
+///
+/// A different family from the four straights, and it shares almost none of
+/// their structure:
+///
+/// - **It takes no random draw at all.** The straights each take one when their
+///   endpoints differ across the run; a corner never does.
+/// - **Two extra refusals up front:** both endpoint deltas must exceed two,
+///   checked before the rect is even built.
+/// - **Five fill rectangles, not four**, and three separate tail runs rather
+///   than one.
+/// - **Its end blocks reuse tiles the straights also use** (`+2` and `+4`), so
+///   the ten-tile allocation is shared across families, not carved up between
+///   them.
+///
+/// `a` is the outer corner (greater on both axes) and `b` the inner one. The
+/// original calls this routine for two of the eight ramp shapes — the pair
+/// mirrored across the isometric diagonal — with the endpoints swapped between
+/// them, so the geometry here is written once and driven twice.
+pub fn carve_corner_ramp(
+    ctx: &mut CarveCtx<'_>,
+    regions: CarveRegions,
+    a: (i32, i32),
+    b: (i32, i32),
+) -> bool {
+    let span_x = a.0 - b.0;
+    let span_y = a.1 - b.1;
+    // Both refusals come before the rect is built, so a corner that is too
+    // tight costs nothing at all.
+    if span_x <= 2 || span_y <= 2 {
+        return false;
+    }
+
+    let rect = (b.0 - 2, b.1 - 7, span_x + 10, span_y + 10);
+    if !rect_is_carveable(
+        ctx.grid,
+        ctx.scratch,
+        ctx.ids,
+        ctx.playfield,
+        rect,
+        regions.region,
+        regions.lower_region,
+    ) {
+        return false;
+    }
+
+    let (rx, ry, rw, rh) = rect;
+
+    // Two rectangles for the lower plateau, three for the upper.
+    fill(
+        ctx,
+        (rx, rx + rw),
+        (ry, ry + 7),
+        regions.lower_region,
+        regions.lower_level,
+    );
+    fill(
+        ctx,
+        (a.0 + 1, a.0 + 8),
+        (ry, ry + rh),
+        regions.lower_region,
+        regions.lower_level,
+    );
+    fill(
+        ctx,
+        (b.0, b.0 + 1),
+        (b.1, b.1 + 2),
+        regions.region,
+        regions.level,
+    );
+    fill(
+        ctx,
+        (a.0 - 1, a.0 + 1),
+        (a.1, a.1 + 1),
+        regions.region,
+        regions.level,
+    );
+    fill(
+        ctx,
+        (b.0 + 1, a.0),
+        (b.1 + 1, a.1),
+        regions.region,
+        regions.level,
+    );
+
+    let end_base = ctx.ramp_end_block;
+    stamp_iso_block(
+        ctx,
+        end_base + 2,
+        (a.0, a.1 - 2),
+        regions.lower_region,
+        Some(regions.level),
+    );
+    stamp_iso_block(
+        ctx,
+        end_base + 4,
+        (b.0, b.1 - 3),
+        regions.lower_region,
+        Some(regions.level),
+    );
+
+    // Three tails. The first lays the diagonal itself, one cell per step; the
+    // other two run the two straight approaches into it, and both grow one cell
+    // longer per step so the corner opens out.
+    for k in 0..FLAT_RUN_DEPTH {
+        let cell = ctx.grid.cell_native_mut(a.0 + k, b.1 - k);
+        cell.slope = 6;
+        cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+        cell.tile = ctx.ids.ramp_base + 5;
+        cell.sub_tile = 0;
+    }
+    for k in 0..FLAT_RUN_DEPTH {
+        for j in 0..(span_y - 3 + k) {
+            let cell = ctx.grid.cell_native_mut(a.0 + k, a.1 - j - 3);
+            cell.slope = 3;
+            cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+            cell.tile = ctx.ids.ramp_base + 2;
+            cell.sub_tile = 0;
+        }
+    }
+    for k in 0..FLAT_RUN_DEPTH {
+        for j in 0..(span_x - 3 + k) {
+            let cell = ctx.grid.cell_native_mut(b.0 + 3 + j, b.1 - k);
+            cell.slope = 2;
+            cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+            cell.tile = ctx.ids.ramp_base + 1;
+            cell.sub_tile = 0;
+        }
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1625,5 +1758,162 @@ mod tests {
         // simply out of reach.
         assert_eq!(ctx.scratch.get(44, 49).region, LOWER, "row above");
         assert_eq!(ctx.scratch.get(44, 51).region, LOWER, "row below");
+    }
+
+    /// A corner carve over the flat harness, returning the recorder.
+    macro_rules! corner_carve {
+        ($ctx:ident, $a:expr, $b:expr) => {
+            carve_corner_ramp(&mut $ctx, regions(), $a, $b)
+        };
+    }
+
+    #[test]
+    fn a_corner_carve_takes_no_draw_at_all() {
+        // The four straights each take one when their endpoints differ across
+        // the run. A corner never draws, so wiring one into the retry loop as
+        // though it did would put the stream out of step.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(corner_carve!(ctx, (52, 54), (44, 46)));
+        let mut fresh = RmgRng::new(1);
+        assert_eq!(ctx.rng.next_u32(), fresh.next_u32(), "corner drew");
+    }
+
+    #[test]
+    fn a_corner_too_tight_on_either_axis_refuses_before_anything_else() {
+        // Both deltas must EXCEED two, and the check happens before the rect is
+        // built -- so a tight corner costs nothing, not even the rect sweep.
+        for (a, b, label) in [
+            ((46, 54), (44, 46), "x span of two"),
+            ((52, 48), (44, 46), "y span of two"),
+            ((47, 49), (44, 46), "both exactly three -- carves"),
+        ] {
+            let (mut grid, mut scratch) = harness();
+            let ids = ids();
+            let blocks = RecordingBlocks::new();
+            let mut rng = RmgRng::new(1);
+            let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+            let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+            let carved = corner_carve!(ctx, a, b);
+            let expected = label.contains("carves");
+            assert_eq!(carved, expected, "{label}");
+            if !carved {
+                assert!(blocks.seen.borrow().is_empty(), "{label}: stamped");
+                let mut fresh = RmgRng::new(1);
+                assert_eq!(ctx.rng.next_u32(), fresh.next_u32(), "{label}: drew");
+            }
+        }
+    }
+
+    #[test]
+    fn the_corner_end_blocks_reuse_tiles_the_straights_also_use() {
+        // The ten end-block tiles are shared across families, not divided
+        // between them: this routine takes the third and fifth, which the
+        // east-facing and north-facing straights also stamp.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(corner_carve!(ctx, (52, 54), (44, 46)));
+        assert_eq!(
+            blocks.seen.borrow().as_slice(),
+            &[END_BASE + 2, END_BASE + 4],
+            "two stamps, not consecutive"
+        );
+    }
+
+    #[test]
+    fn the_corner_fills_split_across_five_rectangles() {
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        // Seed the interior probe with the OTHER plateau first. The harness
+        // already starts every cell owned by the upper region, so asserting
+        // that afterwards would pass even if the rectangle were never written
+        // -- the assertion has to have something to undo.
+        scratch.get_mut(48, 50).region = LOWER;
+        grid.get_mut(48, 50).expect("native cell").level = LOWER_LEVEL;
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(corner_carve!(ctx, (52, 54), (44, 46)));
+        // (43, 41) is in the outer lower rectangle only.
+        assert_eq!(ctx.scratch.get(43, 41).region, LOWER, "lower id");
+        assert_eq!(
+            ctx.grid.cell_native(43, 41).level,
+            LOWER_LEVEL,
+            "lower level"
+        );
+        // (48, 50) is in the big interior rectangle, which is the upper
+        // plateau -- the one a four-rectangle port would not have.
+        assert_eq!(ctx.scratch.get(48, 50).region, REGION, "interior id");
+        assert_eq!(
+            ctx.grid.cell_native(48, 50).level,
+            REGION_LEVEL,
+            "interior level"
+        );
+    }
+
+    #[test]
+    fn the_three_corner_tails_lay_three_different_faces() {
+        // The diagonal takes slope 6 and the tile five above the base; the two
+        // approaches take 3/+2 and 2/+1. Sharing any of them would flatten the
+        // turn.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(corner_carve!(ctx, (52, 54), (44, 46)));
+
+        // Diagonal, step 1. It sits exactly one row below where the second
+        // tail stops, so it survives -- that near miss is worth pinning.
+        let d = ctx.grid.cell_native(53, 45);
+        assert_eq!((d.slope, d.tile, d.level), (6, 205, 6), "diagonal");
+        // Second tail: the along-Y approach.
+        let v = ctx.grid.cell_native(52, 51);
+        assert_eq!((v.slope, v.tile, v.level), (3, 202, 7), "along-Y approach");
+        // Third tail: the along-X approach.
+        let h = ctx.grid.cell_native(48, 46);
+        assert_eq!((h.slope, h.tile, h.level), (2, 201, 7), "along-X approach");
+    }
+
+    #[test]
+    fn the_corner_approaches_grow_one_cell_per_step() {
+        // Each approach runs one cell longer for every step of depth, which is
+        // what opens the turn out. A fixed length would leave a notch.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(corner_carve!(ctx, (52, 54), (44, 46)));
+        // Along-X approach at depth 0 reaches x = 47..51; at depth 1 one
+        // further, to 52. Checking the cell that only the longer run reaches.
+        assert_eq!(
+            ctx.grid.cell_native(52, 45).slope,
+            2,
+            "depth 1 reaches one further"
+        );
+        assert_ne!(
+            ctx.grid.cell_native(52, 46).slope,
+            2,
+            "depth 0 stops short of it"
+        );
+        // The along-Y approach grows the same way, and needs its own probe --
+        // the two share no code path. (53, 46) is reached only at depth 1.
+        assert_eq!(
+            ctx.grid.cell_native(53, 46).slope,
+            3,
+            "along-Y depth 1 reaches one further"
+        );
     }
 }
