@@ -206,6 +206,36 @@ mod tests {
     }
 
     #[test]
+    fn sink_writes_one_contiguous_json_line_per_tick() {
+        // Exercises the real file path, because the consumer rejects a stream with gaps
+        // and a sink that silently dropped or merged lines would look like dropped ticks.
+        let path =
+            std::env::temp_dir().join(format!("vera20k-parity-sink-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let mut sink = ParityDigestSink::create(&path).expect("sink opens");
+        for tick in 0..3u64 {
+            let mut digest = empty_digest();
+            digest.tick = tick;
+            digest.house_credits = vec![1000 - tick as i32];
+            digest.house_count = 1;
+            sink.write(&digest).expect("write succeeds");
+        }
+        assert_eq!(sink.written(), 3);
+        assert_eq!(sink.path(), path.as_path());
+
+        let contents = std::fs::read_to_string(&path).expect("file is readable");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 3, "one line per tick");
+        for (expected_tick, line) in lines.iter().enumerate() {
+            let parsed: ParityDigest = serde_json::from_str(line).expect("each line parses");
+            assert_eq!(parsed.tick, expected_tick as u64);
+            assert_eq!(parsed.house_credits, vec![1000 - expected_tick as i32]);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn empty_state_hashes_to_the_offset_basis() {
         let digest = empty_digest();
         assert_eq!(digest.entity_state_hash, FNV1A64_OFFSET_BASIS);
