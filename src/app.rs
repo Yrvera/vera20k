@@ -380,6 +380,11 @@ pub(crate) struct AppState {
     pub(crate) path_grid: Option<PathGrid>,
     /// Sequence definitions per entity type for animation ticking.
     pub(crate) animation_sequences: BTreeMap<String, SequenceSet>,
+    /// Optional per-tick parity digest stream, opened only when the environment asks.
+    ///
+    /// Lives here rather than on `Simulation` so the sim tick performs no file I/O and a
+    /// capture run stays identical to an uncaptured one.
+    pub(crate) parity_digest_sink: Option<crate::sim::parity_digest::ParityDigestSink>,
     /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
     pub(crate) rules: Option<crate::rules::ruleset::RuleSet>,
     /// Art.ini registry — needed for building animation overlay lookups at render time.
@@ -4076,6 +4081,18 @@ impl App {
             loaded_map_source: None,
             path_grid: None,
             animation_sequences: BTreeMap::new(),
+            parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
+                Ok(sink) => {
+                    if let Some(sink) = sink.as_ref() {
+                        log::info!("parity digest capture -> {}", sink.path().display());
+                    }
+                    sink
+                }
+                Err(error) => {
+                    log::error!("parity digest sink could not be opened: {error}");
+                    None
+                }
+            },
             rules: startup_rules,
             art_registry: None,
             infantry_sequences: HashMap::new(),

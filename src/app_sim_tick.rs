@@ -790,6 +790,17 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
                 state.overlay_registry.as_ref(),
                 SIM_TICK_MS,
             );
+            // Parity capture, if requested. Placed directly after the committed tick so
+            // it observes the same state the tick hash covers, and before any app-layer
+            // animation work that the original engine accounts for elsewhere.
+            if let Some(sink) = state.parity_digest_sink.as_mut() {
+                let digest = sim.parity_digest();
+                if let Err(error) = sink.write(&digest) {
+                    // A failing diagnostic must never take the game down with it.
+                    log::error!("parity digest write failed, disabling capture: {error}");
+                    state.parity_digest_sink = None;
+                }
+            }
             let (ents, interner) = sim.entities_mut_and_interner();
             let death_finished =
                 animation::tick_animations(ents, &state.animation_sequences, SIM_TICK_MS, interner);

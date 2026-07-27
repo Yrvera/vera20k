@@ -34,6 +34,9 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 /// Sub-cell resolution: one cell is 256 units on each axis, and a centred entity sits at
 /// 128. Both engines use this, which is what makes the X/Y fold comparable at all.
@@ -123,6 +126,74 @@ impl ParityDigest {
     /// Serialize as one JSON line for streaming to disk.
     pub fn to_json_line(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
+    }
+}
+
+/// Environment variable naming the digest destination.
+///
+/// Absent means the sink never opens a file and every tick costs one `Option` check.
+/// Capture is a diagnostic, not a mode the game should ever be in by default.
+pub const PARITY_DIGEST_PATH_ENV: &str = "VERA20K_PARITY_DIGEST";
+
+/// Streams one digest per committed tick to a JSONL file.
+///
+/// Deliberately owned *above* the simulation rather than inside it. `advance_tick` stays
+/// free of file I/O, so enabling capture cannot perturb tick timing, ordering, or state —
+/// the run being measured has to be the same run that would happen unmeasured.
+pub struct ParityDigestSink {
+    writer: BufWriter<File>,
+    path: PathBuf,
+    written: u64,
+}
+
+impl ParityDigestSink {
+    /// Open a sink if the environment requests one.
+    ///
+    /// Returns `Ok(None)` when capture was not requested — the overwhelmingly common
+    /// case, and not an error.
+    pub fn from_env() -> std::io::Result<Option<Self>> {
+        match std::env::var(PARITY_DIGEST_PATH_ENV) {
+            Ok(path) if !path.trim().is_empty() => Self::create(Path::new(path.trim())).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn create(path: &Path) -> std::io::Result<Self> {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        Ok(Self {
+            writer: BufWriter::new(File::create(path)?),
+            path: path.to_path_buf(),
+            written: 0,
+        })
+    }
+
+    /// Append one digest. Flushes every line so a crashed or killed run still leaves
+    /// every tick it actually completed on disk.
+    pub fn write(&mut self, digest: &ParityDigest) -> std::io::Result<()> {
+        let line = digest
+            .to_json_line()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        self.writer.write_all(line.as_bytes())?;
+        self.writer.write_all(
+            b"
+",
+        )?;
+        self.writer.flush()?;
+        self.written += 1;
+        Ok(())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn written(&self) -> u64 {
+        self.written
     }
 }
 

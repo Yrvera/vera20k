@@ -547,6 +547,22 @@ impl Simulation {
         }
     }
 
+    /// Summarise this tick for cross-engine parity comparison.
+    ///
+    /// Read-only and side-effect free: the caller decides whether to record it, so
+    /// enabling capture cannot perturb the run being measured. The RNG cursor comes from
+    /// the main stream, which is the one the original engine exposes globally.
+    pub fn parity_digest(&self) -> crate::sim::parity_digest::ParityDigest {
+        let main = self.rng_views().main;
+        crate::sim::parity_digest::ParityDigest::capture(
+            self.session.tick,
+            self.entities(),
+            &self.houses,
+            main.index_a,
+            main.index_b,
+        )
+    }
+
     /// Capture all three complete logical RNG objects as immutable evidence.
     pub fn rng_state(&self) -> SimulationRngState {
         SimulationRngState {
