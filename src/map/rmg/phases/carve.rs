@@ -409,6 +409,152 @@ pub fn carve_straight_ramp_clear_east(
     true
 }
 
+/// Carve the east-west stair whose north side is clear.
+///
+/// Runs along X like [`carve_straight_ramp_clear_south`], but from the **east**
+/// endpoint: `a` is east and `b` west, and the stepped edge climbs northward, so
+/// its rows are laid out by subtracting from `b`'s row rather than adding.
+///
+/// Three end blocks, not two — the end-block tiles are handed out running, not
+/// two per routine, so this one takes the fifth through seventh.
+pub fn carve_straight_ramp_clear_north(
+    ctx: &mut CarveCtx<'_>,
+    regions: CarveRegions,
+    a: (i32, i32),
+    b: (i32, i32),
+) -> bool {
+    let (min_y, max_y) = (a.1.min(b.1), a.1.max(b.1));
+    let rect = (b.0 - 4, min_y - 7, (a.0 - b.0) + 8, (max_y - min_y) + 11);
+    if !rect_is_carveable(
+        ctx.grid,
+        ctx.scratch,
+        ctx.ids,
+        ctx.playfield,
+        rect,
+        regions.region,
+        regions.lower_region,
+    ) {
+        return false;
+    }
+
+    let dy = b.1 - a.1;
+    let run = dy.abs();
+    let length = a.0 - b.0;
+    if length - RUN_CLEARANCE < run {
+        return false;
+    }
+
+    let half = (length + 1) / 2 + 3;
+    let (rx, ry, _, rh) = rect;
+    let far = ry + rh - 2;
+
+    fill(
+        ctx,
+        (rx, rx + 2 + half),
+        (ry, b.1),
+        regions.lower_region,
+        regions.lower_level,
+    );
+    fill(
+        ctx,
+        (a.0 - half + 2, a.0 + 5),
+        (ry, a.1),
+        regions.lower_region,
+        regions.lower_level,
+    );
+    fill(
+        ctx,
+        (b.0, b.0 - 2 + half),
+        (b.1, far),
+        regions.region,
+        regions.level,
+    );
+    fill(
+        ctx,
+        (a.0 - half + 2, a.0 + 1),
+        (a.1, far),
+        regions.region,
+        regions.level,
+    );
+
+    let end_base = ctx.ramp_end_block;
+    stamp_iso_block(
+        ctx,
+        end_base + 4,
+        (b.0, b.1 - 3),
+        regions.lower_region,
+        Some(regions.level),
+    );
+    stamp_iso_block(
+        ctx,
+        end_base + 5,
+        (a.0 - 2, a.1 - 3),
+        regions.lower_region,
+        Some(regions.level),
+    );
+    stamp_iso_block(
+        ctx,
+        end_base + 6,
+        (a.0 - 1, a.1 - 1),
+        regions.lower_region,
+        Some(regions.level),
+    );
+
+    let record = ramp_record(RampShape::ClearNorth).expect("straight shape has a table");
+    let mut shift = (0i32, 0i32);
+
+    if dy != 0 {
+        let coin = super::connector::jitter(ctx.rng);
+        let descending = dy > 0;
+        // Opposite sign convention to the south-facing routine: that one drops a
+        // row when the lean is negative, this one lifts one.
+        let y_bump = i32::from(dy < 0);
+        let mut x_slide = 0;
+        if coin == 1 {
+            shift = (run, -dy);
+        } else {
+            x_slide = ((a.0 - run) - b.0) - RUN_CLEARANCE;
+        }
+        let slopes = record.slopes(dy);
+
+        for i in 0..run {
+            // Also opposite: here a positive lean steps the column back, where
+            // the south-facing routine steps it forward.
+            let lift = if descending { -i } else { i };
+            for k in 0..RAMP_STEPS as i32 {
+                let x = b.0 + 3 + i + x_slide;
+                let y = b.1 - k + y_bump + lift;
+                let slope = slopes[k as usize];
+                let cell = ctx.grid.cell_native_mut(x, y);
+                cell.level = (record.level_steps[k as usize])
+                    .wrapping_add(regions.level as i8)
+                    .wrapping_sub(4) as u8;
+                cell.slope = slope;
+                cell.sub_tile = 0;
+                cell.tile = ramp_tile(ctx.ids.ramp_base, slope);
+            }
+        }
+    }
+
+    let flat_len = length - run - RUN_CLEARANCE;
+    for i in 0..flat_len {
+        for k in 0..FLAT_RUN_DEPTH {
+            let x = b.0 + 3 + i + shift.0;
+            let y = b.1 - k + shift.1;
+            if ctx.scratch.in_diamond(x, y) {
+                ctx.scratch.get_mut(x, y).region = regions.lower_region;
+            }
+            let cell = ctx.grid.cell_native_mut(x, y);
+            cell.slope = FLAT_RUN_SLOPE - 2;
+            cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+            cell.tile = ctx.ids.ramp_base + FLAT_RUN_TILE_OFFSET - 2;
+            cell.sub_tile = 0;
+        }
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -933,5 +1079,207 @@ mod tests {
         assert_eq!(cell.slope, 3, "north-south flat slope");
         assert_eq!(cell.tile, 202, "north-south flat tile");
         assert_eq!(cell.level, 6, "north-south flat level");
+    }
+
+    #[test]
+    fn the_north_facing_stair_splits_ownership_and_takes_three_end_blocks() {
+        // Three blocks, not two: the end-block tiles are handed out running
+        // across the four routines, so this one takes the fifth through
+        // seventh. Assuming a fixed two-per-routine stride would stamp the
+        // wrong faces here.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_straight_ramp_clear_north(
+            &mut ctx,
+            regions(),
+            (52, 50),
+            (40, 50)
+        ));
+        assert_eq!(
+            blocks.seen.borrow().as_slice(),
+            &[END_BASE + 4, END_BASE + 5, END_BASE + 6],
+            "three consecutive end blocks"
+        );
+        // (38, 45) is in the far fill only, (41, 51) in the near fill only.
+        assert_eq!(ctx.scratch.get(38, 45).region, LOWER, "far id");
+        assert_eq!(ctx.grid.cell_native(38, 45).level, LOWER_LEVEL, "far level");
+        assert_eq!(ctx.scratch.get(41, 51).region, REGION, "near id");
+        assert_eq!(
+            ctx.grid.cell_native(41, 51).level,
+            REGION_LEVEL,
+            "near level"
+        );
+    }
+
+    #[test]
+    fn the_north_facing_stepped_edge_climbs_northward() {
+        // Rows are laid out by SUBTRACTING from the west endpoint row, so the
+        // column descends in level as it goes north. The south-facing routine
+        // adds instead; sharing the sign would run the stair the wrong way.
+        //
+        // Empty flat run and zero slide whichever way the coin falls.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_straight_ramp_clear_north(
+            &mut ctx,
+            regions(),
+            (46, 50),
+            (40, 51)
+        ));
+        // k climbs north from y = 51, and the stair steps down as it goes.
+        let expected = [7u8, 6, 5, 4, 4];
+        for (k, want) in expected.iter().enumerate() {
+            assert_eq!(
+                ctx.grid.cell_native(43, 51 - k as i32).level,
+                *want,
+                "column cell {k}"
+            );
+        }
+        // Record 2 ascending row -- distinct from both earlier routines.
+        let slopes = [9u8, 13, 13, 13, 5];
+        for (k, slope) in slopes.iter().enumerate() {
+            let cell = ctx.grid.cell_native(43, 51 - k as i32);
+            assert_eq!(cell.slope, *slope, "slope {k}");
+            assert_eq!(cell.tile, 200 + i32::from(*slope) - 1, "tile {k}");
+        }
+    }
+
+    #[test]
+    fn the_north_facing_flat_run_lays_the_third_face() {
+        // Slope 2 and the tile one above the base -- the four routines walk
+        // down 4/3/2/... as they go, so an off-by-one here is a seam.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_straight_ramp_clear_north(
+            &mut ctx,
+            regions(),
+            (52, 50),
+            (40, 50)
+        ));
+        let cell = ctx.grid.cell_native(45, 49);
+        assert_eq!(cell.slope, 2, "north-facing flat slope");
+        assert_eq!(cell.tile, 201, "north-facing flat tile");
+        assert_eq!(cell.level, 6, "north-facing flat level");
+    }
+
+    #[test]
+    fn the_north_facing_stair_draws_once_and_refuses_cheaply() {
+        for (b, draws) in [((40, 50), 0u32), ((40, 52), 1u32)] {
+            let (mut grid, mut scratch) = harness();
+            let ids = ids();
+            let blocks = RecordingBlocks::new();
+            let mut rng = RmgRng::new(1);
+            let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+            let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+            assert!(carve_straight_ramp_clear_north(
+                &mut ctx,
+                regions(),
+                (52, 50),
+                b
+            ));
+            let mut probe = RmgRng::new(1);
+            for _ in 0..draws {
+                probe.next_u32();
+            }
+            assert_eq!(ctx.rng.next_u32(), probe.next_u32(), "b = {b:?}");
+        }
+
+        // Boundary, both sides, sited so the length rule is what decides.
+        for (b, should_carve) in [((40, 51), true), ((40, 52), false)] {
+            let (mut grid, mut scratch) = harness();
+            let ids = ids();
+            let blocks = RecordingBlocks::new();
+            let mut rng = RmgRng::new(1);
+            let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+            let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+            let carved = carve_straight_ramp_clear_north(&mut ctx, regions(), (46, 50), b);
+            assert_eq!(carved, should_carve, "b = {b:?}");
+            if !carved {
+                let mut fresh = RmgRng::new(1);
+                assert_eq!(ctx.rng.next_u32(), fresh.next_u32(), "refusal drew");
+                assert!(blocks.seen.borrow().is_empty(), "refusal stamped");
+            }
+        }
+    }
+
+    #[test]
+    fn a_two_step_northward_lean_pins_both_sign_terms() {
+        // The previous north-facing fixture leans one step in the positive
+        // direction, which zeroes BOTH sign terms: the per-column lift is
+        // multiplied by a counter that never leaves zero, and the negative-lean
+        // bump never applies. Either could have been flipped unnoticed.
+        //
+        // This one leans two steps the other way, so both terms are live, and
+        // keeps the flat run empty so nothing repaints the columns.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_straight_ramp_clear_north(
+            &mut ctx,
+            regions(),
+            (47, 50),
+            (40, 48)
+        ));
+
+        // First column: the bump lifts it one row north of the west endpoint.
+        let expected = [7u8, 6, 5, 4, 4];
+        for (k, want) in expected.iter().enumerate() {
+            assert_eq!(
+                ctx.grid.cell_native(43, 49 - k as i32).level,
+                *want,
+                "first column cell {k}"
+            );
+        }
+        // Second column: a negative lean steps it one row further south, not
+        // north. Flipping the lift would put this column at y = 48 downward.
+        for (k, want) in expected.iter().enumerate() {
+            assert_eq!(
+                ctx.grid.cell_native(44, 50 - k as i32).level,
+                *want,
+                "second column cell {k}"
+            );
+        }
+        // Descending slope row, since the lean is negative.
+        assert_eq!(ctx.grid.cell_native(43, 49).slope, 10, "descending head");
+    }
+
+    #[test]
+    fn the_north_facing_half_span_keeps_its_plus_three() {
+        // Same shape of trap as the north-south routine: the half-span is
+        // invisible almost everywhere because the fill rectangles overlap. It
+        // shows at (43, 45), which the far fill reaches only with the wider
+        // span -- with the narrower one no rectangle claims the cell at all and
+        // it keeps the harness ownership.
+        //
+        // Asserted on the region id rather than the level, because the stepped
+        // edge repaints that cell later and the id survives it.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_straight_ramp_clear_north(
+            &mut ctx,
+            regions(),
+            (47, 50),
+            (40, 48)
+        ));
+        assert_eq!(ctx.scratch.get(43, 45).region, LOWER, "half-span reach");
     }
 }
