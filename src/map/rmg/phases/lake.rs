@@ -481,6 +481,7 @@ mod tests {
             subtiles: vec![Some(SubTile {
                 height: 0,
                 terrain: 0,
+                slope: 0,
             })],
         })
     }

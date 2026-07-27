@@ -77,6 +77,7 @@ fn tile_block_from_tmp(tmp: &TmpFile) -> TileBlock {
                 cell.as_ref().map(|tile| SubTile {
                     height: tile.height,
                     terrain: tile.terrain_type,
+                    slope: tile.ramp_type,
                 })
             })
             .collect(),
@@ -92,8 +93,8 @@ mod tests {
     const DIAMOND_PIXELS: usize = 16;
 
     /// Append one 52-byte TMP cell header + its pixel/depth payload, with the
-    /// given `height`/`terrain` in the header's +40/+41 slots.
-    fn push_cell(data: &mut Vec<u8>, height: u8, terrain: u8) {
+    /// given `height`/`terrain`/`ramp` in the header's +40/+41/+42 slots.
+    fn push_cell(data: &mut Vec<u8>, height: u8, terrain: u8, ramp: u8) {
         data.extend_from_slice(&[0u8; 20]); // bytes 0-19: metadata
         data.extend_from_slice(&0i32.to_le_bytes()); // +20 extra_x
         data.extend_from_slice(&0i32.to_le_bytes()); // +24 extra_y
@@ -102,7 +103,7 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes()); // +36 flags (no extra)
         data.push(height); // +40 height
         data.push(terrain); // +41 terrain
-        data.push(0); // +42 ramp
+        data.push(ramp); // +42 ramp
         data.extend_from_slice(&[0u8; 3]); // +43 radar_left
         data.extend_from_slice(&[0u8; 3]); // +46 radar_right
         data.extend_from_slice(&[0u8; 3]); // +49 padding → 52
@@ -112,8 +113,8 @@ mod tests {
         data.extend_from_slice(&vec![0u8; DIAMOND_PIXELS]); // depth
     }
 
-    /// A `width × 1` TMP with a distinct `(height, terrain)` per cell.
-    fn tmp_row(cells: &[(u8, u8)]) -> Vec<u8> {
+    /// A `width × 1` TMP with a distinct `(height, terrain, ramp)` per cell.
+    fn tmp_row(cells: &[(u8, u8, u8)]) -> Vec<u8> {
         let n = cells.len() as u32;
         let cell_size = 52 + DIAMOND_PIXELS + DIAMOND_PIXELS;
         let table_bytes = cells.len() * 4;
@@ -127,21 +128,39 @@ mod tests {
             let offset = (first + i * cell_size) as u32;
             data.extend_from_slice(&offset.to_le_bytes());
         }
-        for &(height, terrain) in cells {
-            push_cell(&mut data, height, terrain);
+        for &(height, terrain, ramp) in cells {
+            push_cell(&mut data, height, terrain, ramp);
         }
         data
     }
 
     #[test]
     fn tmp_projects_into_a_tile_block() {
-        let bytes = tmp_row(&[(3, 5), (7, 9)]);
+        let bytes = tmp_row(&[(3, 5, 0), (7, 9, 0)]);
         let tmp = TmpFile::from_bytes(&bytes).expect("valid fixture TMP");
         let block = tile_block_from_tmp(&tmp);
         assert_eq!((block.width, block.height), (2, 1));
         assert_eq!(block.subtiles.len(), 2);
         let a = block.subtiles[0].expect("cell 0 present");
         let b = block.subtiles[1].expect("cell 1 present");
+        assert_eq!((a.height, a.terrain), (3, 5));
+        assert_eq!((b.height, b.terrain), (7, 9));
+    }
+
+    #[test]
+    fn the_ramp_byte_reaches_the_sub_tile_slope() {
+        // Header slot +42 is the ramp type, and it has to survive the trip
+        // into `SubTile` or a carved cliff stair comes out flat. Distinct
+        // values per cell so a swap with the +40/+41 neighbours cannot pass:
+        // ramp differs from both height and terrain in each cell.
+        let bytes = tmp_row(&[(3, 5, 1), (7, 9, 4)]);
+        let tmp = TmpFile::from_bytes(&bytes).expect("valid fixture TMP");
+        let block = tile_block_from_tmp(&tmp);
+        let a = block.subtiles[0].expect("cell 0 present");
+        let b = block.subtiles[1].expect("cell 1 present");
+        assert_eq!(a.slope, 1);
+        assert_eq!(b.slope, 4);
+        // And the neighbouring header bytes still land where they did.
         assert_eq!((a.height, a.terrain), (3, 5));
         assert_eq!((b.height, b.terrain), (7, 9));
     }
@@ -158,7 +177,7 @@ FileName=clear
 TilesInSet=2
 ";
         let lookup = parse_tileset_ini(ini.as_bytes(), "tem").expect("lookup");
-        let fixture = tmp_row(&[(0, 0), (1, 8)]);
+        let fixture = tmp_row(&[(0, 0, 0), (1, 8, 2)]);
         let blocks = TheaterTileBlocks::build(&lookup, |_name| Some(fixture.clone()));
         assert_eq!(blocks.len(), 2, "both tile ids resolved to a block");
         let block = blocks.block(0).expect("tile 0 has a block");

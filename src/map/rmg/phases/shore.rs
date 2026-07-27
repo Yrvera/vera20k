@@ -96,6 +96,14 @@ pub struct SubTile {
     /// TMP terrain-type byte (sub-tile header +0x29); the zone classifier
     /// maps it to a land type. 0 = clear.
     pub terrain: u8,
+    /// TMP ramp-type byte (sub-tile header +0x2A), copied verbatim onto the
+    /// cell when the block is stamped.
+    ///
+    /// This is a property of the stamped sub-tile, **not** a ramp-variant
+    /// index chosen by the carver — the same block always contributes the
+    /// same value. Ramp carving needs it because a cliff stair is only
+    /// walkable if its cells carry the slope the block declares.
+    pub slope: u8,
 }
 
 /// A tile block's sub-tile grid (row-major, `width * height` entries).
@@ -524,7 +532,6 @@ fn stamp(
                         // call succeeds immediately.
                         return true;
                     }
-                    eprintln!("DBG shore 527 at ({tx},{ty}) owner={owner} region={region} target={target_tile} new={new_tile}");
                     return false;
                 }
                 // Freshly adopted cells go straight to the write gate.
@@ -620,7 +627,11 @@ mod tests {
         UniformBlocks(TileBlock {
             width: 1,
             height: 1,
-            subtiles: vec![Some(SubTile { height: 0, terrain: 0 })],
+            subtiles: vec![Some(SubTile {
+                height: 0,
+                terrain: 0,
+                slope: 0,
+            })],
         })
     }
 
