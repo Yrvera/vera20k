@@ -596,6 +596,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
+            waterfalls: [-1; 4],
         }
     }
 

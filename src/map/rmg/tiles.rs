@@ -46,6 +46,9 @@ pub struct TileIds {
     pub paved_roads: i32,
     pub paved_road_ends: i32,
     pub medians: i32,
+    /// The four waterfall tileset bases, indexed by travel heading / 2
+    /// (N, E, S, W). The river crossing's deck is stamped from these.
+    pub waterfalls: [i32; 4],
 }
 
 fn flat(id: Option<u16>) -> i32 {
@@ -54,7 +57,15 @@ fn flat(id: Option<u16>) -> i32 {
 
 impl TileIds {
     pub fn resolve(theater: &TheaterData) -> Self {
-        Self::from_keys(&theater.rmg_tiles)
+        let mut ids = Self::from_keys(&theater.rmg_tiles);
+        let cliffs = &theater.cliff_ranges;
+        ids.waterfalls = [
+            flat(cliffs.waterfall_north),
+            flat(cliffs.waterfall_east),
+            flat(cliffs.waterfall_south),
+            flat(cliffs.waterfall_west),
+        ];
+        ids
     }
 
     pub fn from_keys(keys: &crate::map::theater::RmgTileKeys) -> Self {
@@ -76,6 +87,9 @@ impl TileIds {
             paved_roads: flat(keys.paved_roads),
             paved_road_ends: flat(keys.paved_road_ends),
             medians: flat(keys.medians),
+            // Waterfalls live on the cliff-ranges side of the theater, not the
+            // RMG keys; `resolve` fills them in.
+            waterfalls: [-1; 4],
         }
     }
 
@@ -230,6 +244,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
+            waterfalls: [-1; 4],
         };
         // -1 bases must not create a range around -1; and the unassigned
         // sentinel must not collide with the missing-key value.

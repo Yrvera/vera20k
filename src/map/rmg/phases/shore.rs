@@ -524,6 +524,7 @@ fn stamp(
                         // call succeeds immediately.
                         return true;
                     }
+                    eprintln!("DBG shore 527 at ({tx},{ty}) owner={owner} region={region} target={target_tile} new={new_tile}");
                     return false;
                 }
                 // Freshly adopted cells go straight to the write gate.
@@ -641,6 +642,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
+            waterfalls: [-1; 4],
         }
     }
 
