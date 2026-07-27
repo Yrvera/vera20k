@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 use crate::map::rmg::grid::RmgGrid;
+use crate::map::rmg::preview::Playfield;
 use crate::map::rmg::scratch::RmgScratch;
 use crate::map::rmg::tiles::TileIds;
 
@@ -125,6 +126,7 @@ pub fn rect_is_carveable(
     grid: &mut RmgGrid,
     scratch: &RmgScratch,
     ids: &TileIds,
+    playfield: &Playfield,
     rect: (i32, i32, i32, i32),
     region: i32,
     lower_region: i32,
@@ -136,13 +138,27 @@ pub fn rect_is_carveable(
         (rx, ry + h - 1),
         (rx + w - 1, ry + h - 1),
     ];
-    // The playfield test the original uses here is not yet modelled; the
-    // diamond is the generated map's playable area, so it stands in. Recorded
-    // as an open question rather than hidden — it must be settled before the
-    // carve layer is wired, because a wider playfield would admit rects this
-    // refuses.
-    if corners.iter().any(|&(x, y)| !scratch.in_diamond(x, y)) {
-        return false;
+    // The playfield, not the map diamond — they are not the same rectangle.
+    // The playfield is inset by the map's local-size margins, so a rect out in
+    // the border band passes the diamond and fails here, which is the whole
+    // point: ramps do not get carved into the unplayable frame.
+    //
+    // Elevation-aware, because the carve asks for the raised form. A cell off
+    // the grid has no level or slope to read, so it is refused outright rather
+    // than probed at zero.
+    for &(x, y) in &corners {
+        let Ok(cx) = u16::try_from(x) else {
+            return false;
+        };
+        let Ok(cy) = u16::try_from(y) else {
+            return false;
+        };
+        let Some(cell) = grid.get(x, y) else {
+            return false;
+        };
+        if !playfield.contains_raised(cx, cy, cell.level as i8, cell.slope) {
+            return false;
+        }
     }
 
     for row in 0..h {
@@ -186,6 +202,12 @@ mod tests {
             medians: -1,
             special: SpecialTerrain::default(),
         }
+    }
+
+    /// A playfield covering the whole test diamond, so the corner probes
+    /// only refuse for genuinely out-of-band cells.
+    fn playfield() -> Playfield {
+        Playfield::from_local_size(34, 0, 0, 34, 42)
     }
 
     /// Flat clear ground owned by `region`, with the whole diamond claimed.
@@ -278,6 +300,7 @@ mod tests {
             &mut grid,
             &scratch,
             &ids,
+            &playfield(),
             (38, 48, 6, 4),
             7,
             7
@@ -295,11 +318,27 @@ mod tests {
             scratch.get_mut(x, 49).region = 3;
         }
         assert!(
-            rect_is_carveable(&mut grid, &scratch, &ids, (38, 48, 6, 4), 7, 3),
+            rect_is_carveable(
+                &mut grid,
+                &scratch,
+                &ids,
+                &playfield(),
+                (38, 48, 6, 4),
+                7,
+                3
+            ),
             "lower region accepted"
         );
         assert!(
-            !rect_is_carveable(&mut grid, &scratch, &ids, (38, 48, 6, 4), 7, 9),
+            !rect_is_carveable(
+                &mut grid,
+                &scratch,
+                &ids,
+                &playfield(),
+                (38, 48, 6, 4),
+                7,
+                9
+            ),
             "a third region is not"
         );
     }
@@ -313,6 +352,7 @@ mod tests {
             &mut grid,
             &scratch,
             &ids,
+            &playfield(),
             (38, 48, 6, 4),
             7,
             7
@@ -336,7 +376,15 @@ mod tests {
         }
         assert!(!scratch.in_diamond(16, 16), "corner really is off");
         assert!(
-            !rect_is_carveable(&mut grid, &scratch, &ids, (16, 16, 6, 4), 7, 7),
+            !rect_is_carveable(
+                &mut grid,
+                &scratch,
+                &ids,
+                &playfield(),
+                (16, 16, 6, 4),
+                7,
+                7
+            ),
             "the corner probes must refuse this"
         );
         // Same rect fully inside the diamond still passes, so the refusal
@@ -345,6 +393,7 @@ mod tests {
             &mut grid,
             &scratch,
             &ids,
+            &playfield(),
             (38, 48, 6, 4),
             7,
             7

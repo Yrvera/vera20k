@@ -131,11 +131,27 @@ impl Playfield {
     /// wrong shifts the admitted cell set by a row, and the preview's surface
     /// size is the extent of exactly that set.
     pub fn from_header(header: &crate::map::map_file::MapHeader) -> Self {
-        let map_width = header.width as i32;
-        let left = header.local_left as i32;
-        let top = header.local_top as i32;
-        let width = header.local_width as i32;
-        let height = header.local_height as i32;
+        Self::from_local_size(
+            header.width as i32,
+            header.local_left as i32,
+            header.local_top as i32,
+            header.local_width as i32,
+            header.local_height as i32,
+        )
+    }
+
+    /// The same geometry from the raw local-size numbers.
+    ///
+    /// Map generation has the dimensions long before there is a header to read
+    /// them back out of, so the arithmetic lives here and `from_header` is the
+    /// thin wrapper.
+    pub const fn from_local_size(
+        map_width: i32,
+        left: i32,
+        top: i32,
+        width: i32,
+        height: i32,
+    ) -> Self {
         Self {
             sum_min_exclusive: map_width + 2 * top,
             sum_max_inclusive: map_width + 2 * top + 2 * height + 2,
@@ -148,12 +164,49 @@ impl Playfield {
     ///
     /// Deliberately takes no elevation: the test is constant in `z`, so feeding
     /// it a height would make cells drop in and out of the preview as the
-    /// terrain rises.
+    /// terrain rises. Callers that *do* want the elevation-aware form — map
+    /// generation is the one that does — use [`Playfield::contains_raised`].
     pub const fn contains(&self, x: u16, y: u16) -> bool {
         let sum = x as i32 + y as i32;
         let diff = x as i32 - y as i32;
         sum > self.sum_min_exclusive
             && sum <= self.sum_max_inclusive
+            && diff > self.diff_min_exclusive
+            && diff < self.diff_max_exclusive
+    }
+
+    /// The elevation-aware playfield test: the same rectangle, with its
+    /// `x + y` band **shifted** by the cell's terrain level.
+    ///
+    /// Raised ground is drawn further up the screen, so the band of cells that
+    /// lands inside the visible playfield moves with elevation. The band is
+    /// shifted, not widened — both bounds move by the same amount — so a tall
+    /// cell gains room at the far edge and loses it at the near one.
+    ///
+    /// A cell that is *sloped* and sits near the near edge counts one step
+    /// higher still, because the ramp's upper lip already reads as the next
+    /// level up. That extra step needs the slope byte, which is why it is a
+    /// parameter and not derived from the level alone.
+    ///
+    /// The `diff` bounds do not move; elevation only shifts along `x + y`.
+    pub const fn contains_raised(&self, x: u16, y: u16, level: i8, slope: u8) -> bool {
+        let sum = x as i32 + y as i32;
+        let diff = x as i32 - y as i32;
+        let mut rise = level as i32;
+        // The near-edge probe uses the un-bumped rise, so it cannot cascade.
+        //
+        // The `4` is transcribed, not derived, and it is worth saying that no
+        // test pins it: the bump only changes a verdict for cells sitting
+        // exactly on the near bound, and those fall inside the probe zone for
+        // any margin from 2 up to the band's own width. So every value in that
+        // range behaves identically here. Kept at the transcribed value rather
+        // than simplified away, since only the margin's *range* is proven, not
+        // that the choice within it is free elsewhere.
+        if slope != 0 && sum < self.sum_min_exclusive + 4 + rise {
+            rise += 1;
+        }
+        sum > self.sum_min_exclusive + rise
+            && sum <= self.sum_max_inclusive + rise
             && diff > self.diff_min_exclusive
             && diff < self.diff_max_exclusive
     }
@@ -609,6 +662,82 @@ mod tests {
         assert!(field.contains(x, y), "diff 2 is inside");
         let (x, y) = on_sum(4);
         assert!(!field.contains(x, y), "diff 4 is excluded, strict");
+    }
+
+    #[test]
+    fn raising_a_cell_shifts_the_band_rather_than_widening_it() {
+        // Elevation moves both x+y bounds by the same amount: a raised cell
+        // gains room at the far edge and loses exactly as much at the near
+        // one. Widening instead of shifting would quietly enlarge the
+        // playfield for every plateau on the map.
+        let field = Playfield::from_header(&header(20, 2, 5, 10, 8));
+        // sum band at level 0 is (30, 48]; at level 1 it is (31, 49].
+        assert!(field.contains_raised(16, 15, 0, 0), "sum 31, flat");
+        assert!(
+            !field.contains_raised(16, 15, 1, 0),
+            "sum 31 lost when raised"
+        );
+        assert!(!field.contains_raised(25, 24, 0, 0), "sum 49, flat");
+        assert!(
+            field.contains_raised(25, 24, 1, 0),
+            "sum 49 gained when raised"
+        );
+    }
+
+    #[test]
+    fn a_flat_cell_at_level_zero_matches_the_plain_test() {
+        // The elevation-aware form must degenerate to the original, or the
+        // preview and the generator would disagree about the same map.
+        let field = Playfield::from_header(&header(20, 2, 5, 10, 8));
+        for x in 0..30u16 {
+            for y in 0..30u16 {
+                assert_eq!(
+                    field.contains(x, y),
+                    field.contains_raised(x, y, 0, 0),
+                    "({x},{y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_sloped_cell_near_the_near_edge_counts_one_step_higher() {
+        // The ramp's upper lip already reads as the next level up, but only
+        // close to the near edge — far from it the slope byte changes nothing.
+        let field = Playfield::from_header(&header(20, 2, 5, 10, 8));
+        // sum 31 is inside when flat, and pushed out by the slope bump.
+        assert!(field.contains_raised(16, 15, 0, 0), "flat, admitted");
+        assert!(!field.contains_raised(16, 15, 0, 1), "sloped, bumped out");
+        // sum 40 is far from the near edge, so the bump does not apply.
+        assert_eq!(
+            field.contains_raised(20, 20, 0, 0),
+            field.contains_raised(20, 20, 0, 1),
+            "slope is irrelevant away from the near edge"
+        );
+        // The sharp case: sum 49 sits one past the far bound. If the bump were
+        // applied regardless of position it would drag the far bound out to 49
+        // and admit this cell. It must stay excluded — the probe is what keeps
+        // the bump local to the near edge.
+        assert!(
+            !field.contains_raised(25, 24, 0, 1),
+            "a sloped cell past the far bound is not rescued by the bump"
+        );
+    }
+
+    #[test]
+    fn elevation_never_moves_the_diff_bounds() {
+        // Only x+y shifts. A cell outside on the diff axis stays outside no
+        // matter how high it is.
+        let field = Playfield::from_header(&header(20, 2, 5, 10, 8));
+        // diff 4 is excluded (strict upper bound), sum 40 is well inside.
+        let (x, y) = (22u16, 18u16);
+        assert_eq!(x as i32 - y as i32, 4, "the fixture really is on diff 4");
+        for level in 0..6i8 {
+            assert!(
+                !field.contains_raised(x, y, level, 0),
+                "still out at level {level}"
+            );
+        }
     }
 
     #[test]
