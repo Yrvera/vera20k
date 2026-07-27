@@ -398,7 +398,7 @@ mod tests {
         OneByOne(TileBlock {
             width: 1,
             height: 1,
-            subtiles: vec![Some(SubTile { height: 0, terrain: 0 })],
+            subtiles: vec![Some(SubTile { height: 0, terrain: 0, slope: 0 })],
         })
     }
 

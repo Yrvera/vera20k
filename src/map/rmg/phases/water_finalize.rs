@@ -110,7 +110,7 @@ mod tests {
         TwoByTwo(TileBlock {
             width: 2,
             height: 2,
-            subtiles: vec![Some(SubTile { height: 0, terrain: 0 }); 4],
+            subtiles: vec![Some(SubTile { height: 0, terrain: 0, slope: 0 }); 4],
         })
     }
 
