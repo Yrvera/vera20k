@@ -245,6 +245,7 @@ fn foundation_cell_ok(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::phases::regions::RmgRegion;
 
     fn ids() -> TileIds {
@@ -266,7 +267,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 

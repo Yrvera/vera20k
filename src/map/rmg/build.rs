@@ -289,6 +289,7 @@ mod tests {
     use super::*;
     use crate::map::rmg::STAGE_ORDER;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::rules::ini_parser::IniFile;
 
     struct OneByOne(TileBlock);
@@ -325,7 +326,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 
@@ -742,17 +743,16 @@ mod tests {
         (tiles, overlays, snapshot.start_waypoints.clone())
     }
 
-    /// `IslandPasses` is reported as executed for map types 3 and 4 but does
-    /// no work — that is the open RMG-01 defect.
+    /// The inverse of the no-op guard this replaces: `IslandPasses` must now
+    /// leave a mark on map types 3 and 4, and must still leave none on the
+    /// ordinary types (which do not reach the stage at all).
     ///
-    /// Pinned deliberately as a KNOWN NO-OP. Without this the matrix above
-    /// would go green on map types 3 and 4 and quietly certify the defect as
-    /// correct behaviour. When the island passes are implemented this test
-    /// must fail; that failure is the signal, and the test should then be
-    /// deleted rather than relaxed.
+    /// The connector/bridge carving inside the pass is not modelled yet, so
+    /// this asserts the pass runs and reshapes terrain — not that the result
+    /// matches the original.
     #[test]
-    fn island_passes_is_still_a_known_no_op() {
-        for map_type in [3, 4] {
+    fn island_passes_reshape_only_the_island_map_types() {
+        for (map_type, expect_change) in [(3, true), (4, true), (0, false), (2, false)] {
             let (_, points, snapshots) = observe_run(&matrix_options(map_type, 0, 4242));
             let index_of = |point: GenerationPoint| {
                 points
@@ -766,9 +766,9 @@ mod tests {
                 &snapshots[index_of(GenerationPoint::After(Stage::IslandPasses))],
             );
             assert_eq!(
-                before, after,
-                "map type {map_type}: IslandPasses changed the map. If RMG-01 \
-                 has landed, delete this test — it exists to make that visible."
+                before != after,
+                expect_change,
+                "map type {map_type}: expected IslandPasses to change the map: {expect_change}"
             );
         }
     }

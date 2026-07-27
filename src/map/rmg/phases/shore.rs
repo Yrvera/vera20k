@@ -605,6 +605,7 @@ fn cliff_family(_ctx: &ShoreCtx<'_>, _tile: i32, _sub_tile: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::tiles::TILE_UNASSIGNED;
 
     struct UniformBlocks(TileBlock);
@@ -642,7 +643,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 

@@ -383,6 +383,7 @@ fn self_gauss(ctx: &mut BlobCtx<'_>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
 
     struct OneByOne(TileBlock);
@@ -420,7 +421,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 

@@ -48,6 +48,24 @@ pub struct Regions {
     pub id_counter: i32,
 }
 
+impl RmgRegion {
+    /// A region produced by the inland/mountainous rebuild, which derives all
+    /// of its fields from the flood rather than from the seed scan.
+    pub fn rebuilt(id: i32, level: u8, active: bool, seed: (i32, i32), cell_count: i32) -> Self {
+        Self {
+            id,
+            level,
+            active,
+            seed: (seed.0 as i16, seed.1 as i16),
+            done: false,
+            cell_count,
+            cells: Vec::new(),
+            start_quota: 0,
+            field_slots: None,
+        }
+    }
+}
+
 pub struct RegionCtx<'a> {
     pub grid: &'a mut RmgGrid,
     pub scratch: &'a mut RmgScratch,
@@ -345,6 +363,7 @@ fn water_propagate(ctx: &mut RegionCtx<'_>, id: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::rmg::tiles::SpecialTerrain;
 
     fn ids() -> TileIds {
         TileIds {
@@ -365,7 +384,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 

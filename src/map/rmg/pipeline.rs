@@ -21,6 +21,7 @@ use crate::map::theater::TheaterCliffRanges;
 use super::grid::RmgGrid;
 use super::phases::blob::BlobCtx;
 use super::phases::hills::{HillsArgs, HillsCtx};
+use super::phases::island_passes::{self, IslandCtx};
 use super::phases::lat_patches::PatchCtx;
 use super::phases::regions::{RegionCtx, Regions};
 use super::phases::rocks::{RockArgs, RockCtx};
@@ -190,8 +191,20 @@ pub fn run_pipeline(
     };
     observe(Stage::Regions, grid, &waypoints);
 
-    // IslandPasses (map types 3/4 extra region/bridge passes) are not modelled
-    // yet; ordinary map types skip them entirely.
+    // ---- Island passes (map types 3 and 4 only) ---------------------------
+    // The cliff repair stamps region tags as a side effect, so the pass hands
+    // back a rebuilt partition that replaces the one above wholesale. Every
+    // later stage reads the rebuilt ids.
+    if matches!(inputs.map_type, 3 | 4) {
+        let mut ctx = IslandCtx {
+            grid: &mut *grid,
+            scratch: &mut *scratch,
+            ids: inputs.ids,
+            rng: &mut *rng,
+            default_level: DEFAULT_LEVEL,
+        };
+        regions = island_passes::run(&mut ctx);
+    }
     observe(Stage::IslandPasses, grid, &waypoints);
 
     // ---- Green spread + first recalc --------------------------------------
@@ -388,6 +401,7 @@ mod tests {
     use super::*;
     use crate::map::rmg::options::RmgOptions;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
+    use crate::map::rmg::tiles::SpecialTerrain;
 
     /// A `TileBlocks` provider that returns a 1x1 block for every tile — the
     /// same synthetic the water/shore phase tests use.
@@ -426,7 +440,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         }
     }
 

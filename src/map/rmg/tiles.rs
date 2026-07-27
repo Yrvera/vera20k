@@ -46,25 +46,68 @@ pub struct TileIds {
     pub paved_roads: i32,
     pub paved_road_ends: i32,
     pub medians: i32,
-    /// The four waterfall tileset bases, indexed by travel heading / 2
-    /// (N, E, S, W). The river crossing's deck is stamped from these.
+    /// Tileset bases the terrain-height code must not treat as ordinary
+    /// ground, plus the four waterfall bases the river crossing stamps from.
+    pub special: SpecialTerrain,
+}
+
+/// Tileset bases that mark a cell as carrying special terrain — cliff faces,
+/// ramps, bridges and waterfalls. `-1` means the theater does not define that
+/// set, which disables its test.
+#[derive(Debug, Clone, Copy)]
+pub struct SpecialTerrain {
+    /// Waterfall bases indexed by travel heading / 2: N, E, S, W.
     pub waterfalls: [i32; 4],
+    pub cliff_set: i32,
+    pub cliff_ramps: i32,
+    pub water_caves: i32,
+    pub water_cliffs: i32,
+    pub bridge_set: i32,
+    pub wood_bridge_set: i32,
+    pub destroyable_cliffs: i32,
 }
 
 fn flat(id: Option<u16>) -> i32 {
     id.map_or(-1, i32::from)
 }
 
+impl Default for SpecialTerrain {
+    /// Every base absent. `-1` is the sentinel, not `0` — a derived `Default`
+    /// would make tile 0 look like a cliff face and silently suppress every
+    /// higher-neighbour bit.
+    fn default() -> Self {
+        Self {
+            waterfalls: [-1; 4],
+            cliff_set: -1,
+            cliff_ramps: -1,
+            water_caves: -1,
+            water_cliffs: -1,
+            bridge_set: -1,
+            wood_bridge_set: -1,
+            destroyable_cliffs: -1,
+        }
+    }
+}
+
 impl TileIds {
     pub fn resolve(theater: &TheaterData) -> Self {
         let mut ids = Self::from_keys(&theater.rmg_tiles);
         let cliffs = &theater.cliff_ranges;
-        ids.waterfalls = [
-            flat(cliffs.waterfall_north),
-            flat(cliffs.waterfall_east),
-            flat(cliffs.waterfall_south),
-            flat(cliffs.waterfall_west),
-        ];
+        ids.special = SpecialTerrain {
+            waterfalls: [
+                flat(cliffs.waterfall_north),
+                flat(cliffs.waterfall_east),
+                flat(cliffs.waterfall_south),
+                flat(cliffs.waterfall_west),
+            ],
+            cliff_set: flat(cliffs.cliff_set),
+            cliff_ramps: flat(cliffs.cliff_ramps),
+            water_caves: flat(cliffs.water_caves),
+            water_cliffs: flat(cliffs.water_cliffs),
+            bridge_set: flat(cliffs.bridge_set),
+            wood_bridge_set: flat(cliffs.wood_bridge_set),
+            destroyable_cliffs: flat(cliffs.destroyable_cliffs),
+        };
         ids
     }
 
@@ -87,9 +130,9 @@ impl TileIds {
             paved_roads: flat(keys.paved_roads),
             paved_road_ends: flat(keys.paved_road_ends),
             medians: flat(keys.medians),
-            // Waterfalls live on the cliff-ranges side of the theater, not the
-            // RMG keys; `resolve` fills them in.
-            waterfalls: [-1; 4],
+            // The special-terrain bases live on the cliff-ranges side of the
+            // theater, not the RMG keys; `resolve` fills them in.
+            special: SpecialTerrain::default(),
         }
     }
 
@@ -112,6 +155,37 @@ impl TileIds {
     /// Shore-piece set membership.
     pub fn is_shore_piece(&self, tile: i32) -> bool {
         in_span(tile, self.shore, SHORE_SPAN)
+    }
+
+    /// Does this cell carry special terrain the height code must leave alone?
+    ///
+    /// A fixed list of tileset ranges, tested in the original's order. The four
+    /// waterfall sets are the odd ones: only their first and last tiles can be
+    /// ordinary, and only on the two sub-tiles that are actually the sloped
+    /// ones for that facing — the flat corners of a ramp block stay ordinary
+    /// ground while the rest of the block is special.
+    pub fn is_special_terrain(&self, tile: i32, sub_tile: u8) -> bool {
+        let sp = &self.special;
+        if in_span(tile, sp.cliff_set, 0x28) {
+            return true;
+        }
+        // (base index into `waterfalls`, the two sub-tiles that stay ordinary)
+        const RAMPS: [(usize, [u8; 2]); 4] = [(1, [0, 4]), (3, [1, 3]), (2, [0, 1]), (0, [2, 3])];
+        for (slot, ordinary) in RAMPS {
+            let base = sp.waterfalls[slot];
+            if in_span(tile, base, 4) {
+                if tile != base && tile != base + 3 {
+                    return true;
+                }
+                return !ordinary.contains(&sub_tile);
+            }
+        }
+        in_span(tile, sp.cliff_ramps, 0x14)
+            || in_span(tile, sp.water_caves, 4)
+            || in_span(tile, sp.bridge_set, 0x10)
+            || in_span(tile, sp.wood_bridge_set, 0x10)
+            || in_span(tile, sp.destroyable_cliffs, 2)
+            || in_span(tile, sp.water_cliffs, 0x1C)
     }
 
     /// The families the original's bridge-overlay test matches, as far as the
@@ -247,7 +321,7 @@ mod tests {
             paved_roads: -1,
             paved_road_ends: -1,
             medians: -1,
-            waterfalls: [-1; 4],
+            special: SpecialTerrain::default(),
         };
         // -1 bases must not create a range around -1; and the unassigned
         // sentinel must not collide with the missing-key value.
