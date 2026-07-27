@@ -6,6 +6,7 @@
 
 pub mod blob;
 pub mod bridge;
+pub mod carve;
 pub mod connector;
 pub mod green_spread;
 pub mod hills;

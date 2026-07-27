@@ -195,7 +195,7 @@ pub(crate) fn ring_orientation_mask(
 /// The redraw guard cannot fire under the generator's truncating rounding — the
 /// largest draw lands exactly on 1 — but it is what the original does and costs
 /// nothing.
-fn jitter(rng: &mut RmgRng) -> i32 {
+pub(crate) fn jitter(rng: &mut RmgRng) -> i32 {
     let scale = TruncF64::from_f64(f64::from_bits(JITTER_SCALE_BITS));
     loop {
         let value = x87::ftol(
