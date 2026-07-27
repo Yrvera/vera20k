@@ -146,40 +146,49 @@ fn test_pad_layer_to_union_bounds() {
 #[test]
 fn test_canonical_turret_facing() {
     use super::canonical_turret_facing;
-    // canonical_turret_facing takes u16 (16-bit DirStruct), converts via >>8 to u8,
-    // then quantizes to multiples of 2 (128 buckets).
-    // u8 value 0 → u16 value 0<<8 = 0
+    // canonical_turret_facing takes a 16-bit DirStruct and converts via >>8 to the
+    // 8-bit facing used for sprite selection. At step=1 there are 256 buckets, one per
+    // representable facing, so the quantization is the identity — the high byte passes
+    // through untouched.
     assert_eq!(canonical_turret_facing(0u16), 0);
-    // u8 value 1 → u16 = 1<<8 = 256
-    assert_eq!(canonical_turret_facing(256), 0);
-    // u8 value 2 → u16 = 2<<8 = 512
+    assert_eq!(canonical_turret_facing(256), 1);
     assert_eq!(canonical_turret_facing(512), 2);
-    // u8 value 3 → u16 = 3<<8 = 768
-    assert_eq!(canonical_turret_facing(768), 2);
-    // u8 value 4 → u16 = 4<<8 = 1024
+    assert_eq!(canonical_turret_facing(768), 3);
     assert_eq!(canonical_turret_facing(1024), 4);
-    // u8 value 255 → u16 = 255<<8 = 65280
-    assert_eq!(canonical_turret_facing(65280), 254);
-    // Verify body and turret facing share the same step granularity.
-    assert_eq!(canonical_unit_facing(3), 2); // step=2, snaps 3 to 2
-    assert_eq!(canonical_turret_facing(768), 2); // u8=3, snaps to 2
+    assert_eq!(canonical_turret_facing(65280), 255);
+    // The low byte is sub-facing precision and must not affect sprite selection.
+    assert_eq!(canonical_turret_facing(768 + 255), 3);
+    // Body and turret share the same granularity, and neither loses information.
+    assert_eq!(canonical_unit_facing(3), 3);
+    assert_eq!(canonical_turret_facing(768), 3);
+}
+
+#[test]
+fn every_representable_facing_has_its_own_bucket() {
+    use super::{canonical_turret_facing, canonical_unit_facing};
+    // The simulation stores facing as a byte. With 256 buckets each of those 256 values
+    // maps to a distinct pre-rendered sprite, so rotation can never show a staircase.
+    // If a step > 1 is ever reintroduced this fails loudly rather than degrading looks
+    // silently.
+    for facing in 0..=u8::MAX {
+        assert_eq!(canonical_unit_facing(facing), facing);
+        assert_eq!(canonical_turret_facing(u16::from(facing) << 8), facing);
+    }
 }
 
 #[test]
 fn test_facing_config_for_layer() {
-    let (step, buckets) = super::facing_config_for_layer(VxlLayer::Body);
-    assert_eq!(step, 2);
-    assert_eq!(buckets, 128);
-
-    let (step, buckets) = super::facing_config_for_layer(VxlLayer::Composite);
-    assert_eq!(step, 2);
-    assert_eq!(buckets, 128);
-
-    let (step, buckets) = super::facing_config_for_layer(VxlLayer::Turret);
-    assert_eq!(step, 2);
-    assert_eq!(buckets, 128);
-
-    let (step, buckets) = super::facing_config_for_layer(VxlLayer::Barrel);
-    assert_eq!(step, 2);
-    assert_eq!(buckets, 128);
+    // Every layer renders one sprite per representable facing: step 1, 256 buckets.
+    for layer in [
+        VxlLayer::Body,
+        VxlLayer::Composite,
+        VxlLayer::Turret,
+        VxlLayer::Barrel,
+    ] {
+        let (step, buckets) = super::facing_config_for_layer(layer);
+        assert_eq!(step, 1, "{layer:?} facing step");
+        assert_eq!(buckets, 256, "{layer:?} facing buckets");
+        // The facing derived from the last bucket must still fit a byte.
+        assert_eq!((buckets - 1) * u16::from(step), 255);
+    }
 }

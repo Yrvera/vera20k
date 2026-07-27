@@ -29,19 +29,23 @@ use crate::rules::ruleset::RuleSet;
 
 /// Padding between sprites in the atlas to prevent texture bleeding.
 const SPRITE_PADDING: u32 = 1;
-/// Body/composite facing quantization step: 2 = 128 buckets (2.8° per bucket).
-/// Doubled from 64→128 to bring body smoothness in line with the existing
-/// turret/barrel resolution. Eliminates the visible staircase that was
-/// noticeable during rotation at step=4 (5.6° per bucket).
-const UNIT_FACING_STEP: u8 = 2;
+/// Body/composite facing quantization step: 1 = 256 buckets (1.4° per bucket).
+///
+/// Facing is stored as a byte, so 256 buckets is exact — every distinct facing the
+/// simulation can express has its own pre-rendered sprite and no quantization happens
+/// at all. Earlier values (4, then 2) were compromises for atlas size; that constraint
+/// came from requesting a smaller texture limit than the GPU offers, not from hardware.
+const UNIT_FACING_STEP: u8 = 1;
 /// Number of pre-rendered facing directions for body/composite sprites.
-const UNIT_FACING_BUCKETS: u8 = 128;
-/// Turret/barrel facing quantization step: 2 = 128 buckets (2.8° per bucket).
-/// Turrets rotate frequently during combat, so finer resolution prevents
-/// visible stepping.
-const TURRET_FACING_STEP: u8 = 2;
+///
+/// `u16` because 256 does not fit in a `u8`. The product `bucket * step` always stays
+/// below 256, so the facing derived from a bucket is still a byte.
+const UNIT_FACING_BUCKETS: u16 = 256;
+/// Turret/barrel facing quantization step: 1 = 256 buckets (1.4° per bucket).
+/// Turrets rotate constantly during combat, where stepping shows most.
+const TURRET_FACING_STEP: u8 = 1;
 /// Number of pre-rendered facing directions for turret/barrel sprites.
-const TURRET_FACING_BUCKETS: u8 = 128;
+const TURRET_FACING_BUCKETS: u16 = 256;
 
 // VxlLayer lives in sim::components — re-exported here for convenience.
 pub use crate::sim::components::VxlLayer;
@@ -212,7 +216,7 @@ pub fn collect_needed_unit_keys(
             let slope_range: std::ops::RangeInclusive<u8> =
                 if is_ground_vehicle { 0..=16 } else { 0..=0 };
             for bucket in 0..buckets {
-                let facing: u8 = bucket.saturating_mul(step);
+                let facing: u8 = (bucket * u16::from(step)) as u8;
                 for frame in 0..num_frames {
                     for slope in slope_range.clone() {
                         needed.insert(UnitSpriteKey {
@@ -248,7 +252,7 @@ pub fn collect_needed_unit_keys(
                 None => continue,
             };
             for bucket in 0..TURRET_FACING_BUCKETS {
-                let facing: u8 = bucket.saturating_mul(TURRET_FACING_STEP);
+                let facing: u8 = (bucket * u16::from(TURRET_FACING_STEP)) as u8;
                 needed.insert(UnitSpriteKey {
                     type_id: turret_id.clone(),
                     facing,
@@ -329,7 +333,7 @@ pub fn build_unit_atlas(
             let slope_range: std::ops::RangeInclusive<u8> =
                 if is_ground_vehicle { 0..=16 } else { 0..=0 };
             for bucket in 0..buckets {
-                let facing: u8 = bucket.saturating_mul(step);
+                let facing: u8 = (bucket * u16::from(step)) as u8;
                 for frame in 0..num_frames {
                     for slope in slope_range.clone() {
                         needed.insert(UnitSpriteKey {
@@ -365,7 +369,7 @@ pub fn build_unit_atlas(
                 None => continue,
             };
             for bucket in 0..TURRET_FACING_BUCKETS {
-                let facing: u8 = bucket.saturating_mul(TURRET_FACING_STEP);
+                let facing: u8 = (bucket * u16::from(TURRET_FACING_STEP)) as u8;
                 needed.insert(UnitSpriteKey {
                     type_id: turret_id.clone(),
                     facing,
@@ -423,7 +427,7 @@ pub fn build_unit_atlas(
             let slope_range: std::ops::RangeInclusive<u8> =
                 if is_ground_vehicle { 0..=16 } else { 0..=0 };
             for bucket in 0..buckets {
-                let facing: u8 = bucket.saturating_mul(step);
+                let facing: u8 = (bucket * u16::from(step)) as u8;
                 for frame in 0..num_frames {
                     for slope in slope_range.clone() {
                         needed.insert(UnitSpriteKey {
@@ -1031,7 +1035,7 @@ pub fn canonical_turret_facing(facing_u16: u16) -> u8 {
 }
 
 /// Get the facing quantization step and bucket count for a given VxlLayer.
-fn facing_config_for_layer(layer: VxlLayer) -> (u8, u8) {
+fn facing_config_for_layer(layer: VxlLayer) -> (u8, u16) {
     match layer {
         VxlLayer::Body | VxlLayer::Composite => (UNIT_FACING_STEP, UNIT_FACING_BUCKETS),
         VxlLayer::Turret | VxlLayer::Barrel => (TURRET_FACING_STEP, TURRET_FACING_BUCKETS),
@@ -1110,10 +1114,21 @@ fn pack_sprites(
     let aw: f32 = atlas_width as f32;
     let ah: f32 = atlas_height as f32;
 
+    let mut dropped: u32 = 0;
     for &(idx, px, py) in &placements {
         let rs: &CachedUnitSprite = &sprites[idx];
         let w: u32 = rs.width;
         let h: u32 = rs.height;
+
+        // A sprite past the clamped height was never blitted, so its pixels are whatever
+        // the buffer was initialised to. Emitting an entry for it would hand the shader
+        // UVs above 1.0 pointing at unwritten memory — the unit renders blank or wrong
+        // with nothing logged. Skip the entry entirely so the sprite is visibly absent
+        // and the count below says so.
+        if py + h > atlas_height {
+            dropped += 1;
+            continue;
+        }
 
         // Blit sprite palette indices into atlas (one byte per pixel).
         for y in 0..h {
@@ -1135,6 +1150,15 @@ fn pack_sprites(
                 offset_x: rs.offset_x,
                 offset_y: rs.offset_y,
             },
+        );
+    }
+
+    if dropped > 0 {
+        log::error!(
+            "Unit atlas overflow: {dropped} of {} sprites did not fit in {atlas_width}x{atlas_height} \
+             and will not render. Raise the requested max_texture_dimension_2d or lower the \
+             facing bucket counts.",
+            placements.len()
         );
     }
 
