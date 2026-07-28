@@ -1,7 +1,7 @@
 //! Substrate for carving a cliff stair: the per-shape tile tables and the
 //! precheck every carve runs before it touches a cell.
 //!
-//! The carve routines themselves are not here yet. What is here is the part
+//! The carve routines themselves live in `carve`. What is here is the part
 //! they all share, and the part that decides whether a carve happens at all:
 //!
 //! - [`RampRecord`] — the level-step and slope tables for the four straight
@@ -10,11 +10,7 @@
 //!   caller's hundred-attempt retry loop affordable, because a refusal costs
 //!   nothing: no cell written, no random draw taken.
 //!
-//! Nothing here is wired into the pipeline; see `connector` for why the carve
-//! layer lands as one piece or not at all.
-
-// Unwired until the carve bodies land — see the module note above.
-#![allow(dead_code)]
+//! Reached through `carve_driver`, which runs on the two island map types.
 
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::preview::Playfield;

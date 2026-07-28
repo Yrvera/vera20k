@@ -83,7 +83,11 @@ pub struct ResolvedTheaterInputs {
 
 impl ResolvedTheaterInputs {
     /// Snapshot a theater + rules into the resolved input set.
-    pub fn from_theater(theater: &TheaterData, rules: &TerrainRules, trig: Option<TrigTable>) -> Self {
+    pub fn from_theater(
+        theater: &TheaterData,
+        rules: &TerrainRules,
+        trig: Option<TrigTable>,
+    ) -> Self {
         let morphable = (0..theater.lookup.len())
             .map(|tile| theater.lookup.is_morphable(tile as u16))
             .collect();
@@ -223,6 +227,7 @@ pub fn generate_map_observed(
         tech_types,
         trig: resolved.trig.as_ref(),
         map_type: options.map_type,
+        accessibility: options.accessibility,
         theater: options.theater,
         num_players: options.num_players,
         bridge_enabled,
@@ -607,6 +612,41 @@ mod tests {
         RmgOptions {
             seed,
             ..options(map_type, theater)
+        }
+    }
+
+    /// The connector pass is live, and its randomness reaches the map.
+    ///
+    /// Accessibility only ever enters through the connector pass, and only on
+    /// the island map types. So if raising it changes the generated map, the
+    /// pass is running, its rolls are being taken, and the results reach the
+    /// terrain — which no unit test of the pieces can show on its own.
+    ///
+    /// The ordinary map types must be untouched by it, since they never reach
+    /// the pass at all. That half is what makes the first half meaningful:
+    /// together they say the difference comes from the connector pass and not
+    /// from accessibility leaking into something else.
+    #[test]
+    fn accessibility_moves_island_maps_and_leaves_the_others_alone() {
+        for (map_type, should_differ) in [(3, true), (4, true), (0, false), (2, false)] {
+            let mut low = matrix_options(map_type, 0, 4242);
+            low.accessibility = 0;
+            let mut high = matrix_options(map_type, 0, 4242);
+            high.accessibility = 100;
+            let left = run_cell(&low);
+            let right = run_cell(&high);
+            let cells = |m: &GeneratedMap| {
+                m.map_file
+                    .cells
+                    .iter()
+                    .map(|c| c.tile_index)
+                    .collect::<Vec<_>>()
+            };
+            let differ = cells(&left) != cells(&right);
+            assert_eq!(
+                differ, should_differ,
+                "map type {map_type}: accessibility should change the map: {should_differ}"
+            );
         }
     }
 

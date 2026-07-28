@@ -20,6 +20,8 @@ use crate::map::theater::TheaterCliffRanges;
 
 use super::grid::RmgGrid;
 use super::phases::blob::BlobCtx;
+use super::phases::carve::CarveCtx;
+use super::phases::carve_driver::{self, ConnectorRegion};
 use super::phases::hills::{HillsArgs, HillsCtx};
 use super::phases::island_passes::{self, IslandCtx};
 use super::phases::lat_patches::PatchCtx;
@@ -36,6 +38,7 @@ use super::phases::{
     green_spread, hills, lat_fixup, lat_patches, regions, rocks, starts, tech_buildings, tiberium,
     trees, water, water_finalize,
 };
+use super::preview::Playfield;
 use super::rng::RmgRng;
 use super::scratch::RmgScratch;
 use super::tiles::TileIds;
@@ -66,6 +69,9 @@ pub struct PipelineInputs<'a> {
 
     // Scalars from the `.SED` options / MapSeed / RMGMD settings.
     pub map_type: i32,
+    /// How freely plateaus get linked by ramps. Zero does not disable the
+    /// pass — it gives every adjacent pair exactly one ramp.
+    pub accessibility: i32,
     pub theater: i32,
     pub num_players: i32,
     /// `WaterAmount` option.
@@ -204,6 +210,53 @@ pub fn run_pipeline(
             default_level: DEFAULT_LEVEL,
         };
         regions = island_passes::run(&mut ctx);
+
+        // Then the ramps. THREE SEPARATE PASSES over every region, in this
+        // order — adjacency for all of them, then carving for all of them,
+        // then the release. Fusing the first two would let a region see a
+        // neighbour's data before that neighbour had been measured, and the
+        // maps would drift apart from the original.
+        //
+        // The first pass is implicit here: `adjacency::neighbour_ids` reads
+        // the scratch grid directly rather than caching onto the region, and
+        // the grid is already final by this point, so every region sees the
+        // same finished partition the original's pre-pass would have built.
+        // The third pass — freeing the vectors — has no analogue: the lists
+        // are values and drop on their own.
+        let playfield =
+            Playfield::from_local_size(map_w as i32, local_rect[0], local_rect[1], gen_w, gen_h);
+        let connector_regions: Vec<ConnectorRegion> = regions
+            .list
+            .iter()
+            .map(|r| ConnectorRegion {
+                id: r.id,
+                level: r.level,
+                waterish: r.active,
+            })
+            .collect();
+        let region_count = regions.id_counter;
+        for region in &connector_regions {
+            let mut ctx = CarveCtx {
+                grid: &mut *grid,
+                scratch: &mut *scratch,
+                ids: inputs.ids,
+                blocks: inputs.blocks,
+                rng: &mut *rng,
+                playfield: &playfield,
+                // The theater key for the ramp end-block tileset is not traced
+                // yet, so the blocks at each ramp's ends are left unstamped.
+                // Absent rather than guessed: stamping costs no draws, so the
+                // gap shows as missing end tiles and never as a divergent map.
+                ramp_end_block: -1,
+            };
+            carve_driver::carve_connectors_for_region(
+                &mut ctx,
+                &connector_regions,
+                *region,
+                region_count,
+                inputs.accessibility,
+            );
+        }
     }
     observe(Stage::IslandPasses, grid, &waypoints);
 
@@ -462,6 +515,7 @@ mod tests {
             tech_types,
             trig: None,
             map_type,
+            accessibility: 0,
             theater,
             num_players: 4,
             water_percent: 30,

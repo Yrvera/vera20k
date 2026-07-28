@@ -19,9 +19,6 @@
 //! the opposite of the carve routines, where a missing verdict would have
 //! shifted the whole draw stream.
 
-// The pipeline wiring is the next slice.
-#![allow(dead_code)]
-
 use crate::map::rmg::rng::RmgRng;
 use crate::map::rmg::x87::{self, TruncF64};
 
