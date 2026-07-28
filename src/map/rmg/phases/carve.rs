@@ -16,10 +16,7 @@
 //! - **The end blocks come from a different tileset base than the stepped
 //!   edge.** Conflating them stamps plausible-looking wrong tiles.
 //!
-//! Unwired, like the rest of the carve layer — see `connector`.
-
-// Unwired until all seven routines land and the driver is written.
-#![allow(dead_code)]
+//! Driven by `carve_driver`, which runs on the two island map types.
 
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::preview::Playfield;

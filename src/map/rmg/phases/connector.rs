@@ -8,22 +8,15 @@
 //!    nine 5x5 windows and asks, for each of the eight around the centre,
 //!    whether the region owns enough cells in it. The answers become one
 //!    direction mask.
-//! 2. [`select_ramp_site`] reads that mask and picks the first ramp shape whose
-//!    surroundings fit, jittering the chosen shape's two endpoints.
+//! 2. `carve::try_carve_connector_at_cell` reads that mask and walks the ramp
+//!    shapes in the original's order, jittering each straight shape's two
+//!    endpoints as it goes.
 //!
-//! **This module selects; it does not carve.** The seven routines that actually
-//! stamp ramp tiles are not modelled yet, so nothing here is wired into the
-//! pipeline — see the note on [`select_ramp_site`] about why a partial wiring
-//! would be worse than none.
+//! **This module selects; it does not carve.** The routines that stamp ramp
+//! tiles live in `carve`, and the pass that drives them in `carve_driver`.
 //!
 //! Depends on the grid/scratch owners and the x87 environment; no rendering,
 //! no rules.
-
-// Nothing outside this module's own tests calls any of it yet — the pipeline
-// stays untouched until the carve routines land. Remove this the moment the
-// driver is wired; it is here to keep a deliberately-unwired slice from
-// burying real warnings, not to excuse permanently dead code.
-#![allow(dead_code)]
 
 use crate::map::rmg::rng::RmgRng;
 use crate::map::rmg::scratch::RmgScratch;
@@ -222,6 +215,13 @@ pub(crate) fn jitter(rng: &mut RmgRng) -> i32 {
 /// What this does model exactly is the **first** candidate: the guards are
 /// evaluated in the original's order, and the winner's draws are taken in the
 /// original's order.
+/// SUPERSEDED by `carve::try_carve_connector_at_cell`, which walks the shapes
+/// in order and moves on when a carve refuses. **Do not call this from new
+/// code** — it stops at the first shape whose guard matches, which spends the
+/// wrong number of draws. Kept only because its tests still pin the guard
+/// order, the endpoint geometry and the per-shape draw counts, all of which
+/// the replacement relies on. Delete once those tests are moved across.
+#[allow(dead_code)]
 pub(crate) fn select_ramp_site(mask: u8, cell: (i32, i32), rng: &mut RmgRng) -> Option<RampSite> {
     let (x, y) = (cell.0, cell.1);
 
@@ -328,6 +328,9 @@ pub(crate) fn select_ramp_site(mask: u8, cell: (i32, i32), rng: &mut RmgRng) -> 
 /// Fixed geometry, no jitter, and each is still gated on a clear mask bit. The
 /// first and third share the same guard bit in the original; that is not a
 /// transcription slip.
+/// SUPERSEDED with [`select_ramp_site`]; the live fallbacks are inline in
+/// `carve::try_carve_connector_at_cell`.
+#[allow(dead_code)]
 pub(crate) fn fallback_ramp_sites(mask: u8, cell: (i32, i32)) -> Vec<RampSite> {
     let (x, y) = (cell.0, cell.1);
     let mut sites = Vec::new();
@@ -363,6 +366,8 @@ pub(crate) fn fallback_ramp_sites(mask: u8, cell: (i32, i32)) -> Vec<RampSite> {
 }
 
 /// Is this attempt late enough for the fallback shapes?
+/// SUPERSEDED with [`select_ramp_site`].
+#[allow(dead_code)]
 pub(crate) fn fallback_allowed(leniency: f32) -> bool {
     leniency > FALLBACK_LENIENCY
 }
