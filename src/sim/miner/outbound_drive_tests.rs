@@ -1095,3 +1095,70 @@ fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
     assert!(entity.drive_locomotion.is_none());
     assert_ore_intact(&sim, &oracle, target);
 }
+
+/// Regression: the low-bridge tube gate must not classify the dock pad-entry
+/// direct move (a deliberate multi-cell, bypass-grid straight-line segment)
+/// as a failed tube traversal. It did, which stranded every miner whose
+/// accepted CAN_DOCK entry began more than one cell from the pad — the
+/// player-visible "chrono miner fills up and never returns" stall in every
+/// ordinary skirmish with an Allied refinery.
+#[test]
+fn cmin_full_close_return_docks_and_deposits() {
+    use crate::sim::miner::RefineryDockPhase;
+    let oracle = outbound_contract_oracle();
+    let config = MinerConfig::from_rules(&oracle.rules);
+    let refinery_anchor = (10, 10);
+    let mut sim = production_sim(0xDEB6, &oracle);
+    let mut grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+    let refinery_type = oracle.rules.object("GAREFN").expect("GAREFN");
+    grid.block_building_movement_cells(
+        refinery_anchor.0,
+        refinery_anchor.1,
+        &refinery_type.foundation,
+        refinery_type.bib,
+    );
+    install_world(&mut sim, &oracle, &grid, &[], &[], true);
+    let _refinery_id = spawn_stock_refinery(&mut sim, &oracle, refinery_anchor);
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
+    arm_full_ore_return(&mut sim, entity_id, &config);
+
+    let mut deposited_at = None;
+    for tick in 0..3000u32 {
+        advance(&mut sim, &oracle, &grid);
+        let e = sim.substrate.entities.get(entity_id).expect("miner");
+        if e.miner.as_ref().expect("miner comp").cargo.is_empty() {
+            deposited_at = Some(tick);
+            break;
+        }
+    }
+    let deposited_at = deposited_at.expect(
+        "full CMIN must complete the close-return dock cycle and deposit \
+         (stall = the pad-entry direct move died; see tube gate)",
+    );
+
+    // Let the state-4 departure and the delayed Harvest redispatch run.
+    for _ in 0..100u32 {
+        advance(&mut sim, &oracle, &grid);
+    }
+
+    // The cycle physically completed: the miner entered the refinery pad,
+    // cargo empty, dock bookkeeping released, and the handler resumed
+    // harvest scheduling.
+    let e = sim.substrate.entities.get(entity_id).expect("miner");
+    let m = e.miner.as_ref().expect("miner comp");
+    assert!(m.cargo.is_empty());
+    assert_eq!(m.dock_phase, RefineryDockPhase::Approach);
+    assert!(m.reserved_refinery.is_none(), "reservation released at exit");
+    assert!(
+        matches!(
+            e.miner_state().expect("cursor"),
+            MinerState::SearchOre | MinerState::WaitNoOre
+        ),
+        "post-deposit cursor resumes harvest scheduling, got {:?}",
+        e.miner_state(),
+    );
+    assert!(
+        deposited_at > 0,
+        "deposit happened during the run (tick {deposited_at})"
+    );
+}

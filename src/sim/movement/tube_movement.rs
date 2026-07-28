@@ -183,6 +183,16 @@ pub fn try_begin_path_tube_step(
     if target.next_index >= target.path.len() {
         return TubePathStepResult::NotTubeStep;
     }
+    // A bypass-grid mover is a deliberate straight-line direct move (refinery
+    // pad entry, exit hops) whose two path nodes may span many cells — never
+    // a tube traversal. The non-adjacent-step heuristic below exists for
+    // pathfinder outputs, where a multi-cell jump encodes a tube crossing;
+    // applying it to direct moves classified every distant pad entry as a
+    // failed tube step and stranded the miner outside the refinery (the
+    // stuck chrono close-return dock).
+    if target.bypass_grid {
+        return TubePathStepResult::NotTubeStep;
+    }
     let current = (position.rx, position.ry);
     let next = target.path[target.next_index];
     let dx = next.0 as i32 - current.0 as i32;
