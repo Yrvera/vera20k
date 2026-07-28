@@ -422,8 +422,8 @@ fn place_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::phases::regions::RmgRegion;
+    use crate::map::rmg::tiles::SpecialTerrain;
 
     fn ids() -> TileIds {
         TileIds {

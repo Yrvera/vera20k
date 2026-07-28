@@ -86,8 +86,8 @@ fn append_clear_neighbors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::grid::GridCell;
+    use crate::map::rmg::tiles::SpecialTerrain;
 
     /// Minimal identity table: green base 100, green LAT 110, everything else
     /// far away so no accidental range overlaps.

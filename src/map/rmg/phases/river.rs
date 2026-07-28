@@ -594,11 +594,11 @@ pub fn carries_a_river(water_percent: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::grid::RmgGrid as Grid;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::phases::water::PlayableRect;
     use crate::map::rmg::scratch::RmgScratch;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::tiles::TileIds;
     use crate::map::rmg::x87::Gaussian;
 

@@ -182,7 +182,11 @@ fn rmg_tile_keys_resolve_ordinals_and_missing_keys_stay_none() {
 
     assert_eq!(keys.clear_tile, Some(0));
     assert_eq!(keys.water_set, Some(2), "set 1 starts at cumulative tile 2");
-    assert_eq!(keys.green_tile, Some(5), "set 2 starts at cumulative tile 5");
+    assert_eq!(
+        keys.green_tile,
+        Some(5),
+        "set 2 starts at cumulative tile 5"
+    );
     assert_eq!(keys.sand_tile, None, "absent key must stay None, not 0");
     assert_eq!(keys.shore_pieces, None);
 }

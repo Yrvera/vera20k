@@ -245,8 +245,8 @@ fn foundation_cell_ok(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::phases::regions::RmgRegion;
+    use crate::map::rmg::tiles::SpecialTerrain;
 
     fn ids() -> TileIds {
         TileIds {

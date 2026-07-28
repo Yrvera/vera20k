@@ -454,11 +454,11 @@ pub(crate) fn grow_lake(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::grid::RmgGrid;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::phases::water::PlayableRect;
     use crate::map::rmg::rng::RmgRng;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::tiles::TileIds;
     use crate::map::rmg::x87::Gaussian;
 

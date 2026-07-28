@@ -452,7 +452,11 @@ mod tests {
             let block = |terrain: u8| TileBlock {
                 width: 1,
                 height: 1,
-                subtiles: vec![Some(SubTile { height: 0, terrain, slope: 0 })],
+                subtiles: vec![Some(SubTile {
+                    height: 0,
+                    terrain,
+                    slope: 0,
+                })],
             };
             Some(match tile {
                 500..=599 => WATER.get_or_init(|| block(9)),

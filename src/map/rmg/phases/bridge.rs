@@ -475,11 +475,11 @@ pub(crate) fn jump(heading_dir: usize) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::grid::RmgGrid;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::rng::RmgRng;
     use crate::map::rmg::scratch::RmgScratch;
+    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::tiles::{TILE_UNASSIGNED, TileIds};
     use crate::map::rmg::x87::Gaussian;
 

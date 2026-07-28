@@ -941,8 +941,7 @@ fn resolve_tileset_start(lookup: &TilesetLookup, ordinal: Option<i32>) -> Option
 }
 
 fn resolve_rmg_tile_keys(lookup: &TilesetLookup, ini_text: &str) -> RmgTileKeys {
-    let resolve =
-        |key: &str| resolve_tileset_start(lookup, parse_general_i32(ini_text, key));
+    let resolve = |key: &str| resolve_tileset_start(lookup, parse_general_i32(ini_text, key));
     RmgTileKeys {
         clear_tile: resolve("ClearTile"),
         ramp_base: resolve("RampBase"),

@@ -383,8 +383,8 @@ fn self_gauss(ctx: &mut BlobCtx<'_>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
+    use crate::map::rmg::tiles::SpecialTerrain;
 
     struct OneByOne(TileBlock);
 
@@ -398,7 +398,11 @@ mod tests {
         OneByOne(TileBlock {
             width: 1,
             height: 1,
-            subtiles: vec![Some(SubTile { height: 0, terrain: 0, slope: 0 })],
+            subtiles: vec![Some(SubTile {
+                height: 0,
+                terrain: 0,
+                slope: 0,
+            })],
         })
     }
 
