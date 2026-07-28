@@ -5,6 +5,7 @@
 //! in `super::generate`.
 
 pub mod adjacency;
+pub mod area;
 pub mod blob;
 pub mod bridge;
 pub mod bridge_deck;

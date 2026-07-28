@@ -15,6 +15,7 @@ use crate::map::rmg::scratch::RmgScratch;
 use crate::map::rmg::tiles::TileIds;
 use crate::map::rmg::x87::{self, TruncF64, approx_sqrt_f32};
 
+use super::area;
 use super::blob::MinHeap;
 use super::regions::{Regions, RmgRegion};
 use super::shore::TileBlocks;
@@ -258,39 +259,15 @@ fn lane_draw(rng: &mut RmgRng) -> i32 {
     }
 }
 
-/// The 6x6 passability window around a candidate: all four corners must be
-/// in the diamond, and every covered cell must be clear, misc-pave or pave
-/// (roads and road-ends reject; both policy flags are off on this path).
+/// The 6x6 passability window around a candidate.
+///
+/// The routine behind it is shared with the low-bridge placer's corridor walk —
+/// **the same function in the original**, not merely a similar one. Both
+/// override bytes are zero on this path: the register carrying the road-end
+/// override is cleared before the gather loop and only written again after it,
+/// so roads and road-ends reject on every iteration.
 fn gate_6x6(ctx: &StartsCtx<'_>, x: i32, y: i32) -> bool {
-    let (rx, ry, rw, rh) = (x - 3, y - 3, 6, 6);
-    let corners = [
-        (rx, ry),
-        (rx + rw - 1, ry),
-        (rx, ry + rh - 1),
-        (rx + rw - 1, ry + rh - 1),
-    ];
-    if corners
-        .iter()
-        .any(|&(cx, cy)| !ctx.scratch.in_diamond(cx, cy))
-    {
-        return false;
-    }
-    for yy in ry..ry + rh {
-        for xx in rx..rx + rw {
-            let Some(cell) = ctx.grid.get(xx, yy) else {
-                return false;
-            };
-            let tile = cell.tile;
-            if ctx.ids.is_paved_road(tile) || ctx.ids.is_paved_road_end(tile) {
-                return false;
-            }
-            if ctx.ids.is_clear(tile) || ctx.ids.is_misc_pave(tile) || ctx.ids.is_pave(tile) {
-                continue;
-            }
-            return false;
-        }
-    }
-    true
+    area::area_is_paved_clear(ctx.grid, ctx.scratch, ctx.ids, (x - 3, y - 3, 6, 6))
 }
 
 /// Gather candidates for one region, select, and write its waypoint slots.
@@ -513,9 +490,9 @@ fn clearing_floods(ctx: &mut StartsCtx<'_>, args: &StartsArgs, outcome: &StartsO
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::tiles::SpecialTerrain;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::phases::zones::{self, ZoneKind, ZoneParams};
+    use crate::map::rmg::tiles::SpecialTerrain;
 
     struct ClearBlocks;
 
@@ -526,7 +503,11 @@ mod tests {
             let block = |terrain: u8| TileBlock {
                 width: 1,
                 height: 1,
-                subtiles: vec![Some(SubTile { height: 0, terrain, slope: 0 })],
+                subtiles: vec![Some(SubTile {
+                    height: 0,
+                    terrain,
+                    slope: 0,
+                })],
             };
             Some(if (500..600).contains(&tile) {
                 WATER.get_or_init(|| block(9))
@@ -777,6 +758,37 @@ mod tests {
         assert_eq!(selection[0], (20, 40), "first element of the far pair");
         assert_eq!(selection[1], (44, 40), "farthest from the seed");
         assert_eq!(selection[2], (32, 40), "max-min-distance next");
+    }
+
+    #[test]
+    fn the_candidate_window_reaches_three_cells_back_and_two_forward() {
+        // `gate_6x6` is now a one-line adapter over the shared area test, so
+        // the only thing left in it to get wrong is the rect it hands over.
+        // Nothing else in this module reaches that call — gutting the shared
+        // predicate leaves every other test here green — so without this the
+        // window could be moved or resized freely and the suite would not
+        // notice.
+        let args = args();
+        let identity = ids();
+        let mut accepts = |bx: i32, by: i32| {
+            let (mut grid, mut scratch) = world(&args);
+            grid.get_mut(bx, by).expect("native cell").tile = 100;
+            let mut rng = RmgRng::new(1);
+            let mut regions = Regions::default();
+            let ctx = StartsCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &identity,
+                blocks: &ClearBlocks,
+                rng: &mut rng,
+                regions: &mut regions,
+            };
+            gate_6x6(&ctx, 40, 40)
+        };
+        assert!(!accepts(37, 37), "three back is the window's near corner");
+        assert!(!accepts(42, 42), "two forward is its far corner");
+        assert!(accepts(43, 42), "one column further out is not judged");
+        assert!(accepts(37, 36), "one row further back is not judged");
     }
 
     #[test]
