@@ -82,7 +82,8 @@ const RATE_EPILOGUE_JITTER_MAX_FRAMES: u32 = 2;
 
 /// Keyless-`[Harvest]` fallback for the epilogue base; the stock `Rate=.016`
 /// resolves to `ftol(.016 × 900) = 14` from the mission-control table, so this
-/// is only reached when a mod strips the section.
+/// is only reached when a mod strips the section. The gamemd MissionControl
+/// ctor default for that case is UNCHECKED.
 const HARVEST_RATE_FALLBACK_FRAMES: u8 = 14;
 
 /// Install the native default handler epilogue as the dispatch delay:

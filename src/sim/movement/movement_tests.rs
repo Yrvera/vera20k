@@ -328,6 +328,122 @@ fn test_drive_queued_arrival_pops_navqueue_and_reissues_destination() {
 }
 
 #[test]
+fn test_drive_off_destination_finish_defers_then_resumes_toward_navcom() {
+    let mut entities = EntityStore::new();
+    let grid = PathGrid::new(8, 4);
+
+    // A truncated drive segment ends at (1,0) while the owner destination
+    // (NavCom) is still (3,0): an off-destination finish.
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 1, 0);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.navigation.nav_com = Some(NavTargetRef::cell(3, 0));
+    e.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
+        destination: Some(DriveCoord::cell(3, 0, 0)),
+        head_to: Some(DriveCoord::cell(1, 0, 0)),
+        track_valid: true,
+        track_index: 1,
+        point_index: 2,
+        ..Default::default()
+    });
+    e.movement_target = Some(MovementTarget {
+        path: vec![(0, 0), (1, 0)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 2,
+        final_goal: Some((1, 0)),
+        ..Default::default()
+    });
+    entities.insert(e);
+
+    // Tick 1: the segment finishes short of the owner destination. The owner
+    // keeps its destination and the deferred process-entry flag arms; no
+    // same-tick clear.
+    let mut lifecycle_requests = Vec::new();
+    tick_movement_with_grid(
+        &mut entities,
+        Some(&grid),
+        &Default::default(),
+        &Default::default(),
+        &mut OccupancyGrid::new(),
+        &mut SimRng::new(0),
+        16,
+        0,
+        &mut test_interner(),
+        &mut lifecycle_requests,
+    );
+    let entity = entities.get(1).expect("entity exists");
+    assert!(entity.movement_target.is_none());
+    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(3, 0)));
+    assert!(entity.navigation.pending_arrival_clear);
+
+    // Tick 2: the process-entry pass repaths toward the surviving NavCom and
+    // the unit resumes moving.
+    tick_movement_with_grid(
+        &mut entities,
+        Some(&grid),
+        &Default::default(),
+        &Default::default(),
+        &mut OccupancyGrid::new(),
+        &mut SimRng::new(0),
+        1,
+        1,
+        &mut test_interner(),
+        &mut lifecycle_requests,
+    );
+    let entity = entities.get(1).expect("entity exists");
+    let movement = entity.movement_target.as_ref().expect("movement target");
+    assert_eq!(movement.final_goal, Some((3, 0)));
+    assert_eq!(movement.path.first().copied(), Some((1, 0)));
+    assert_eq!(movement.path.last().copied(), Some((3, 0)));
+    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(3, 0)));
+    assert!(!entity.navigation.pending_arrival_clear);
+}
+
+#[test]
+fn test_drive_deferred_repath_failure_rearms_retry_instead_of_dead_end() {
+    let mut entities = EntityStore::new();
+    let mut grid = PathGrid::new(8, 4);
+    // Wall off the goal: a full blocked column between (1,0) and (3,0).
+    for y in 0..4 {
+        grid.set_blocked(2, y, true);
+    }
+
+    // Deferred process-entry state: owner destination survives, no active
+    // movement, retry flag armed (the off-destination finish already
+    // happened).
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 1, 0);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.navigation.nav_com = Some(NavTargetRef::cell(3, 0));
+    e.navigation.pending_arrival_clear = true;
+    entities.insert(e);
+
+    // Two ticks: each process-entry repath fails against the wall. The retry
+    // flag must stay armed and the owner destination must survive — never the
+    // dead-end state (nav_com held with no movement and no retry flag).
+    let mut lifecycle_requests = Vec::new();
+    for tick in 0..2u64 {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut OccupancyGrid::new(),
+            &mut SimRng::new(0),
+            16,
+            tick,
+            &mut test_interner(),
+            &mut lifecycle_requests,
+        );
+        let entity = entities.get(1).expect("entity exists");
+        assert!(entity.movement_target.is_none());
+        assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(3, 0)));
+        assert!(
+            entity.navigation.pending_arrival_clear,
+            "repath failure must re-arm the deferred retry flag (tick {tick})"
+        );
+    }
+}
+
+#[test]
 fn test_tick_movement_partial_progress() {
     let mut entities = EntityStore::new();
 

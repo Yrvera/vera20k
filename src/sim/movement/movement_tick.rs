@@ -484,6 +484,14 @@ fn process_pending_drive_arrivals(
         let current = (entity.position.rx, entity.position.ry);
         let current_layer = entity.movement_layer_or_ground();
         let Some(loco) = entity.locomotor.as_ref() else {
+            // VERA-internal retry policy: `set_destination_internal_cell`
+            // above cleared the deferred flag, so bailing out here would
+            // strand a live owner destination with no path, no movement, and
+            // no retry — a permanent dead-end (callers gate on
+            // `nav_com.is_some()`). Re-arm the flag so the next tick retries.
+            // The gamemd fallback on a failed process-entry repath is
+            // UNCHECKED.
+            entity.navigation.pending_arrival_clear = true;
             continue;
         };
         let layered_pathing = supports_layered_bridge_pathing(loco, grid, entity.on_bridge);
@@ -521,9 +529,19 @@ fn process_pending_drive_arrivals(
                         | MovementZone::CrusherAll
                 ),
         ) else {
+            // VERA-internal retry policy: pathfinding failed, so re-arm the
+            // deferred flag (cleared by `set_destination_internal_cell`
+            // above) and retry next tick toward the surviving owner
+            // destination instead of stranding it as a permanent dead-end.
+            // The gamemd fallback on a failed process-entry repath is
+            // UNCHECKED.
+            entity.navigation.pending_arrival_clear = true;
             continue;
         };
         if path.len() < 2 {
+            // VERA-internal retry policy, same as the pathfinding-failure
+            // branch above; the gamemd equivalent is UNCHECKED.
+            entity.navigation.pending_arrival_clear = true;
             continue;
         }
         let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref)));

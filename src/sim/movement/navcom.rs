@@ -125,6 +125,10 @@ pub(super) fn finish_drive_navigation(
             }
             return;
         }
+        // Residual: the native arrival match also compares z within twice a
+        // global height tolerance (bridge deck vs ground); NavTargetRef::Cell
+        // carries no layer, so a same-cell bridge/ground mismatch reads as
+        // arrived here.
         let arrived = matches!(
             entity.navigation.nav_com,
             Some(NavTargetRef::Cell { rx, ry })
