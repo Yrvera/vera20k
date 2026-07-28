@@ -754,4 +754,41 @@ mod tests {
         tick_weapon_muzzle_flash_list(&mut flashes, MUZZLE_FLASH_RATE_MS);
         assert!(flashes.is_empty());
     }
+
+    /// Regression for the reported projectile/impact one-cell visual
+    /// discrepancy. Exercise both production projectors with the exact same
+    /// native cell-center CoordStruct.
+    #[test]
+    fn coordinate_runtime_trace_world_effect_anchor_matches_projectile_endpoint() {
+        let sim = Simulation::new();
+
+        for (rx, ry) in [(10_u16, 10_u16), (23_u16, 20_u16), (41_u16, 17_u16)] {
+            let projectile =
+                target_fire_destination(&sim, TargetKind::Cell(rx, ry)).expect("cell target");
+            let world_effect = crate::app_instances::world_effect_screen_position(
+                rx,
+                ry,
+                crate::util::lepton::CELL_CENTER_LEPTON,
+                crate::util::lepton::CELL_CENTER_LEPTON,
+                0,
+            );
+
+            eprintln!(
+                "FIRE_TRACE cell=({rx},{ry}) projectile=({:.1},{:.1}) \
+                 world_effect=({:.1},{:.1}) delta=({:.1},{:.1})",
+                projectile.screen_x,
+                projectile.screen_y,
+                world_effect.0,
+                world_effect.1,
+                world_effect.0 - projectile.screen_x,
+                world_effect.1 - projectile.screen_y,
+            );
+
+            assert_eq!(world_effect.0, projectile.screen_x);
+            assert_eq!(
+                world_effect.1, projectile.screen_y,
+                "WorldEffect must land on its projectile endpoint"
+            );
+        }
+    }
 }

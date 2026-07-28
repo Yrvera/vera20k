@@ -19,6 +19,7 @@ use crate::sim::miner::{
 };
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
+use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_for_owner;
 use crate::sim::world::Simulation;
@@ -7542,4 +7543,145 @@ fn deposit_slot_order_ore_then_gem_over_seam() {
         5 * 25 + 3 * 50,
         "seam: gem slot credits second (total 125 + 150)",
     );
+}
+
+/// Regression for the reported "miner removes ore one cell behind" symptom.
+/// Drive onto the same ore cell from all four cardinal directions and verify
+/// both the simulation resource and its render overlay use the arrived cell.
+#[test]
+fn coordinate_runtime_trace_miner_arrival_and_extraction_four_directions() {
+    let target = (20_u16, 20_u16);
+    let approaches = [
+        ("west", (19_u16, 20_u16), (21_u16, 20_u16)),
+        ("east", (21_u16, 20_u16), (19_u16, 20_u16)),
+        ("north", (20_u16, 19_u16), (20_u16, 21_u16)),
+        ("south", (20_u16, 21_u16), (20_u16, 19_u16)),
+    ];
+
+    for (label, start, behind) in approaches {
+        let mut sim = Simulation::new();
+        let rules = miner_rules();
+        place_ore(&mut sim, target.0, target.1, 120);
+        place_ore(&mut sim, behind.0, behind.1, 120);
+        sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+        {
+            let overlay = sim.overlay_grid.as_mut().expect("overlay grid");
+            overlay.place_overlay(target.0, target.1, 1, 1);
+            overlay.place_overlay(behind.0, behind.1, 1, 1);
+        }
+
+        let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, start.0, start.1);
+        {
+            let entity = sim
+                .substrate
+                .entities
+                .get_mut(miner_id)
+                .expect("miner entity");
+            let miner = entity.miner.as_mut().expect("miner component");
+            entity
+                .mission
+                .set_handler_state(MinerState::MoveToOre.cursor());
+            miner.target_ore_cell = Some(target);
+            miner.harvest_timer.clear();
+        }
+
+        let mut first_harvest_tick = None;
+        let mut extraction_tick = None;
+
+        for trace_tick in 0..512_u32 {
+            let target_before = sim.production.resource_nodes.contains_key(&target);
+            tick_miners_n(&mut sim, &rules, 1);
+
+            let entity = sim
+                .substrate
+                .entities
+                .get(miner_id)
+                .expect("miner remains alive");
+            let state = entity.miner_state().expect("valid miner state");
+            let sub_x = entity.position.sub_x.to_num::<i32>();
+            let sub_y = entity.position.sub_y.to_num::<i32>();
+
+            if state == MinerState::Harvest && first_harvest_tick.is_none() {
+                eprintln!(
+                    "MINER_TRACE approach={label} event=enter_harvest trace_tick={trace_tick} \
+                     sim_tick={} cell=({},{}) sub=({sub_x},{sub_y}) screen=({:.1},{:.1}) \
+                     target={target:?} movement_target={}",
+                    sim.session.tick,
+                    entity.position.rx,
+                    entity.position.ry,
+                    entity.position.screen_x,
+                    entity.position.screen_y,
+                    entity.movement_target.is_some(),
+                );
+                assert_eq!(
+                    (entity.position.rx, entity.position.ry),
+                    target,
+                    "{label}: Harvest must begin on the selected ore cell"
+                );
+                assert_eq!(
+                    (sub_x, sub_y),
+                    (128, 128),
+                    "{label}: Harvest must begin at cell center"
+                );
+                assert!(
+                    entity.movement_target.is_none(),
+                    "{label}: Harvest must not begin while movement is still active"
+                );
+                first_harvest_tick = Some(trace_tick);
+            }
+
+            let target_after = sim.production.resource_nodes.contains_key(&target);
+            if target_before && !target_after {
+                let overlay = sim.overlay_grid.as_ref().expect("overlay grid");
+                let target_overlay_cleared = overlay.cell(target.0, target.1).overlay_id.is_none();
+                let behind_overlay_preserved =
+                    overlay.cell(behind.0, behind.1).overlay_id.is_some();
+                eprintln!(
+                    "MINER_TRACE approach={label} event=extract trace_tick={trace_tick} \
+                     sim_tick={} cell=({},{}) sub=({sub_x},{sub_y}) target_removed={target:?} \
+                     target_overlay_cleared={target_overlay_cleared} \
+                     behind_resource_preserved={} behind_overlay_preserved={behind_overlay_preserved} \
+                     cargo_bales={}",
+                    sim.session.tick,
+                    entity.position.rx,
+                    entity.position.ry,
+                    sim.production.resource_nodes.contains_key(&behind),
+                    entity.miner.as_ref().expect("miner component").cargo.len(),
+                );
+                assert_eq!(
+                    (entity.position.rx, entity.position.ry),
+                    target,
+                    "{label}: extraction must use the miner's current cell"
+                );
+                assert_eq!(
+                    (sub_x, sub_y),
+                    (128, 128),
+                    "{label}: extraction must occur at cell center"
+                );
+                assert!(
+                    sim.production.resource_nodes.contains_key(&behind),
+                    "{label}: ore behind the target must remain untouched"
+                );
+                assert!(
+                    target_overlay_cleared,
+                    "{label}: the renderer's target overlay cell must clear"
+                );
+                assert!(
+                    behind_overlay_preserved,
+                    "{label}: the renderer's behind-cell overlay must remain occupied"
+                );
+                extraction_tick = Some(trace_tick);
+                break;
+            }
+        }
+
+        assert!(
+            first_harvest_tick.is_some(),
+            "{label}: miner never entered Harvest"
+        );
+        assert!(
+            extraction_tick.is_some(),
+            "{label}: miner never extracted the target ore"
+        );
+    }
 }

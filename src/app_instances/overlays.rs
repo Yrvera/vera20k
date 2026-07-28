@@ -18,6 +18,7 @@ use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::WeaponMuzzleFlash;
 use crate::sim::miner::ResourceType;
+use crate::util::fixed_math::SimFixed;
 
 use super::helpers::{
     ANIM_DRAW_DEPTH_BIAS_PX, apply_shape_z_adjust, compute_sprite_depth,
@@ -28,6 +29,20 @@ use super::helpers::{
 enum OverlayRenderBucket {
     Generic,
     Wall,
+}
+
+/// Project an AnimClass-like fixed world effect from its exact cell/subcell anchor.
+///
+/// Native `ObjectClass::DrawIt` passes the effect's CoordStruct directly through
+/// `CoordsToClient2`; it does not convert the effect to a terrain-tile origin first.
+pub(crate) fn world_effect_screen_position(
+    rx: u16,
+    ry: u16,
+    sub_x: SimFixed,
+    sub_y: SimFixed,
+    z: u8,
+) -> (f32, f32) {
+    crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z)
 }
 
 fn classify_overlay_render_bucket(is_wall: bool) -> OverlayRenderBucket {
@@ -58,12 +73,8 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         if fx.delay_ms > 0 {
             continue;
         }
-        let coords = glam::IVec3::new(
-            fx.rx as i32 * 256 + fx.sub_x.to_num::<i32>(),
-            fx.ry as i32 * 256 + fx.sub_y.to_num::<i32>(),
-            fx.z as i32 * 256,
-        );
-        let (center_x, center_y) = terrain::lepton_to_screen(coords);
+        let (center_x, center_y) =
+            world_effect_screen_position(fx.rx, fx.ry, fx.sub_x, fx.sub_y, fx.z);
         if !in_view(
             center_x - TILE_WIDTH / 2.0,
             center_y - TILE_HEIGHT / 2.0,
@@ -859,8 +870,10 @@ mod tests {
     use super::{
         ANIM_DRAW_DEPTH_BIAS_PX, OverlayRenderBucket, apply_shape_z_adjust,
         classify_overlay_render_bucket, garrison_flash_depth, weapon_muzzle_flash_key,
+        world_effect_screen_position,
     };
     use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash, WeaponMuzzleFlash};
+    use crate::util::fixed_math::SimFixed;
 
     #[test]
     fn wall_routes_to_wall_bucket() {
@@ -975,5 +988,24 @@ mod tests {
     #[test]
     fn anim_draw_bias_constant_matches_native() {
         assert_eq!(ANIM_DRAW_DEPTH_BIAS_PX, -2);
+    }
+
+    #[test]
+    fn world_effect_projection_preserves_exact_subcell_anchor() {
+        for (rx, ry, sub_x, sub_y, z) in [
+            (10, 10, 128, 128, 0),
+            (23, 20, 128, 128, 0),
+            (41, 17, 32, 224, 0),
+            (7, 13, 240, 48, 2),
+        ] {
+            let sub_x = SimFixed::from_num(sub_x);
+            let sub_y = SimFixed::from_num(sub_y);
+            assert_eq!(
+                world_effect_screen_position(rx, ry, sub_x, sub_y, z),
+                crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z),
+                "WorldEffect must use the native CoordStruct anchor at \
+                 ({rx},{ry},{sub_x:?},{sub_y:?},z={z})"
+            );
+        }
     }
 }
