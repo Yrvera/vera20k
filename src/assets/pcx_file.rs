@@ -361,15 +361,15 @@ mod tests {
     }
 
     #[test]
-    fn rgba_color_key_applies_after_embedded_palette_conversion() {
+    fn rgba_color_key_uses_rgb_not_palette_index() {
         let pcx = PcxFile {
             width: 3,
             height: 1,
-            pixels: vec![1, 2, 3],
+            pixels: vec![1, 0, 3],
             palette: {
                 let mut palette = [[0u8; 3]; 256];
+                palette[0] = [0, 0, 0];
                 palette[1] = [255, 0, 255];
-                palette[2] = [0, 0, 0];
                 palette[3] = [255, 0, 255];
                 palette
             },

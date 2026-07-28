@@ -68,6 +68,9 @@ use crate::ui::shell::controller::ShellKey;
 use crate::ui::skirmish_shell::{SavedSeedBrowserState, SavedSeedMode};
 use crate::util::config::GameConfig;
 
+#[path = "app_startup_splash.rs"]
+mod app_startup_splash;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellFramePreludeStep {
     MaintainIntro,
@@ -520,8 +523,8 @@ pub(crate) struct AppState {
     /// (the sidebar-anchored button Y is render-derived; see KD-6). None until the
     /// overlay first renders.
     pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
-    /// Hold the loading splash on screen briefly before showing the client UI.
-    pub(crate) startup_splash_until: Option<Instant>,
+    /// Retail process-start splash, held until its post-present deadline.
+    pub(crate) startup_splash: Option<app_startup_splash::StartupSplashPresentation>,
     /// Global elapsed time for looping IdleAnim overlays (flags, smokestacks, etc.).
     pub(crate) idle_anim_elapsed_ms: u32,
     /// Debug overlay: show terrain cost / pathgrid overlay. Toggle with P / F9.
@@ -3416,6 +3419,35 @@ impl ApplicationHandler for App {
             return;
         }
 
+        // Native does not expose menu/game input while its process-start splash
+        // owns the display. Keep close/resize/redraw operational, but discard
+        // player input until the post-present deadline has elapsed.
+        if state
+            .startup_splash
+            .as_ref()
+            .is_some_and(|splash| splash.is_active(Instant::now()))
+            && matches!(
+                &event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::ModifiersChanged(_)
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::CursorEntered { .. }
+                    | WindowEvent::CursorLeft { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::PinchGesture { .. }
+                    | WindowEvent::PanGesture { .. }
+                    | WindowEvent::DoubleTapGesture { .. }
+                    | WindowEvent::RotationGesture { .. }
+                    | WindowEvent::TouchpadPressure { .. }
+                    | WindowEvent::AxisMotion { .. }
+                    | WindowEvent::Touch(_)
+            )
+        {
+            return;
+        }
+
         // Always let egui see the event first for input handling.
         let egui_response: egui_winit::EventResponse =
             state.egui.on_window_event(&state.window, &event);
@@ -3831,14 +3863,51 @@ impl App {
             .as_ref()
             .map(crate::app_transitions::load_eva_registry)
             .unwrap_or_default();
-        if let Some(fnt) = startup_asset_manager.as_ref().and_then(|assets| {
+        let startup_fnt = startup_asset_manager.as_ref().and_then(|assets| {
             assets.get_ref("GAME.FNT").and_then(|data| {
                 crate::assets::fnt_file::FntFile::from_bytes(data)
                     .map_err(|err| log::warn!("Failed to parse startup GAME.FNT: {err}"))
                     .ok()
             })
-        }) {
+        });
+        if let Some(fnt) = startup_fnt.as_ref() {
             bit_font = BitFont::from_fnt(&gpu, &batch_renderer, &fnt);
+        }
+        let mut startup_splash = if capture_dimensions.is_none() {
+            startup_asset_manager
+                .as_ref()
+                .zip(startup_fnt.as_ref())
+                .and_then(|(assets, fnt)| {
+                    app_startup_splash::StartupSplashPresentation::build(
+                        &gpu,
+                        &batch_renderer,
+                        assets,
+                        startup_csf.as_ref(),
+                        fnt,
+                        gpu.config.width,
+                        gpu.config.height,
+                    )
+                    .map_err(|err| log::warn!("Could not build retail startup splash: {err:#}"))
+                    .ok()
+                })
+        } else {
+            None
+        };
+        if let Some(splash) = startup_splash.as_mut() {
+            match app_startup_splash::render_and_present(
+                &gpu,
+                &batch_renderer,
+                &shell_surface_presenter,
+                &depth_view,
+                splash,
+            ) {
+                Ok(()) => splash.mark_presented(Instant::now()),
+                Err(err) => {
+                    // Surface acquisition can be transient before the first
+                    // event-loop redraw. Keep the unarmed splash for retry.
+                    log::warn!("Initial retail startup splash present deferred: {err:#}");
+                }
+            }
         }
         let skirmish_shell_chrome = if dev_skirmish_shell_enabled {
             startup_asset_manager.as_ref().and_then(|assets| {
@@ -4156,7 +4225,7 @@ impl App {
                 ..Default::default()
             },
             in_game_options_anchor: None,
-            startup_splash_until: None,
+            startup_splash,
             idle_anim_elapsed_ms: 0,
             debug_show_pathgrid: false,
             debug_terrain_cost_speed_type: None,
@@ -4227,37 +4296,30 @@ impl App {
         state.frame_timer.sample(Instant::now());
         crate::app_tooltips::update(state);
         crate::app_messages::update(state);
-        if let Some(until) = state.startup_splash_until {
-            if Instant::now() < until {
-                let output: wgpu::SurfaceTexture = state
-                    .gpu
-                    .surface
-                    .get_current_texture()
-                    .map_err(|e| anyhow::anyhow!("Surface texture: {}", e))?;
-                let view: wgpu::TextureView = output.texture.create_view(&Default::default());
-                let mut encoder: wgpu::CommandEncoder =
-                    state
-                        .gpu
-                        .device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("Startup Splash Frame"),
-                        });
-                app_transitions::clear_screen(&mut encoder, &view);
-                state.egui.begin_frame(&state.window);
-                main_menu::draw_loading_screen(&state.egui.ctx, "Initializing client");
-                state.egui.end_frame_and_render(
-                    &state.gpu,
-                    &mut encoder,
-                    &view,
-                    &state.window,
-                    state.use_software_cursor(),
-                );
-                state.gpu.queue.submit(std::iter::once(encoder.finish()));
-                output.present();
-                return Ok(());
-            }
-            state.startup_splash_until = None;
+        if state
+            .startup_splash
+            .as_ref()
+            .is_some_and(|splash| splash.is_active(Instant::now()))
+        {
+            let splash = state
+                .startup_splash
+                .as_ref()
+                .expect("active startup splash exists");
+            app_startup_splash::render_and_present(
+                &state.gpu,
+                &state.batch_renderer,
+                &state.shell_surface_presenter,
+                &state.depth_view,
+                splash,
+            )?;
+            state
+                .startup_splash
+                .as_mut()
+                .expect("active startup splash exists")
+                .mark_presented(Instant::now());
+            return Ok(());
         }
+        state.startup_splash = None;
 
         // Drive the graceful quit cascade (started on Exit-confirm OK). Compute the
         // voice poll before borrowing the cascade mutably to avoid aliasing.

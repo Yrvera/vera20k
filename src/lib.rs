@@ -48,6 +48,8 @@ pub mod app_init_helpers;
 pub mod app_launch;
 pub mod app_list_maps;
 pub mod app_loading;
+pub mod app_loading_composition;
+pub mod app_loading_progress_row;
 pub mod app_main_menu_shell_render;
 pub mod app_quit_cascade;
 pub mod app_radiation_light;

@@ -149,6 +149,20 @@ pub(crate) struct MapLoadInitial {
     map_source: LoadedMapSource,
 }
 
+impl MapLoadInitial {
+    pub(crate) fn theater_name(&self) -> &str {
+        &self.map_data.header.theater
+    }
+
+    pub(crate) fn map_data(&self) -> &MapFile {
+        &self.map_data
+    }
+
+    pub(crate) fn asset_manager(&self) -> &AssetManager {
+        &self.asset_manager
+    }
+}
+
 pub(crate) fn load_csf(asset_manager: &AssetManager) -> Option<crate::assets::csf_file::CsfFile> {
     for name in [
         "ra2md.csf",
@@ -500,6 +514,8 @@ pub(crate) fn load_map_from_initial(
     initial: MapLoadInitial,
     startup: LoadingStartup,
     skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
+    theater_cache_mismatch: bool,
+    runtime_color_scheme_count: usize,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> Result<MapLoadResult> {
@@ -514,16 +530,22 @@ pub(crate) fn load_map_from_initial(
     // Also loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority.
     let theater_result: Option<theater::TheaterData> =
         theater::load_theater(&mut asset_manager, &map_data.header.theater);
+    if theater_cache_mismatch {
+        progress.milestone(12);
+        // Native advances while rebuilding each color scheme. Rust's theater
+        // loader is monolithic, so present the verified pre-load-count sequence
+        // synchronously after that work instead of faking per-item callbacks.
+        for value in crate::app_loading::theater_ramp_changed_values(runtime_color_scheme_count) {
+            progress.milestone(value);
+        }
+        progress.milestone(25);
+    }
+    progress.milestone(30);
+
     let theater_ext: &'static str = match &theater_result {
         Some(td) => td.extension,
         None => theater_ext_for(&map_data.header.theater),
     };
-    // Theater archives + palettes loaded. Rust's theater loader is monolithic,
-    // so its internal dynamic 13..25 callbacks remain a documented residual;
-    // preserve the verified finalization boundary before post-theater work.
-    progress.milestone(12);
-    progress.milestone(25);
-    progress.milestone(30);
 
     let parse_bool_env = |key: &str| -> Option<bool> {
         std::env::var(key).ok().map(|v| {
