@@ -837,6 +837,122 @@ pub fn carve_corner_ramp(
     true
 }
 
+/// Carve a ramp that turns the opposite corner.
+///
+/// Same family as [`carve_corner_ramp`] and the same five-fill, three-tail
+/// shape, but reflected: `a` is north-east and `b` south-west, so the span
+/// guards read `a.x - b.x` and `b.y - a.y`.
+///
+/// Two things are not reflections and had to be read:
+///
+/// - **Four end blocks, not two** (`+5`, `+6`, `+8`, `+9`).
+/// - **Every face sits one lower**: slopes 5/2/1 against the other corner's
+///   6/3/2, tiles `+4`/`+1`/`+0` against `+5`/`+2`/`+1`. The two corners lay
+///   adjacent faces of the same set, not the same ones.
+pub fn carve_corner_ramp_reflected(
+    ctx: &mut CarveCtx<'_>,
+    regions: CarveRegions,
+    a: (i32, i32),
+    b: (i32, i32),
+) -> bool {
+    let span_x = a.0 - b.0;
+    let span_y = b.1 - a.1;
+    if span_x <= 2 || span_y <= 2 {
+        return false;
+    }
+
+    let rect = (b.0 - 7, a.1 - 7, span_x + 10, span_y + 10);
+    if !rect_is_carveable(
+        ctx.grid,
+        ctx.scratch,
+        ctx.ids,
+        ctx.playfield,
+        rect,
+        regions.region,
+        regions.lower_region,
+    ) {
+        return false;
+    }
+
+    let (rx, ry, rw, rh) = rect;
+
+    fill(
+        ctx,
+        (rx, rx + rw),
+        (ry, ry + 7),
+        regions.lower_region,
+        regions.lower_level,
+    );
+    fill(
+        ctx,
+        (rx, rx + 7),
+        (ry, ry + rh),
+        regions.lower_region,
+        regions.lower_level,
+    );
+    fill(
+        ctx,
+        (a.0, a.0 + 1),
+        (a.1, a.1 + 2),
+        regions.region,
+        regions.level,
+    );
+    fill(
+        ctx,
+        (b.0, b.0 + 2),
+        (b.1, b.1 + 1),
+        regions.region,
+        regions.level,
+    );
+    fill(
+        ctx,
+        (b.0 + 1, a.0),
+        (a.1 + 1, b.1),
+        regions.region,
+        regions.level,
+    );
+
+    let end_base = ctx.ramp_end_block;
+    for (tile, origin) in [
+        (end_base + 5, (a.0 - 2, a.1 - 3)),
+        (end_base + 6, (a.0 - 1, a.1 - 1)),
+        (end_base + 8, (b.0 - 3, b.1 - 2)),
+        (end_base + 9, (b.0 - 1, b.1 - 1)),
+    ] {
+        stamp_iso_block(ctx, tile, origin, regions.lower_region, Some(regions.level));
+    }
+
+    // The diagonal, then the two approaches. One face lower than the other
+    // corner's throughout.
+    for k in 0..FLAT_RUN_DEPTH {
+        let cell = ctx.grid.cell_native_mut(b.0 - k, a.1 - k);
+        cell.slope = 5;
+        cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+        cell.tile = ctx.ids.ramp_base + 4;
+        cell.sub_tile = 0;
+    }
+    for k in 0..FLAT_RUN_DEPTH {
+        for j in 0..(span_x - 3 + k) {
+            let cell = ctx.grid.cell_native_mut(a.0 - j - 3, a.1 - k);
+            cell.slope = 2;
+            cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+            cell.tile = ctx.ids.ramp_base + 1;
+            cell.sub_tile = 0;
+        }
+    }
+    for k in 0..FLAT_RUN_DEPTH {
+        for j in 0..(span_y - 3 + k) {
+            let cell = ctx.grid.cell_native_mut(b.0 - k, b.1 - j - 3);
+            cell.slope = 1;
+            cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+            cell.tile = ctx.ids.ramp_base;
+            cell.sub_tile = 0;
+        }
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1915,5 +2031,128 @@ mod tests {
             3,
             "along-Y depth 1 reaches one further"
         );
+    }
+
+    #[test]
+    fn the_reflected_corner_takes_four_end_blocks() {
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_corner_ramp_reflected(
+            &mut ctx,
+            regions(),
+            (52, 46),
+            (44, 54)
+        ));
+        assert_eq!(
+            blocks.seen.borrow().as_slice(),
+            &[END_BASE + 5, END_BASE + 6, END_BASE + 8, END_BASE + 9],
+            "four stamps, with a gap at +7"
+        );
+        let mut fresh = RmgRng::new(1);
+        assert_eq!(ctx.rng.next_u32(), fresh.next_u32(), "corners never draw");
+    }
+
+    #[test]
+    fn the_reflected_corner_guards_read_the_other_way_round() {
+        // Its spans are a.x - b.x and b.y - a.y, so a corner the first routine
+        // would accept can be too tight here and vice versa.
+        for (a, b, expected) in [
+            ((52, 46), (44, 54), true),
+            ((46, 46), (44, 54), false),
+            ((52, 52), (44, 54), false),
+        ] {
+            let (mut grid, mut scratch) = harness();
+            let ids = ids();
+            let blocks = RecordingBlocks::new();
+            let mut rng = RmgRng::new(1);
+            let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+            let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+            let carved = carve_corner_ramp_reflected(&mut ctx, regions(), a, b);
+            assert_eq!(carved, expected, "a = {a:?}, b = {b:?}");
+            if !carved {
+                assert!(blocks.seen.borrow().is_empty(), "refusal stamped");
+            }
+        }
+    }
+
+    #[test]
+    fn the_reflected_corner_fills_five_rectangles() {
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        // Seed the interior probe with the other plateau so the assertion has
+        // something to undo.
+        scratch.get_mut(48, 50).region = LOWER;
+        grid.get_mut(48, 50).expect("native cell").level = LOWER_LEVEL;
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_corner_ramp_reflected(
+            &mut ctx,
+            regions(),
+            (52, 46),
+            (44, 54)
+        ));
+        assert_eq!(ctx.scratch.get(50, 40).region, LOWER, "outer lower id");
+        assert_eq!(
+            ctx.grid.cell_native(50, 40).level,
+            LOWER_LEVEL,
+            "outer level"
+        );
+        assert_eq!(ctx.scratch.get(48, 50).region, REGION, "interior id");
+        assert_eq!(
+            ctx.grid.cell_native(48, 50).level,
+            REGION_LEVEL,
+            "interior level"
+        );
+    }
+
+    #[test]
+    fn the_reflected_corner_lays_the_faces_one_lower() {
+        // 5/2/1 and +4/+1/+0 against the other corner's 6/3/2 and +5/+2/+1.
+        // The two corners lay adjacent faces, not the same ones.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_corner_ramp_reflected(
+            &mut ctx,
+            regions(),
+            (52, 46),
+            (44, 54)
+        ));
+        let d = ctx.grid.cell_native(43, 45);
+        assert_eq!((d.slope, d.tile, d.level), (5, 204, 6), "diagonal");
+        let h = ctx.grid.cell_native(49, 46);
+        assert_eq!((h.slope, h.tile, h.level), (2, 201, 7), "along-X approach");
+        let v = ctx.grid.cell_native(44, 51);
+        assert_eq!((v.slope, v.tile, v.level), (1, 200, 7), "along-Y approach");
+    }
+
+    #[test]
+    fn the_reflected_corner_approaches_both_grow() {
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_corner_ramp_reflected(
+            &mut ctx,
+            regions(),
+            (52, 46),
+            (44, 54)
+        ));
+        // Along-X at depth 1 reaches one cell further west than at depth 0.
+        assert_eq!(ctx.grid.cell_native(44, 45).slope, 2, "along-X depth 1");
+        // Along-Y at depth 1 reaches one row further north.
+        assert_eq!(ctx.grid.cell_native(43, 45).slope, 5, "diagonal survives");
+        assert_eq!(ctx.grid.cell_native(43, 46).slope, 1, "along-Y depth 1");
     }
 }
