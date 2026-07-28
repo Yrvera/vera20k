@@ -366,14 +366,15 @@ mod tests {
         );
         assert_eq!(out.len(), 3, "3 checkboxes");
 
-        // Rail-only chrome: only the 2 VISIBLE trackbars (GameSpeed/ScrollRate)
-        // emit a rail; the hidden VisualDetails trackbar is skipped.
-        let rail_only = ControlChrome {
-            trackbar_rail: Some(entry(200.0, 18.0)),
+        // Frame-only chrome: only the 2 VISIBLE trackbars
+        // (GameSpeed/ScrollRate) emit the shared two-frame composition; the
+        // hidden VisualDetails trackbar is skipped.
+        let frame_only = ControlChrome {
+            trackbar_rail: Some(entry(132.0, 25.0)),
             ..Default::default()
         };
         let out = build_in_game_options_instances(
-            &rail_only,
+            &frame_only,
             800,
             600,
             test_anchor(),

@@ -207,7 +207,7 @@ fn apply_resolved_skirmish_launch_session(
     recount_house_owned_counts(sim);
 
     let starts = waypoints::multiplayer_start_waypoints(&map_data.waypoints);
-    let assignments = assign_launch_starts(&slots, &starts, resolved_terrain);
+    let assignments = assign_launch_starts(session, &starts, resolved_terrain);
     // Session start-slot -> house table: filled after the random-assignment
     // draws, before tick 0 — lockstep state (hashed + serialized).
     sim.session.start_slot_houses.clear();
@@ -429,34 +429,43 @@ fn recount_house_owned_counts(sim: &mut Simulation) {
     }
 }
 
-fn assign_launch_starts(
-    slots: &[NormalizedSkirmishSlot],
+/// Assign participants to original map waypoints without terrain fallback.
+///
+/// Explicit requests reserve their waypoint first. Remaining `Auto` requests
+/// then take the first still-free waypoint in participant order. This helper
+/// intentionally performs no randomized/distance selection and consumes no RNG.
+pub(crate) fn original_launch_start_assignments(
+    session: &SkirmishLaunchSession,
     starts: &[Waypoint],
-    resolved_terrain: &ResolvedTerrainGrid,
 ) -> Vec<(usize, Waypoint)> {
-    let mut assignments: Vec<Option<Waypoint>> = vec![None; slots.len()];
+    let requested_starts: Vec<LaunchStartPosition> = std::iter::once(session.local.start_position)
+        .chain(
+            session
+                .opponents
+                .iter()
+                .map(|opponent| opponent.start_position),
+        )
+        .collect();
+    let mut assignments: Vec<Option<Waypoint>> = vec![None; requested_starts.len()];
     let mut used_start_indices = BTreeSet::new();
-    let mut reserved_cells: BTreeSet<(u16, u16)> =
-        starts.iter().map(|start| (start.rx, start.ry)).collect();
-    let mut next_fallback_index = u32::MAX;
 
-    for (idx, slot) in slots.iter().enumerate() {
-        let LaunchStartPosition::Position(position) = slot.start_position else {
+    for (idx, requested) in requested_starts.iter().enumerate() {
+        let LaunchStartPosition::Position(position) = requested else {
             continue;
         };
-        let Some(start) = starts.iter().find(|start| start.index == position as u32) else {
+        let Some(start) = starts
+            .iter()
+            .find(|start| start.index == u32::from(*position))
+        else {
             continue;
         };
         if used_start_indices.insert(start.index) {
             assignments[idx] = Some(*start);
-            reserved_cells.insert((start.rx, start.ry));
-        } else {
-            continue;
         }
     }
 
-    for (idx, slot) in slots.iter().enumerate() {
-        if assignments[idx].is_some() || slot.start_position != LaunchStartPosition::Auto {
+    for (idx, requested) in requested_starts.iter().enumerate() {
+        if assignments[idx].is_some() || *requested != LaunchStartPosition::Auto {
             continue;
         }
         let Some(start) = starts
@@ -466,10 +475,33 @@ fn assign_launch_starts(
             continue;
         };
         used_start_indices.insert(start.index);
-        reserved_cells.insert((start.rx, start.ry));
         assignments[idx] = Some(*start);
     }
 
+    assignments
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, start)| start.map(|start| (idx, start)))
+        .collect()
+}
+
+fn assign_launch_starts(
+    session: &SkirmishLaunchSession,
+    starts: &[Waypoint],
+    resolved_terrain: &ResolvedTerrainGrid,
+) -> Vec<(usize, Waypoint)> {
+    let slot_count = 1 + session.opponents.len();
+    let original_assignments = original_launch_start_assignments(session, starts);
+    let mut assignments: Vec<Option<Waypoint>> = vec![None; slot_count];
+    for (slot_idx, start) in original_assignments {
+        if let Some(assignment) = assignments.get_mut(slot_idx) {
+            *assignment = Some(start);
+        }
+    }
+
+    let mut reserved_cells: BTreeSet<(u16, u16)> =
+        starts.iter().map(|start| (start.rx, start.ry)).collect();
+    let mut next_fallback_index = u32::MAX;
     for start in &mut assignments {
         if start.is_some() {
             continue;
@@ -1095,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_launch_starts_places_explicit_slots_before_auto_slots() {
+    fn original_launch_start_assignments_preserve_explicit_and_auto_slot_identity() {
         let mut session = test_session();
         session.opponents.push(SkirmishAiSlot {
             country: LaunchCountry::Cuba,
@@ -1106,7 +1138,6 @@ mod tests {
             team: LaunchTeam::None,
             difficulty: Default::default(),
         });
-        let slots = normalized_launch_slots(&session);
         let starts = [
             Waypoint {
                 index: 0,
@@ -1125,8 +1156,7 @@ mod tests {
             },
         ];
 
-        let terrain = test_terrain(16, 16);
-        let assignments = assign_launch_starts(&slots, &starts, &terrain);
+        let assignments = original_launch_start_assignments(&session, &starts);
 
         assert_eq!(assignments[0], (0, starts[1]));
         assert_eq!(assignments[1], (1, starts[2]));
@@ -1137,7 +1167,6 @@ mod tests {
     fn assign_launch_starts_generates_fallback_for_deficient_start_pool() {
         let mut session = test_session();
         session.opponents[0].start_position = LaunchStartPosition::Position(3);
-        let slots = normalized_launch_slots(&session);
         let starts = [Waypoint {
             index: 3,
             rx: 30,
@@ -1145,10 +1174,12 @@ mod tests {
         }];
         let terrain = test_terrain(8, 8);
 
-        let assignments = assign_launch_starts(&slots, &starts, &terrain);
+        let original = original_launch_start_assignments(&session, &starts);
+        let assignments = assign_launch_starts(&session, &starts, &terrain);
 
+        assert_eq!(original, vec![(0, starts[0])]);
         assert_eq!(assignments.len(), 2);
-        assert_eq!(assignments[0], (0, starts[0]));
+        assert_eq!(assignments[0], original[0]);
         assert_eq!(
             assignments[1],
             (
@@ -1164,7 +1195,7 @@ mod tests {
 
     #[test]
     fn assign_launch_starts_rejects_fallback_with_blocked_cell_inside_8x8_rect() {
-        let slots = normalized_launch_slots(&test_session());
+        let session = test_session();
         let starts = [Waypoint {
             index: 3,
             rx: 30,
@@ -1176,7 +1207,7 @@ mod tests {
         blocked.base_speed_costs.track = Some(0);
         blocked.zone_type = zone_class::IMPASSABLE;
 
-        let assignments = assign_launch_starts(&slots, &starts, &terrain);
+        let assignments = assign_launch_starts(&session, &starts, &terrain);
 
         assert_eq!(assignments.len(), 2);
         assert_eq!(assignments[0], (0, starts[0]));
@@ -1266,7 +1297,7 @@ mod tests {
         ];
         let terrain = test_terrain(16, 16);
 
-        let assignments = assign_launch_starts(&slots, &starts, &terrain);
+        let assignments = assign_launch_starts(&session, &starts, &terrain);
         let alliances = launch_alliance_map(&roster_with_neutral_and_playable(), &slots);
 
         assert_eq!(assignments[0], (0, starts[1]));

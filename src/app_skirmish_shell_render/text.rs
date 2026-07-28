@@ -49,13 +49,6 @@ pub(super) fn checkbox_label(id: SkirmishCheckboxId) -> (&'static str, &'static 
     }
 }
 
-pub(super) fn start_position_label(pos: crate::ui::main_menu::StartPosition) -> String {
-    match pos {
-        crate::ui::main_menu::StartPosition::Auto => "Random".to_string(),
-        crate::ui::main_menu::StartPosition::Position(idx) => (idx + 1).to_string(),
-    }
-}
-
 fn team_label_spec(team: i32) -> (&'static str, &'static str) {
     match team {
         0 => ("LETTER_A", "A"),
@@ -688,7 +681,7 @@ pub(super) fn build_shell_text_draws(
     push_combo_face_label_draw(
         &mut shell_draws,
         state,
-        &start_position_label(shell.player_start_position),
+        &combo_item_label(state, SkirmishComboItem::Start(shell.player_start_position)),
         layout.rows.start_combos[0],
         &covering_overlays,
     );
@@ -740,7 +733,7 @@ pub(super) fn build_shell_text_draws(
         push_combo_face_label_draw_with_color(
             &mut shell_draws,
             state,
-            &start_position_label(opponent.start_position),
+            &combo_item_label(state, SkirmishComboItem::Start(opponent.start_position)),
             layout.rows.start_combos[row],
             sibling_text_color,
             &covering_overlays,

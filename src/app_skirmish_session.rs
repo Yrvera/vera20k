@@ -25,14 +25,24 @@ use crate::skirmish_persistence::{
     SkirmishPersistedSnapshot, read_skirmish_snapshot,
 };
 use crate::ui::main_menu::SkirmishCountry;
-use crate::ui::skirmish_shell::{SkirmishAiRowType, SkirmishShellState, SkirmishTrackbarId};
+use crate::ui::skirmish_shell::{
+    PlayerNameEditState, SkirmishAiRowType, SkirmishShellState, SkirmishTrackbarId,
+};
 
 const RA2MD_INI: &str = "RA2MD.INI";
 const RANDOM_ITEM_DATA: i32 = -2;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LocalMultiplayerPreferences {
+    player_name: Option<String>,
+    country: Option<SkirmishCountry>,
+    color_index: Option<usize>,
+}
+
 /// App-owned state whose lifetime matches the front-end process, not one map.
 pub(crate) struct OfflineSkirmishRuntime {
     snapshot: SkirmishPersistedSnapshot,
+    local_preferences: LocalMultiplayerPreferences,
     scenario_rng: SimRng,
     ini_path: Option<PathBuf>,
     cooperative_registry: CooperativeRegistry,
@@ -70,10 +80,11 @@ impl OfflineSkirmishRuntime {
             .map(cooperative_country_roster_from_assets)
             .unwrap_or_else(stock_cooperative_country_roster);
         let ini_path = ra2_dir.map(|root| root.join(RA2MD_INI));
-        let snapshot = load_snapshot(ini_path.as_deref(), defaults);
+        let (snapshot, local_preferences) = load_persistence(ini_path.as_deref(), defaults);
 
         Self {
             snapshot,
+            local_preferences,
             scenario_rng,
             ini_path,
             cooperative_registry,
@@ -122,6 +133,18 @@ impl OfflineSkirmishRuntime {
         state.build_off_ally = self.snapshot.build_off_ally;
         state.mcv_redeploy = self.snapshot.mcv_repacks;
         state.crates = self.snapshot.crates_appear;
+
+        if let Some(player_name) = self.local_preferences.player_name.as_deref() {
+            state.player_name_edit = PlayerNameEditState::with_name(player_name);
+        }
+        if let Some(country) = self.local_preferences.country {
+            state.player_country = country;
+            state.player_country_random = false;
+        }
+        if let Some(color_index) = self.local_preferences.color_index {
+            state.player_color_index = color_index;
+            state.player_color_claimed = true;
+        }
 
         for (opponent, persisted) in state.opponents.iter_mut().zip(self.snapshot.slots) {
             opponent.row_type = ai_row_type_from_persisted(persisted.row_type);
@@ -468,32 +491,84 @@ pub(crate) fn skirmish_global_defaults(state: &SkirmishShellState) -> SkirmishGl
     }
 }
 
-fn load_snapshot(
+fn load_persistence(
     path: Option<&Path>,
     defaults: SkirmishGlobalDefaults,
-) -> SkirmishPersistedSnapshot {
+) -> (SkirmishPersistedSnapshot, LocalMultiplayerPreferences) {
+    let fallback = || {
+        (
+            SkirmishPersistedSnapshot::from_global_defaults(defaults),
+            LocalMultiplayerPreferences::default(),
+        )
+    };
     let Some(path) = path else {
-        return SkirmishPersistedSnapshot::from_global_defaults(defaults);
+        return fallback();
     };
     match std::fs::read(path) {
-        Ok(bytes) => read_skirmish_snapshot(&bytes, defaults).unwrap_or_else(|err| {
-            log::warn!(
-                "Could not parse Skirmish settings from {}: {err}",
-                path.display()
-            );
-            SkirmishPersistedSnapshot::from_global_defaults(defaults)
-        }),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            SkirmishPersistedSnapshot::from_global_defaults(defaults)
+        Ok(bytes) => {
+            let snapshot = read_skirmish_snapshot(&bytes, defaults).unwrap_or_else(|err| {
+                log::warn!(
+                    "Could not parse Skirmish settings from {}: {err}",
+                    path.display()
+                );
+                SkirmishPersistedSnapshot::from_global_defaults(defaults)
+            });
+            (snapshot, read_local_multiplayer_preferences(&bytes))
         }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => fallback(),
         Err(err) => {
             log::warn!(
                 "Could not read Skirmish settings from {}: {err}",
                 path.display()
             );
-            SkirmishPersistedSnapshot::from_global_defaults(defaults)
+            fallback()
         }
     }
+}
+
+fn read_local_multiplayer_preferences(bytes: &[u8]) -> LocalMultiplayerPreferences {
+    let Ok(ini) = IniFile::from_bytes(bytes) else {
+        return LocalMultiplayerPreferences::default();
+    };
+    let Some(section) = ini.section("MultiPlayer") else {
+        return LocalMultiplayerPreferences::default();
+    };
+
+    let player_name = section.get("Handle").and_then(decode_multiplayer_handle);
+    let country = section.get("Side").and_then(|side| {
+        SkirmishCountry::ALL
+            .into_iter()
+            .find(|country| country.country_name().eq_ignore_ascii_case(side.trim()))
+    });
+    let color_index = section
+        .get_i32("Color")
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value < crate::skirmish_launch::HOUSE_COLOR_COUNT);
+
+    LocalMultiplayerPreferences {
+        player_name,
+        country,
+        color_index,
+    }
+}
+
+fn decode_multiplayer_handle(value: &str) -> Option<String> {
+    let mut bytes = Vec::new();
+    for part in value.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        bytes.push(u8::from_str_radix(part, 16).ok()?);
+    }
+    if bytes.is_empty() {
+        return None;
+    }
+    if let Some(nul) = bytes.iter().position(|byte| *byte == 0) {
+        bytes.truncate(nul);
+    }
+    let decoded = String::from_utf8_lossy(&bytes).into_owned();
+    (!decoded.is_empty()).then_some(decoded)
 }
 
 fn is_cooperative_mode(session: &SkirmishLaunchSession) -> bool {
@@ -652,6 +727,7 @@ mod tests {
                 .expect("preconstructed Cooperative records");
         OfflineSkirmishRuntime {
             snapshot: SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            local_preferences: LocalMultiplayerPreferences::default(),
             scenario_rng,
             ini_path: None,
             cooperative_registry,
@@ -664,6 +740,7 @@ mod tests {
     fn runtime(snapshot: SkirmishPersistedSnapshot, seed: u32) -> OfflineSkirmishRuntime {
         OfflineSkirmishRuntime {
             snapshot,
+            local_preferences: LocalMultiplayerPreferences::default(),
             scenario_rng: SimRng::new(u64::from(seed)),
             ini_path: None,
             cooperative_registry: CooperativeRegistry::default(),
@@ -722,6 +799,53 @@ mod tests {
 
         runtime.pack_shell_snapshot(&shell, &[map()], &[mode()]);
         assert_eq!(runtime.snapshot().slots[0], expected_slot);
+    }
+
+    #[test]
+    fn retail_multiplayer_preferences_decode_into_local_shell_state() {
+        let preferences = read_local_multiplayer_preferences(
+            b"[MultiPlayer]\n\
+              Handle=5b,4e,65,77,20,50,6c,61,79,65,72,5d,\n\
+              Color=2\n\
+              ColorEx=-1\n\
+              Side=Americans\n\
+              SideEx=-1\n",
+        );
+        assert_eq!(
+            preferences,
+            LocalMultiplayerPreferences {
+                player_name: Some("[New Player]".to_string()),
+                country: Some(SkirmishCountry::America),
+                color_index: Some(2),
+            }
+        );
+
+        let mut runtime = runtime(
+            SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            7,
+        );
+        runtime.local_preferences = preferences;
+        let mut shell = SkirmishShellState::default();
+        runtime.hydrate_shell(&mut shell, &[map()], &[mode()]);
+
+        assert_eq!(shell.player_name_edit.text, "[New Player]");
+        assert_eq!(shell.player_country, SkirmishCountry::America);
+        assert!(!shell.player_country_random);
+        assert_eq!(shell.player_color_index, 2);
+        assert!(shell.player_color_claimed);
+    }
+
+    #[test]
+    fn malformed_multiplayer_preferences_fall_back_independently() {
+        let preferences = read_local_multiplayer_preferences(
+            b"[MultiPlayer]\nHandle=not-hex,\nColor=99\nSide=UnknownCountry\n",
+        );
+        assert_eq!(preferences, LocalMultiplayerPreferences::default());
+        assert_eq!(decode_multiplayer_handle(""), None);
+        assert_eq!(
+            decode_multiplayer_handle("41,00,42,"),
+            Some("A".to_string())
+        );
     }
 
     #[test]

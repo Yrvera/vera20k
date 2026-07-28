@@ -9,7 +9,7 @@ use crate::render::bit_font::BitFont;
 use crate::render::skirmish_shell_chrome::{
     ControlChrome, SkirmishShellChromeAtlas, SkirmishShellChromeEntry,
 };
-use crate::rules::color_scheme::{ColorSchemeEntry, hsv_to_rgb, scheme_for_priority};
+use crate::rules::color_scheme::ColorSchemeEntry;
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_DROPDOWN_SCROLLBAR_BUTTON_H, DropdownScrollbarPart, RectPx,
     SkirmishCheckboxId, SkirmishComboId, SkirmishComboItem, SkirmishShellLayout,
@@ -175,25 +175,29 @@ pub(super) fn scrollbar_arrow_entry(
     }
 }
 
-/// Resolve a lobby color slot (0..=7) to its swatch RGB.
+/// Resolve a normal Skirmish lobby color slot to its fixed owner-draw swatch.
 ///
-/// The 8 lobby color slots present the `[Colors]` schemes in priority order: the
-/// slot index IS the color priority. `scheme_for_priority` applies the priority
-/// LUT + scheme-doubling, then `hsv_to_rgb` runs the same 6-sextant integer
-/// conversion the loading-screen backing uses — so a lobby swatch and the loading
-/// backing match for a given slot.
-///
-/// Falls back to the legacy synthesized ramp only when the `[Colors]` list is empty
-/// (rules not yet loaded), so the swatch still renders rather than going black; in a
-/// normal skirmish lobby the scheme list is always populated.
-pub(super) fn house_color_tint(color_schemes: &[ColorSchemeEntry], index: usize) -> [f32; 3] {
-    if let Some(scheme) = scheme_for_priority(color_schemes, index as i32) {
-        let [r, g, b] = hsv_to_rgb(scheme.hsv);
-        return [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
-    }
-    // No [Colors] loaded yet (rules not ready): neutral grey so the swatch still
-    // draws rather than going black. A populated lobby always hits the path above.
-    [0.5, 0.5, 0.5]
+/// The active native initializer copies these eight packed RGB values from
+/// `0x008316A8`; gameplay `[Colors]` schemes do not feed this UI table. The
+/// existing parameter remains part of the renderer seam but deliberately has no
+/// authority here.
+const SKIRMISH_SWATCH_RGB: [[u8; 3]; 8] = [
+    [221, 226, 13],
+    [255, 25, 25],
+    [42, 116, 226],
+    [62, 209, 46],
+    [255, 160, 25],
+    [50, 215, 230],
+    [149, 40, 189],
+    [255, 154, 235],
+];
+
+pub(super) fn house_color_tint(_color_schemes: &[ColorSchemeEntry], index: usize) -> [f32; 3] {
+    let [r, g, b] = SKIRMISH_SWATCH_RGB
+        .get(index)
+        .copied()
+        .unwrap_or([96, 96, 96]);
+    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
 }
 
 pub(super) fn paint_trackbar_plaque(
@@ -291,15 +295,22 @@ pub(super) fn paint_control(
             }
         }
         ControlPaint::Trackbar { rect, thumb_px } => {
-            // Emission order preserved byte-for-byte: rail → plaque(mid, left,
-            // right) → thumb, at the same depths as the pre-seam emitter.
-            if let Some(rail) = chrome.trackbar_rail {
-                push_entry_native(out, rail, rect.x, rect.y, SHELL_CONTROL_DEPTH);
-            }
+            // The active owner-draw callback blits plaque and thumb art before
+            // drawing its two adjacent border-2 primitive frames. The frame
+            // entry includes the native two-pixel outside expansion.
             paint_trackbar_plaque(out, chrome, rect, SHELL_CONTROL_DEPTH);
             if let Some(thumb) = chrome.trackbar_thumb_trakgrip {
                 let thumb_rect = trackbar_thumb_rect(rect, thumb_px);
                 push_entry(out, thumb, thumb_rect, SHELL_CONTROL_DEPTH - 0.00002);
+            }
+            if let Some(frame) = chrome.trackbar_rail {
+                push_entry_native(
+                    out,
+                    frame,
+                    rect.x - 2,
+                    rect.y - 2,
+                    SHELL_CONTROL_DEPTH - 0.00003,
+                );
             }
         }
         ControlPaint::Combo {
@@ -695,75 +706,37 @@ pub(super) fn dropdown_selected_row_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::color_scheme::backing_rgb_for_priority;
-
-    /// The reachable entries of the retail rulesmd `[Colors]` list, in order — same
-    /// fixture rationale as the color_scheme.rs tests. Slot/priority indices land on
-    /// the scattered scheme entries via the priority LUT + doubling.
-    fn retail_schemes() -> Vec<ColorSchemeEntry> {
-        let raw: &[(&str, [u8; 3])] = &[
-            ("LightGold", [25, 255, 255]),
-            ("Gold", [43, 239, 255]),
-            ("LightGrey", [0, 0, 240]),
-            ("Grey", [0, 0, 131]),
-            ("Red", [20, 255, 184]),
-            ("DarkRed", [0, 230, 255]),
-            ("Orange", [25, 230, 255]),
-            ("Magenta", [221, 102, 255]),
-            ("Purple", [201, 201, 189]),
-            ("LightBlue", [119, 143, 255]),
-            ("DarkBlue", [153, 214, 212]),
-            ("NeonBlue", [185, 156, 238]),
-            ("DarkSky", [131, 200, 230]),
-            ("Green", [104, 241, 195]),
-            ("DarkGreen", [81, 200, 210]),
-        ];
-        raw.iter()
-            .map(|(name, hsv)| ColorSchemeEntry {
-                name: name.to_string(),
-                hsv: *hsv,
-            })
-            .collect()
-    }
 
     #[test]
-    fn swatch_matches_loading_backing_for_every_slot() {
-        // The lobby swatch and the loading-screen progress-bar backing must agree
-        // color-for-color for each of the 8 slots — this is the parity that broke.
-        let schemes = retail_schemes();
-        for slot in 0..8usize {
-            let rgb = backing_rgb_for_priority(&schemes, slot as i32).unwrap();
+    fn skirmish_swatches_match_the_native_fixed_table() {
+        for (slot, rgb) in SKIRMISH_SWATCH_RGB.into_iter().enumerate() {
             let expected = [
                 rgb[0] as f32 / 255.0,
                 rgb[1] as f32 / 255.0,
                 rgb[2] as f32 / 255.0,
             ];
-            assert_eq!(house_color_tint(&schemes, slot), expected, "slot {slot}");
+            assert_eq!(house_color_tint(&[], slot), expected, "slot {slot}");
         }
     }
 
     #[test]
-    fn slot_one_is_red_slot_two_is_blue() {
-        // Priority order: slot 1 = DarkRed (red-dominant), slot 2 = DarkBlue
-        // (blue-dominant), resolved from the [Colors] HSV via the priority LUT.
-        let schemes = retail_schemes();
-        let red = house_color_tint(&schemes, 1);
-        assert!(
-            red[0] > red[1] && red[0] > red[2],
-            "slot 1 red-dominant: {red:?}"
-        );
-        let blue = house_color_tint(&schemes, 2);
-        assert!(
-            blue[2] > blue[0] && blue[2] > blue[1],
-            "slot 2 blue-dominant: {blue:?}"
+    fn gameplay_color_schemes_cannot_change_skirmish_ui_swatches() {
+        let deliberately_different = [ColorSchemeEntry {
+            name: "NotTheLobbySwatch".to_string(),
+            hsv: [0, 0, 0],
+        }];
+        assert_eq!(
+            house_color_tint(&deliberately_different, 2),
+            house_color_tint(&[], 2)
         );
     }
 
     #[test]
-    fn empty_schemes_fall_back_to_neutral_grey() {
-        // Defensive path: with no [Colors] loaded the swatch still renders a color.
-        let tint = house_color_tint(&[], 0);
-        assert!(tint.iter().any(|&channel| channel > 0.0));
+    fn out_of_range_swatch_uses_native_observer_grey() {
+        assert_eq!(
+            house_color_tint(&[], 8),
+            [96.0 / 255.0, 96.0 / 255.0, 96.0 / 255.0]
+        );
     }
 
     #[test]
@@ -865,16 +838,11 @@ mod tests {
     }
 
     #[test]
-    fn trackbar_paint_seam_emits_rail_plaque_thumb_in_native_order() {
-        // Draw-list assertion (Slice 4 §1.4): the trackbar seam emits rail →
-        // plaque(mid, left, right) → thumb in the exact order/positions/depths of
-        // the pre-seam push_trackbar_instances emitter, across min/mid/max thumb
-        // offsets. Geometry is pinned via the same layout helpers the emitter uses,
-        // so the assertion tracks the helpers rather than hardcoding plaque math.
-        let rail = SkirmishShellChromeEntry {
+    fn trackbar_paint_seam_emits_plaque_thumb_and_native_frames_in_order() {
+        let frame = SkirmishShellChromeEntry {
             uv_origin: [0.01, 0.02],
             uv_size: [0.03, 0.04],
-            pixel_size: [200.0, 18.0],
+            pixel_size: [132.0, 25.0],
         };
         let mid = SkirmishShellChromeEntry {
             uv_origin: [0.11, 0.12],
@@ -897,7 +865,7 @@ mod tests {
             pixel_size: [12.0, 18.0],
         };
         let chrome = ControlChrome {
-            trackbar_rail: Some(rail),
+            trackbar_rail: Some(frame),
             trackbar_plaque_mid_trofm: Some(mid),
             trackbar_plaque_left_trofl: Some(left),
             trackbar_plaque_right_trofr: Some(right),
@@ -910,42 +878,43 @@ mod tests {
         for thumb_px in [0, 68, 137] {
             let mut out = Vec::new();
             paint_control(&mut out, &chrome, ControlPaint::Trackbar { rect, thumb_px });
-            assert_eq!(out.len(), 5, "rail + plaque(mid, left, right) + thumb");
+            assert_eq!(out.len(), 5, "plaque(mid, left, right) + thumb + frame");
 
-            // 0: rail — native at the control origin, SHELL_CONTROL_DEPTH.
-            assert_eq!(out[0].position, [rect.x as f32, rect.y as f32]);
-            assert_eq!(out[0].size, rail.pixel_size);
-            assert_eq!(out[0].uv_origin, rail.uv_origin);
+            // 0: plaque mid — scaled to the plaque rect.
+            assert_eq!(out[0].position, [plaque.x as f32, plaque.y as f32]);
+            assert_eq!(out[0].size, [plaque.w as f32, plaque.h as f32]);
+            assert_eq!(out[0].uv_origin, mid.uv_origin);
             assert_eq!(out[0].depth, SHELL_CONTROL_DEPTH);
 
-            // 1: plaque mid — scaled to the plaque rect, same depth.
+            // 1: plaque left — native at the plaque origin.
             assert_eq!(out[1].position, [plaque.x as f32, plaque.y as f32]);
-            assert_eq!(out[1].size, [plaque.w as f32, plaque.h as f32]);
-            assert_eq!(out[1].uv_origin, mid.uv_origin);
-            assert_eq!(out[1].depth, SHELL_CONTROL_DEPTH);
+            assert_eq!(out[1].size, left.pixel_size);
+            assert_eq!(out[1].uv_origin, left.uv_origin);
+            assert_eq!(out[1].depth, SHELL_CONTROL_DEPTH - 0.00001);
 
-            // 2: plaque left — native at the plaque origin, one tick under.
-            assert_eq!(out[2].position, [plaque.x as f32, plaque.y as f32]);
-            assert_eq!(out[2].size, left.pixel_size);
-            assert_eq!(out[2].uv_origin, left.uv_origin);
-            assert_eq!(out[2].depth, SHELL_CONTROL_DEPTH - 0.00001);
-
-            // 3: plaque right — native, right-aligned in the plaque, one tick under.
+            // 2: plaque right — native and right-aligned in the plaque.
             let right_w = right.pixel_size[0].round() as i32;
             assert_eq!(
-                out[3].position,
+                out[2].position,
                 [(plaque.x + plaque.w - right_w) as f32, plaque.y as f32]
             );
-            assert_eq!(out[3].size, right.pixel_size);
-            assert_eq!(out[3].uv_origin, right.uv_origin);
-            assert_eq!(out[3].depth, SHELL_CONTROL_DEPTH - 0.00001);
+            assert_eq!(out[2].size, right.pixel_size);
+            assert_eq!(out[2].uv_origin, right.uv_origin);
+            assert_eq!(out[2].depth, SHELL_CONTROL_DEPTH - 0.00001);
 
-            // 4: thumb — follows thumb_px via trackbar_thumb_rect, two ticks under.
+            // 3: thumb — follows thumb_px via trackbar_thumb_rect.
             let thumb_rect = trackbar_thumb_rect(rect, thumb_px);
-            assert_eq!(out[4].position, [thumb_rect.x as f32, thumb_rect.y as f32]);
-            assert_eq!(out[4].size, [thumb_rect.w as f32, thumb_rect.h as f32]);
-            assert_eq!(out[4].uv_origin, thumb.uv_origin);
-            assert_eq!(out[4].depth, SHELL_CONTROL_DEPTH - 0.00002);
+            assert_eq!(out[3].position, [thumb_rect.x as f32, thumb_rect.y as f32]);
+            assert_eq!(out[3].size, [thumb_rect.w as f32, thumb_rect.h as f32]);
+            assert_eq!(out[3].uv_origin, thumb.uv_origin);
+            assert_eq!(out[3].depth, SHELL_CONTROL_DEPTH - 0.00002);
+
+            // 4: transparent two-frame composition, expanded two pixels around
+            // the owner-draw control and layered over the PCX edges.
+            assert_eq!(out[4].position, [(rect.x - 2) as f32, (rect.y - 2) as f32]);
+            assert_eq!(out[4].size, frame.pixel_size);
+            assert_eq!(out[4].uv_origin, frame.uv_origin);
+            assert_eq!(out[4].depth, SHELL_CONTROL_DEPTH - 0.00003);
         }
 
         // Missing entries → nothing emitted (matches the pre-seam `if let` guards).

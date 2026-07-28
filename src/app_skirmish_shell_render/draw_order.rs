@@ -16,9 +16,32 @@ pub(super) enum ParentBackgroundRole {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GenericBackgroundRole {
+    Mnscrns640,
+    MnscrnlLarge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LowerStripRole {
     Lwscrns640,
     LwscrnlLarge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ShellDialogChromeProfile {
+    SkirmishSetup0x102,
+    ChooseMap0x6b,
+    RandomMapSetup0x105,
+}
+
+impl ShellDialogChromeProfile {
+    pub(super) const fn draws_top_highlight(self) -> bool {
+        true
+    }
+
+    pub(super) const fn draws_map_button(self) -> bool {
+        matches!(self, Self::SkirmishSetup0x102)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +53,12 @@ pub enum SkirmishShellDrawRole {
     ChooseMapListbox,
     ChooseMapOwnerDrawButton,
     ChooseMapPreviewStatic,
+    RandomMapBackgroundMnscrns640,
+    RandomMapBackgroundMnscrnlLarge,
+    RandomMapModalBackdrop,
+    RandomMapOptionControl,
+    RandomMapOwnerDrawButton,
+    RandomMapPreviewStatic,
     ValidationModal,
     ValidationModalButton,
     LowerSideLwscrns,
@@ -64,6 +93,13 @@ pub(super) fn parent_background_role(layout: &SkirmishShellLayout) -> Option<Par
     }
 }
 
+pub(super) const fn generic_background_role(layout: &SkirmishShellLayout) -> GenericBackgroundRole {
+    match layout.screen.w {
+        640 => GenericBackgroundRole::Mnscrns640,
+        _ => GenericBackgroundRole::MnscrnlLarge,
+    }
+}
+
 pub(super) fn lower_strip_role(layout: &SkirmishShellLayout) -> LowerStripRole {
     match layout.screen.w {
         640 => LowerStripRole::Lwscrns640,
@@ -71,14 +107,11 @@ pub(super) fn lower_strip_role(layout: &SkirmishShellLayout) -> LowerStripRole {
     }
 }
 
-pub fn skirmish_shell_semantic_draw_order(
+fn push_base_shell_roles(
+    roles: &mut Vec<SkirmishShellDrawRole>,
     layout: &SkirmishShellLayout,
     overlay_frame10_active: bool,
-    preview_surface_available: bool,
-    start_marker_overlay_available: bool,
-    flag_count: usize,
-) -> Vec<SkirmishShellDrawRole> {
-    let mut roles = Vec::new();
+) {
     roles.push(SkirmishShellDrawRole::RightPanelTopSdtp);
     roles.extend(
         std::iter::repeat(SkirmishShellDrawRole::RightPanelTileSdbtnbkgd)
@@ -95,6 +128,29 @@ pub fn skirmish_shell_semantic_draw_order(
         LowerStripRole::Lwscrns640 => SkirmishShellDrawRole::LowerSideLwscrns,
         LowerStripRole::LwscrnlLarge => SkirmishShellDrawRole::LowerSideLwscrnl,
     });
+}
+
+fn push_steady_optional_roles(
+    roles: &mut Vec<SkirmishShellDrawRole>,
+    profile: ShellDialogChromeProfile,
+) {
+    if profile.draws_top_highlight() {
+        roles.push(SkirmishShellDrawRole::RightPanelTopHighlightSdtpFrame1);
+    }
+    if profile.draws_map_button() {
+        roles.push(SkirmishShellDrawRole::RightPanelMapButtonSdmpbtn);
+    }
+}
+
+pub fn skirmish_shell_semantic_draw_order(
+    layout: &SkirmishShellLayout,
+    overlay_frame10_active: bool,
+    preview_surface_available: bool,
+    start_marker_overlay_available: bool,
+    flag_count: usize,
+) -> Vec<SkirmishShellDrawRole> {
+    let mut roles = Vec::new();
+    push_base_shell_roles(&mut roles, layout, overlay_frame10_active);
     if let Some(role) = parent_background_role(layout) {
         roles.push(match role {
             ParentBackgroundRole::Mnscrns640 => SkirmishShellDrawRole::ParentBackgroundMnscrns640,
@@ -103,8 +159,7 @@ pub fn skirmish_shell_semantic_draw_order(
             }
         });
     }
-    roles.push(SkirmishShellDrawRole::RightPanelTopHighlightSdtpFrame1);
-    roles.push(SkirmishShellDrawRole::RightPanelMapButtonSdmpbtn);
+    push_steady_optional_roles(&mut roles, ShellDialogChromeProfile::SkirmishSetup0x102);
     roles.extend(std::iter::repeat(SkirmishShellDrawRole::OwnerDrawButton).take(3));
     if preview_surface_available {
         roles.push(SkirmishShellDrawRole::PreviewSurface);
@@ -118,17 +173,45 @@ pub fn skirmish_shell_semantic_draw_order(
 }
 
 pub fn choose_map_modal_semantic_draw_order(
+    layout: &SkirmishShellLayout,
     customize_battle_background_available: bool,
 ) -> Vec<SkirmishShellDrawRole> {
     let mut roles = Vec::new();
+    push_base_shell_roles(&mut roles, layout, false);
     if customize_battle_background_available {
         roles.push(SkirmishShellDrawRole::ChooseMapBackgroundCustomizeBattle800);
     } else {
         roles.push(SkirmishShellDrawRole::ChooseMapModalBackdrop);
     }
+    push_steady_optional_roles(&mut roles, ShellDialogChromeProfile::ChooseMap0x6b);
     roles.extend(std::iter::repeat(SkirmishShellDrawRole::ChooseMapListbox).take(2));
     roles.extend(std::iter::repeat(SkirmishShellDrawRole::ChooseMapOwnerDrawButton).take(3));
     roles.push(SkirmishShellDrawRole::ChooseMapPreviewStatic);
+    roles
+}
+
+pub fn random_map_setup_semantic_draw_order(
+    layout: &SkirmishShellLayout,
+    generic_background_available: bool,
+) -> Vec<SkirmishShellDrawRole> {
+    let mut roles = Vec::new();
+    push_base_shell_roles(&mut roles, layout, false);
+    if generic_background_available {
+        roles.push(match generic_background_role(layout) {
+            GenericBackgroundRole::Mnscrns640 => {
+                SkirmishShellDrawRole::RandomMapBackgroundMnscrns640
+            }
+            GenericBackgroundRole::MnscrnlLarge => {
+                SkirmishShellDrawRole::RandomMapBackgroundMnscrnlLarge
+            }
+        });
+    } else {
+        roles.push(SkirmishShellDrawRole::RandomMapModalBackdrop);
+    }
+    push_steady_optional_roles(&mut roles, ShellDialogChromeProfile::RandomMapSetup0x105);
+    roles.extend(std::iter::repeat(SkirmishShellDrawRole::RandomMapOptionControl).take(6));
+    roles.extend(std::iter::repeat(SkirmishShellDrawRole::RandomMapOwnerDrawButton).take(7));
+    roles.push(SkirmishShellDrawRole::RandomMapPreviewStatic);
     roles
 }
 

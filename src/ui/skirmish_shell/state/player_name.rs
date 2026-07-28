@@ -284,7 +284,9 @@ impl Default for SkirmishShellState {
             player_country_random: false,
             player_color_index: 0,
             player_color_claimed: true,
-            player_start_position: settings.start_position,
+            // Native population selects Random when the local row owns no
+            // numbered start reservation.
+            player_start_position: StartPosition::Auto,
             player_team: -2,
             starting_credits: options.starting_credits,
             game_speed: options.game_speed,
@@ -675,5 +677,13 @@ mod tests {
         s.map_label_reveal
             .start("NEW MAP", now + Duration::from_millis(500));
         assert_eq!(s.map_label_reveal.window().unwrap().count, 1);
+    }
+
+    #[test]
+    fn fresh_shell_starts_with_an_unreserved_random_position() {
+        assert_eq!(
+            SkirmishShellState::default().player_start_position,
+            StartPosition::Auto
+        );
     }
 }

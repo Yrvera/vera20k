@@ -8,12 +8,19 @@ use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShe
 use crate::ui::skirmish_shell::{RectPx, SkirmishShellLayout, SkirmishShellState};
 
 use super::draw_order::{
-    LowerStripRole, ParentBackgroundRole, lower_strip_role, parent_background_role,
+    LowerStripRole, ParentBackgroundRole, ShellDialogChromeProfile, lower_strip_role,
+    parent_background_role,
 };
 use super::{
     BUTTON_DISABLED_ALPHA, OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
     OWNERDRAW_BEVEL_LIGHT_RGB_FROM_PACKED_00C5BEA7, PRESSED_BUTTON_CONTENT_OFFSET_Y,
+    SHELL_LOWER_STRIP_DEPTH,
 };
+
+const RIGHT_PANEL_TOP_DEPTH: f32 = 0.00080;
+const RIGHT_PANEL_TILE_DEPTH: f32 = 0.00079;
+const RIGHT_PANEL_OVERLAY_DEPTH: f32 = 0.000785;
+const RIGHT_PANEL_BOTTOM_DEPTH: f32 = 0.00078;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ButtonPiece {
@@ -626,6 +633,101 @@ pub(super) fn sdmpbtn_rect(
     let x = layout.right_panel.top.x + layout.right_panel.top.w - w;
     let y = layout.right_panel.tile.y + layout.right_panel.tile.h - h;
     RectPx::new(x, y, w, h)
+}
+
+pub(super) fn push_right_panel_base_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &SkirmishShellLayout,
+    top_offset_x: i32,
+    overlay_frame10_active: bool,
+) {
+    if let Some(top) = atlas.right_panel_top_sdtp {
+        push_entry(
+            out,
+            top,
+            layout.right_panel.top.translate(top_offset_x, 0),
+            RIGHT_PANEL_TOP_DEPTH,
+        );
+    }
+    if let Some(tile) = atlas.right_panel_tile_sdbtnbkgd {
+        for row in 0..layout.right_panel.tile_count {
+            push_entry(
+                out,
+                tile,
+                RectPx::new(
+                    layout.right_panel.tile.x,
+                    layout.right_panel.tile.y + row * layout.right_panel.tile.h,
+                    layout.right_panel.tile.w,
+                    layout.right_panel.tile.h,
+                ),
+                RIGHT_PANEL_TILE_DEPTH,
+            );
+        }
+    }
+    if overlay_frame10_active {
+        if let Some(overlay) = atlas.right_panel_overlay_sdbtnanm_frame10 {
+            for row in 0..layout.right_panel.tile_count {
+                push_entry(
+                    out,
+                    overlay,
+                    right_panel_overlay_rect(layout, row, overlay),
+                    RIGHT_PANEL_OVERLAY_DEPTH,
+                );
+            }
+        }
+    }
+    if let Some(bottom) = atlas.right_panel_bottom_sdbtm {
+        push_entry_top_clipped_native(
+            out,
+            bottom,
+            layout.right_panel.bottom,
+            RIGHT_PANEL_BOTTOM_DEPTH,
+        );
+    }
+}
+
+pub(super) fn push_lower_strip_instance(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &SkirmishShellLayout,
+) {
+    if let Some(lower_strip) = lower_strip_entry(atlas, layout) {
+        push_entry(
+            out,
+            lower_strip,
+            lower_strip_rect(layout, lower_strip),
+            SHELL_LOWER_STRIP_DEPTH,
+        );
+    }
+}
+
+pub(super) fn push_steady_optional_chrome_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &SkirmishShellLayout,
+    profile: ShellDialogChromeProfile,
+) {
+    if profile.draws_top_highlight() {
+        if let Some(top_highlight) = atlas.right_panel_top_highlight_sdtp_frame1 {
+            push_entry(
+                out,
+                top_highlight,
+                layout.right_panel.top,
+                SHELL_LOWER_STRIP_DEPTH - 0.00001,
+            );
+        }
+    }
+    if profile.draws_map_button() {
+        if let Some(sdmpbtn) = atlas.sd_map_button {
+            push_entry(
+                out,
+                sdmpbtn,
+                sdmpbtn_rect(layout, sdmpbtn),
+                SHELL_LOWER_STRIP_DEPTH - 0.00002,
+            );
+        }
+    }
 }
 
 pub(super) fn right_panel_frame10_overlay_active(_shell: &SkirmishShellState) -> bool {

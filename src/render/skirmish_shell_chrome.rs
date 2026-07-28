@@ -18,6 +18,11 @@ const ATLAS_PADDING: u32 = 2;
 const OWNER_DRAW_FLAG_TRANSPARENT_RGB: [u8; 3] = [255, 0, 255];
 const PRIMITIVE_BEVEL_COLOR_A_RGB: [u8; 3] = [0xC5, 0xBE, 0xA7];
 const PRIMITIVE_BEVEL_COLOR_B_RGB: [u8; 3] = [0x80, 0x7A, 0x68];
+const TRACKBAR_CONTROL_W: u32 = 128;
+const TRACKBAR_CONTROL_H: u32 = 21;
+const TRACKBAR_VALUE_PLAQUE_W: i32 = 50;
+const TRACKBAR_FRAME_BORDER: i32 = 2;
+const TRACKBAR_VALUE_FRAME_INSET: i32 = 2;
 const SKIRMISH_FLAG_PCX_NAMES: [&str; 12] = [
     "usai.pcx", "japi.pcx", "frai.pcx", "geri.pcx", "gbri.pcx", "djbi.pcx", "arbi.pcx", "lati.pcx",
     "rusi.pcx", "yrii.pcx", "obsi.pcx", "rani.pcx",
@@ -47,6 +52,10 @@ pub struct SkirmishShellChromeAtlas {
     pub background_640_mnscrns: Option<SkirmishShellChromeEntry>,
     pub background_800_coop_game_setup: Option<SkirmishShellChromeEntry>,
     pub choose_map_background_800_customize_battle: Option<SkirmishShellChromeEntry>,
+    /// Generic common-shell small background, decoded through SHELL.PAL.
+    pub generic_background_640_mnscrns_shell: Option<SkirmishShellChromeEntry>,
+    /// Generic common-shell large background, decoded through SHELL.PAL.
+    pub generic_background_large_mnscrnl_shell: Option<SkirmishShellChromeEntry>,
     pub lower_side_640_lwscrns: Option<SkirmishShellChromeEntry>,
     pub lower_side_large_lwscrnl: Option<SkirmishShellChromeEntry>,
     pub validation_modal_background_pudlgbgn: Option<SkirmishShellChromeEntry>,
@@ -81,6 +90,8 @@ pub struct SkirmishShellChromeAtlas {
     pub scrollbar_thumb_top: Option<SkirmishShellChromeEntry>,
     pub scrollbar_thumb_mid: Option<SkirmishShellChromeEntry>,
     pub scrollbar_thumb_bottom: Option<SkirmishShellChromeEntry>,
+    /// Both adjacent border-2 primitive frames drawn around a `128x21`
+    /// owner-draw trackbar, including the two-pixel outside expansion.
     pub trackbar_rail: Option<SkirmishShellChromeEntry>,
     pub combo_face_150: Option<SkirmishShellChromeEntry>,
     pub combo_face_117: Option<SkirmishShellChromeEntry>,
@@ -332,6 +343,17 @@ pub fn build_skirmish_shell_chrome_atlas(
         "SHELL.PAL",
     )?);
 
+    for (name, label) in [
+        ("MNSCRNS.SHP", "mnscrns.shp#shell"),
+        ("MNSCRNL.SHP", "mnscrnl.shp#shell"),
+    ] {
+        push_optional(
+            &mut rendered,
+            render_shp_entry_labeled(assets, name, label, &shell_palette, 0),
+            name,
+        );
+    }
+
     if let Some(parent_background_palette) = parent_background_palette.as_ref() {
         for name in ["MNSCRNS.SHP", "MnScrnLCoopGameSetup.shp"] {
             push_optional(
@@ -396,13 +418,7 @@ pub fn build_skirmish_shell_chrome_atlas(
         push_optional(&mut rendered, render_pcx_entry(assets, name), name);
     }
 
-    rendered.push(render_primitive_bevel_entry(
-        "skirmish_trackbar_rail",
-        78,
-        21,
-        [2, 8, 63, 3],
-        2,
-    ));
+    rendered.push(render_trackbar_frame_entry("skirmish_trackbar_rail"));
     for (label, width) in [
         ("skirmish_combo_face_150", 150),
         ("skirmish_combo_face_117", 117),
@@ -463,6 +479,8 @@ pub fn build_skirmish_shell_chrome_atlas(
         choose_map_background_800_customize_battle: by_label
             .get("mnscrnlcustomizebattle.shp")
             .copied(),
+        generic_background_640_mnscrns_shell: by_label.get("mnscrns.shp#shell").copied(),
+        generic_background_large_mnscrnl_shell: by_label.get("mnscrnl.shp#shell").copied(),
         lower_side_640_lwscrns: by_label.get("lwscrns.shp").copied(),
         lower_side_large_lwscrnl: by_label.get("lwscrnl.shp").copied(),
         validation_modal_background_pudlgbgn: by_label.get("pudlgbgn.shp#0").copied(),
@@ -557,7 +575,9 @@ fn load_named_palette(assets: &AssetManager, name: &str) -> Option<Palette> {
 #[cfg(test)]
 fn classify_shell_asset(name: &str) -> ShellAssetRole {
     match name.to_ascii_lowercase().as_str() {
-        "mnscrns.shp" | "mnscrnlcoopgamesetup.shp" => ShellAssetRole::VerifiedParentBackground,
+        "mnscrns.shp" | "mnscrnl.shp" | "mnscrnlcoopgamesetup.shp" => {
+            ShellAssetRole::VerifiedParentBackground
+        }
         "mnscrnlcustomizebattle.shp" => ShellAssetRole::VerifiedChooseMapBackground,
         "startbut.shp" => ShellAssetRole::VerifiedOfflineStartMarker,
         "mmpb.shp" => ShellAssetRole::AssignedPlayerMarker,
@@ -574,9 +594,7 @@ fn classify_shell_asset(name: &str) -> ShellAssetRole {
         | "arbi.pcx" | "lati.pcx" | "rusi.pcx" | "yrii.pcx" | "obsi.pcx" | "rani.pcx" => {
             ShellAssetRole::VerifiedFlag
         }
-        "mnscrnl.shp" | "dbak6440.pcx" | "dlgsysa.pcx" | "dlgsysi.pcx" => {
-            ShellAssetRole::ResearchCandidate
-        }
+        "dbak6440.pcx" | "dlgsysa.pcx" | "dlgsysi.pcx" => ShellAssetRole::ResearchCandidate,
         _ => ShellAssetRole::Other,
     }
 }
@@ -709,13 +727,56 @@ fn render_primitive_bevel_entry(
     border: i32,
 ) -> RenderedShellEntry {
     let mut rgba = vec![0u8; (width * height * 4) as usize];
+    draw_primitive_bevel(&mut rgba, width, height, box_xywh, border);
+    RenderedShellEntry {
+        label: label.to_ascii_lowercase(),
+        width,
+        height,
+        rgba,
+    }
+}
+
+fn render_trackbar_frame_entry(label: &str) -> RenderedShellEntry {
+    let border = TRACKBAR_FRAME_BORDER;
+    let width = TRACKBAR_CONTROL_W + (border as u32) * 2;
+    let height = TRACKBAR_CONTROL_H + (border as u32) * 2;
+    let mut rgba = vec![0u8; (width * height * 4) as usize];
+
+    let control_w = TRACKBAR_CONTROL_W as i32;
+    let control_h = TRACKBAR_CONTROL_H as i32;
+    let left_frame_w = control_w - TRACKBAR_VALUE_PLAQUE_W;
+    let value_frame_x = left_frame_w + TRACKBAR_VALUE_FRAME_INSET;
+    let value_frame_w = TRACKBAR_VALUE_PLAQUE_W - TRACKBAR_VALUE_FRAME_INSET;
+
+    // `OwnerDraw_Trackbar_0061D950` supplies control-relative boxes and
+    // FUN_006208F0 expands each by two pixels. Shift both inputs by the canvas
+    // border so the complete outside rings fit in this transparent entry.
+    draw_primitive_bevel(
+        &mut rgba,
+        width,
+        height,
+        [border, border, left_frame_w, control_h],
+        border,
+    );
+    draw_primitive_bevel(
+        &mut rgba,
+        width,
+        height,
+        [border + value_frame_x, border, value_frame_w, control_h],
+        border,
+    );
+
+    RenderedShellEntry {
+        label: label.to_ascii_lowercase(),
+        width,
+        height,
+        rgba,
+    }
+}
+
+fn draw_primitive_bevel(rgba: &mut [u8], width: u32, height: u32, box_xywh: [i32; 4], border: i32) {
     if border <= 0 || box_xywh[2] <= 0 || box_xywh[3] <= 0 {
-        return RenderedShellEntry {
-            label: label.to_ascii_lowercase(),
-            width,
-            height,
-            rgba,
-        };
+        return;
     }
 
     let left0 = box_xywh[0] - border;
@@ -741,7 +802,7 @@ fn render_primitive_bevel_entry(
         };
 
         draw_axis_line_inclusive_clipped(
-            &mut rgba,
+            rgba,
             width,
             height,
             (left, top),
@@ -749,7 +810,7 @@ fn render_primitive_bevel_entry(
             top_left_color,
         );
         draw_axis_line_inclusive_clipped(
-            &mut rgba,
+            rgba,
             width,
             height,
             (left, top + 1),
@@ -757,7 +818,7 @@ fn render_primitive_bevel_entry(
             top_left_color,
         );
         draw_axis_line_inclusive_clipped(
-            &mut rgba,
+            rgba,
             width,
             height,
             (right, bottom),
@@ -765,7 +826,7 @@ fn render_primitive_bevel_entry(
             bottom_right_color,
         );
         draw_axis_line_inclusive_clipped(
-            &mut rgba,
+            rgba,
             width,
             height,
             (right, bottom - 1),
@@ -774,16 +835,9 @@ fn render_primitive_bevel_entry(
         );
 
         if border == 2 {
-            put_pixel_clipped(&mut rgba, width, height, right, top, mixed);
-            put_pixel_clipped(&mut rgba, width, height, left, bottom, mixed);
+            put_pixel_clipped(rgba, width, height, right, top, mixed);
+            put_pixel_clipped(rgba, width, height, left, bottom, mixed);
         }
-    }
-
-    RenderedShellEntry {
-        label: label.to_ascii_lowercase(),
-        width,
-        height,
-        rgba,
     }
 }
 
@@ -930,7 +984,8 @@ mod tests {
         AssetManager, OWNER_DRAW_FLAG_TRANSPARENT_RGB, PRIMITIVE_BEVEL_COLOR_A_RGB,
         PRIMITIVE_BEVEL_COLOR_B_RGB, RenderedShellEntry, ShellAssetRole, average_rgb,
         classify_shell_asset, draw_axis_line_inclusive_clipped, load_named_palette,
-        load_parent_background_palette, render_primitive_bevel_entry, render_shp_entry, rgba_color,
+        load_parent_background_palette, render_primitive_bevel_entry, render_shp_entry,
+        render_trackbar_frame_entry, rgba_color,
     };
 
     fn pixel(entry: &RenderedShellEntry, x: u32, y: u32) -> [u8; 4] {
@@ -1015,7 +1070,7 @@ mod tests {
         );
         assert_eq!(
             classify_shell_asset("MNSCRNL.SHP"),
-            ShellAssetRole::ResearchCandidate
+            ShellAssetRole::VerifiedParentBackground
         );
         assert_eq!(
             classify_shell_asset("MnScrnLCustomizeBattle.shp"),
@@ -1115,6 +1170,26 @@ mod tests {
     }
 
     #[test]
+    fn trackbar_frame_entry_contains_both_native_primitive_boxes() {
+        let entry = render_trackbar_frame_entry("trackbar");
+        let color_a = rgba_color(PRIMITIVE_BEVEL_COLOR_A_RGB);
+        let color_b = rgba_color(PRIMITIVE_BEVEL_COLOR_B_RGB);
+        let mixed = rgba_color(average_rgb(
+            PRIMITIVE_BEVEL_COLOR_A_RGB,
+            PRIMITIVE_BEVEL_COLOR_B_RGB,
+        ));
+
+        assert_eq!((entry.width, entry.height), (132, 25));
+        assert_eq!(pixel(&entry, 0, 0), color_a);
+        assert_eq!(pixel(&entry, 131, 0), mixed);
+        assert_eq!(pixel(&entry, 80, 10), color_a);
+        assert_eq!(pixel(&entry, 81, 10), color_b);
+        assert_eq!(pixel(&entry, 79, 10), [0, 0, 0, 0]);
+        assert_eq!(pixel(&entry, 100, 10), [0, 0, 0, 0]);
+        assert_eq!(pixel(&entry, 80, 24), mixed);
+    }
+
+    #[test]
     #[ignore]
     fn retail_shell_shp_dimensions_match_research() {
         let config = crate::util::config::GameConfig::load().expect("game config");
@@ -1152,5 +1227,18 @@ mod tests {
             .expect("MnScrnLCoopGameSetup");
         assert_eq!((mnscrns.width, mnscrns.height), (472, 448));
         assert_eq!((coop.width, coop.height), (632, 568));
+    }
+
+    #[test]
+    #[ignore]
+    fn retail_generic_shell_backgrounds_decode_with_shell_palette() {
+        let config = crate::util::config::GameConfig::load().expect("game config");
+        let assets = AssetManager::new(&config.paths.ra2_dir).expect("asset manager");
+        let palette = load_named_palette(&assets, "SHELL.PAL").expect("SHELL.PAL");
+        let small = render_shp_entry(&assets, "MNSCRNS.SHP", &palette, 0).expect("MNSCRNS frame 0");
+        let large = render_shp_entry(&assets, "MNSCRNL.SHP", &palette, 0).expect("MNSCRNL frame 0");
+
+        assert_eq!((small.width, small.height), (472, 448));
+        assert_eq!((large.width, large.height), (632, 568));
     }
 }
