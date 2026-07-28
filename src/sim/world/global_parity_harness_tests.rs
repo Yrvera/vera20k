@@ -60,8 +60,14 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// draws this fixture never reached before. Streams 1 and 2 are unchanged and
 /// the total hash moved with stream 0 — a behavior-bearing shift, not a
 /// misroute.
+/// Re-baselined with the native Mission_Harvest per-path dispatch delays:
+/// the return/idle/still-driving handler exits now draw the native
+/// RandomRanged(0,2) Rate-epilogue jitter on the scenario stream, so this
+/// fixture's harvester consumes scenario draws on every non-productive
+/// dispatch. Streams 1 and 2 are unchanged and the total hash moved with
+/// stream 0 — a behavior-bearing shift, not a misroute.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
-    3231716614990372260,
+    4301199653360695687,
     4175722561206807420,
     2082941527059030371,
 );
@@ -147,8 +153,11 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// behavior-bearing timing shift in hashed navigation/mission/position
 /// state. All three absolute RNG stream pins held their values (the arrival
 /// clear draws nothing), and record/replay tick equality still holds.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 733684070086703891;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 17736517586681189907;
+/// Re-baselined with the native Mission_Harvest per-path dispatch delays:
+/// a behavior-bearing shift (dispatch cadence + scenario-stream draws), so
+/// the legacy-schema probes move together with the live hash.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 4844629824678724271;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 2401965642562130820;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -158,7 +167,12 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 17736517586681189907;
 /// positions, mission/miner state, and scenario-stream consumption in this
 /// fixture. Both schema probes shift with it (movement diverges from early
 /// ticks). Record/replay tick equality still holds.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x979F_4B09_BDC0_D900;
+/// Re-baselined with the native Mission_Harvest per-path dispatch delays
+/// (see FINAL_STREAM_STATES): the harvester's dispatch cadence and
+/// scenario-stream consumption changed in this fixture, shifting positions
+/// and timers from the first return leg on. Record/replay tick equality
+/// still holds.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xADCD_2D1C_ABFF_D48D;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

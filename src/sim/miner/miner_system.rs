@@ -71,11 +71,39 @@ fn return_exceeds_too_far_threshold(
     Some(distance_sq > threshold * threshold)
 }
 
-/// The default handler return: dispatch again next frame — the exact
-/// per-frame cadence the pre-absorption global tick had. Every FSM path
-/// whose native return delay is not Ghidra-verified keeps this value
-/// (recorded UNCHECKED residual); only verified epilogues override it.
+/// The per-frame handler return. Native Mission_Harvest returns it from the
+/// harvesting state (all paths), the enter/dock state, and the productive
+/// search paths (ore found and moved toward); every other exit goes through
+/// the default `[Harvest] Rate` epilogue or the fixed no-ore wait below.
 pub(super) const DISPATCH_NEXT_FRAME: i32 = 1;
+
+/// Jitter ceiling of the default handler epilogue: `RandomRanged(0, 2)`.
+const RATE_EPILOGUE_JITTER_MAX_FRAMES: u32 = 2;
+
+/// Keyless-`[Harvest]` fallback for the epilogue base; the stock `Rate=.016`
+/// resolves to `ftol(.016 × 900) = 14` from the mission-control table, so this
+/// is only reached when a mod strips the section.
+const HARVEST_RATE_FALLBACK_FRAMES: u8 = 14;
+
+/// Install the native default handler epilogue as the dispatch delay:
+/// `ftol([Harvest] Rate × 900)` plus one `RandomRanged(0, 2)` drawn on the
+/// scenario stream. Paths that take it: the return/finding-home state on
+/// every dispatch, the idle state on every dispatch, the search state's
+/// archive-consume and still-driving returns, and any cursor outside the
+/// native handler's switch. The base lookup consumes no RNG, so the single
+/// draw here keeps the scenario stream position aligned with the native
+/// epilogue.
+pub(super) fn arm_rate_epilogue(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot) {
+    let base = super::miner_dock_sequence::mission_base_frames(
+        rules,
+        crate::sim::mission::MissionType::Harvest,
+        HARVEST_RATE_FALLBACK_FRAMES,
+    );
+    let jitter = sim
+        .miner_jitter_rng()
+        .next_range_u32_inclusive(0, RATE_EPILOGUE_JITTER_MAX_FRAMES);
+    snap.dispatch_delay = i32::from(base) + jitter as i32;
+}
 
 /// Snapshot of one miner entity for one Harvest dispatch.
 pub(super) struct MinerSnapshot {
@@ -295,23 +323,39 @@ pub(super) fn process_miner(
 
     let state_before = format!("{:?}", snap.state);
     match snap.state {
-        MinerState::SearchOre => handle_search_ore(sim, config, path_grid, snap),
+        MinerState::SearchOre => handle_search_ore(sim, rules, config, path_grid, snap),
         MinerState::MoveToOre => handle_move_to_ore(sim, rules, config, path_grid, snap),
         MinerState::Harvest => {
             handle_harvest(sim, rules, config, path_grid, overlay_registry, snap)
         }
-        MinerState::ReturnToRefinery => handle_return(sim, rules, config, path_grid, snap),
+        MinerState::ReturnToRefinery => {
+            handle_return(sim, rules, config, path_grid, snap);
+            // Native return/finding-home state has no per-frame exit: every
+            // dispatch leaves through the default Rate epilogue.
+            arm_rate_epilogue(sim, rules, snap);
+        }
         MinerState::Dock => {
             super::miner_dock_sequence::handle_dock_sequence(sim, rules, config, path_grid, snap)
         }
         MinerState::Unload => {
             // Legacy state — production code never enters this path. If we
             // encounter it (e.g., a save from before the FSM rewrite), fall
-            // through to SearchOre.
+            // through to SearchOre. Outside the native handler's switch, so
+            // it exits through the default epilogue.
             snap.state = MinerState::SearchOre;
+            arm_rate_epilogue(sim, rules, snap);
         }
-        MinerState::WaitNoOre => handle_wait_no_ore(snap, sim.session.binary_frame),
-        MinerState::ForcedReturn => handle_forced_return(sim, rules, config, path_grid, snap),
+        MinerState::WaitNoOre => {
+            handle_wait_no_ore(snap, sim.session.binary_frame);
+            // Native idle state falls straight into the default epilogue.
+            arm_rate_epilogue(sim, rules, snap);
+        }
+        MinerState::ForcedReturn => {
+            handle_forced_return(sim, rules, config, path_grid, snap);
+            // VERA-internal cursor; outside the native handler's switch, so
+            // it exits through the default epilogue like any high cursor.
+            arm_rate_epilogue(sim, rules, snap);
+        }
     }
     let state_after = format!("{:?}", snap.state);
     if state_before != state_after {
@@ -395,7 +439,8 @@ pub(crate) fn is_cell_path_clear_for_scan(
 }
 
 fn handle_search_ore(
-    sim: &Simulation,
+    sim: &mut Simulation,
+    rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
@@ -416,73 +461,102 @@ fn handle_search_ore(
         return;
     }
 
-    // Combined scan filter — zone reachability + cell occupancy.
-    // Returns None if zone_grid / anchor is missing; caller falls back to
-    // an unfiltered scan that tick.
-    let scan_filter = build_scan_filter(sim, path_grid, snap);
-    let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
+    /// Scan decision, computed under the scan filter's immutable `sim` borrow
+    /// and committed after it drops (the epilogue draw needs `&mut sim`).
+    enum ScanOutcome {
+        /// Ghost-cell archive consumed — the native archive-target return.
+        Archive((u16, u16)),
+        /// Fresh ore target from the bounded or global scan.
+        Found((u16, u16)),
+        /// No reachable ore anywhere.
+        NoOre,
+    }
 
-    // Archive ghost-cell consumption: if `last_harvest_cell` is set,
-    // drive straight to it and clear. The archive is written by
-    // `save_archive_via_short_scan` when the miner becomes full.
-    // Reachability is re-checked because the patch may have been walled
-    // off between the save and the next cycle.
-    if let Some(archive) = snap.miner.last_harvest_cell {
-        let archive_has_ore = sim.production.resource_nodes.contains_key(&archive);
-        let archive_reachable = filter_ref.is_none_or(|f| f(archive));
-        if archive_has_ore && archive_reachable {
-            snap.miner.target_ore_cell = Some(archive);
+    let outcome = {
+        // Combined scan filter — zone reachability + cell occupancy.
+        // Returns None if zone_grid / anchor is missing; caller falls back to
+        // an unfiltered scan that tick.
+        let scan_filter = build_scan_filter(sim, path_grid, snap);
+        let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
+
+        // Archive ghost-cell consumption: if `last_harvest_cell` is set,
+        // drive straight to it and clear. The archive is written by
+        // `save_archive_via_short_scan` when the miner becomes full.
+        // Reachability is re-checked because the patch may have been walled
+        // off between the save and the next cycle.
+        let mut archive_hit = None;
+        if let Some(archive) = snap.miner.last_harvest_cell {
+            let archive_has_ore = sim.production.resource_nodes.contains_key(&archive);
+            let archive_reachable = filter_ref.is_none_or(|f| f(archive));
+            if archive_has_ore && archive_reachable {
+                archive_hit = Some(ScanOutcome::Archive(archive));
+            } else {
+                // Stale archive (depleted or unreachable) — drop it so we
+                // don't keep retrying.
+                snap.miner.last_harvest_cell = None;
+            }
+        }
+
+        // Long-range bounded scan from the miner's current position
+        // (TiberiumLongScan). Single scan with no separate short-scan
+        // pre-pass — the search expands outward and picks the best cell
+        // within radius. Used for both war miners and chrono miners.
+        //
+        // Chrono miners DRIVE to ore, not warp — the original's
+        // Mission_Harvest state 0 forces a DriveLocomotion piggyback before
+        // calling Set_Destination, so the teleport-vs-drive branch in
+        // Set_Destination resolves to drive. Only the inbound trip
+        // (ore → refinery) uses the warp; outbound is a normal drive.
+        archive_hit.unwrap_or_else(|| {
+            search_local_ore(
+                &sim.production.resource_nodes,
+                (snap.rx, snap.ry),
+                config.long_scan_radius,
+                filter_ref,
+                config.ore_bale_value,
+                config.gem_bale_value,
+            )
+            // Global search — find nearest reachable ore anywhere on the map.
+            .or_else(|| {
+                pick_best_resource_node(
+                    &sim.production.resource_nodes,
+                    (snap.rx, snap.ry),
+                    filter_ref,
+                )
+            })
+            .map_or(ScanOutcome::NoOre, ScanOutcome::Found)
+        })
+    };
+
+    match outcome {
+        ScanOutcome::Archive(cell) => {
+            snap.miner.target_ore_cell = Some(cell);
             snap.state = MinerState::MoveToOre;
             snap.miner.last_harvest_cell = None;
-            return;
+            // The native archive-consume exit goes through the default Rate
+            // epilogue, not the per-frame return.
+            arm_rate_epilogue(sim, rules, snap);
         }
-        // Stale archive (depleted or unreachable) — drop it so we don't
-        // keep retrying.
-        snap.miner.last_harvest_cell = None;
+        ScanOutcome::Found(cell) => {
+            snap.miner.target_ore_cell = Some(cell);
+            snap.state = MinerState::MoveToOre;
+            // Productive search: per-frame dispatch (native return 1).
+        }
+        ScanOutcome::NoOre => {
+            // Native: no ore, no owner destination, no archive parks the
+            // handler in the idle state and returns the fixed 105-frame wait
+            // directly — bypassing the Rate epilogue, so no RNG draw. The
+            // dispatch delay carries the wait; the internal rescan gate is
+            // armed to the same expiry (the gate fires inclusively at
+            // start + duration), so the two never double-count.
+            snap.state = MinerState::WaitNoOre;
+            snap.miner.rescan_cooldown.arm(
+                sim.session.binary_frame,
+                u32::from(config.rescan_cooldown_ticks),
+            );
+            snap.dispatch_delay = i32::from(config.rescan_cooldown_ticks);
+        }
     }
-
-    // Long-range bounded scan from the miner's current position
-    // (TiberiumLongScan). Single scan with no separate short-scan
-    // pre-pass — the search expands outward and picks the best cell
-    // within radius. Used for both war miners and chrono miners.
-    //
-    // Chrono miners DRIVE to ore, not warp — the original's
-    // Mission_Harvest state 0 forces a DriveLocomotion piggyback before
-    // calling Set_Destination, so the teleport-vs-drive branch in
-    // Set_Destination resolves to drive. Only the inbound trip
-    // (ore → refinery) uses the warp; outbound is a normal drive.
-    if let Some(cell) = search_local_ore(
-        &sim.production.resource_nodes,
-        (snap.rx, snap.ry),
-        config.long_scan_radius,
-        filter_ref,
-        config.ore_bale_value,
-        config.gem_bale_value,
-    ) {
-        snap.miner.target_ore_cell = Some(cell);
-        snap.state = MinerState::MoveToOre;
-        return;
-    }
-
-    // Global search — find nearest reachable ore anywhere on the map.
-    if let Some(cell) = pick_best_resource_node(
-        &sim.production.resource_nodes,
-        (snap.rx, snap.ry),
-        filter_ref,
-    ) {
-        snap.miner.target_ore_cell = Some(cell);
-        snap.state = MinerState::MoveToOre;
-        return;
-    }
-
-    // No reachable ore anywhere. Arm the no-ore retry gate for exactly
-    // rescan_cooldown_ticks (0x69) frames — the gate fires inclusively at
-    // start + duration, so the duration IS the frame count (no fencepost).
-    snap.state = MinerState::WaitNoOre;
-    snap.miner.rescan_cooldown.arm(
-        sim.session.binary_frame,
-        u32::from(config.rescan_cooldown_ticks),
-    );
 }
 
 fn handle_move_to_ore(
@@ -501,10 +575,12 @@ fn handle_move_to_ore(
             });
 
     // Native Search_For_Tiberium_And_Move returns immediately for a non-null
-    // owner NavCom before target validation, arrival, or scan. MovementTarget
-    // remains Rust's transitional second owner until the broader Drive host is
-    // migrated.
+    // owner NavCom before target validation, arrival, or scan; the handler
+    // then exits through the default Rate epilogue (the still-driving
+    // return). MovementTarget remains Rust's transitional second owner until
+    // the broader Drive host is migrated.
     if has_destination_or_movement {
+        arm_rate_epilogue(sim, rules, snap);
         return;
     }
 
