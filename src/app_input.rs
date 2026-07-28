@@ -388,6 +388,90 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
 /// debug logs on enable and frees them on disable, and sets the sim flag
 /// `debug_event_logging`. Called by both the X hotkey and the dev overlay
 /// checkbox so the two paths cannot drift.
+/// Explain every terrain cell that draws as black, and say which cause is responsible.
+///
+/// A cell renders black for exactly two reasons, and they need completely different
+/// fixes: the vision system never revealed it, or it was revealed but its tile key is
+/// missing from the atlas. Both look identical on screen, so this counts them separately
+/// instead of leaving the diagnosis to guesswork.
+pub(crate) fn report_black_cell_causes(state: &mut AppState) {
+    let Some(grid) = state.terrain_grid.as_ref() else {
+        log::info!("Black-cell report: no terrain grid loaded");
+        return;
+    };
+
+    let owner = crate::app_commands::preferred_local_owner_name(state)
+        .and_then(|name| state.simulation.as_ref()?.interner.get(&name));
+    let fog = match (&state.simulation, owner) {
+        _ if state.sandbox_full_visibility => None,
+        (Some(sim), Some(id)) => Some((id, &sim.fog)),
+        _ => None,
+    };
+
+    let mut unrevealed: u32 = 0;
+    let mut missing_tile: u32 = 0;
+    // Checked for every cell regardless of shroud. The fog-gated count above only sees
+    // cells the player has explored, so on an unexplored map it can report zero while the
+    // rest of the map is full of unresolvable tiles. This one cannot be fooled that way.
+    let mut missing_tile_anywhere: u32 = 0;
+    let mut missing_samples: Vec<(u16, u16, u16, u8)> = Vec::new();
+    let mut unrevealed_samples: Vec<(u16, u16)> = Vec::new();
+
+    for cell in &grid.cells {
+        if let Some(atlas) = state.tile_atlas.as_ref() {
+            let key = crate::map::theater::TileKey {
+                tile_id: cell.tile_id,
+                sub_tile: cell.sub_tile,
+                variant: 0,
+            };
+            if atlas.get_uv(key).is_none() {
+                missing_tile_anywhere += 1;
+            }
+        }
+        if let Some((id, fog_state)) = fog {
+            if !fog_state.is_cell_revealed(id, cell.rx, cell.ry) {
+                unrevealed += 1;
+                if unrevealed_samples.len() < 12 {
+                    unrevealed_samples.push((cell.rx, cell.ry));
+                }
+                // An unrevealed cell is never drawn, so its tile is irrelevant.
+                continue;
+            }
+        }
+        if let Some(atlas) = state.tile_atlas.as_ref() {
+            let key = crate::map::theater::TileKey {
+                tile_id: cell.tile_id,
+                sub_tile: cell.sub_tile,
+                variant: 0,
+            };
+            if atlas.get_uv(key).is_none() {
+                missing_tile += 1;
+                if missing_samples.len() < 12 {
+                    missing_samples.push((cell.rx, cell.ry, cell.tile_id, cell.sub_tile));
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "Black-cell report: {} cells total | fog {} | unrevealed={} | revealed-but-no-tile={}          | no-tile-anywhere={}",
+        grid.cells.len(),
+        if fog.is_some() { "ON" } else { "OFF" },
+        unrevealed,
+        missing_tile,
+        missing_tile_anywhere,
+    );
+    if !unrevealed_samples.is_empty() {
+        log::info!("  unrevealed sample (rx,ry): {unrevealed_samples:?}");
+    }
+    if !missing_samples.is_empty() {
+        log::info!("  no-tile sample (rx,ry,tile_id,sub_tile): {missing_samples:?}");
+    }
+    if unrevealed == 0 && missing_tile == 0 {
+        log::info!("  no cell is black for either reason — the black must come from elsewhere");
+    }
+}
+
 pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
     state.debug_unit_inspector = !state.debug_unit_inspector;
     if let Some(sim) = &mut state.simulation {
@@ -614,6 +698,9 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
                     "ON"
                 }
             );
+        }
+        KeyCode::F8 => {
+            report_black_cell_causes(state);
         }
         KeyCode::KeyX => {
             toggle_unit_inspector(state);

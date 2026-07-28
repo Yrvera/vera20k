@@ -774,6 +774,8 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
         // Cache local owner name before mutable sim borrow (avoids borrow conflict).
         let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
+        // Carried out of the sim borrow so the census can read `state` freely below.
+        let mut census_tick: Option<u64> = None;
         if let Some(sim) = &mut state.simulation {
             // Clear AI players when disabled — prevents computer houses from acting.
             if state.disable_ai && !sim.ai_players.is_empty() {
@@ -801,6 +803,7 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
                     state.parity_digest_sink = None;
                 }
             }
+            census_tick = Some(tick_result.tick);
             let (ents, interner) = sim.entities_mut_and_interner();
             let death_finished =
                 animation::tick_animations(ents, &state.animation_sequences, SIM_TICK_MS, interner);
@@ -1288,6 +1291,18 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
             }
         }
         crate::app_fire_effects::spawn_non_garrison_fire_effects(state, &drained_fire_events);
+
+        // Black-cell census, on a schedule rather than a keypress: nobody hits a debug key
+        // at the exact moment they notice the artifact. Spread-out ticks give a time series,
+        // which separates "still exploring" from "these cells will never be revealed" — a
+        // shrinking count is normal, a count that plateaus with a stubborn remainder is the
+        // bug. Runs after the sim borrow ends so it can read the atlas and terrain grid.
+        // Early sample, then once a minute for as long as the match runs. A fixed set of
+        // early ticks missed the symptom entirely: the interesting state is a mostly-explored
+        // map with holes left in it, which only appears well into a session.
+        if census_tick.is_some_and(|tick| tick == 150 || (tick > 150 && tick % 900 == 0)) {
+            crate::app_input::report_black_cell_causes(state);
+        }
 
         let trigger_effects = if let Some(sim) = &mut state.simulation {
             sim.advance_triggers(
