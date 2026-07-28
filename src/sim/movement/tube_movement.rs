@@ -201,17 +201,25 @@ pub fn try_begin_path_tube_step(
         return TubePathStepResult::NotTubeStep;
     }
 
+    // A tube traversal can only begin FROM a tube portal cell. Off-tube, a
+    // non-adjacent next node is not a tube crossing — it appears legitimately
+    // on ordinary pathfinder moves whenever a sharp-turn (>=135°) fallback
+    // drive track consumes the first path node at issuance: the track carries
+    // the mover through the skipped node, leaving next_index two cells out.
+    // Treating that as a failed tube step killed the move on its issue tick
+    // and stranded every miner whose post-dock outbound leg began with a
+    // sharp turn (standing on the pad still facing the refinery).
     let Some(terrain) = terrain else {
-        return TubePathStepResult::Blocked;
+        return TubePathStepResult::NotTubeStep;
     };
     let Some(tube_id) = terrain
         .cell(current.0, current.1)
         .and_then(|cell| cell.tube_index)
     else {
-        return TubePathStepResult::Blocked;
+        return TubePathStepResult::NotTubeStep;
     };
     let Some(tube) = terrain.tube(tube_id) else {
-        return TubePathStepResult::Blocked;
+        return TubePathStepResult::NotTubeStep;
     };
     if tube.exit != next {
         return TubePathStepResult::Blocked;

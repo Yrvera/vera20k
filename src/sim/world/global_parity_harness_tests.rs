@@ -53,8 +53,15 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// Re-baselined after MapGen was split from the scenario seed. The new MapGen
 /// value was identical in two focused runs with pristine fresh Seed(0) MapGen.
 /// This remains a Rust regression ratchet, not a gamemd parity reference.
+/// Re-baselined with the tube-gate fix (off-tube non-adjacent path steps are
+/// no longer killed as failed tube traversals): the harness harvester's
+/// sharp-turn outbound legs now execute instead of dying on their issue tick,
+/// so it reaches ore and Reduce_Tiberium's growth reseeding consumes scenario
+/// draws this fixture never reached before. Streams 1 and 2 are unchanged and
+/// the total hash moved with stream 0 — a behavior-bearing shift, not a
+/// misroute.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
-    4175722561206807420,
+    3231716614990372260,
     4175722561206807420,
     2082941527059030371,
 );
@@ -134,13 +141,18 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// legacy reconstructions — so all three constants move together. All three
 /// absolute RNG stream pins and record/replay tick equality held unchanged
 /// (this scenario's miner never docks, so no draw moved).
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 17313341738631287269;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 8452853324444810158;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 271370323554276941;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 3383850218108790906;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
 // All remain Rust regression ratchets, not gamemd evidence.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x6164_15E1_0065_135F;
+/// Re-baselined with the tube-gate fix (see FINAL_STREAM_STATES): the
+/// harvester's outbound Drive moves now survive their issue tick, changing
+/// positions, mission/miner state, and scenario-stream consumption in this
+/// fixture. Both schema probes shift with it (movement diverges from early
+/// ticks). Record/replay tick equality still holds.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x76CC_1637_D665_4B53;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -508,7 +520,11 @@ fn dense_converging_setup() -> (
 /// converging scenario, captured PRE-flip (T2). The S2 dispatch flip changes
 /// only `mission.current`/`tick_counter` write points — if this fingerprint
 /// shifts, the flip moved someone: that is a bug, never a re-baseline.
-const POSITION_FINGERPRINT: u64 = 12834935063109785345; // captured pre-flip (S2 T2)
+/// Re-baselined ONCE after the flip validation closed, for the tube-gate fix:
+/// off-tube non-adjacent path steps (sharp-turn fallback bumps) are no longer
+/// killed on their issue tick, so movers that previously froze now drive —
+/// an intended movement-behavior change, not dispatch-order drift.
+const POSITION_FINGERPRINT: u64 = 18354164349101625193;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

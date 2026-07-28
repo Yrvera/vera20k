@@ -1162,3 +1162,71 @@ fn cmin_full_close_return_docks_and_deposits() {
         "deposit happened during the run (tick {deposited_at})"
     );
 }
+
+/// Regression: the second harvest cycle must leave the refinery pad. At dock
+/// departure the miner stands on the pad still facing the refinery, so the
+/// outbound move begins with a sharp (>=135°) turn whose fallback drive track
+/// consumes the first path node — leaving the "next" node two cells out. The
+/// tube gate classified that non-adjacent step on a plain (non-tube) cell as
+/// a failed tube traversal and killed the move on its issue tick, freezing
+/// the miner on the pad in a dispatch/kill loop after every deposit.
+#[test]
+fn cmin_second_cycle_leaves_the_pad_and_reharvests() {
+    let oracle = outbound_contract_oracle();
+    let config = MinerConfig::from_rules(&oracle.rules);
+    let refinery_anchor = (10, 10);
+    let ore: &[(u16, u16)] = &[(22, 18), (23, 18), (22, 19), (23, 19)];
+    let mut sim = production_sim(0xDEB7, &oracle);
+    let mut grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+    let refinery_type = oracle.rules.object("GAREFN").expect("GAREFN");
+    grid.block_building_movement_cells(
+        refinery_anchor.0,
+        refinery_anchor.1,
+        &refinery_type.foundation,
+        refinery_type.bib,
+    );
+    install_world(&mut sim, &oracle, &grid, ore, ore, true);
+    // install_world places overlays at density 0 (the outbound suite never
+    // extracts). Reduce_Tiberium reads the overlay density byte, so give the
+    // patch real density or harvesting yields zero bales.
+    for &(rx, ry) in ore {
+        sim.overlay_grid
+            .as_mut()
+            .expect("overlay grid")
+            .set_overlay_data(rx, ry, 11);
+        sim.production
+            .resource_nodes
+            .get_mut(&(rx, ry))
+            .expect("ore node")
+            .remaining = 11 * ONE_ORE_LEVEL;
+    }
+    let _refinery_id = spawn_stock_refinery(&mut sim, &oracle, refinery_anchor);
+    let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
+    arm_full_ore_return(&mut sim, entity_id, &config);
+
+    let mut deposited_at = None;
+    for tick in 0..3000u32 {
+        advance(&mut sim, &oracle, &grid);
+        let e = sim.substrate.entities.get(entity_id).expect("miner");
+        if e.miner.as_ref().expect("miner comp").cargo.is_empty() {
+            deposited_at = Some(tick);
+            break;
+        }
+    }
+    deposited_at.expect("cycle 1 deposit completes");
+
+    let mut reharvested = false;
+    for _ in 0..2000u32 {
+        advance(&mut sim, &oracle, &grid);
+        let e = sim.substrate.entities.get(entity_id).expect("miner");
+        if !e.miner.as_ref().expect("miner comp").cargo.is_empty() {
+            reharvested = true;
+            break;
+        }
+    }
+    assert!(
+        reharvested,
+        "miner must drive back out and harvest again after the first deposit \
+         (stall = sharp-turn fallback path killed by the tube gate)",
+    );
+}
