@@ -4,6 +4,7 @@
 //! commits state in the original's order. The stage sequencing itself lives
 //! in `super::generate`.
 
+pub mod adjacency;
 pub mod blob;
 pub mod bridge;
 pub mod carve;
