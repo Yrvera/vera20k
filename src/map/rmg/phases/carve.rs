@@ -953,6 +953,127 @@ pub fn carve_corner_ramp_reflected(
     true
 }
 
+/// Carve the north-east corner — the last of the seven.
+///
+/// Here `a` is the inner corner and `b` the outer one, so both spans read
+/// `b - a`: the reverse of both other corner routines.
+///
+/// Its faces are a third distinct set — slopes 8/1/4 and tiles `+7`/`+0`/`+3`,
+/// against 6/3/2 and 5/2/1 for the other two. Between them the three corner
+/// routines cover most of the ramp set rather than repeating one another, and
+/// slope 8 appears nowhere else.
+///
+/// Two end blocks, `+7` and `+1` — a pair no other routine uses together.
+pub fn carve_corner_ramp_north_east(
+    ctx: &mut CarveCtx<'_>,
+    regions: CarveRegions,
+    a: (i32, i32),
+    b: (i32, i32),
+) -> bool {
+    let span_x = b.0 - a.0;
+    let span_y = b.1 - a.1;
+    if span_x <= 2 || span_y <= 2 {
+        return false;
+    }
+
+    let rect = (a.0 - 7, a.1 - 4, span_x + 10, span_y + 10);
+    if !rect_is_carveable(
+        ctx.grid,
+        ctx.scratch,
+        ctx.ids,
+        ctx.playfield,
+        rect,
+        regions.region,
+        regions.lower_region,
+    ) {
+        return false;
+    }
+
+    let (rx, ry, rw, rh) = rect;
+
+    fill(
+        ctx,
+        (rx, rx + 7),
+        (ry, ry + rh),
+        regions.lower_region,
+        regions.lower_level,
+    );
+    fill(
+        ctx,
+        (rx, rx + rw),
+        (b.1 + 1, b.1 + 8),
+        regions.lower_region,
+        regions.lower_level,
+    );
+    fill(
+        ctx,
+        (a.0, a.0 + 2),
+        (a.1, a.1 + 1),
+        regions.region,
+        regions.level,
+    );
+    fill(
+        ctx,
+        (b.0, b.0 + 1),
+        (b.1 - 1, b.1 + 1),
+        regions.region,
+        regions.level,
+    );
+    fill(
+        ctx,
+        (a.0 + 1, b.0),
+        (a.1 + 1, b.1),
+        regions.region,
+        regions.level,
+    );
+
+    let end_base = ctx.ramp_end_block;
+    stamp_iso_block(
+        ctx,
+        end_base + 7,
+        (a.0 - 3, a.1),
+        regions.lower_region,
+        Some(regions.level),
+    );
+    stamp_iso_block(
+        ctx,
+        end_base + 1,
+        (b.0 - 2, b.1),
+        regions.lower_region,
+        Some(regions.level),
+    );
+
+    // The diagonal runs south-west here: x falls while y rises. Both other
+    // corners have them falling together.
+    for k in 0..FLAT_RUN_DEPTH {
+        let cell = ctx.grid.cell_native_mut(a.0 - k, b.1 + k);
+        cell.slope = 8;
+        cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+        cell.tile = ctx.ids.ramp_base + 7;
+        cell.sub_tile = 0;
+    }
+    for k in 0..FLAT_RUN_DEPTH {
+        for j in 0..(span_y - 3 + k) {
+            let cell = ctx.grid.cell_native_mut(a.0 - k, a.1 + 3 + j);
+            cell.slope = 1;
+            cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+            cell.tile = ctx.ids.ramp_base;
+            cell.sub_tile = 0;
+        }
+    }
+    for k in 0..FLAT_RUN_DEPTH {
+        for j in 0..(span_x - 3 + k) {
+            let cell = ctx.grid.cell_native_mut(b.0 - j - 3, b.1 + k);
+            cell.slope = 4;
+            cell.level = (regions.level as i8).wrapping_sub(k as i8).wrapping_sub(1) as u8;
+            cell.tile = ctx.ids.ramp_base + 3;
+            cell.sub_tile = 0;
+        }
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2154,5 +2275,113 @@ mod tests {
         // Along-Y at depth 1 reaches one row further north.
         assert_eq!(ctx.grid.cell_native(43, 45).slope, 5, "diagonal survives");
         assert_eq!(ctx.grid.cell_native(43, 46).slope, 1, "along-Y depth 1");
+    }
+
+    #[test]
+    fn the_north_east_corner_spans_read_from_the_inner_endpoint() {
+        // Both spans are b - a here, the reverse of both other corners. A
+        // corner one routine accepts another will refuse outright.
+        for (a, b, expected) in [
+            ((44, 46), (52, 54), true),
+            ((44, 46), (46, 54), false),
+            ((44, 46), (52, 48), false),
+        ] {
+            let (mut grid, mut scratch) = harness();
+            let ids = ids();
+            let blocks = RecordingBlocks::new();
+            let mut rng = RmgRng::new(1);
+            let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+            let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+            let carved = carve_corner_ramp_north_east(&mut ctx, regions(), a, b);
+            assert_eq!(carved, expected, "a = {a:?}, b = {b:?}");
+            if !carved {
+                assert!(blocks.seen.borrow().is_empty(), "refusal stamped");
+            }
+        }
+    }
+
+    #[test]
+    fn the_north_east_corner_takes_a_pair_no_one_else_uses() {
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_corner_ramp_north_east(
+            &mut ctx,
+            regions(),
+            (44, 46),
+            (52, 54)
+        ));
+        assert_eq!(
+            blocks.seen.borrow().as_slice(),
+            &[END_BASE + 7, END_BASE + 1],
+            "descending, not ascending"
+        );
+        let mut fresh = RmgRng::new(1);
+        assert_eq!(ctx.rng.next_u32(), fresh.next_u32(), "corners never draw");
+    }
+
+    #[test]
+    fn the_north_east_corner_lays_a_third_distinct_face_set() {
+        // 8/1/4 and +7/+0/+3, against 6/3/2 and 5/2/1 for the other corners.
+        // Slope 8 appears in no other routine.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        scratch.get_mut(48, 50).region = LOWER;
+        grid.get_mut(48, 50).expect("native cell").level = LOWER_LEVEL;
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_corner_ramp_north_east(
+            &mut ctx,
+            regions(),
+            (44, 46),
+            (52, 54)
+        ));
+        let d = ctx.grid.cell_native(43, 55);
+        assert_eq!((d.slope, d.tile, d.level), (8, 207, 6), "diagonal");
+        let v = ctx.grid.cell_native(44, 49);
+        assert_eq!((v.slope, v.tile, v.level), (1, 200, 7), "along-Y approach");
+        let h = ctx.grid.cell_native(49, 54);
+        assert_eq!((h.slope, h.tile, h.level), (4, 203, 7), "along-X approach");
+        // Five fills, including the interior block.
+        assert_eq!(ctx.scratch.get(38, 44).region, LOWER, "outer lower");
+        assert_eq!(ctx.scratch.get(48, 50).region, REGION, "interior");
+        assert_eq!(
+            ctx.grid.cell_native(48, 50).level,
+            REGION_LEVEL,
+            "interior level"
+        );
+    }
+
+    #[test]
+    fn the_north_east_diagonal_runs_south_west() {
+        // x falls while y RISES. Both other corners have them falling
+        // together, so a copied sign puts this diagonal in the wrong quadrant.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(carve_corner_ramp_north_east(
+            &mut ctx,
+            regions(),
+            (44, 46),
+            (52, 54)
+        ));
+        for k in 0..4i32 {
+            let cell = ctx.grid.cell_native(44 - k, 54 + k);
+            assert_eq!(cell.slope, 8, "diagonal step {k}");
+        }
+        // And both approaches grow with depth.
+        assert_eq!(ctx.grid.cell_native(43, 54).slope, 1, "along-Y depth 1");
+        // The BOUNDARY cell of the along-X run: depth 1 reaches exactly one
+        // cell further west than depth 0, and (44, 55) is that cell. A probe
+        // anywhere inside the run is reached either way and proves nothing.
+        assert_eq!(ctx.grid.cell_native(44, 55).slope, 4, "along-X depth 1");
     }
 }
