@@ -45,7 +45,7 @@ const THRESHOLD_AT_LENIENT: f64 = 5.0;
 /// Leniency above which the fixed-geometry fallback shapes are tried. With the
 /// 0.01 step this first holds at attempt 51 — attempt 50 lands just under a
 /// half because the step is the binary float nearest 0.01, not 0.01 itself.
-const FALLBACK_LENIENCY: f32 = 0.5;
+pub(crate) const FALLBACK_LENIENCY: f32 = 0.5;
 
 /// Leniency added per failed attempt.
 pub const LENIENCY_STEP: f32 = 0.01;
@@ -64,14 +64,14 @@ const JITTER_SCALE_BITS: u64 = 0x3E00_0000_0010_0000;
 /// edge mask uses.
 const RING_SLOT_BITS: [u8; 9] = [0x40, 0x80, 0x01, 0x20, 0x00, 0x02, 0x10, 0x08, 0x04];
 
-const NE: u8 = 0x01;
-const E: u8 = 0x02;
-const SE: u8 = 0x04;
-const S: u8 = 0x08;
-const SW: u8 = 0x10;
-const W: u8 = 0x20;
-const NW: u8 = 0x40;
-const N: u8 = 0x80;
+pub(crate) const NE: u8 = 0x01;
+pub(crate) const E: u8 = 0x02;
+pub(crate) const SE: u8 = 0x04;
+pub(crate) const S: u8 = 0x08;
+pub(crate) const SW: u8 = 0x10;
+pub(crate) const W: u8 = 0x20;
+pub(crate) const NW: u8 = 0x40;
+pub(crate) const N: u8 = 0x80;
 
 /// Which ramp shape the mask selected.
 ///
