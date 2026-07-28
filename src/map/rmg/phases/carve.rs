@@ -1074,6 +1074,166 @@ pub fn carve_corner_ramp_north_east(
     true
 }
 
+/// Try to cut a ramp at one candidate cell.
+///
+/// Reads the ring mask, then walks the eight ramp shapes **in the original's
+/// order, moving on whenever a shape's carve refuses**. That last part is the
+/// whole point and is easy to get wrong: a shape whose surroundings fit can
+/// still fail its own rect precheck, and the cell then falls through to the
+/// next fitting shape rather than giving up.
+///
+/// **The draws of every straight shape attempted are spent on the way**, two
+/// apiece, whether or not that shape goes on to carve. Stopping at the first
+/// shape whose guard matches would leave the rest of the map drawing from the
+/// wrong place in the stream.
+///
+/// Past halfway through the attempt budget, four fixed-geometry fallback
+/// shapes are tried after all eight have refused.
+pub fn try_carve_connector_at_cell(
+    ctx: &mut CarveCtx<'_>,
+    regions: CarveRegions,
+    cell: (i32, i32),
+    leniency: f32,
+) -> bool {
+    use super::connector::{E, N, NE, NW, S, SE, SW, W};
+
+    // A centre window too thin for the bar rejects the cell outright — this is
+    // distinct from "the mask came back empty".
+    let Some(mask) =
+        super::connector::ring_orientation_mask(ctx.scratch, cell, regions.region, leniency)
+    else {
+        return false;
+    };
+    // Surrounded on all eight sides: interior ground, never an edge.
+    if mask == 0xFF {
+        return false;
+    }
+
+    let (x, y) = cell;
+
+    // --- the eight shapes, in order, each falling through on refusal -------
+    if mask & (N | E) == (N | E) && mask & (S | SW | W) == 0 {
+        let ay = if mask & NW != 0 { y - 4 } else { y - 5 };
+        let bx = if mask & SE != 0 { x + 4 } else { x + 5 };
+        if carve_corner_ramp_north_east(ctx, regions, (x - 1, ay), (bx, y + 1)) {
+            return true;
+        }
+    }
+    if mask & (S | E) == (S | E) && mask & (NE | SW) == 0 {
+        let ax = if mask & NE != 0 { x + 4 } else { x + 5 };
+        let by = if mask & SW != 0 { y + 4 } else { y + 5 };
+        if carve_corner_ramp_reflected(ctx, regions, (ax, y - 1), (x - 1, by)) {
+            return true;
+        }
+    }
+    if mask & (S | W) == (S | W) && mask & (N | NE | E) == 0 {
+        let ay = if mask & SE != 0 { y + 4 } else { y + 5 };
+        let bx = if mask & NW != 0 { x - 6 } else { x - 5 };
+        if carve_corner_ramp(ctx, regions, (x + 1, ay), (bx, y - 1)) {
+            return true;
+        }
+    }
+    if mask & (N | W) == (N | W) && mask & (E | SE | S) == 0 {
+        // The same routine as the shape above, mirrored across the isometric
+        // diagonal — seven routines cover eight shapes because of this pair.
+        let ax = if mask & SW != 0 { x - 4 } else { x - 5 };
+        let by = if mask & NE != 0 { y - 4 } else { y - 5 };
+        if carve_corner_ramp(ctx, regions, (ax, y + 1), (x + 1, by)) {
+            return true;
+        }
+    }
+    if mask & (SW | W | NW) == 0 && mask & (N | S) != 0 {
+        let (mut ay, mut by) = if mask & N != 0 {
+            (y - 3, y + 5)
+        } else {
+            (y - 4, y + 4)
+        };
+        if mask & S != 0 {
+            ay -= 1;
+            by -= 1;
+        }
+        let ax = x - 1 + super::connector::jitter(ctx.rng);
+        let bx = x - 1 + super::connector::jitter(ctx.rng);
+        if carve_straight_ramp_clear_west(ctx, regions, (ax, ay), (bx, by)) {
+            return true;
+        }
+    }
+    if mask & (NE | E | SE) == 0 && mask & (N | S) != 0 {
+        let (mut ay, mut by) = if mask & N != 0 {
+            (y + 5, y - 3)
+        } else {
+            (y + 4, y - 4)
+        };
+        if mask & S != 0 {
+            ay -= 1;
+            by -= 1;
+        }
+        let ax = x + 1 + super::connector::jitter(ctx.rng) - 1;
+        let bx = x + 1 + super::connector::jitter(ctx.rng) - 1;
+        if carve_straight_ramp_clear_east(ctx, regions, (ax, ay), (bx, by)) {
+            return true;
+        }
+    }
+    if mask & (NE | NW | N) == 0 && mask & (E | W) != 0 {
+        let (mut ax, mut bx) = if mask & W != 0 {
+            (x + 5, x - 3)
+        } else {
+            (x + 4, x - 4)
+        };
+        if mask & E != 0 {
+            ax -= 1;
+            bx -= 1;
+        }
+        let ay = y - 1 + super::connector::jitter(ctx.rng);
+        let by = y - 1 + super::connector::jitter(ctx.rng);
+        if carve_straight_ramp_clear_north(ctx, regions, (ax, ay), (bx, by)) {
+            return true;
+        }
+    }
+    if mask & (SE | S | SW) == 0 && mask & (E | W) != 0 {
+        let (mut ax, mut bx) = if mask & W != 0 {
+            (x - 3, x + 5)
+        } else {
+            (x - 4, x + 4)
+        };
+        if mask & E != 0 {
+            ax -= 1;
+            bx -= 1;
+        }
+        let ay = y + 1 + super::connector::jitter(ctx.rng) - 1;
+        let by = y + 1 + super::connector::jitter(ctx.rng) - 1;
+        if carve_straight_ramp_clear_south(ctx, regions, (ax, ay), (bx, by)) {
+            return true;
+        }
+    }
+
+    // --- late-attempt fallbacks, fixed geometry, no jitter ----------------
+    if leniency <= super::connector::FALLBACK_LENIENCY {
+        return false;
+    }
+    if mask & S == 0
+        && carve_straight_ramp_clear_south(ctx, regions, (x - 4, y + 1), (x + 4, y + 1))
+    {
+        return true;
+    }
+    if mask & E == 0 && carve_straight_ramp_clear_east(ctx, regions, (x + 1, y + 4), (x + 1, y - 4))
+    {
+        return true;
+    }
+    // The south bit again, deliberately — the original gates the first and
+    // third fallbacks on the same bit. Not a transcription slip.
+    if mask & S == 0
+        && carve_straight_ramp_clear_north(ctx, regions, (x + 4, y - 1), (x - 4, y - 1))
+    {
+        return true;
+    }
+    if mask & W == 0 && carve_straight_ramp_clear_west(ctx, regions, (x - 1, y - 4), (x - 1, y + 4))
+    {
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2383,5 +2543,58 @@ mod tests {
         // cell further west than depth 0, and (44, 55) is that cell. A probe
         // anywhere inside the run is reached either way and proves nothing.
         assert_eq!(ctx.grid.cell_native(44, 55).slope, 4, "along-X depth 1");
+    }
+
+    #[test]
+    fn a_refused_shape_falls_through_and_still_spends_its_draws() {
+        // The behaviour the whole restructure exists for. A bare north bit
+        // satisfies BOTH straight shapes whose run is north-south: the
+        // west-clear one and the east-clear one. With the ground unusable both
+        // refuse, and the original tries them in turn -- spending two draws
+        // apiece on the way, four in total.
+        //
+        // Stopping at the first shape whose guard matched, which is what this
+        // function used to do, would spend two. That is not a smaller carve;
+        // it is every later draw on the map coming from the wrong place.
+        let (mut grid, mut scratch) = harness();
+        let ids = ids();
+        let blocks = RecordingBlocks::new();
+        let mut rng = RmgRng::new(1);
+        let pf = Playfield::from_local_size(34, 0, 0, 34, 42);
+
+        // The harness owns the whole diamond for the region, which would make
+        // every window pass and the mask come back full -- an interior cell,
+        // rejected before any shape is tried. Clear it first.
+        for slot in scratch.cells_mut() {
+            slot.region = -1;
+        }
+        // Give the ring mask a north bit and nothing else.
+        for (x, y) in [(38, 48), (38, 43)] {
+            for row in 0..5 {
+                for col in 0..5 {
+                    scratch.get_mut(x + col, y + row).region = REGION;
+                }
+            }
+        }
+        // And make every carve refuse: no cell is bare ground.
+        for (x, y) in grid.native_cells().collect::<Vec<_>>() {
+            grid.get_mut(x, y).expect("native cell").tile = 500;
+        }
+
+        let mut ctx = ctx_over!(grid, scratch, ids, blocks, rng, pf);
+        assert!(
+            !try_carve_connector_at_cell(&mut ctx, regions(), (40, 50), 0.0),
+            "unusable ground carves nothing"
+        );
+
+        let mut probe = RmgRng::new(1);
+        for _ in 0..4 {
+            probe.next_u32();
+        }
+        assert_eq!(
+            ctx.rng.next_u32(),
+            probe.next_u32(),
+            "both north-south shapes were tried, two draws each"
+        );
     }
 }
