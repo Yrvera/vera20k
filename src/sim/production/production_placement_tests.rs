@@ -5,19 +5,22 @@ use std::collections::{BTreeMap, VecDeque};
 
 use super::{
     BuildingPlacementError, ProductionCategory, cancel_last_for_owner, credits_for_owner,
-    cycle_active_producer_for_owner_category, find_spawn_cell_for_owner, place_ready_building,
-    placement_preview_for_owner, producer_candidates_for_owner_category, ready_buildings_for_owner,
-    sell_building, tick_production,
+    cycle_active_producer_for_owner_category, find_spawn_cell_for_owner, foundation_dimensions,
+    place_ready_building, placement_preview_for_owner, producer_candidates_for_owner_category,
+    ready_buildings_for_owner, sell_building, tick_production,
 };
 use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
+use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::{RampDirection, ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::command::{Command, CommandEnvelope};
-use crate::sim::components::Health;
+use crate::sim::components::{BuildingUp, Health};
 use crate::sim::game_entity::GameEntity;
+use crate::sim::mission::MissionType;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::power_system::has_active_radar;
@@ -28,6 +31,151 @@ use super::tests::{
     basic_multi_queue_rules, build_catalog_rules, factory_rules, placement_radius_rules,
     sell_rules, spawn_structure,
 };
+
+fn stock_refinery_completion_rules() -> RuleSet {
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         0=CMIN\n\
+         1=HARV\n\
+         2=BLOCKER\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GACNST\n\
+         1=NACNST\n\
+         2=GAREFN\n\
+         3=NAREFN\n\
+         [GACNST]\n\
+         Factory=BuildingType\n\
+         [NACNST]\n\
+         Factory=BuildingType\n\
+         [GAREFN]\n\
+         Refinery=yes\n\
+         FreeUnit=CMIN\n\
+         [NAREFN]\n\
+         Refinery=yes\n\
+         FreeUnit=HARV\n\
+         [CMIN]\n\
+         Harvester=yes\n\
+         Dock=GAREFN\n\
+         Cost=1400\n\
+         Speed=4\n\
+         Storage=20\n\
+         [HARV]\n\
+         Harvester=yes\n\
+         Dock=NAREFN\n\
+         Cost=1400\n\
+         Speed=4\n\
+         Storage=20\n\
+         [BLOCKER]\n\
+         Cost=1\n\
+         Speed=0\n",
+    ))
+    .expect("stock refinery completion rules should parse");
+    let art = ArtRegistry::from_ini(&IniFile::from_str(
+        "[GACNST]\n\
+         Foundation=4x4\n\
+         [NACNST]\n\
+         Foundation=4x4\n\
+         [GAREFN]\n\
+         Foundation=4x3\n\
+         [NAREFN]\n\
+         Foundation=4x3\n",
+    ));
+    rules.merge_art_data(&art);
+    rules
+}
+
+fn ready_and_place(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    owner: &str,
+    type_id: &str,
+    rx: u16,
+    ry: u16,
+    path_grid: &PathGrid,
+    height_map: &BTreeMap<(u16, u16), u8>,
+) -> u64 {
+    let owner_id = sim.interner.intern(owner);
+    let type_ref = sim.interner.intern(type_id);
+    sim.production
+        .ready_by_owner
+        .entry(owner_id)
+        .or_default()
+        .push_back(type_ref);
+    assert!(place_ready_building(
+        sim,
+        rules,
+        owner,
+        type_id,
+        rx,
+        ry,
+        Some(path_grid),
+        height_map,
+    ));
+    sim.substrate
+        .entities
+        .values()
+        .find(|entity| {
+            entity.owner == owner_id
+                && entity.type_ref == type_ref
+                && entity.position.rx == rx
+                && entity.position.ry == ry
+                && entity.category == EntityCategory::Structure
+        })
+        .map(|entity| entity.stable_id)
+        .expect("placed building should exist")
+}
+
+fn set_ticks_until_completion(sim: &mut Simulation, stable_id: u64, ticks: u16) {
+    assert!(ticks > 0);
+    let building_up = sim
+        .substrate
+        .entities
+        .get_mut(stable_id)
+        .and_then(|entity| entity.building_up.as_mut())
+        .expect("placed building should have BuildingUp");
+    assert!(ticks <= building_up.total_ticks);
+    building_up.elapsed_ticks = building_up.total_ticks - ticks;
+}
+
+fn block_building_foundation(
+    path_grid: &mut PathGrid,
+    rules: &RuleSet,
+    type_id: &str,
+    rx: u16,
+    ry: u16,
+) {
+    let foundation = &rules
+        .object(type_id)
+        .expect("building rules should exist")
+        .foundation;
+    let (width, height) = foundation_dimensions(foundation);
+    for y in ry..ry + height {
+        for x in rx..rx + width {
+            path_grid.set_blocked(x, y, true);
+        }
+    }
+}
+
+fn unit_ids(sim: &Simulation, owner: &str, type_id: &str) -> Vec<u64> {
+    sim.substrate
+        .entities
+        .values()
+        .filter(|entity| {
+            entity.category == EntityCategory::Unit
+                && sim
+                    .interner
+                    .resolve(entity.owner)
+                    .eq_ignore_ascii_case(owner)
+                && sim
+                    .interner
+                    .resolve(entity.type_ref)
+                    .eq_ignore_ascii_case(type_id)
+        })
+        .map(|entity| entity.stable_id)
+        .collect()
+}
 
 fn resolved_clear_grid_with_override(
     width: u16,
@@ -505,55 +653,386 @@ fn place_ready_building_rejects_blocked_cell_inside_mixed_height_footprint() {
 }
 
 #[test]
-fn refinery_placement_spawns_one_starter_harvester() {
+fn stock_refinery_free_unit_spawns_on_building_up_completion_once() {
     let mut sim = Simulation::new();
-    let rules = build_catalog_rules();
+    let rules = stock_refinery_completion_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    let grid = PathGrid::new(64, 64);
-    spawn_structure(&mut sim, 1, "Americans", "GACNST", 18, 18);
-    let americans = sim.interner.intern("Americans");
-    let garefn = sim.interner.intern("GAREFN");
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([garefn]));
-
-    assert!(place_ready_building(
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let refinery_id = ready_and_place(
         &mut sim,
         &rules,
         "Americans",
         "GAREFN",
         20,
         20,
-        Some(&grid),
+        &grid,
         &height_map,
-    ));
+    );
+    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    set_ticks_until_completion(&mut sim, refinery_id, 2);
 
-    let harvesters: Vec<(u16, u16)> = sim
+    assert!(unit_ids(&sim, "Americans", "CMIN").is_empty());
+    let before_completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(!before_completion.spawned_entities);
+    assert!(
+        sim.substrate
+            .entities
+            .get(refinery_id)
+            .is_some_and(|entity| entity.building_up.is_some())
+    );
+    assert!(unit_ids(&sim, "Americans", "CMIN").is_empty());
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(completion.spawned_entities);
+    assert!(
+        sim.substrate
+            .entities
+            .get(refinery_id)
+            .is_some_and(|entity| entity.building_up.is_none())
+    );
+    assert_eq!(unit_ids(&sim, "Americans", "CMIN").len(), 1);
+
+    let later = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(!later.spawned_entities);
+    assert_eq!(unit_ids(&sim, "Americans", "CMIN").len(), 1);
+}
+
+#[test]
+fn stock_4x3_refinery_free_unit_uses_native_primary_cell() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let refinery_id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(completion.spawned_entities);
+    let miner = sim
         .substrate
         .entities
         .values()
-        .filter(|e| {
-            sim.interner
-                .resolve(e.owner)
-                .eq_ignore_ascii_case("Americans")
+        .find(|entity| {
+            entity.category == EntityCategory::Unit
+                && entity.position.rx == 22
+                && entity.position.ry == 22
                 && sim
                     .interner
-                    .resolve(e.type_ref)
-                    .eq_ignore_ascii_case("HARV")
-                && e.category == crate::map::entities::EntityCategory::Unit
+                    .resolve(entity.owner)
+                    .eq_ignore_ascii_case("Americans")
+                && sim
+                    .interner
+                    .resolve(entity.type_ref)
+                    .eq_ignore_ascii_case("CMIN")
         })
-        .map(|e| (e.position.rx, e.position.ry))
-        .collect();
-    assert_eq!(harvesters.len(), 1);
-    let (harv_rx, harv_ry) = harvesters[0];
+        .expect("stock Allied FreeUnit should use the 4x3 native primary cell");
+    assert_eq!(miner.facing, 0xC0);
+    assert_eq!(miner.mission.current().known(), Some(MissionType::Harvest));
     assert!(
-        !(20..=22).contains(&harv_rx) || !(20..=22).contains(&harv_ry),
-        "starter harvester spawned inside refinery footprint at ({harv_rx},{harv_ry})"
+        !sim.substrate.entities.values().any(|entity| {
+            entity.category == EntityCategory::Unit
+                && entity.position.rx == 22
+                && entity.position.ry == 23
+                && sim
+                    .interner
+                    .resolve(entity.type_ref)
+                    .eq_ignore_ascii_case("CMIN")
+        }),
+        "FreeUnit must not use the old south-edge heuristic"
     );
 }
 
 #[test]
-fn modded_refinery_placement_uses_free_unit_from_rules() {
+fn occupied_primary_bay_uses_one_fallback_without_overlap() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let refinery_id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    let blocker_id = sim
+        .spawn_object("BLOCKER", "Russians", 22, 22, 0, &rules, &height_map)
+        .expect("dynamic primary blocker should spawn");
+    assert!(sim.substrate.occupancy.contains_entity(22, 22, refinery_id));
+    assert!(sim.substrate.occupancy.contains_entity(22, 22, blocker_id));
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(completion.spawned_entities);
+    let cmin_ids = unit_ids(&sim, "Americans", "CMIN");
+    assert_eq!(
+        cmin_ids.len(),
+        1,
+        "fallback must reuse one constructed unit"
+    );
+    let miner = sim
+        .substrate
+        .entities
+        .get(cmin_ids[0])
+        .expect("fallback miner should remain alive");
+    assert_ne!(
+        (miner.position.rx, miner.position.ry),
+        (22, 22),
+        "FreeUnit must not overlap an independent primary-bay blocker"
+    );
+    assert_eq!(miner.facing, 0xA0);
+    assert!(sim.substrate.occupancy.contains_entity(22, 22, blocker_id));
+    assert!(
+        !sim.substrate
+            .occupancy
+            .contains_entity(22, 22, miner.stable_id),
+        "failed primary Reveal must not mark the miner into occupancy"
+    );
+}
+
+#[test]
+fn occupied_first_fallback_retries_same_unit_at_second_candidate() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let refinery_id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    sim.spawn_object("BLOCKER", "Russians", 22, 22, 0, &rules, &height_map)
+        .expect("dynamic primary blocker should spawn");
+    sim.spawn_object("BLOCKER", "Russians", 19, 19, 0, &rules, &height_map)
+        .expect("first compatibility fallback blocker should spawn");
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(completion.spawned_entities);
+    let cmin_ids = unit_ids(&sim, "Americans", "CMIN");
+    assert_eq!(
+        cmin_ids.len(),
+        1,
+        "fallback retries must not allocate another FreeUnit"
+    );
+    let miner = sim
+        .substrate
+        .entities
+        .get(cmin_ids[0])
+        .expect("second-fallback miner should remain alive");
+    assert_eq!((miner.position.rx, miner.position.ry), (20, 19));
+    assert_eq!(miner.facing, 0xA0);
+    assert!(
+        !sim.substrate
+            .occupancy
+            .contains_entity(19, 19, miner.stable_id),
+        "failed first fallback must leave no occupancy residue"
+    );
+}
+
+#[test]
+fn free_unit_total_placement_failure_refunds_once_and_leaves_no_entity() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let refinery_id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    sim.spawn_object("BLOCKER", "Russians", 22, 22, 0, &rules, &height_map)
+        .expect("dynamic primary blocker should spawn");
+    for ry in 0..64 {
+        for rx in 0..64 {
+            grid.set_blocked(rx, ry, true);
+        }
+    }
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 100;
+    let americans = sim.interner.get("Americans").expect("owner should exist");
+    let owned_units_before = sim
+        .houses
+        .get(&americans)
+        .expect("house should exist")
+        .owned_unit_count;
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(
+        !completion.spawned_entities,
+        "a constructed-then-destroyed FreeUnit is not a successful spawn"
+    );
+    assert!(unit_ids(&sim, "Americans", "CMIN").is_empty());
+    assert!(
+        !sim.substrate.entities.values().any(|entity| sim
+            .interner
+            .resolve(entity.type_ref)
+            .eq_ignore_ascii_case("CMIN")),
+        "same-tick pending-delete drain must leave no living or limbo CMIN"
+    );
+    assert_eq!(credits_for_owner(&sim, "Americans"), 1500);
+    assert_eq!(
+        sim.houses
+            .get(&americans)
+            .expect("house should remain")
+            .owned_unit_count,
+        owned_units_before,
+        "constructed FreeUnit owner count must be released exactly once"
+    );
+
+    let later = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(!later.spawned_entities);
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        1500,
+        "consumed BuildingUp transition must not refund twice"
+    );
+}
+
+#[test]
+fn stock_soviet_refinery_completion_spawns_harv() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Russians", "NACNST", 14, 20);
+    let refinery_id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Russians",
+        "NAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    block_building_foundation(&mut grid, &rules, "NAREFN", 20, 20);
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(completion.spawned_entities);
+    let harvester_id = unit_ids(&sim, "Russians", "HARV")
+        .into_iter()
+        .next()
+        .expect("stock Soviet refinery should spawn HARV");
+    let harvester = sim
+        .substrate
+        .entities
+        .get(harvester_id)
+        .expect("spawned HARV should exist");
+    assert_eq!((harvester.position.rx, harvester.position.ry), (22, 22));
+    assert_eq!(harvester.facing, 0xC0);
+    assert_eq!(
+        harvester.mission.current().known(),
+        Some(MissionType::Harvest)
+    );
+    assert!(unit_ids(&sim, "Russians", "CMIN").is_empty());
+}
+
+#[test]
+fn non_refinery_completion_has_no_free_unit_or_credit_side_effect() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+    let construction_yard_id = sim
+        .spawn_object("GACNST", "Americans", 20, 20, 0, &rules, &height_map)
+        .expect("construction yard should spawn");
+    sim.substrate
+        .entities
+        .get_mut(construction_yard_id)
+        .expect("construction yard should exist")
+        .building_up = Some(BuildingUp {
+        elapsed_ticks: 0,
+        total_ticks: 1,
+    });
+    let credits_before = credits_for_owner(&sim, "Americans");
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(!completion.spawned_entities);
+    assert!(unit_ids(&sim, "Americans", "CMIN").is_empty());
+    assert!(unit_ids(&sim, "Americans", "HARV").is_empty());
+    assert_eq!(credits_for_owner(&sim, "Americans"), credits_before);
+}
+
+#[test]
+fn simultaneous_refinery_completions_preserve_stable_id_order() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    spawn_structure(&mut sim, 2, "Russians", "NACNST", 14, 35);
+    let allied_refinery = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    let soviet_refinery = ready_and_place(
+        &mut sim,
+        &rules,
+        "Russians",
+        "NAREFN",
+        20,
+        35,
+        &grid,
+        &height_map,
+    );
+    assert!(allied_refinery < soviet_refinery);
+    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    block_building_foundation(&mut grid, &rules, "NAREFN", 20, 35);
+    set_ticks_until_completion(&mut sim, allied_refinery, 1);
+    set_ticks_until_completion(&mut sim, soviet_refinery, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(completion.spawned_entities);
+    let cmin = unit_ids(&sim, "Americans", "CMIN");
+    let harv = unit_ids(&sim, "Russians", "HARV");
+    assert_eq!(cmin.len(), 1);
+    assert_eq!(harv.len(), 1);
+    assert!(
+        cmin[0] < harv[0],
+        "FreeUnits must allocate in completed-building stable-ID order"
+    );
+}
+
+#[test]
+fn modded_refinery_completion_uses_free_unit_from_rules() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[InfantryTypes]\n\
          [VehicleTypes]\n\
@@ -579,43 +1058,26 @@ fn modded_refinery_placement_uses_free_unit_from_rules() {
     let grid = PathGrid::new(64, 64);
 
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 18, 18);
-    let americans = sim.interner.intern("Americans");
-    let modproc = sim.interner.intern("MODPROC");
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([modproc]));
-
-    assert!(place_ready_building(
+    let refinery_id = ready_and_place(
         &mut sim,
         &rules,
         "Americans",
         "MODPROC",
         20,
         20,
-        Some(&grid),
+        &grid,
         &height_map,
-    ));
+    );
+    assert!(unit_ids(&sim, "Americans", "MODHARV").is_empty());
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
 
-    let harvesters = sim
-        .substrate
-        .entities
-        .values()
-        .filter(|e| {
-            sim.interner
-                .resolve(e.owner)
-                .eq_ignore_ascii_case("Americans")
-                && sim
-                    .interner
-                    .resolve(e.type_ref)
-                    .eq_ignore_ascii_case("MODHARV")
-                && e.category == crate::map::entities::EntityCategory::Unit
-        })
-        .count();
-    assert_eq!(harvesters, 1);
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(completion.spawned_entities);
+    assert_eq!(unit_ids(&sim, "Americans", "MODHARV").len(), 1);
 }
 
 #[test]
-fn refinery_without_free_unit_spawns_nothing() {
+fn refinery_without_free_unit_spawns_nothing_on_completion() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[InfantryTypes]\n\
          [VehicleTypes]\n\
@@ -640,39 +1102,21 @@ fn refinery_without_free_unit_spawns_nothing() {
     let grid = PathGrid::new(64, 64);
 
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 18, 18);
-    let americans = sim.interner.intern("Americans");
-    let modproc = sim.interner.intern("MODPROC");
-    sim.production
-        .ready_by_owner
-        .insert(americans, VecDeque::from([modproc]));
-
-    assert!(place_ready_building(
+    let refinery_id = ready_and_place(
         &mut sim,
         &rules,
         "Americans",
         "MODPROC",
         20,
         20,
-        Some(&grid),
+        &grid,
         &height_map,
-    ));
+    );
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
 
-    let harvesters = sim
-        .substrate
-        .entities
-        .values()
-        .filter(|e| {
-            sim.interner
-                .resolve(e.owner)
-                .eq_ignore_ascii_case("Americans")
-                && sim
-                    .interner
-                    .resolve(e.type_ref)
-                    .eq_ignore_ascii_case("MODHARV")
-                && e.category == crate::map::entities::EntityCategory::Unit
-        })
-        .count();
-    assert_eq!(harvesters, 0);
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(!completion.spawned_entities);
+    assert!(unit_ids(&sim, "Americans", "MODHARV").is_empty());
 }
 
 #[test]

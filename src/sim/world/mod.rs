@@ -1798,8 +1798,8 @@ impl Simulation {
         }
     }
 
-    /// Advance build-up animations: increment elapsed ticks, remove when done.
-    fn tick_building_up(&mut self) {
+    /// Advance build-up animations and return completed building stable IDs.
+    fn tick_building_up(&mut self) -> Vec<u64> {
         // Collect keys first to allow &mut iteration via get_mut().
         let keys = self.substrate.entities.keys_sorted();
         let mut finished: Vec<u64> = Vec::new();
@@ -1813,11 +1813,12 @@ impl Simulation {
                 }
             }
         }
-        for sid in finished {
+        for &sid in &finished {
             if let Some(entity) = self.substrate.entities.get_mut(sid) {
                 entity.building_up = None;
             }
         }
+        finished
     }
 
     /// Advance building-down (undeploy) animations. When done, despawn the
@@ -1983,7 +1984,16 @@ impl Simulation {
 
         // --- Phase 9: Building animations + cleanup ---
         // DEPENDS ON: production (newly placed buildings start build-up).
-        self.tick_building_up();
+        let completed_buildings = self.tick_building_up();
+        if let Some(rules) = rules {
+            *spawned_entities |= production::spawn_completed_refinery_free_units(
+                self,
+                &completed_buildings,
+                rules,
+                path_grid,
+                height_map,
+            );
+        }
         // Advance building-down (undeploy) animations; spawn units when done.
         *spawned_entities |= self.tick_building_down(rules);
 

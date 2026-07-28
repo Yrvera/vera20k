@@ -17,7 +17,6 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding;
 use crate::sim::world::Simulation;
 
-use super::production_refinery::maybe_spawn_refinery_harvester;
 use super::production_tech::{foundation_dimensions, producer_candidates_for_owner_category};
 use super::production_types::*;
 
@@ -229,8 +228,6 @@ pub fn place_ready_building(
             total_ticks: 30,
         });
     }
-    maybe_spawn_refinery_harvester(sim, rules, owner, type_id, rx, ry, path_grid, height_map);
-
     // Refresh superweapon grants — newly placed building may provide a SW.
     if sim.session.game_options.super_weapons {
         crate::sim::superweapon::refresh_super_weapons_for_owner(sim, rules, owner_id);
