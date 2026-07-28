@@ -1,98 +1,167 @@
-//! Refinery detection, harvester spawning, and ore dropoff cell finding.
+//! Refinery detection, completion-owned FreeUnit spawning, and fallback cell finding.
 //!
 //! Extracted from production_placement.rs for file-size limits.
 
 use std::collections::BTreeMap;
 
+use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 
 use super::production_tech::foundation_dimensions;
 
-/// Facing for the free harvester when the south-of-foundation spawn cell
-/// is walkable. 0xC0 = 192 = south in the 0..255 facing system.
+/// Native primary FreeUnit facing byte. Under the project facing convention,
+/// 0xC0 is west.
 const FREE_UNIT_FACING_PRIMARY: u8 = 0xC0;
-/// Fallback facing when the primary cell is blocked and a perimeter cell is
-/// chosen instead. 0xA0 = 160 = south-southwest.
+/// Native fallback FreeUnit facing byte. Under the project facing convention,
+/// 0xA0 is southwest.
 const FREE_UNIT_FACING_FALLBACK: u8 = 0xA0;
 
-/// Spawn a free harvester when a refinery is placed (RA2 standard behavior).
-pub(super) fn maybe_spawn_refinery_harvester(
+/// Spawn configured refinery FreeUnits for buildings whose build-up completed
+/// this tick. The input order is the deterministic completion order.
+pub(crate) fn spawn_completed_refinery_free_units(
+    sim: &mut Simulation,
+    completed_building_ids: &[u64],
+    rules: &RuleSet,
+    path_grid: Option<&PathGrid>,
+    height_map: &BTreeMap<(u16, u16), u8>,
+) -> bool {
+    let mut any_spawned = false;
+
+    for &stable_id in completed_building_ids {
+        let Some((owner_id, type_ref, rx, ry, width, height)) = ({
+            let entity = sim.substrate.entities.get(stable_id);
+            entity.and_then(|entity| {
+                if entity.category != EntityCategory::Structure || entity.dying {
+                    return None;
+                }
+                let (width, height) = foundation_dimensions(&entity.foundation);
+                Some((
+                    entity.owner,
+                    entity.type_ref,
+                    entity.position.rx,
+                    entity.position.ry,
+                    width,
+                    height,
+                ))
+            })
+        }) else {
+            continue;
+        };
+
+        // These allocations occur only for completed buildings, not every tick.
+        // They end immutable interner borrows before spawn_object mutates sim.
+        let owner = sim.interner.resolve(owner_id).to_owned();
+        let building_type_id = sim.interner.resolve(type_ref).to_owned();
+        any_spawned |= try_spawn_refinery_free_unit(
+            sim,
+            rules,
+            &owner,
+            &building_type_id,
+            rx,
+            ry,
+            width,
+            height,
+            path_grid,
+            height_map,
+        );
+    }
+
+    any_spawned
+}
+
+fn try_spawn_refinery_free_unit(
     sim: &mut Simulation,
     rules: &RuleSet,
     owner: &str,
     building_type_id: &str,
     building_rx: u16,
     building_ry: u16,
-    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    width: u16,
+    height: u16,
+    path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
-) {
+) -> bool {
     if !rules.is_refinery_type(building_type_id) {
-        return;
+        return false;
     }
 
-    let Some(harvester_type) = rules.refinery_free_unit(building_type_id) else {
-        return;
+    let Some(free_unit_type) = rules.refinery_free_unit(building_type_id) else {
+        return false;
     };
 
-    let obj = rules.object_case_insensitive(building_type_id);
-    let (width, height) = obj
-        .map(|o| foundation_dimensions(&o.foundation))
-        .unwrap_or((1, 1));
-
-    // Primary spawn cell: one row south of the foundation, on the building's
-    // middle column. For a 4x3 refinery at (rx, ry) this lands at (rx+2, ry+3)
-    // — directly below the south face of the structure.
-    let primary: (u16, u16) = (
-        building_rx.saturating_add(width / 2),
-        building_ry.saturating_add(height),
-    );
-    let (rx, ry, facing) = if path_grid.is_none_or(|g| g.is_walkable(primary.0, primary.1)) {
-        (primary.0, primary.1, FREE_UNIT_FACING_PRIMARY)
-    } else {
-        match find_adjacent_spawn_cell(building_rx, building_ry, width, height, path_grid) {
-            Some((fx, fy)) => (fx, fy, FREE_UNIT_FACING_FALLBACK),
-            None => {
-                log::warn!(
-                    "No walkable cell near refinery ({},{}) to spawn {}",
-                    building_rx,
-                    building_ry,
-                    harvester_type
-                );
-                return;
-            }
-        }
-    };
-    if sim
-        .spawn_object(harvester_type, owner, rx, ry, facing, rules, height_map)
-        .is_some()
+    let (rx, ry, facing) = if let Some((primary_rx, primary_ry)) =
+        primary_free_unit_cell(building_rx, building_ry, width, height)
     {
+        // By completion PathGrid contains the source refinery's own static
+        // blocker over this native internal bay, so it cannot reject primary.
+        (primary_rx, primary_ry, FREE_UNIT_FACING_PRIMARY)
+    } else {
+        let Some((fallback_rx, fallback_ry)) =
+            find_adjacent_spawn_cell(building_rx, building_ry, width, height, path_grid)
+        else {
+            log::warn!(
+                "No representable cell near completed refinery ({},{}) to spawn {}",
+                building_rx,
+                building_ry,
+                free_unit_type
+            );
+            return false;
+        };
+        (fallback_rx, fallback_ry, FREE_UNIT_FACING_FALLBACK)
+    };
+
+    let spawned = sim
+        .spawn_object(free_unit_type, owner, rx, ry, facing, rules, height_map)
+        .is_some();
+
+    if spawned {
         log::info!(
-            "Refinery {} spawned free {} at ({},{}) for {}",
+            "Completed refinery {} spawned free {} at ({},{}) for {}",
             building_type_id,
-            harvester_type,
+            free_unit_type,
             rx,
             ry,
             owner
         );
     } else {
         log::warn!(
-            "Refinery {} resolved free unit {} but spawn_object failed at ({},{}) for {}",
+            "Completed refinery {} resolved free unit {} but spawn_object failed at ({},{}) for {}",
             building_type_id,
-            harvester_type,
+            free_unit_type,
             rx,
             ry,
             owner
         );
     }
+
+    spawned
 }
 
+fn primary_free_unit_cell(
+    building_rx: u16,
+    building_ry: u16,
+    width: u16,
+    height: u16,
+) -> Option<(u16, u16)> {
+    let center_x = u32::from(building_rx).checked_add(u32::from(width) / 2)?;
+    let center_y = u32::from(building_ry).checked_add(u32::from(height) / 2)?;
+    let primary_y = center_y.checked_add(1)?;
+    Some((
+        u16::try_from(center_x).ok()?,
+        u16::try_from(primary_y).ok()?,
+    ))
+}
+
+/// Compatibility fallback retained as known drift until the native two-pass
+/// nearby-cell option and candidate order are decoded.
 fn find_adjacent_spawn_cell(
     cx: u16,
     cy: u16,
     width: u16,
     height: u16,
-    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    path_grid: Option<&PathGrid>,
 ) -> Option<(u16, u16)> {
     let Some(grid) = path_grid else {
         return Some((cx.saturating_add(width), cy.saturating_add(height / 2)));
@@ -119,4 +188,19 @@ fn find_adjacent_spawn_cell(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::primary_free_unit_cell;
+
+    #[test]
+    fn stock_4x3_primary_cell_is_center_plus_south() {
+        assert_eq!(primary_free_unit_cell(20, 20, 4, 3), Some((22, 22)));
+    }
+
+    #[test]
+    fn primary_cell_rejects_u16_overflow() {
+        assert_eq!(primary_free_unit_cell(u16::MAX, u16::MAX, 4, 3), None);
+    }
 }
