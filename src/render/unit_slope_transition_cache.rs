@@ -195,6 +195,7 @@ impl VxlSlopeTransitionCache {
                 pixel_size: [sprite.width as f32, sprite.height as f32],
                 offset_x: sprite.offset_x,
                 offset_y: sprite.offset_y,
+                page: page_index,
             },
         };
         self.entries.insert(key, entry);

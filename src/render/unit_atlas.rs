@@ -2,10 +2,12 @@
 //!
 //! At map load time, all VXL-rendered entities are identified by (type_id, facing).
 //! Each unique combination is rendered once via the software rasterizer, then all
-//! resulting sprites are shelf-packed into a single GPU texture atlas. During the
-//! render loop, unit SpriteInstances reference UV regions within this atlas.
+//! resulting sprites are shelf-packed into lossless GPU texture pages. During the
+//! render loop, unit SpriteInstances reference UV regions within one page while
+//! the app layer preserves the original flat draw order across page changes.
 //!
-//! This matches the proven TileAtlas approach: one texture, one draw call.
+//! This retains the proven TileAtlas pre-render/cache approach while paging only
+//! the texture storage and ordered draw submission needed for lossless capacity.
 //!
 //! ## Dependency rules
 //! - Part of render/ — depends on assets/ (VXL/HVA/Palette), render/batch (GPU upload),
@@ -88,14 +90,22 @@ pub struct UnitSpriteEntry {
     pub offset_x: f32,
     /// Y offset from the model's center to the sprite's top-left corner.
     pub offset_y: f32,
+    /// Texture page containing this sprite.
+    pub page: usize,
 }
 
-/// A GPU texture atlas containing pre-rendered unit voxel sprites.
+/// One texture page in the unit atlas.
+pub struct UnitAtlasPage {
+    /// Packed palette-index texture for this page.
+    pub texture: BatchTexture,
+}
+
+/// A paged GPU texture atlas containing pre-rendered unit voxel sprites.
 ///
 /// Created once at map load. Queried per-frame to build unit SpriteInstances.
 pub struct UnitAtlas {
-    /// The packed GPU texture containing all unit sprites.
-    pub texture: BatchTexture,
+    /// Lossless texture pages containing all unit sprites.
+    pub pages: Vec<UnitAtlasPage>,
     /// Lookup: (type_id, facing, frame) → UV rectangle + offset data.
     entries: HashMap<UnitSpriteKey, UnitSpriteEntry>,
     /// HVA frame counts per (type_id, layer). Missing entries have 1 frame.
@@ -120,6 +130,21 @@ impl UnitAtlas {
     /// Number of unique sprites in the atlas.
     pub fn sprite_count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Number of texture pages in the atlas.
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// Get one atlas page.
+    pub fn page(&self, page: usize) -> Option<&UnitAtlasPage> {
+        self.pages.get(page)
+    }
+
+    /// Get the texture for one atlas page.
+    pub fn page_texture(&self, page: usize) -> Option<&BatchTexture> {
+        self.page(page).map(|atlas_page| &atlas_page.texture)
     }
 
     /// Get the HVA frame count for a (type_id, layer) pair. Returns 1 if unknown.
@@ -449,8 +474,13 @@ pub fn build_unit_atlas(
     }
 
     // Step 1.5: Extract cached sprites from existing atlas, diff against needed keys.
-    let mut cached: Vec<CachedUnitSprite> = existing
-        .map(|atlas| atlas.rendered_cache)
+    let mut previous_atlas = existing;
+    let previous_cache_len = previous_atlas
+        .as_ref()
+        .map_or(0, |atlas| atlas.rendered_cache.len());
+    let mut cached: Vec<CachedUnitSprite> = previous_atlas
+        .as_mut()
+        .map(|atlas| std::mem::take(&mut atlas.rendered_cache))
         .unwrap_or_default();
     let cached_keys: HashSet<UnitSpriteKey> = cached.iter().map(|s| s.key.clone()).collect();
     let new_keys: Vec<UnitSpriteKey> = needed
@@ -538,15 +568,33 @@ pub fn build_unit_atlas(
     }
 
     // Step 3: Shelf-pack all sprites (cached + newly rendered) into atlas.
-    let mut atlas: UnitAtlas = pack_sprites(gpu, batch, &cached, frame_counts);
+    let mut atlas: UnitAtlas = match pack_sprites(gpu, batch, &cached, frame_counts) {
+        Ok(atlas) => atlas,
+        Err(err) => {
+            log::error!("Unit atlas packing failed: {err}");
+            if let Some(mut previous) = previous_atlas {
+                cached.truncate(previous_cache_len);
+                previous.rendered_cache = cached;
+                log::error!("Keeping the previous valid unit atlas after packing failure");
+                return Some(previous);
+            }
+            return None;
+        }
+    };
     atlas.rendered_cache = cached;
     atlas.gpu_rendered = gpu_rendered;
     atlas.cpu_rendered = cpu_rendered;
+    let page_dimensions = atlas
+        .pages
+        .iter()
+        .map(|page| format!("{}x{}", page.texture.width, page.texture.height))
+        .collect::<Vec<_>>()
+        .join(", ");
     log::info!(
-        "Unit atlas built: {} sprites, {}x{} px",
+        "Unit atlas built: {} sprites across {} page(s): {}",
         atlas.sprite_count(),
-        atlas.texture.width,
-        atlas.texture.height,
+        atlas.page_count(),
+        page_dimensions,
     );
     Some(atlas)
 }
@@ -1042,136 +1090,262 @@ fn facing_config_for_layer(layer: VxlLayer) -> (u8, u16) {
     }
 }
 
-/// Shelf-pack cached sprites into a GPU texture atlas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnitAtlasPlacement {
+    sprite_index: usize,
+    page: usize,
+    x: u32,
+    y: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnitAtlasPackPlan {
+    page_width: u32,
+    page_heights: Vec<u32>,
+    placements: Vec<UnitAtlasPlacement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UnitAtlasPackError {
+    ZeroTextureLimit,
+    SpriteExceedsTextureLimit {
+        sprite_index: usize,
+        width: u32,
+        height: u32,
+        limit: u32,
+    },
+    InvalidPixelCount {
+        sprite_index: usize,
+        expected: usize,
+        actual: usize,
+    },
+}
+
+impl std::fmt::Display for UnitAtlasPackError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroTextureLimit => write!(formatter, "GPU reports a zero 2D texture limit"),
+            Self::SpriteExceedsTextureLimit {
+                sprite_index,
+                width,
+                height,
+                limit,
+            } => write!(
+                formatter,
+                "sprite {sprite_index} is {width}x{height}, exceeding GPU limit {limit}"
+            ),
+            Self::InvalidPixelCount {
+                sprite_index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "sprite {sprite_index} has {actual} pixels; expected {expected}"
+            ),
+        }
+    }
+}
+
+/// Build a GPU-independent, lossless page-placement plan.
+fn plan_sprite_pages(
+    dimensions: &[(u32, u32)],
+    max_texture_dim: u32,
+) -> Result<UnitAtlasPackPlan, UnitAtlasPackError> {
+    if max_texture_dim == 0 {
+        return Err(UnitAtlasPackError::ZeroTextureLimit);
+    }
+    for (sprite_index, &(width, height)) in dimensions.iter().enumerate() {
+        if width > max_texture_dim || height > max_texture_dim {
+            return Err(UnitAtlasPackError::SpriteExceedsTextureLimit {
+                sprite_index,
+                width,
+                height,
+                limit: max_texture_dim,
+            });
+        }
+    }
+
+    let mut indices: Vec<usize> = (0..dimensions.len()).collect();
+    indices.sort_by(|&a, &b| dimensions[b].1.cmp(&dimensions[a].1));
+
+    let total_area: u64 = dimensions
+        .iter()
+        .map(|&(width, height)| {
+            (width as u64 + SPRITE_PADDING as u64) * (height as u64 + SPRITE_PADDING as u64)
+        })
+        .sum();
+    let estimated_side = (total_area as f64).sqrt().ceil() as u32;
+    let widest_sprite = dimensions
+        .iter()
+        .map(|&(width, _)| width)
+        .max()
+        .unwrap_or(0);
+    let minimum_width = 64.min(max_texture_dim);
+    let mut page_width = estimated_side
+        .max(minimum_width)
+        .max(widest_sprite)
+        .min(max_texture_dim);
+
+    while simulate_shelf_height(&indices, dimensions, page_width) > max_texture_dim as u64
+        && page_width < max_texture_dim
+    {
+        page_width = page_width.saturating_mul(2).min(max_texture_dim);
+    }
+
+    let mut placements = Vec::with_capacity(dimensions.len());
+    let mut page_heights: Vec<u32> = Vec::new();
+    let mut page = 0usize;
+    let mut cursor_x = 0u32;
+    let mut cursor_y = 0u32;
+    let mut shelf_height = 0u32;
+
+    for &sprite_index in &indices {
+        let (width, height) = dimensions[sprite_index];
+        if cursor_x + width > page_width {
+            let next_y = cursor_y + shelf_height + SPRITE_PADDING;
+            if next_y + height > max_texture_dim {
+                page += 1;
+                cursor_x = 0;
+                cursor_y = 0;
+                shelf_height = 0;
+            } else {
+                cursor_x = 0;
+                cursor_y = next_y;
+                shelf_height = 0;
+            }
+        }
+        if cursor_y + height > max_texture_dim {
+            page += 1;
+            cursor_x = 0;
+            cursor_y = 0;
+            shelf_height = 0;
+        }
+
+        placements.push(UnitAtlasPlacement {
+            sprite_index,
+            page,
+            x: cursor_x,
+            y: cursor_y,
+        });
+        if page_heights.len() <= page {
+            page_heights.resize(page + 1, 0);
+        }
+        page_heights[page] = page_heights[page].max(cursor_y + height);
+        cursor_x += width + SPRITE_PADDING;
+        shelf_height = shelf_height.max(height);
+    }
+
+    Ok(UnitAtlasPackPlan {
+        page_width,
+        page_heights,
+        placements,
+    })
+}
+
+fn simulate_shelf_height(indices: &[usize], dimensions: &[(u32, u32)], page_width: u32) -> u64 {
+    let mut cursor_x = 0u64;
+    let mut cursor_y = 0u64;
+    let mut shelf_height = 0u64;
+    for &sprite_index in indices {
+        let (width, height) = dimensions[sprite_index];
+        let width = width as u64;
+        let height = height as u64;
+        if cursor_x + width > page_width as u64 {
+            cursor_y += shelf_height + SPRITE_PADDING as u64;
+            cursor_x = 0;
+            shelf_height = 0;
+        }
+        cursor_x += width + SPRITE_PADDING as u64;
+        shelf_height = shelf_height.max(height);
+    }
+    cursor_y + shelf_height
+}
+
+/// Shelf-pack cached sprites into lossless GPU texture pages.
 fn pack_sprites(
     gpu: &GpuContext,
     batch: &BatchRenderer,
     sprites: &[CachedUnitSprite],
     frame_counts: BTreeMap<(String, VxlLayer), u32>,
-) -> UnitAtlas {
-    // Sort by height descending for shelf packing efficiency.
-    let mut indices: Vec<usize> = (0..sprites.len()).collect();
-    indices.sort_by(|&a, &b| sprites[b].height.cmp(&sprites[a].height));
-
-    // Estimate atlas width from total pixel area.
-    let total_area: u64 = sprites
-        .iter()
-        .map(|s| {
-            (s.width as u64 + SPRITE_PADDING as u64) * (s.height as u64 + SPRITE_PADDING as u64)
-        })
-        .sum();
-    let estimated_side: u32 = (total_area as f64).sqrt().ceil() as u32;
+) -> Result<UnitAtlas, UnitAtlasPackError> {
     let max_texture_dim: u32 = gpu.device.limits().max_texture_dimension_2d;
-    let mut atlas_width: u32 = estimated_side.clamp(64, max_texture_dim);
-
-    // Shelf-pack with retry: widen atlas if height exceeds GPU texture limit.
-    let placements: Vec<(usize, u32, u32)>;
-    let atlas_height: u32;
-    loop {
-        let mut trial: Vec<(usize, u32, u32)> = Vec::with_capacity(sprites.len());
-        let mut cursor_x: u32 = 0;
-        let mut cursor_y: u32 = 0;
-        let mut shelf_height: u32 = 0;
-        for &idx in &indices {
-            let w: u32 = sprites[idx].width;
-            let h: u32 = sprites[idx].height;
-            if cursor_x + w > atlas_width {
-                cursor_y += shelf_height + SPRITE_PADDING;
-                cursor_x = 0;
-                shelf_height = 0;
-            }
-            trial.push((idx, cursor_x, cursor_y));
-            cursor_x += w + SPRITE_PADDING;
-            shelf_height = shelf_height.max(h);
-        }
-        let trial_height: u32 = trial
-            .iter()
-            .map(|&(idx, _, py)| py + sprites[idx].height)
-            .max()
-            .unwrap_or(1);
-        if trial_height <= max_texture_dim {
-            placements = trial;
-            atlas_height = trial_height;
-            break;
-        }
-        if atlas_width >= max_texture_dim {
-            log::warn!(
-                "Unit atlas height {} exceeds GPU limit {} at max width",
-                trial_height,
-                max_texture_dim
-            );
-            placements = trial;
-            atlas_height = trial_height.min(max_texture_dim);
-            break;
-        }
-        atlas_width = (atlas_width.saturating_mul(2)).min(max_texture_dim);
+    let plan = plan_cached_sprite_pages(sprites, max_texture_dim)?;
+    if plan.page_heights.len() > 1 {
+        log::info!(
+            "Unit atlas split into {} pages (GPU texture limit {})",
+            plan.page_heights.len(),
+            max_texture_dim,
+        );
     }
 
-    // Allocate palette-index buffer (one byte per pixel) and blit sprites.
-    let mut pixels: Vec<u8> = vec![0u8; (atlas_width * atlas_height) as usize];
-    let mut entries: HashMap<UnitSpriteKey, UnitSpriteEntry> =
-        HashMap::with_capacity(placements.len());
-    let aw: f32 = atlas_width as f32;
-    let ah: f32 = atlas_height as f32;
-
-    let mut dropped: u32 = 0;
-    for &(idx, px, py) in &placements {
-        let rs: &CachedUnitSprite = &sprites[idx];
-        let w: u32 = rs.width;
-        let h: u32 = rs.height;
-
-        // A sprite past the clamped height was never blitted, so its pixels are whatever
-        // the buffer was initialised to. Emitting an entry for it would hand the shader
-        // UVs above 1.0 pointing at unwritten memory — the unit renders blank or wrong
-        // with nothing logged. Skip the entry entirely so the sprite is visibly absent
-        // and the count below says so.
-        if py + h > atlas_height {
-            dropped += 1;
-            continue;
-        }
-
-        // Blit sprite palette indices into atlas (one byte per pixel).
-        for y in 0..h {
-            let src_start: usize = (y * w) as usize;
-            let src_end: usize = src_start + w as usize;
-            let dst_start: usize = ((py + y) * atlas_width + px) as usize;
-            let dst_end: usize = dst_start + w as usize;
-            if src_end <= rs.pixels.len() && dst_end <= pixels.len() {
+    let mut pages = Vec::with_capacity(plan.page_heights.len());
+    let mut entries = HashMap::with_capacity(plan.placements.len());
+    for (page_index, &page_height) in plan.page_heights.iter().enumerate() {
+        let mut pixels = vec![0u8; (plan.page_width * page_height) as usize];
+        let page_width_f32 = plan.page_width as f32;
+        let page_height_f32 = page_height as f32;
+        for placement in plan
+            .placements
+            .iter()
+            .filter(|placement| placement.page == page_index)
+        {
+            let rs = &sprites[placement.sprite_index];
+            let expected_pixels = (rs.width * rs.height) as usize;
+            if rs.pixels.len() != expected_pixels {
+                return Err(UnitAtlasPackError::InvalidPixelCount {
+                    sprite_index: placement.sprite_index,
+                    expected: expected_pixels,
+                    actual: rs.pixels.len(),
+                });
+            }
+            for y in 0..rs.height {
+                let src_start = (y * rs.width) as usize;
+                let src_end = src_start + rs.width as usize;
+                let dst_start = ((placement.y + y) * plan.page_width + placement.x) as usize;
+                let dst_end = dst_start + rs.width as usize;
                 pixels[dst_start..dst_end].copy_from_slice(&rs.pixels[src_start..src_end]);
             }
+            entries.insert(
+                rs.key.clone(),
+                UnitSpriteEntry {
+                    uv_origin: [
+                        placement.x as f32 / page_width_f32,
+                        placement.y as f32 / page_height_f32,
+                    ],
+                    uv_size: [
+                        rs.width as f32 / page_width_f32,
+                        rs.height as f32 / page_height_f32,
+                    ],
+                    pixel_size: [rs.width as f32, rs.height as f32],
+                    offset_x: rs.offset_x,
+                    offset_y: rs.offset_y,
+                    page: page_index,
+                },
+            );
         }
-
-        entries.insert(
-            rs.key.clone(),
-            UnitSpriteEntry {
-                uv_origin: [px as f32 / aw, py as f32 / ah],
-                uv_size: [w as f32 / aw, h as f32 / ah],
-                pixel_size: [w as f32, h as f32],
-                offset_x: rs.offset_x,
-                offset_y: rs.offset_y,
-            },
-        );
+        let texture = batch.create_unit_atlas_texture(gpu, plan.page_width, page_height, &pixels);
+        pages.push(UnitAtlasPage { texture });
     }
 
-    if dropped > 0 {
-        log::error!(
-            "Unit atlas overflow: {dropped} of {} sprites did not fit in {atlas_width}x{atlas_height} \
-             and will not render. Raise the requested max_texture_dimension_2d or lower the \
-             facing bucket counts.",
-            placements.len()
-        );
-    }
-
-    let texture: BatchTexture =
-        batch.create_unit_atlas_texture(gpu, atlas_width, atlas_height, &pixels);
-    UnitAtlas {
-        texture,
+    Ok(UnitAtlas {
+        pages,
         entries,
         frame_counts,
         rendered_cache: Vec::new(), // caller sets this after packing
         gpu_rendered: 0,            // caller sets after rendering
         cpu_rendered: 0,
-    }
+    })
+}
+
+fn plan_cached_sprite_pages(
+    sprites: &[CachedUnitSprite],
+    max_texture_dim: u32,
+) -> Result<UnitAtlasPackPlan, UnitAtlasPackError> {
+    let dimensions = sprites
+        .iter()
+        .map(|sprite| (sprite.width, sprite.height))
+        .collect::<Vec<_>>();
+    plan_sprite_pages(&dimensions, max_texture_dim)
 }
 
 // Tests extracted to unit_atlas_tests.rs to stay under 600 lines.
