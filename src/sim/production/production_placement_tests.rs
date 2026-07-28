@@ -38,6 +38,7 @@ fn stock_refinery_completion_rules() -> RuleSet {
          [VehicleTypes]\n\
          0=CMIN\n\
          1=HARV\n\
+         2=BLOCKER\n\
          [AircraftTypes]\n\
          [BuildingTypes]\n\
          0=GACNST\n\
@@ -57,13 +58,18 @@ fn stock_refinery_completion_rules() -> RuleSet {
          [CMIN]\n\
          Harvester=yes\n\
          Dock=GAREFN\n\
+         Cost=1400\n\
          Speed=4\n\
          Storage=20\n\
          [HARV]\n\
          Harvester=yes\n\
          Dock=NAREFN\n\
+         Cost=1400\n\
          Speed=4\n\
-         Storage=20\n",
+         Storage=20\n\
+         [BLOCKER]\n\
+         Cost=1\n\
+         Speed=0\n",
     ))
     .expect("stock refinery completion rules should parse");
     let art = ArtRegistry::from_ini(&IniFile::from_str(
@@ -745,6 +751,171 @@ fn stock_4x3_refinery_free_unit_uses_native_primary_cell() {
                     .eq_ignore_ascii_case("CMIN")
         }),
         "FreeUnit must not use the old south-edge heuristic"
+    );
+}
+
+#[test]
+fn occupied_primary_bay_uses_one_fallback_without_overlap() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let refinery_id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    let blocker_id = sim
+        .spawn_object("BLOCKER", "Russians", 22, 22, 0, &rules, &height_map)
+        .expect("dynamic primary blocker should spawn");
+    assert!(sim.substrate.occupancy.contains_entity(22, 22, refinery_id));
+    assert!(sim.substrate.occupancy.contains_entity(22, 22, blocker_id));
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(completion.spawned_entities);
+    let cmin_ids = unit_ids(&sim, "Americans", "CMIN");
+    assert_eq!(
+        cmin_ids.len(),
+        1,
+        "fallback must reuse one constructed unit"
+    );
+    let miner = sim
+        .substrate
+        .entities
+        .get(cmin_ids[0])
+        .expect("fallback miner should remain alive");
+    assert_ne!(
+        (miner.position.rx, miner.position.ry),
+        (22, 22),
+        "FreeUnit must not overlap an independent primary-bay blocker"
+    );
+    assert_eq!(miner.facing, 0xA0);
+    assert!(sim.substrate.occupancy.contains_entity(22, 22, blocker_id));
+    assert!(
+        !sim.substrate
+            .occupancy
+            .contains_entity(22, 22, miner.stable_id),
+        "failed primary Reveal must not mark the miner into occupancy"
+    );
+}
+
+#[test]
+fn occupied_first_fallback_retries_same_unit_at_second_candidate() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let refinery_id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    sim.spawn_object("BLOCKER", "Russians", 22, 22, 0, &rules, &height_map)
+        .expect("dynamic primary blocker should spawn");
+    sim.spawn_object("BLOCKER", "Russians", 19, 19, 0, &rules, &height_map)
+        .expect("first compatibility fallback blocker should spawn");
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(completion.spawned_entities);
+    let cmin_ids = unit_ids(&sim, "Americans", "CMIN");
+    assert_eq!(
+        cmin_ids.len(),
+        1,
+        "fallback retries must not allocate another FreeUnit"
+    );
+    let miner = sim
+        .substrate
+        .entities
+        .get(cmin_ids[0])
+        .expect("second-fallback miner should remain alive");
+    assert_eq!((miner.position.rx, miner.position.ry), (20, 19));
+    assert_eq!(miner.facing, 0xA0);
+    assert!(
+        !sim.substrate
+            .occupancy
+            .contains_entity(19, 19, miner.stable_id),
+        "failed first fallback must leave no occupancy residue"
+    );
+}
+
+#[test]
+fn free_unit_total_placement_failure_refunds_once_and_leaves_no_entity() {
+    let mut sim = Simulation::new();
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let refinery_id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    sim.spawn_object("BLOCKER", "Russians", 22, 22, 0, &rules, &height_map)
+        .expect("dynamic primary blocker should spawn");
+    for ry in 0..64 {
+        for rx in 0..64 {
+            grid.set_blocked(rx, ry, true);
+        }
+    }
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 100;
+    let americans = sim.interner.get("Americans").expect("owner should exist");
+    let owned_units_before = sim
+        .houses
+        .get(&americans)
+        .expect("house should exist")
+        .owned_unit_count;
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(
+        !completion.spawned_entities,
+        "a constructed-then-destroyed FreeUnit is not a successful spawn"
+    );
+    assert!(unit_ids(&sim, "Americans", "CMIN").is_empty());
+    assert!(
+        !sim.substrate.entities.values().any(|entity| sim
+            .interner
+            .resolve(entity.type_ref)
+            .eq_ignore_ascii_case("CMIN")),
+        "same-tick pending-delete drain must leave no living or limbo CMIN"
+    );
+    assert_eq!(credits_for_owner(&sim, "Americans"), 1500);
+    assert_eq!(
+        sim.houses
+            .get(&americans)
+            .expect("house should remain")
+            .owned_unit_count,
+        owned_units_before,
+        "constructed FreeUnit owner count must be released exactly once"
+    );
+
+    let later = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(!later.spawned_entities);
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        1500,
+        "consumed BuildingUp transition must not refund twice"
     );
 }
 
