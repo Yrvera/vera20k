@@ -20,11 +20,12 @@
 pub(crate) mod cell_spread;
 pub(crate) mod combat_aoe;
 pub(crate) mod combat_fire_gate;
-pub(crate) mod damage;
 pub(crate) mod combat_targeting;
 pub(crate) mod combat_weapon;
+pub(crate) mod damage;
 pub(crate) mod fire_decision;
 pub(crate) mod in_range;
+mod inviso_scatter;
 pub mod smudge_dispatch;
 
 #[cfg(test)]
@@ -58,8 +59,8 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::infantry;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
-use crate::sim::passenger::PassengerRole;
 use crate::sim::power_system::PowerState;
+use crate::sim::rng::SimRng;
 use crate::sim::vision::FogState;
 use crate::sim::world::{FireOriginSnapshot, SimFireEvent, SimSoundEvent};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
@@ -574,6 +575,7 @@ pub fn tick_combat(
     current_tick: u64,
     tick_ms: u32,
     binary_frame: u32,
+    scenario_rng: &mut SimRng,
 ) -> CombatTickResult {
     tick_combat_with_fog(
         entities,
@@ -594,6 +596,7 @@ pub fn tick_combat(
         // stable-id resolution order, preserving prior behavior exactly.
         &[],
         None,
+        scenario_rng,
     )
 }
 
@@ -652,6 +655,8 @@ pub enum SmudgeSpawnRequest {
         anim_name: InternedId,
         rx: u16,
         ry: u16,
+        sub_x: SimFixed,
+        sub_y: SimFixed,
         z: i32,
     },
     /// Emitted once per >=2x2 building destruction (DestructionEffects path).
@@ -705,6 +710,8 @@ pub(crate) fn emit_warhead_detonation_effects(
         anim_name: interned_name,
         rx,
         ry,
+        sub_x,
+        sub_y,
         z: z as i32,
     });
 }
@@ -730,9 +737,9 @@ pub struct TiberiumReductionRequest {
 pub struct CombatTickResult {
     pub reveal_events: Vec<RevealEvent>,
     pub despawned_ids: Vec<u64>,
-    /// IDs that should be physically removed by the world lifecycle this tick.
+    /// IDs that should enter world-owned UnInit immediately this tick.
     /// `despawned_ids` also includes SHP deaths that remain in-store for their
-    /// death animation; this list is immediate structure/voxel removal only.
+    /// death animation; this list is the immediate structure/voxel handoff only.
     pub immediate_uninit_ids: Vec<u64>,
     /// A structure was destroyed — PathGrid needs footprint unblock.
     pub structure_destroyed: bool,
@@ -763,6 +770,22 @@ pub struct CombatTickResult {
     /// post-batch by `unit_post::apply_unit_facing`. Transient — never stored,
     /// serialized, or hashed.
     pub unit_facing: Vec<(u64, u16)>,
+    /// Base-structure / harvester enemy-damage pings produced at the damage
+    /// apply site. Drained by the world into BaseUnderAttack/MinerUnderAttack
+    /// radar events + the local player's EVA dispatch.
+    pub under_attack_events: Vec<UnderAttackEvent>,
+}
+
+/// A "your asset is being shot" ping: a Structure or harvester took damage
+/// from a different house this tick.
+#[derive(Debug, Clone, Copy)]
+pub struct UnderAttackEvent {
+    pub rx: u16,
+    pub ry: u16,
+    /// The VICTIM's owner — the player whose radar/EVA should react.
+    pub owner: InternedId,
+    /// True when the victim is a harvester (miner ping), else a base structure.
+    pub miner: bool,
 }
 
 /// Resolve an attack's impact z (tile-step level units, signed) for the
@@ -817,7 +840,7 @@ struct DeathEffects {
     smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
 }
 
-/// Process all entity deaths for this tick: death weapons, passengers, explosions, despawn.
+/// Process combat-owned death effects and classify the lifecycle handoff.
 ///
 /// Extracts death side-effects into a `DeathEffects` struct so the caller can apply them
 /// (bridge damage, sound events, etc.) without the combat function growing unbounded.
@@ -902,18 +925,18 @@ fn handle_entity_deaths(
                 }
             }
 
-            // Snapshot cargo before the building entity is despawned. Used to
-            // either eject garrison occupants alive (CanBeOccupied buildings)
-            // or kill all riders (transports — current behavior).
+            // Generic transport cargo remains attached and untouched here so
+            // the carrier's world-owned UnInit can recurse in cargo order. The
+            // snapshot is only exported for the distinct garrison-eject path.
             let passenger_ids: Vec<u64> = entities
                 .get(dead_id)
                 .and_then(|e| e.passenger_role.cargo())
                 .map(|c| c.passengers.clone())
                 .unwrap_or_default();
 
-            // Branch: garrisoned CanBeOccupied buildings use the same gamemd
-            // SellBuilding occupant-eject contract as sell. Transports continue
-            // to kill all riders; that's a separate parity gap to fix later.
+            // Garrisoned CanBeOccupied buildings use the same gamemd
+            // SellBuilding occupant-eject contract as sell. Generic transports
+            // deliberately emit no passenger-side mutations from combat.
             //
             // Re-resolve the type string here because earlier mutable borrows
             // of `interner` (death_weapon_aoe, intern calls) ended its prior
@@ -942,18 +965,6 @@ fn handle_entity_deaths(
                     foundation_h,
                     passenger_ids,
                 });
-            } else {
-                // Existing transport / non-garrison cargo behavior: kill riders.
-                for &pid in &passenger_ids {
-                    if let Some(pax) = entities.get_mut(pid) {
-                        pax.health.current = 0;
-                        pax.dying = true;
-                        pax.passenger_role = PassengerRole::None;
-                        pax.attack_target = None;
-                        pax.movement_target = None;
-                        pax.selected = false;
-                    }
-                }
             }
 
             // Look up the warhead that dealt the killing blow for InfDeath
@@ -993,11 +1004,10 @@ fn handle_entity_deaths(
                 }
             }
 
-            clear_targets_on_dead_entity(entities, dead_id);
-
             if has_animation {
-                // Infantry/SHP units: mark dying, trigger death animation.
-                // The animation system will despawn when the death anim finishes.
+                // Transitional Infantry/SHP handoff: health was already reduced
+                // to zero by damage processing. Combat owns only the Rust death
+                // gate and sequence selection until Mission/Foot owns cadence.
                 // Select InfDeath variant from the killing warhead (default Die1).
                 let inf_death: u8 = killing_warhead
                     .as_ref()
@@ -1005,9 +1015,6 @@ fn handle_entity_deaths(
                     .unwrap_or(1);
                 if let Some(entity) = entities.get_mut(dead_id) {
                     entity.dying = true;
-                    entity.attack_target = None;
-                    entity.movement_target = None;
-                    entity.selected = false;
                     if let Some(ref mut anim) = entity.animation {
                         use crate::sim::animation::death_sequence_for_inf_death;
                         anim.switch_to(death_sequence_for_inf_death(inf_death));
@@ -1018,14 +1025,9 @@ fn handle_entity_deaths(
                 despawned_ids.push(dead_id);
                 log::trace!("Entity {} dying (death animation)", dead_id);
             } else {
-                // Structures and voxel vehicles: immediate physical removal,
-                // but the world layer owns lifecycle cleanup.
-                if let Some(entity) = entities.get_mut(dead_id) {
-                    entity.dying = true;
-                    entity.attack_target = None;
-                    entity.movement_target = None;
-                    entity.selected = false;
-                }
+                // Structures and voxel vehicles remain otherwise intact. The
+                // world consumes this request through ordered UnInit, which owns
+                // deselection, targets, radio, cell/logic state, and passengers.
                 immediate_uninit_ids.push(dead_id);
                 despawned_ids.push(dead_id);
                 log::trace!("Entity {} destroyed", dead_id);
@@ -1135,23 +1137,6 @@ fn handle_entity_deaths(
     }
 }
 
-/// Remove AttackTarget from any entity currently targeting the dead entity.
-fn clear_targets_on_dead_entity(entities: &mut EntityStore, dead_id: u64) {
-    let keys: Vec<u64> = entities.keys_sorted();
-    for &eid in &keys {
-        if let Some(entity) = entities.get_mut(eid) {
-            // Cell targets don't despawn, so this only matters for Entity targets.
-            if entity
-                .attack_target
-                .as_ref()
-                .is_some_and(|a| matches!(a.target, TargetKind::Entity(id) if id == dead_id))
-            {
-                entity.attack_target = None;
-            }
-        }
-    }
-}
-
 /// Destroy ore/gem resources at cells affected by a warhead detonation.
 ///
 /// Iterates cells in the warhead's CellSpread radius and reduces ore density
@@ -1228,6 +1213,10 @@ pub(crate) struct CombatEmit {
 /// cells from bridge cells when a wall-warhead detonates (so the right event
 /// stream — WallDamageEvent vs BridgeDamageEvent — gets populated). Pass
 /// `None` to skip wall-cell discrimination (legacy bridge-only routing).
+///
+/// `scenario_rng` is the persistent `ScenarioClass::Random` authority used
+/// inline by projectile detonation mechanisms such as the Inviso
+/// impact-animation scatter.
 pub fn tick_combat_with_fog(
     entities: &mut EntityStore,
     occupancy: &mut OccupancyGrid,
@@ -1245,6 +1234,7 @@ pub fn tick_combat_with_fog(
     binary_frame: u32,
     live_order: &[u64],
     radiation: Option<&mut crate::sim::radiation::RadiationState>,
+    scenario_rng: &mut SimRng,
 ) -> CombatTickResult {
     if tick_ms == 0 {
         return CombatTickResult {
@@ -1263,6 +1253,7 @@ pub fn tick_combat_with_fog(
             explosion_effects: Vec::new(),
             smudge_spawn_requests: Vec::new(),
             unit_facing: Vec::new(),
+            under_attack_events: Vec::new(),
         };
     }
     // Pre-scan: collect entities blocked from firing by locomotor or power state.
@@ -1602,7 +1593,7 @@ pub fn tick_combat_with_fog(
     // Phase 2: per-attacker fire decision + emission, in live-LOGIC snapshot
     // order. Each attacker is resolved through `resolve_attacker_fire` (the
     // reusable per-object fire body); emission order is identical to the prior
-    // inline loop, so the downstream scenario_rng smudge cursor is unmoved.
+    // inline loop, preserving both event order and inline Scenario-RNG draws.
     // Fire is category-agnostic (Units fire through the same body here); Unit
     // FACING destinations are computed per-object right after each Unit's own
     // resolution (S3 post-Foot Fire→Facing order) and applied post-batch by
@@ -1623,6 +1614,7 @@ pub fn tick_combat_with_fog(
             terrain,
             binary_frame,
             tick_ms,
+            scenario_rng,
             &mut emit,
         );
         // S3: per-object barrel destination for Unit attackers, read in the
@@ -1780,8 +1772,7 @@ pub fn tick_combat_with_fog(
         for &det in &rad_detonations {
             rad.apply_detonation(det, binary_frame, &rules.radiation, terrain);
         }
-        if !rad.is_empty()
-            && binary_frame.is_multiple_of(rules.radiation.application_delay as u32)
+        if !rad.is_empty() && binary_frame.is_multiple_of(rules.radiation.application_delay as u32)
         {
             if let Some(rad_warhead) = rules.warhead(&rules.radiation.site_warhead) {
                 let wh_iid = interner.intern(&rad_warhead.id);
@@ -1789,9 +1780,8 @@ pub fn tick_combat_with_fog(
                 // per-object AI would have applied this damage), stable-id
                 // fallback for entities absent from the live order.
                 let mut victim_ids: Vec<u64> = keys.clone();
-                victim_ids.sort_by_key(|&id| {
-                    (live_index.get(&id).copied().unwrap_or(usize::MAX), id)
-                });
+                victim_ids
+                    .sort_by_key(|&id| (live_index.get(&id).copied().unwrap_or(usize::MAX), id));
                 for &id in &victim_ids {
                     let Some(entity) = entities.get(id) else {
                         continue;
@@ -1830,8 +1820,11 @@ pub fn tick_combat_with_fog(
                         .object(interner.resolve(entity.type_ref))
                         .map(|o| o.armor.as_str())
                         .unwrap_or("none");
-                    let verses_pct =
-                        rad_warhead.verses.get(armor_index(armor)).copied().unwrap_or(100);
+                    let verses_pct = rad_warhead
+                        .verses
+                        .get(armor_index(armor))
+                        .copied()
+                        .unwrap_or(100);
                     let dmg = base * verses_pct as i32 / 100;
                     if dmg > 0 {
                         damage_events.push((
@@ -1848,7 +1841,15 @@ pub fn tick_combat_with_fog(
 
     // Phase 4: apply damage to targets and track last attacker for retaliation.
     let mut dead_entities: Vec<u64> = Vec::new();
+    let mut under_attack_events: Vec<UnderAttackEvent> = Vec::new();
     for (target_id, damage, attacker_id, _wh_id) in &damage_events {
+        // Attacker owner read before the target's mutable borrow. None for
+        // sourceless damage (radiation) or an already-despawned attacker.
+        let attacker_owner: Option<InternedId> = if *attacker_id != RAD_NO_ATTACKER {
+            entities.get(*attacker_id).map(|a| a.owner)
+        } else {
+            None
+        };
         if let Some(target) = entities.get_mut(*target_id) {
             if crate::sim::superweapon::invulnerability::is_invulnerable(
                 target.invulnerability.as_ref(),
@@ -1875,6 +1876,21 @@ pub fn tick_combat_with_fog(
             }
             if target.health.current == 0 {
                 dead_entities.push(*target_id);
+            }
+            // Under-attack ping: another house damaged a base structure or a
+            // harvester. Owner-differs is the hostility gate — alliances are
+            // not in scope in this pass; allied splash is rare and self-damage
+            // never pings, which matches the observable contract.
+            if *damage > 0 && attacker_owner.is_some_and(|ao| ao != target.owner) {
+                let miner = target.miner.is_some();
+                if miner || target.category == EntityCategory::Structure {
+                    under_attack_events.push(UnderAttackEvent {
+                        rx: target.position.rx,
+                        ry: target.position.ry,
+                        owner: target.owner,
+                        miner,
+                    });
+                }
             }
             // Sourceless damage (radiation field) never arms retaliation and
             // must not overwrite a real attacker recorded this tick.
@@ -1949,6 +1965,7 @@ pub fn tick_combat_with_fog(
         explosion_effects,
         smudge_spawn_requests,
         unit_facing,
+        under_attack_events,
     }
 }
 
@@ -2015,6 +2032,7 @@ pub(crate) fn resolve_attacker_fire(
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
     binary_frame: u32,
     tick_ms: u32,
+    scenario_rng: &mut SimRng,
     out: &mut CombatEmit,
 ) {
     // Pre-compute garrison scan range for retargeting (includes +1 buffer).
@@ -2216,9 +2234,8 @@ pub(crate) fn resolve_attacker_fire(
         }
     }
 
-    let infantry_fire_sync = snap.category == EntityCategory::Infantry
-        && !is_garrison
-        && snap.animation_frame.is_some();
+    let infantry_fire_sync =
+        snap.category == EntityCategory::Infantry && !is_garrison && snap.animation_frame.is_some();
     let mut pending_at_fire_frame = false;
     if infantry_fire_sync {
         if let Some(pending) = snap.pending_infantry_fire {
@@ -2335,8 +2352,7 @@ pub(crate) fn resolve_attacker_fire(
         // Aligned iff destination matches AND no rotation in progress.
         // Both checks needed: destination may match while interpolation
         // is still mid-arc (animated value not yet at destination).
-        let aligned =
-            barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
+        let aligned = barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
         if !aligned {
             if pending_at_fire_frame {
                 out.pending_infantry_updates.push((snap.stable_id, None));
@@ -2403,7 +2419,8 @@ pub(crate) fn resolve_attacker_fire(
         );
         for (target_id, dmg) in aoe_hits {
             let wh_iid = interner.intern(&warhead.id);
-            out.damage_events.push((target_id, dmg, snap.stable_id, wh_iid));
+            out.damage_events
+                .push((target_id, dmg, snap.stable_id, wh_iid));
         }
         if warhead.wall && weapon.damage > 0 {
             let damage_u16 = weapon.damage.max(0) as u16;
@@ -2446,7 +2463,8 @@ pub(crate) fn resolve_attacker_fire(
         if actual_damage > 0 {
             if let TargetKind::Entity(target_id) = snap.target {
                 let wh_iid = interner.intern(&warhead.id);
-                out.damage_events.push((target_id, actual_damage, snap.stable_id, wh_iid));
+                out.damage_events
+                    .push((target_id, actual_damage, snap.stable_id, wh_iid));
             }
         }
         if warhead.wall && weapon.damage > 0 {
@@ -2492,12 +2510,13 @@ pub(crate) fn resolve_attacker_fire(
     // Radiation-emitting detonation: one site request per shot at the impact
     // cell. Spread is the warhead's CellSpread truncated to whole cells.
     if weapon.rad_level > 0 {
-        out.rad_detonations.push(crate::sim::radiation::RadDetonation {
-            rx: target_rx,
-            ry: target_ry,
-            rad_level: weapon.rad_level,
-            spread: warhead.cell_spread.to_num::<i32>(),
-        });
+        out.rad_detonations
+            .push(crate::sim::radiation::RadDetonation {
+                rx: target_rx,
+                ry: target_ry,
+                rad_level: weapon.rad_level,
+                spread: warhead.cell_spread.to_num::<i32>(),
+            });
     }
 
     // Cell-target force-fire on terrain has no entity z; the dispatcher
@@ -2506,13 +2525,32 @@ pub(crate) fn resolve_attacker_fire(
         TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
         TargetKind::Cell(_, _) => 0,
     };
+    // BulletClass::Detonate randomizes only the visible CoordStruct for an
+    // Inviso projectile. The draw happens before AnimList selection, so this
+    // must run even when the warhead has no animation to emit.
+    let (effect_rx, effect_ry, effect_sub_x, effect_sub_y) = if weapon
+        .projectile
+        .as_deref()
+        .and_then(|projectile_id| rules.projectile(projectile_id))
+        .is_some_and(|projectile| projectile.inviso)
+    {
+        inviso_scatter::scatter_inviso_effect_coord(
+            scenario_rng,
+            target_rx,
+            target_ry,
+            target_sub_x,
+            target_sub_y,
+        )
+    } else {
+        (target_rx, target_ry, target_sub_x, target_sub_y)
+    };
     emit_warhead_detonation_effects(
         warhead,
         base_damage,
-        target_rx,
-        target_ry,
-        target_sub_x,
-        target_sub_y,
+        effect_rx,
+        effect_ry,
+        effect_sub_x,
+        effect_sub_y,
         impact_z,
         interner,
         &mut out.explosion_effects,
@@ -2572,7 +2610,8 @@ pub(crate) fn resolve_attacker_fire(
         snap.burst_remaining.saturating_sub(1)
     };
     if current_remaining > 0 {
-        out.burst_updates.push((snap.stable_id, current_remaining, BURST_INTER_SHOT_DELAY, 0));
+        out.burst_updates
+            .push((snap.stable_id, current_remaining, BURST_INTER_SHOT_DELAY, 0));
     } else {
         let mut rof_ticks = rof_to_cooldown_ticks(weapon.rof, tick_ms);
         // Garrison ROF: divide by occupant count, then by multiplier.

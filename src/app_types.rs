@@ -216,6 +216,12 @@ pub(crate) enum CursorFeedbackKind {
     /// C4 plant cursor — SEAL/Tanya/PTROOP hovering a CanC4 enemy structure
     /// (action 0x10 in gamemd, distinct mouse.shp frames from Enter).
     Demolish,
+    /// Repair cursor mode active (sidebar wrench). `true` = an own building is
+    /// under the cursor (wrench), `false` = no eligible target (no-repair).
+    RepairMode(bool),
+    /// Sell cursor mode active (sidebar dollar). `true` = an own building is
+    /// under the cursor (sell), `false` = no eligible target (no-sell).
+    SellMode(bool),
     /// Pan cursor — shown while middle-mouse dragging to scroll the map.
     Pan,
     /// Superweapon targeting reticle — shown while a charged SW is armed

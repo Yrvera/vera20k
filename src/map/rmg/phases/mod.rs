@@ -1,0 +1,57 @@
+//! Generation phase bodies, one module per pipeline stage.
+//!
+//! Each phase is a plain function over the grid/scratch/rng owners and
+//! commits state in the original's order. The stage sequencing itself lives
+//! in `super::generate`.
+
+pub mod adjacency;
+pub mod area;
+pub mod blob;
+pub mod bridge;
+pub mod bridge_deck;
+pub mod carve;
+pub mod carve_driver;
+pub mod connector;
+pub mod green_spread;
+pub mod hills;
+pub mod hills_corners;
+pub mod island_passes;
+pub mod lake;
+pub mod lat_fixup;
+pub mod lat_patches;
+pub mod meander;
+pub mod ramp;
+pub mod regions;
+pub mod river;
+pub mod rocks;
+pub mod shore;
+pub mod starts;
+pub mod tech_buildings;
+pub mod tiberium;
+pub mod trees;
+pub mod water;
+pub mod water_finalize;
+pub mod zones;
+
+/// A cell reference held in a phase's work list.
+///
+/// The original keeps raw cell pointers; every out-of-band lookup returns the
+/// one shared border cell, so list entries must distinguish "a real cell" from
+/// "the border cell" to preserve the aliasing (a border entry re-reads the
+/// border's coordinate slot at use time — it does not remember the coordinate
+/// it was created from).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellRef {
+    Cell(i16, i16),
+    Border,
+}
+
+impl CellRef {
+    pub fn at(grid: &super::grid::RmgGrid, x: i32, y: i32) -> Self {
+        if grid.is_valid(x, y) {
+            Self::Cell(x as i16, y as i16)
+        } else {
+            Self::Border
+        }
+    }
+}

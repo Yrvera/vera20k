@@ -25,7 +25,7 @@ use crate::rules::house_colors::HouseColorIndex;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::AiPlayerState;
-use crate::sim::house_state::HouseState;
+use crate::sim::house_state::{HouseDifficulty, HouseState};
 use crate::sim::world::Simulation;
 use crate::skirmish_launch::{
     LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
@@ -142,6 +142,7 @@ struct NormalizedSkirmishSlot {
     start_position: LaunchStartPosition,
     team: LaunchTeam,
     is_human: bool,
+    difficulty: HouseDifficulty,
 }
 
 pub(crate) fn house_color_map_for_launch_session(
@@ -163,7 +164,8 @@ pub(crate) fn house_color_map_for_launch_session(
     colors
 }
 
-pub(crate) fn apply_skirmish_launch_session(
+/// Apply an already validated explicit session without placeholder RNG draws.
+pub(crate) fn apply_explicit_skirmish_launch_session(
     sim: &mut Simulation,
     map_data: &MapFile,
     house_roster: &HouseRoster,
@@ -172,20 +174,30 @@ pub(crate) fn apply_skirmish_launch_session(
     resolved_terrain: &ResolvedTerrainGrid,
     session: &SkirmishLaunchSession,
 ) -> SkirmishLaunchApplyResult {
-    // Resolve any "random country" slots into concrete countries before any
-    // house/spawn state is built, drawing from the scenario stream so the
-    // choice is deterministic for the game seed and identical across peers.
-    let resolved_session = session.resolve_random_assignments(sim.random_assignment_rng());
-    let session = &resolved_session;
+    apply_resolved_skirmish_launch_session(
+        sim,
+        map_data,
+        house_roster,
+        rules,
+        height_map,
+        resolved_terrain,
+        session,
+    )
+}
+
+fn apply_resolved_skirmish_launch_session(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    house_roster: &HouseRoster,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    session: &SkirmishLaunchSession,
+) -> SkirmishLaunchApplyResult {
     let slots = normalized_launch_slots(session);
-    let ai_difficulty = session
-        .opponents
-        .first()
-        .map(|slot| slot.difficulty)
-        .unwrap_or_default();
     sim.session.game_options = session
         .options
-        .to_game_options(session.opponents.len() as i32, ai_difficulty);
+        .to_game_options(session.opponents.len() as i32);
 
     sim.houses.clear();
     sim.ai_players.clear();
@@ -195,7 +207,7 @@ pub(crate) fn apply_skirmish_launch_session(
     recount_house_owned_counts(sim);
 
     let starts = waypoints::multiplayer_start_waypoints(&map_data.waypoints);
-    let assignments = assign_launch_starts(&slots, &starts, resolved_terrain);
+    let assignments = assign_launch_starts(session, &starts, resolved_terrain);
     // Session start-slot -> house table: filled after the random-assignment
     // draws, before tick 0 — lockstep state (hashed + serialized).
     sim.session.start_slot_houses.clear();
@@ -302,6 +314,7 @@ fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<NormalizedSki
         start_position: session.local.start_position,
         team: session.local.team,
         is_human: true,
+        difficulty: HouseDifficulty::Normal,
     });
     for (idx, opponent) in session.opponents.iter().enumerate() {
         slots.push(NormalizedSkirmishSlot {
@@ -311,6 +324,8 @@ fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<NormalizedSki
             start_position: opponent.start_position,
             team: opponent.team,
             is_human: false,
+            difficulty: HouseDifficulty::from_native(opponent.difficulty.as_i32())
+                .expect("AiDifficulty uses native HouseClass discriminants"),
         });
     }
     slots
@@ -342,17 +357,16 @@ fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot]
     for slot in slots {
         let name_id = sim.interner.intern(&slot.owner_name);
         let country_id = sim.interner.intern(slot.country.country_name());
-        sim.houses.insert(
+        let mut house = HouseState::new(
             name_id,
-            HouseState::new(
-                name_id,
-                slot.country.side_index(),
-                Some(country_id),
-                slot.is_human,
-                sim.session.game_options.starting_credits,
-                sim.session.game_options.tech_level,
-            ),
+            slot.country.side_index(),
+            Some(country_id),
+            slot.is_human,
+            sim.session.game_options.starting_credits,
+            sim.session.game_options.tech_level,
         );
+        house.difficulty = slot.difficulty;
+        sim.houses.insert(name_id, house);
         if !slot.is_human {
             sim.ai_players.push(AiPlayerState::new(name_id));
             log::info!("AI player registered: {}", slot.owner_name);
@@ -415,34 +429,43 @@ fn recount_house_owned_counts(sim: &mut Simulation) {
     }
 }
 
-fn assign_launch_starts(
-    slots: &[NormalizedSkirmishSlot],
+/// Assign participants to original map waypoints without terrain fallback.
+///
+/// Explicit requests reserve their waypoint first. Remaining `Auto` requests
+/// then take the first still-free waypoint in participant order. This helper
+/// intentionally performs no randomized/distance selection and consumes no RNG.
+pub(crate) fn original_launch_start_assignments(
+    session: &SkirmishLaunchSession,
     starts: &[Waypoint],
-    resolved_terrain: &ResolvedTerrainGrid,
 ) -> Vec<(usize, Waypoint)> {
-    let mut assignments: Vec<Option<Waypoint>> = vec![None; slots.len()];
+    let requested_starts: Vec<LaunchStartPosition> = std::iter::once(session.local.start_position)
+        .chain(
+            session
+                .opponents
+                .iter()
+                .map(|opponent| opponent.start_position),
+        )
+        .collect();
+    let mut assignments: Vec<Option<Waypoint>> = vec![None; requested_starts.len()];
     let mut used_start_indices = BTreeSet::new();
-    let mut reserved_cells: BTreeSet<(u16, u16)> =
-        starts.iter().map(|start| (start.rx, start.ry)).collect();
-    let mut next_fallback_index = u32::MAX;
 
-    for (idx, slot) in slots.iter().enumerate() {
-        let LaunchStartPosition::Position(position) = slot.start_position else {
+    for (idx, requested) in requested_starts.iter().enumerate() {
+        let LaunchStartPosition::Position(position) = requested else {
             continue;
         };
-        let Some(start) = starts.iter().find(|start| start.index == position as u32) else {
+        let Some(start) = starts
+            .iter()
+            .find(|start| start.index == u32::from(*position))
+        else {
             continue;
         };
         if used_start_indices.insert(start.index) {
             assignments[idx] = Some(*start);
-            reserved_cells.insert((start.rx, start.ry));
-        } else {
-            continue;
         }
     }
 
-    for (idx, slot) in slots.iter().enumerate() {
-        if assignments[idx].is_some() || slot.start_position != LaunchStartPosition::Auto {
+    for (idx, requested) in requested_starts.iter().enumerate() {
+        if assignments[idx].is_some() || *requested != LaunchStartPosition::Auto {
             continue;
         }
         let Some(start) = starts
@@ -452,10 +475,33 @@ fn assign_launch_starts(
             continue;
         };
         used_start_indices.insert(start.index);
-        reserved_cells.insert((start.rx, start.ry));
         assignments[idx] = Some(*start);
     }
 
+    assignments
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, start)| start.map(|start| (idx, start)))
+        .collect()
+}
+
+fn assign_launch_starts(
+    session: &SkirmishLaunchSession,
+    starts: &[Waypoint],
+    resolved_terrain: &ResolvedTerrainGrid,
+) -> Vec<(usize, Waypoint)> {
+    let slot_count = 1 + session.opponents.len();
+    let original_assignments = original_launch_start_assignments(session, starts);
+    let mut assignments: Vec<Option<Waypoint>> = vec![None; slot_count];
+    for (slot_idx, start) in original_assignments {
+        if let Some(assignment) = assignments.get_mut(slot_idx) {
+            *assignment = Some(start);
+        }
+    }
+
+    let mut reserved_cells: BTreeSet<(u16, u16)> =
+        starts.iter().map(|start| (start.rx, start.ry)).collect();
+    let mut next_fallback_index = u32::MAX;
     for start in &mut assignments {
         if start.is_some() {
             continue;
@@ -623,7 +669,12 @@ fn seed_starting_extra_units(
     if unit_count <= 0 {
         return 0;
     }
-    let budget = starting_unit_budget(slots, rules, unit_count, sim.session.game_options.tech_level);
+    let budget = starting_unit_budget(
+        slots,
+        rules,
+        unit_count,
+        sim.session.game_options.tech_level,
+    );
     if budget <= 0 {
         return 0;
     }
@@ -639,8 +690,11 @@ fn seed_starting_extra_units(
         .and_then(|house| house.base_center) else {
             continue;
         };
-        let candidates =
-            starting_unit_candidates_for_country(rules, slot.country, sim.session.game_options.tech_level);
+        let candidates = starting_unit_candidates_for_country(
+            rules,
+            slot.country,
+            sim.session.game_options.tech_level,
+        );
         if candidates.is_empty() {
             continue;
         }
@@ -790,8 +844,8 @@ mod tests {
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::skirmish_launch::{
-        LaunchStartPosition, LaunchTeam, SkirmishAiSlot, SkirmishLaunchMode, SkirmishLaunchOptions,
-        SkirmishLocalSlot,
+        AiDifficulty, LaunchStartPosition, LaunchTeam, SkirmishAiSlot, SkirmishLaunchMode,
+        SkirmishLaunchOptions, SkirmishLocalSlot,
     };
 
     fn test_session() -> SkirmishLaunchSession {
@@ -1073,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_launch_starts_places_explicit_slots_before_auto_slots() {
+    fn original_launch_start_assignments_preserve_explicit_and_auto_slot_identity() {
         let mut session = test_session();
         session.opponents.push(SkirmishAiSlot {
             country: LaunchCountry::Cuba,
@@ -1084,7 +1138,6 @@ mod tests {
             team: LaunchTeam::None,
             difficulty: Default::default(),
         });
-        let slots = normalized_launch_slots(&session);
         let starts = [
             Waypoint {
                 index: 0,
@@ -1103,8 +1156,7 @@ mod tests {
             },
         ];
 
-        let terrain = test_terrain(16, 16);
-        let assignments = assign_launch_starts(&slots, &starts, &terrain);
+        let assignments = original_launch_start_assignments(&session, &starts);
 
         assert_eq!(assignments[0], (0, starts[1]));
         assert_eq!(assignments[1], (1, starts[2]));
@@ -1115,7 +1167,6 @@ mod tests {
     fn assign_launch_starts_generates_fallback_for_deficient_start_pool() {
         let mut session = test_session();
         session.opponents[0].start_position = LaunchStartPosition::Position(3);
-        let slots = normalized_launch_slots(&session);
         let starts = [Waypoint {
             index: 3,
             rx: 30,
@@ -1123,10 +1174,12 @@ mod tests {
         }];
         let terrain = test_terrain(8, 8);
 
-        let assignments = assign_launch_starts(&slots, &starts, &terrain);
+        let original = original_launch_start_assignments(&session, &starts);
+        let assignments = assign_launch_starts(&session, &starts, &terrain);
 
+        assert_eq!(original, vec![(0, starts[0])]);
         assert_eq!(assignments.len(), 2);
-        assert_eq!(assignments[0], (0, starts[0]));
+        assert_eq!(assignments[0], original[0]);
         assert_eq!(
             assignments[1],
             (
@@ -1142,7 +1195,7 @@ mod tests {
 
     #[test]
     fn assign_launch_starts_rejects_fallback_with_blocked_cell_inside_8x8_rect() {
-        let slots = normalized_launch_slots(&test_session());
+        let session = test_session();
         let starts = [Waypoint {
             index: 3,
             rx: 30,
@@ -1154,7 +1207,7 @@ mod tests {
         blocked.base_speed_costs.track = Some(0);
         blocked.zone_type = zone_class::IMPASSABLE;
 
-        let assignments = assign_launch_starts(&slots, &starts, &terrain);
+        let assignments = assign_launch_starts(&session, &starts, &terrain);
 
         assert_eq!(assignments.len(), 2);
         assert_eq!(assignments[0], (0, starts[0]));
@@ -1244,7 +1297,7 @@ mod tests {
         ];
         let terrain = test_terrain(16, 16);
 
-        let assignments = assign_launch_starts(&slots, &starts, &terrain);
+        let assignments = assign_launch_starts(&session, &starts, &terrain);
         let alliances = launch_alliance_map(&roster_with_neutral_and_playable(), &slots);
 
         assert_eq!(assignments[0], (0, starts[1]));
@@ -1267,7 +1320,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1293,6 +1346,170 @@ mod tests {
     }
 
     #[test]
+    fn explicit_launch_local_owner_drives_production_sidebar_theme() {
+        use crate::render::sidebar_chrome::SidebarTheme;
+
+        let terrain = test_terrain(64, 64);
+        let starts = test_launch_starts();
+        let map = test_map_with_starts(&starts);
+        let rules = test_standard_launch_rules();
+        let roster = roster_with_neutral_and_playable();
+
+        for (country, expected_theme) in [
+            (LaunchCountry::America, SidebarTheme::Allied),
+            (LaunchCountry::Russia, SidebarTheme::Soviet),
+            (LaunchCountry::Yuri, SidebarTheme::Yuri),
+        ] {
+            let mut sim = Simulation::new();
+            let mut session = test_session();
+            session.player_name = "Commander".to_string();
+            session.local.country = country;
+            session.options.bases = false;
+            session.options.unit_count = 0;
+
+            let result = apply_explicit_skirmish_launch_session(
+                &mut sim,
+                &map,
+                &roster,
+                &rules,
+                &test_height_map(),
+                &terrain,
+                &session,
+            );
+            let owner = result
+                .local_owner
+                .as_deref()
+                .expect("explicit launch must return its pinned local owner");
+            assert_eq!(owner, "Commander");
+
+            let actual = crate::app_sidebar_render::sidebar_theme_for_owner_sources(
+                Some(&sim),
+                &roster,
+                owner,
+            )
+            .unwrap_or(SidebarTheme::Allied);
+            assert_eq!(
+                actual, expected_theme,
+                "{country:?} launch owner must reach its live side theme"
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_theme_sources_preserve_roster_path_on_owner_name_collision() {
+        use crate::render::sidebar_chrome::SidebarTheme;
+
+        let roster = HouseRoster {
+            houses: vec![HouseDefinition {
+                name: "MapPlayer".to_string(),
+                color: HouseColorIndex(4),
+                country: Some("Russians".to_string()),
+                side: Some("Soviet".to_string()),
+                player_control: Some(true),
+                allies: Vec::new(),
+            }],
+        };
+
+        assert_eq!(
+            crate::app_sidebar_render::sidebar_theme_for_owner_sources(None, &roster, "MapPlayer",),
+            Some(SidebarTheme::Soviet),
+            "an absent live owner must preserve the existing roster resolver"
+        );
+
+        let mut sim = Simulation::new();
+        let owner_id = sim.interner.intern("MapPlayer");
+        sim.houses
+            .insert(owner_id, HouseState::new(owner_id, 2, None, true, 0, 10));
+        assert_eq!(
+            crate::app_sidebar_render::sidebar_theme_for_owner_sources(
+                Some(&sim),
+                &roster,
+                "MapPlayer",
+            ),
+            Some(SidebarTheme::Soviet),
+            "an explicit-name collision must preserve the roster-resolved map path"
+        );
+    }
+
+    #[test]
+    fn sidebar_theme_sources_reject_unknown_live_side() {
+        let mut sim = Simulation::new();
+        let owner_id = sim.interner.intern("DynamicOwner");
+        sim.houses
+            .insert(owner_id, HouseState::new(owner_id, 7, None, true, 0, 10));
+
+        assert_eq!(
+            crate::app_sidebar_render::sidebar_theme_for_owner_sources(
+                Some(&sim),
+                &HouseRoster::default(),
+                "DynamicOwner",
+            ),
+            None,
+            "unknown live side must defer to the caller's explicit fallback"
+        );
+    }
+
+    #[test]
+    fn explicit_skirmish_application_bypasses_legacy_resolver_even_with_poison_random_flag() {
+        let mut sim = Simulation::new();
+        let mut session = test_session();
+        session.local.country_random = true;
+        session.opponents[0].start_position = LaunchStartPosition::Position(0);
+        session.options.bases = false;
+        session.options.unit_count = 0;
+        let terrain = test_terrain(64, 64);
+        let starts = test_launch_starts();
+        let map = test_map_with_starts(&starts);
+        let rules = test_standard_launch_rules();
+        let scenario_before = sim.rng_state().scenario;
+
+        let result = apply_explicit_skirmish_launch_session(
+            &mut sim,
+            &map,
+            &roster_with_neutral_and_playable(),
+            &rules,
+            &test_height_map(),
+            &terrain,
+            &session,
+        );
+
+        assert_eq!(result.spawned_mcvs, 0);
+        assert_eq!(result.active_slots, 2);
+        assert_eq!(sim.rng_state().scenario, scenario_before);
+        assert!(
+            session.local.country_random,
+            "the borrowed poison fixture must remain marked random"
+        );
+    }
+
+    #[test]
+    fn launch_population_copies_each_ai_row_difficulty_to_its_house() {
+        let mut session = test_session();
+        let template = session.opponents[0].clone();
+        session.opponents = [AiDifficulty::Hard, AiDifficulty::Normal, AiDifficulty::Easy]
+            .into_iter()
+            .enumerate()
+            .map(|(index, difficulty)| SkirmishAiSlot {
+                color_index: (index + 2) as u8,
+                difficulty,
+                ..template.clone()
+            })
+            .collect();
+
+        let mut sim = Simulation::new();
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session));
+
+        let difficulty = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .map(|house| house.difficulty)
+        };
+        assert_eq!(difficulty("Player"), Some(HouseDifficulty::Normal));
+        assert_eq!(difficulty("Computer1"), Some(HouseDifficulty::Hard));
+        assert_eq!(difficulty("Computer2"), Some(HouseDifficulty::Normal));
+        assert_eq!(difficulty("Computer3"), Some(HouseDifficulty::Easy));
+    }
+
+    #[test]
     fn skirmish_bases_off_still_allows_unit_count_extra_units() {
         let mut sim = Simulation::new();
         let mut session = test_session();
@@ -1303,7 +1520,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_starting_unit_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1330,7 +1547,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1354,7 +1571,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1392,7 +1609,7 @@ mod tests {
         )
         .expect("blocker");
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),
@@ -1459,7 +1676,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let rules = test_starting_unit_rules();
 
-        let result = apply_skirmish_launch_session(
+        let result = apply_explicit_skirmish_launch_session(
             &mut sim,
             &map,
             &roster_with_neutral_and_playable(),

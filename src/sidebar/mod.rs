@@ -349,8 +349,18 @@ pub fn scroll_button_rects(
     let x0 = layout.sidebar_x + (sidebar_width - (dw + uw)) * 0.5;
     let y = layout.side3_y + 1.0;
     (
-        Rect { x: x0, y, w: dw, h: dh },
-        Rect { x: x0 + dw, y, w: uw, h: uh },
+        Rect {
+            x: x0,
+            y,
+            w: dw,
+            h: dh,
+        },
+        Rect {
+            x: x0 + dw,
+            y,
+            w: uw,
+            h: uh,
+        },
     )
 }
 
@@ -487,5 +497,4 @@ mod tests {
             }
         }
     }
-
 }

@@ -14,7 +14,7 @@ use super::SkirmishShellState;
 /// Map the menu country selection onto a launch country. When the slot is set
 /// to Random this still returns the currently-shown menu country as a
 /// placeholder; the caller flags the slot via `country_random` so the concrete
-/// country is drawn later (see `SkirmishLaunchSession::resolve_random_assignments`).
+/// country is drawn later on the app-owned front-end Scenario cursor.
 fn launch_country_from_menu(country: SkirmishCountry) -> LaunchCountry {
     match country {
         SkirmishCountry::America => LaunchCountry::America,
@@ -87,8 +87,8 @@ pub fn launch_session(
         .filter(|opponent| opponent.is_active())
         .count();
     let requested_players = active_count + 1;
-    let capacity = selected_map.multiplayer_start_waypoints.len();
-    if capacity < requested_players {
+    let capacity = selected_map.player_capacity;
+    if capacity < i32::try_from(requested_players).unwrap_or(i32::MAX) {
         return Err(LaunchValidationError::MapCapacityExceeded {
             capacity,
             requested_players,
@@ -111,6 +111,24 @@ pub fn launch_session(
         }
     }
 
+    pack_launch_session_without_start_validation(state, maps, modes)
+}
+
+/// Pack the current controls into a launch-shaped copy without running the
+/// Start-only capacity, minimum-player, or same-team validation gates.
+///
+/// Back follows the same native control-packing/randomization transaction as
+/// Start, so app code needs this conversion even when no match will launch.
+/// Structural conversion failures (missing map/mode or invalid typed values)
+/// remain errors because there is no faithful `SkirmishLaunchSession` to return.
+pub fn pack_launch_session_without_start_validation(
+    state: &SkirmishShellState,
+    maps: &[MapMenuEntry],
+    modes: &[SkirmishGameMode],
+) -> Result<SkirmishLaunchSession, LaunchValidationError> {
+    let selected_map = maps
+        .get(state.selected_map_idx)
+        .ok_or(LaunchValidationError::NoSelectedMap)?;
     let selected_mode =
         mode_by_id(modes, state.selected_mode_id).ok_or(LaunchValidationError::NoSelectedMode {
             mode_id: state.selected_mode_id,
@@ -120,8 +138,7 @@ pub fn launch_session(
         country: launch_country_from_menu(state.player_country),
         country_random: state.player_country_random,
         color_index: launch_color_index(0, state.player_color_index)?,
-        // Dormant: the shell does not yet offer a "random color" choice.
-        color_random: false,
+        color_random: !state.player_color_claimed,
         start_position: launch_start_position(0, state.player_start_position)?,
         team: LaunchTeam::from_shell_value(state.player_team),
     };
@@ -136,7 +153,7 @@ pub fn launch_session(
             country: launch_country_from_menu(opponent.country),
             country_random: opponent.country_random,
             color_index: launch_color_index(slot, opponent.color_index)?,
-            color_random: false,
+            color_random: !opponent.color_claimed,
             start_position: launch_start_position(slot, opponent.start_position)?,
             team: LaunchTeam::from_shell_value(opponent.team),
             difficulty,

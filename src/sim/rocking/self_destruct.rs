@@ -67,7 +67,7 @@ mod tests {
     }
 
     fn entity_with_rocking() -> GameEntity {
-        let mut e = GameEntity::new(
+        let mut e = GameEntity::new_at_frame_zero_for_test(
             1,
             10,
             10,

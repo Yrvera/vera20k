@@ -1,4 +1,6 @@
-/target
+**/target/
+**/__pycache__/
+**/*.py[co]
 **/graphify-out/
 
 config.toml
@@ -31,10 +33,10 @@ AGENTS.md
 .mcp.json
 /.claude/
 /.agents/
-/.codegraph/
 /todo/
 /logs/
 /saves/
+/replays/
 
 tools/vendor-eval/
 tools/research_index/
@@ -44,3 +46,6 @@ tools/research_index/
 
 /*.js
 /*.py
+
+# throwaway verification build dir (parallel-session exe lock workaround)
+/target-verify/

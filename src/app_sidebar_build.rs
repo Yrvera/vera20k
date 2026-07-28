@@ -11,9 +11,9 @@
 use crate::app::AppState;
 use crate::app_sidebar_render::current_sidebar_chrome;
 use crate::render::batch::SpriteInstance;
-use crate::render::sidebar_chrome::SidebarChromeAtlas;
+use crate::render::sidebar_chrome::{SidebarChromeAtlas, SidebarChromeEntry};
 use crate::sidebar::power_bar_anim::PowerBarAnimState;
-use crate::sidebar::{SidebarChromeLayoutSpec, SidebarLayout, SidebarTabButton, SidebarView};
+use crate::sidebar::{Rect, SidebarChromeLayoutSpec, SidebarLayout, SidebarTabButton, SidebarView};
 
 // ---------------------------------------------------------------------------
 // Main sidebar panel instances (backgrounds, progress, badges, buttons, meters)
@@ -214,11 +214,27 @@ pub fn build_sidebar_chrome_instances_for_layout(
     );
     let down_frame = scroll_frames[0] as usize;
     if let Some(e) = atlas.scroll_down_frames[down_frame].or(atlas.scroll_down_frames[0]) {
-        push_chrome(&mut inst, e, scroll_down_rect.x, scroll_down_rect.y, btn_depth, camera_offset, s);
+        push_chrome(
+            &mut inst,
+            e,
+            scroll_down_rect.x,
+            scroll_down_rect.y,
+            btn_depth,
+            camera_offset,
+            s,
+        );
     }
     let up_frame = scroll_frames[1] as usize;
     if let Some(e) = atlas.scroll_up_frames[up_frame].or(atlas.scroll_up_frames[0]) {
-        push_chrome(&mut inst, e, scroll_up_rect.x, scroll_up_rect.y, btn_depth, camera_offset, s);
+        push_chrome(
+            &mut inst,
+            e,
+            scroll_up_rect.x,
+            scroll_up_rect.y,
+            btn_depth,
+            camera_offset,
+            s,
+        );
     }
 
     // --- Power bar meter (powerp.shp strips stacked from top) ---
@@ -439,6 +455,77 @@ fn ready_text_scale(ui_scale: f32) -> f32 {
     ui_scale
 }
 
+/// Map an alpha-cropped source rectangle through its original canvas into a
+/// sidebar slot. Rounding both crop edges from the shared canvas transform
+/// keeps the base art and full-canvas overlays on the same pixel boundaries.
+/// The camera offset is added after screen-space rounding so the shader can
+/// subtract it without making fixed UI geometry depend on fractional panning.
+fn place_canvas_crop_in_slot(
+    slot: Rect,
+    canvas_size: [f32; 2],
+    crop_origin: [f32; 2],
+    crop_size: [f32; 2],
+    camera_offset: [f32; 2],
+) -> Option<Rect> {
+    let [canvas_w, canvas_h] = canvas_size;
+    let [crop_w, crop_h] = crop_size;
+    if canvas_w <= 0.0 || canvas_h <= 0.0 || crop_w <= 0.0 || crop_h <= 0.0 {
+        return None;
+    }
+
+    let scale = (slot.w / canvas_w).min(slot.h / canvas_h);
+    let canvas_x = slot.x + (slot.w - canvas_w * scale) * 0.5;
+    let canvas_y = slot.y + (slot.h - canvas_h * scale) * 0.5;
+    let left = (canvas_x + crop_origin[0] * scale).round();
+    let top = (canvas_y + crop_origin[1] * scale).round();
+    let right = (canvas_x + (crop_origin[0] + crop_w) * scale).round();
+    let bottom = (canvas_y + (crop_origin[1] + crop_h) * scale).round();
+
+    Some(Rect {
+        x: left + camera_offset[0],
+        y: top + camera_offset[1],
+        w: right - left,
+        h: bottom - top,
+    })
+}
+
+/// Select and place the GCLOCK2 frame for one in-progress cameo.
+pub(crate) fn build_gclock_instance(
+    gclock_frames: &[SidebarChromeEntry],
+    progress: f32,
+    slot: Rect,
+    camera_offset: [f32; 2],
+) -> Option<SpriteInstance> {
+    let last_frame = gclock_frames.len().checked_sub(1)?;
+    let progress = progress.clamp(0.0, 1.0);
+    // gamemd draws frame = Production_Value + 1 (range 1-55), skipping
+    // frame 0. Map our 0.0-1.0 progress to frames 1..last.
+    let frame_index = if last_frame >= 2 {
+        ((progress * (last_frame - 1) as f32).round() as usize + 1).min(last_frame)
+    } else {
+        last_frame.min(1)
+    };
+    let gclock_entry = &gclock_frames[frame_index];
+    let gclock_rect = place_canvas_crop_in_slot(
+        slot,
+        gclock_entry.pixel_size,
+        [0.0, 0.0],
+        gclock_entry.pixel_size,
+        camera_offset,
+    )?;
+
+    Some(SpriteInstance {
+        position: [gclock_rect.x, gclock_rect.y],
+        size: [gclock_rect.w, gclock_rect.h],
+        uv_origin: gclock_entry.uv_origin,
+        uv_size: gclock_entry.uv_size,
+        depth: 0.00043,
+        tint: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        ..Default::default()
+    })
+}
+
 /// Returns (cameo_instances, gclock_instances, overlay_instances).
 /// Cameo instances use the cameo atlas texture.
 /// Gclock instances use the GCLOCK2 atlas texture (progress overlay).
@@ -459,7 +546,7 @@ pub(crate) fn build_sidebar_cameo_instances(
     let mut gclock_instances = Vec::new();
     let mut overlay_instances = Vec::new();
     let co = [state.camera_x, state.camera_y];
-    let gclock_frames: &[crate::render::sidebar_chrome::SidebarChromeEntry] =
+    let gclock_frames: &[SidebarChromeEntry] =
         crate::app_sidebar_render::current_sidebar_chrome(state)
             .map(|a| a.gclock_frames.as_slice())
             .unwrap_or(&[]);
@@ -468,22 +555,22 @@ pub(crate) fn build_sidebar_cameo_instances(
             continue;
         };
         let slot = item.cameo_rect();
-        let [aw, ah] = entry.pixel_size;
-        if aw <= 0.0 || ah <= 0.0 {
+        let Some(cameo_rect) = place_canvas_crop_in_slot(
+            slot,
+            entry.canvas_size,
+            entry.crop_origin,
+            entry.pixel_size,
+            co,
+        ) else {
             continue;
-        }
-        let scale = (slot.w / aw).min(slot.h / ah);
-        let dw = (aw * scale).round();
-        let dh = (ah * scale).round();
+        };
         let is_building = !item.is_ready && item.progress > 0.0;
 
         if is_building {
             // Full cameo quad (normal tint — GCLOCK2 overlay handles darkening).
-            let cam_x = (slot.x + (slot.w - dw) * 0.5 + co[0]).round();
-            let cam_y = (slot.y + (slot.h - dh) * 0.5 + co[1]).round();
             instances.push(SpriteInstance {
-                position: [cam_x, cam_y],
-                size: [dw, dh],
+                position: [cameo_rect.x, cameo_rect.y],
+                size: [cameo_rect.w, cameo_rect.h],
                 uv_origin: entry.uv_origin,
                 uv_size: entry.uv_size,
                 depth: 0.00044,
@@ -492,38 +579,16 @@ pub(crate) fn build_sidebar_cameo_instances(
                 ..Default::default()
             });
 
-            // GCLOCK2 overlay — select frame from progress (0.0-1.0).
-            // gamemd: frame = Production_Value + 1, Production_Value = 0..54.
-            if !gclock_frames.is_empty() {
-                let progress = item.progress.clamp(0.0, 1.0);
-                // gamemd draws frame = Production_Value + 1 (range 1-55), skipping
-                // frame 0. Map our 0.0-1.0 progress to frames 1..last.
-                let last_frame = gclock_frames.len() - 1;
-                let frame_index = if last_frame >= 2 {
-                    ((progress * (last_frame - 1) as f32).round() as usize + 1).min(last_frame)
-                } else {
-                    last_frame.min(1)
-                };
-                let gclock_entry = &gclock_frames[frame_index];
-                gclock_instances.push(SpriteInstance {
-                    position: [cam_x, cam_y],
-                    size: [dw, dh],
-                    uv_origin: gclock_entry.uv_origin,
-                    uv_size: gclock_entry.uv_size,
-                    depth: 0.00043,
-                    tint: [1.0, 1.0, 1.0],
-                    alpha: 1.0,
-                    ..Default::default()
-                });
+            if let Some(gclock_instance) =
+                build_gclock_instance(gclock_frames, item.progress, slot, co)
+            {
+                gclock_instances.push(gclock_instance);
             }
         } else {
             // Non-building items: single full cameo quad. No blinking.
             instances.push(SpriteInstance {
-                position: [
-                    (slot.x + (slot.w - dw) * 0.5 + co[0]).round(),
-                    (slot.y + (slot.h - dh) * 0.5 + co[1]).round(),
-                ],
-                size: [dw, dh],
+                position: [cameo_rect.x, cameo_rect.y],
+                size: [cameo_rect.w, cameo_rect.h],
                 uv_origin: entry.uv_origin,
                 uv_size: entry.uv_size,
                 depth: 0.00044,
@@ -665,4 +730,119 @@ pub(crate) fn build_sidebar_text_instances(
         }
     }
     instances
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_gclock_instance, place_canvas_crop_in_slot};
+    use crate::render::sidebar_chrome::SidebarChromeEntry;
+    use crate::sidebar::Rect;
+
+    #[test]
+    fn test_canvas_crop_uses_shared_rounded_edges_with_camera_cancellation() {
+        let slot = Rect {
+            x: 100.1,
+            y: 50.3,
+            w: 75.0,
+            h: 60.0,
+        };
+        let without_camera =
+            place_canvas_crop_in_slot(slot, [60.0, 48.0], [3.0, 4.0], [54.0, 40.0], [0.0, 0.0])
+                .unwrap();
+        let with_camera =
+            place_canvas_crop_in_slot(slot, [60.0, 48.0], [3.0, 4.0], [54.0, 40.0], [13.25, -7.5])
+                .unwrap();
+
+        assert_eq!(
+            without_camera,
+            Rect {
+                x: 104.0,
+                y: 55.0,
+                w: 67.0,
+                h: 50.0
+            }
+        );
+        assert_eq!(with_camera.w, without_camera.w);
+        assert_eq!(with_camera.h, without_camera.h);
+        assert_eq!(with_camera.x - 13.25, without_camera.x);
+        assert_eq!(with_camera.y + 7.5, without_camera.y);
+        // 54 * 1.25 is 67.5; deriving size from the shared rounded edges
+        // intentionally produces 67 rather than independently rounding to 68.
+        assert_eq!(with_camera.w, 67.0);
+    }
+
+    #[test]
+    fn test_gclock_canvas_fills_slot_independently_of_base_crop() {
+        let slot = Rect {
+            x: 100.1,
+            y: 50.3,
+            w: 75.0,
+            h: 60.0,
+        };
+        let base =
+            place_canvas_crop_in_slot(slot, [60.0, 48.0], [3.0, 4.0], [54.0, 40.0], [13.25, -7.5])
+                .unwrap();
+        let gclock =
+            place_canvas_crop_in_slot(slot, [60.0, 48.0], [0.0, 0.0], [60.0, 48.0], [13.25, -7.5])
+                .unwrap();
+
+        assert_eq!(
+            base,
+            Rect {
+                x: 117.25,
+                y: 47.5,
+                w: 67.0,
+                h: 50.0
+            }
+        );
+        assert_eq!(
+            gclock,
+            Rect {
+                x: 113.25,
+                y: 42.5,
+                w: 75.0,
+                h: 60.0
+            }
+        );
+    }
+
+    #[test]
+    fn test_gclock_instance_uses_current_mid_progress_frame_and_geometry() {
+        let frames: Vec<SidebarChromeEntry> = (0..55)
+            .map(|frame| SidebarChromeEntry {
+                uv_origin: [frame as f32 / 55.0, 0.25],
+                uv_size: [1.0 / 55.0, 0.5],
+                pixel_size: [60.0, 48.0],
+            })
+            .collect();
+        let slot = Rect {
+            x: 100.1,
+            y: 50.3,
+            w: 75.0,
+            h: 60.0,
+        };
+
+        let instance = build_gclock_instance(&frames, 0.5, slot, [13.25, -7.5]).unwrap();
+
+        // Current mapping for 55 stored frames selects index 28 at 50% progress.
+        assert_eq!(instance.uv_origin, frames[28].uv_origin);
+        assert_eq!(instance.uv_size, frames[28].uv_size);
+        assert_eq!(instance.position, [113.25, 42.5]);
+        assert_eq!(instance.size, [75.0, 60.0]);
+        assert_eq!(instance.depth, 0.00043);
+        assert_eq!(instance.tint, [1.0, 1.0, 1.0]);
+        assert_eq!(instance.alpha, 1.0);
+    }
+
+    #[test]
+    fn test_gclock_instance_requires_a_stored_frame() {
+        let slot = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 60.0,
+            h: 48.0,
+        };
+
+        assert!(build_gclock_instance(&[], 0.5, slot, [0.0, 0.0]).is_none());
+    }
 }

@@ -85,33 +85,39 @@ pub fn apply_income_mult(amount: i32, income_ppm: i64) -> i32 {
 }
 
 /// Per-slot OrePurifier BONUS credits — gamemd's second `Add_Tiberium_Credits` call:
-/// `trunc(base_value × IncomeMult × purifier_count × (bonus_pct/100))` as ONE i64
-/// truncation. IncomeMult AND the `×count×bonus_pct/100` are folded inside a single floor
-/// (matching gamemd's one `ftol`); a separate `/100` truncation first would drift ±1 when
-/// `IncomeMult != 1.0`. `base_value` is the slot's total ore/gem credit value (Σ bale
-/// values). Returns 0 for ≤0 purifiers.
+/// `trunc(base_value × IncomeMult × purifier_count × PurifierBonus)` as ONE truncation.
+/// Both `IncomeMult` (`income_ppm`) and `PurifierBonus` (`bonus_ppm`) are ppm fractions
+/// (`INCOME_PPM_SCALE` = 1.0×) folded inside a single floor — matching gamemd's one `ftol`;
+/// truncating either factor separately first would drift ±1. An i128 intermediate is required
+/// because the two ppm factors overflow i64. `base_value` is the slot's total ore/gem credit
+/// value (Σ bale values). Returns 0 for ≤0 purifiers.
 pub fn purifier_bonus_credits(
     base_value: i32,
     purifier_count: i32,
-    bonus_pct: i32,
+    bonus_ppm: i64,
     income_ppm: i64,
 ) -> i32 {
     if purifier_count <= 0 {
         return 0;
     }
-    let v = (base_value as i64) * (purifier_count as i64) * (bonus_pct as i64) * income_ppm
-        / (100 * INCOME_PPM_SCALE);
-    v.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+    const SCALE_SQUARED: i128 = (INCOME_PPM_SCALE as i128) * (INCOME_PPM_SCALE as i128);
+    let v = (base_value as i128)
+        * (purifier_count as i128)
+        * (bonus_ppm as i128)
+        * (income_ppm as i128)
+        / SCALE_SQUARED;
+    v.clamp(i32::MIN as i128, i32::MAX as i128) as i32
 }
 
-/// Per-slot OrePurifier BONUS HarvestedCredits stat: `trunc(purifier_count × 0.25 × bales
-/// × 5.0)` as ONE i64 expr (`bonus_pct/100 == 0.25`, the `×5` baked in — NOT
-/// floor-bonus-bales-then-×5). Statistics only; 0 for ≤0 purifiers.
-pub fn purifier_bonus_harvested(bales: i32, purifier_count: i32, bonus_pct: i32) -> i32 {
+/// Per-slot OrePurifier BONUS HarvestedCredits stat: `trunc(purifier_count × PurifierBonus ×
+/// bales × 5.0)` as ONE truncation (`bonus_ppm` is the ppm fraction, `INCOME_PPM_SCALE` =
+/// 1.0×; the `×5` baked in — NOT floor-bonus-bales-then-×5). Statistics only; 0 for ≤0
+/// purifiers.
+pub fn purifier_bonus_harvested(bales: i32, purifier_count: i32, bonus_ppm: i64) -> i32 {
     if purifier_count <= 0 {
         return 0;
     }
-    let v = (bales as i64) * (purifier_count as i64) * (bonus_pct as i64) * 5 / 100;
+    let v = (bales as i64) * (purifier_count as i64) * bonus_ppm * 5 / INCOME_PPM_SCALE;
     v.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
@@ -123,7 +129,12 @@ mod tests {
     fn economy_default_is_zeroed() {
         let e = Economy::default();
         assert_eq!(
-            (e.credits, e.spent_credits, e.harvested_credits, e.purifier_count),
+            (
+                e.credits,
+                e.spent_credits,
+                e.harvested_credits,
+                e.purifier_count
+            ),
             (0, 0, 0, 0)
         );
     }
@@ -187,30 +198,36 @@ mod tests {
     /// draft produced).
     #[test]
     fn purifier_bonus_credits_single_truncation_not_double() {
-        assert_eq!(purifier_bonus_credits(50, 3, 25, 1_200_000), 45);
+        assert_eq!(purifier_bonus_credits(50, 3, 250_000, 1_200_000), 45);
         // Sanity: the buggy double-trunc would have been 44.
         let double_trunc = apply_income_mult((50 * 3 * 25) / 100, 1_200_000);
         assert_eq!(double_trunc, 44, "documents the bug this guards against");
-        assert_ne!(purifier_bonus_credits(50, 3, 25, 1_200_000), double_trunc);
+        assert_ne!(
+            purifier_bonus_credits(50, 3, 250_000, 1_200_000),
+            double_trunc
+        );
     }
 
     /// At IncomeMult 1.0 the bonus equals the legacy `slot_value×count×pct/100` (so stock
     /// is hash-neutral), and 0 purifiers -> 0.
     #[test]
     fn purifier_bonus_credits_stock_and_zero() {
-        assert_eq!(purifier_bonus_credits(100, 2, 25, INCOME_PPM_SCALE), 50);
-        assert_eq!(purifier_bonus_credits(100, 0, 25, INCOME_PPM_SCALE), 0);
-        assert_eq!(purifier_bonus_credits(100, -1, 25, 1_200_000), 0);
+        assert_eq!(
+            purifier_bonus_credits(100, 2, 250_000, INCOME_PPM_SCALE),
+            50
+        );
+        assert_eq!(purifier_bonus_credits(100, 0, 250_000, INCOME_PPM_SCALE), 0);
+        assert_eq!(purifier_bonus_credits(100, -1, 250_000, 1_200_000), 0);
     }
 
     /// The bonus HarvestedCredits stat is trunc(count × 0.25 × bales × 5) in one step:
     /// count 1, 1 bale -> trunc(1.25) = 1 (NOT floor(0.25)×5 = 0).
     #[test]
     fn purifier_bonus_harvested_single_truncation() {
-        assert_eq!(purifier_bonus_harvested(1, 1, 25), 1);
-        assert_eq!(purifier_bonus_harvested(4, 1, 25), 5); // trunc(0.25×4×5=5.0)
-        assert_eq!(purifier_bonus_harvested(10, 2, 25), 25); // 10×2×25×5/100
-        assert_eq!(purifier_bonus_harvested(10, 0, 25), 0);
+        assert_eq!(purifier_bonus_harvested(1, 1, 250_000), 1);
+        assert_eq!(purifier_bonus_harvested(4, 1, 250_000), 5); // trunc(0.25×4×5=5.0)
+        assert_eq!(purifier_bonus_harvested(10, 2, 250_000), 25); // 10×2×0.25×5
+        assert_eq!(purifier_bonus_harvested(10, 0, 250_000), 0);
     }
 
     /// add_harvested_raw adds a pre-computed figure without the ×5 (used for the bonus
@@ -221,5 +238,25 @@ mod tests {
         e.add_harvested_raw(7);
         assert_eq!(e.harvested_credits, 7);
         assert_eq!(e.credits, 0);
+    }
+
+    /// Full-precision ppm flows through the credit fold: PurifierBonus=.333 (333_000 ppm),
+    /// 3 purifiers, base 1000, IncomeMult 1.0 -> trunc(1000 × 3 × 0.333) = 999. The old
+    /// whole-percent path (33% = 330_000) would give trunc(1000×3×0.33) = 990 — a
+    /// player-visible 9-credit gap per deposit. Stock .25 (250_000) stays byte-identical.
+    #[test]
+    fn purifier_bonus_credits_fractional_ppm_beats_whole_percent() {
+        assert_eq!(
+            purifier_bonus_credits(1000, 3, 333_000, INCOME_PPM_SCALE),
+            999
+        );
+        assert_eq!(
+            purifier_bonus_credits(1000, 3, 330_000, INCOME_PPM_SCALE),
+            990
+        );
+        assert_eq!(
+            purifier_bonus_credits(1000, 2, 250_000, INCOME_PPM_SCALE),
+            500
+        );
     }
 }

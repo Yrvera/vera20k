@@ -120,6 +120,7 @@ pub(super) fn spawn_particle(
         current_color: [0; 3],
         color_index: 0,
         color_accumulator: SimFixed::from_num(0),
+        spark: None,
         prev_delta: [SimFixed::from_num(0); 3],
         state_advance_counter: 0,
     });

@@ -13,14 +13,17 @@ use anyhow::Result;
 
 use crate::app_init_helpers::{
     build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas, load_art_ini,
-    load_rules_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env, spawn_entities,
-    theater_ext_for,
+    load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
+    spawn_entities, theater_ext_for,
 };
-use crate::app_list_maps::{load_map_by_name_or_path_with_assets, try_load_mmx};
+use crate::app_list_maps::{
+    LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
+};
 use crate::app_skirmish::{
-    apply_skirmish_launch_session, build_overlay_atlas_from_map,
+    apply_explicit_skirmish_launch_session, build_overlay_atlas_from_map,
     house_color_map_for_launch_session, seed_skirmish_opening_if_needed,
 };
+use crate::match_bootstrap::LoadingStartup;
 
 use crate::assets::asset_manager::AssetManager;
 use crate::map::actions::ActionMap;
@@ -59,10 +62,11 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::trigger_runtime::TriggerRuntime;
 use crate::sim::world::Simulation;
-use crate::skirmish_launch::SkirmishLaunchSession;
 
 /// All data produced by loading a map: terrain, tile atlas, entities, and camera.
 pub struct MapLoadResult {
+    pub(crate) startup: LoadingStartup,
+    pub(crate) map_source: LoadedMapSource,
     pub basic: BasicSection,
     pub tile_atlas: Option<TileAtlas>,
     pub terrain_grid: Option<TerrainGrid>,
@@ -142,6 +146,21 @@ pub struct MapLoadResult {
 pub(crate) struct MapLoadInitial {
     asset_manager: AssetManager,
     map_data: MapFile,
+    map_source: LoadedMapSource,
+}
+
+impl MapLoadInitial {
+    pub(crate) fn theater_name(&self) -> &str {
+        &self.map_data.header.theater
+    }
+
+    pub(crate) fn map_data(&self) -> &MapFile {
+        &self.map_data
+    }
+
+    pub(crate) fn asset_manager(&self) -> &AssetManager {
+        &self.asset_manager
+    }
 }
 
 pub(crate) fn load_csf(asset_manager: &AssetManager) -> Option<crate::assets::csf_file::CsfFile> {
@@ -311,6 +330,9 @@ pub struct MapMenuEntry {
     pub preview: PreviewSection,
     /// Multiplayer start waypoints 0..=7, sorted by waypoint index.
     pub multiplayer_start_waypoints: Vec<Waypoint>,
+    /// Setup-shell player capacity from native waypoint counting, including
+    /// the `[RandomMap] NumPlayers` / eight-player fallback path.
+    pub player_capacity: i32,
     /// Verified source bounds for projecting starts onto the preview surface.
     pub preview_source_bounds: Option<PreviewSourceBounds>,
 }
@@ -327,8 +349,107 @@ pub(crate) fn load_map_initial_with_assets(
     let quickplay_map: Option<String> = std::env::var("RA2_QUICKPLAY")
         .ok()
         .filter(|v| v.ends_with(".map") || v.ends_with(".mpr") || v.ends_with(".mmx"));
+    // `RA2_QUICKPLAY=<name>.sed` forces a random-map generation without going
+    // through the skirmish UI — a dev shortcut for exercising the generator.
+    let quickplay_seed: Option<String> = std::env::var("RA2_QUICKPLAY")
+        .ok()
+        .filter(|v| crate::map::rmg::is_seed_selection(v));
 
-    let map_data: MapFile =
+    // A `.SED` selection names a random-map seed, not a map file: the map is
+    // generated in memory from its options. Handled before the file-loading
+    // branches below, which would look for a map file that does not exist.
+    let seed_selection: Option<String> = requested_map
+        .filter(|name| crate::map::rmg::is_seed_selection(name))
+        .map(str::to_string)
+        .or(quickplay_seed);
+    if let Some(seed_name) = seed_selection.as_deref() {
+        // Shadowed as mutable: the theater loader needs &mut, and every borrow
+        // has to end before the manager is moved into MapLoadInitial.
+        let mut asset_manager = asset_manager;
+
+        let mut options = crate::map::rmg::RmgOptions::default();
+        match std::fs::read(ra2_dir.join(seed_name)) {
+            Ok(bytes) => match crate::rules::ini_parser::IniFile::from_bytes(&bytes) {
+                Ok(ini) => options.apply_sed(&ini),
+                Err(err) => {
+                    log::warn!("random map: {seed_name} is not valid INI ({err}); using defaults")
+                }
+            },
+            // Missing seed file is not fatal: the original's options object
+            // keeps its constructor defaults when a key (or the file) is absent.
+            Err(err) => log::warn!("random map: cannot read {seed_name} ({err}); using defaults"),
+        }
+        options.normalize();
+
+        let settings = crate::map::rmg::RmgSettings::load(&asset_manager);
+        let theater_name = crate::map::rmg::emit::theater_name(options.theater);
+        let theater = crate::map::theater::load_theater(&mut asset_manager, theater_name)
+            .ok_or_else(|| anyhow::anyhow!("random map: theater {theater_name} unavailable"))?;
+
+        // Terrain rules feed the zone classifier's wheel-impassable table. The
+        // table is observably inert during generation (the classifier runs at
+        // start-placement time, before any rock/rough/cliff terrain exists), but
+        // it is resolved faithfully from `rulesmd.ini` when present; a missing
+        // file falls back to the passable defaults.
+        crate::map::rmg::trig::install_from_dir(&ra2_dir);
+        let terrain_rules = asset_manager
+            .get_ref("rulesmd.ini")
+            .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
+            .map(|ini| crate::rules::terrain_rules::TerrainRules::from_ini(&ini))
+            .unwrap_or_default();
+        let resolved = crate::map::rmg::build::ResolvedTheaterInputs::from_theater(
+            &theater,
+            &terrain_rules,
+            crate::map::rmg::trig::global().cloned(),
+        );
+
+        // Tile-block layouts (sub-cell height/terrain grids) from the theater's
+        // real TMP data — the shore tiler and zone classifier read these.
+        let blocks =
+            crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
+                asset_manager.get(name)
+            });
+
+        // `[AI] NeutralTechBuildings` plus each type's `Foundation=`. The phase
+        // runs for every map type except 0, so an empty list here would both
+        // strip the buildings and skip the draws the original consumes.
+        let tech_types = crate::app_init_helpers::load_neutral_tech_types(&asset_manager);
+        let generated = crate::map::rmg::build::generate_map(
+            &options,
+            &settings,
+            &resolved,
+            &blocks,
+            &tech_types,
+        );
+        log::info!(
+            "Random map generated: theater={}, {}x{}, seed={}, players={}",
+            generated.map_file.header.theater,
+            generated.map_file.header.width,
+            generated.map_file.header.height,
+            options.seed,
+            options.num_players
+        );
+        if generated.unfilled_start_slots > 0 {
+            log::warn!(
+                "Random map is short of spawns: {} start slot(s) could not be \
+                 filled (seed={}, players={}); those players have no start position",
+                generated.unfilled_start_slots,
+                options.seed,
+                options.num_players
+            );
+        }
+
+        progress.milestone(8);
+        return Ok(MapLoadInitial {
+            asset_manager,
+            map_data: generated.map_file,
+            map_source: LoadedMapSource::Generated {
+                seed_name: seed_name.to_string(),
+            },
+        });
+    }
+
+    let loaded_map: LoadedMap =
         if let Some(map_name) = requested_map.filter(|m| !m.eq_ignore_ascii_case("auto")) {
             load_map_by_name_or_path_with_assets(&ra2_dir, map_name, &asset_manager)?
         } else if let Some(ref map_name) = quickplay_map {
@@ -336,7 +457,13 @@ pub(crate) fn load_map_initial_with_assets(
         } else if Path::new("testmap1.map").exists() {
             let bytes: Vec<u8> = std::fs::read("testmap1.map")?;
             log::info!("Loading default map: testmap1.map");
-            MapFile::from_bytes(&bytes)?
+            LoadedMap {
+                map: MapFile::from_bytes(&bytes)?,
+                source: LoadedMapSource::Loose {
+                    path: PathBuf::from("testmap1.map"),
+                    payload_len: bytes.len(),
+                },
+            }
         } else {
             let mmx_names: &[&str] = &[
                 "Dustbowl.mmx",
@@ -354,6 +481,10 @@ pub(crate) fn load_map_initial_with_assets(
             ];
             try_load_mmx(&ra2_dir, mmx_names)?
         };
+    let LoadedMap {
+        map: map_data,
+        source: map_source,
+    } = loaded_map;
     log::info!(
         "Map loaded: title={:?}, theater={}, {}x{}, {} cells, {} entities",
         map_data.basic.name,
@@ -373,6 +504,7 @@ pub(crate) fn load_map_initial_with_assets(
     Ok(MapLoadInitial {
         asset_manager,
         map_data,
+        map_source,
     })
 }
 
@@ -380,27 +512,40 @@ pub(crate) fn load_map_from_initial(
     gpu: &GpuContext,
     batch: &BatchRenderer,
     initial: MapLoadInitial,
-    skirmish_launch_session: Option<&SkirmishLaunchSession>,
+    startup: LoadingStartup,
     skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
+    theater_cache_mismatch: bool,
+    runtime_color_scheme_count: usize,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> Result<MapLoadResult> {
     let MapLoadInitial {
         mut asset_manager,
         map_data,
+        map_source,
     } = initial;
+    let skirmish_launch_session = startup.launch_session();
 
     // Load theater INI for tileset lookup, palette, and LAT configuration.
     // Also loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority.
     let theater_result: Option<theater::TheaterData> =
         theater::load_theater(&mut asset_manager, &map_data.header.theater);
+    if theater_cache_mismatch {
+        progress.milestone(12);
+        // Native advances while rebuilding each color scheme. Rust's theater
+        // loader is monolithic, so present the verified pre-load-count sequence
+        // synchronously after that work instead of faking per-item callbacks.
+        for value in crate::app_loading::theater_ramp_changed_values(runtime_color_scheme_count) {
+            progress.milestone(value);
+        }
+        progress.milestone(25);
+    }
+    progress.milestone(30);
+
     let theater_ext: &'static str = match &theater_result {
         Some(td) => td.extension,
         None => theater_ext_for(&map_data.header.theater),
     };
-    // Theater archives + palettes loaded (gamemd Init_Theater milestones).
-    progress.milestone(12);
-    progress.milestone(30);
 
     let parse_bool_env = |key: &str| -> Option<bool> {
         std::env::var(key).ok().map(|v| {
@@ -422,7 +567,41 @@ pub(crate) fn load_map_from_initial(
 
     // Load rules.ini and art.ini before building resolved terrain so overlay
     // semantics and art-foundation data are available to the pipeline.
-    let mut rules: Option<RuleSet> = load_rules_ini(&asset_manager, Some(&map_data.ini));
+    // The selected game mode's override INI (MPModes roster row) applies its
+    // rules payload between rulesmd and the map overrides — without it every
+    // non-Battle mode silently plays with Battle rules.
+    let mode_override_ini: Option<IniFile> = {
+        let override_file = skirmish_launch_session
+            .map(|s| s.mode.override_file.trim())
+            .unwrap_or("");
+        if override_file.is_empty() {
+            None
+        } else {
+            asset_manager
+                .get_with_source(override_file)
+                .and_then(|(data, source)| {
+                    log::info!(
+                        "Loading game-mode rules override {} ({} bytes) from {}",
+                        override_file,
+                        data.len(),
+                        source
+                    );
+                    IniFile::from_bytes(&data)
+                        .map_err(|err| {
+                            log::warn!("Failed to parse game-mode override {override_file}: {err}")
+                        })
+                        .ok()
+                })
+        }
+    };
+    let (loaded_rules, rules_ini) = load_rules_with_merged_ini(
+        &asset_manager,
+        mode_override_ini.as_ref(),
+        Some(&map_data.ini),
+    )
+    .ok_or_else(|| anyhow::anyhow!("failed to load or validate merged game rules"))?
+    .into_parts();
+    let mut rules: Option<RuleSet> = Some(loaded_rules);
     let art_result: Option<(ArtRegistry, IniFile)> = load_art_ini(&asset_manager);
     let (mut art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
         Some((reg, ini)) => (Some(reg), Some(ini)),
@@ -430,6 +609,18 @@ pub(crate) fn load_map_from_initial(
     };
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
         r.merge_art_data(a);
+        let damage_fire_roots: Vec<String> = r
+            .general
+            .damage_fire_types
+            .iter()
+            .map(|anim| anim.name.clone())
+            .collect();
+        a.bind_scheduler_anim_assets(
+            &damage_fire_roots,
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        )?;
         // Eagerly populate per-anim SHP frame dimensions so the smudge
         // dispatcher can size-filter without falling back to the (30, 30)
         // default that always loses the threshold check.
@@ -462,14 +653,6 @@ pub(crate) fn load_map_from_initial(
     progress.milestone(35);
     progress.milestone(45);
     let csf: Option<crate::assets::csf_file::CsfFile> = load_csf(&asset_manager);
-    let rules_ini: IniFile = asset_manager
-        .get_with_source("rulesmd.ini")
-        .or_else(|| asset_manager.get_with_source("rules.ini"))
-        .and_then(|(d, source)| {
-            log::info!("Raw rules INI from: {}", source);
-            IniFile::from_bytes(&d).ok()
-        })
-        .unwrap_or_else(|| IniFile::from_str(""));
     let overlay_registry: OverlayTypeRegistry =
         OverlayTypeRegistry::from_ini(&rules_ini, art_ini.as_ref());
 
@@ -577,12 +760,11 @@ pub(crate) fn load_map_from_initial(
             }
         });
 
-    // One negotiated per-match seed, fixed before the sim exists and before
-    // any setup-phase draw (random country/color resolution included). Logged
-    // as the repro handle until replay save/load UI exists. Identity, bounds,
-    // and the MP start table come from the map file — never hardcoded.
+    // Every shell startup carries its one fresh pre-loading seed unchanged.
+    // Generic loading alone retains the explicitly noncertifying SystemTime
+    // fallback. In every case the selected word exists before Simulation.
     let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
-        seed: crate::app_init_helpers::generate_match_seed(),
+        seed: startup.seed_or_else(crate::app_init_helpers::generate_unverified_legacy_match_seed),
         map_name: skirmish_launch_session
             .and_then(|s| s.selected_map_file.clone())
             .or_else(|| map_data.basic.name.clone())
@@ -678,7 +860,10 @@ pub(crate) fn load_map_from_initial(
     if !spawn_pick_pending {
         if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
             let should_rebuild_entity_atlases = if let Some(session) = skirmish_launch_session {
-                let result = apply_skirmish_launch_session(
+                // Every shell session is resolved before loading on the app-owned
+                // frontend Scenario cursor. Map loading must never advance the
+                // freshly seeded gameplay stream for lobby assignments.
+                let result = apply_explicit_skirmish_launch_session(
                     sim,
                     &map_data,
                     &house_roster,
@@ -1079,11 +1264,12 @@ pub(crate) fn load_map_from_initial(
         simulation.as_ref(),
         rules.as_ref(),
     );
-    // Final post-map-init milestones (gamemd cell-attributes, beacon-art [90
-    // coalesced here, no distinct Rust step], post-map-init, tactical cleanup,
-    // final pre-render refresh). 100 is emitted by the pump at Finished.
+    // Final post-map-init milestones (cell attributes, beacon art, post-map
+    // init, tactical cleanup, final pre-render refresh). 100 is emitted by the
+    // pump at Finished.
     progress.milestone(82);
     progress.milestone(86);
+    progress.milestone(90);
     progress.milestone(93);
     progress.milestone(96);
     progress.milestone(98);
@@ -1091,6 +1277,8 @@ pub(crate) fn load_map_from_initial(
     // Move fields out of map_data (last use) instead of cloning.
     let theater_name = map_data.header.theater;
     Ok(MapLoadResult {
+        startup,
+        map_source,
         basic: map_data.basic,
         tile_atlas,
         terrain_grid: Some(grid),
@@ -1166,5 +1354,184 @@ fn setup_ai_players(
         sim.ai_players
             .push(AiPlayerState::new(sim.interner.intern(&house.name)));
         log::info!("AI player registered: {}", house.name);
+    }
+}
+
+#[cfg(test)]
+mod random_map_retail_tests {
+    //! Retail-input pass over the real `.SED` load path.
+    //!
+    //! This is the only place retail theater data meets the generator's
+    //! emitted tile indices. The in-crate matrix cannot reach that clause at
+    //! all: its synthetic tile-block stub answers every id, so resolvability
+    //! is true there by construction rather than by generation being correct.
+    //!
+    //! It drives `load_map_initial_with_assets` — the production loop — instead
+    //! of reassembling that function's resolution steps in test code. A
+    //! mirrored sequence keeps passing after the production callsite drifts,
+    //! which is exactly how every generated map shipped without a single
+    //! neutral tech building while the phase itself was fully implemented and
+    //! tested.
+    //!
+    //! Still not parity evidence. It shows the emitted surface is *loadable*,
+    //! never that it matches the original.
+
+    use super::*;
+    use crate::map::entities::EntityCategory;
+    use crate::map::rmg::RmgOptions;
+
+    struct SilentProgress;
+    impl crate::app_loading::LoadingProgressSink for SilentProgress {
+        fn milestone(&mut self, _percent: u32) {}
+    }
+
+    /// The configurations the dialog itself can emit.
+    const RETAIL_MAP_TYPES: [i32; 4] = [1, 2, 3, 4];
+    /// Comfortably above the river gate of 20, so the carved map types seed a
+    /// lake *and* a river and both get their tiles resolved against retail
+    /// theater data.
+    const RETAIL_WATER_AMOUNT: i32 = 50;
+    const RETAIL_THEATERS: [i32; 2] = [0, 1];
+
+    /// A generated map must carry far more than this; the bar exists only to
+    /// catch a run that emitted nothing real and would therefore pass the
+    /// resolvability check without testing anything.
+    const MIN_REAL_TILES_PER_MAP: usize = 1_000;
+
+    fn retail_dir() -> Option<PathBuf> {
+        let dir = PathBuf::from(std::env::var("RA2_DIR").ok()?);
+        dir.is_dir().then_some(dir)
+    }
+
+    /// Write a `.SED` for `options` into a scratch dir, returning the dir the
+    /// loader should read from and the seed file's name.
+    ///
+    /// The scratch dir is deliberately *not* the retail install: the loader
+    /// takes `ra2_dir` and the asset manager as separate parameters, so the
+    /// seed can come from a temp dir while the assets come from the real game.
+    fn write_seed(options: &RmgOptions, tag: &str) -> (PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("vera20k-rmg-retail-{tag}"));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let name = format!("{tag}.sed");
+        std::fs::write(dir.join(&name), options.to_sed_bytes()).expect("write .SED");
+        (dir, name)
+    }
+
+    #[test]
+    #[ignore] // Requires RA2_DIR (retail game files).
+    fn generated_maps_resolve_every_tile_against_retail_theaters() {
+        let Some(ra2) = retail_dir() else {
+            panic!("set RA2_DIR to the retail RA2/YR install directory");
+        };
+
+        let mut structures_placed = 0usize;
+        let mut configurations = 0usize;
+        for map_type in RETAIL_MAP_TYPES {
+            for theater in RETAIL_THEATERS {
+                configurations += 1;
+                let tag = format!("t{map_type}-th{theater}");
+                let options = RmgOptions {
+                    map_type,
+                    theater,
+                    num_players: 4,
+                    seed: 4242,
+                    // Above the river gate, so the carved map types actually
+                    // seed water. The default is zero, which skips their whole
+                    // seeder — this pass validated neither lakes nor rivers
+                    // until that was noticed.
+                    water_amount: RETAIL_WATER_AMOUNT,
+                    ..Default::default()
+                };
+                let (seed_dir, seed_name) = write_seed(&options, &tag);
+
+                let asset_manager = AssetManager::new(&ra2).expect("AssetManager::new");
+                let mut initial = load_map_initial_with_assets(
+                    seed_dir,
+                    asset_manager,
+                    Some(&seed_name),
+                    &mut SilentProgress,
+                )
+                .unwrap_or_else(|err| panic!("{tag}: the .SED branch failed: {err}"));
+
+                assert!(
+                    !initial.map_data.cells.is_empty(),
+                    "{tag}: the generated map has no cells"
+                );
+
+                let theater_name = crate::map::rmg::emit::theater_name(theater);
+                let data =
+                    crate::map::theater::load_theater(&mut initial.asset_manager, theater_name)
+                        .unwrap_or_else(|| panic!("{tag}: theater {theater_name} unavailable"));
+
+                // Guard against a vacuous pass: if every cell were NO_TILE the
+                // resolvability filter below would empty and the assertion
+                // would hold without ever having looked at a tile.
+                let real_tiles: Vec<i32> = initial
+                    .map_data
+                    .cells
+                    .iter()
+                    .map(|cell| cell.tile_index)
+                    .filter(|index| *index >= 0)
+                    .collect();
+                assert!(
+                    real_tiles.len() > MIN_REAL_TILES_PER_MAP,
+                    "{tag}: only {} cell(s) carry a real tile — the resolvability \
+                     check below would be vacuous",
+                    real_tiles.len()
+                );
+
+                // The completion-gate clause. `filename` returns None both for
+                // out-of-range ids and for blank tileset slots, and either one
+                // renders as a hole in the map, so both count as unresolved.
+                let mut unresolved: Vec<i32> = real_tiles
+                    .iter()
+                    .copied()
+                    .filter(|index| !data.lookup.filename(*index).is_some_and(|f| !f.is_empty()))
+                    .collect();
+                unresolved.sort_unstable();
+                unresolved.dedup();
+                let mut distinct = real_tiles.clone();
+                distinct.sort_unstable();
+                distinct.dedup();
+                println!(
+                    "{tag}: {} cells, {} real tiles ({} distinct), {} unresolved",
+                    initial.map_data.cells.len(),
+                    real_tiles.len(),
+                    distinct.len(),
+                    unresolved.len()
+                );
+                assert!(
+                    unresolved.is_empty(),
+                    "{tag}: {} distinct tile index(es) do not resolve against {theater_name}: {:?}",
+                    unresolved.len(),
+                    unresolved
+                );
+
+                structures_placed += initial
+                    .map_data
+                    .entities
+                    .iter()
+                    .filter(|entity| entity.category == EntityCategory::Structure)
+                    .count();
+            }
+        }
+
+        // The first check that the real `NeutralTechBuildings` catalog reaches
+        // the generator through the app's own resolution rather than a test
+        // stub. Asserted over the tier: how many a given map places is
+        // configuration-dependent, but a starved catalog places none anywhere.
+        assert!(
+            structures_placed > 0,
+            "no neutral tech building was placed on any retail configuration"
+        );
+        assert_eq!(
+            configurations,
+            RETAIL_MAP_TYPES.len() * RETAIL_THEATERS.len(),
+            "the matrix did not visit every configuration"
+        );
+        println!(
+            "{configurations} retail configurations checked, {structures_placed} neutral \
+             structure(s) placed"
+        );
     }
 }

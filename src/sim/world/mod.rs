@@ -12,6 +12,7 @@
 
 pub(crate) mod bridge_orchestrator;
 pub mod edge_cell;
+mod lifecycle;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
@@ -21,9 +22,18 @@ mod world_hash;
 mod world_orders;
 mod world_spawn;
 
+#[cfg(test)]
+mod lifecycle_tests;
+
+pub(crate) use lifecycle::{
+    ConcealOutcome, LifecycleOutput, PlacementEvidence, RevealOutcome, RevealPosition,
+    RevealRequest,
+};
+#[cfg(test)]
+pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};
 pub(crate) use logic_vector::LogicVector;
-pub(crate) use substrate::ObjectSubstrate;
 pub use substrate::EnterOrderCounter;
+pub(crate) use substrate::ObjectSubstrate;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -35,6 +45,7 @@ use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::trigger_graph::TriggerGraph;
 use crate::map::triggers::TriggerMap;
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
@@ -47,9 +58,9 @@ use crate::sim::components::WorldEffect;
 use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
-use crate::sim::game_entity::Presence;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
+use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::droppod_movement;
@@ -59,7 +70,7 @@ use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
 use crate::sim::movement::tunnel_movement;
 use crate::sim::movement::turret;
-use crate::sim::occupancy::{CellListInsertion, OccupancyGrid, entity_occupancy_cells};
+use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
 use crate::sim::overlay_grid::{WallDamageEvent, cleanup_wall_neighbors, damage_wall_overlay};
 use crate::sim::particles::ParticleSystemStore;
@@ -72,7 +83,7 @@ use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
 use crate::sim::replay::ReplayLog;
-use crate::sim::rng::SimRng;
+use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
 use crate::sim::scenario_session::ScenarioSession;
 use crate::sim::trigger_runtime::{TriggerEffect, TriggerRuntime};
 use crate::sim::vision::{self, FogState};
@@ -100,18 +111,24 @@ pub struct TickResult {
     /// starting next tick. Matches gamemd's one-tick-delayed visibility.
     pub bridge_state_changed: bool,
     pub movement: movement::MovementTickStats,
-    /// Debug/test-only S2a measurement: how many live non-miner Units had their
-    /// dispatch family differ between host-time (top-of-tick, the gamemd-faithful
-    /// dispatch input) and the end-of-tick re-derivation this tick. Always 0 in
-    /// release (the proof that fills it is debug/test only). NOT hashed, NOT
-    /// serialized — pure instrumentation for the S2 go/no-go churn signal.
-    pub dispatch_churn: u32,
 }
 
 /// A sound event produced during simulation (combat, death, production).
 /// Pure data — no audio library dependency. Drained by the app layer each frame.
 #[derive(Debug, Clone)]
 pub enum SimSoundEvent {
+    /// Constructor-time animation start/report sound, keyed to object identity.
+    AnimationStarted {
+        anim_id: crate::sim::anim_class::AnimId,
+        sound_id: InternedId,
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
+    /// Animation destruction releases its current handle before optional StopSound.
+    AnimationStopped {
+        anim_id: crate::sim::anim_class::AnimId,
+        stop_sound_id: Option<InternedId>,
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
     /// A weapon fired — play its Report= sound.
     WeaponFired {
         report_sound_id: InternedId,
@@ -164,6 +181,17 @@ pub enum SimSoundEvent {
         sound_id: InternedId,
         rx: u16,
         ry: u16,
+    },
+    /// A base structure / harvester took enemy damage — the radar ping is
+    /// already enqueued sim-side; `eva_allowed` mirrors the queue's dedup
+    /// result (the BridgeRepaired pattern). App gates the EVA voice to the
+    /// local owner.
+    UnderAttack {
+        rx: u16,
+        ry: u16,
+        owner: InternedId,
+        miner: bool,
+        eva_allowed: bool,
     },
     /// A superweapon was launched — play EVA warning.
     SuperWeaponLaunched { owner: InternedId, rx: u16, ry: u16 },
@@ -281,6 +309,22 @@ pub struct SimFireEvent {
     pub occupant_anim: Option<InternedId>,
 }
 
+/// Borrowed names for the three native RNG authorities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimulationRngViews<'a> {
+    pub scenario: SimRngLogicalView<'a>,
+    pub main: SimRngLogicalView<'a>,
+    pub mapgen: SimRngLogicalView<'a>,
+}
+
+/// Owned logical RNG evidence used by the Rust pre-first-tick receipt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimulationRngState {
+    pub scenario: SimRngLogicalState,
+    pub main: SimRngLogicalState,
+    pub mapgen: SimRngLogicalState,
+}
+
 /// The game simulation - owns all authoritative game state.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Simulation {
@@ -301,7 +345,7 @@ pub struct Simulation {
     pub session: ScenarioSession,
     /// Scenario RNG — gamemd `Scenario->Random` (Scen+0x218). Drives in-object-tick
     /// sim draws: scatter, sub-cell placement, smudge/destruction, particles,
-    /// wall/overlay damage, bridge collapse/repair, ore growth/spread, TIBTRE,
+    /// wall/overlay damage, bridge collapse/destruction presentation, ore growth/spread, TIBTRE,
     /// anim scorch/50-50, miner-dock jitter. MUST be serialized + hashed (never
     /// #[serde(skip)]) or a divergence here hides from desync detection.
     pub(crate) scenario_rng: SimRng,
@@ -311,13 +355,10 @@ pub struct Simulation {
     /// today; seeded + hashed regardless so it is already in lockstep when those land.
     /// MUST be serialized + hashed.
     pub(crate) main_rng: SimRng,
-    /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). On a non-random map
-    /// this `RandomClass` is never seeded, so it stays all-zero and returns 0 on
-    /// every draw. The bridge **repair** walker-variant pick consumes this stream;
-    /// on a fixed map it therefore always yields variant 0 (the base overlay), and
-    /// the scenario/main cursors are never advanced by a repair. Constructed via
-    /// `SimRng::zeroed()` (NOT seeded). MUST be serialized + hashed like the other
-    /// two streams. Seeding this for random maps is a deferred (Blocked) follow-up.
+    /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). Fresh construction
+    /// uses the verified native `Random__Seed(0)` logical state. Bridge repair
+    /// consumes this stream; destruction remains Scenario-owned. Later
+    /// same-process native ownership remains unverified.
     pub(crate) mapgen_rng: SimRng,
     /// Deterministic fog/shroud visibility state.
     pub fog: FogState,
@@ -328,6 +369,18 @@ pub struct Simulation {
     /// (reveal/conceal/unlimbo/uninit) mutates; entity storage and the
     /// occupancy grid migrate here in later stages.
     pub(crate) substrate: ObjectSubstrate,
+    /// Ordered release-visible handoffs produced by lifecycle transactions.
+    /// The app drains these without feeding them back into simulation.
+    #[serde(skip)]
+    pub(crate) lifecycle_outputs: Vec<LifecycleOutput>,
+    /// Reusable movement-to-world lifecycle request buffer. Requests are applied
+    /// immediately after the movement call returns.
+    #[serde(skip)]
+    pub(crate) pending_lifecycle_requests: Vec<LifecycleRequest>,
+    /// Internal order proof; release builds carry no ledger or recording branch.
+    #[cfg(test)]
+    #[serde(skip)]
+    lifecycle_test_events: Vec<LifecycleTestEvent>,
     /// Sound events produced during the current tick — drained by the app layer.
     #[serde(skip)]
     pub sound_events: Vec<SimSoundEvent>,
@@ -478,6 +531,40 @@ impl Default for Simulation {
 }
 
 impl Simulation {
+    /// Borrow all three logical RNG objects without exposing mutation.
+    pub fn rng_views(&self) -> SimulationRngViews<'_> {
+        SimulationRngViews {
+            scenario: self.scenario_rng.logical_view(),
+            main: self.main_rng.logical_view(),
+            mapgen: self.mapgen_rng.logical_view(),
+        }
+    }
+
+    /// Summarise this tick for cross-engine parity comparison.
+    ///
+    /// Read-only and side-effect free: the caller decides whether to record it, so
+    /// enabling capture cannot perturb the run being measured. The RNG cursor comes from
+    /// the main stream, which is the one the original engine exposes globally.
+    pub fn parity_digest(&self) -> crate::sim::parity_digest::ParityDigest {
+        let main = self.rng_views().main;
+        crate::sim::parity_digest::ParityDigest::capture(
+            self.session.tick,
+            self.entities(),
+            &self.houses,
+            main.index_a,
+            main.index_b,
+        )
+    }
+
+    /// Capture all three complete logical RNG objects as immutable evidence.
+    pub fn rng_state(&self) -> SimulationRngState {
+        SimulationRngState {
+            scenario: self.scenario_rng.logical_state(),
+            main: self.main_rng.logical_state(),
+            mapgen: self.mapgen_rng.logical_state(),
+        }
+    }
+
     /// Create a new empty simulation with the default deterministic seed.
     pub fn new() -> Self {
         Self::with_seed(DEFAULT_SIM_SEED)
@@ -503,9 +590,7 @@ impl Simulation {
     ) -> Option<&'r ObjectType> {
         match self.type_handles.handle_for(type_ref) {
             Some(handle) => Some(rules.object_by_handle(handle)),
-            None if self.type_handles.is_empty() => {
-                rules.object(self.interner.resolve(type_ref))
-            }
+            None if self.type_handles.is_empty() => rules.object(self.interner.resolve(type_ref)),
             None => None,
         }
     }
@@ -515,8 +600,9 @@ impl Simulation {
     /// `session.seed` (pinned harness baselines depend on it) even though the
     /// stream seeder consumes only 32 bits.
     pub fn with_seed(seed: u64) -> Self {
-        let mut session =
-            ScenarioSession::from_descriptor(&crate::sim::scenario_session::ScenarioDescriptor::default());
+        let mut session = ScenarioSession::from_descriptor(
+            &crate::sim::scenario_session::ScenarioDescriptor::default(),
+        );
         session.seed = seed;
         Self::construct(session)
     }
@@ -529,8 +615,7 @@ impl Simulation {
     }
 
     /// Shared constructor body: seed both gameplay streams identically from
-    /// the session seed (divergence comes from consumption only), leave the
-    /// mapgen stream in its unseeded zero-state.
+    /// the session seed and construct fresh MapGen with native Seed(0) state.
     fn construct(session: ScenarioSession) -> Self {
         let seed = session.seed;
         let mut out = Self {
@@ -540,10 +625,14 @@ impl Simulation {
             session,
             scenario_rng: SimRng::new(seed),
             main_rng: SimRng::new(seed),
-            mapgen_rng: SimRng::zeroed(),
+            mapgen_rng: SimRng::new(0),
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
+            lifecycle_outputs: Vec::new(),
+            pending_lifecycle_requests: Vec::new(),
+            #[cfg(test)]
+            lifecycle_test_events: Vec::new(),
             sound_events: Vec::new(),
             fire_events: Vec::new(),
             pending_smudge_requests: Vec::new(),
@@ -628,27 +717,28 @@ impl Simulation {
     pub(crate) fn miner_jitter_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // dock-entry retry + unload-deploy frame jitter
-    pub(crate) fn random_assignment_rng(&mut self) -> &mut SimRng {
-        &mut self.scenario_rng
-    } // session random country/color resolution at launch handoff
+    /// Capture the process-continuity Scenario cursor when gameplay returns to
+    /// the frontend. The app stores this clone until the next successful Start
+    /// reseeds the gameplay pair.
+    pub(crate) fn clone_scenario_rng(&self) -> SimRng {
+        self.scenario_rng.clone()
+    }
 
     // --- Main stream (gamemd g_MainRng @ 0x00886B88); no sim/ consumer wired yet ---
     pub(crate) fn weapon_spread_rng(&mut self) -> &mut SimRng {
         &mut self.main_rng
-    } // projectile spread X/Y, warhead detonate scatter
+    } // verified main-only weapon/warhead property rolls; not detonation scatter
     pub(crate) fn house_ai_rng(&mut self) -> &mut SimRng {
         &mut self.main_rng
     } // HouseClass superpower/AI gate roll
 
-    /// Test/replay helper — reseed BOTH streams from one seed (mirrors the dual
-    /// Seed+clone in gamemd Init_Random_Number_System). Replaces test code that
-    /// did `sim.rng = SimRng::new(seed)`.
-    pub(crate) fn reseed_both(&mut self, seed: u64) {
+    /// Test/replay helper for the per-game Scenario/Main pair only.
+    ///
+    /// Same-process MapGen reset/retention is unverified, so reseeding the
+    /// per-game pair must preserve the current MapGen object.
+    pub(crate) fn reseed_scenario_and_main(&mut self, seed: u64) {
         self.scenario_rng = SimRng::new(seed);
         self.main_rng = SimRng::new(seed);
-        // mapgen_rng mirrors gamemd's unseeded g_MapGenRng — reset to zero-state,
-        // never seeded from the gameplay seed.
-        self.mapgen_rng = SimRng::zeroed();
         self.session.seed = seed;
     }
 
@@ -793,97 +883,14 @@ impl Simulation {
     }
 
     pub(crate) fn allocate_stable_id(&mut self) -> u64 {
-        let id = self.substrate.next_stable_entity_id;
-        self.substrate.next_stable_entity_id = self.substrate.next_stable_entity_id.saturating_add(1);
+        let id = self.substrate.next_stable_object_id;
+        self.substrate.next_stable_object_id =
+            self.substrate.next_stable_object_id.saturating_add(1);
         id
     }
 
     /// Native Reveal's append: +0x98 guard → tail-append → set flag. Idempotent.
-    pub(crate) fn register_live_object(&mut self, stable_id: u64) {
-        match self.substrate.entities.get_mut(stable_id) {
-            Some(e) if !e.in_logic_vector => {
-                // Legal source: the only non-active presence in this slice is
-                // Limbo, so an object joining the active set must be in Limbo.
-                debug_assert_eq!(
-                    e.presence,
-                    Presence::Limbo,
-                    "register_live_object: entity {stable_id} joined active set from {:?}, expected Limbo",
-                    e.presence,
-                );
-                e.in_logic_vector = true;
-                e.presence = Presence::InCell;
-            }
-            _ => return, // absent, or already a member (idempotent)
-        }
-        self.substrate.logic.push(stable_id);
-    }
-
-    /// Native Conceal's remove: gate on flag → clear flag → compacting remove.
-    pub(crate) fn unregister_live_object(&mut self, stable_id: u64) {
-        if let Some(e) = self.substrate.entities.get_mut(stable_id) {
-            if !e.in_logic_vector {
-                return; // not a member — nothing to remove
-            }
-            // Legal source: an object leaving the active set was InCell.
-            debug_assert_eq!(
-                e.presence,
-                Presence::InCell,
-                "unregister_live_object: entity {stable_id} left active set from {:?}, expected InCell",
-                e.presence,
-            );
-            e.in_logic_vector = false;
-            e.presence = Presence::Limbo;
-        }
-        // Entity present-and-member, or already gone from store: scrub the order.
-        self.substrate.logic.remove(stable_id);
-    }
-
-    /// Native `ObjectClass::Reveal` append: an object becomes a live AI member.
-    /// Active spawns / unlimbo / unload / paradrop call this. Delegates to the
-    /// membership-guarded tail-append primitive; idempotent.
-    pub(crate) fn reveal(&mut self, stable_id: u64) {
-        self.register_live_object(stable_id);
-    }
-
-    /// Native `ObjectClass::Conceal`: the object leaves the live AI set but stays
-    /// in the store (limbo). Delegates to the compacting-remove primitive.
-    pub(crate) fn conceal(&mut self, stable_id: u64) {
-        self.unregister_live_object(stable_id);
-    }
-
-    pub(crate) fn add_entity_occupancy(&mut self, stable_id: u64) {
-        let Some(entity) = self.substrate.entities.get_mut(stable_id) else {
-            return;
-        };
-        if entity.passenger_role.is_inside_transport() {
-            return;
-        }
-        let Some(layer) = entity.occupancy_list_layer() else {
-            return;
-        };
-        let cells = entity_occupancy_cells(entity);
-        let sub_cell = if entity.category == EntityCategory::Infantry {
-            entity.sub_cell
-        } else {
-            None
-        };
-        let order = self.substrate.next_occupancy_enter_order.next();
-        entity.occupancy_enter_order = order;
-        let insertion = CellListInsertion::from_category(entity.category);
-        for (rx, ry) in cells {
-            self.substrate.occupancy
-                .add(rx, ry, stable_id, layer, sub_cell, insertion);
-        }
-    }
-
-    pub(crate) fn remove_entity_occupancy(&mut self, stable_id: u64) {
-        let Some(entity) = self.substrate.entities.get(stable_id) else {
-            return;
-        };
-        for (rx, ry) in entity_occupancy_cells(entity) {
-            self.substrate.occupancy.remove(rx, ry, stable_id);
-        }
-    }
+    // Reveal/Conceal and raw LogicVector transactions live in lifecycle.rs.
 
     /// Debug-only invariant: the active order and the per-entity membership flag
     /// are two views of one set and must never disagree. The order must be
@@ -895,63 +902,87 @@ impl Simulation {
         let mut seen = std::collections::BTreeSet::new();
         for &id in order {
             debug_assert!(seen.insert(id), "logic order has duplicate id {id}");
+            debug_assert!(
+                self.substrate
+                    .entities
+                    .get(id)
+                    .is_some_and(|entity| entity.in_logic_vector)
+                    || self
+                        .substrate
+                        .anims
+                        .get(id)
+                        .is_some_and(|anim| anim.in_logic_vector),
+                "logic order id {id} is missing or not membership-flagged",
+            );
         }
-        let flagged = self.substrate.entities.values().filter(|e| e.in_logic_vector).count();
+        let flagged_entities = self
+            .substrate
+            .entities
+            .values()
+            .filter(|e| e.in_logic_vector)
+            .count();
+        let flagged_anims = self
+            .substrate
+            .anims
+            .iter()
+            .filter(|(_, anim)| anim.in_logic_vector)
+            .count();
+        let flagged = flagged_entities + flagged_anims;
         debug_assert_eq!(
             order.len(),
             flagged,
-            "logic order length ({}) != entities flagged in_logic_vector ({})",
+            "logic order length ({}) != objects flagged in_logic_vector ({})",
             order.len(),
             flagged
         );
     }
 
-    /// Debug-only invariant: the `presence` shadow must equal the value derivable
-    /// from the authoritative gates for every in-store entity. Proves transition
-    /// coverage is complete (every gate flip set the shadow). O(n); compiled out of
-    /// release builds. `Dying` entities exist in-store between `uninit`'s enqueue
-    /// and the end-of-tick `flush_pending_delete`. The flush runs in Phase 9 before
-    /// this assert, so no `Dying` entity remains in the store at this call point.
+    /// Debug-only checks for relationships that remain true while the native
+    /// lifecycle axes themselves are deliberately independent.
     #[cfg(debug_assertions)]
-    pub(crate) fn debug_assert_presence_consistent(&self) {
-        for e in self.substrate.entities.values() {
-            debug_assert_eq!(
-                e.presence,
-                e.derived_presence(),
-                "entity {} presence {:?} != derived {:?} (in_logic_vector={})",
-                e.stable_id,
-                e.presence,
-                e.derived_presence(),
-                e.in_logic_vector,
-            );
-        }
-    }
-
-    /// Refresh the `mission` component's `current`/`substate` on every entity
-    /// from the authoritative `Option<T>` machines, and advance its per-entity
-    /// `tick_counter`. As of Slice 8 `mission` IS folded into `world_hash`, so
-    /// this is the canonical projection writer: `current`/`substate` are a
-    /// deterministic function of the authoritative machines (the verbs own
-    /// `queued`/`suspended`/`timer`). Runs before `state_hash()` each tick tail,
-    /// so the folded value reflects the current tick. BTreeMap `values_mut()`
-    /// yields deterministic ascending-id order.
-    pub(crate) fn refresh_mission_shadow(&mut self) {
-        self.refresh_mission_shadow_except(&BTreeSet::new());
-    }
-
-    /// Tail projection with an S2 skip set: ids dispatched in-loop this tick
-    /// already committed `current`/`substate` and incremented `tick_counter` at
-    /// host time (authoritative); rewriting them here would clobber the
-    /// dispatch-time value and double-count the counter.
-    pub(crate) fn refresh_mission_shadow_except(&mut self, dispatched: &BTreeSet<u64>) {
-        for entity in self.substrate.entities.values_mut() {
-            if dispatched.contains(&entity.stable_id) {
-                continue;
+    pub(crate) fn debug_assert_lifecycle_consistent(&self) {
+        for entity in self.substrate.entities.values() {
+            if !entity.lifecycle.object_alive {
+                debug_assert!(
+                    entity.lifecycle.in_limbo,
+                    "dead entity {} must have completed Conceal before alive clear",
+                    entity.stable_id
+                );
+                debug_assert!(
+                    !entity.lifecycle.cell_marked,
+                    "dead entity {} must be unmarked before alive clear",
+                    entity.stable_id
+                );
+                debug_assert!(
+                    !entity.in_logic_vector,
+                    "dead entity {} must leave LogicVector before alive clear",
+                    entity.stable_id
+                );
+                debug_assert!(
+                    entity.owned_count_released,
+                    "dead entity {} must release owned count exactly once before alive clear",
+                    entity.stable_id
+                );
+                debug_assert!(
+                    self.substrate.pending_delete.contains(&entity.stable_id),
+                    "dead entity {} must remain pending until finalization",
+                    entity.stable_id
+                );
             }
-            let (current, substate) = entity.derived_mission();
-            entity.mission.current = current;
-            entity.mission.substate = substate;
-            entity.mission.tick_counter = entity.mission.tick_counter.wrapping_add(1);
+            if entity.lifecycle.cell_marked
+                && !entity.passenger_role.is_inside_transport()
+                && entity.occupancy_list_layer().is_some()
+            {
+                for (rx, ry) in crate::sim::occupancy::entity_occupancy_cells(entity) {
+                    debug_assert!(
+                        self.substrate
+                            .occupancy
+                            .contains_entity(rx, ry, entity.stable_id),
+                        "cell-marked entity {} missing occupancy at ({rx}, {ry})",
+                        entity.stable_id
+                    );
+                }
+            }
         }
     }
 
@@ -1057,7 +1088,7 @@ impl Simulation {
     #[cfg(debug_assertions)]
     pub(crate) fn debug_assert_factory_conservation(&self) {
         use crate::sim::economy::Economy;
-        use crate::sim::production::{StepOutcome, PRODUCTION_STEPS};
+        use crate::sim::production::{PRODUCTION_STEPS, StepOutcome};
         for factory in self.production.factory_shadow.iter_insertion_ordered() {
             if factory.object.is_none() {
                 continue; // queue-only / no active object: nothing to conserve
@@ -1105,7 +1136,9 @@ impl Simulation {
             debug_assert!(
                 f.suspended && f.object.is_some(),
                 "C12: tick {} {:?}/{:?}: completion must suspend with the object attached",
-                self.session.tick, factory.owner, factory.category,
+                self.session.tick,
+                factory.owner,
+                factory.category,
             );
         }
     }
@@ -1132,7 +1165,9 @@ impl Simulation {
                 debug_assert!(
                     f.insertion_seq > p,
                     "P5d (A): tick {}: insertion_seq must be strictly increasing across the sweep ({} after {})",
-                    self.session.tick, f.insertion_seq, p,
+                    self.session.tick,
+                    f.insertion_seq,
+                    p,
                 );
             }
             prev_seq = Some(f.insertion_seq);
@@ -1141,7 +1176,11 @@ impl Simulation {
                 debug_assert!(
                     e.enqueue_order > tail_prev,
                     "P5d (A): tick {} {:?}/{:?}: tail enqueue_order must strictly exceed the active build + prior tail ({} after {})",
-                    self.session.tick, f.owner, f.category, e.enqueue_order, tail_prev,
+                    self.session.tick,
+                    f.owner,
+                    f.category,
+                    e.enqueue_order,
+                    tail_prev,
                 );
                 tail_prev = e.enqueue_order;
             }
@@ -1153,12 +1192,20 @@ impl Simulation {
             debug_assert!(
                 f.progress <= PRODUCTION_STEPS,
                 "P5b (B): tick {} {:?}/{:?}: progress {} exceeds {}",
-                self.session.tick, f.owner, f.category, f.progress, PRODUCTION_STEPS,
+                self.session.tick,
+                f.owner,
+                f.category,
+                f.progress,
+                PRODUCTION_STEPS,
             );
             debug_assert!(
                 f.balance >= 0 && f.balance <= f.original_balance,
                 "P5b (B): tick {} {:?}/{:?}: balance {} out of [0, original {}]",
-                self.session.tick, f.owner, f.category, f.balance, f.original_balance,
+                self.session.tick,
+                f.owner,
+                f.category,
+                f.balance,
+                f.original_balance,
             );
         }
     }
@@ -1166,10 +1213,17 @@ impl Simulation {
     /// Test-only: force the active order and sync membership flags to it.
     #[cfg(test)]
     pub(crate) fn set_logic_order_for_test(&mut self, order: Vec<u64>) {
+        for entity in self.substrate.entities.values_mut() {
+            entity.in_logic_vector = false;
+        }
+        for anim in self.substrate.anims.values_mut() {
+            anim.in_logic_vector = false;
+        }
         for &id in &order {
             if let Some(e) = self.substrate.entities.get_mut(id) {
                 e.in_logic_vector = true;
-                e.presence = Presence::InCell;
+            } else if let Some(anim) = self.substrate.anims.get_mut(id) {
+                anim.in_logic_vector = true;
             }
         }
         self.substrate.logic.set_order_for_test(order);
@@ -1213,72 +1267,8 @@ impl Simulation {
         self.substrate.entities.change_owner(stable_id, new_owner);
     }
 
-    /// Despawn an entity by stable_id, removing it from EntityStore.
-    /// Decrements owned count if the entity was not already dying (combat deaths
-    /// are decremented when dying is first set, not at physical removal).
-    /// Also removes the entity from every occupied foundation cell.
-    pub(crate) fn uninit(&mut self, stable_id: u64) {
-        // Gather entity data before any mutable borrows.
-        let entity_info = self.substrate.entities.get(stable_id).map(|e| {
-            (
-                e.dying,
-                self.interner.resolve(e.owner).to_string(),
-                e.category,
-            )
-        });
-        if let Some((dying, owner_str, category)) = entity_info {
-            if !dying {
-                self.decrement_owned_count(&owner_str, category);
-            }
-            self.remove_entity_occupancy(stable_id);
-        }
-        self.clear_radio_contacts_for(stable_id);
-        // Despawn safety net: clear the surviving side of any bunker link.
-        crate::sim::docking::bunker_link::break_links_on_despawn(self, stable_id);
-        self.conceal(stable_id); // leave the active order before freeing the slot
-        // Conceal moved presence to Limbo (or it was already Limbo for a never-
-        // revealed limbo object); we then mark Dying + enqueue. The store slot is
-        // NOT freed here — flush_pending_delete frees it at end-of-tick. The entity
-        // stays resolvable by id as a Dying corpse until then (the death window).
-        if let Some(e) = self.substrate.entities.get_mut(stable_id) {
-            debug_assert_ne!(
-                e.presence,
-                Presence::Dying,
-                "uninit: entity {stable_id} already Dying (double teardown?)",
-            );
-            e.presence = Presence::Dying;
-            // IsAlive-equivalent: a queued corpse is dead for all live systems.
-            // Idempotent — the count-decrement above already read the original
-            // `dying`, so owned-counts are still adjusted exactly once.
-            e.dying = true;
-        }
-        // Two-phase death: enqueue instead of freeing. The slot is freed by
-        // flush_pending_delete at end-of-tick (ProcessPendingDelete).
-        self.substrate.pending_delete.push(stable_id);
-    }
-
-    /// Remove an entity from the world. Retained name for existing callers and
-    /// tests; routes through `uninit` so conceal-before-free stays centralized.
-    pub(crate) fn despawn_entity(&mut self, stable_id: u64) {
-        self.uninit(stable_id);
-    }
-
-    /// Drain the deferred-delete queue, freeing each enqueued store slot in death
-    /// (insertion) order. The end-of-tick `ProcessPendingDelete` drain. Called at
-    /// the end of `run_late_region` (inside `advance_tick`, before the asserts +
-    /// state hash) and in the app layer after the death-animation despawn loop.
-    /// After this returns the queue is empty and no `Dying` entity remains in the
-    /// store.
-    pub(crate) fn flush_pending_delete(&mut self) {
-        // mem::take so the loop body can call entities.remove without a
-        // simultaneous borrow of self.substrate.pending_delete. Removing an
-        // absent id is a no-op, covering any defensive double-enqueue.
-        let queued = std::mem::take(&mut self.substrate.pending_delete);
-        for id in queued {
-            self.substrate.entities.remove(id);
-        }
-    }
-
+    /// Legacy non-lifecycle contact scrub retained only for separately classified
+    /// failure paths. Reveal/Conceal/UnInit must use synchronous radio authority.
     pub(crate) fn clear_radio_contacts_for(&mut self, stable_id: u64) {
         self.substrate.entities.clear_radio_contacts_for(stable_id);
     }
@@ -1302,6 +1292,15 @@ impl Simulation {
             if should_defeat {
                 if let Some(h) = self.houses.get_mut(&owner) {
                     h.is_defeated = true;
+                    // A house that owns nothing (or, in Short Game, has no base
+                    // left) has lost from its own perspective. gamemd sets HasLost
+                    // via Flag_To_Lose after a borrowed-time delay; we commit the
+                    // end-state directly. NOTE: gamemd does NOT destroy the
+                    // defeated house's remaining objects — it scatters surviving
+                    // units (ScatterAllUnits) and they persist; hard object
+                    // removal only happens under the non-standard SpecialFlags
+                    // 0x800 (HarvesterImmune). So no cleanup/destroy is done here.
+                    h.has_lost = true;
                 }
             }
         }
@@ -1416,21 +1415,18 @@ impl Simulation {
         for entity in self.substrate.entities.values_mut() {
             entity.in_logic_vector = false;
         }
+        for anim in self.substrate.anims.values_mut() {
+            anim.in_logic_vector = false;
+        }
         for &id in &self.substrate.logic.snapshot() {
             if let Some(entity) = self.substrate.entities.get_mut(id) {
                 entity.in_logic_vector = true;
+            } else if let Some(anim) = self.substrate.anims.get_mut(id) {
+                anim.in_logic_vector = true;
             }
         }
-        // Presence is #[serde(skip)] → all-default (Limbo) straight after
-        // deserialize. Reconcile it from the just-restored authoritative gates so
-        // a save/load round-trip restores identical presence (Slice 2 acceptance).
-        // `mission` is NOT re-derived: it is hashed authoritative state (Slice 8)
-        // that round-trips via serde, and as of S2 the dispatch-time value can
-        // legitimately differ from a fresh derivation (arrival tick) — a re-derive
-        // here would desync the restored hash.
-        for entity in self.substrate.entities.values_mut() {
-            entity.presence = entity.derived_presence();
-        }
+        // Alive, limbo, cell Mark, and death-sequence state are independent
+        // serialized facts. Load repair must never derive them from this vector.
     }
 
     /// Rebuild the zone connectivity map from the current PathGrid and terrain costs.
@@ -1576,9 +1572,7 @@ impl Simulation {
         let to_remove: Option<u64> = self.substrate.entities.iter_sorted().find_map(|(id, e)| {
             if e.position.rx == rx
                 && e.position.ry == ry
-                && self
-                    .object_type(e.type_ref, rules)
-                    .is_some_and(|o| o.wall)
+                && self.object_type(e.type_ref, rules).is_some_and(|o| o.wall)
             {
                 Some(id)
             } else {
@@ -1591,14 +1585,90 @@ impl Simulation {
             // wall is an EntityCategory::Structure, so it owns owned-building
             // count, foundation occupancy, logic-vector membership, and any radio
             // contacts. uninit tears all of those down in native order, marks the
-            // entity Dying, and enqueues the slot for the end-of-tick
-            // flush_pending_delete (the same deferred-death window every combat
-            // death uses). A direct entities.remove leaks count/occupancy and
+            // entity dead-limbo, and enqueues the slot for the ordinary tail
+            // pending-delete drain. A direct entities.remove leaks count/occupancy and
             // leaves a dangling id in the active order.
             self.uninit(id);
         } else {
             log::warn!("apply_wall_damage_events: no wall entity at ({rx}, {ry})");
         }
+    }
+
+    /// Movement-side wall crush: a `Crusher=yes` drive vehicle that finishes the
+    /// ground-movement stage standing on a `Wall=yes` overlay cell flattens that
+    /// wall outright. This mirrors gamemd's per-cell-process wall crush — a
+    /// forced, instant overlay removal — which is a SEPARATE path from the
+    /// probabilistic weapon/warhead wall damage (the crush deals no unit damage
+    /// and skips the Strength dice roll).
+    ///
+    /// The gate is exactly the `Crusher=` flag (not `OmniCrusher=`, which governs
+    /// unit-vs-unit crushing) plus a Drive locomotor over a wall cell. In stock
+    /// YR only the Battle Fortress routes *through* walls (`MovementZone=
+    /// CrusherAll`), but any Crusher drive vehicle that ends up on a wall cell
+    /// crushes it. A crusher can only occupy an intact wall cell on the tick it
+    /// enters (walls block non-crushers), and the wall is removed that same tick,
+    /// so this self-limits to one destruction per wall with no per-tick re-fire.
+    ///
+    /// Runs immediately after Phase-1 ground movement, before vision. Reuses the
+    /// shared `apply_wall_damage_events` teardown so overlay clear, cardinal
+    /// neighbor connectivity cleanup, chain reaction, and wall-entity `uninit`
+    /// match the weapon path's downstream behavior exactly.
+    ///
+    /// Parity follow-up: gamemd also plays a Voc cue and adds a small forward
+    /// rocking tilt on the crush; the exact Voc index is unresolved
+    /// (`docs/research/WALL_CRUSH_ON_DRIVEOVER_GHIDRA_REPORT.md` §5), so the sound
+    /// and cosmetic tilt are deferred rather than approximated with a wrong cue.
+    pub(crate) fn apply_wall_crush_on_driveover(
+        &mut self,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        let (Some(rules), Some(registry)) = (rules, overlay_registry) else {
+            return;
+        };
+        let Some(grid) = self.overlay_grid.as_ref() else {
+            return;
+        };
+
+        // Phase 1 (read-only): collect every distinct wall cell currently
+        // occupied by an active Crusher drive vehicle. Sorted entity iteration
+        // keeps this deterministic; the per-cell dedup means two crushers on one
+        // cell emit a single forced-destruction event.
+        let mut events: Vec<WallDamageEvent> = Vec::new();
+        let mut seen: BTreeSet<(u16, u16)> = BTreeSet::new();
+        for (_id, e) in self.substrate.entities.iter_sorted() {
+            if !e.regular_crusher || !e.is_active() {
+                continue;
+            }
+            // Wall crush requires the Drive locomotor (gamemd LocomotorType ==
+            // Drive); check the primary kind so a transient piggyback (e.g. the
+            // chrono-miner's temporary Drive) does not change the gate.
+            if e.locomotor.as_ref().map(|l| l.primary_kind()) != Some(LocomotorKind::Drive) {
+                continue;
+            }
+            let (rx, ry) = (e.position.rx, e.position.ry);
+            let has_wall = grid
+                .cell(rx, ry)
+                .overlay_id
+                .and_then(|oid| registry.flags(oid))
+                .is_some_and(|f| f.wall);
+            if has_wall && seen.insert((rx, ry)) {
+                // damage == u16::MAX = forced instant removal, bypassing the
+                // probabilistic Strength gate the weapon path uses.
+                events.push(WallDamageEvent {
+                    rx,
+                    ry,
+                    damage: u16::MAX,
+                });
+            }
+        }
+
+        if events.is_empty() {
+            return;
+        }
+
+        // Phase 2 (mutating): shared teardown, identical to the combat wall path.
+        self.apply_wall_damage_events(&events, rules, registry);
     }
 
     pub(crate) fn default_vision_range_for_category(category: EntityCategory) -> u16 {
@@ -1728,8 +1798,8 @@ impl Simulation {
         }
     }
 
-    /// Advance build-up animations: increment elapsed ticks, remove when done.
-    fn tick_building_up(&mut self) {
+    /// Advance build-up animations and return completed building stable IDs.
+    fn tick_building_up(&mut self) -> Vec<u64> {
         // Collect keys first to allow &mut iteration via get_mut().
         let keys = self.substrate.entities.keys_sorted();
         let mut finished: Vec<u64> = Vec::new();
@@ -1743,11 +1813,12 @@ impl Simulation {
                 }
             }
         }
-        for sid in finished {
+        for &sid in &finished {
             if let Some(entity) = self.substrate.entities.get_mut(sid) {
                 entity.building_up = None;
             }
         }
+        finished
     }
 
     /// Advance building-down (undeploy) animations. When done, despawn the
@@ -1913,7 +1984,16 @@ impl Simulation {
 
         // --- Phase 9: Building animations + cleanup ---
         // DEPENDS ON: production (newly placed buildings start build-up).
-        self.tick_building_up();
+        let completed_buildings = self.tick_building_up();
+        if let Some(rules) = rules {
+            *spawned_entities |= production::spawn_completed_refinery_free_units(
+                self,
+                &completed_buildings,
+                rules,
+                path_grid,
+                height_map,
+            );
+        }
         // Advance building-down (undeploy) animations; spawn units when done.
         *spawned_entities |= self.tick_building_down(rules);
 
@@ -1938,26 +2018,6 @@ impl Simulation {
         });
         self.sound_events.extend(started_effect_sounds);
 
-        // The SINGLE in-tick deferred-delete drain (gamemd's one ProcessPending-
-        // Delete at the tail of Main_Tick). Frees every entity uninit'd anywhere
-        // in this advance_tick: command deaths (sells, MCV/slave deploy-undeploy,
-        // engineer capture), Phase-5 combat structure/voxel deaths, tick_building_
-        // down undeploy frees. The earlier command-boundary and end-of-Phase-5
-        // drains were removed — corpses now live the full Dying window and every
-        // mid-tick raw-store consumer is dying-gated instead. Runs BEFORE the
-        // OCCUPANCY_DEBUG rebuild (which would re-add an unflushed dying structure)
-        // and before the tail presence/membership asserts + state_hash.
-        self.flush_pending_delete();
-
-        // Debug-mode safety net: rebuild occupancy from scratch and compare
-        // with the persistent grid. Catches missed add/remove calls.
-        // Enable via OCCUPANCY_DEBUG=1 environment variable for focused debugging.
-        #[cfg(debug_assertions)]
-        if std::env::var("OCCUPANCY_DEBUG").is_ok() {
-            let expected = OccupancyGrid::rebuild(&self.substrate.entities);
-            self.substrate.occupancy.debug_assert_matches(&expected);
-        }
-
         // Native frame / tick contract: commit the synthetic 15 Hz frame LATE,
         // after all phase work — mirrors Main_Tick's guarded g_CurrentFrameCounter
         // increment after Network_ServiceLoop. During the tick, binary_frame held
@@ -1967,6 +2027,24 @@ impl Simulation {
         // of 1000/15 ≈ 66.67ms.
         self.session.total_sim_ms = self.session.total_sim_ms.saturating_add(tick_ms as u64);
         self.session.binary_frame = ((self.session.total_sim_ms * 15) / 1000) as u32;
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::BinaryFrameCommitted);
+
+        // The one ordinary ProcessPendingDelete drain follows the native frame
+        // commit. Alive queue entries keep their position; ready duplicate IDs
+        // collapse and physically finalize exactly once.
+        self.process_pending_delete();
+
+        // Debug-mode safety net: rebuild occupancy after the drain so dead
+        // structures are not reconstructed into the comparison.
+        #[cfg(debug_assertions)]
+        if std::env::var("OCCUPANCY_DEBUG").is_ok() {
+            let expected = OccupancyGrid::rebuild(&self.substrate.entities);
+            self.substrate.occupancy.debug_assert_matches(&expected);
+        }
+
+        // The separate Rust session tick has no direct native field; preserve
+        // its existing post-debug-validation relation.
         self.session.tick = execute_tick;
     }
 
@@ -1999,26 +2077,31 @@ impl Simulation {
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
 
-        // Object-AI stage (S4a): AUTHORITATIVE per-object mission commit walk over
-        // the live object order, run immediately BEFORE Phase-1 ground movement.
-        // This is the per-object dispatch site that must precede the locomotor —
-        // gamemd decides each object's mission, then moves it, within
-        // one pass — so a later slice (S2b) can absorb the ground-movement loop
-        // into this stage. The stage is still a strict no-op here, so the
-        // relocation is hash-neutral (proven by the no-hash-change tests).
-        // Movement stays before the Phase-3 vision recompute, so sight is
-        // unaffected. The S1 shadow PROOF stays at end-of-tick, where the mission
-        // shadow is fresh.
+        // Object-AI stage: the authoritative per-object Mission host, run
+        // immediately BEFORE Phase-1 ground movement — gamemd decides each
+        // object's mission, then moves it, within one pass. Each live object
+        // gets its `+0xC4` AI-counter tick, its owner-local queued-mission
+        // promotion (Ready→Commence), and its absorbed mission-handler
+        // dispatch (Harvest: the miner FSM, timer-gated with the post-handler
+        // epilogue write) here; player commands queued the mission in the
+        // command phase above (the event-execute shape). Movement stays
+        // before the Phase-3 vision recompute, so sight is unaffected.
         //
-        // S2a: bind the host-time Unit dispatch trace (debug/test only). S4a
-        // (Option B): the object-AI stage now AUTHORITATIVELY commits each live
-        // non-miner Unit's mission (`+0xC4` tick_counter + `derived_mission`) at
-        // this gamemd-faithful per-object point (pre-movement, LogicVector order);
-        // `host_dispatched` collects those ids so the Phase-9 tail projection
-        // skips them (no double-commit / double-count). Miners, passengers, dying
-        // units, and non-Units fall to the tail.
-        let mut host_dispatched: BTreeSet<u64> = BTreeSet::new();
-        let dispatch_trace = self.object_ai_stage(rules, &mut host_dispatched);
+        // Dock-reservation corpse sweep first (was the global miner tick's
+        // pre-pass): reservations held by/on dying objects release before the
+        // Harvest dispatches run.
+        if rules.is_some() {
+            crate::sim::miner::sweep_dead_dock_reservations(self);
+        }
+        let miner_config = rules.map(crate::sim::miner::MinerConfig::from_rules);
+        self.object_ai_stage_with(
+            rules,
+            techno_ai::ObjectAiCtx {
+                path_grid,
+                overlay_registry,
+                miner_config: miner_config.as_ref(),
+            },
+        );
 
         // --- Phase 1: Ground movement ---
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.
@@ -2026,7 +2109,7 @@ impl Simulation {
         let movement_order = self.live_object_order_snapshot();
         let movement_stats = movement::tick_movement_with_grids(
             &mut self.substrate.entities,
-            &movement_order,
+            Some(&movement_order),
             path_grid,
             &self.terrain_costs,
             &self.house_alliances,
@@ -2038,6 +2121,7 @@ impl Simulation {
             &mut self.scenario_rng,
             tick_ms,
             self.session.tick,
+            self.session.binary_frame,
             self.zone_grid.as_ref(),
             self.resolved_terrain.as_ref(),
             &self.terrain_speed_config,
@@ -2047,7 +2131,14 @@ impl Simulation {
             &mut self.interner,
             rules,
             &mut self.sound_events,
+            &mut self.pending_lifecycle_requests,
         );
+        let mut lifecycle_requests = std::mem::take(&mut self.pending_lifecycle_requests);
+        for request in lifecycle_requests.drain(..) {
+            self.apply_lifecycle_request(request);
+        }
+        debug_assert!(lifecycle_requests.is_empty());
+        self.pending_lifecycle_requests = lifecycle_requests;
         if let Some(rules) = rules {
             crate::sim::gate_runtime::tick_gate_runtimes(
                 &mut self.substrate.entities,
@@ -2065,79 +2156,86 @@ impl Simulation {
                 &self.interner,
             );
         }
+        // Movement-side wall crush (part of the ground-movement stage): a Crusher
+        // drive vehicle that ended Phase-1 on a wall cell flattens the wall,
+        // separate from the weapon-damage wall path. No-op when no crusher sits
+        // on a wall, so it is hash-neutral for every non-crush scenario.
+        self.apply_wall_crush_on_driveover(rules, overlay_registry);
         // --- Phase 2: Air + special movement ---
         // DEPENDS ON: commands (may set movement targets for air/special units).
         // INDEPENDENT OF: ground movement (air units bypass A* and occupancy).
         let special_movement_order = self.live_object_order_snapshot();
-        air_movement::tick_air_movement(
-            &mut self.substrate.entities,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        if let Some(rules) = rules {
-            let warp_out_type = self.interner.intern(&rules.general.warp_out.name);
-            let mut teleport_visuals = teleport_movement::TeleportVisuals {
-                world_effects: &mut self.world_effects,
-                effect_frame_counts: &self.effect_frame_counts,
-                warp_out_type,
-                warp_out_rate_ms: rules.general.warp_out.rate_ms,
-            };
-            teleport_movement::tick_teleport_movement(
+        if !special_movement_order.is_empty() {
+            air_movement::tick_air_movement(
+                &mut self.substrate.entities,
+                &special_movement_order,
+                tick_ms,
+                self.session.tick,
+            );
+            if let Some(rules) = rules {
+                let warp_out_type = self.interner.intern(&rules.general.warp_out.name);
+                let mut teleport_visuals = teleport_movement::TeleportVisuals {
+                    world_effects: &mut self.world_effects,
+                    effect_frame_counts: &self.effect_frame_counts,
+                    warp_out_type,
+                    warp_out_rate_ms: rules.general.warp_out.rate_ms,
+                };
+                teleport_movement::tick_teleport_movement(
+                    &mut self.substrate.entities,
+                    &mut self.substrate.occupancy,
+                    &special_movement_order,
+                    tick_ms,
+                    self.session.tick,
+                    Some(&mut teleport_visuals),
+                );
+            } else {
+                teleport_movement::tick_teleport_movement(
+                    &mut self.substrate.entities,
+                    &mut self.substrate.occupancy,
+                    &special_movement_order,
+                    tick_ms,
+                    self.session.tick,
+                    None,
+                );
+            }
+            tunnel_movement::tick_tunnel_movement(
                 &mut self.substrate.entities,
                 &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
                 self.session.tick,
-                Some(&mut teleport_visuals),
             );
-        } else {
-            teleport_movement::tick_teleport_movement(
+            let _rocket_detonations = rocket_movement::tick_rocket_movement(
                 &mut self.substrate.entities,
-                &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
                 self.session.tick,
-                None,
             );
-        }
-        tunnel_movement::tick_tunnel_movement(
-            &mut self.substrate.entities,
-            &mut self.substrate.occupancy,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        let _rocket_detonations = rocket_movement::tick_rocket_movement(
-            &mut self.substrate.entities,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        // Homing missile state machine. Runs in the same air/special-movement
-        // phase as rocket_movement; detonation list is currently unused — the
-        // production projectile-spawn dispatch lands in a separate follow-up.
-        let _homing_detonations = homing_movement::tick_homing_movement(
-            &mut self.substrate.entities,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        droppod_movement::tick_droppod_movement(
-            &mut self.substrate.entities,
-            &special_movement_order,
-            tick_ms,
-            self.session.tick,
-        );
-        if let Some(rules) = rules {
-            parachute_descent::tick_parachute_descent(
+            // Homing missile state machine. Runs in the same air/special-movement
+            // phase as rocket_movement; detonation list is currently unused — the
+            // production projectile-spawn dispatch lands in a separate follow-up.
+            let _homing_detonations = homing_movement::tick_homing_movement(
                 &mut self.substrate.entities,
+                &special_movement_order,
                 tick_ms,
-                rules.general.parachute_max_fall_rate,
                 self.session.tick,
             );
+            droppod_movement::tick_droppod_movement(
+                &mut self.substrate.entities,
+                &special_movement_order,
+                tick_ms,
+                self.session.tick,
+            );
+            if let Some(rules) = rules {
+                parachute_descent::tick_parachute_descent(
+                    &mut self.substrate.entities,
+                    tick_ms,
+                    rules.general.parachute_max_fall_rate,
+                    self.session.tick,
+                );
+            }
+            movement::tick_locomotor_piggyback_restore(&mut self.substrate.entities);
         }
-        movement::tick_locomotor_piggyback_restore(&mut self.substrate.entities);
 
         // --- Phase 2.5: Body rocking + slope-transition advance ---
         // DEPENDS ON: all movement above (slope_type lookups must see the
@@ -2170,7 +2268,8 @@ impl Simulation {
                     .unwrap_or(8);
                 // Collect positions to avoid borrow conflict (read entities, write world_effects).
                 let wake_positions: Vec<(u16, u16, u8)> = self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .keys_sorted()
                     .iter()
                     .filter_map(|id| {
@@ -2251,7 +2350,11 @@ impl Simulation {
 
             // Infantry fear decay and runtime prone transitions happen after
             // deploy state and before combat consumes the prone bit.
-            crate::sim::infantry::tick_fear_for_entities(&mut self.substrate.entities, rules, &self.interner);
+            crate::sim::infantry::tick_fear_for_entities(
+                &mut self.substrate.entities,
+                rules,
+                &self.interner,
+            );
 
             // --- Phase 5: Combat + Turret rotation ---
             // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking).
@@ -2299,12 +2402,16 @@ impl Simulation {
                 self.session.binary_frame,
                 &logic_order,
                 Some(&mut self.radiation),
+                &mut self.scenario_rng,
             );
             // Radiation site evolution (lifetime countdown, periodic per-cell
             // decay, self-deletion) runs after the per-object combat work —
             // the native driver updates radiation sites after the object loop.
-            self.radiation
-                .tick_decay(self.session.binary_frame, &rules.radiation, self.resolved_terrain.as_ref());
+            self.radiation.tick_decay(
+                self.session.binary_frame,
+                &rules.radiation,
+                self.resolved_terrain.as_ref(),
+            );
             turret::tick_turret_rotation(
                 &mut self.substrate.entities,
                 rules,
@@ -2329,18 +2436,20 @@ impl Simulation {
                 .despawned_ids
                 .iter()
                 .filter_map(|&dead_id| {
-                    self.substrate.entities
+                    self.substrate
+                        .entities
                         .get(dead_id)
                         .map(|entity| (entity.owner, entity.category))
                 })
                 .collect();
-            // Decrement owned counts for entities killed in combat (dying=true set this tick).
-            for &(owner_id, category) in &combat_dead_infos {
-                let owner_str = self.interner.resolve(owner_id).to_string();
-                self.decrement_owned_count(&owner_str, category);
-            }
+            // The still-blocked animated-death path releases its represented
+            // owner count and logic membership at the existing handoff timing.
+            // Immediate objects keep every common lifecycle fact for UnInit.
             for &dead_id in &combat_result.despawned_ids {
-                self.unregister_live_object(dead_id);
+                if !combat_result.immediate_uninit_ids.contains(&dead_id) {
+                    self.release_owned_count_once(dead_id);
+                    self.legacy_unregister_logic_only_for_app_death(dead_id);
+                }
             }
             let mut sw_refresh_owners: Vec<InternedId> = Vec::new();
             if self.session.game_options.super_weapons && combat_result.structure_destroyed {
@@ -2351,6 +2460,12 @@ impl Simulation {
                         sw_refresh_owners.push(owner_id);
                     }
                 }
+            }
+            // Destroyed garrisons detach/eject their cargo while the building is
+            // still alive and represented. Generic carrier recursion must not
+            // consume those occupants first.
+            for event in &combat_result.destroyed_garrison_buildings {
+                production::eject_destruction_garrison(self, rules, event);
             }
             for &dead_id in &combat_result.immediate_uninit_ids {
                 // Eject a bunkered unit before the bunker is removed (UndockUnit).
@@ -2431,10 +2546,6 @@ impl Simulation {
                     bldg.z,
                 );
             }
-            // Eject garrison occupants from CanBeOccupied buildings destroyed in combat.
-            for ev in &combat_result.destroyed_garrison_buildings {
-                production::eject_destruction_garrison(self, rules, ev);
-            }
             // Refresh superweapon grants for owners who lost structures in combat.
             if self.session.game_options.super_weapons && combat_result.structure_destroyed {
                 for owner_id in sw_refresh_owners {
@@ -2473,6 +2584,30 @@ impl Simulation {
             for ev in &combat_result.reveal_events {
                 self.radar_events
                     .push(RadarEventType::Combat, ev.rx, ev.ry, event_dur);
+            }
+            // Player-asset damage pings: owner-scoped radar diamond + EVA
+            // dispatch (voice gated app-side to the local player; the queue's
+            // dedup result rides along as `eva_allowed`, BridgeRepaired-style).
+            for ev in &combat_result.under_attack_events {
+                let event_type = if ev.miner {
+                    RadarEventType::MinerUnderAttack
+                } else {
+                    RadarEventType::BaseUnderAttack
+                };
+                let eva_allowed = self.radar_events.push_owned(
+                    event_type,
+                    ev.rx,
+                    ev.ry,
+                    event_dur,
+                    Some(ev.owner),
+                );
+                self.sound_events.push(SimSoundEvent::UnderAttack {
+                    rx: ev.rx,
+                    ry: ev.ry,
+                    owner: ev.owner,
+                    miner: ev.miner,
+                    eva_allowed,
+                });
             }
             // Drain combat-emitted smudge spawn requests before any tick stage
             // that reads tiberium density (ore-growth, repairs that touch
@@ -2543,7 +2678,12 @@ impl Simulation {
             // --- Phase 6: Retaliation + Passengers ---
             // DEPENDS ON: combat (sets last_attacker_id read by retaliation).
             let logic_order = self.live_object_order_snapshot();
-            combat::tick_retaliation(&mut self.substrate.entities, rules, &self.interner, &logic_order);
+            combat::tick_retaliation(
+                &mut self.substrate.entities,
+                rules,
+                &self.interner,
+                &logic_order,
+            );
             passenger_ownership_changed = passenger::tick_passenger_system(self, rules);
             self.tick_order_intents_post_combat(path_grid, Some(rules));
             // --- Phase 7: Scatter + Production + Repairs + Docks + Ore ---
@@ -2659,7 +2799,12 @@ impl Simulation {
                 )
                 .with_growth_queue(&mut production.ore_growth_state, self.session.binary_frame)
                 .with_spawning_terrain_cells(&production.tiberium_spawning_terrain_cells)
-                .with_live_object_context(&self.substrate.entities, &self.substrate.occupancy, rules, &self.interner)
+                .with_live_object_context(
+                    &self.substrate.entities,
+                    &self.substrate.occupancy,
+                    rules,
+                    &self.interner,
+                )
                 .with_validation_context(
                     self.resolved_terrain.as_ref(),
                     overlay_registry,
@@ -2687,40 +2832,13 @@ impl Simulation {
         #[cfg(debug_assertions)]
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
-        self.debug_assert_presence_consistent();
-        // Mission projection runs after all systems and before the hash, so the
-        // folded `mission` reflects the current tick. As of Slice 8 `mission` is
-        // canonical hashed state; the Slice-2 shadow-agreement assert is retired.
-        // S4a: live non-miner Units already committed at the host (`host_dispatched`);
-        // the tail projects only the rest (miners, passengers, dying units, non-Units).
-        self.refresh_mission_shadow_except(&host_dispatched);
+        self.debug_assert_lifecycle_consistent();
         // P1+P2 production+economy shadow: mirror credits + purifier_count and
         // rebuild the factory registry from the legacy queues, after all
         // authoritative systems and before the hash. Writes only non-hashed shadow
         // fields, so state_hash stays bit-identical (proven by the *_no_hash_change
         // tests). `rules` is the advance_tick `Option<&RuleSet>` tail param.
         self.refresh_production_shadow(rules);
-        // Object-AI Slice S1 shadow: for one bounded moving-UnitClass scenario,
-        // assert mission dispatch is observed before the locomotor Process within
-        // one object pass (the verified gamemd ordering). Read-only, unhashed,
-        // debug-only — the authority flip is a later slice.
-        #[cfg(debug_assertions)]
-        self.debug_assert_s1_shadow();
-        // S2a: end-of-tick Unit dispatch proof — router determinism + AttackMove-
-        // unreachable + Skip-never asserts, plus the host-vs-tail churn metric.
-        // Read-only, debug/test only; the binding is consumed (or discarded in
-        // release) so the host-time trace never leaks past the tick.
-        #[cfg(any(test, debug_assertions))]
-        let dispatch_churn = self.debug_assert_unit_dispatch_shadow(&dispatch_trace);
-        #[cfg(not(any(test, debug_assertions)))]
-        let dispatch_churn = {
-            let _ = dispatch_trace;
-            0u32
-        };
-        // S2a: live-set coverage (T5) — surface any Unit a legacy dispatch phase
-        // would touch that is absent from the host's LogicVector set.
-        #[cfg(any(test, debug_assertions))]
-        self.debug_check_dispatch_live_set_coverage();
         // S4c: passive/opportunity-acquire eligibility shadow (read-only,
         // hash-neutral). Counts Units that would reach the passive-acquire
         // scanner per the verified gate; the authority flip (running the scanner)
@@ -2739,7 +2857,6 @@ impl Simulation {
             ownership_changed: passenger_ownership_changed,
             bridge_state_changed,
             movement: movement_stats,
-            dispatch_churn,
         }
     }
 }

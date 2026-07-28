@@ -34,6 +34,7 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::InternedId;
+use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
@@ -43,6 +44,7 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed, facing_from_delta_int};
 
 // --- Internal submodules ---
 mod drive_locomotion;
+pub(crate) mod locomotor_ready;
 mod movement_blocked;
 mod movement_bridge;
 mod movement_commands;
@@ -62,6 +64,7 @@ pub mod droppod_movement;
 pub mod facing_class;
 pub mod group_destination;
 pub mod homing_movement;
+pub mod hover;
 pub mod jumpjet_movement;
 pub mod locomotor;
 pub mod parachute_descent;
@@ -92,7 +95,7 @@ pub(crate) use movement_path::{
     path_search_used_zone_grid_marker, reset_path_search_used_zone_grid_marker,
 };
 // Re-export the tick function so callers can use `movement::tick_movement_with_grids`.
-pub use movement_tick::tick_movement_with_grids;
+pub(crate) use movement_tick::tick_movement_with_grids;
 
 // ---------------------------------------------------------------------------
 // Constants — shared across movement submodules via `super::`
@@ -225,14 +228,26 @@ pub fn tick_locomotor_piggyback_restore(entities: &mut EntityStore) -> usize {
         let owner_deploying = entity.building_up.is_some()
             || entity.building_down.is_some()
             || entity.deploy_state.is_some();
-        if let Some(ref mut loco) = entity.locomotor
-            && loco.can_restore_primary_from_piggyback(
+        let mut retired_drive = false;
+        let restored_now = if let Some(ref mut loco) = entity.locomotor {
+            retired_drive =
+                loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive;
+            loco.can_restore_primary_from_piggyback(
                 owner_moving,
                 owner_teleporting,
                 owner_deploying,
-            )
-            && loco.restore_primary_from_piggyback()
-        {
+            ) && loco.restore_primary_from_piggyback()
+        } else {
+            false
+        };
+        if restored_now {
+            if retired_drive {
+                // Native FootClass::AI releases the old active locomotor before
+                // installing the stored primary. Do not retain hashed Drive
+                // state after primary Teleport is active again.
+                entity.drive_locomotion = None;
+                entity.drive_track = None;
+            }
             restored = restored.saturating_add(1);
         }
     }
@@ -247,10 +262,11 @@ pub fn tick_locomotor_piggyback_restore(entities: &mut EntityStore) -> usize {
 ///
 /// Called once per simulation tick with `tick_ms` milliseconds elapsed.
 /// Entities that reach their destination have MovementTarget removed automatically.
-pub fn tick_movement(
+pub(crate) fn tick_movement(
     entities: &mut EntityStore,
     tick_ms: u32,
     interner: &mut crate::sim::intern::StringInterner,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
 ) {
     let empty_costs: BTreeMap<SpeedType, TerrainCostGrid> = BTreeMap::new();
     let empty_alliances: HouseAllianceMap = HouseAllianceMap::new();
@@ -266,6 +282,7 @@ pub fn tick_movement(
         tick_ms,
         0, // sim_tick not available in test-only wrapper
         interner,
+        lifecycle_requests,
     );
 }
 
@@ -274,7 +291,7 @@ pub fn tick_movement(
 /// `terrain_costs` is the per-SpeedType cost map for cost-aware repath.
 /// When provided, repath attempts use `find_path_with_costs` to prefer
 /// roads and avoid rough terrain.
-pub fn tick_movement_with_grid(
+pub(crate) fn tick_movement_with_grid(
     entities: &mut EntityStore,
     path_grid: Option<&PathGrid>,
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
@@ -284,12 +301,13 @@ pub fn tick_movement_with_grid(
     tick_ms: u32,
     sim_tick: u64,
     interner: &mut crate::sim::intern::StringInterner,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
 ) -> MovementTickStats {
     let mut sound_events: Vec<crate::sim::world::SimSoundEvent> = Vec::new();
     let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     tick_movement_with_grids(
         entities,
-        &[],
+        None,
         path_grid,
         terrain_costs,
         alliances,
@@ -298,8 +316,9 @@ pub fn tick_movement_with_grid(
         rng,
         tick_ms,
         sim_tick,
-        None, // No zone grid in legacy wrapper
-        None, // No resolved terrain in legacy wrapper
+        sim_tick as u32, // binary_frame proxy (test-only wrapper: 1 frame/tick)
+        None,            // No zone grid in legacy wrapper
+        None,            // No resolved terrain in legacy wrapper
         &TerrainSpeedConfig::default(),
         SIM_ZERO, // No CloseEnough in legacy wrapper
         9,        // Default PathDelay
@@ -307,6 +326,7 @@ pub fn tick_movement_with_grid(
         interner,
         None, // No RuleSet in legacy wrapper — crush sounds suppressed
         &mut sound_events,
+        lifecycle_requests,
     )
 }
 

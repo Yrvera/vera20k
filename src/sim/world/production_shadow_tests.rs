@@ -13,9 +13,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
-use crate::sim::production::{
-    CancelOutcome, ProductionCategory, StepOutcome, PRODUCTION_STEPS,
-};
+use crate::sim::production::{CancelOutcome, PRODUCTION_STEPS, ProductionCategory, StepOutcome};
 use std::collections::BTreeMap;
 
 fn empty_rules() -> RuleSet {
@@ -96,14 +94,22 @@ fn economy_shadow_does_not_mirror_credits() {
     let rules = empty_rules();
     let a = sim.interner.intern("Americans");
     let b = sim.interner.intern("Russians");
-    sim.houses.insert(a, HouseState::new(a, 0, None, true, 5000, 10));
-    sim.houses.insert(b, HouseState::new(b, 1, None, true, 1234, 10));
+    sim.houses
+        .insert(a, HouseState::new(a, 0, None, true, 5000, 10));
+    sim.houses
+        .insert(b, HouseState::new(b, 1, None, true, 1234, 10));
     sim.refresh_economy_shadow(Some(&rules));
     // The authoritative wallet is untouched; the economy shim is NOT mirrored.
     assert_eq!(sim.houses[&a].credits, 5000);
     assert_eq!(sim.houses[&b].credits, 1234);
-    assert_eq!(sim.houses[&a].economy.credits, 0, "economy.credits is not mirrored (retired)");
-    assert_eq!(sim.houses[&b].economy.credits, 0, "economy.credits is not mirrored (retired)");
+    assert_eq!(
+        sim.houses[&a].economy.credits, 0,
+        "economy.credits is not mirrored (retired)"
+    );
+    assert_eq!(
+        sim.houses[&b].economy.credits, 0,
+        "economy.credits is not mirrored (retired)"
+    );
     // The purifier-count statistic is still recomputed each refresh.
     assert_eq!(sim.houses[&a].economy.purifier_count, 0);
 }
@@ -115,7 +121,11 @@ fn economy_shadow_does_not_create_houses() {
     let before_len = sim.houses.len();
     let before = sim.state_hash();
     sim.refresh_economy_shadow(Some(&rules));
-    assert_eq!(sim.houses.len(), before_len, "shadow must not create houses");
+    assert_eq!(
+        sim.houses.len(),
+        before_len,
+        "shadow must not create houses"
+    );
     assert_eq!(before, sim.state_hash(), "shadow must not perturb the hash");
 }
 
@@ -124,11 +134,15 @@ fn economy_shadow_does_not_change_state_hash() {
     let mut sim = Simulation::new();
     let rules = empty_rules();
     let a = sim.interner.intern("Americans");
-    sim.houses.insert(a, HouseState::new(a, 0, None, true, 5000, 10));
+    sim.houses
+        .insert(a, HouseState::new(a, 0, None, true, 5000, 10));
     let before = sim.state_hash();
     sim.refresh_economy_shadow(Some(&rules));
     let after = sim.state_hash();
-    assert_eq!(before, after, "economy shadow must not perturb the state hash");
+    assert_eq!(
+        before, after,
+        "economy shadow must not perturb the state hash"
+    );
 }
 
 /// CONCERN-1 regression guard for the v2 correction: the purifier-bonus base is the
@@ -139,7 +153,8 @@ fn economy_purifier_count_is_building_count() {
     let mut sim = Simulation::new();
     let rules = rules_with_ore_purifier();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 5000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 5000, 10));
     let proc_ty = sim.interner.intern("GAPROC");
     let powr_ty = sim.interner.intern("GAPOWR"); // not a purifier (absent from rules)
 
@@ -180,26 +195,44 @@ fn factory_reconcile_seeds_zero_and_persists_progress() {
     let ty = sim.interner.intern("GRIZZLY");
     // Arm a fresh Vehicle build: the registry SEEDS progress 0 (authoritative), never
     // frames-derived.
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     {
         let view = sim
             .production
             .factory_shadow
             .view(owner, ProductionCategory::Vehicle)
             .expect("factory exists");
-        assert_eq!(view.progress, 0, "SEED arm seeds a fresh build at progress 0, not frames-derived");
+        assert_eq!(
+            view.progress, 0,
+            "SEED arm seeds a fresh build at progress 0, not frames-derived"
+        );
         assert!(view.object.is_some(), "Building front => active object");
     }
     // Manually advance the authoritative progress, then refresh: the PERSIST arm must
     // leave progress UNTOUCHED (the registry persists with no rebuild).
-    sim.production.factory_shadow.test_first_mut().unwrap().progress = 9;
+    sim.production
+        .factory_shadow
+        .test_first_mut()
+        .unwrap()
+        .progress = 9;
     sim.refresh_production_shadow(Some(&rules));
     let view = sim
         .production
         .factory_shadow
         .view(owner, ProductionCategory::Vehicle)
         .unwrap();
-    assert_eq!(view.progress, 9, "PERSIST arm keeps authoritative progress; frames are not the source");
+    assert_eq!(
+        view.progress, 9,
+        "PERSIST arm keeps authoritative progress; frames are not the source"
+    );
 }
 
 #[test]
@@ -237,14 +270,29 @@ fn insertion_seq_stable_across_rebuild() {
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     let seq_a = sim.production.factory_shadow.iter_insertion_ordered()[0].insertion_seq;
     // Advance the build, refresh — the registry persists, the same (owner, category)
     // survives with the same seq (refresh no longer reconciles).
-    sim.production.factory_shadow.test_first_mut().unwrap().progress = 10;
+    sim.production
+        .factory_shadow
+        .test_first_mut()
+        .unwrap()
+        .progress = 10;
     sim.refresh_production_shadow(Some(&rules));
     let seq_b = sim.production.factory_shadow.iter_insertion_ordered()[0].insertion_seq;
-    assert_eq!(seq_a, seq_b, "surviving factory keeps a stable insertion_seq");
+    assert_eq!(
+        seq_a, seq_b,
+        "surviving factory keeps a stable insertion_seq"
+    );
 }
 
 /// The authority-flip inversion of `factory_registry_shadow_no_hash_change`: the
@@ -256,9 +304,18 @@ fn production_authoritative_hash_includes_factory_fields() {
         let mut sim = Simulation::new();
         let rules = vehicle_rules();
         let owner = sim.interner.intern("Americans");
-        sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
         let ty = sim.interner.intern("GRIZZLY");
-        arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+        arm(
+            &mut sim,
+            &rules,
+            owner,
+            ProductionCategory::Vehicle,
+            ty,
+            54,
+            1,
+        );
         sim
     }
     let base = mid_build().state_hash();
@@ -278,7 +335,11 @@ fn production_authoritative_hash_includes_factory_fields() {
     for m in factory_muts {
         let mut sim = mid_build();
         m(sim.production.factory_shadow.test_first_mut().unwrap());
-        assert_ne!(base, sim.state_hash(), "a newly-hashed Factory field must move the hash");
+        assert_ne!(
+            base,
+            sim.state_hash(),
+            "a newly-hashed Factory field must move the hash"
+        );
     }
 
     type EMut = fn(&mut crate::sim::economy::Economy);
@@ -291,7 +352,11 @@ fn production_authoritative_hash_includes_factory_fields() {
         let mut sim = mid_build();
         let owner = sim.interner.intern("Americans");
         m(&mut sim.houses.get_mut(&owner).unwrap().economy);
-        assert_ne!(base, sim.state_hash(), "a hashed economy statistic must move the hash");
+        assert_ne!(
+            base,
+            sim.state_hash(),
+            "a hashed economy statistic must move the hash"
+        );
     }
 }
 
@@ -301,14 +366,26 @@ fn production_shadow_does_not_create_houses() {
     let rules = empty_rules();
     let owner = sim.interner.intern("Ghost"); // no HouseState inserted
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     let before_houses = sim.houses.len();
     let before_factories = sim.production.factory_shadow.len();
     sim.refresh_production_shadow(Some(&rules));
     // The refresh NEVER fabricates a house (the auto-create hazard guard); the registry
     // (now authoritative + hashed) is populated by the arm, so the hash IS allowed to
     // move — only the no-house-creation invariant is asserted here.
-    assert_eq!(sim.houses.len(), before_houses, "refresh must not create houses");
+    assert_eq!(
+        sim.houses.len(),
+        before_houses,
+        "refresh must not create houses"
+    );
     assert_eq!(
         sim.production.factory_shadow.len(),
         before_factories,
@@ -344,11 +421,28 @@ fn snapshot_roundtrip_factory_registry() {
     let mut sim = Simulation::new();
     let rules = vehicle_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
     let next = sim.interner.intern("FV");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1); // SEED arm: balance = full cost
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, next, 54, 2); // a tail entry to round-trip
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    ); // SEED arm: balance = full cost
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        next,
+        54,
+        2,
+    ); // a tail entry to round-trip
     // Give the build non-trivial authoritative progress/balance/stats to round-trip.
     {
         let f = sim.production.factory_shadow.test_first_mut().unwrap();
@@ -356,18 +450,30 @@ fn snapshot_roundtrip_factory_registry() {
         f.balance = 300;
         f.step_timer = 4;
     }
-    sim.houses.get_mut(&owner).unwrap().economy.harvested_credits = 12_345;
+    sim.houses
+        .get_mut(&owner)
+        .unwrap()
+        .economy
+        .harvested_credits = 12_345;
     let before = sim.state_hash();
 
     let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "test_map", 0);
     let mut loaded = crate::sim::snapshot::GameSnapshot::load(&bytes)
         .expect("load")
         .sim;
-    assert_eq!(loaded.state_hash(), before, "registry + economy stats round-trip bit-identically");
+    assert_eq!(
+        loaded.state_hash(),
+        before,
+        "registry + economy stats round-trip bit-identically"
+    );
 
     // The first post-load reconcile (PERSIST arm, same front) must NOT perturb it.
     loaded.refresh_production_shadow(Some(&rules));
-    assert_eq!(before, loaded.state_hash(), "post-load reconcile leaves the loaded build untouched");
+    assert_eq!(
+        before,
+        loaded.state_hash(),
+        "post-load reconcile leaves the loaded build untouched"
+    );
 }
 
 /// `progress_carry` was the retired frames-timer field with no live reader. P5d retired
@@ -389,12 +495,24 @@ fn legacy_progress_carry_removed_from_hash() {
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     let before = sim.state_hash();
     // No retired per-queue-item frames field exists to mutate; a refresh no-op must not
     // perturb the hash (the registry carries no progress_carry/remaining frames timer).
     sim.refresh_production_shadow(Some(&rules));
-    assert_eq!(before, sim.state_hash(), "no retired progress_carry frames field is hashed");
+    assert_eq!(
+        before,
+        sim.state_hash(),
+        "no retired progress_carry frames field is hashed"
+    );
 }
 
 /// Identical fixtures over N ticks produce identical per-tick state_hash sequences
@@ -411,7 +529,11 @@ fn production_shadow_preserves_advance_tick_phase_order() {
             })
             .collect()
     }
-    assert_eq!(run(), run(), "advance_tick with the production shadow stays deterministic");
+    assert_eq!(
+        run(),
+        run(),
+        "advance_tick with the production shadow stays deterministic"
+    );
 }
 
 // ===== P3 — per-step charge oracle (hash-neutral) =====
@@ -424,9 +546,18 @@ fn factory_advance_step_does_not_change_state_hash() {
     let mut sim = Simulation::new();
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1); // cost-based shadow built
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    ); // cost-based shadow built
     let before = sim.state_hash();
 
     // Step a CLONE of the shadow factory against a CLONE of the wallet, 54 times.
@@ -460,9 +591,18 @@ fn production_shadow_with_oracle_is_deterministic() {
         let mut sim = Simulation::new();
         let rules = empty_rules();
         let owner = sim.interner.intern("Americans");
-        sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
         let ty = sim.interner.intern("GRIZZLY");
-        arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+        arm(
+            &mut sim,
+            &rules,
+            owner,
+            ProductionCategory::Vehicle,
+            ty,
+            54,
+            1,
+        );
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
         (0..5)
             .map(|_| {
@@ -471,7 +611,11 @@ fn production_shadow_with_oracle_is_deterministic() {
             })
             .collect()
     }
-    assert_eq!(run(), run(), "advance_tick with the P3 oracle path stays deterministic");
+    assert_eq!(
+        run(),
+        run(),
+        "advance_tick with the P3 oracle path stays deterministic"
+    );
 }
 
 /// The FIT-(a) probe: build a cost-based shadow, place a live Structure for the
@@ -482,9 +626,18 @@ fn factory_oracle_step_trace_walks_live_structures() {
     let mut sim = Simulation::new();
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     // A live Structure for the owner (the war factory the probe walks).
     let mut e = GameEntity::test_default(1, "GAWEAP", "Americans", 5, 5);
     e.category = EntityCategory::Structure;
@@ -495,9 +648,20 @@ fn factory_oracle_step_trace_walks_live_structures() {
 
     let before = sim.state_hash();
     let trace = sim.factory_oracle_step_trace();
-    assert_eq!(trace.len(), 1, "one live structure x one owner factory-with-object");
-    assert_eq!(trace[0].0, 1, "the outcome is attributed to the live structure id");
-    assert_eq!(before, sim.state_hash(), "the probe must not perturb the hash");
+    assert_eq!(
+        trace.len(),
+        1,
+        "one live structure x one owner factory-with-object"
+    );
+    assert_eq!(
+        trace[0].0, 1,
+        "the outcome is attributed to the live structure id"
+    );
+    assert_eq!(
+        before,
+        sim.state_hash(),
+        "the probe must not perturb the hash"
+    );
     assert_eq!(
         trace,
         sim.factory_oracle_step_trace(),
@@ -518,9 +682,18 @@ fn factory_cancel_one_does_not_change_state_hash() {
     let mut sim = Simulation::new();
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1); // cost-based shadow built
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    ); // cost-based shadow built
     let before = sim.state_hash();
     let legacy_credits = sim.houses[&owner].credits;
 
@@ -555,16 +728,37 @@ fn queue_advances_only_after_delivery() {
     let mut sim = Simulation::new();
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let active = sim.interner.intern("GRIZZLY");
     let next = sim.interner.intern("FV"); // the queued tail item
     // Front Building (active object) with a tail item behind it.
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, active, 54, 1);
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, next, 54, 2);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        active,
+        54,
+        1,
+    );
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        next,
+        54,
+        2,
+    );
 
     let before = sim.state_hash();
     let mut f = sim.production.factory_shadow.iter_insertion_ordered()[0].clone();
-    assert_eq!(f.object.as_ref().map(|o| o.type_id), Some(active), "active = GRIZZLY");
+    assert_eq!(
+        f.object.as_ref().map(|o| o.type_id),
+        Some(active),
+        "active = GRIZZLY"
+    );
     assert_eq!(
         f.queue.iter().map(|e| e.type_id).collect::<Vec<_>>(),
         vec![next],
@@ -583,10 +777,17 @@ fn queue_advances_only_after_delivery() {
             break;
         }
     }
-    assert!(f.suspended && f.object.is_some(), "C12: completion holds the object, suspended");
+    assert!(
+        f.suspended && f.object.is_some(),
+        "C12: completion holds the object, suspended"
+    );
     // The queue does NOT advance on completion alone (cost/step_delay are inert when the
     // object is still held — the guard fires before the seed).
-    assert_eq!(f.start_next_queued(0, 0), None, "C7: held object blocks the advance");
+    assert_eq!(
+        f.start_next_queued(0, 0),
+        None,
+        "C7: held object blocks the advance"
+    );
     assert_eq!(
         f.queue.iter().map(|e| e.type_id).collect::<Vec<_>>(),
         vec![next],
@@ -596,11 +797,23 @@ fn queue_advances_only_after_delivery() {
     // path: step_delay 0).
     f.object = None;
     f.suspended = false;
-    assert_eq!(f.start_next_queued(0, 0), Some(next), "after delivery the front pops");
-    assert_eq!(f.object.as_ref().map(|o| o.type_id), Some(next), "active = FV");
+    assert_eq!(
+        f.start_next_queued(0, 0),
+        Some(next),
+        "after delivery the front pops"
+    );
+    assert_eq!(
+        f.object.as_ref().map(|o| o.type_id),
+        Some(next),
+        "active = FV"
+    );
     assert!(f.queue.is_empty(), "tail consumed");
 
-    assert_eq!(before, sim.state_hash(), "the clone drive must not perturb the hash");
+    assert_eq!(
+        before,
+        sim.state_hash(),
+        "the clone drive must not perturb the hash"
+    );
 }
 
 /// P4 determinism: identical fixtures over N ticks with a per-tick cancel probe on
@@ -612,9 +825,18 @@ fn production_shadow_with_cancel_is_deterministic() {
         let mut sim = Simulation::new();
         let rules = empty_rules();
         let owner = sim.interner.intern("Americans");
-        sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
         let ty = sim.interner.intern("GRIZZLY");
-        arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+        arm(
+            &mut sim,
+            &rules,
+            owner,
+            ProductionCategory::Vehicle,
+            ty,
+            54,
+            1,
+        );
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
         (0..5)
             .map(|_| {
@@ -631,7 +853,11 @@ fn production_shadow_with_cancel_is_deterministic() {
             })
             .collect()
     }
-    assert_eq!(run(), run(), "advance_tick with the P4 clone cancel probe stays deterministic");
+    assert_eq!(
+        run(),
+        run(),
+        "advance_tick with the P4 clone cancel probe stays deterministic"
+    );
 }
 
 // ===== P5a — flip-prep (pure producers + temporal mint + inversion-readiness, hash-neutral) =====
@@ -644,13 +870,22 @@ fn production_shadow_with_cancel_is_deterministic() {
 /// change touches only the `#[serde(skip)]` registry).
 #[test]
 fn factory_flip_prep_does_not_change_state_hash() {
-    use crate::sim::production::{build_step_time, BuildStepTimeInputs};
+    use crate::sim::production::{BuildStepTimeInputs, build_step_time};
     let mut sim = Simulation::new();
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     let before = sim.state_hash();
     let legacy_credits = sim.houses[&owner].credits;
 
@@ -701,8 +936,24 @@ fn factory_insertion_seq_equals_front_enqueue_order() {
     let veh_ty = sim.interner.intern("GRIZZLY");
     // Aircraft begun first (order 10), Vehicle second (order 20) — enqueue mints each
     // factory's insertion_seq from its first-begin order.
-    arm(&mut sim, &rules, owner, ProductionCategory::Aircraft, air_ty, 54, 10);
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, veh_ty, 54, 20);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Aircraft,
+        air_ty,
+        54,
+        10,
+    );
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        veh_ty,
+        54,
+        20,
+    );
 
     let ordered: Vec<(ProductionCategory, u64)> = sim
         .production
@@ -713,7 +964,10 @@ fn factory_insertion_seq_equals_front_enqueue_order() {
         .collect();
     assert_eq!(
         ordered,
-        vec![(ProductionCategory::Aircraft, 10), (ProductionCategory::Vehicle, 20)],
+        vec![
+            (ProductionCategory::Aircraft, 10),
+            (ProductionCategory::Vehicle, 20)
+        ],
         "insertion_seq == front.enqueue_order; sweep follows TEMPORAL, not enum-sort, order"
     );
 }
@@ -728,8 +982,24 @@ fn factory_step_order_matches_legacy_temporal_order() {
     let air_ty = sim.interner.intern("BEAG");
     let veh_ty = sim.interner.intern("GRIZZLY");
     // Aircraft begun first (order 5), Vehicle second (order 9).
-    arm(&mut sim, &rules, owner, ProductionCategory::Aircraft, air_ty, 54, 5);
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, veh_ty, 54, 9);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Aircraft,
+        air_ty,
+        54,
+        5,
+    );
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        veh_ty,
+        54,
+        9,
+    );
 
     let cats_in_sweep: Vec<ProductionCategory> = sim
         .production
@@ -753,9 +1023,18 @@ fn factory_step_matches_legacy_shadow_holds() {
     let mut sim = Simulation::new();
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     for _ in 0..5 {
         // If the inversion assert diverges, advance_tick panics in a debug build.
@@ -771,28 +1050,57 @@ fn production_delivery_probe_is_dormant() {
     let mut sim = Simulation::new();
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let active = sim.interner.intern("GRIZZLY");
     let next = sim.interner.intern("FV");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, active, 54, 1);
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, next, 54, 2);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        active,
+        54,
+        1,
+    );
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        next,
+        54,
+        2,
+    );
 
     let before = sim.state_hash();
     let probe = sim.factory_delivery_probe();
     assert_eq!(probe.len(), 1, "one factory with a tail");
-    assert_eq!(probe[0].2, Some(next), "the probe would pop FV after a delivery (on a clone)");
+    assert_eq!(
+        probe[0].2,
+        Some(next),
+        "the probe would pop FV after a delivery (on a clone)"
+    );
     let view = sim
         .production
         .factory_shadow
         .view(owner, ProductionCategory::Vehicle)
         .unwrap();
-    assert_eq!(view.object.map(|o| o.type_id), Some(active), "live active still GRIZZLY");
+    assert_eq!(
+        view.object.map(|o| o.type_id),
+        Some(active),
+        "live active still GRIZZLY"
+    );
     assert_eq!(
         view.queue.iter().map(|e| e.type_id).collect::<Vec<_>>(),
         vec![next],
         "live tail unchanged"
     );
-    assert_eq!(before, sim.state_hash(), "the probe must not perturb the hash");
+    assert_eq!(
+        before,
+        sim.state_hash(),
+        "the probe must not perturb the hash"
+    );
 }
 
 /// P5a determinism: a per-tick closure that builds the producer + runs the dormant
@@ -800,14 +1108,23 @@ fn production_delivery_probe_is_dormant() {
 /// (mirrors `production_shadow_with_cancel_is_deterministic`).
 #[test]
 fn production_flip_prep_is_deterministic() {
-    use crate::sim::production::{build_step_time, BuildStepTimeInputs};
+    use crate::sim::production::{BuildStepTimeInputs, build_step_time};
     fn run() -> Vec<u64> {
         let mut sim = Simulation::new();
         let rules = empty_rules();
         let owner = sim.interner.intern("Americans");
-        sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
         let ty = sim.interner.intern("GRIZZLY");
-        arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+        arm(
+            &mut sim,
+            &rules,
+            owner,
+            ProductionCategory::Vehicle,
+            ty,
+            54,
+            1,
+        );
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
         (0..5)
             .map(|_| {
@@ -831,7 +1148,11 @@ fn production_flip_prep_is_deterministic() {
             })
             .collect()
     }
-    assert_eq!(run(), run(), "advance_tick with the P5a flip-prep probe stays deterministic");
+    assert_eq!(
+        run(),
+        run(),
+        "advance_tick with the P5a flip-prep probe stays deterministic"
+    );
 }
 
 // ===== P5b — the authority flip: real-wallet charge guards (end-to-end via advance_tick) =====
@@ -845,12 +1166,27 @@ fn single_wallet_charged_once_no_double_debit() {
     let mut sim = Simulation::new();
     let rules = vehicle_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     spawn_war_factory(&mut sim, owner); // P6: a real factory so the build is not abandoned
-    let full_cost = sim.object_type(ty, &rules).map(|o| o.cost.max(0)).unwrap_or(0);
-    assert!(full_cost > 0, "GRIZZLY needs a positive cost for this guard");
+    let full_cost = sim
+        .object_type(ty, &rules)
+        .map(|o| o.cost.max(0))
+        .unwrap_or(0);
+    assert!(
+        full_cost > 0,
+        "GRIZZLY needs a positive cost for this guard"
+    );
     let start = sim.houses[&owner].credits;
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     // A war factory exists but no path_grid is supplied, so the completed vehicle has no exit
@@ -864,7 +1200,10 @@ fn single_wallet_charged_once_no_double_debit() {
         }
     }
     let debited = start - sim.houses[&owner].credits;
-    assert_eq!(debited, full_cost, "exactly one full-cost debit to house.credits over the build");
+    assert_eq!(
+        debited, full_cost,
+        "exactly one full-cost debit to house.credits over the build"
+    );
     assert_eq!(
         sim.houses[&owner].economy.spent_credits, full_cost,
         "spent_credits accumulates the cost exactly once"
@@ -878,16 +1217,31 @@ fn stall_on_no_funds_holds() {
     let mut sim = Simulation::new();
     let rules = vehicle_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 0, 10)); // 0 credits
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 0, 10)); // 0 credits
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     spawn_war_factory(&mut sim, owner); // P6: factory present so the build STALLS (not abandoned)
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     for _ in 0..200 {
         sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
     }
-    assert_eq!(sim.houses[&owner].credits, 0, "a stalled build spends nothing");
-    assert_eq!(sim.houses[&owner].economy.spent_credits, 0, "nothing is accumulated while stalled");
+    assert_eq!(
+        sim.houses[&owner].credits, 0,
+        "a stalled build spends nothing"
+    );
+    assert_eq!(
+        sim.houses[&owner].economy.spent_credits, 0,
+        "nothing is accumulated while stalled"
+    );
 }
 
 /// C8: cancelling a mid-build active object refunds EXACTLY the spent portion
@@ -898,24 +1252,42 @@ fn cancel_one_partial_refund_to_house_credits() {
     let mut sim = Simulation::new();
     let rules = vehicle_rules();
     let owner = sim.interner.intern("Americans");
-    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    arm(
+        &mut sim,
+        &rules,
+        owner,
+        ProductionCategory::Vehicle,
+        ty,
+        54,
+        1,
+    );
     spawn_war_factory(&mut sim, owner); // P6: factory present so the build is not abandoned
-    let full_cost = sim.object_type(ty, &rules).map(|o| o.cost.max(0)).unwrap_or(0);
+    let full_cost = sim
+        .object_type(ty, &rules)
+        .map(|o| o.cost.max(0))
+        .unwrap_or(0);
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     // Charge partway (not to completion).
     for _ in 0..200 {
         sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
     }
     let spent = sim.houses[&owner].economy.spent_credits;
-    assert!(spent > 0 && spent < full_cost, "mid-build: some but not all of the cost is spent");
+    assert!(
+        spent > 0 && spent < full_cost,
+        "mid-build: some but not all of the cost is spent"
+    );
     let credits_before = sim.houses[&owner].credits;
     let ok =
         crate::sim::production::cancel_by_type_for_owner(&mut sim, &rules, "Americans", "GRIZZLY");
     assert!(ok, "the active build is cancellable");
     let refunded = sim.houses[&owner].credits - credits_before;
-    assert_eq!(refunded, spent, "C8: refund exactly the spent portion (original_balance - balance)");
+    assert_eq!(
+        refunded, spent,
+        "C8: refund exactly the spent portion (original_balance - balance)"
+    );
     // The cancelled active build (no tail) leaves an idle factory that is pruned, so the
     // factory no longer exists in the registry (the queue-of-record).
     assert!(
@@ -938,15 +1310,41 @@ fn factory_flip_determinism_over_scripted_commands() {
         let rules = vehicle_rules();
         let a = sim.interner.intern("Americans");
         let b = sim.interner.intern("Russians");
-        sim.houses.insert(a, HouseState::new(a, 0, None, true, 1_000_000, 10));
-        sim.houses.insert(b, HouseState::new(b, 1, None, true, 1_000_000, 10));
+        sim.houses
+            .insert(a, HouseState::new(a, 0, None, true, 1_000_000, 10));
+        sim.houses
+            .insert(b, HouseState::new(b, 1, None, true, 1_000_000, 10));
         let griz = sim.interner.intern("GRIZZLY");
         let beag = sim.interner.intern("BEAG");
         // Owner A: a Vehicle build (order 1) + an Aircraft build (order 2).
-        arm(&mut sim, &rules, a, ProductionCategory::Vehicle, griz, 54, 1);
-        arm(&mut sim, &rules, a, ProductionCategory::Aircraft, beag, 54, 2);
+        arm(
+            &mut sim,
+            &rules,
+            a,
+            ProductionCategory::Vehicle,
+            griz,
+            54,
+            1,
+        );
+        arm(
+            &mut sim,
+            &rules,
+            a,
+            ProductionCategory::Aircraft,
+            beag,
+            54,
+            2,
+        );
         // Owner B: a Vehicle build (order 3).
-        arm(&mut sim, &rules, b, ProductionCategory::Vehicle, griz, 54, 3);
+        arm(
+            &mut sim,
+            &rules,
+            b,
+            ProductionCategory::Vehicle,
+            griz,
+            54,
+            3,
+        );
         sim.production.next_enqueue_order = 4;
 
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
@@ -955,7 +1353,10 @@ fn factory_flip_determinism_over_scripted_commands() {
                 if i == 10 {
                     // Cancel one of A's builds (the Aircraft) partway through.
                     let _ = crate::sim::production::cancel_by_type_for_owner(
-                        &mut sim, &rules, "Americans", "BEAG",
+                        &mut sim,
+                        &rules,
+                        "Americans",
+                        "BEAG",
                     );
                 }
                 sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
@@ -963,5 +1364,9 @@ fn factory_flip_determinism_over_scripted_commands() {
             })
             .collect()
     }
-    assert_eq!(run(), run(), "the authority flip preserves lockstep determinism across the bump");
+    assert_eq!(
+        run(),
+        run(),
+        "the authority flip preserves lockstep determinism across the bump"
+    );
 }

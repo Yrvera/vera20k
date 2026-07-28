@@ -206,7 +206,18 @@ impl MapFile {
         let basic: BasicSection = basic::parse_basic_section(&ini);
         let special_flags: SpecialFlagsSection = basic::parse_special_flags_section(&ini);
         let briefing: BriefingSection = briefing::parse_briefing_section(&ini);
-        let preview: PreviewSection = preview::parse_preview_section(&ini);
+        let mut preview: PreviewSection = preview::parse_preview_section(&ini);
+        match preview::decode_preview_image_from_ini(&ini) {
+            Ok(Some(decoded)) => preview.decoded = Some(decoded),
+            Ok(None) => {
+                log::warn!(
+                    "Map preview unavailable; continuing without preview because [Preview] size or [PreviewPack] data is missing"
+                );
+            }
+            Err(err) => {
+                log::warn!("Map preview decode failed; continuing without preview: {err}");
+            }
+        }
         let cells: Vec<MapCell> = parse_iso_map_pack(&ini)?;
         let entities: Vec<MapEntity> = entities::parse_map_entities(&ini);
         let overlay_packs = overlay::parse_overlay_packs(&ini);
@@ -563,6 +574,22 @@ mod smudge_parse_tests {
 mod tests {
     use super::*;
 
+    const ONE_CELL_ISO_MAP_PACK: &str = "DwALABwBAAIA/////wAAABEAAA==";
+    const TWO_PIXEL_PREVIEW_PACK: &str = "CgAGABcBAgMEBQYRAAA=";
+
+    fn full_map_with_preview(preview_sections: &str) -> Vec<u8> {
+        format!(
+            "[Map]\n\
+             Theater=TEMPERATE\n\
+             Size=0,0,2,1\n\
+             LocalSize=0,0,2,1\n\
+             [IsoMapPack5]\n\
+             1={ONE_CELL_ISO_MAP_PACK}\n\
+             {preview_sections}"
+        )
+        .into_bytes()
+    }
+
     #[test]
     fn test_parse_header_from_ini() {
         let text: &str = "\
@@ -616,5 +643,41 @@ LocalSize=2,4,96,92
         let ini: IniFile = IniFile::from_str(text);
         let result = parse_header(&ini);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn full_map_parse_decodes_its_preview_pack() {
+        let bytes = full_map_with_preview(&format!(
+            "[Preview]\nSize=0,0,2,1\n[PreviewPack]\n1={TWO_PIXEL_PREVIEW_PACK}\n"
+        ));
+
+        let map = MapFile::from_bytes(&bytes).expect("valid full map");
+        let decoded = map.preview.decoded.expect("decoded map preview");
+
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.rgba, vec![1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn full_map_parse_keeps_invalid_preview_nonfatal() {
+        let bytes =
+            full_map_with_preview("[Preview]\nSize=0,0,2,1\n[PreviewPack]\n1=not valid base64!\n");
+
+        let map = MapFile::from_bytes(&bytes).expect("preview failure is non-fatal");
+
+        assert_eq!(map.preview.size, Some((2, 1)));
+        assert!(map.preview.has_packed_preview);
+        assert!(map.preview.decoded.is_none());
+    }
+
+    #[test]
+    fn full_map_parse_keeps_missing_preview_nonfatal() {
+        let bytes = full_map_with_preview("");
+
+        let map = MapFile::from_bytes(&bytes).expect("missing preview is non-fatal");
+
+        assert!(!map.preview.has_packed_preview);
+        assert!(map.preview.decoded.is_none());
     }
 }

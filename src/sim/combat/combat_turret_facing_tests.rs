@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::AttackTarget;
+use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::InternedId;
 use crate::sim::movement::FacingClass;
@@ -106,8 +106,18 @@ fn slow_rot_takes_more_frames_to_align_than_fast_rot() {
     let rules_fast = rules_with_mtnk_rot(10);
 
     // Attach attack_target on both.
-    sim_slow.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
-    sim_fast.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+    sim_slow
+        .substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .attack_target = Some(AttackTarget::new(2));
+    sim_fast
+        .substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .attack_target = Some(AttackTarget::new(2));
 
     // Compute the expected duration: from facing 0 (north, after body_facing_to_turret(0))
     // to facing south (~32768). Diff = 32768. ROT=1: duration = 32768/256 = 128 frames.
@@ -121,7 +131,8 @@ fn slow_rot_takes_more_frames_to_align_than_fast_rot() {
     }
 
     let slow_rotating = sim_slow
-        .substrate.entities
+        .substrate
+        .entities
         .get(1)
         .unwrap()
         .barrel_facing
@@ -129,7 +140,8 @@ fn slow_rot_takes_more_frames_to_align_than_fast_rot() {
         .map(|f| f.is_rotating(sim_slow.session.binary_frame))
         .unwrap_or(false);
     let fast_rotating = sim_fast
-        .substrate.entities
+        .substrate
+        .entities
         .get(1)
         .unwrap()
         .barrel_facing
@@ -164,7 +176,14 @@ fn idle_turret_returns_to_body_facing() {
     sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
     sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
 
-    let barrel = sim.substrate.entities.get(1).unwrap().barrel_facing.as_ref().unwrap();
+    let barrel = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .barrel_facing
+        .as_ref()
+        .unwrap();
     assert_eq!(
         barrel.destination(),
         body_facing_to_turret(64),
@@ -229,7 +248,8 @@ fn unit_facing_pass_drives_turret_to_target() {
 
     let want = {
         let e = sim.substrate.entities.get(1).unwrap();
-        desired_turret_facing(e, &sim.substrate.entities).expect("turreted unit has a desired facing")
+        desired_turret_facing(e, &sim.substrate.entities)
+            .expect("turreted unit has a desired facing")
     };
     let result = run_combat_direct(&mut sim, &rules);
     crate::sim::world::unit_post::apply_unit_facing(
@@ -320,6 +340,7 @@ fn run_combat_direct(
         sim.session.binary_frame,
         &live_order,
         None, // radiation state — not under test here
+        &mut sim.scenario_rng,
     )
 }
 
@@ -383,7 +404,12 @@ fn removed_attacker_returns_to_body_same_tick() {
         "own-remove → body facing same tick"
     );
     assert!(
-        sim.substrate.entities.get(1).unwrap().attack_target.is_none(),
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .attack_target
+            .is_none(),
         "the remove was applied by the batch"
     );
 }
@@ -433,8 +459,8 @@ fn kill_tick_unit_facing_holds_target() {
     // THE S3 fidelity pin: a unit whose target dies from this tick's fire
     // keeps aiming at it this tick (gamemd: the munition is deferred and the
     // bullet's AI runs after the firing unit's pass, so Facing_Update reads a
-    // live TarCom on the kill tick). The destination is read in the P2 window
-    // even though the batch clears attack_target before the apply site runs.
+    // live TarCom on the kill tick). Lethal damage must not run the later
+    // Object UnInit pointer-expiry listener stage early.
     let mut sim = Simulation::new();
     spawn_turreted(&mut sim, 1, 5, 5, 100);
     spawn_target(&mut sim, 2, 5, 8);
@@ -460,15 +486,24 @@ fn kill_tick_unit_facing_holds_target() {
         .get(2)
         .map(|t| t.health.current == 0 || t.dying)
         .unwrap_or(true);
-    assert!(target_dead, "precondition: the shot this tick killed the target");
+    assert!(
+        target_dead,
+        "precondition: the shot this tick killed the target"
+    );
     assert_eq!(
         unit_facing_of(&result, 1),
         Some(toward_target),
         "kill tick: barrel destination holds the dying target's facing"
     );
     assert!(
-        sim.substrate.entities.get(1).unwrap().attack_target.is_none(),
-        "precondition: the death batch cleared the attacker's target before the apply site"
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .attack_target
+            .as_ref()
+            .is_some_and(|target| matches!(target.target, TargetKind::Entity(2))),
+        "lethal damage must retain the target until the UnInit listener stage"
     );
 }
 
@@ -565,8 +600,8 @@ fn facing_apply_point_equivalence_no_kill() {
 fn co_attacker_facing_matches_killer() {
     // Two attackers on one target; the killer's shot lands this tick. The
     // co-attacker's barrel destination this tick must ALSO hold the dying
-    // target's facing (its facing read happens in the per-object window,
-    // before the death batch clears co-attacker targets).
+    // target's facing (its facing read happens in the per-object window, and
+    // lethal damage does not run UnInit pointer-expiry listeners early).
     let mut sim = Simulation::new();
     spawn_turreted(&mut sim, 1, 5, 5, 100); // killer
     spawn_turreted(&mut sim, 3, 8, 8, 100); // co-attacker (out of its own ROF this tick)
@@ -600,8 +635,10 @@ fn co_attacker_facing_matches_killer() {
     );
     let co = sim.substrate.entities.get(3).unwrap();
     assert!(
-        co.attack_target.is_none(),
-        "precondition: the death batch cleared the co-attacker's target"
+        co.attack_target
+            .as_ref()
+            .is_some_and(|target| matches!(target.target, TargetKind::Entity(2))),
+        "co-attacker target remains until the UnInit listener stage"
     );
     assert_eq!(
         co.barrel_facing.as_ref().unwrap().destination(),

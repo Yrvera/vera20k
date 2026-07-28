@@ -1,19 +1,83 @@
-//! `MissionTimer` — the single frame-anchored deferral primitive.
+//! Frame-anchored timer primitives used by Mission-related systems.
 //!
-//! The mission throttle snapshots the global frame counter and tests a delta —
-//! it never decrements, so skipped ticks never drift the cadence. This
-//! generalizes the building-gate's already-correct `(last_frame, ticks_remaining)`
-//! model. Pure integer `u32`, wrapping arithmetic, no float. sim/ only.
+//! `MissionTimer` retains the existing unsigned timing model shared by docking,
+//! gates, and miners. `MissionDispatchTimer` separately models native Mission
+//! dispatch's signed dwords and wrapping comparisons. Both snapshot the global
+//! frame counter rather than decrementing per tick. sim/ only.
 use serde::{Deserialize, Serialize};
 
 /// "Unarmed / always due" (the -1 start). `u32::MAX`: the live counter starts at
 /// 0 and would take ~3.3 years at 15fps to reach it, so it is never a live value.
 pub const SENTINEL: u32 = u32::MAX;
 
+const DISPATCH_ALWAYS_DUE_START: i32 = -1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MissionTimer {
     pub start_frame: u32,
     pub duration: u32,
+}
+
+/// Native Mission-dispatch timer state.
+///
+/// Both fields are signed dwords. The simulation's unsigned frame counter is
+/// reinterpreted as the same 32 raw bits before signed wrapping arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MissionDispatchTimer {
+    start_frame: i32,
+    delay: i32,
+}
+
+impl MissionDispatchTimer {
+    /// Construct a timer anchored at the supplied simulation frame and due
+    /// immediately because its delay is zero.
+    #[inline]
+    pub const fn at_frame(frame: u32) -> Self {
+        Self {
+            start_frame: frame as i32,
+            delay: 0,
+        }
+    }
+
+    /// Preserve raw native timer dwords without normalization.
+    #[inline]
+    pub const fn from_raw(start_frame: i32, delay: i32) -> Self {
+        Self { start_frame, delay }
+    }
+
+    /// Return the raw signed start-frame dword.
+    #[inline]
+    pub const fn start_frame(self) -> i32 {
+        self.start_frame
+    }
+
+    /// Return the raw signed delay dword.
+    #[inline]
+    pub const fn delay(self) -> i32 {
+        self.delay
+    }
+
+    /// Test native Mission-dispatch readiness.
+    ///
+    /// A `-1` start is always due. Otherwise elapsed time is a signed wrapping
+    /// subtraction and the due boundary is inclusive.
+    #[inline]
+    pub fn due(self, now: u32) -> bool {
+        self.start_frame == DISPATCH_ALWAYS_DUE_START
+            || (now as i32).wrapping_sub(self.start_frame) >= self.delay
+    }
+
+    /// Return the signed wrapping remainder only while dispatch is pending.
+    ///
+    /// Native dispatch does not saturate this subtraction.
+    #[inline]
+    pub fn remaining_if_pending(self, now: u32) -> Option<i32> {
+        if self.due(now) {
+            return None;
+        }
+        let elapsed = (now as i32).wrapping_sub(self.start_frame);
+        Some(self.delay.wrapping_sub(elapsed))
+    }
 }
 
 impl Default for MissionTimer {
@@ -90,7 +154,8 @@ impl MissionTimer {
         if self.start_frame == SENTINEL {
             0
         } else {
-            self.duration.saturating_sub(now.wrapping_sub(self.start_frame))
+            self.duration
+                .saturating_sub(now.wrapping_sub(self.start_frame))
         }
     }
 }
@@ -98,6 +163,68 @@ impl MissionTimer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_dispatch_raw_fields_and_frame_bits_round_trip() {
+        let raw = MissionDispatchTimer::from_raw(i32::MIN, i32::MAX);
+        assert_eq!(raw.start_frame(), i32::MIN);
+        assert_eq!(raw.delay(), i32::MAX);
+
+        let high_bit_frame = MissionDispatchTimer::at_frame(0x8000_0000);
+        assert_eq!(high_bit_frame.start_frame(), i32::MIN);
+        assert_eq!(high_bit_frame.delay(), 0);
+        assert!(high_bit_frame.due(0x8000_0000));
+    }
+
+    #[test]
+    fn signed_dispatch_minus_one_start_is_always_due() {
+        let timer = MissionDispatchTimer::from_raw(-1, i32::MAX);
+
+        assert!(timer.due(0));
+        assert!(timer.due(u32::MAX));
+        assert_eq!(timer.remaining_if_pending(0), None);
+    }
+
+    #[test]
+    fn signed_dispatch_negative_delay_is_due_at_anchor() {
+        let timer = MissionDispatchTimer::from_raw(10, -1);
+
+        assert!(timer.due(10));
+        assert_eq!(timer.remaining_if_pending(10), None);
+    }
+
+    #[test]
+    fn signed_dispatch_exact_boundary_is_inclusive() {
+        let timer = MissionDispatchTimer::from_raw(10, 5);
+
+        assert!(!timer.due(14));
+        assert_eq!(timer.remaining_if_pending(14), Some(1));
+        assert!(timer.due(15));
+        assert_eq!(timer.remaining_if_pending(15), None);
+    }
+
+    #[test]
+    fn signed_dispatch_wraparound_uses_signed_elapsed_comparison() {
+        let start = i32::MAX - 1;
+        let now = (i32::MIN + 1) as u32;
+
+        let pending = MissionDispatchTimer::from_raw(start, 4);
+        assert!(!pending.due(now));
+        assert_eq!(pending.remaining_if_pending(now), Some(1));
+
+        let due = MissionDispatchTimer::from_raw(start, 3);
+        assert!(due.due(now));
+        assert_eq!(due.remaining_if_pending(now), None);
+    }
+
+    #[test]
+    fn signed_dispatch_remaining_uses_wrapping_subtraction() {
+        let timer = MissionDispatchTimer::from_raw(10, i32::MAX);
+        let now = (10i32.wrapping_add(i32::MIN)) as u32;
+
+        assert!(!timer.due(now));
+        assert_eq!(timer.remaining_if_pending(now), Some(-1));
+    }
 
     #[test]
     fn unarmed_is_always_due() {

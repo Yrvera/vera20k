@@ -21,12 +21,14 @@
 //! - sim/ receives commands but never calls into presentation modules.
 
 // --- Core types: entity storage, components, commands, RNG, interning ---
+pub mod anim_class;
 pub mod command;
 pub mod components;
 pub mod economy; // per-house wallet/storage/statistics value-type (production+economy substrate)
 pub mod entity_store;
 pub mod game_entity;
 pub mod intern;
+pub(crate) mod lifecycle_request;
 pub mod rng;
 pub mod scenario_session; // app->sim launch descriptor (per-match seed pipeline)
 pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution
@@ -88,6 +90,7 @@ pub mod smudge_grid;
 pub mod radiation;
 
 // --- Passengers, transport, slaves ---
+pub mod parity_digest;
 pub mod passenger;
 pub mod slave_miner;
 

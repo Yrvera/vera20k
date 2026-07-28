@@ -1,7 +1,8 @@
 //! Player-name edit state and input helpers for the skirmish shell.
 
+use crate::app_init::MapMenuEntry;
 use crate::sim::game_options::GameOptions;
-use crate::skirmish_launch::SkirmishLaunchOptions;
+use crate::skirmish_launch::{SKIRMISH_PLAYER_SLOT_COUNT, SkirmishLaunchOptions};
 use crate::skirmish_modes::{SkirmishGameMode, mode_by_id};
 use crate::ui::main_menu::{SkirmishCountry, SkirmishSettings, StartPosition};
 
@@ -10,7 +11,7 @@ use super::super::static_reveal::StaticReveal;
 use super::trackbars::{SkirmishTrackbarBounds, trackbar_control_id, trackbar_hscroll_wparam};
 use super::{
     ChooseMapModalState, DropdownScrollDragState, DropdownScrollbarPressState, OpenComboDropdown,
-    OwnerDrawButton, SkirmishShellOpponent, SkirmishShellUiSound,
+    OwnerDrawButton, RandomMapSetupModalState, SkirmishShellOpponent, SkirmishShellUiSound,
     SkirmishTrackbarHScrollNotification, SkirmishValidationModalState, TrackbarDragState,
     default_opponents,
 };
@@ -253,6 +254,12 @@ pub struct SkirmishShellState {
     pub dropdown_scroll_press: Option<DropdownScrollbarPressState>,
     pub open_combo_dropdown: Option<OpenComboDropdown>,
     pub choose_map_modal: Option<ChooseMapModalState>,
+    /// The Create Random Map dialog, opened over the choose-map modal.
+    pub random_map_setup_modal: Option<RandomMapSetupModalState>,
+    /// The Load / Save / Delete browser the setup dialog opens over itself.
+    /// Sits beside the setup modal rather than inside it because it replaces
+    /// the setup dialog on screen while that dialog keeps its working options.
+    pub saved_seed_browser: Option<super::SavedSeedBrowserState>,
     pub validation_modal: Option<SkirmishValidationModalState>,
     pub status_help_text: String,
     pub pending_trackbar_hscrolls: Vec<SkirmishTrackbarHScrollNotification>,
@@ -277,7 +284,9 @@ impl Default for SkirmishShellState {
             player_country_random: false,
             player_color_index: 0,
             player_color_claimed: true,
-            player_start_position: settings.start_position,
+            // Native population selects Random when the local row owns no
+            // numbered start reservation.
+            player_start_position: StartPosition::Auto,
             player_team: -2,
             starting_credits: options.starting_credits,
             game_speed: options.game_speed,
@@ -299,6 +308,8 @@ impl Default for SkirmishShellState {
             dropdown_scroll_press: None,
             open_combo_dropdown: None,
             choose_map_modal: None,
+            random_map_setup_modal: None,
+            saved_seed_browser: None,
             validation_modal: None,
             status_help_text: String::new(),
             pending_trackbar_hscrolls: Vec::new(),
@@ -412,6 +423,81 @@ pub(super) fn inactive_ai_team_default(state: &SkirmishShellState) -> i32 {
     }
 }
 
+/// Whether a complete player-row control group is visible for the selected map.
+/// Slot zero is the local row and never hides; opponent rows are bounded by the
+/// selected map's native player-capacity query.
+pub fn player_row_visible(state: &SkirmishShellState, maps: &[MapMenuEntry], row: usize) -> bool {
+    if row == 0 {
+        return true;
+    }
+    let capacity = maps
+        .get(state.selected_map_idx)
+        .map(|map| visible_player_capacity(map.player_capacity))
+        .unwrap_or(SKIRMISH_PLAYER_SLOT_COUNT)
+        .min(SKIRMISH_PLAYER_SLOT_COUNT);
+    row < capacity
+}
+
+fn visible_player_capacity(capacity: i32) -> usize {
+    capacity.clamp(0, SKIRMISH_PLAYER_SLOT_COUNT as i32) as usize
+}
+
+fn reset_rows_hidden_by_capacity(state: &mut SkirmishShellState, capacity: i32) {
+    let capacity = visible_player_capacity(capacity);
+    let visible_opponents = capacity.saturating_sub(1);
+    let team_default = inactive_ai_team_default(state);
+    for opponent in state.opponents.iter_mut().skip(visible_opponents) {
+        opponent.row_type = super::SkirmishAiRowType::None;
+        opponent.apply_inactive_combo_defaults(team_default);
+    }
+
+    let open_row = state.open_combo_dropdown.map(|open| match open.id {
+        super::SkirmishComboId::AiType(idx) => idx + 1,
+        super::SkirmishComboId::Side(row)
+        | super::SkirmishComboId::Color(row)
+        | super::SkirmishComboId::Start(row)
+        | super::SkirmishComboId::Team(row) => row,
+    });
+    if open_row.is_some_and(|row| row != 0 && row >= capacity) {
+        state.open_combo_dropdown = None;
+        state.dropdown_scroll_drag = None;
+        state.dropdown_scroll_press = None;
+    }
+}
+
+/// Apply the accepted Choose Map selection as one row-lifecycle transaction.
+/// A shrink resets every now-hidden opponent row before the selected map becomes
+/// observable; growth only reveals rows, whose prior hide reset remains intact.
+pub fn accept_selected_map(
+    state: &mut SkirmishShellState,
+    maps: &[MapMenuEntry],
+    map_idx: usize,
+) -> bool {
+    let Some(new_map) = maps.get(map_idx) else {
+        return false;
+    };
+    let old_capacity = maps
+        .get(state.selected_map_idx)
+        .map(|map| map.player_capacity)
+        .unwrap_or(SKIRMISH_PLAYER_SLOT_COUNT as i32);
+    if new_map.player_capacity < old_capacity {
+        reset_rows_hidden_by_capacity(state, new_map.player_capacity);
+    }
+    state.selected_map_idx = map_idx;
+    true
+}
+
+/// Apply the native first-open row hide pass for the initially selected map.
+pub fn initialize_rows_for_selected_map(state: &mut SkirmishShellState, maps: &[MapMenuEntry]) {
+    let capacity = maps
+        .get(state.selected_map_idx)
+        .map(|map| map.player_capacity)
+        .unwrap_or(SKIRMISH_PLAYER_SLOT_COUNT as i32);
+    if capacity < SKIRMISH_PLAYER_SLOT_COUNT as i32 {
+        reset_rows_hidden_by_capacity(state, capacity);
+    }
+}
+
 #[cfg(test)]
 mod multiplayer_dialog_value_tests {
     use super::*;
@@ -471,15 +557,14 @@ pub fn repair_teams_for_selected_mode(state: &mut SkirmishShellState, modes: &[S
     }
 
     let inactive_default = inactive_ai_team_default(state);
-    if state.selected_mode_must_ally && state.player_team == -2 {
-        state.player_team = 0;
-    }
+    // Rebuilding the local Team combo selects its first row: Team A when
+    // MustAlly suppresses None, otherwise None. Accepted map/type refreshes are
+    // constructor-like and do not preserve a prior explicit local selection.
+    state.player_team = if state.selected_mode_must_ally { 0 } else { -2 };
     for opponent in &mut state.opponents {
-        if !opponent.is_active() {
-            opponent.team = inactive_default;
-        } else if state.selected_mode_must_ally && opponent.team == -2 {
-            opponent.team = 3;
-        }
+        // Native selected-mode refresh writes the mode default to every AI Team
+        // control. This is a refresh event, not a per-frame repair.
+        opponent.team = inactive_default;
     }
 }
 
@@ -584,11 +669,21 @@ mod tests {
         let mut s = SkirmishShellState::default();
         s.map_label_reveal.start("OLD MAP", now);
         for i in 1..=4 {
-            s.map_label_reveal.advance(now + Duration::from_millis(30 * i));
+            s.map_label_reveal
+                .advance(now + Duration::from_millis(30 * i));
         }
         // Selecting a new map restarts the reveal with the new text (the 0x4B2
         // text-update path the use-map handler drives), from the first character.
-        s.map_label_reveal.start("NEW MAP", now + Duration::from_millis(500));
+        s.map_label_reveal
+            .start("NEW MAP", now + Duration::from_millis(500));
         assert_eq!(s.map_label_reveal.window().unwrap().count, 1);
+    }
+
+    #[test]
+    fn fresh_shell_starts_with_an_unreserved_random_position() {
+        assert_eq!(
+            SkirmishShellState::default().player_start_position,
+            StartPosition::Auto
+        );
     }
 }

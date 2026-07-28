@@ -18,11 +18,11 @@
 use crate::map::entities::EntityCategory;
 use crate::sim::aircraft::AircraftMission;
 use crate::sim::animation::Animation;
-use crate::sim::combat::AttackTarget;
+use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
-    DamageFireOverlays, DriveLocomotionRuntime, HarvestOverlay, Health, MovementTarget,
-    NavigationState, OrderIntent, PendingC4Detonation, Position, RockingState, VoxelAnimation,
+    DriveLocomotionRuntime, HarvestOverlay, Health, MovementTarget, NavigationState, OrderIntent,
+    PendingC4Detonation, Position, RockingState, VoxelAnimation,
 };
 use crate::sim::debug_event_log::{DebugEventKind, DebugEventLog};
 use crate::sim::deploy::DeployPhase;
@@ -30,8 +30,7 @@ use crate::sim::docking::aircraft_dock::AircraftAmmo;
 use crate::sim::docking::building_dock::DockState;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
-use crate::sim::mission::{MissionCom, MissionTimer, MissionType};
-use crate::sim::radio::Contacts;
+use crate::sim::mission::{MissionCom, MissionLeafState, MissionTimer, MissionType};
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
 use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
@@ -40,6 +39,7 @@ use crate::sim::movement::teleport_movement::TeleportState;
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::movement::tunnel_movement::TunnelState;
 use crate::sim::passenger::PassengerRole;
+use crate::sim::radio::Contacts;
 use crate::sim::slave_miner::SlaveHarvester;
 use crate::sim::superweapon::invulnerability::InvulnerabilityState;
 
@@ -90,7 +90,9 @@ pub enum BuildingGateMissionState {
 /// The unit side of the tank-bunker reciprocal link (the pre-install approach
 /// state plus the installed link, folded into one hashed field). Distinct from
 /// `PassengerRole` cargo: a bunker is a single reciprocal link, never cargo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum BunkerLink {
     /// Not heading to or inside any bunker.
     #[default]
@@ -162,28 +164,31 @@ impl BuildingGateRuntime {
     }
 }
 
-/// Authoritative-shadow lifecycle state of an object (the substrate `Presence`
-/// FSM, Slice 2). Mirrors the single InLimbo bit: an object is either in the
-/// active set (`InCell`) or out of it (`Limbo`). `Dying` is set during teardown
-/// after conceal and persists in the store until the end-of-tick deferred-delete
-/// drain frees the slot (Slice 6) — during that window the entity is resolvable by
-/// id but off occupancy + off the logic vector, excluded from all live systems.
+/// Independent ObjectClass lifecycle facts.
 ///
-/// In this slice `presence` *shadows* the old gates (`in_logic_vector` + store
-/// membership) — those stay authoritative — and a debug assert proves the two
-/// never disagree. Not serialized (`#[serde(skip)]` on the field); rebuilt on
-/// load from the restored active order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum Presence {
-    /// Out of the active set: born-in-limbo, concealed, or loaded as cargo. The
-    /// default for a freshly constructed entity (born InLimbo).
-    #[default]
-    Limbo,
-    /// In the active-object set and placed on the playfield (`in_logic_vector`).
-    InCell,
-    /// Teardown in progress — set after conceal; persists in-store until the
-    /// end-of-tick deferred-delete drain frees the slot.
-    Dying,
+/// These bytes deliberately do not derive from health, store presence, cell
+/// occupancy, LogicVector membership, or the Rust death-sequence state. Active
+/// gamemd keeps those concerns independent, including alive objects that are in
+/// limbo, active objects that are temporarily off-cell, and dead-limbo objects
+/// that remain resolvable until the pending-delete drain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ObjectLifecycle {
+    /// ObjectClass native-alive state (`ObjectClass+0x90` analogue).
+    pub object_alive: bool,
+    /// ObjectClass InLimbo state. This is independent of LogicVector membership.
+    pub in_limbo: bool,
+    /// Whether Mark/cell-list insertion currently owns cell membership.
+    pub cell_marked: bool,
+}
+
+impl Default for ObjectLifecycle {
+    fn default() -> Self {
+        Self {
+            object_alive: true,
+            in_limbo: true,
+            cell_marked: false,
+        }
+    }
 }
 
 /// Unified entity struct — replaces all hecs ECS components.
@@ -204,6 +209,15 @@ pub struct GameEntity {
     /// When `Some`, the entity is rotating in place and should not advance position.
     /// Infantry always turn instantly (RA2 behavior), so this stays `None` for them.
     pub facing_target: Option<u8>,
+    /// Binary-frame body-rotation interpolator, active only while turning in place
+    /// toward `facing_target`. Mirrors gamemd's hull `FacingClass` (the body
+    /// PrimaryFacing turned by the drive locomotor at the unit's rules `ROT=`):
+    /// turn duration is `abs(delta_8bit) / ROT` binary frames, frame-count based —
+    /// NOT millisecond based. `facing` (the u8 above) stays the authoritative
+    /// rendered/logic heading and is refreshed from this each tick; this is
+    /// cleared to `None` whenever no in-place rotation is in progress.
+    #[serde(default)]
+    pub body_facing: Option<crate::sim::movement::FacingClass>,
     /// Owning player/faction name (e.g., "Americans", "Soviet") — interned for zero-cost clones.
     pub owner: InternedId,
     /// Current and maximum hit points.
@@ -239,16 +253,22 @@ pub struct GameEntity {
     pub repairing: bool,
     /// LogicClass active-vector membership — mirrors gamemd ObjectClass+0x98.
     /// True iff this entity is currently in `Simulation::logic`. Not serialized:
-    /// rebuilt from the restored order on load (native does not round-trip it).
+    /// Rust snapshots rebuild it from the serialized LogicVector order. Exact
+    /// native save/load reconstruction remains unverified.
     #[serde(skip)]
     pub in_logic_vector: bool,
-    /// Substrate lifecycle shadow (Slice 2). Tracks `Limbo | InCell | Dying`.
-    /// Authoritative gates remain `in_logic_vector` + store membership; this
-    /// field rides alongside them and a per-tick debug assert proves they agree.
-    /// Not serialized (rebuilt from the restored active order on load), and NOT
-    /// hashed (non-authoritative this slice).
-    #[serde(skip)]
-    pub presence: Presence,
+    /// Independent, serialized ObjectClass lifecycle facts.
+    #[serde(default)]
+    pub lifecycle: ObjectLifecycle,
+    /// Explicit represented type fact for the native type `+0xAC` tactical-dirty
+    /// branch. False unless a caller has positive evidence; never inferred from
+    /// category or render representation.
+    #[serde(default)]
+    pub dirty_rect_eligible: bool,
+    /// Rust bookkeeping that makes the represented owner-count decrement
+    /// exactly-once. This does not stand in for native-alive or `dying`.
+    #[serde(default)]
+    pub owned_count_released: bool,
     /// Monotonic order of the last successful insertion into a CellClass-style
     /// object list. Serialized because `OccupancyGrid` is a rebuilt cache; this
     /// is the authoritative fact needed to reconstruct its linked-list order.
@@ -302,8 +322,13 @@ pub struct GameEntity {
     /// BuildingClass BState table.
     #[serde(default)]
     pub building_damage_state_active: bool,
-    /// Persistent fire/smoke overlays on damaged buildings (health < ConditionYellow).
-    pub damage_fire_overlays: Option<DamageFireOverlays>,
+    /// Native BuildingClass damage-fire transition cache. Distinct from the
+    /// generic damaged-art state above.
+    #[serde(default)]
+    pub damage_fire_state_active: bool,
+    /// Eight fixed AnimClass ownership slots at Building+0x5C8..+0x5E4.
+    #[serde(default)]
+    pub damage_fire_anim_ids: [Option<crate::sim::anim_class::AnimId>; 8],
     /// Bridge deck occupancy marker.
     pub bridge_occupancy: Option<BridgeOccupancy>,
     /// Persistent bridge layer flag — authoritative source for "is this entity on a bridge?"
@@ -490,14 +515,15 @@ pub struct GameEntity {
     /// vehicles and voxel-bodied buildings.
     #[serde(default)]
     pub rocking: Option<RockingState>,
-    /// Mission substrate state. Written in parallel by the Slice-6 verb API
-    /// (`mission::verb` / `mission::retask`) alongside the still-authoritative
-    /// `Option<T>` machines; `current`/`substate` are additionally refreshed from
-    /// those machines each tick. NOT folded into `world_hash` yet (a later slice
-    /// makes it authoritative and hashes it), so it round-trips via serde without
-    /// affecting the lockstep hash. `#[serde(default)]` lets pre-Slice-6 saves load.
-    #[serde(default)]
+    /// Exact native-width Mission state. All writes pass through a named legacy
+    /// compatibility adapter or the dormant exact-authority surface.
     pub mission: MissionCom,
+    /// Category-specific bytes read by Mission readiness and Aircraft policy.
+    pub(crate) mission_leaf: MissionLeafState,
+    /// Target identity archived by the Techno Override wrapper.
+    pub(crate) suspended_attack_target: Option<TargetKind>,
+    /// ObjectClass falling-down byte read by Infantry readiness.
+    pub(crate) object_is_falling_down: u8,
     /// Sim-side model of gamemd's TechnoClass `+0x308` (`DamageSparkSystem`): the
     /// `session.tick` at which the live AI_Update damage-Spark particle system
     /// expires and the object may roll again. `0` = no live system (may roll;
@@ -517,33 +543,30 @@ pub struct GameEntity {
 }
 
 impl GameEntity {
-    /// Ground-truth presence derived from the authoritative gates. A unit in the
-    /// active set is `InCell` (this includes a dying-but-animating unit, which
-    /// keeps ticking and stays in its cell until teardown); otherwise `Limbo`.
-    /// `Dying` is never *derived* here — it is set imperatively during `uninit`
-    /// (which also enqueues the slot for the end-of-tick drain). It cannot be
-    /// derived from `GameEntity` fields: `dying && !in_logic_vector` is shared by
-    /// a uninit'd corpse (field `Dying`) and a concealed-dead object mid-teardown
-    /// (field `Limbo`); only `pending_delete` membership tells them apart, and
-    /// that lives on the substrate. The presence invariant for surviving corpses
-    /// is therefore handled at the substrate-aware assert, not here.
-    pub fn derived_presence(&self) -> Presence {
-        if self.in_logic_vector {
-            Presence::InCell
-        } else {
-            Presence::Limbo
-        }
+    /// The Harvest FSM cursor of record, decoded from
+    /// `MissionCom::handler_state`. `None` when the entity has no Miner
+    /// component. An out-of-vocabulary cursor decodes as `SearchOre` (the
+    /// zeroed handler state every mission transition writes) — the only
+    /// writers are the FSM commit and the zeroing transitions, so anything
+    /// else is a logic error surfaced by the dispatch-time debug assert.
+    pub fn miner_state(&self) -> Option<crate::sim::miner::MinerState> {
+        self.miner.as_ref().map(|_| {
+            crate::sim::miner::MinerState::from_cursor(self.mission.handler_state())
+                .unwrap_or(crate::sim::miner::MinerState::SearchOre)
+        })
     }
 
-    /// Ground-truth current mission + sub-phase derived from the authoritative
-    /// `Option<T>` machines. Priority: miner → aircraft → dock → attack → move →
-    /// idle. The `mission` component's `current`/`substate` are refreshed from
-    /// this each tick; a later slice makes `mission` authoritative and this
-    /// becomes the cross-check.
+    /// Debug/test classifier: the mission + sub-phase the legacy `Option<T>`
+    /// machines imply. Since the authority flip, `mission` advances only
+    /// through the exact verbs — this derivation is no longer projected into
+    /// it and survives purely as the cross-check the harvest seam and the
+    /// passive-acquire shadow assert against.
+    #[cfg(any(test, debug_assertions))]
     pub fn derived_mission(&self) -> (MissionType, u8) {
-        if let Some(miner) = &self.miner {
-            // The whole harvest loop is one mission; the FSM state is its sub-phase.
-            return (MissionType::Harvest, miner.state as u8);
+        if self.miner.is_some() {
+            // The whole harvest loop is one mission; the FSM cursor of record
+            // (MissionCom.handler_state) is its sub-phase.
+            return (MissionType::Harvest, self.mission.handler_state() as u8);
         }
         if let Some(aircraft) = &self.aircraft_mission {
             return match aircraft {
@@ -582,7 +605,7 @@ impl GameEntity {
     }
 
     /// Create a new entity with all required fields. Optional fields default to None/false.
-    pub fn new(
+    pub fn new_at_frame(
         stable_id: u64,
         rx: u16,
         ry: u16,
@@ -595,6 +618,7 @@ impl GameEntity {
         veterancy: u16,
         vision_range: u16,
         is_voxel: bool,
+        construction_frame: u32,
     ) -> Self {
         // Infantry spawn at sub-cell 2 (top of diamond) instead of cell center
         // so they don't overlap with other units at the same position.
@@ -621,6 +645,7 @@ impl GameEntity {
             },
             facing,
             facing_target: None,
+            body_facing: None,
             owner,
             health,
             type_ref,
@@ -632,7 +657,9 @@ impl GameEntity {
             selected: false,
             repairing: false,
             in_logic_vector: false,
-            presence: Presence::Limbo,
+            lifecycle: ObjectLifecycle::default(),
+            dirty_rect_eligible: false,
+            owned_count_released: false,
             occupancy_enter_order: stable_id,
             locomotor: None,
             movement_target: None,
@@ -647,7 +674,8 @@ impl GameEntity {
             building_down: None,
             building_anim_overlays: None,
             building_damage_state_active: false,
-            damage_fire_overlays: None,
+            damage_fire_state_active: false,
+            damage_fire_anim_ids: [None; 8],
             bridge_occupancy: None,
             on_bridge: false,
             animation: None,
@@ -707,10 +735,52 @@ impl GameEntity {
                 None
             },
             rocking: None,
-            mission: MissionCom::idle(),
+            mission: MissionCom::at_frame(construction_frame),
+            mission_leaf: MissionLeafState::for_entity_category(category),
+            suspended_attack_target: None,
+            object_is_falling_down: 0,
             damage_particle_live_until: 0,
             debug_log: None,
         }
+    }
+
+    /// Explicit frame-zero constructor for tests that do not exercise
+    /// construction-time Mission timer anchoring.
+    #[cfg(test)]
+    pub fn new_at_frame_zero_for_test(
+        stable_id: u64,
+        rx: u16,
+        ry: u16,
+        z: u8,
+        facing: u8,
+        owner: InternedId,
+        health: Health,
+        type_ref: InternedId,
+        category: EntityCategory,
+        veterancy: u16,
+        vision_range: u16,
+        is_voxel: bool,
+    ) -> Self {
+        Self::new_at_frame(
+            stable_id,
+            rx,
+            ry,
+            z,
+            facing,
+            owner,
+            health,
+            type_ref,
+            category,
+            veterancy,
+            vision_range,
+            is_voxel,
+            0,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_object_is_falling_down_for_test(&mut self, raw: u8) {
+        self.object_is_falling_down = raw;
     }
 
     /// Record a debug event if the event log is active. No-op when `debug_log` is `None`.
@@ -804,7 +874,7 @@ impl GameEntity {
     /// Create a minimal test entity with the given owner and type_ref strings.
     /// Uses a shared test interner via `test_intern()` for consistent IDs.
     pub fn test_default(stable_id: u64, type_ref: &str, owner: &str, rx: u16, ry: u16) -> Self {
-        Self::new(
+        Self::new_at_frame_zero_for_test(
             stable_id,
             rx,
             ry,
@@ -828,15 +898,18 @@ impl GameEntity {
         self.health.current > 0
     }
 
-    /// Whether this entity is an active (non-corpse) object — the native
-    /// `IsAlive`-equivalent gate for mid-tick raw-store consumers. `false` once
-    /// `uninit` has flagged it `dying` (it then lingers in the store, off the
-    /// logic vector and occupancy grid, until the end-of-tick deferred-delete
-    /// drain). Distinct from `is_alive()` (health-based): a sold or captured
-    /// structure keeps its health but is `dying`, so vision/power/production/
-    /// movement scans must use THIS, not `health.current > 0`, to exclude it.
+    /// Whether ObjectClass native-alive state is set. This is intentionally
+    /// independent from health and the Rust death-sequence state.
+    pub fn is_object_alive(&self) -> bool {
+        self.lifecycle.object_alive
+    }
+
+    /// Transitional Rust system gate until ordinary Infantry lifecycle authority
+    /// migrates. Distinct from both health-based `is_alive()` and native-alive
+    /// `is_object_alive()`; death-sequence state still suppresses current raw-store
+    /// consumers even while ObjectClass native-alive remains set.
     pub fn is_active(&self) -> bool {
-        !self.dying
+        self.lifecycle.object_alive && !self.dying
     }
 
     /// Whether this entity is in any deploy phase (Deploying, Deployed, or Undeploying).
@@ -894,8 +967,8 @@ mod tests {
         // OnBridge byte, NOT the locomotor/path layer. Pin a mismatch — loco.layer
         // = Ground while on_bridge = true — and assert the list layer follows
         // on_bridge (Bridge), the gamemd `Object+0x8C` selector.
-        use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
         use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 
         let mut entity = GameEntity::test_default(1, "HTNK", "Americans", 5, 5);
         let mut loco = LocomotorState::for_test_kind(LocomotorKind::Drive);
@@ -1036,7 +1109,7 @@ mod tests {
 
     #[test]
     fn test_screen_coords_computed() {
-        let e = GameEntity::new(
+        let e = GameEntity::new_at_frame_zero_for_test(
             1,
             30,
             40,
@@ -1061,27 +1134,34 @@ mod tests {
 }
 
 #[cfg(test)]
-mod presence_tests {
+mod lifecycle_tests {
     use super::*;
 
     #[test]
-    fn derived_presence_tracks_active_membership() {
+    fn lifecycle_authority_state_axes_are_independent() {
         let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
-        // Born in limbo: not yet in the active set.
+        assert_eq!(e.lifecycle, ObjectLifecycle::default());
         assert!(!e.in_logic_vector);
-        assert_eq!(e.derived_presence(), Presence::Limbo);
+        assert!(!e.dirty_rect_eligible);
+        assert!(!e.owned_count_released);
 
-        // Joins the active set.
-        e.in_logic_vector = true;
-        assert_eq!(e.derived_presence(), Presence::InCell);
+        // Exercise every combination without deriving one fact from another.
+        for bits in 0u8..64 {
+            e.lifecycle.object_alive = bits & 0b00_0001 != 0;
+            e.lifecycle.in_limbo = bits & 0b00_0010 != 0;
+            e.lifecycle.cell_marked = bits & 0b00_0100 != 0;
+            e.in_logic_vector = bits & 0b00_1000 != 0;
+            e.dying = bits & 0b01_0000 != 0;
+            e.health.current = if bits & 0b10_0000 != 0 { 1 } else { 0 };
 
-        // A dying-but-animating unit stays active → still InCell (dying ignored).
-        e.dying = true;
-        assert_eq!(e.derived_presence(), Presence::InCell);
-
-        // Leaves the active set.
-        e.in_logic_vector = false;
-        assert_eq!(e.derived_presence(), Presence::Limbo);
+            assert_eq!(e.is_object_alive(), bits & 0b00_0001 != 0);
+            assert_eq!(e.lifecycle.in_limbo, bits & 0b00_0010 != 0);
+            assert_eq!(e.lifecycle.cell_marked, bits & 0b00_0100 != 0);
+            assert_eq!(e.in_logic_vector, bits & 0b00_1000 != 0);
+            assert_eq!(e.dying, bits & 0b01_0000 != 0);
+            assert_eq!(e.is_alive(), bits & 0b10_0000 != 0);
+            assert_eq!(e.is_active(), e.lifecycle.object_alive && !e.dying,);
+        }
     }
 }
 
@@ -1089,14 +1169,15 @@ mod presence_tests {
 mod mission_shadow_tests {
     use super::*;
     use crate::sim::combat::{AttackTarget, TargetKind};
-    use crate::sim::mission::MissionType;
+    use crate::sim::mission::state::MissionTestFixture;
+    use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionType};
 
     #[test]
     fn mission_defaults_to_idle_none() {
         let e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
-        assert_eq!(e.mission.current, MissionType::None);
-        assert_eq!(e.mission.substate, 0);
-        assert_eq!(e.mission.tick_counter, 0);
+        assert_eq!(e.mission.current(), MissionId::NONE);
+        assert_eq!(e.mission.handler_state(), 0);
+        assert_eq!(e.mission.ai_counter(), 0);
     }
 
     #[test]
@@ -1145,17 +1226,30 @@ mod mission_shadow_tests {
         // timer survive a save/load. (current/substate are also reconciled from
         // the legacy machines on load; the rest persists as serialized.)
         let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
-        e.mission.current = MissionType::Attack;
-        e.mission.queued = Some(MissionType::Guard);
-        e.mission.tick_counter = 99;
+        e.mission.apply_test_fixture(MissionTestFixture {
+            current: MissionId::from_known(MissionType::Attack),
+            suspended: MissionId::NONE,
+            queued: MissionId::from_known(MissionType::Guard),
+            movement_bypass_latch: 0,
+            handler_state: 0,
+            mission_start_frame: 0,
+            ai_counter: 99,
+            dispatch_timer: MissionDispatchTimer::at_frame(0),
+        });
         let json = serde_json::to_string(&e).expect("serialize entity");
         assert!(
             json.contains("mission"),
             "mission must round-trip — present in serialized form"
         );
         let restored: GameEntity = serde_json::from_str(&json).expect("deserialize entity");
-        assert_eq!(restored.mission.current, MissionType::Attack);
-        assert_eq!(restored.mission.queued, Some(MissionType::Guard));
-        assert_eq!(restored.mission.tick_counter, 99);
+        assert_eq!(
+            restored.mission.current(),
+            MissionId::from_known(MissionType::Attack)
+        );
+        assert_eq!(
+            restored.mission.queued(),
+            MissionId::from_known(MissionType::Guard)
+        );
+        assert_eq!(restored.mission.ai_counter(), 99);
     }
 }

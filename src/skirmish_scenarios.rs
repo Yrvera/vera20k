@@ -12,9 +12,15 @@ use crate::rules::ini_parser::IniFile;
 use crate::skirmish_modes::SkirmishGameMode;
 
 pub const RANDMAP_SED: &str = "RandMap.Sed";
+/// `[RandomMap] NumPlayers` is clamped to this inclusive range before
+/// generation, so the sentinel has to advertise the same span.
 pub const RANDOM_MAP_MIN_PLAYERS: u8 = 2;
+pub const RANDOM_MAP_MAX_PLAYERS: u8 = 8;
+/// Start slots the generator produces before a `.SED` supplies `NumPlayers`.
+/// This is a *default quota*, not a capacity limit: `RANDOM_MAP_MAX_PLAYERS`
+/// used to alias it, which capped the sentinel at 4 and made 5-8 player random
+/// maps unselectable.
 pub const RANDOM_MAP_GENERATED_START_QUOTA: u8 = 4;
-pub const RANDOM_MAP_MAX_PLAYERS: u8 = RANDOM_MAP_GENERATED_START_QUOTA;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkirmishScenarioSource {
@@ -41,6 +47,7 @@ pub struct SkirmishScenarioRecord {
     pub briefing: BriefingSection,
     pub preview: PreviewSection,
     pub multiplayer_start_waypoints: Vec<Waypoint>,
+    pub player_capacity: i32,
     pub preview_source_bounds: Option<PreviewSourceBounds>,
     pub game_modes: Vec<String>,
     pub min_players: Option<u8>,
@@ -67,6 +74,7 @@ impl SkirmishScenarioRecord {
             briefing: entry.briefing,
             preview: entry.preview,
             multiplayer_start_waypoints: entry.multiplayer_start_waypoints,
+            player_capacity: entry.player_capacity,
             preview_source_bounds: entry.preview_source_bounds,
             game_modes: parse_game_modes(ini),
             min_players: basic
@@ -104,7 +112,11 @@ impl SkirmishScenarioRecord {
         record
     }
 
-    pub fn random_map_sentinel(source_ordinal: usize, display_name: impl Into<String>) -> Self {
+    pub fn random_map_sentinel(
+        source_ordinal: usize,
+        display_name: impl Into<String>,
+        player_capacity: i32,
+    ) -> Self {
         Self {
             source_ordinal,
             source: SkirmishScenarioSource::Synthetic,
@@ -114,6 +126,7 @@ impl SkirmishScenarioRecord {
             briefing: BriefingSection::default(),
             preview: PreviewSection::default(),
             multiplayer_start_waypoints: Vec::new(),
+            player_capacity,
             preview_source_bounds: None,
             game_modes: Vec::new(),
             min_players: Some(RANDOM_MAP_MIN_PLAYERS),
@@ -133,6 +146,7 @@ impl SkirmishScenarioRecord {
             briefing: entry.briefing.clone(),
             preview: entry.preview.clone(),
             multiplayer_start_waypoints: entry.multiplayer_start_waypoints.clone(),
+            player_capacity: entry.player_capacity,
             preview_source_bounds: entry.preview_source_bounds.clone(),
             game_modes: Vec::new(),
             min_players: None,
@@ -150,6 +164,7 @@ impl SkirmishScenarioRecord {
             briefing: self.briefing.clone(),
             preview: self.preview.clone(),
             multiplayer_start_waypoints: self.multiplayer_start_waypoints.clone(),
+            player_capacity: self.player_capacity,
             preview_source_bounds: self.preview_source_bounds.clone(),
         }
     }
@@ -207,9 +222,14 @@ pub fn record_matches_mode(record: &SkirmishScenarioRecord, mode: &SkirmishGameM
     }
 }
 
+/// Insert or refresh the single random-map row.
+///
+/// `player_capacity` comes from the seed's configured player count, which is
+/// what decides how many setup slots the row offers — not a fixed quota.
 pub fn upsert_random_map_sentinel(
     records: &mut Vec<SkirmishScenarioRecord>,
     display_name: impl Into<String>,
+    player_capacity: i32,
 ) -> usize {
     if let Some(idx) = records
         .iter()
@@ -219,6 +239,7 @@ pub fn upsert_random_map_sentinel(
         records[idx].file_name = RANDMAP_SED.to_string();
         records[idx].source = SkirmishScenarioSource::Synthetic;
         records[idx].multiplayer_start_waypoints.clear();
+        records[idx].player_capacity = player_capacity;
         records[idx].preview_source_bounds = None;
         records[idx].game_modes.clear();
         records[idx].min_players = Some(RANDOM_MAP_MIN_PLAYERS);
@@ -231,6 +252,7 @@ pub fn upsert_random_map_sentinel(
     records.push(SkirmishScenarioRecord::random_map_sentinel(
         idx,
         display_name,
+        player_capacity,
     ));
     idx
 }
@@ -239,6 +261,43 @@ pub fn upsert_random_map_sentinel(
 mod tests {
     use super::*;
     use crate::skirmish_modes::stock_skirmish_modes;
+
+    #[test]
+    fn upserting_the_random_map_sentinel_keeps_exactly_one_row() {
+        // Accepting Create Random Map twice must refresh the existing row, not
+        // append a second one.
+        let mut records = Vec::new();
+        let first = upsert_random_map_sentinel(
+            &mut records,
+            "Random Map",
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
+        );
+        let second = upsert_random_map_sentinel(
+            &mut records,
+            "Random Map",
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
+        );
+        assert_eq!(first, second, "the sentinel is updated, never duplicated");
+
+        let sentinels = records
+            .iter()
+            .filter(|record| record.kind == SkirmishScenarioKind::RandomMapSentinel)
+            .count();
+        assert_eq!(sentinels, 1);
+
+        let sentinel = &records[first];
+        assert_eq!(sentinel.file_name, RANDMAP_SED);
+        assert!(sentinel.official, "the original constructs it official");
+        // Current repo behaviour. The binary's record constructor passes 2 and 4
+        // into +0x180/+0x184, but nothing reads those two fields when deciding a
+        // player count - MPGameOptions__GetScenarioPlayerCount reads
+        // [RandomMap] NumPlayers from the .SED instead - so the wider range here
+        // is what the dialog's 2..8 trackbar actually produces.
+        assert_eq!(
+            (sentinel.min_players, sentinel.max_players),
+            (Some(RANDOM_MAP_MIN_PLAYERS), Some(RANDOM_MAP_MAX_PLAYERS))
+        );
+    }
 
     fn mode(id: i32) -> SkirmishGameMode {
         stock_skirmish_modes()
@@ -276,6 +335,7 @@ mod tests {
         assert_eq!(entry.file_name, "Projected.yrm");
         assert_eq!(entry.display_name, "Projected");
         assert_eq!(entry.multiplayer_start_waypoints.len(), 2);
+        assert_eq!(entry.player_capacity, 2);
     }
 
     #[test]
@@ -345,20 +405,51 @@ mod tests {
 
     #[test]
     fn choose_map_filters_randmap_by_mode_random_allowed() {
-        let records = vec![SkirmishScenarioRecord::random_map_sentinel(0, "Random Map")];
+        let records = vec![SkirmishScenarioRecord::random_map_sentinel(
+            0,
+            "Random Map",
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
+        )];
         assert_eq!(filter_records_for_mode(&records, &mode(1)), vec![0]);
         assert!(filter_records_for_mode(&records, &mode(9)).is_empty());
     }
 
     #[test]
+    fn random_map_sentinel_spans_the_full_player_range() {
+        // Pinned to literals on purpose: the capacity used to alias the
+        // generated-start quota, which silently capped random maps at 4.
+        assert_eq!(RANDOM_MAP_MIN_PLAYERS, 2);
+        assert_eq!(RANDOM_MAP_MAX_PLAYERS, 8, "NumPlayers clamps to 2..8");
+        assert_ne!(
+            RANDOM_MAP_MAX_PLAYERS, RANDOM_MAP_GENERATED_START_QUOTA,
+            "capacity must not be re-aliased to the start quota"
+        );
+
+        let rec = SkirmishScenarioRecord::random_map_sentinel(
+            0,
+            "Random Map",
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
+        );
+        assert_eq!(rec.max_players, Some(8));
+    }
+
+    #[test]
     fn random_map_sentinel_advertises_shell_capacity_without_concrete_starts() {
-        let rec = SkirmishScenarioRecord::random_map_sentinel(4, "Random Map");
+        let rec = SkirmishScenarioRecord::random_map_sentinel(
+            4,
+            "Random Map",
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
+        );
 
         assert_eq!(rec.file_name, RANDMAP_SED);
         assert_eq!(rec.kind, SkirmishScenarioKind::RandomMapSentinel);
         assert_eq!(rec.min_players, Some(RANDOM_MAP_MIN_PLAYERS));
         assert_eq!(rec.max_players, Some(RANDOM_MAP_MAX_PLAYERS));
         assert!(rec.official);
+        assert_eq!(
+            rec.player_capacity,
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA)
+        );
         assert_eq!(RANDOM_MAP_GENERATED_START_QUOTA, 4);
         assert!(
             rec.multiplayer_start_waypoints.is_empty(),
@@ -369,8 +460,16 @@ mod tests {
     #[test]
     fn skirmish_random_map_command_adds_or_updates_single_sentinel_record() {
         let mut records = vec![record(0, "Concrete", "standard")];
-        let first = upsert_random_map_sentinel(&mut records, "Random Map");
-        let second = upsert_random_map_sentinel(&mut records, "Updated Random Map");
+        let first = upsert_random_map_sentinel(
+            &mut records,
+            "Random Map",
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
+        );
+        let second = upsert_random_map_sentinel(
+            &mut records,
+            "Updated Random Map",
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
+        );
         assert_eq!(first, 1);
         assert_eq!(second, 1);
         assert_eq!(records.len(), 2);
@@ -378,13 +477,46 @@ mod tests {
         assert_eq!(records[1].display_name, "Updated Random Map");
         assert_eq!(records[1].min_players, Some(RANDOM_MAP_MIN_PLAYERS));
         assert_eq!(records[1].max_players, Some(RANDOM_MAP_MAX_PLAYERS));
+        assert_eq!(
+            records[1].player_capacity,
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA)
+        );
         assert!(records[1].official);
         assert!(records[1].multiplayer_start_waypoints.is_empty());
     }
 
     #[test]
+    fn sentinel_capacity_follows_the_configured_player_count() {
+        // The row's capacity is what decides how many setup slots the player
+        // gets, so it has to track the seed's NumPlayers rather than a quota.
+        let mut records = Vec::new();
+        upsert_random_map_sentinel(&mut records, "Random Map", 6);
+        assert_eq!(records[0].player_capacity, 6);
+        assert_eq!(records[0].to_map_menu_entry().player_capacity, 6);
+
+        upsert_random_map_sentinel(&mut records, "Random Map", 3);
+        assert_eq!(records.len(), 1, "still one row");
+        assert_eq!(records[0].player_capacity, 3, "a re-accept updates it");
+    }
+
+    #[test]
+    fn the_sentinel_map_entry_is_addressable_by_its_seed_file_name() {
+        // Committing a chooser selection resolves it against the loadable map
+        // list by file name; a mismatch here is what makes an accepted random
+        // map unplayable.
+        let mut records = Vec::new();
+        let idx = upsert_random_map_sentinel(&mut records, "Random Map", 2);
+        let entry = records[idx].to_map_menu_entry();
+        assert!(entry.file_name.eq_ignore_ascii_case(RANDMAP_SED));
+    }
+
+    #[test]
     fn random_map_upsert_repairs_stale_sentinel_metadata() {
-        let mut stale = SkirmishScenarioRecord::random_map_sentinel(0, "Old Random Map");
+        let mut stale = SkirmishScenarioRecord::random_map_sentinel(
+            0,
+            "Old Random Map",
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
+        );
         stale.file_name = "Wrong.yrm".to_string();
         stale.source = SkirmishScenarioSource::LooseYrm("Wrong.yrm".to_string());
         stale.multiplayer_start_waypoints = vec![Waypoint {
@@ -397,7 +529,11 @@ mod tests {
         stale.official = false;
 
         let mut records = vec![stale];
-        let idx = upsert_random_map_sentinel(&mut records, "Random Map");
+        let idx = upsert_random_map_sentinel(
+            &mut records,
+            "Random Map",
+            i32::from(RANDOM_MAP_GENERATED_START_QUOTA),
+        );
 
         assert_eq!(idx, 0);
         assert_eq!(records[0].file_name, RANDMAP_SED);

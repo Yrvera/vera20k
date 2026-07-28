@@ -14,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::LogicVector;
+use crate::sim::anim_class::AnimStore;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::occupancy::OccupancyGrid;
 
@@ -49,7 +50,7 @@ pub(crate) struct ObjectSubstrate {
     /// Monotonic per-instance id source (never reused). Each spawned entity
     /// draws the next value; a stale reference degrades to `None` rather than
     /// aliasing a reused slot.
-    pub(crate) next_stable_entity_id: u64,
+    pub(crate) next_stable_object_id: u64,
     /// Monotonic source for rebuilt CellClass-style object-list (enter) order.
     /// See `EnterOrderCounter`. `OccupancyGrid` itself is a skipped cache; each
     /// entity stores the last order value assigned when it entered a cell list.
@@ -66,13 +67,16 @@ pub(crate) struct ObjectSubstrate {
     /// Plain-struct entity storage (`BTreeMap<u64, GameEntity>` + by_owner index).
     /// The authoritative object store — serialized verbatim (NOT skipped).
     pub(crate) entities: EntityStore,
-    /// Deferred-delete queue (the native `PendingDeleteList`). `uninit` pushes an
-    /// id here instead of freeing the store slot; `Simulation::flush_pending_delete`
-    /// drains it in death order at end-of-tick. Transient: empty at every tick/save
-    /// boundary, so it is `#[serde(skip)]` — not serialized, not hashed. Between
-    /// enqueue and drain the entity stays in the store as a `Dying`, off-occupancy,
-    /// off-logic corpse, resolvable by id (the two-phase death window).
-    #[serde(skip)]
+    /// Separate AnimClass registry sharing the global object ID namespace and
+    /// LogicVector with entities.
+    #[serde(default)]
+    pub(crate) anims: AnimStore,
+    /// Deferred-delete queue (the native `PendingDeleteList`). Ordered IDs may
+    /// survive a Rust snapshot boundary: between enqueue and the ordinary late
+    /// drain an entity remains resolvable in storage while its independent
+    /// lifecycle facts describe dead/limbo/cell/logic state. Serialized verbatim;
+    /// the state hash folds the queue length followed by IDs in insertion order.
+    #[serde(default)]
     pub(crate) pending_delete: Vec<u64>,
 }
 
@@ -81,11 +85,12 @@ impl ObjectSubstrate {
     /// sentinel), matching the pre-consolidation `Simulation::new` initializers.
     pub(crate) fn new() -> Self {
         Self {
-            next_stable_entity_id: 1,
+            next_stable_object_id: 1,
             next_occupancy_enter_order: EnterOrderCounter::new(),
             logic: LogicVector::new(),
             occupancy: OccupancyGrid::new(),
             entities: EntityStore::new(),
+            anims: AnimStore::default(),
             pending_delete: Vec::new(),
         }
     }

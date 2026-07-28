@@ -23,7 +23,12 @@ const DEBUG_LABEL_HEIGHT: u32 = 18;
 pub struct SidebarCameoEntry {
     pub uv_origin: [f32; 2],
     pub uv_size: [f32; 2],
+    /// Visible, alpha-cropped texture dimensions stored in the atlas.
     pub pixel_size: [f32; 2],
+    /// Original SHP canvas dimensions before transparent borders were cropped.
+    pub canvas_size: [f32; 2],
+    /// Top-left of the visible crop in original-canvas pixels.
+    pub crop_origin: [f32; 2],
 }
 
 pub struct SidebarCameoAtlas {
@@ -42,6 +47,10 @@ struct RenderedCameo {
     rgba: Vec<u8>,
     width: u32,
     height: u32,
+    canvas_width: u32,
+    canvas_height: u32,
+    crop_x: u32,
+    crop_y: u32,
 }
 
 pub fn build_sidebar_cameo_atlas(
@@ -242,15 +251,9 @@ fn render_cameo(
     }
     let mut full_rgba = vec![0u8; (full_w * full_h * 4) as usize];
     blit_frame_into_full_bounds(&mut full_rgba, full_w, full_h, frame, &frame_rgba);
-    let (cropped_rgba, cropped_w, cropped_h) = crop_visible_bounds(&full_rgba, full_w, full_h)?;
+    let cameo = rendered_cameo_from_canvas(type_id, full_rgba, full_w, full_h)?;
     log::debug!("Sidebar cameo {} loaded from {}", type_id, file_name);
-
-    Some(RenderedCameo {
-        type_id: type_id.to_ascii_uppercase(),
-        rgba: cropped_rgba,
-        width: cropped_w,
-        height: cropped_h,
-    })
+    Some(cameo)
 }
 
 /// Load a superweapon sidebar image SHP directly by name.
@@ -277,14 +280,9 @@ fn render_sw_cameo(
     }
     let mut full_rgba = vec![0u8; (full_w * full_h * 4) as usize];
     blit_frame_into_full_bounds(&mut full_rgba, full_w, full_h, frame, &frame_rgba);
-    let (cropped_rgba, cropped_w, cropped_h) = crop_visible_bounds(&full_rgba, full_w, full_h)?;
+    let cameo = rendered_cameo_from_canvas(image_name, full_rgba, full_w, full_h)?;
     log::debug!("SW sidebar cameo {} loaded from {}", image_name, shp_name);
-    Some(RenderedCameo {
-        type_id: image_name.to_ascii_uppercase(),
-        rgba: cropped_rgba,
-        width: cropped_w,
-        height: cropped_h,
-    })
+    Some(cameo)
 }
 
 /// Repo-only fallback guesses kept out of `rules::art_data`.
@@ -356,7 +354,31 @@ fn blit_frame_into_full_bounds(
     }
 }
 
-fn crop_visible_bounds(rgba: &[u8], width: u32, height: u32) -> Option<(Vec<u8>, u32, u32)> {
+fn rendered_cameo_from_canvas(
+    type_id: &str,
+    full_rgba: Vec<u8>,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> Option<RenderedCameo> {
+    let (rgba, width, height, crop_x, crop_y) =
+        crop_visible_bounds(&full_rgba, canvas_width, canvas_height)?;
+    Some(RenderedCameo {
+        type_id: type_id.to_ascii_uppercase(),
+        rgba,
+        width,
+        height,
+        canvas_width,
+        canvas_height,
+        crop_x,
+        crop_y,
+    })
+}
+
+fn crop_visible_bounds(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> Option<(Vec<u8>, u32, u32, u32, u32)> {
     let mut min_x = width;
     let mut min_y = height;
     let mut max_x = 0u32;
@@ -393,7 +415,7 @@ fn crop_visible_bounds(rgba: &[u8], width: u32, height: u32) -> Option<(Vec<u8>,
             .copy_from_slice(&rgba[src_start..src_start + byte_count]);
     }
 
-    Some((cropped, cropped_w, cropped_h))
+    Some((cropped, cropped_w, cropped_h, min_x, min_y))
 }
 
 fn blit_rgba(
@@ -481,6 +503,8 @@ fn pack_cameos(
                 uv_origin: [px as f32 / aw, py as f32 / ah],
                 uv_size: [cameo.width as f32 / aw, cameo.height as f32 / ah],
                 pixel_size: [cameo.width as f32, cameo.height as f32],
+                canvas_size: [cameo.canvas_width as f32, cameo.canvas_height as f32],
+                crop_origin: [cameo.crop_x as f32, cameo.crop_y as f32],
             },
         );
     }
@@ -521,7 +545,7 @@ fn shelf_pack(
 
 #[cfg(test)]
 mod tests {
-    use super::legacy_cameo_fallback_candidates;
+    use super::{legacy_cameo_fallback_candidates, rendered_cameo_from_canvas};
 
     #[test]
     fn test_legacy_cameo_fallbacks_start_after_declared_candidates() {
@@ -529,5 +553,27 @@ mod tests {
         assert_eq!(candidates[0], "GACNSTICON.SHP");
         assert!(candidates.contains(&"CNSTICON.SHP".to_string()));
         assert!(!candidates.contains(&"CIVICONICON.SHP".to_string()));
+    }
+
+    #[test]
+    fn test_rendered_cameo_retains_canvas_and_nonzero_crop_origin() {
+        let canvas_width = 6;
+        let canvas_height = 5;
+        let mut rgba = vec![0u8; (canvas_width * canvas_height * 4) as usize];
+        for y in 2..=3 {
+            for x in 1..=4 {
+                let offset = ((y * canvas_width + x) * 4) as usize;
+                rgba[offset..offset + 4].copy_from_slice(&[10, 20, 30, 255]);
+            }
+        }
+
+        let cameo =
+            rendered_cameo_from_canvas("testicon", rgba, canvas_width, canvas_height).unwrap();
+
+        assert_eq!(cameo.type_id, "TESTICON");
+        assert_eq!([cameo.canvas_width, cameo.canvas_height], [6, 5]);
+        assert_eq!([cameo.crop_x, cameo.crop_y], [1, 2]);
+        assert_eq!([cameo.width, cameo.height], [4, 2]);
+        assert_eq!(cameo.rgba.len(), 4 * 2 * 4);
     }
 }

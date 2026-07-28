@@ -29,6 +29,7 @@ pub mod overlay;
 pub mod overlay_types;
 pub mod preview;
 pub mod resolved_terrain;
+pub mod rmg;
 pub mod tags;
 pub mod terrain;
 pub mod theater;

@@ -25,6 +25,9 @@ pub(crate) struct SkirmishPreviewTexture {
     pub texture: BatchTexture,
     pub width: u32,
     pub height: u32,
+    /// Set when the texture holds a random-map setup preview rather than a
+    /// chooser map's thumbnail, carrying the generation it was built from.
+    pub setup_preview_generation: Option<u32>,
 }
 
 pub(super) fn push_start_marker_sprites(
@@ -93,7 +96,12 @@ pub(super) fn selected_preview_texture_is_current(
     state
         .skirmish_preview_texture
         .as_ref()
-        .is_some_and(|cached| cached.selected_map_idx == selected_map_idx)
+        .is_some_and(|cached| {
+            // A setup-dialog preview happens to carry the selected index too, so it
+            // has to be rejected explicitly or closing the dialog would leave the
+            // generated image standing in for the chooser's own thumbnail.
+            cached.setup_preview_generation.is_none() && cached.selected_map_idx == selected_map_idx
+        })
 }
 
 pub(super) fn is_random_map_sentinel_file_name(file_name: &str) -> bool {
@@ -195,7 +203,49 @@ pub(super) fn decode_preview_from_ini(ini: &IniFile, source: &str) -> Option<Dec
     }
 }
 
+/// Keep the preview texture in step with the setup dialog's generated image.
+///
+/// Returns true when the setup dialog owns the preview, so the caller skips the
+/// chooser's own texture handling. While the dialog is up the box shows the
+/// generated map and nothing else — before the first generate it stays empty
+/// rather than borrowing whatever the chooser underneath had selected.
+pub(super) fn ensure_random_map_setup_preview_texture(state: &mut AppState) -> bool {
+    let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_ref() else {
+        return false;
+    };
+    let Some(preview) = modal.generated_preview.as_ref() else {
+        state.skirmish_preview_texture = None;
+        return true;
+    };
+    let generation = modal.preview_generation;
+    let already_current = state
+        .skirmish_preview_texture
+        .as_ref()
+        .is_some_and(|texture| texture.setup_preview_generation == Some(generation));
+    if already_current {
+        return true;
+    }
+
+    let texture = state.batch_renderer.create_texture(
+        &state.gpu,
+        &preview.rgba,
+        preview.width,
+        preview.height,
+    );
+    state.skirmish_preview_texture = Some(SkirmishPreviewTexture {
+        selected_map_idx: state.skirmish_shell_state.selected_map_idx,
+        texture,
+        width: preview.width,
+        height: preview.height,
+        setup_preview_generation: Some(generation),
+    });
+    true
+}
+
 pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
+    if ensure_random_map_setup_preview_texture(state) {
+        return;
+    }
     let selected_map_idx = state.skirmish_shell_state.selected_map_idx;
     let selected_entry = state.skirmish_shell_maps.get(selected_map_idx).cloned();
     let selected_is_random_sentinel = selected_entry
@@ -231,6 +281,7 @@ pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
         texture,
         width: decoded.width,
         height: decoded.height,
+        setup_preview_generation: None,
     });
 }
 

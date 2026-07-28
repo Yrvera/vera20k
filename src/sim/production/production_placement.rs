@@ -13,10 +13,10 @@ use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BuildingUp;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding;
 use crate::sim::world::Simulation;
 
-use super::production_refinery::maybe_spawn_refinery_harvester;
 use super::production_tech::{foundation_dimensions, producer_candidates_for_owner_category};
 use super::production_types::*;
 
@@ -117,7 +117,9 @@ pub fn toggle_pause_for_owner_category(
     // P5d: pause is a registry flag on the active build (the retired `front.state` Paused
     // bridge). `step_all` skips a `manual` factory without losing progress; unpausing
     // auto-resumes via `set_rate`.
-    sim.production.factory_shadow.toggle_pause(owner_id, category)
+    sim.production
+        .factory_shadow
+        .toggle_pause(owner_id, category)
 }
 
 pub fn cycle_active_producer_for_owner_category(
@@ -226,8 +228,6 @@ pub fn place_ready_building(
             total_ticks: 30,
         });
     }
-    maybe_spawn_refinery_harvester(sim, rules, owner, type_id, rx, ry, path_grid, height_map);
-
     // Refresh superweapon grants — newly placed building may provide a SW.
     if sim.session.game_options.super_weapons {
         crate::sim::superweapon::refresh_super_weapons_for_owner(sim, rules, owner_id);
@@ -292,7 +292,13 @@ fn evaluate_building_placement(
                 obj.water_bound,
             ) {
                 // Distinguish overlap from terrain for the error variant.
-                if structure_occupies_cell(&sim.substrate.entities, rules, cell_x, cell_y, &sim.interner) {
+                if structure_occupies_cell(
+                    &sim.substrate.entities,
+                    rules,
+                    cell_x,
+                    cell_y,
+                    &sim.interner,
+                ) {
                     return Err(BuildingPlacementError::OverlapsStructure);
                 }
                 return Err(BuildingPlacementError::BlockedTerrain);
@@ -303,7 +309,8 @@ fn evaluate_building_placement(
         Ok(())
     } else {
         let providers: Vec<String> = sim
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .filter(|e| {
                 e.category == EntityCategory::Structure
@@ -352,7 +359,12 @@ fn cell_placeable(
     cy: u16,
     water_bound: bool,
 ) -> bool {
-    let no_overlap = !structure_occupies_cell(entities, rules, cx, cy, &sim.interner);
+    let no_overlap = !structure_occupies_cell(entities, rules, cx, cy, &sim.interner)
+        && !ground_non_structure_occupies_cell(sim, cx, cy);
+    let no_overlay = sim
+        .overlay_grid
+        .as_ref()
+        .map_or(true, |grid| grid.cell(cx, cy).overlay_id.is_none());
 
     if water_bound {
         let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
@@ -379,7 +391,7 @@ fn cell_placeable(
                 )
             })
         };
-        cell_ok && no_overlap
+        cell_ok && no_overlap && no_overlay
     } else {
         let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
             terrain.cell(cx, cy).is_some_and(|cell| {
@@ -396,8 +408,26 @@ fn cell_placeable(
             let not_blocked = !sim.effective_build_blocked(cx, cy).unwrap_or(false);
             walkable && not_blocked
         };
-        cell_ok && no_overlap
+        cell_ok && no_overlap && no_overlay
     }
+}
+
+fn ground_non_structure_occupies_cell(sim: &Simulation, rx: u16, ry: u16) -> bool {
+    sim.substrate.occupancy.get(rx, ry).is_some_and(|cell| {
+        cell.iter_layer(MovementLayer::Ground).any(|occupant| {
+            match sim.substrate.entities.get(occupant.entity_id) {
+                Some(entity) => entity.category != EntityCategory::Structure,
+                None => {
+                    debug_assert!(
+                        false,
+                        "occupancy cell ({rx},{ry}) references missing entity {}",
+                        occupant.entity_id
+                    );
+                    true
+                }
+            }
+        })
+    })
 }
 
 pub(crate) fn structure_occupies_cell(

@@ -6,18 +6,23 @@ use std::time::Instant;
 use anyhow::Result;
 
 use crate::app::AppState;
-use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
+use crate::app_shell_transition::{
+    ButtonGroup, MainMenuEntryPaintFrame, MainMenuEntryPresentToken,
+};
 use crate::render::batch::SpriteInstance;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_paint::{
-    self, ArtFit, ButtonPolicy, PaintButton, PaintLabel, CURSOR_DEPTH, MOVIE_DEPTH,
-    PARENT_BACKGROUND_DEPTH, PRESSED_CONTENT_OFFSET_Y, SHELL_TEXT_RGB_ENABLED,
+    self, ArtFit, ButtonPolicy, CURSOR_DEPTH, MOVIE_DEPTH, PARENT_BACKGROUND_DEPTH, PaintButton,
+    PaintLabel, SHELL_TEXT_RGB_ENABLED,
 };
 use crate::render::shell_text::ShellAlign;
+use crate::render::shell_text_reveal::PathAReveal;
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::ui::main_menu_shell::{
-    MainMenuControlId, MainMenuShellLayout, RectPx, compute_layout, csf_key_for_control,
+    MainMenuControlId, MainMenuMovieBase, MainMenuShellLayout, RectPx, compute_layout,
+    csf_key_for_control, tooltip_csf_key_for_control,
 };
+use crate::ui::shell::static_reveal::{Kind1PaintWindow, Kind1RevealReceipt, Kind1RevealWindow};
 
 /// Screen-size thresholds above which the centered 800x600 shell is letterboxed
 /// (background and chrome offset by ((w-800)/2, (h-600)/2) instead of (0,0)).
@@ -26,19 +31,78 @@ const SHELL_LETTERBOX_H_THRESHOLD: i32 = 767;
 const SHELL_BASE_W: i32 = 800;
 const SHELL_BASE_H: i32 = 600;
 
-/// Dialog 0xE2 owner-draw button policy: native art at the cell top-left, +2 px
-/// Y sink on press, no hover flash, no disabled dim (0xE2 has no disabled
-/// control). The +1 px text X shift on press is applied in the label builder.
+/// Dialog 0xE2 owner-draw button policy: native art remains at the cell top-left
+/// while frame selection changes on press. The dialog has no hover flash or
+/// disabled owner-draw button.
 const MAIN_MENU_BUTTON_POLICY: ButtonPolicy = ButtonPolicy {
     art_fit: ArtFit::Native,
     hover_flash: false,
-    art_sink_y: PRESSED_CONTENT_OFFSET_Y,
+    art_sink_y: 0.0,
     disabled_dim: false,
 };
 
+/// Native static `0x695` is left-aligned and vertically centered.
+const MAIN_MENU_STATUS_ALIGN: ShellAlign = ShellAlign::V_CENTER;
+
 pub(crate) enum MainMenuShellRenderResult {
-    Rendered,
+    Rendered {
+        title_receipt: Option<Kind1RevealReceipt>,
+    },
     Fallback,
+}
+
+pub(crate) enum MainMenuEntryRenderResult {
+    Rendered { token: MainMenuEntryPresentToken },
+    Fallback,
+}
+
+/// Dialog whose child static `0x71A` owns the active RA2TS movie handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ra2tsDialogOwner {
+    MainMenu0xE2,
+    SinglePlayer0x100,
+}
+
+/// Identity of the one RA2TS session installed for a movie-bearing dialog.
+///
+/// Owner and asset base change atomically because neither alone is sufficient
+/// to make the decoder/texture reusable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ra2tsMovieSessionIdentity {
+    owner: Ra2tsDialogOwner,
+    base: MainMenuMovieBase,
+}
+
+impl Ra2tsMovieSessionIdentity {
+    const fn new(owner: Ra2tsDialogOwner, base: MainMenuMovieBase) -> Self {
+        Self { owner, base }
+    }
+
+    pub(crate) const fn owner(self) -> Ra2tsDialogOwner {
+        self.owner
+    }
+
+    pub(crate) const fn base(self) -> MainMenuMovieBase {
+        self.base
+    }
+}
+
+fn ra2ts_movie_session_is_reusable(
+    movie_loaded: bool,
+    active_identity: Option<Ra2tsMovieSessionIdentity>,
+    requested_identity: Ra2tsMovieSessionIdentity,
+) -> bool {
+    movie_loaded && active_identity == Some(requested_identity)
+}
+
+/// Drop the one active RA2TS decoder/texture and all of its cache identity.
+///
+/// This models destruction of the owning dialog's child static `0x71A`. The
+/// next movie-bearing dialog reconstructs its own session lazily on first paint.
+pub(crate) fn clear_ra2ts_movie_session(state: &mut AppState) {
+    state.main_menu_movie = None;
+    state.main_menu_movie_identity = None;
+    state.main_menu_movie_last_step = Instant::now();
 }
 
 fn push_entry_sized(
@@ -67,15 +131,14 @@ fn push_entry_sized(
 fn main_menu_paint_buttons(
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
-    wave: Option<&ShellFrameWave>,
+    entry_frame: Option<MainMenuEntryPaintFrame>,
 ) -> Vec<PaintButton> {
     layout
         .buttons
         .iter()
-        .enumerate()
-        .map(|(slot, button)| {
-            let wave_frame =
-                wave.map(|w| w.sdbtnanm_frame(slot as u32, ButtonGroup::A) as usize);
+        .map(|button| {
+            let wave_frame = entry_frame
+                .and_then(|frame| frame.sdbtnanm_frame(button.id.resource_id(), ButtonGroup::A));
             PaintButton {
                 rect: button.rect,
                 pressed: pressed_button == Some(button.id),
@@ -95,75 +158,72 @@ fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
         .unwrap_or(key)
 }
 
-/// Build the owner-draw button labels + statics (title / version / tooltip) as
-/// `PaintLabel`s consumed by `shell_paint::paint_labels`. Reproduces the prior
-/// `build_text_draws` exactly: button labels h+v-centered in a rect inset by
-/// top+=1 / right-=2, shifted +x_offset / +2y on press; statics h-centered
-/// top-anchored. 0xE2 text is always #FFFF00 (no disabled control). The `version`
-/// string is owned, so the returned labels borrow from `strings`.
+pub(crate) fn main_menu_title_text(state: &AppState) -> &str {
+    resolve_csf(state, "GUI:MainMenu")
+}
+
+fn main_menu_status_csf_key(hovered_button: Option<MainMenuControlId>) -> Option<&'static str> {
+    hovered_button.map(tooltip_csf_key_for_control)
+}
+
+fn main_menu_title_path_a(window: Kind1RevealWindow) -> PathAReveal {
+    PathAReveal {
+        count: window.count,
+        range: window.range,
+        base_rgb: [255, 255, 0],
+        highlight_rgb: [255, 255, 255],
+    }
+}
+
+/// Build the owner-draw button labels and dialog statics consumed by
+/// `shell_paint::paint_labels`. Button labels use the exact native normal/pressed
+/// clipping rectangles. Status static `0x695` reads the dialog's immediate hover
+/// state rather than the delayed in-game tooltip service.
 fn main_menu_paint_labels<'a>(
     state: &'a AppState,
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
-    _hovered_button: Option<MainMenuControlId>,
+    hovered_button: Option<MainMenuControlId>,
     version_text: &'a str,
+    title_window: Option<Kind1RevealWindow>,
 ) -> Vec<PaintLabel<'a>> {
     use crate::render::shell_text::ShellAlign;
     let mut out = Vec::new();
     let button_align = ShellAlign::H_CENTER | ShellAlign::V_CENTER;
     for button in &layout.buttons {
         let pressed = pressed_button == Some(button.id);
-        let x_offset = if pressed {
-            layout.pressed_content_offset_x
-        } else {
-            0
-        };
-        // gamemd sinks the whole button content (art + label) down +2 px on
-        // press. The text Y sink is applied as i32, distinct from the f32 art
-        // sink threaded through ButtonPolicy.
-        let y_offset = if pressed {
-            PRESSED_CONTENT_OFFSET_Y as i32
-        } else {
-            0
-        };
         out.push(PaintLabel {
             text: resolve_csf(state, csf_key_for_control(button.id)),
-            rect: RectPx::new(
-                button.rect.x + x_offset,
-                button.rect.y + 1 + y_offset,
-                (button.rect.w - 2).max(0),
-                (button.rect.h - 1).max(0),
-            ),
+            rect: owner_draw_button_label_rect(button.rect, pressed),
             align: button_align,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         });
     }
     // Statics: title heading, version, tooltip — top-anchored, h-centered.
-    out.push(PaintLabel {
-        text: resolve_csf(state, "GUI:MainMenu"),
-        rect: layout.title,
-        align: ShellAlign::H_CENTER,
-        rgb: SHELL_TEXT_RGB_ENABLED,
-    });
+    if let Some(window) = title_window {
+        out.push(PaintLabel {
+            text: main_menu_title_text(state),
+            rect: layout.title,
+            align: ShellAlign::H_CENTER,
+            rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: Some(main_menu_title_path_a(window)),
+        });
+    }
     out.push(PaintLabel {
         text: version_text,
         rect: layout.version_line,
         align: ShellAlign::H_CENTER,
         rgb: SHELL_TEXT_RGB_ENABLED,
+        path_a_reveal: None,
     });
-    // Tooltip text now comes from the shared service (study S1): it appears
-    // only after the 1000 ms hover delay, hides on move, and is killed by any
-    // button press — replacing the immediate-on-hover emission (D-B2).
-    if let Some(tip) = state
-        .tooltips
-        .active()
-        .filter(|t| (t.id & crate::app_tooltips::SHELL_TIP_NAMESPACE) != 0)
-    {
+    if let Some(key) = main_menu_status_csf_key(hovered_button) {
         out.push(PaintLabel {
-            text: &tip.text,
+            text: resolve_csf(state, key),
             rect: layout.tooltip_line,
-            align: ShellAlign::H_CENTER,
+            align: MAIN_MENU_STATUS_ALIGN,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         });
     }
     out
@@ -252,11 +312,20 @@ fn build_movie_instances(layout: &MainMenuShellLayout) -> Vec<SpriteInstance> {
     vec![movie_instance(layout)]
 }
 
-pub(crate) fn ensure_movie_for_current_layout(state: &mut AppState) -> Result<()> {
+pub(crate) fn ensure_movie_for_current_layout(
+    state: &mut AppState,
+    requested_owner: Ra2tsDialogOwner,
+) -> Result<()> {
     let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
-    if state.main_menu_movie_base == Some(layout.movie_base) && state.main_menu_movie.is_some() {
+    let requested_identity = Ra2tsMovieSessionIdentity::new(requested_owner, layout.movie_base);
+    if ra2ts_movie_session_is_reusable(
+        state.main_menu_movie.is_some(),
+        state.main_menu_movie_identity,
+        requested_identity,
+    ) {
         return Ok(());
     }
+    clear_ra2ts_movie_session(state);
 
     let Some(assets) = state.asset_manager.as_ref() else {
         state.main_menu_shell_failed = true;
@@ -295,7 +364,7 @@ pub(crate) fn ensure_movie_for_current_layout(state: &mut AppState) -> Result<()
         movie.source_archive()
     );
     state.main_menu_movie = Some(movie);
-    state.main_menu_movie_base = Some(layout.movie_base);
+    state.main_menu_movie_identity = Some(requested_identity);
     state.main_menu_movie_last_step = Instant::now();
     Ok(())
 }
@@ -325,28 +394,88 @@ fn menu_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
     })
 }
 
+/// Paint the normal 0xE2 route through its active-retail presentation boundary.
+///
+/// First-paint callers use [`render_main_menu_first_paint_frame`] so entry and
+/// steady paint share this exact RGB565 presentation boundary.
 pub(crate) fn render_main_menu_shell(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
+    destination: &wgpu::Texture,
 ) -> Result<MainMenuShellRenderResult> {
+    let (title_window, title_receipt) =
+        match state.main_menu_shell_state.title_reveal.paint_window() {
+            Kind1PaintWindow::Hidden => (None, None),
+            Kind1PaintWindow::Retained(window) => (Some(window), None),
+            Kind1PaintWindow::Due { window, receipt } => (Some(window), Some(receipt)),
+        };
+    let color = state.shell_surface_presenter.source_render_view();
     let depth = state.depth_view.clone();
-    render_main_menu_shell_to_target(
+    let result = render_main_menu_shell_to_target_inner(
         state,
         encoder,
         ShellRenderTarget {
-            color: target,
+            color: &color,
             depth: &depth,
         },
-    )
+        title_window,
+        None,
+    )?;
+    match result {
+        MainMenuShellRenderResult::Rendered { .. } => {
+            state
+                .shell_surface_presenter
+                .encode_present(encoder, destination);
+            Ok(MainMenuShellRenderResult::Rendered { title_receipt })
+        }
+        MainMenuShellRenderResult::Fallback => Ok(MainMenuShellRenderResult::Fallback),
+    }
 }
 
-pub(crate) fn render_main_menu_shell_to_target(
+pub(crate) fn render_main_menu_first_paint_frame(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    destination: &wgpu::Texture,
+    frame: MainMenuEntryPaintFrame,
+) -> Result<MainMenuEntryRenderResult> {
+    let color = state.shell_surface_presenter.source_render_view();
+    let depth = state.depth_view.clone();
+    let result = render_main_menu_shell_to_target_inner(
+        state,
+        encoder,
+        ShellRenderTarget {
+            color: &color,
+            depth: &depth,
+        },
+        None,
+        Some(frame),
+    )?;
+    match result {
+        MainMenuShellRenderResult::Rendered { .. } => {
+            state
+                .shell_surface_presenter
+                .encode_present(encoder, destination);
+            let token = state
+                .shell_first_paint_slide
+                .as_ref()
+                .and_then(|wave| wave.mint_present_token(frame))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("main-menu entry frame changed before presenter token mint")
+                })?;
+            Ok(MainMenuEntryRenderResult::Rendered { token })
+        }
+        MainMenuShellRenderResult::Fallback => Ok(MainMenuEntryRenderResult::Fallback),
+    }
+}
+
+fn render_main_menu_shell_to_target_inner(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
     target: ShellRenderTarget<'_>,
+    title_window: Option<Kind1RevealWindow>,
+    entry_frame: Option<MainMenuEntryPaintFrame>,
 ) -> Result<MainMenuShellRenderResult> {
-    ensure_movie_for_current_layout(state)?;
+    ensure_movie_for_current_layout(state, Ra2tsDialogOwner::MainMenu0xE2)?;
     if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
         state.main_menu_shell_failed = true;
         return Ok(MainMenuShellRenderResult::Fallback);
@@ -366,9 +495,6 @@ pub(crate) fn render_main_menu_shell_to_target(
     }
 
     let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
-    // While a first-paint slide is live the buttons animate through their
-    // SDBTNANM ramp frames; off-slide this is None and they paint steady-state.
-    let wave = state.shell_first_paint_slide.clone();
     let chrome = state
         .main_menu_shell_chrome
         .as_ref()
@@ -382,17 +508,26 @@ pub(crate) fn render_main_menu_shell_to_target(
     // 0xE2-only MNSCRN parent background, submitted FIRST (no analog on 0x100).
     let background_instances = build_parent_background_instances(chrome, &layout);
     let movie_instances = build_movie_instances(&layout);
-    let chrome_instances =
-        shell_paint::paint_chrome(chrome, layout.right_panel, Some(layout.lower_strip), layout.screen.w);
+    let chrome_instances = shell_paint::paint_chrome(
+        chrome,
+        layout.right_panel,
+        Some(layout.lower_strip),
+        layout.screen.w,
+    );
     let buttons = main_menu_paint_buttons(
         &layout,
         state.main_menu_shell_state.pressed_owner_draw_button,
-        wave.as_ref(),
+        entry_frame,
     );
     // 0xE2 never flashes, so the hover clock is unused (None) — keep the call
     // shape uniform with 0x100, which threads its hover_started_at.
-    let button_instances =
-        shell_paint::paint_buttons(chrome, &buttons, MAIN_MENU_BUTTON_POLICY, Instant::now(), None);
+    let button_instances = shell_paint::paint_buttons(
+        chrome,
+        &buttons,
+        MAIN_MENU_BUTTON_POLICY,
+        Instant::now(),
+        None,
+    );
     let version_text = format!(
         "{} {}",
         resolve_csf(state, "GUI:Version"),
@@ -404,6 +539,7 @@ pub(crate) fn render_main_menu_shell_to_target(
         state.main_menu_shell_state.pressed_owner_draw_button,
         state.main_menu_shell_state.hovered_owner_draw_button,
         &version_text,
+        title_window,
     );
     let text_draws = shell_paint::paint_labels(&state.bit_font, &labels);
 
@@ -441,13 +577,11 @@ pub(crate) fn render_main_menu_shell_to_target(
                 .create_instance_buffer(&state.gpu, &draw.instances)
         })
         .collect();
-    let modal_sprite_buffer = modal_overlay
-        .as_ref()
-        .and_then(|m| {
-            state
-                .batch_renderer
-                .create_instance_buffer(&state.gpu, &m.sprites)
-        });
+    let modal_sprite_buffer = modal_overlay.as_ref().and_then(|m| {
+        state
+            .batch_renderer
+            .create_instance_buffer(&state.gpu, &m.sprites)
+    });
     let modal_text_buffers: Vec<_> = modal_overlay
         .as_ref()
         .map(|m| {
@@ -488,7 +622,10 @@ pub(crate) fn render_main_menu_shell_to_target(
             .and_then(|white| {
                 let quad = [crate::render::batch::SpriteInstance {
                     position: [0.0, 0.0],
-                    size: [state.gpu.config.width as f32, state.gpu.config.height as f32],
+                    size: [
+                        state.gpu.config.width as f32,
+                        state.gpu.config.height as f32,
+                    ],
                     uv_origin: white.uv_origin,
                     uv_size: white.uv_size,
                     // Passthrough compares depth Always and this draws last, so any
@@ -498,7 +635,9 @@ pub(crate) fn render_main_menu_shell_to_target(
                     alpha: fade_alpha,
                     ..Default::default()
                 }];
-                state.batch_renderer.create_instance_buffer(&state.gpu, &quad)
+                state
+                    .batch_renderer
+                    .create_instance_buffer(&state.gpu, &quad)
             })
     } else {
         None
@@ -611,13 +750,18 @@ pub(crate) fn render_main_menu_shell_to_target(
     // Quit-cascade fade-to-black overlay, drawn LAST so it blackens everything
     // including the cursor (the original's palette fade affects the whole frame).
     if let (Some((buffer, count)), Some(sk_chrome)) = (fade_buffer.as_ref(), skirmish_chrome) {
-        state
-            .batch_renderer
-            .draw_with_buffer_passthrough(&mut pass, &sk_chrome.texture, buffer, *count);
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            &sk_chrome.texture,
+            buffer,
+            *count,
+        );
     }
     drop(pass);
 
-    Ok(MainMenuShellRenderResult::Rendered)
+    Ok(MainMenuShellRenderResult::Rendered {
+        title_receipt: None,
+    })
 }
 
 /// Back-to-front depths for the quit-confirm modal overlay. They sit in the clear
@@ -670,18 +814,21 @@ fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::Mod
             rect: layout.body,
             align: ShellAlign::NONE,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         },
         PaintLabel {
             text: &modal_state.confirm,
-            rect: modal_button_label_rect(layout.ok, ok_pressed),
+            rect: owner_draw_button_label_rect(layout.ok, ok_pressed),
             align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         },
         PaintLabel {
             text: &modal_state.cancel,
-            rect: modal_button_label_rect(layout.cancel, cancel_pressed),
+            rect: owner_draw_button_label_rect(layout.cancel, cancel_pressed),
             align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,
+            path_a_reveal: None,
         },
     ];
     Some(shell_paint::paint_modal_shp(
@@ -695,15 +842,11 @@ fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::Mod
     ))
 }
 
-/// Owner-draw button label rect with the MNBTTN press sink. Matches the skirmish
-/// validation modal's `button_text_rect`: unpressed `+0x/+1y/-2w/-1h`, pressed
-/// `+2x/+5y/-4w/-5h`.
-fn modal_button_label_rect(
-    rect: crate::ui::shell::geom::RectPx,
-    pressed: bool,
-) -> crate::ui::shell::geom::RectPx {
+/// Exact owner-draw button label clipping rectangle: unpressed
+/// `+0x/+1y/-2w/-1h`, pressed `+2x/+5y/-4w/-5h`.
+fn owner_draw_button_label_rect(rect: RectPx, pressed: bool) -> RectPx {
     let (dx, dy) = if pressed { (2, 5) } else { (0, 1) };
-    crate::ui::shell::geom::RectPx::new(
+    RectPx::new(
         rect.x + dx,
         rect.y + dy,
         (rect.w - 2 - dx).max(0),
@@ -715,9 +858,93 @@ fn modal_button_label_rect(
 mod tests {
     use super::*;
     use crate::ui::main_menu_shell::compute_layout;
+    use crate::ui::shell::slide::{PresentedPoll, ShellFrameWave};
+    use std::time::Duration;
 
-    // The pressed-sink and native-art geometry tests moved to
-    // `render::shell_paint` along with the geometry itself (Slice 3).
+    #[test]
+    fn options_and_exit_share_the_fifth_main_menu_entry_tick() {
+        let start = Instant::now();
+        let mut wave = ShellFrameWave::new_presented_main_menu(1);
+        assert!(wave.activate_after_acquire());
+        for tick in 0..6_u64 {
+            let frame = wave.current_main_menu_frame().expect("ready frame");
+            let token = wave.mint_present_token(frame).expect("matching token");
+            let accepted_at = start + Duration::from_millis(30 * tick);
+            wave.record_presented(token, accepted_at).expect("accept");
+            assert_eq!(
+                wave.poll_presented(accepted_at + Duration::from_millis(30)),
+                Some(PresentedPoll::Acquire)
+            );
+        }
+        let frame = wave.current_main_menu_frame().expect("tick 6");
+        let buttons = main_menu_paint_buttons(&compute_layout(800, 600), None, Some(frame));
+        assert_eq!(buttons[4].wave_frame, buttons[5].wave_frame);
+    }
+
+    #[test]
+    fn main_menu_entry_schedule_is_resource_keyed_not_vector_keyed() {
+        let mut layout = compute_layout(800, 600);
+        layout.buttons.reverse();
+        let mut wave = ShellFrameWave::new_presented_main_menu(2);
+        assert!(wave.activate_after_acquire());
+        let frame = wave.current_main_menu_frame().expect("tick 0");
+        let painted = main_menu_paint_buttons(&layout, None, Some(frame));
+        for (button, paint) in layout.buttons.iter().zip(painted.iter()) {
+            assert_eq!(
+                paint.wave_frame,
+                frame.sdbtnanm_frame(button.id.resource_id(), ButtonGroup::A)
+            );
+        }
+    }
+
+    #[test]
+    fn owner_draw_label_rect_matches_native_boundaries() {
+        let button = RectPx::new(644, 199, 156, 42);
+        assert_eq!(
+            owner_draw_button_label_rect(button, false),
+            RectPx::new(644, 200, 154, 41)
+        );
+        assert_eq!(
+            owner_draw_button_label_rect(button, true),
+            RectPx::new(646, 204, 152, 37)
+        );
+    }
+
+    #[test]
+    fn status_key_follows_immediate_hover_state() {
+        assert_eq!(main_menu_status_csf_key(None), None);
+        assert_eq!(
+            main_menu_status_csf_key(Some(MainMenuControlId::SinglePlayer0x683)),
+            Some("STT:MainButtonSinglePlayer")
+        );
+        assert_eq!(
+            main_menu_status_csf_key(Some(MainMenuControlId::ExitGame0x3ee)),
+            Some("STT:MainButtonExitGamemd")
+        );
+    }
+
+    #[test]
+    fn status_static_is_left_aligned_and_vertically_centered() {
+        assert_eq!(MAIN_MENU_STATUS_ALIGN, ShellAlign::V_CENTER);
+        assert!(!MAIN_MENU_STATUS_ALIGN.contains(ShellAlign::H_CENTER));
+    }
+
+    #[test]
+    fn terminal_title_metadata_is_content_agnostic_path_a() {
+        let reveal = main_menu_title_path_a(Kind1RevealWindow {
+            count: 17,
+            range: 8,
+        });
+        assert_eq!(
+            reveal,
+            PathAReveal {
+                count: 17,
+                range: 8,
+                base_rgb: [255, 255, 0],
+                highlight_rgb: [255, 255, 255],
+            }
+        );
+    }
 
     #[test]
     fn movie_instance_uses_layout_movie_rect() {
@@ -763,5 +990,89 @@ mod tests {
     fn parent_background_renders_behind_movie() {
         // Background depth must be greater (farther back) than the movie's.
         assert!(PARENT_BACKGROUND_DEPTH > MOVIE_DEPTH);
+    }
+
+    #[test]
+    fn changing_dialog_owner_restarts_ra2ts_even_when_asset_base_matches() {
+        assert!(!ra2ts_movie_session_is_reusable(
+            true,
+            Some(Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::MainMenu0xE2,
+                MainMenuMovieBase::Ra2tsL,
+            )),
+            Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::SinglePlayer0x100,
+                MainMenuMovieBase::Ra2tsL,
+            ),
+        ));
+        assert!(!ra2ts_movie_session_is_reusable(
+            true,
+            Some(Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::SinglePlayer0x100,
+                MainMenuMovieBase::Ra2tsL,
+            )),
+            Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::MainMenu0xE2,
+                MainMenuMovieBase::Ra2tsL,
+            ),
+        ));
+    }
+
+    #[test]
+    fn matching_owner_and_base_reuses_only_a_loaded_ra2ts_session() {
+        let identity = Ra2tsMovieSessionIdentity::new(
+            Ra2tsDialogOwner::MainMenu0xE2,
+            MainMenuMovieBase::Ra2tsL,
+        );
+        assert!(ra2ts_movie_session_is_reusable(
+            true,
+            Some(identity),
+            identity,
+        ));
+        assert!(!ra2ts_movie_session_is_reusable(
+            false,
+            Some(identity),
+            identity,
+        ));
+        assert!(!ra2ts_movie_session_is_reusable(
+            true,
+            Some(Ra2tsMovieSessionIdentity::new(
+                Ra2tsDialogOwner::MainMenu0xE2,
+                MainMenuMovieBase::Ra2tsS,
+            )),
+            identity,
+        ));
+    }
+
+    #[test]
+    fn cleared_identity_blocks_collapsed_dialog_round_trip_reuse() {
+        for owner in [
+            Ra2tsDialogOwner::MainMenu0xE2,
+            Ra2tsDialogOwner::SinglePlayer0x100,
+        ] {
+            let identity = Ra2tsMovieSessionIdentity::new(owner, MainMenuMovieBase::Ra2tsL);
+            let mut active_identity = Some(identity);
+            assert!(ra2ts_movie_session_is_reusable(
+                true,
+                active_identity,
+                identity,
+            ));
+
+            // The source dialog is destroyed and the destination never paints.
+            // Keep movie_loaded true deliberately to model a stale GPU surface.
+            active_identity = None;
+            assert!(!ra2ts_movie_session_is_reusable(
+                true,
+                active_identity,
+                identity,
+            ));
+
+            active_identity = Some(identity);
+            assert!(ra2ts_movie_session_is_reusable(
+                true,
+                active_identity,
+                identity,
+            ));
+        }
     }
 }

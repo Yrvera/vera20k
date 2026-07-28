@@ -333,7 +333,11 @@ mod tests {
         assert!(o.added >= 2, "wrapped into multiple rows");
         assert!(o.play_sound, "ONE sound for the top-level add");
         for row in l.messages() {
-            assert!(row.text.starts_with("P:"), "prefix re-included on wraps: {}", row.text);
+            assert!(
+                row.text.starts_with("P:"),
+                "prefix re-included on wraps: {}",
+                row.text
+            );
             assert!(mono(&row.text) <= 200 - MESSAGE_WIDTH_PAD_PX + 20);
         }
         // All input chars survive across the rows (minus break spaces).
@@ -391,9 +395,18 @@ mod tests {
         assert_eq!(clock.now(5000), 1000, "clock frozen mid-pause");
         clock.set_paused(false, 11000);
         assert_eq!(clock.now(11000), 1000, "10 s pause span subtracted");
-        assert!(!l.manage(clock.now(12000)), "wall 12000 → adjusted 2000: kept");
-        assert!(!l.manage(clock.now(14000)), "adjusted 4000 == deadline: kept (strict >)");
-        assert!(l.manage(clock.now(14001)), "adjusted 4001 > deadline: expired");
+        assert!(
+            !l.manage(clock.now(12000)),
+            "wall 12000 → adjusted 2000: kept"
+        );
+        assert!(
+            !l.manage(clock.now(14000)),
+            "adjusted 4000 == deadline: kept (strict >)"
+        );
+        assert!(
+            l.manage(clock.now(14001)),
+            "adjusted 4001 > deadline: expired"
+        );
     }
 
     #[test]

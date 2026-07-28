@@ -9,7 +9,9 @@
 //! Filename candidate generation lives in free functions below so render code can
 //! use convention helpers without re-mixing them into metadata resolution.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, VecDeque};
+
+use thiserror::Error;
 
 use crate::rules::flh::{Flh, parse_flh};
 use crate::rules::ini_parser::{IniFile, IniSection};
@@ -120,7 +122,7 @@ pub struct ArtEntry {
     pub pads: Vec<crate::rules::object_type::DockPad>,
     /// Pixel offsets where fire/smoke overlays appear when building health < ConditionYellow.
     /// Parsed from DamageFireOffset0=X,Y .. DamageFireOffset7=X,Y in art.ini. Max 8.
-    pub damage_fire_offsets: Vec<(i32, i32)>,
+    pub damage_fire_offsets: Vec<DamageFireOffset>,
     /// Building height in cell-height units (from `Height=` in art.ini).
     /// Used for health bar vertical positioning: Dimension2.Z = (fh + Height) * 256
     /// leptons, projected via CoordsToScreen as z_screen = (fh + Height) * 7.5 px.
@@ -143,6 +145,19 @@ pub struct ArtEntry {
     pub undeploy_frames: Option<u16>,
     /// Middle integer of `DeployedFire=<start>,<frames>,<rate>` in the sequence.
     pub deployed_fire_frames: Option<u16>,
+}
+
+/// One native building-damage-fire art offset.
+///
+/// The source pair remains available for z-adjust. The world delta is bound once
+/// during rules initialization so authoritative simulation never performs float
+/// coordinate conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DamageFireOffset {
+    pub pixel_x: i32,
+    pub pixel_y: i32,
+    pub world_dx: i32,
+    pub world_dy: i32,
 }
 
 /// Parse a sequence entry value of the form `<start>,<frames>,<rate>` and
@@ -182,6 +197,12 @@ pub struct AnimTypeRuntimeConfig {
     pub loop_start: i32,
     pub loop_end: i32,
     pub end: i32,
+    /// Whether `End=` was explicitly present. Explicit zero differs from omission.
+    pub explicit_end: Option<i32>,
+    /// Whether `LoopEnd=` was explicitly present.
+    pub explicit_loop_end: Option<i32>,
+    /// Signed SHP frame count read from header offset +6 during asset binding.
+    pub raw_shp_frame_count: Option<i32>,
     pub loop_count: i32,
     pub rate_logic_frames: u16,
     pub next: Option<String>,
@@ -201,6 +222,31 @@ pub struct AnimTypeRuntimeConfig {
     pub shadow: bool,
     pub ping_pong: bool,
     pub reverse: bool,
+    pub report: Option<String>,
+    pub start_sound: Option<String>,
+    pub stop_sound: Option<String>,
+}
+
+/// Failures while binding native AnimType metadata to retail SHP assets.
+#[derive(Debug, Error)]
+pub enum AnimAssetBindError {
+    #[error("damage-fire art contains an offset outside the verified native conversion domain")]
+    InvalidDamageFireOffset,
+    #[error("required animation type [{0}] is absent from merged art data")]
+    MissingAnimType(String),
+    #[error("required SHP for animation type [{0}] was not found")]
+    MissingShp(String),
+    #[error("animation SHP [{name}] has an invalid signed frame count {count}")]
+    InvalidFrameCount { name: String, count: i32 },
+    #[error(
+        "animation type [{name}] has invalid loaded {field} value {value} for {raw_count} frames"
+    )]
+    InvalidLoadedBound {
+        name: String,
+        field: &'static str,
+        value: i32,
+        raw_count: i32,
+    },
 }
 
 /// Display layer used by native object submission.
@@ -272,11 +318,16 @@ pub fn art_rate_to_delay_ms(ini_rate: i32) -> u32 {
 }
 
 fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
+    let explicit_end = section.get_i32("End");
+    let explicit_loop_end = section.get_i32("LoopEnd");
     AnimTypeRuntimeConfig {
         start: section.get_i32("Start").unwrap_or(0),
         loop_start: section.get_i32("LoopStart").unwrap_or(0),
-        loop_end: section.get_i32("LoopEnd").unwrap_or(0),
-        end: section.get_i32("End").unwrap_or(0),
+        loop_end: explicit_loop_end.unwrap_or(0),
+        end: explicit_end.unwrap_or(0),
+        explicit_end,
+        explicit_loop_end,
+        raw_shp_frame_count: None,
         loop_count: section.get_i32("LoopCount").unwrap_or(0),
         rate_logic_frames: section
             .get_i32("Rate")
@@ -299,6 +350,9 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
         shadow: section.get_bool("Shadow").unwrap_or(false),
         ping_pong: section.get_bool("PingPong").unwrap_or(false),
         reverse: section.get_bool("Reverse").unwrap_or(false),
+        report: parse_anim_ref(section, "Report"),
+        start_sound: parse_anim_ref(section, "StartSound"),
+        stop_sound: parse_anim_ref(section, "StopSound"),
     }
 }
 
@@ -363,6 +417,72 @@ pub struct ArtRegistry {
     rates_logic_frames: HashMap<String, u16>,
     /// section ID (uppercase) -> generic AnimType runtime metadata.
     anim_runtime_configs: HashMap<String, AnimTypeRuntimeConfig>,
+    /// Full deterministic Next/Trailer closure reachable from scheduler-owned roots.
+    scheduler_anim_types: BTreeSet<String>,
+    damage_fire_offsets_valid: bool,
+}
+
+fn validate_loaded_bound(
+    name: &str,
+    field: &'static str,
+    value: i32,
+    raw_count: i32,
+) -> Result<(), AnimAssetBindError> {
+    if value < -1 || value > raw_count {
+        return Err(AnimAssetBindError::InvalidLoadedBound {
+            name: name.to_string(),
+            field,
+            value,
+            raw_count,
+        });
+    }
+    Ok(())
+}
+
+fn resolve_loaded_bounds(
+    name: &str,
+    raw_count: i32,
+    shadow: bool,
+    explicit_end: Option<i32>,
+    explicit_loop_end: Option<i32>,
+) -> Result<(i32, i32), AnimAssetBindError> {
+    if raw_count <= 0 {
+        return Err(AnimAssetBindError::InvalidFrameCount {
+            name: name.to_string(),
+            count: raw_count,
+        });
+    }
+    let header_end = if shadow { raw_count / 2 } else { raw_count };
+    // Native copies the loader-derived End into LoopEnd before applying the
+    // explicit INI End and LoopEnd keys.
+    let loaded_end = explicit_end.unwrap_or(header_end);
+    let loaded_loop_end = explicit_loop_end.unwrap_or(header_end);
+    validate_loaded_bound(name, "End", loaded_end, raw_count)?;
+    validate_loaded_bound(name, "LoopEnd", loaded_loop_end, raw_count)?;
+    Ok((loaded_end, loaded_loop_end))
+}
+
+/// Verified `TacticalClass::IsometricPixelToWorld` transform for the initialized
+/// retail tactical matrix. Native evaluates the row in extended precision, stores
+/// one f32 result, then truncates toward zero in `Math::ftol`.
+fn damage_fire_world_delta(pixel_x: i32, pixel_y: i32) -> Option<(i32, i32)> {
+    const EXACT_F32_INTEGER_LIMIT: i32 = 1 << 24;
+    const ISO_PIXEL_TO_WORLD_A: f32 = f32::from_bits(0x4088_88CE);
+
+    let twice_y = pixel_y.checked_mul(2)?;
+    let native_x = pixel_x.checked_add(twice_y)?;
+    let native_y = pixel_x.checked_neg()?.checked_add(twice_y)?;
+    for value in [pixel_x, pixel_y, native_x, native_y] {
+        if value.unsigned_abs() > EXACT_F32_INTEGER_LIMIT as u32 {
+            return None;
+        }
+    }
+    let world_x = ISO_PIXEL_TO_WORLD_A * native_x as f32;
+    let world_y = ISO_PIXEL_TO_WORLD_A * native_y as f32;
+    if !world_x.is_finite() || !world_y.is_finite() {
+        return None;
+    }
+    Some((world_x.trunc() as i32, world_y.trunc() as i32))
 }
 
 /// Hardcoded filename prefixes that always receive `NewTheater` treatment
@@ -391,6 +511,7 @@ impl ArtRegistry {
         let mut rates_ms: HashMap<String, u16> = HashMap::new();
         let mut rates_logic_frames: HashMap<String, u16> = HashMap::new();
         let mut anim_runtime_configs: HashMap<String, AnimTypeRuntimeConfig> = HashMap::new();
+        let mut damage_fire_offsets_valid = true;
 
         for section_name in ini.section_names() {
             let section = match ini.section(section_name) {
@@ -525,17 +646,37 @@ impl ArtRegistry {
                     })
                 })
                 .collect();
-            let damage_fire_offsets: Vec<(i32, i32)> = {
+            let damage_fire_offsets: Vec<DamageFireOffset> = {
                 let mut offsets = Vec::new();
                 for i in 0..8 {
                     let key = format!("DamageFireOffset{}", i);
                     if let Some(val) = section.get(&key) {
                         let mut parts = val.split(',');
-                        if let (Some(x), Some(y)) = (
+                        let parsed = (
                             parts.next().and_then(|s| s.trim().parse::<i32>().ok()),
                             parts.next().and_then(|s| s.trim().parse::<i32>().ok()),
-                        ) {
-                            offsets.push((x, y));
+                        );
+                        if let (Some(x), Some(y)) = parsed {
+                            match damage_fire_world_delta(x, y) {
+                                Some((world_dx, world_dy)) => offsets.push(DamageFireOffset {
+                                    pixel_x: x,
+                                    pixel_y: y,
+                                    world_dx,
+                                    world_dy,
+                                }),
+                                None => {
+                                    damage_fire_offsets_valid = false;
+                                    offsets.push(DamageFireOffset {
+                                        pixel_x: x,
+                                        pixel_y: y,
+                                        world_dx: 0,
+                                        world_dy: 0,
+                                    });
+                                }
+                            }
+                        } else {
+                            damage_fire_offsets_valid = false;
+                            break;
                         }
                     } else {
                         break;
@@ -637,6 +778,8 @@ impl ArtRegistry {
             rates_ms,
             rates_logic_frames,
             anim_runtime_configs,
+            scheduler_anim_types: BTreeSet::new(),
+            damage_fire_offsets_valid,
         }
     }
 
@@ -649,6 +792,8 @@ impl ArtRegistry {
             rates_ms: HashMap::new(),
             rates_logic_frames: HashMap::new(),
             anim_runtime_configs: HashMap::new(),
+            scheduler_anim_types: BTreeSet::new(),
+            damage_fire_offsets_valid: true,
         }
     }
 
@@ -672,6 +817,101 @@ impl ArtRegistry {
     /// Generic native-like AnimType runtime metadata for an art section.
     pub fn anim_runtime_config(&self, image_id: &str) -> Option<&AnimTypeRuntimeConfig> {
         self.anim_runtime_configs.get(&image_id.to_uppercase())
+    }
+
+    /// Animation types whose complete raw SHP ranges must be available to the
+    /// scheduler-owned runtime.
+    pub fn scheduler_anim_types(&self) -> &BTreeSet<String> {
+        &self.scheduler_anim_types
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bind_anim_frame_count_for_test(&mut self, name: &str, raw_count: i32) {
+        let key = name.to_ascii_uppercase();
+        let config = self
+            .anim_runtime_configs
+            .get_mut(&key)
+            .expect("test animation section must exist");
+        let (loaded_end, loaded_loop_end) = resolve_loaded_bounds(
+            &key,
+            raw_count,
+            config.shadow,
+            config.explicit_end,
+            config.explicit_loop_end,
+        )
+        .expect("test animation bounds must be valid");
+        config.raw_shp_frame_count = Some(raw_count);
+        config.end = loaded_end;
+        config.loop_end = loaded_loop_end;
+        self.scheduler_anim_types.insert(key);
+    }
+
+    /// Bind native loader-derived End/LoopEnd values for the transitive
+    /// Next/Trailer closure rooted at the supplied animation names.
+    pub fn bind_scheduler_anim_assets(
+        &mut self,
+        roots: &[String],
+        asset_manager: &crate::assets::asset_manager::AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) -> Result<(), AnimAssetBindError> {
+        if !self.damage_fire_offsets_valid {
+            return Err(AnimAssetBindError::InvalidDamageFireOffset);
+        }
+
+        let mut pending: VecDeque<String> = roots
+            .iter()
+            .map(|name| name.trim().to_ascii_uppercase())
+            .filter(|name| !name.is_empty())
+            .collect();
+        let mut resolved = BTreeSet::new();
+
+        while let Some(name) = pending.pop_front() {
+            if !resolved.insert(name.clone()) {
+                continue;
+            }
+            let config = self
+                .anim_runtime_configs
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| AnimAssetBindError::MissingAnimType(name.clone()))?;
+            let image_id = self.resolve_effective_image_id(&name, &name);
+            let candidates =
+                anim_shp_candidates(Some(self), &name, &image_id, theater_ext, theater_name);
+            let data = candidates
+                .iter()
+                .find_map(|candidate| asset_manager.get_ref(candidate))
+                .ok_or_else(|| AnimAssetBindError::MissingShp(name.clone()))?;
+            let raw_count = data
+                .get(6..8)
+                .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as i32)
+                .unwrap_or(0);
+            let (loaded_end, loaded_loop_end) = resolve_loaded_bounds(
+                &name,
+                raw_count,
+                config.shadow,
+                config.explicit_end,
+                config.explicit_loop_end,
+            )?;
+
+            let bound = self
+                .anim_runtime_configs
+                .get_mut(&name)
+                .expect("configuration was resolved above");
+            bound.raw_shp_frame_count = Some(raw_count);
+            bound.end = loaded_end;
+            bound.loop_end = loaded_loop_end;
+
+            if let Some(next) = config.next {
+                pending.push_back(next);
+            }
+            if let Some(trailer) = config.trailer_anim {
+                pending.push_back(trailer);
+            }
+        }
+
+        self.scheduler_anim_types = resolved;
+        Ok(())
     }
 
     /// Hidden-occupancy gate from art.ini `CanHideThings=`.
@@ -1320,6 +1560,57 @@ mod anim_runtime_metadata_tests {
         assert_eq!(config.trailer_seperation, 0);
         assert_eq!(config.bounce_anim, None);
         assert_eq!(config.expire_anim, None);
+    }
+
+    #[test]
+    fn anim_bounds_preserve_omission_explicit_zero_and_negative_one() {
+        let ini = IniFile::from_str(
+            "[OMITTED]\n\
+             [ZERO]\nEnd=0\nLoopEnd=0\n\
+             [LAST]\nEnd=-1\nLoopEnd=-1\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+        let omitted = reg.anim_runtime_config("OMITTED").unwrap();
+        assert_eq!(omitted.explicit_end, None);
+        assert_eq!(omitted.explicit_loop_end, None);
+        let zero = reg.anim_runtime_config("ZERO").unwrap();
+        assert_eq!(zero.explicit_end, Some(0));
+        assert_eq!(zero.explicit_loop_end, Some(0));
+        let last = reg.anim_runtime_config("LAST").unwrap();
+        assert_eq!(last.explicit_end, Some(-1));
+        assert_eq!(last.explicit_loop_end, Some(-1));
+    }
+
+    #[test]
+    fn damage_fire_pixel_offsets_bind_verified_world_deltas() {
+        assert_eq!(damage_fire_world_delta(-24, -1), Some((-110, 93)));
+        assert_eq!(damage_fire_world_delta(64, 36), Some((580, 34)));
+        assert_eq!(damage_fire_world_delta(i32::MIN, 0), None);
+    }
+
+    #[test]
+    fn loaded_bounds_allow_native_sentinels_but_reject_out_of_range_values() {
+        assert!(validate_loaded_bound("FIRE", "End", -1, 30).is_ok());
+        assert!(validate_loaded_bound("FIRE", "End", 0, 30).is_ok());
+        assert!(validate_loaded_bound("FIRE", "End", 30, 30).is_ok());
+        assert!(validate_loaded_bound("FIRE", "End", -2, 30).is_err());
+        assert!(validate_loaded_bound("FIRE", "End", 31, 30).is_err());
+    }
+
+    #[test]
+    fn loaded_bounds_apply_shadow_before_explicit_native_overrides() {
+        assert_eq!(
+            resolve_loaded_bounds("FIRE", 64, true, None, None).unwrap(),
+            (32, 32),
+        );
+        assert_eq!(
+            resolve_loaded_bounds("FIRE", 64, true, Some(7), None).unwrap(),
+            (7, 32),
+        );
+        assert_eq!(
+            resolve_loaded_bounds("FIRE", 64, true, Some(0), Some(-1)).unwrap(),
+            (0, -1),
+        );
     }
 }
 

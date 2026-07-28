@@ -463,7 +463,10 @@ mod tests {
         for state in [0u8, 4, 8] {
             let (dx, dy) = policy.bridge_draw_offset(&view_with_state(state));
             assert_eq!(dx, 0, "NS family has no shadow X shift (state {state})");
-            assert_eq!(dy, BRIDGE_BODY_Y_OFFSET_STATE_0_TO_8 as i32, "state {state}");
+            assert_eq!(
+                dy, BRIDGE_BODY_Y_OFFSET_STATE_0_TO_8 as i32,
+                "state {state}"
+            );
         }
     }
 

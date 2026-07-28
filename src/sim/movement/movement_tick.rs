@@ -24,6 +24,7 @@ use crate::sim::components::{MovementTarget, NavTargetRef, Position};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::infantry;
+use crate::sim::lifecycle_request::{LifecycleRequest, UninitReason};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::cell_entry::{self, CellEntryResult, TerrainEntryMode};
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
@@ -460,21 +461,37 @@ fn process_pending_drive_arrivals(
         if entity.movement_target.is_some() || entity.drive_track.is_some() {
             continue;
         }
-        if entity.navigation.nav_queue.is_empty() {
+        // Process-entry rebuild: an owner destination that survived the
+        // end-of-track resolution (off-destination finish, or a queued
+        // waypoint advanced at arrival) gets a fresh path toward it here —
+        // the drive locomotor's no-track process-entry position. Entities
+        // deferred with a non-cell owner target fall back to the queue
+        // advance, then to the owner-null clear.
+        let (rx, ry) = if let Some(NavTargetRef::Cell { rx, ry }) = entity.navigation.nav_com {
+            (rx, ry)
+        } else if let Some(NavTargetRef::Cell { rx, ry }) =
+            entity.navigation.nav_queue.first().copied()
+        {
+            entity.navigation.nav_queue.remove(0);
+            (rx, ry)
+        } else {
             super::navcom::set_destination_internal_null(entity);
             continue;
-        }
-        let Some(NavTargetRef::Cell { rx, ry }) = entity.navigation.nav_queue.first().copied()
-        else {
-            continue;
         };
-        entity.navigation.nav_queue.remove(0);
         super::navcom::foot_stop_moving(entity);
         super::navcom::set_destination_internal_cell(entity, (rx, ry), resolved_terrain);
 
         let current = (entity.position.rx, entity.position.ry);
         let current_layer = entity.movement_layer_or_ground();
         let Some(loco) = entity.locomotor.as_ref() else {
+            // VERA-internal retry policy: `set_destination_internal_cell`
+            // above cleared the deferred flag, so bailing out here would
+            // strand a live owner destination with no path, no movement, and
+            // no retry — a permanent dead-end (callers gate on
+            // `nav_com.is_some()`). Re-arm the flag so the next tick retries.
+            // The gamemd fallback on a failed process-entry repath is
+            // UNCHECKED.
+            entity.navigation.pending_arrival_clear = true;
             continue;
         };
         let layered_pathing = supports_layered_bridge_pathing(loco, grid, entity.on_bridge);
@@ -512,13 +529,27 @@ fn process_pending_drive_arrivals(
                         | MovementZone::CrusherAll
                 ),
         ) else {
+            // VERA-internal retry policy: pathfinding failed, so re-arm the
+            // deferred flag (cleared by `set_destination_internal_cell`
+            // above) and retry next tick toward the surviving owner
+            // destination instead of stranding it as a permanent dead-end.
+            // The gamemd fallback on a failed process-entry repath is
+            // UNCHECKED.
+            entity.navigation.pending_arrival_clear = true;
             continue;
         };
         if path.len() < 2 {
+            // VERA-internal retry policy, same as the pathfinding-failure
+            // branch above; the gamemd equivalent is UNCHECKED.
+            entity.navigation.pending_arrival_clear = true;
             continue;
         }
         let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref)));
         let speed_multiplier = loco.speed_multiplier;
+        // Copy out (Copy type) before `loco`'s borrow of `entity` ends: only
+        // Drive-kind movers ride drive-track curve tables below — hover (and
+        // any other straight-line mover) must not pick one up on repath.
+        let loco_kind = loco.kind;
         let speed = (obj
             .map(|o| ra2_speed_to_leptons_per_second(o.speed))
             .unwrap_or(ra2_speed_to_leptons_per_second(4))
@@ -543,36 +574,43 @@ fn process_pending_drive_arrivals(
             final_goal: Some((rx, ry)),
             ..Default::default()
         };
-        if let Some(sel) =
-            super::drive_track::select_drive_track(entity.facing, facing_from_delta(dx, dy), false)
-        {
-            entity.drive_track = super::drive_track::begin_drive_track(
-                sel.raw_track_index,
-                sel.flags,
-                dx,
-                dy,
-                sel.target_facing,
-            );
-            if entity.drive_track.is_some() {
-                entity.facing_target = None;
-            }
-        } else if let Some(fb) = super::drive_track::build_sharp_turn_fallback(entity.facing) {
-            let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity.facing);
-            entity.drive_track = super::drive_track::begin_drive_track(
-                fb.raw_track_index,
-                fb.flags,
-                cdx,
-                cdy,
-                fb.target_facing,
-            );
-            if entity.drive_track.is_some() {
-                movement.next_index += 1;
-                let (move_dir_x, move_dir_y, move_dir_len) =
-                    crate::util::lepton::cell_delta_to_lepton_dir(cdx, cdy);
-                movement.move_dir_x = move_dir_x;
-                movement.move_dir_y = move_dir_y;
-                movement.move_dir_len = move_dir_len;
-                entity.facing_target = None;
+        if matches!(
+            loco_kind,
+            crate::rules::locomotor_type::LocomotorKind::Drive
+        ) {
+            if let Some(sel) = super::drive_track::select_drive_track(
+                entity.facing,
+                facing_from_delta(dx, dy),
+                false,
+            ) {
+                entity.drive_track = super::drive_track::begin_drive_track(
+                    sel.raw_track_index,
+                    sel.flags,
+                    dx,
+                    dy,
+                    sel.target_facing,
+                );
+                if entity.drive_track.is_some() {
+                    entity.facing_target = None;
+                }
+            } else if let Some(fb) = super::drive_track::build_sharp_turn_fallback(entity.facing) {
+                let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity.facing);
+                entity.drive_track = super::drive_track::begin_drive_track(
+                    fb.raw_track_index,
+                    fb.flags,
+                    cdx,
+                    cdy,
+                    fb.target_facing,
+                );
+                if entity.drive_track.is_some() {
+                    movement.next_index += 1;
+                    let (move_dir_x, move_dir_y, move_dir_len) =
+                        crate::util::lepton::cell_delta_to_lepton_dir(cdx, cdy);
+                    movement.move_dir_x = move_dir_x;
+                    movement.move_dir_y = move_dir_y;
+                    movement.move_dir_len = move_dir_len;
+                    entity.facing_target = None;
+                }
             }
         }
         entity.movement_target = Some(movement);
@@ -760,8 +798,16 @@ fn handle_deferred_drive_track_chain(
                 _ => Vec::new(),
             };
             for &victim_id in &victims {
-                if let Some(victim) = entities.get(victim_id) {
-                    occupancy.remove(victim.position.rx, victim.position.ry, victim_id);
+                if let Some((rx, ry)) = entities
+                    .get(victim_id)
+                    .map(|victim| (victim.position.rx, victim.position.ry))
+                {
+                    occupancy.remove(rx, ry, victim_id);
+                }
+                if let Some(victim) = entities.get_mut(victim_id) {
+                    // This forced-drive path shares the same UNCHECKED
+                    // pre-UnInit unmark timing as the ordinary crush path.
+                    victim.lifecycle.cell_marked = false;
                 }
             }
             crush_kills.extend(victims.into_iter().map(|victim_id| PendingCrushKill {
@@ -817,9 +863,9 @@ fn handle_deferred_drive_track_chain(
     true
 }
 
-pub fn tick_movement_with_grids(
+pub(crate) fn tick_movement_with_grids(
     entities: &mut EntityStore,
-    live_order: &[u64],
+    live_order: Option<&[u64]>,
     path_grid: Option<&PathGrid>,
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     alliances: &HouseAllianceMap,
@@ -828,6 +874,7 @@ pub fn tick_movement_with_grids(
     rng: &mut SimRng,
     tick_ms: u32,
     sim_tick: u64,
+    binary_frame: u32,
     zone_grid: Option<&ZoneGrid>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     terrain_speed_config: &TerrainSpeedConfig,
@@ -837,9 +884,15 @@ pub fn tick_movement_with_grids(
     interner: &mut crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
 ) -> MovementTickStats {
     let mut stats = MovementTickStats::default();
     if tick_ms == 0 {
+        return stats;
+    }
+    if live_order.is_some_and(|order| order.is_empty()) {
+        // An explicitly supplied empty LogicVector is authoritative. It is not
+        // the test-wrapper signal for deriving stable-id order from storage.
         return stats;
     }
     let blocker_neighbor_counts = path_grid.map(|grid| {
@@ -865,11 +918,12 @@ pub fn tick_movement_with_grids(
     };
     let dt: SimFixed = dt_from_tick_ms(tick_ms);
     let fallback_order;
-    let entity_order: &[u64] = if live_order.is_empty() {
-        fallback_order = entities.keys_sorted();
-        &fallback_order
-    } else {
-        live_order
+    let entity_order: &[u64] = match live_order {
+        Some(order) => order,
+        None => {
+            fallback_order = entities.keys_sorted();
+            &fallback_order
+        }
     };
     // Collect entities that have finished their paths (need movement_target removal after loop).
     let mut finished_entities: Vec<u64> = Vec::new();
@@ -976,6 +1030,9 @@ pub fn tick_movement_with_grids(
     }
 
     for entity_id in movers {
+        if contains_crush_victim(&crush_kills, entity_id) {
+            continue;
+        }
         stats.movers_total = stats.movers_total.saturating_add(1);
 
         // Snapshot mover data before entering the inner loop so we can release the
@@ -1090,24 +1147,45 @@ pub fn tick_movement_with_grids(
                 }
             }
 
-            // Vehicles rotate in place before moving (RA2 behavior).
-            // If facing_target is set and not yet reached, rotate toward it and
-            // skip lepton advancement this tick. ROT=0 means instant turn.
+            // Steering / rotation. Hover steers continuously toward the current
+            // waypoint (facing-lagged curves, turn-stall braking) and never
+            // stop-rotates; everything else keeps the rotate-in-place-then-move
+            // behavior. ROT=0 means instant turn in both models.
+            let uses_hover_locomotor = snap.locomotor.as_ref().is_some_and(|loco| {
+                matches!(
+                    loco.kind,
+                    crate::rules::locomotor_type::LocomotorKind::Hover
+                )
+            });
+            let mut hover_stall = false;
             if snap.category != EntityCategory::Infantry {
-                match movement_step::handle_vehicle_rotation(
-                    &mut entity.facing,
-                    &mut entity.facing_target,
-                    &mut entity.position,
-                    &mut entity.locomotor,
-                    snap.rot,
-                    tick_ms,
-                    sim_tick,
-                ) {
-                    movement_step::RotationResult::StillRotating { debug_events: evts } => {
-                        debug_events.extend(evts);
-                        continue;
+                if uses_hover_locomotor {
+                    hover_stall = movement_step::hover_steer(
+                        &mut entity.facing,
+                        &mut entity.facing_target,
+                        &mut entity.body_facing,
+                        &entity.position,
+                        target,
+                        snap.rot,
+                        binary_frame,
+                    );
+                } else {
+                    match movement_step::handle_vehicle_rotation(
+                        &mut entity.facing,
+                        &mut entity.facing_target,
+                        &mut entity.body_facing,
+                        &mut entity.position,
+                        &mut entity.locomotor,
+                        snap.rot,
+                        binary_frame,
+                        sim_tick,
+                    ) {
+                        movement_step::RotationResult::StillRotating { debug_events: evts } => {
+                            debug_events.extend(evts);
+                            continue;
+                        }
+                        movement_step::RotationResult::ReadyToMove => {}
                     }
-                    movement_step::RotationResult::ReadyToMove => {}
                 }
             }
 
@@ -1179,6 +1257,69 @@ pub fn tick_movement_with_grids(
                 } else {
                     target.current_speed = target.speed * cell_speed_mod;
                 }
+            } else if uses_hover_locomotor {
+                // Hover throttle (the hover locomotor's SpeedUpdate model, see
+                // sim/movement/hover.rs): a [0,1] fraction of base Speed ramped
+                // at the HoverAcceleration/HoverBrake minute rates. Request: 0
+                // while turning hard (steering above), 0.5 on arrival slow-in /
+                // departure slow-out (~1 cell of goal / path start), else 1.0.
+                // HoverBoost multiplies the request when the next two queued
+                // steps share a direction; the post-boost clamp to 1.0 makes it
+                // a cruise no-op. Throttle persists on the locomotor across
+                // repaths.
+                let goal = target.final_goal.unwrap_or_else(|| {
+                    target
+                        .path
+                        .last()
+                        .copied()
+                        .unwrap_or((entity.position.rx, entity.position.ry))
+                });
+                let dist_goal = distance_to_goal_leptons(&entity.position, goal);
+                let start = target.path.first().copied().unwrap_or(goal);
+                let dist_start = distance_to_goal_leptons(&entity.position, start);
+                // Straightaway when the step INTO the current waypoint and the
+                // step OUT of it share a direction (the two queued same-facing
+                // path entries of the boost condition).
+                let straightaway = if target.next_index + 1 < target.path.len() {
+                    let a = target.path[target.next_index];
+                    let b = target.path[target.next_index + 1];
+                    let dir_in = facing_from_delta(
+                        a.0 as i32 - entity.position.rx as i32,
+                        a.1 as i32 - entity.position.ry as i32,
+                    );
+                    let dir_out =
+                        facing_from_delta(b.0 as i32 - a.0 as i32, b.1 as i32 - a.1 as i32);
+                    dir_in == dir_out
+                } else {
+                    false
+                };
+                let (accel_min, brake_min, boost) = rules
+                    .map(|r| {
+                        (
+                            r.general.hover_acceleration,
+                            r.general.hover_brake,
+                            r.general.hover_boost,
+                        )
+                    })
+                    .unwrap_or((
+                        super::hover::HOVER_ACCELERATION_DEFAULT_MINUTES,
+                        super::hover::HOVER_BRAKE_DEFAULT_MINUTES,
+                        SimFixed::lit("1.5"),
+                    ));
+                let request = super::hover::hover_speed_request(hover_stall, dist_goal, dist_start);
+                let boost_mult = if straightaway { boost } else { SIM_ONE };
+                let throttle = snap
+                    .locomotor
+                    .as_ref()
+                    .map(|l| l.hover_throttle)
+                    .unwrap_or(SIM_ONE);
+                let new_throttle = super::hover::hover_tick_throttle(
+                    throttle, request, boost_mult, accel_min, brake_min,
+                );
+                if let Some(ref mut loco) = entity.locomotor {
+                    loco.hover_throttle = new_throttle;
+                }
+                target.current_speed = target.speed * new_throttle;
             } else if target.accel_factor > SIM_ZERO || target.decel_factor > SIM_ZERO {
                 let goal = target.final_goal.unwrap_or_else(|| {
                     target
@@ -1233,6 +1374,12 @@ pub fn tick_movement_with_grids(
             };
             if let Some(crawls) = prone_crawls {
                 effective_speed = infantry::apply_prone_speed(effective_speed, crawls);
+            }
+            // Hover turn-stall: hold position while the body swings through a
+            // >45° turn (the throttle keeps braking above). See hover_steer's
+            // doc for why translation is suppressed rather than decayed.
+            if hover_stall {
+                effective_speed = SIM_ZERO;
             }
 
             // Advance sub_x/sub_y toward the next cell — either via drive track
@@ -1647,8 +1794,10 @@ pub fn tick_movement_with_grids(
 
     sync_formation_speeds(entities);
 
-    // Apply deferred crush kills (instant death, then remove from EntityStore).
-    // Occupancy entries were already removed in handle_deferred_occupancy.
+    // Apply the immediate crush effects, then hand teardown to the lifecycle
+    // authority. Occupancy entries were already removed in
+    // handle_deferred_occupancy; that early timing remains UNCHECKED until the
+    // unified per-object scheduler owns the whole locomotor/PerCellProcess pass.
     crush_kills.sort_by_key(|kill| (kill.victim_id, kill.crusher_id));
     crush_kills.dedup_by_key(|kill| kill.victim_id);
     for kill in &crush_kills {
@@ -1670,14 +1819,92 @@ pub fn tick_movement_with_grids(
             if let Some(victim) = entities.get_mut(victim_id) {
                 victim.health.current = 0;
             }
-            entities.clear_radio_contacts_for(victim_id);
-            entities.remove(victim_id);
+            lifecycle_requests.push(LifecycleRequest::Uninit {
+                stable_id: victim_id,
+                reason: UninitReason::Crush,
+            });
             stats.crush_kills = stats.crush_kills.saturating_add(1);
         }
     }
 
-    finalize_finished_entities(entities, &finished_entities, sim_tick);
-    update_locomotor_phases(entities, sim_tick);
+    finalize_finished_entities(
+        entities,
+        &finished_entities,
+        &crush_kills,
+        sim_tick,
+        resolved_terrain,
+    );
+    update_locomotor_phases(entities, &crush_kills, sim_tick);
+
+    // Hover vertical controller — every hover unit, moving OR parked (idle
+    // units still float at cruise height and bob). Runs after the XY stage so
+    // the per-tick order matches the original locomotor (step, then vertical).
+    let (vh_height, vh_bob, vh_dampen, vh_gravity) = rules
+        .map(|r| {
+            (
+                r.general.hover_height,
+                r.general.hover_bob,
+                r.general.hover_dampen,
+                r.general.gravity,
+            )
+        })
+        .unwrap_or((
+            120,
+            SimFixed::from_num(0.04),
+            SimFixed::from_num(0.4),
+            3, // engine code default; stock [AudioVisual] overrides to 6
+        ));
+    for &entity_id in entity_order {
+        if contains_crush_victim(&crush_kills, entity_id) {
+            continue;
+        }
+        let Some(entity) = entities.get_mut(entity_id) else {
+            continue;
+        };
+        let is_hover = entity
+            .locomotor
+            .as_ref()
+            .is_some_and(|l| matches!(l.kind, crate::rules::locomotor_type::LocomotorKind::Hover));
+        if !is_hover || !entity.is_active() {
+            continue;
+        }
+        let moving = entity.movement_target.is_some();
+        // Climbing: the next path cell's ground is higher than the current
+        // cell's — the height deficit is measured against the uphill slope.
+        let climbing = moving
+            && path_grid.is_some_and(|pg| {
+                entity.movement_target.as_ref().is_some_and(|t| {
+                    t.path.get(t.next_index).is_some_and(|&(nx, ny)| {
+                        match (
+                            pg.cell(nx, ny),
+                            pg.cell(entity.position.rx, entity.position.ry),
+                        ) {
+                            (Some(next), Some(cur)) => next.ground_level > cur.ground_level,
+                            _ => false,
+                        }
+                    })
+                })
+            });
+        if let Some(ref mut loco) = entity.locomotor {
+            // Powered: locomotor EMP/power shutdown is not modeled yet, so
+            // hover units are always lifted; the unpowered-sink branch is
+            // exercised by unit tests until an EMP system exists.
+            let (new_height, new_offset) = super::hover::hover_vertical_tick(
+                loco.altitude,
+                loco.hover_bob_offset,
+                binary_frame,
+                moving,
+                climbing,
+                true,
+                vh_height,
+                vh_bob,
+                vh_dampen,
+                vh_gravity,
+            );
+            loco.altitude = new_height;
+            loco.hover_bob_offset = new_offset;
+        }
+    }
 
     stats
 }
@@ -1726,15 +1953,29 @@ fn sync_formation_speeds(entities: &mut EntityStore) {
 
 /// Remove movement targets from finished entities, reset sub-cell to final
 /// position, and transition locomotor to Idle.
-fn finalize_finished_entities(entities: &mut EntityStore, finished: &[u64], sim_tick: u64) {
+fn contains_crush_victim(crush_kills: &[PendingCrushKill], stable_id: u64) -> bool {
+    // The mover loop consults this before the deferred kill list is sorted.
+    // Preserve native live-order visibility with a linear membership check;
+    // post-loop sorting remains only for deterministic request emission.
+    crush_kills.iter().any(|kill| kill.victim_id == stable_id)
+}
+
+fn finalize_finished_entities(
+    entities: &mut EntityStore,
+    finished: &[u64],
+    crush_kills: &[PendingCrushKill],
+    sim_tick: u64,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+) {
     for &entity_id in finished {
+        if contains_crush_victim(crush_kills, entity_id) {
+            continue;
+        }
         if let Some(entity) = entities.get_mut(entity_id) {
-            if !super::navcom::defer_drive_arrival_clear(entity) {
-                super::navcom::set_destination_internal_null(entity);
-                entity.navigation.nav_queue.clear();
-            }
+            super::navcom::finish_drive_navigation(entity, resolved_terrain);
             entity.movement_target = None;
             entity.drive_track = None; // clear any active drive track curve
+            entity.body_facing = None; // steering/turn interpolator ends with the move
             // Snap sub-cell leptons to final position. Use the locomotor's
             // subcell_dest if available (set during cell entry), otherwise fall
             // back to computing from sub_cell index. Vehicles snap to center.
@@ -1751,6 +1992,9 @@ fn finalize_finished_entities(entities: &mut EntityStore, finished: &[u64], sim_
                 loco.phase = GroundMovePhase::Idle;
                 loco.infantry_wobble_phase = 0.0;
                 loco.subcell_dest = None;
+                // Full stop zeroes the hover throttle (the hover locomotor's
+                // arrival cleanup) so the next order spins up from rest.
+                loco.hover_throttle = crate::util::fixed_math::SIM_ZERO;
             }
             if let Some(old) = old_phase {
                 if old != GroundMovePhase::Idle {
@@ -1770,9 +2014,16 @@ fn finalize_finished_entities(entities: &mut EntityStore, finished: &[u64], sim_
 
 /// Update locomotor phases for all active movers — 7-state mapping.
 /// Maps the current movement state to the appropriate WalkLocomotionClass state.
-fn update_locomotor_phases(entities: &mut EntityStore, sim_tick: u64) {
+fn update_locomotor_phases(
+    entities: &mut EntityStore,
+    crush_kills: &[PendingCrushKill],
+    sim_tick: u64,
+) {
     let all_keys = entities.keys_sorted();
     for &id in &all_keys {
+        if contains_crush_victim(crush_kills, id) {
+            continue;
+        }
         if let Some(entity) = entities.get_mut(id) {
             // Compute new phase and capture old phase in a scoped block to release
             // borrows before calling push_debug_event.
@@ -1917,7 +2168,10 @@ mod drive_track_chain_tests {
             &interner,
             None,
         );
-        assert!(rebuilt, "stale snapshot must rebuild when generation advances");
+        assert!(
+            rebuilt,
+            "stale snapshot must rebuild when generation advances"
+        );
         assert!(
             !sets[&owner].1.contains_key(MovementLayer::Ground, &(5, 5)),
             "old cell freed"
@@ -1998,10 +2252,14 @@ mod drive_track_chain_tests {
         let mut entities = EntityStore::new();
         let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
         mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        mover.lifecycle.in_limbo = false;
+        mover.lifecycle.cell_marked = true;
         entities.insert(mover);
 
         let mut blocker = GameEntity::test_default(2, "MTNK", "Americans", 11, 10);
         blocker.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        blocker.lifecycle.in_limbo = false;
+        blocker.lifecycle.cell_marked = true;
         if blocker_moving {
             blocker.movement_target = Some(MovementTarget::default());
         }
@@ -2080,11 +2338,15 @@ mod drive_track_chain_tests {
         let mut entities = EntityStore::new();
         let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
         mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        mover.lifecycle.in_limbo = false;
+        mover.lifecycle.cell_marked = true;
         entities.insert(mover);
 
         let mut gate = GameEntity::test_default(100, "GAGATE_A", "Americans", 11, 10);
         gate.category = EntityCategory::Structure;
         gate.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
+        gate.lifecycle.in_limbo = false;
+        gate.lifecycle.cell_marked = true;
         entities.insert(gate);
 
         let occupancy = OccupancyGrid::rebuild(&entities);
@@ -2132,5 +2394,58 @@ mod drive_track_chain_tests {
         assert!(installed);
         assert!(entities.get(1).unwrap().drive_track.is_some());
         assert_eq!(stats.scatter_successes, 0);
+    }
+
+    #[test]
+    fn drive_track_crush_clears_cell_mark_before_lifecycle_handoff() {
+        let mut entities = EntityStore::new();
+        let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
+        mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        mover.lifecycle.in_limbo = false;
+        mover.lifecycle.cell_marked = true;
+        entities.insert(mover);
+
+        let mut victim = GameEntity::test_default(2, "E1", "Soviets", 11, 10);
+        victim.category = EntityCategory::Infantry;
+        victim.crushable = true;
+        victim.lifecycle.in_limbo = false;
+        victim.lifecycle.cell_marked = true;
+        entities.insert(victim);
+
+        let mut occupancy = OccupancyGrid::rebuild(&entities);
+        let mut snap = drive_snapshot();
+        snap.regular_crusher = true;
+        let live_building_entry_skips = BTreeMap::new();
+        let alliances = HouseAllianceMap::new();
+        let interner = test_interner();
+        let mut rng = SimRng::new(0);
+        let mut stats = MovementTickStats::default();
+        let mut crush_kills = Vec::new();
+        let mut already_scattered = BTreeSet::new();
+
+        let installed = handle_deferred_drive_track_chain(
+            &mut entities,
+            1,
+            &snap,
+            chain_to_east_cell(),
+            None,
+            None,
+            None,
+            &mut occupancy,
+            &live_building_entry_skips,
+            &alliances,
+            &interner,
+            None,
+            &mut rng,
+            &mut stats,
+            &mut crush_kills,
+            &mut already_scattered,
+        );
+
+        assert!(installed);
+        assert_eq!(crush_kills.len(), 1);
+        assert_eq!(crush_kills[0].victim_id, 2);
+        assert!(!entities.get(2).unwrap().lifecycle.cell_marked);
+        assert!(!occupancy.contains_entity(11, 10, 2));
     }
 }

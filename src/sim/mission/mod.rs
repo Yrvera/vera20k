@@ -1,20 +1,30 @@
-//! Mission scheduler substrate — vocabulary + components.
+//! Mission scheduler substrate — vocabulary, native-width state, and authority.
 //!
-//! Models the original engine's mission *contract* as a Rust-native service (a
-//! single current-mission selector + frame-anchored dispatch timer + verb API),
-//! not its C++ class tree. `timer` owns the deferral primitive; `control` owns
-//! the per-mission INI table; the verbs and dispatch land in later slices.
-//! Depends on `rules/` (the control table parses from an `IniFile`); `sim/`
-//! only — never render/ui/sidebar/audio/net.
+//! Models the original engine's mission contract as Rust-native state and
+//! functions rather than reproducing its C++ class tree. `state` owns the
+//! lossless selectors and private common fields, `timer` owns both legacy and
+//! signed dispatch timing, and `authority` owns the LIVE exact verb surface:
+//! player commands queue through it (the event-execute shape) and the
+//! per-object AI host promotes queued missions (Ready→Commence). The mission
+//! handler bodies remain the legacy per-system state machines — dispatch-time
+//! handler execution (timer/handler-state writes) is the recorded residual.
+//! Depends on `rules/` for the INI control table and otherwise remains in
+//! `sim/` — never render/ui/sidebar/audio/net.
 
+pub(crate) mod authority;
+pub(crate) mod concrete_effects;
 pub mod control;
-pub mod dispatch;
+pub(crate) mod leaf;
+pub(crate) mod readiness;
 pub mod retask;
+pub mod state;
 pub mod timer;
 pub mod verb;
 pub use control::{MissionControl, MissionControlEntry};
+pub(crate) use leaf::MissionLeafState;
 pub use retask::DockTeardown;
-pub use timer::MissionTimer;
+pub use state::{MissionCom, MissionId};
+pub use timer::{MissionDispatchTimer, MissionTimer};
 
 /// Number of dispatched mission ids (0..=31). The `None` sentinel is outside
 /// this range and is never iterated by [`MissionType::all`].
@@ -24,8 +34,17 @@ pub const MISSION_COUNT: usize = 32;
 /// id; `None = 0xFF` is the idle sentinel. `repr(u16)` so the discriminant folds
 /// stably into the state hash in later slices.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default,
-    serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[repr(u16)]
 pub enum MissionType {
@@ -171,42 +190,6 @@ impl MissionType {
     /// Iterate all 32 dispatched missions in id order (table builds, round-trip).
     pub fn all() -> impl Iterator<Item = MissionType> {
         (0u8..MISSION_COUNT as u8).filter_map(MissionType::from_id)
-    }
-}
-
-/// Shadow mission component: the single current-mission selector plus the
-/// queued/suspended interrupt stack, a sub-phase byte, the dispatch deferral
-/// timer, and a per-entity refresh counter.
-///
-/// Canonical hashed lockstep state (Slice 8): folded into `world_hash` and fully
-/// serde round-tripped — load trusts it verbatim (no post-load re-derivation).
-/// `current`/`substate` are written by the tail projection for most units and,
-/// as of S2, at host/dispatch time for scoped move units (where the dispatch-time
-/// value is authoritative — e.g. an arrival tick hashes `Move`). The verb API
-/// owns `queued`/`suspended`/`timer`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
-)]
-pub struct MissionCom {
-    /// The committed current mission (`MissionType::None` = idle).
-    pub current: MissionType,
-    /// A queued follow-up to commence after the current mission, if any.
-    pub queued: Option<MissionType>,
-    /// A suspended mission to restore after an interrupt (override/restore stack).
-    pub suspended: Option<MissionType>,
-    /// Sub-phase byte within the current mission (attack sub-state, dock phase, …).
-    pub substate: u8,
-    /// Frame-anchored dispatch deferral.
-    pub timer: MissionTimer,
-    /// Monotonic per-entity refresh counter (wrapping).
-    pub tick_counter: u32,
-}
-
-impl MissionCom {
-    /// The idle component: no current mission, empty stack, default timer.
-    #[inline]
-    pub fn idle() -> Self {
-        Self::default()
     }
 }
 

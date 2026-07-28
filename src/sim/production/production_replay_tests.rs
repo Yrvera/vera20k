@@ -31,7 +31,7 @@
 use std::collections::BTreeMap;
 
 use super::tests::{build_catalog_rules, spawn_structure};
-use super::{queue_view_for_owner, BuildQueueState, ProductionCategory};
+use super::{BuildQueueState, ProductionCategory, queue_view_for_owner};
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{Command, CommandEnvelope, QueueMode};
@@ -58,8 +58,10 @@ fn scenario() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
     let owners = [("Americans", 0u8, 10u16), ("Alliance", 1u8, 30u16)];
     for (i, (owner, side, base_x)) in owners.iter().enumerate() {
         let oid = sim.interner.intern(owner);
-        sim.houses
-            .insert(oid, HouseState::new(oid, *side, None, true, START_CREDITS, 10));
+        sim.houses.insert(
+            oid,
+            HouseState::new(oid, *side, None, true, START_CREDITS, 10),
+        );
         let sid = (i as u64) * 10 + 1;
         spawn_structure(&mut sim, sid, owner, "GACNST", *base_x, 10);
         spawn_structure(&mut sim, sid + 1, owner, "GAPILE", *base_x + 2, 10);
@@ -211,7 +213,11 @@ fn derived_view_state_stays_building_on_underfunded_stall() {
         f.on_hold = true; // underfunded stall: not paused, not complete
     }
     let view = queue_view_for_owner(&sim, &rules, "Americans");
-    assert_eq!(view.len(), 1, "the single armed build projects to one view item");
+    assert_eq!(
+        view.len(),
+        1,
+        "the single armed build projects to one view item"
+    );
     assert_eq!(
         view[0].state,
         BuildQueueState::Building,
@@ -275,10 +281,7 @@ fn economy_conservation_over_replay() {
     let (am, al, _, _) = ids(&sim);
     let pending = refund_free_stream(&sim);
 
-    let initial: i64 = [am, al]
-        .iter()
-        .map(|o| sim.houses[o].credits as i64)
-        .sum();
+    let initial: i64 = [am, al].iter().map(|o| sim.houses[o].credits as i64).sum();
 
     let mut pending = pending;
     let mut any_spent = false;
@@ -367,8 +370,10 @@ fn economy_conservation_through_cancel_refund() {
         .map(|o| o.cost.max(0))
         .expect("MTNK has a cost") as i64;
 
-    let mut prev: BTreeMap<InternedId, i32> =
-        [am, al].iter().map(|&o| (o, sim.houses[&o].credits)).collect();
+    let mut prev: BTreeMap<InternedId, i32> = [am, al]
+        .iter()
+        .map(|&o| (o, sim.houses[&o].credits))
+        .collect();
     let mut cumulative_refunded: i64 = 0;
 
     for _ in 0..TICKS {
@@ -452,11 +457,12 @@ fn revalidate_abandons_build_with_no_factory_and_drops_queued() {
     sim.production
         .factory_shadow
         .enqueue(am, ProductionCategory::Vehicle, mtnk, 2, 100, 900);
-    assert!(sim
-        .production
-        .factory_shadow
-        .view(am, ProductionCategory::Vehicle)
-        .is_some());
+    assert!(
+        sim.production
+            .factory_shadow
+            .view(am, ProductionCategory::Vehicle)
+            .is_some()
+    );
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     sim.advance_tick(&[], Some(&rules), &heights, None, None, TICK_MS);
     assert!(
@@ -509,7 +515,10 @@ fn revalidate_abandons_active_on_factory_loss_partial_refund() {
         );
         f.original_balance - f.balance
     };
-    assert!(spent > 0 && spent < 900, "some but not all of the cost is charged");
+    assert!(
+        spent > 0 && spent < 900,
+        "some but not all of the cost is charged"
+    );
 
     // Destroy the war factory. In scenario() Americans' GAWEAP is stable_id 3.
     let gaweap = sim.interner.intern("GAWEAP");
@@ -564,6 +573,9 @@ fn revalidate_keeps_buildable_build_untouched() {
         .factory_shadow
         .view(am, ProductionCategory::Vehicle)
         .expect("buildable MTNK is still building, not abandoned");
-    assert!(view.object.is_some(), "a buildable build is never abandoned by revalidation");
+    assert!(
+        view.object.is_some(),
+        "a buildable build is never abandoned by revalidation"
+    );
     assert!(view.progress > 0, "and keeps progressing");
 }

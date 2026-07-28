@@ -114,9 +114,9 @@ fn build_sim() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
 fn spawn_engineer(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("ENGI");
-    let id = sim.substrate.next_stable_entity_id;
-    sim.substrate.next_stable_entity_id += 1;
-    let e = GameEntity::new(
+    let id = sim.substrate.next_stable_object_id;
+    sim.substrate.next_stable_object_id += 1;
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -134,15 +134,16 @@ fn spawn_engineer(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
         false,
     );
     sim.substrate.entities.insert(e);
+    assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
     id
 }
 
 fn spawn_seal(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("GHOST");
-    let id = sim.substrate.next_stable_entity_id;
-    sim.substrate.next_stable_entity_id += 1;
-    let e = GameEntity::new(
+    let id = sim.substrate.next_stable_object_id;
+    sim.substrate.next_stable_object_id += 1;
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -160,15 +161,16 @@ fn spawn_seal(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
         false,
     );
     sim.substrate.entities.insert(e);
+    assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
     id
 }
 
 fn spawn_cabhut(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let owner = sim.interner.intern("Soviets");
     let ty = sim.interner.intern("CABHUT");
-    let id = sim.substrate.next_stable_entity_id;
-    sim.substrate.next_stable_entity_id += 1;
-    let e = GameEntity::new(
+    let id = sim.substrate.next_stable_object_id;
+    sim.substrate.next_stable_object_id += 1;
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -186,6 +188,7 @@ fn spawn_cabhut(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
         false,
     );
     sim.substrate.entities.insert(e);
+    assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
     id
 }
 
@@ -490,7 +493,8 @@ fn advance_until_c4_claim(
     for _ in 0..32 {
         step(sim, rules, heights);
         if let Some(pending) = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(target_id)
             .and_then(|b| b.pending_c4_detonation)
         {
@@ -507,7 +511,11 @@ fn engineer_enters_cabhut_repairs_bridge() {
     // arrival branch should repair the nearby bridge strip.
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let engineer = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer)
+        .unwrap()
+        .capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
 
     let result = step(&mut sim, &rules, &heights);
@@ -522,13 +530,12 @@ fn engineer_enters_cabhut_repairs_bridge() {
     );
 
     let bs = sim.bridge_state.as_ref().unwrap();
-    for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
+    for (&(rx, ry), expected_overlay) in ENGINEER_REPAIR_STRIP_CELLS.iter().zip([0xCE, 0xCE, 0xCE])
+    {
         let cell = bs.cell(rx, ry).unwrap();
         assert_eq!(
-            cell.overlay_byte, 0xCD,
-            "cell ({rx},{ry}) overlay={:#04X} must repair to base+0 (variant 0) on a \
-             fixed map — mapgen_rng is zero-state, so the repaired tile is the base, \
-             never a random base+1..3",
+            cell.overlay_byte, expected_overlay,
+            "cell ({rx},{ry}) overlay={:#04X} must follow fresh Seed(0) MapGen variants",
             cell.overlay_byte
         );
         assert!(
@@ -550,7 +557,11 @@ fn engineer_at_intact_cabhut_emits_sound_no_mutation() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let engineer = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer)
+        .unwrap()
+        .capture_target = Some(cabhut);
     seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
 
     let result = step(&mut sim, &rules, &heights);
@@ -577,8 +588,16 @@ fn consecutive_engineers_second_bridge_repair_waits_for_next_tick() {
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let engineer_a = spawn_engineer(&mut sim, 9, 10);
     let engineer_b = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate.entities.get_mut(engineer_a).unwrap().capture_target = Some(cabhut);
-    sim.substrate.entities.get_mut(engineer_b).unwrap().capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer_a)
+        .unwrap()
+        .capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer_b)
+        .unwrap()
+        .capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
 
     step(&mut sim, &rules, &heights);
@@ -633,8 +652,16 @@ fn nonconsecutive_engineers_both_repair_same_tick_with_radar_eva_gate() {
     let engineer_a = spawn_engineer(&mut sim, 9, 10);
     let blocker = spawn_seal(&mut sim, 8, 8);
     let engineer_b = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate.entities.get_mut(engineer_a).unwrap().capture_target = Some(cabhut);
-    sim.substrate.entities.get_mut(engineer_b).unwrap().capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer_a)
+        .unwrap()
+        .capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer_b)
+        .unwrap()
+        .capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
 
     step(&mut sim, &rules, &heights);
@@ -682,7 +709,10 @@ fn capture_building_command_accepts_noncapturable_bridge_repair_hut() {
 
     assert!(accepted);
     assert_eq!(
-        sim.substrate.entities.get(engineer).and_then(|e| e.capture_target),
+        sim.substrate
+            .entities
+            .get(engineer)
+            .and_then(|e| e.capture_target),
         Some(cabhut)
     );
 }
@@ -692,7 +722,11 @@ fn engineer_adjacent_to_cabhut_enters_before_repairing_and_dirtying_minimap() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 8, 10);
     let engineer = spawn_engineer(&mut sim, 7, 10);
-    sim.substrate.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer)
+        .unwrap()
+        .capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
 
     let result = step(&mut sim, &rules, &heights);
@@ -714,7 +748,8 @@ fn engineer_adjacent_to_cabhut_enters_before_repairing_and_dirtying_minimap() {
     );
     assert_eq!(sim.radar_terrain_dirty_generation, 0);
     assert_eq!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(engineer)
             .and_then(|e| e.movement_target.as_ref())
             .map(|m| m.path.clone()),
@@ -761,7 +796,11 @@ fn engineer_far_from_bridge_at_cabhut_no_mutation() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let engineer = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer)
+        .unwrap()
+        .capture_target = Some(cabhut);
     // Empty bridge state — scan finds nothing.
     sim.bridge_state = Some(BridgeRuntimeState::default());
 
@@ -797,16 +836,18 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let cabhut_max_hp = sim.substrate.entities.get(cabhut).unwrap().health.current;
     let seal = spawn_seal(&mut sim, 10, 10); // Chebyshev-1 adjacent
-    sim.substrate.entities.get_mut(seal).unwrap().c4_plant = Some(crate::sim::components::C4PlantState {
-        target_building_id: cabhut,
-    });
+    sim.substrate.entities.get_mut(seal).unwrap().c4_plant =
+        Some(crate::sim::components::C4PlantState {
+            target_building_id: cabhut,
+        });
     seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
 
     // First tick: adjacency only issues the one-cell enter move. It must not
     // claim the marker until the SEAL's current cell resolves to the CABHUT.
     step(&mut sim, &rules, &heights);
     assert!(
-        sim.substrate.entities
+        sim.substrate
+            .entities
             .get(cabhut)
             .and_then(|b| b.pending_c4_detonation)
             .is_none(),
@@ -834,7 +875,8 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
     // After detonation: hut alive, bridge segment Destroyed,
     // bridge_state_changed propagated at least once.
     let hut = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(cabhut)
         .expect("hut entity must survive the explosion");
     assert_eq!(
@@ -894,7 +936,11 @@ fn c4_on_cabhut_without_bridge_clears_pending_marker() {
     let seal = spawn_seal(&mut sim, 10, 10);
     let cabhut_max_hp = sim.substrate.entities.get(cabhut).unwrap().health.current;
     sim.bridge_state = Some(BridgeRuntimeState::default());
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -924,11 +970,19 @@ fn c4_on_invulnerable_cabhut_still_dispatches_bridge_and_clears_pending() {
     let seal = spawn_seal(&mut sim, 10, 10);
     let cabhut_max_hp = sim.substrate.entities.get(cabhut).unwrap().health.current;
     seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
-    sim.substrate.entities.get_mut(cabhut).unwrap().invulnerability = Some(InvulnerabilityState {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .invulnerability = Some(InvulnerabilityState {
         start_frame: sim.session.tick as u32,
         duration_frames: rules.c4_delay_ticks + 20,
         kind: InvulnKind::IronCurtain,
@@ -963,7 +1017,11 @@ fn c4_on_cabhut_bridgehead_fallback_collapses_bridge() {
     let seal = spawn_seal(&mut sim, 9, 10);
     let hut_hp = sim.substrate.entities.get(cabhut).unwrap().health.current;
     seed_hut_fallback_bridgehead_layout(&mut sim);
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -988,7 +1046,11 @@ fn c4_on_cabhut_pure_bridgehead_fallback_uses_opposite_anchor_offset() {
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let seal = spawn_seal(&mut sim, 9, 10);
     seed_hut_pure_bridgehead_fallback_layout(&mut sim);
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -1020,7 +1082,11 @@ fn c4_on_cabhut_fallback_rejects_anchor_or_direction_flags_alone() {
         .unwrap();
     starter.bridge_facts.raw_flags = BRIDGE_FLAG_ANCHOR_SELF | BRIDGE_FLAG_DIRECTION_ZERO;
     starter.bridge_facts.anchor = None;
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -1044,7 +1110,11 @@ fn stock_high_cabhut_no_overlay_fallback_collapses_bridge() {
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let seal = spawn_seal(&mut sim, 9, 10);
     seed_stock_high_cabhut_no_overlay_fallback_fixture(&mut sim);
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -1069,7 +1139,11 @@ fn stock_low_cabhut_no_overlay_fallback_collapses_bridge() {
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let seal = spawn_seal(&mut sim, 9, 10);
     seed_stock_low_cabhut_no_overlay_fallback_fixture(&mut sim);
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -1094,7 +1168,11 @@ fn stock_cabhut_no_overlay_without_starter_is_noop() {
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let seal = spawn_seal(&mut sim, 9, 10);
     seed_stock_no_starter_cabhut_no_overlay_fixture(&mut sim);
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -1120,7 +1198,11 @@ fn c4_on_cabhut_low_overlay_collapses_low_bridge() {
     let seal = spawn_seal(&mut sim, 10, 10);
     let hut_hp = sim.substrate.entities.get(cabhut).unwrap().health.current;
     seed_low_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -1152,7 +1234,11 @@ fn c4_on_cabhut_low_terminal_overlay_0x65_uses_overlay_first_scan() {
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let seal = spawn_seal(&mut sim, 10, 10);
     seed_terminal_overlay_with_fallback_trap(&mut sim, 0x65);
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -1180,7 +1266,11 @@ fn c4_on_cabhut_high_terminal_overlay_0xe8_uses_overlay_first_scan() {
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let seal = spawn_seal(&mut sim, 10, 10);
     seed_terminal_overlay_with_fallback_trap(&mut sim, 0xE8);
-    sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+    sim.substrate
+        .entities
+        .get_mut(cabhut)
+        .unwrap()
+        .pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
@@ -1375,7 +1465,11 @@ fn g4_repair_clears_damaged_variant_on_repaired_cells() {
     sim.resolved_terrain = Some(damaged_data_resolved_terrain(42));
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let engineer = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer)
+        .unwrap()
+        .capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
     // Pre-flag every bridge cell as damaged-variant.
     {
@@ -1402,7 +1496,11 @@ fn g4_repair_flood_fill_propagates_clear_to_same_tile_id_bridge_neighbor() {
     sim.resolved_terrain = Some(damaged_data_resolved_terrain(42));
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let engineer = spawn_engineer(&mut sim, 9, 10);
-    sim.substrate.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+    sim.substrate
+        .entities
+        .get_mut(engineer)
+        .unwrap()
+        .capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
 
     // Add an off-span bridge cell at (10, 14): same tile_id as BRIDGE_CELLS,
@@ -1675,16 +1773,13 @@ fn ramp_fire_collapses_high_bridgehead_on_ion_retry() {
 // `seed_bridge_with_state`, `BRIDGE_CELLS`, `ENGINEER_REPAIR_STRIP_CELLS`, and
 // `cells_in_5x5_scan` (the exact scan the trigger builds).
 
-/// TEST A — engineer repair draws ONLY the mapgen stream, and with mapgen in
-/// its default zero-state the variant is 0 (base overlay 0xCD on every repaired
-/// strip cell). Proves acceptance (2) no gameplay RNG consumed + (3) the draw
-/// lands on mapgen_rng (zero case).
+/// Engineer repair draws only MapGen and follows fresh native Seed(0) variants.
 #[test]
-fn repair_draws_only_mapgen_zero_state_yields_variant_zero() {
+fn bridge_repair_ns_high_destroyed_anchor_consumes_mapgen_only() {
     let (mut sim, _rules, _heights) = build_sim();
     seed_destroyed_bridge(&mut sim); // all BRIDGE_CELLS overlay 0xE7 (NS-High destroyed)
 
-    // mapgen_rng is left in its constructed zero-state (SimRng::zeroed()).
+    // Fresh Simulation construction installs the native Seed(0) MapGen state.
     let scenario_before = sim.scenario_rng.state();
     let main_before = sim.main_rng.state();
     let mapgen_before = sim.mapgen_rng.state();
@@ -1717,21 +1812,27 @@ fn repair_draws_only_mapgen_zero_state_yields_variant_zero() {
         "bridge repair must NOT advance the main stream"
     );
 
-    // (3) The mapgen stream MUST advance — even a zero-state draw bumps the
-    // index counters, so state() changes (assert_ne!), while every drawn VALUE
-    // is 0, which we verify via the resulting overlay byte (base + 0), never via
-    // state() equality.
+    // The MapGen object advances while both per-game streams remain unchanged.
     assert_ne!(
         sim.mapgen_rng.state(),
         mapgen_before,
-        "bridge repair must draw the mapgen stream (index advances even on zero-state)"
+        "bridge repair must draw the MapGen stream"
+    );
+    let mut expected_mapgen = crate::sim::rng::SimRng::new(0);
+    let first_variant = expected_mapgen.next_range_u32_inclusive_scaled(0, 3);
+    assert_eq!(first_variant, 1);
+    assert_eq!(
+        sim.mapgen_rng.state(),
+        expected_mapgen.state(),
+        "this one-strip fixture must consume exactly one scaled MapGen draw"
     );
     let bs = sim.bridge_state.as_ref().unwrap();
-    for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
+    for (&(rx, ry), expected_overlay) in ENGINEER_REPAIR_STRIP_CELLS.iter().zip([0xCE, 0xCE, 0xCE])
+    {
         assert_eq!(
             bs.cell(rx, ry).unwrap().overlay_byte,
-            0xCD,
-            "zero-state mapgen ⇒ variant 0 ⇒ overlay == NS-High base 0xCD at ({rx},{ry})"
+            expected_overlay,
+            "fresh Seed(0) MapGen variant mismatch at ({rx},{ry})"
         );
     }
 }
@@ -1828,7 +1929,11 @@ fn two_identical_sims_repair_with_identical_hash_and_streams() {
         let (mut sim, rules, heights) = build_sim();
         let cabhut = spawn_cabhut(&mut sim, 9, 10);
         let engineer = spawn_engineer(&mut sim, 9, 10);
-        sim.substrate.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+        sim.substrate
+            .entities
+            .get_mut(engineer)
+            .unwrap()
+            .capture_target = Some(cabhut);
         seed_destroyed_bridge(&mut sim);
         (sim, rules, heights)
     }

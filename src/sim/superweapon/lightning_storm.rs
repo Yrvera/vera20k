@@ -414,7 +414,11 @@ mod tests {
 
         spawn_bolt(&mut sim, &rules, 5, 5, owner);
 
-        let building = sim.substrate.entities.get(10).expect("building remains in sim");
+        let building = sim
+            .substrate
+            .entities
+            .get(10)
+            .expect("building remains in sim");
         assert_eq!(building.health.current, 50);
         assert!(building.building_damage_state_active);
     }

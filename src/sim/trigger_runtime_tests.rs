@@ -46,7 +46,7 @@ fn spawn_type(sim: &mut Simulation, type_id: &str) {
     let sid = sim.allocate_stable_id();
     let owner_id = sim.interner.intern("Neutral");
     let type_id_interned = sim.interner.intern(type_id);
-    let ge = GameEntity::new(
+    let ge = GameEntity::new_at_frame_zero_for_test(
         sid,
         0,
         0,

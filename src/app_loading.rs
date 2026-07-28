@@ -6,14 +6,28 @@
 
 use crate::app::AppState;
 use crate::app_init::{self, MapLoadInitial, MapLoadResult};
+use crate::app_loading_composition::{
+    LoadingCompositionSnapshot, LoadingParticipantId, LoadingStartAssignment,
+    build_loading_composition,
+};
+use crate::app_loading_progress_row::{
+    LoadingProgressRowLayout, LoadingProgressRowSnapshot, layout_standard_skirmish_progress_row,
+};
 use crate::assets::asset_manager::AssetManager;
+use crate::assets::pal_file::Color;
+use crate::match_bootstrap::{LoadingStartup, PreparedMatchStartup};
 use crate::render::batch::{BatchRenderer, SpriteInstance};
+use crate::render::bit_font::BitFont;
 use crate::render::gpu::GpuContext;
 use crate::render::loading_screen_chrome::{
-    LoadingArtVariant, LoadingScreenAtlas, LoadingScreenEntry, LoadingScreenWidth,
+    LoadingArtVariant, LoadingScreenAtlas, LoadingScreenCompositionAtlasInput, LoadingScreenEntry,
+    LoadingScreenWidth, MmpbMarkerRemap, PreparedLoadingPreviewRgba,
+    build_loading_screen_atlas_with_composition,
 };
+use crate::render::shell_text::{ScissorRect, ShellAlign, ShellTextDraw, TextRect, draw_in_rect};
 use crate::rules::color_scheme::{
-    ColorSchemeEntry, hsv_to_rgb, scheme_entry_for_priority, scheme_hsv_by_entry,
+    ColorSchemeEntry, hsv_to_rgb, scheme_entry_by_name, scheme_entry_for_priority,
+    scheme_hsv_by_entry,
 };
 use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
 use crate::skirmish_launch::{LaunchCountry, SkirmishLaunchSession};
@@ -26,33 +40,24 @@ const PROGRESS_PERCENT_SCALE: f64 = 0.01;
 const PERCENT_DISPLAY_SCALE: f64 = 100.0;
 const FTOL_EPSILON: f64 = 0.000_001;
 const BACKGROUND_DEPTH: f32 = 0.90;
+const PREVIEW_DEPTH: f32 = 0.80;
+const MARKER_DEPTH: f32 = 0.70;
+const TEXT_BACKING_DEPTH: f32 = 0.60;
+const TEXT_DEPTH: f32 = 0.50;
+const TEXT_BACKING_ALPHA: f32 = 159.0 / 255.0;
+const TEXT_BACKING_PADDING: f32 = 2.0;
 /// Solid backing fill (G3) sits just behind the bar so the bar draws over it.
 const SOLID_FILL_DEPTH: f32 = 0.20;
-/// Player-ramp shade index (0 brightest, 15 darkest). The filled bar uses the
-/// brightest shade of the player's `[Colors]` ramp; the backing comes from the
-/// scheme HSV (see `NativeLoadingScreenState::backing_rgb`). The filled-bar
-/// palette remap is still a follow-up.
-const BAR_FILL_RAMP_SHADE: usize = 0;
-/// Static loading-bar colors used only when rules `[Colors]` are unavailable
+/// Static loading colors used only when rules `[Colors]` are unavailable
 /// (missing assets / headless); replaced by `resolve_player_colors` once rules
-/// load. Backing is darker than the bar so the empty track stays visible.
+/// load.
 const FALLBACK_BACKING_RGB: [f32; 3] = [0.22, 0.22, 0.22];
-const FALLBACK_BAR_RGB: [f32; 3] = [0.55, 0.55, 0.55];
+const FALLBACK_PROGRESS_RAMP: [Color; 16] = [Color::rgb(180, 180, 180); 16];
 const PROGRESS_DEPTH: f32 = 0.10;
 /// Side icon (G4) draws above the background, at the bar's depth.
 const SIDE_ICON_DEPTH: f32 = 0.10;
-
-/// Bar helper offset (+5) plus inset (+3) from the row origin x.
-/// Verified gamemd `0x00643720` + `0x00643400`.
-const BAR_X_HELPER_INSET: f32 = 5.0 + 3.0;
-/// Inset (+3) added to the vertically-centered bar y.
-const BAR_Y_INSET: f32 = 3.0;
-/// Padding added when computing the row height (`row_h = max(...) + 4`).
-const ROW_PADDING: f32 = 4.0;
-/// Vertical slack added to the bar height for the centering band (`H + 6`).
-const BAR_HEIGHT_BAND: f32 = 6.0;
-/// Horizontal gap between the bar's right edge and the side icon (`0x15`).
-const SIDE_ICON_GAP: f32 = 0x15 as f32;
+/// Row label follows the bar and country insignia.
+const ROW_LABEL_DEPTH: f32 = 0.05;
 
 /// Effective selected-map standard offline Skirmish milestones after first LS draw.
 ///
@@ -124,13 +129,50 @@ impl LoadingProgressState {
     }
 }
 
-/// Receives a native loading milestone (0..=100) at a real load-phase boundary.
+/// Receives a raw native loading milestone at a real load-phase boundary.
 ///
 /// Implementors apply the monotonic gate (via [`LoadingProgressState::advance_progress`])
 /// and may synchronously repaint the loading screen on an advancing milestone,
-/// mirroring gamemd's per-milestone synchronous `WM_PAINT`.
+/// mirroring gamemd's per-milestone synchronous hidden-to-primary blit.
+/// Selected maps use raw values through 100; random-map seed loads halve raw
+/// values and finish at raw 200.
 pub(crate) trait LoadingProgressSink {
     fn milestone(&mut self, percent: u32);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeLoadingProgressCadence {
+    SelectedMap,
+    RandomMapHalved,
+}
+
+impl NativeLoadingProgressCadence {
+    fn for_selected_map_file(selected_map_file: &str) -> Self {
+        if crate::map::rmg::is_seed_selection(selected_map_file) {
+            Self::RandomMapHalved
+        } else {
+            Self::SelectedMap
+        }
+    }
+
+    fn effective_percent(self, raw_percent: u32) -> u32 {
+        match self {
+            Self::SelectedMap => raw_percent,
+            // Native integer division truncates raw random-map milestones.
+            Self::RandomMapHalved => raw_percent / 2,
+        }
+    }
+
+    fn terminal_raw_percent(self) -> u32 {
+        match self {
+            Self::SelectedMap => 100,
+            Self::RandomMapHalved => 200,
+        }
+    }
+
+    fn uses_prepared_selected_map_composition(self) -> bool {
+        matches!(self, Self::SelectedMap)
+    }
 }
 
 /// A sink that only advances the gated progress state, with no repaint. Used at
@@ -138,11 +180,13 @@ pub(crate) trait LoadingProgressSink {
 /// the base behavior shared by all sinks.
 struct GatedProgressSink<'a> {
     progress: &'a mut LoadingProgressState,
+    cadence: NativeLoadingProgressCadence,
 }
 
 impl LoadingProgressSink for GatedProgressSink<'_> {
-    fn milestone(&mut self, percent: u32) {
-        self.progress.advance_progress(percent);
+    fn milestone(&mut self, raw_percent: u32) {
+        self.progress
+            .advance_progress(self.cadence.effective_percent(raw_percent));
     }
 }
 
@@ -153,23 +197,36 @@ impl LoadingProgressSink for NoopProgressSink {
     fn milestone(&mut self, _percent: u32) {}
 }
 
-#[derive(Clone)]
 pub(crate) struct LoadingRequest {
-    selected_map_file: String,
-    launch: LoadingLaunch,
+    /// `None` is an internal terminal-transfer marker only. Every live request
+    /// owns exactly one explicit startup variant.
+    startup: Option<LoadingStartup>,
     presentation: LoadingPresentation,
     fallback_skirmish_settings: SkirmishSettings,
 }
 
 impl LoadingRequest {
-    pub(crate) fn native_selected_skirmish(
-        selected_map_file: String,
-        skirmish_launch_session: SkirmishLaunchSession,
+    pub(crate) fn accepted_skirmish(
+        startup: PreparedMatchStartup,
         fallback_skirmish_settings: SkirmishSettings,
     ) -> Self {
         Self {
-            selected_map_file,
-            launch: LoadingLaunch::Skirmish(skirmish_launch_session),
+            startup: Some(LoadingStartup::Accepted(startup)),
+            presentation: LoadingPresentation::NativeSelectedSkirmish,
+            fallback_skirmish_settings,
+        }
+    }
+
+    pub(crate) fn unverified_legacy_skirmish(
+        skirmish_launch_session: SkirmishLaunchSession,
+        seed: crate::match_bootstrap::MatchSeed,
+        fallback_skirmish_settings: SkirmishSettings,
+    ) -> Self {
+        Self {
+            startup: Some(LoadingStartup::UnverifiedLegacy {
+                session: skirmish_launch_session,
+                seed,
+            }),
             presentation: LoadingPresentation::NativeSelectedSkirmish,
             fallback_skirmish_settings,
         }
@@ -180,29 +237,33 @@ impl LoadingRequest {
         fallback_skirmish_settings: SkirmishSettings,
     ) -> Self {
         Self {
-            selected_map_file: selected_map_file.into(),
-            launch: LoadingLaunch::Generic,
+            startup: Some(LoadingStartup::Generic {
+                selected_map_file: selected_map_file.into(),
+            }),
             presentation: LoadingPresentation::GenericMapLoad,
             fallback_skirmish_settings,
         }
     }
 
     pub(crate) fn selected_map_file(&self) -> &str {
-        &self.selected_map_file
+        self.startup().selected_map_file()
     }
 
     fn skirmish_launch_session(&self) -> Option<&SkirmishLaunchSession> {
-        match &self.launch {
-            LoadingLaunch::Skirmish(session) => Some(session),
-            LoadingLaunch::Generic => None,
-        }
+        self.startup().launch_session()
     }
-}
 
-#[derive(Clone)]
-pub(crate) enum LoadingLaunch {
-    Skirmish(SkirmishLaunchSession),
-    Generic,
+    fn startup(&self) -> &LoadingStartup {
+        self.startup
+            .as_ref()
+            .expect("live loading request must retain startup authority")
+    }
+
+    fn take_startup(&mut self) -> LoadingStartup {
+        self.startup
+            .take()
+            .expect("terminal loading phase transfers startup authority once")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +274,7 @@ pub(crate) enum LoadingPresentation {
 
 pub(crate) struct NativeLoadingScreenState {
     pub variant: LoadingArtVariant,
+    local_side_index: u8,
     /// Local player's MP color scheme — source of the G3 solid backing fill and
     /// bar remap. Derived from the launch session, not the country variant.
     pub color_index: HouseColorIndex,
@@ -220,38 +282,71 @@ pub(crate) struct NativeLoadingScreenState {
     /// `[Colors]` scheme HSV. Falls back to a static shade when `[Colors]` is
     /// unavailable (e.g. assets missing).
     pub backing_rgb: [f32; 3],
-    /// Filled-bar color (normalized RGB) = shade 0 of the player's `[Colors]`
-    /// ramp. Resolved alongside `backing_rgb`; static fallback otherwise.
-    pub bar_rgb: [f32; 3],
+    /// GAME.FNT loading-copy color from the named AlliedLoad/SovietLoad scheme.
+    pub text_rgb: [f32; 3],
+    /// Full `[Colors]` band copied into PROGBARM palette indices 16..31 when
+    /// the session-local loading atlas is decoded.
+    pub progress_ramp: [Color; 16],
     pub progress: LoadingProgressState,
+    pub progress_row: LoadingProgressRowSnapshot,
     pub atlas: Option<LoadingScreenAtlas>,
+    pub composition: Option<LoadingCompositionSnapshot>,
     pub first_renderer_ready: bool,
+    /// Native constructs two runtime ColorScheme objects per current `[Colors]`
+    /// entry. Capture that pre-load count before the later rules reset.
+    runtime_color_scheme_count: usize,
+    progress_cadence: NativeLoadingProgressCadence,
 }
 
 impl NativeLoadingScreenState {
-    fn standard_skirmish(variant: LoadingArtVariant, color_index: HouseColorIndex) -> Self {
+    fn standard_skirmish(
+        variant: LoadingArtVariant,
+        local_side_index: u8,
+        color_index: HouseColorIndex,
+        progress_row: LoadingProgressRowSnapshot,
+        progress_cadence: NativeLoadingProgressCadence,
+    ) -> Self {
         Self {
             variant,
+            local_side_index,
             color_index,
             // Static placeholders; replaced by `resolve_player_colors` once rules load.
             backing_rgb: FALLBACK_BACKING_RGB,
-            bar_rgb: FALLBACK_BAR_RGB,
+            text_rgb: [1.0, 1.0, 1.0],
+            progress_ramp: FALLBACK_PROGRESS_RAMP,
             progress: LoadingProgressState::standard_skirmish(),
+            progress_row,
             atlas: None,
+            composition: None,
             first_renderer_ready: false,
+            runtime_color_scheme_count: 0,
+            progress_cadence,
         }
     }
 
-    /// Resolve the backing fill + bar color from the rules `[Colors]` data. The
+    /// Resolve the backing fill + progress ramp from the rules `[Colors]` data. The
     /// player's `color_index` is a `[Colors]` entry index: the backing is that
-    /// entry's HSV→RGB, the bar is shade 0 of that entry's ramp. Leaves the static
+    /// entry's HSV→RGB, and PROGBARM uses all 16 shades of that entry's ramp. Leaves the static
     /// fallbacks in place when the color list is empty/unmatched.
     fn resolve_player_colors(&mut self, schemes: &[ColorSchemeEntry], ramps: &HouseColorRamps) {
+        self.runtime_color_scheme_count = schemes.len() * 2;
         let entry = self.color_index.0 as usize;
         if let Some(hsv) = scheme_hsv_by_entry(schemes, entry) {
             self.backing_rgb = normalize_rgb(hsv_to_rgb(hsv));
         }
-        self.bar_rgb = player_scheme_bar_rgb(self.color_index, ramps);
+        let text_scheme = if self.local_side_index == 0 {
+            "AlliedLoad"
+        } else {
+            "SovietLoad"
+        };
+        if let Some(entry) = scheme_entry_by_name(schemes, text_scheme)
+            && let Some(hsv) = scheme_hsv_by_entry(schemes, entry)
+        {
+            self.text_rgb = normalize_rgb(hsv_to_rgb(hsv));
+        } else {
+            log::warn!("Missing loading text color scheme {text_scheme}; using white");
+        }
+        self.progress_ramp = *ramps.ramp(self.color_index);
     }
 }
 
@@ -264,26 +359,29 @@ pub(crate) struct LoadingSession {
 
 impl LoadingSession {
     fn from_request(request: LoadingRequest) -> Self {
-        let native = match (&request.presentation, &request.launch) {
-            (
-                LoadingPresentation::NativeSelectedSkirmish,
-                LoadingLaunch::Skirmish(skirmish_launch_session),
-            ) => {
+        let native = match (&request.presentation, request.skirmish_launch_session()) {
+            (LoadingPresentation::NativeSelectedSkirmish, Some(skirmish_launch_session)) => {
                 let variant =
                     loading_art_variant_from_launch_country(skirmish_launch_session.local.country);
                 // `local.color_index` is the gamemd color priority; resolve to a
                 // `[Colors]` entry index (priority LUT + /2).
-                let color_index = HouseColorIndex(
-                    scheme_entry_for_priority(skirmish_launch_session.local.color_index as i32) as u8,
+                let color_index = HouseColorIndex(scheme_entry_for_priority(
+                    skirmish_launch_session.local.color_index as i32,
+                ) as u8);
+                let progress_cadence = NativeLoadingProgressCadence::for_selected_map_file(
+                    request.selected_map_file(),
                 );
                 Some(NativeLoadingScreenState::standard_skirmish(
                     variant,
+                    skirmish_launch_session.local.country.side_index(),
                     color_index,
+                    LoadingProgressRowSnapshot::from_launch_session(skirmish_launch_session),
+                    progress_cadence,
                 ))
             }
-            (LoadingPresentation::GenericMapLoad, LoadingLaunch::Generic) => None,
-            (LoadingPresentation::NativeSelectedSkirmish, LoadingLaunch::Generic)
-            | (LoadingPresentation::GenericMapLoad, LoadingLaunch::Skirmish(_)) => {
+            (LoadingPresentation::GenericMapLoad, None) => None,
+            (LoadingPresentation::NativeSelectedSkirmish, None)
+            | (LoadingPresentation::GenericMapLoad, Some(_)) => {
                 debug_assert!(
                     false,
                     "LoadingRequest constructor created mismatched launch/presentation modes"
@@ -334,6 +432,16 @@ impl LoadingJob {
 }
 
 pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
+    let next_active = request
+        .startup()
+        .accepted()
+        .map(|startup| startup.correlation);
+    replace_match_startup_slots(
+        &mut state.active_loading_correlation,
+        &mut state.loaded_startup,
+        &mut state.rust_l0_receipt,
+        next_active,
+    );
     clear_loading_state(state);
     let mut session = LoadingSession::from_request(request);
     // Resolve the backing fill from the live rules `[Colors]` schemes now that
@@ -356,6 +464,28 @@ pub(crate) fn clear_loading_state(state: &mut AppState) {
     state.loading_session = None;
     state.loading_screen_atlas = None;
     state.loading_progress = LoadingProgressState::standard_skirmish();
+}
+
+/// Close any prior/in-flight match startup without resetting the process-wide
+/// monotonically increasing correlation allocator.
+pub(crate) fn clear_match_startup_state(state: &mut AppState) {
+    replace_match_startup_slots(
+        &mut state.active_loading_correlation,
+        &mut state.loaded_startup,
+        &mut state.rust_l0_receipt,
+        None,
+    );
+}
+
+fn replace_match_startup_slots(
+    active: &mut Option<crate::match_bootstrap::MatchCorrelationId>,
+    loaded: &mut Option<crate::match_bootstrap::PreparedMatchStartup>,
+    receipt: &mut Option<crate::match_bootstrap::RustL0Receipt>,
+    next_active: Option<crate::match_bootstrap::MatchCorrelationId>,
+) {
+    *active = next_active;
+    *loaded = None;
+    *receipt = None;
 }
 
 pub(crate) fn is_native_loading_session(state: &AppState) -> bool {
@@ -388,8 +518,10 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                 Ok((ra2_dir, asset_manager)) => match session.native.as_mut() {
                     // The map-parse milestone (8) is emitted inside the loader.
                     Some(native) => {
+                        let cadence = native.progress_cadence;
                         let mut sink = GatedProgressSink {
                             progress: &mut native.progress,
+                            cadence,
                         };
                         app_init::load_map_initial_with_assets(
                             ra2_dir,
@@ -421,56 +553,92 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     "loading job had no initial map state"
                 ));
             };
+            let native_theater_cache_mismatch = theater_cache_mismatch(
+                state.loaded_map_source.is_some(),
+                &state.theater_name,
+                initial.theater_name(),
+            );
             // All mid-load milestones (12..98) are emitted inside the loader; the
             // pump emits the terminal 100 once the result is ready. For the native
             // case we drive a RenderingProgressSink that synchronously repaints the
             // loading screen on each advancing milestone (gamemd's per-milestone
-            // WM_PAINT), so the bar visibly sweeps instead of snapping once.
+            // hidden-to-primary blit), so the bar visibly sweeps instead of
+            // snapping once.
             //
             // Pre-copy the by-value pieces before borrowing so the disjoint
             // split-borrows (gpu/depth_view/batch shared, vxl_compute &mut,
             // native.progress &mut, native.atlas shared, request shared) all
             // hold simultaneously.
             let render_width = state.gpu.config.width;
+            if let Some(native) = session.native.as_mut()
+                && native
+                    .progress_cadence
+                    .uses_prepared_selected_map_composition()
+            {
+                advance_and_present_native_progress(
+                    &state.gpu,
+                    &state.depth_view,
+                    &state.batch_renderer,
+                    &state.bit_font,
+                    native,
+                    8,
+                    render_width,
+                );
+            }
             // `session.native` and `session.request` are disjoint fields, so the
             // launch-session/settings borrows below coexist with the native split.
+            let startup = session.request.take_startup();
             let load_result = match session.native.as_mut() {
                 // Only repaint when the atlas is present; without it the bar
                 // cannot draw, so fall back to the gate-only sink.
                 Some(native) if native.atlas.is_some() => {
-                    let bar_rgb = native.bar_rgb;
                     let backing_rgb = native.backing_rgb;
+                    let text_rgb = native.text_rgb;
+                    let cadence = native.progress_cadence;
+                    let runtime_color_scheme_count = native.runtime_color_scheme_count;
                     let atlas = native.atlas.as_ref().expect("atlas present checked above");
+                    let composition = native.composition.as_ref();
                     let mut sink = RenderingProgressSink {
                         gpu: &state.gpu,
                         depth_view: &state.depth_view,
                         batch: &state.batch_renderer,
+                        font: &state.bit_font,
                         progress: &mut native.progress,
+                        progress_row: &native.progress_row,
                         atlas,
-                        bar_rgb,
+                        composition,
                         backing_rgb,
+                        text_rgb,
                         render_width,
+                        cadence,
                     };
                     app_init::load_map_from_initial(
                         &state.gpu,
                         &state.batch_renderer,
                         initial,
-                        session.request.skirmish_launch_session(),
+                        startup,
                         &session.request.fallback_skirmish_settings,
+                        native_theater_cache_mismatch,
+                        runtime_color_scheme_count,
                         state.vxl_compute.as_mut(),
                         &mut sink,
                     )
                 }
                 Some(native) => {
+                    let cadence = native.progress_cadence;
+                    let runtime_color_scheme_count = native.runtime_color_scheme_count;
                     let mut sink = GatedProgressSink {
                         progress: &mut native.progress,
+                        cadence,
                     };
                     app_init::load_map_from_initial(
                         &state.gpu,
                         &state.batch_renderer,
                         initial,
-                        session.request.skirmish_launch_session(),
+                        startup,
                         &session.request.fallback_skirmish_settings,
+                        native_theater_cache_mismatch,
+                        runtime_color_scheme_count,
                         state.vxl_compute.as_mut(),
                         &mut sink,
                     )
@@ -479,15 +647,28 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     &state.gpu,
                     &state.batch_renderer,
                     initial,
-                    session.request.skirmish_launch_session(),
+                    startup,
                     &session.request.fallback_skirmish_settings,
+                    false,
+                    0,
                     state.vxl_compute.as_mut(),
                     &mut NoopProgressSink,
                 ),
             };
             match load_result {
                 Ok(result) => {
-                    advance_native_progress(&mut session, 100);
+                    if let Some(native) = session.native.as_mut() {
+                        let terminal_raw_percent = native.progress_cadence.terminal_raw_percent();
+                        advance_and_present_native_progress(
+                            &state.gpu,
+                            &state.depth_view,
+                            &state.batch_renderer,
+                            &state.bit_font,
+                            native,
+                            terminal_raw_percent,
+                            render_width,
+                        );
+                    }
                     LoadingPump::Finished(result)
                 }
                 Err(err) => LoadingPump::Failed(err),
@@ -524,6 +705,14 @@ fn ensure_job_asset_manager(state: &mut AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn loading_asset_manager(session: &LoadingSession) -> Option<&AssetManager> {
+    if let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase {
+        Some(initial.asset_manager())
+    } else {
+        session.job.asset_manager.as_ref()
+    }
+}
+
 fn take_job_assets_for_initial_load(
     state: &AppState,
     session: &mut LoadingSession,
@@ -552,19 +741,146 @@ fn take_job_assets_for_initial_load(
     Ok((ra2_dir, asset_manager))
 }
 
-fn advance_native_progress(session: &mut LoadingSession, percent: u32) {
-    if let Some(native) = session.native.as_mut() {
-        native.progress.advance_progress(percent);
+/// Parse a selected map before constructing its first loading frame.
+///
+/// Native selected-map composition consumes the parsed preview/waypoint data
+/// before the first confirmed 3% display. The loader's raw 8 milestone is
+/// intentionally swallowed here and visibly handed off by the first pump only
+/// after that 3% frame has been presented.
+fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyhow::Result<()> {
+    let should_prepare = state
+        .loading_session
+        .as_ref()
+        .and_then(|session| session.native.as_ref())
+        .is_some_and(|native| {
+            native
+                .progress_cadence
+                .uses_prepared_selected_map_composition()
+        })
+        && state.loading_session.as_ref().is_some_and(|session| {
+            matches!(session.job.phase, LoadingJobPhase::InitialMapSelection)
+        });
+    if !should_prepare {
+        return Ok(());
+    }
+
+    let Some(mut session) = state.loading_session.take() else {
+        return Ok(());
+    };
+    let requested_map_file = session.request.selected_map_file().to_string();
+    let result = take_job_assets_for_initial_load(state, &mut session).and_then(
+        |(ra2_dir, asset_manager)| {
+            app_init::load_map_initial_with_assets(
+                ra2_dir,
+                asset_manager,
+                Some(requested_map_file.as_str()),
+                &mut NoopProgressSink,
+            )
+        },
+    );
+    match result {
+        Ok(initial) => {
+            session.job.phase = LoadingJobPhase::RemainingLegacyLoad(Some(initial));
+            state.loading_session = Some(session);
+            Ok(())
+        }
+        Err(err) => {
+            state.loading_session = Some(session);
+            Err(err)
+        }
     }
 }
 
-/// Build the verified dynamic theater ramp values that actually change progress.
-pub fn theater_ramp_changed_values(values: impl IntoIterator<Item = u32>) -> Vec<u32> {
-    let mut state = LoadingProgressState::standard_skirmish();
+fn ensure_selected_map_composition_snapshot(state: &mut AppState) {
+    let snapshot = {
+        let Some(session) = state.loading_session.as_ref() else {
+            return;
+        };
+        let Some(native) = session.native.as_ref() else {
+            return;
+        };
+        if native.composition.is_some()
+            || !native
+                .progress_cadence
+                .uses_prepared_selected_map_composition()
+        {
+            return;
+        }
+        let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase else {
+            return;
+        };
+        let Some(launch_session) = session.request.skirmish_launch_session() else {
+            return;
+        };
+        let starts =
+            crate::map::waypoints::multiplayer_start_waypoints(&initial.map_data().waypoints);
+        let assignments =
+            crate::app_skirmish::original_launch_start_assignments(launch_session, &starts)
+                .into_iter()
+                .filter_map(|(participant_index, waypoint)| {
+                    let (participant, color_priority) = if participant_index == 0 {
+                        (
+                            LoadingParticipantId::Local,
+                            launch_session.local.color_index,
+                        )
+                    } else {
+                        let opponent_index = participant_index - 1;
+                        let opponent = launch_session.opponents.get(opponent_index)?;
+                        (
+                            LoadingParticipantId::Opponent(opponent_index),
+                            opponent.color_index,
+                        )
+                    };
+                    Some(LoadingStartAssignment {
+                        start_index: waypoint.index,
+                        participant,
+                        color_priority,
+                    })
+                })
+                .collect::<Vec<_>>();
+        build_loading_composition(
+            initial.map_data(),
+            launch_session,
+            state.csf.as_ref(),
+            [state.gpu.config.width, state.gpu.config.height],
+            &assignments,
+        )
+    };
+
+    if let Some(native) = state
+        .loading_session
+        .as_mut()
+        .and_then(|session| session.native.as_mut())
+    {
+        native.composition = Some(snapshot);
+    }
+}
+
+fn theater_cache_mismatch(
+    has_successfully_loaded_map: bool,
+    cached_theater: &str,
+    requested_theater: &str,
+) -> bool {
+    !has_successfully_loaded_map || !cached_theater.eq_ignore_ascii_case(requested_theater)
+}
+
+/// Derive the verified dynamic theater values from the native runtime scheme count.
+///
+/// Native relies on `N == 0 || N >= 13`; counts 1..12 would divide by zero.
+/// Rust treats those malformed, non-stock counts like an empty dynamic loop.
+pub(crate) fn theater_ramp_changed_values(runtime_color_scheme_count: usize) -> Vec<u32> {
+    if runtime_color_scheme_count < 13 {
+        return Vec::new();
+    }
+
+    let quotient = runtime_color_scheme_count / 13;
+    let mut previous = 12;
     let mut emitted = Vec::new();
-    for value in [3, 8, 12].into_iter().chain(values) {
-        if state.advance_progress(value) && (13..=25).contains(&value) {
-            emitted.push(value);
+    for scheme_index in 0..runtime_color_scheme_count {
+        let candidate = ((scheme_index / quotient).min(13) + 12) as u32;
+        if candidate != previous {
+            emitted.push(candidate);
+            previous = candidate;
         }
     }
     emitted
@@ -583,23 +899,79 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
     {
         return Ok(());
     }
-    ensure_job_asset_manager(state)?;
+    prepare_selected_map_initial_before_first_frame(state)?;
+    ensure_selected_map_composition_snapshot(state);
+    if state
+        .loading_session
+        .as_ref()
+        .and_then(loading_asset_manager)
+        .is_none()
+    {
+        ensure_job_asset_manager(state)?;
+    }
     let Some(assets) = state
         .loading_session
         .as_ref()
-        .and_then(|session| session.job.asset_manager.as_ref())
+        .and_then(loading_asset_manager)
     else {
         return Err(anyhow::anyhow!(
             "native loading job has no asset manager after initialization"
         ));
     };
     let width = LoadingScreenWidth::for_render_width(state.gpu.config.width);
-    let atlas = crate::render::loading_screen_chrome::build_loading_screen_atlas(
+    let progress_ramp = state
+        .loading_session
+        .as_ref()
+        .and_then(|session| session.native.as_ref())
+        .map(|native| native.progress_ramp)
+        .ok_or_else(|| anyhow::anyhow!("native loading session lost its progress ramp"))?;
+    let prepared_preview = state
+        .loading_session
+        .as_ref()
+        .and_then(|session| session.native.as_ref())
+        .and_then(|native| native.composition.as_ref())
+        .and_then(|composition| composition.preview.as_ref())
+        .map(|preview| PreparedLoadingPreviewRgba {
+            width: preview.image.width,
+            height: preview.image.height,
+            rgba: preview.image.rgba.clone(),
+        });
+    let marker_remaps = state
+        .loading_session
+        .as_ref()
+        .and_then(|session| session.native.as_ref())
+        .and_then(|native| native.composition.as_ref())
+        .zip(state.rules.as_ref())
+        .map(|(composition, rules)| {
+            composition
+                .markers
+                .iter()
+                .map(|marker| {
+                    let color_key =
+                        scheme_entry_for_priority(i32::from(marker.color_priority)) as u8;
+                    MmpbMarkerRemap {
+                        color_key,
+                        ramp: *rules.house_color_ramps.ramp(HouseColorIndex(color_key)),
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let composition_input =
+        prepared_preview
+            .as_ref()
+            .map(|preview| LoadingScreenCompositionAtlasInput {
+                preview,
+                marker_remaps: &marker_remaps,
+            });
+    let atlas = build_loading_screen_atlas_with_composition(
         &state.gpu,
         &state.batch_renderer,
         &assets,
         variant,
         width,
+        &progress_ramp,
+        composition_input,
     );
     if let Some(native) = state
         .loading_session
@@ -636,6 +1008,17 @@ pub(crate) fn render_loading_screen(
     if let Err(err) = ensure_native_loading_atlas(state) {
         return LoadingRenderResult::NativeFailed(err);
     }
+    if let Some(session) = state.loading_session.as_mut()
+        && !session.first_frame_presented
+        && let Some(native) = session.native.as_mut()
+    {
+        // Retail composes the LS country surface first, then ProgressClass
+        // supplies the first displayed value: selected maps show raw 3, while
+        // random-map seed loads halve it to 1.
+        native
+            .progress
+            .advance_progress(native.progress_cadence.effective_percent(3));
+    }
     let Some(native) = state
         .loading_session
         .as_ref()
@@ -649,13 +1032,18 @@ pub(crate) fn render_loading_screen(
         ));
     };
 
-    let instances = build_native_loading_instances(
+    let frame_plan = build_native_loading_frame_plan(
+        &state.bit_font,
         atlas,
+        native.composition.as_ref(),
+        &native.progress_row,
         &native.progress,
-        native.bar_rgb,
         native.backing_rgb,
+        native.text_rgb,
         state.gpu.config.width,
     );
+    let instances = frame_plan.instances;
+    let text_draws = frame_plan.text_draws;
 
     state.batch_renderer.update_camera(
         &state.gpu,
@@ -673,6 +1061,22 @@ pub(crate) fn render_loading_screen(
             "native Skirmish loading instances could not be uploaded"
         ));
     };
+    let backing_buffers = text_draws
+        .iter()
+        .map(|draw| {
+            state
+                .batch_renderer
+                .create_instance_buffer(&state.gpu, &draw.backing)
+        })
+        .collect::<Vec<_>>();
+    let text_buffers = text_draws
+        .iter()
+        .map(|draw| {
+            state
+                .batch_renderer
+                .create_instance_buffer(&state.gpu, &draw.text.instances)
+        })
+        .collect::<Vec<_>>();
 
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Native Loading Screen"),
@@ -699,6 +1103,38 @@ pub(crate) fn render_loading_screen(
     state
         .batch_renderer
         .draw_with_buffer_passthrough(&mut pass, &atlas.texture, &buffer, count);
+    for ((draw, backing_buffer), text_buffer) in text_draws
+        .iter()
+        .zip(backing_buffers.iter())
+        .zip(text_buffers.iter())
+    {
+        if let Some((buffer, count)) = backing_buffer.as_ref() {
+            state.batch_renderer.draw_with_buffer_passthrough(
+                &mut pass,
+                &atlas.texture,
+                buffer,
+                *count,
+            );
+        }
+        let Some((buffer, count)) = text_buffer.as_ref() else {
+            continue;
+        };
+        let Some(scissor) = clamp_loading_scissor(
+            draw.text.scissor,
+            state.gpu.config.width,
+            state.gpu.config.height,
+        ) else {
+            continue;
+        };
+        pass.set_scissor_rect(scissor.x, scissor.y, scissor.w, scissor.h);
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            state.bit_font.atlas(),
+            buffer,
+            *count,
+        );
+    }
+    pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
     LoadingRenderResult::NativeRendered
 }
 
@@ -708,9 +1144,6 @@ pub(crate) fn loading_screen_presented(state: &mut AppState) {
         return;
     };
     session.first_frame_presented = true;
-    if let Some(native) = session.native.as_mut() {
-        native.progress.advance_progress(3);
-    }
 }
 
 fn selected_loading_art_variant(state: &AppState) -> Option<LoadingArtVariant> {
@@ -739,56 +1172,6 @@ fn loading_art_variant_from_launch_country(country: LaunchCountry) -> LoadingArt
     }
 }
 
-/// Row-draw origin (the NW corner the bar helper offsets from), before any
-/// helper/inset additions. Verified gamemd standard-skirmish ProgressClass
-/// position: (0x10, 0x141) at >=800px, (0x0C, 0x100) below.
-fn standard_skirmish_row_origin(render_width: u32) -> [f32; 2] {
-    if render_width >= 800 {
-        [0x10 as f32, 0x141 as f32]
-    } else {
-        [0x0C as f32, 0x100 as f32]
-    }
-}
-
-/// Row height = max(side_icon_h, H + 6, font_h) + 4.
-///
-/// `font_h` (the loading font height) is not readily available at this layer, so
-/// `H` stands in for it; since `H + 6 > H`, the `H + 6` term dominates whenever
-/// the font is no taller than the bar. Exact font-height precision is a small
-/// vertical follow-up.
-fn standard_skirmish_row_height(bar_height: f32, side_icon_height: f32) -> f32 {
-    let font_h = bar_height; // stand-in for the loading font height (follow-up).
-    side_icon_height
-        .max(bar_height + BAR_HEIGHT_BAND)
-        .max(font_h)
-        + ROW_PADDING
-}
-
-/// Bar fill origin: x = base_x + 5 + 3 (helper + inset); y = base_y +
-/// ((row_h - (H + 6)) / 2) + 3 (vertical row-centering + inset).
-fn standard_skirmish_progress_position(
-    render_width: u32,
-    bar_height: f32,
-    row_height: f32,
-) -> [f32; 2] {
-    let [base_x, base_y] = standard_skirmish_row_origin(render_width);
-    let centered_y = base_y + (row_height - (bar_height + BAR_HEIGHT_BAND)) / 2.0 + BAR_Y_INSET;
-    [base_x + BAR_X_HELPER_INSET, centered_y]
-}
-
-/// Side-icon origin: x = base_x + W + 0x15; y vertically centered against row_h.
-fn standard_skirmish_side_icon_position(
-    render_width: u32,
-    bar_width: f32,
-    row_height: f32,
-    icon_height: f32,
-) -> [f32; 2] {
-    let [base_x, base_y] = standard_skirmish_row_origin(render_width);
-    let icon_x = base_x + bar_width + SIDE_ICON_GAP;
-    let icon_y = base_y + (row_height - icon_height) / 2.0;
-    [icon_x, icon_y]
-}
-
 /// Normalize an 8-bit RGB triple to 0..1.
 fn normalize_rgb(rgb: [u8; 3]) -> [f32; 3] {
     [
@@ -798,30 +1181,181 @@ fn normalize_rgb(rgb: [u8; 3]) -> [f32; 3] {
     ]
 }
 
-/// A shade of the player's `[Colors]` scheme ramp, normalized to 0..1.
-/// Ramp index 0 is the brightest shade, 15 the darkest.
-fn player_scheme_shade_rgb(
-    color_index: HouseColorIndex,
-    shade: usize,
-    ramps: &HouseColorRamps,
-) -> [f32; 3] {
-    let ramp = ramps.ramp(color_index);
-    let c = ramp[shade.min(ramp.len() - 1)];
-    [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0]
+struct NativeLoadingTextDraw {
+    backing: Vec<SpriteInstance>,
+    text: ShellTextDraw,
 }
 
-/// Filled-bar color. The faithful behavior is a per-pixel palette remap of the
-/// PROGBARM frame-0 house-color indices through the player scheme's 16-shade
-/// ramp — NOT a uniform tint.
-///
-/// BLOCKED (UNKNOWN-exact): a true remap requires (a) the player scheme's real
-/// 16-shade ramp built from `[Colors]` HSV (same data blocker as the backing
-/// color), and (b) the frame-0 palette-index layout (which indices are
-/// remappable house-color indices) inspected from the real SHP. Until both are
-/// available, the frame is uniformly tinted with the brightest ramp shade; this
-/// preserves none of the frame's internal shading and is NOT parity-correct.
-fn player_scheme_bar_rgb(color_index: HouseColorIndex, ramps: &HouseColorRamps) -> [f32; 3] {
-    player_scheme_shade_rgb(color_index, BAR_FILL_RAMP_SHADE, ramps)
+struct NativeLoadingFramePlan {
+    instances: Vec<SpriteInstance>,
+    text_draws: Vec<NativeLoadingTextDraw>,
+}
+
+fn native_loading_row_layout(
+    font: &BitFont,
+    atlas: &LoadingScreenAtlas,
+    progress: &LoadingProgressState,
+    render_width: u32,
+) -> Option<LoadingProgressRowLayout> {
+    if progress.current_value() == 0.0 {
+        return None;
+    }
+    Some(layout_standard_skirmish_progress_row(
+        render_width,
+        [
+            atlas.progress_frame0.pixel_size[0] as i32,
+            atlas.progress_frame0.pixel_size[1] as i32,
+        ],
+        atlas
+            .side_icon
+            .map(|icon| [icon.pixel_size[0] as i32, icon.pixel_size[1] as i32]),
+        font.cell_height() as i32,
+    ))
+}
+
+fn build_native_loading_text_draws(
+    font: &BitFont,
+    atlas: &LoadingScreenAtlas,
+    composition: Option<&LoadingCompositionSnapshot>,
+    row: &LoadingProgressRowSnapshot,
+    row_layout: Option<&LoadingProgressRowLayout>,
+    text_rgb: [f32; 3],
+    row_rgb: [f32; 3],
+) -> Vec<NativeLoadingTextDraw> {
+    let mut draws = Vec::with_capacity(5);
+    if let Some(composition) = composition {
+        if let Some(text) = composition.text.country_name.as_deref() {
+            draws.push(build_native_loading_text_draw(
+                font,
+                atlas,
+                text,
+                composition.text_rects.country_name,
+                text_rgb,
+                ShellAlign::H_RIGHT,
+                true,
+                TEXT_DEPTH,
+            ));
+        }
+        if let Some(text) = composition.text.special_unit.as_deref() {
+            draws.push(build_native_loading_text_draw(
+                font,
+                atlas,
+                text,
+                composition.text_rects.special_unit,
+                [0.0, 0.0, 0.0],
+                ShellAlign::NONE,
+                false,
+                TEXT_DEPTH,
+            ));
+        }
+        if let Some(text) = composition.text.load_brief.as_deref() {
+            draws.push(build_native_loading_text_draw(
+                font,
+                atlas,
+                text,
+                composition.text_rects.load_brief,
+                text_rgb,
+                ShellAlign::NONE,
+                true,
+                TEXT_DEPTH,
+            ));
+        }
+        if let Some(text) = composition.text.loading.as_deref() {
+            draws.push(build_native_loading_text_draw(
+                font,
+                atlas,
+                text,
+                composition.text_rects.loading,
+                text_rgb,
+                ShellAlign::NONE,
+                true,
+                TEXT_DEPTH,
+            ));
+        }
+    }
+    if let Some(layout) = row_layout
+        && !row.label.is_empty()
+        && layout.label_rect.w > 0
+        && layout.label_rect.h > 0
+    {
+        draws.push(build_native_loading_text_draw(
+            font,
+            atlas,
+            &row.label,
+            layout.label_rect,
+            row_rgb,
+            ShellAlign::NONE,
+            false,
+            ROW_LABEL_DEPTH,
+        ));
+    }
+    draws
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_native_loading_text_draw(
+    font: &BitFont,
+    atlas: &LoadingScreenAtlas,
+    text: &str,
+    rect: crate::ui::shell::geom::RectPx,
+    color: [f32; 3],
+    align: ShellAlign,
+    with_backing: bool,
+    depth: f32,
+) -> NativeLoadingTextDraw {
+    let width = rect.w.max(0) as u32;
+    let height = rect.h.max(0) as u32;
+    let text_rect = TextRect {
+        x: rect.x,
+        y: rect.y,
+        w: width,
+        h: height,
+    };
+    let text_draw = draw_in_rect(font, text, text_rect, color, align, [0.0, 0.0], depth, None);
+    let mut backing = Vec::new();
+    if with_backing && !text_draw.instances.is_empty() {
+        let layout = font.wrap_layout(text, width);
+        let aligned_x = if align.contains(ShellAlign::H_RIGHT) && layout.width < width {
+            rect.x + (width - layout.width) as i32
+        } else if align.contains(ShellAlign::H_CENTER) && layout.width < width {
+            rect.x + ((width - layout.width) / 2) as i32
+        } else {
+            rect.x
+        };
+        push_entry_tinted(
+            &mut backing,
+            atlas.solid_texel,
+            [
+                aligned_x as f32 - TEXT_BACKING_PADDING,
+                rect.y as f32 - TEXT_BACKING_PADDING,
+            ],
+            [
+                layout.width as f32 + TEXT_BACKING_PADDING * 2.0,
+                layout.height.min(height) as f32 + TEXT_BACKING_PADDING * 2.0,
+            ],
+            TEXT_BACKING_DEPTH,
+            [0.0, 0.0, 0.0],
+        );
+        if let Some(instance) = backing.last_mut() {
+            instance.alpha = TEXT_BACKING_ALPHA;
+        }
+    }
+    NativeLoadingTextDraw {
+        backing,
+        text: text_draw,
+    }
+}
+
+fn clamp_loading_scissor(
+    scissor: ScissorRect,
+    render_width: u32,
+    render_height: u32,
+) -> Option<ScissorRect> {
+    let x = scissor.x.min(render_width);
+    let y = scissor.y.min(render_height);
+    let w = scissor.w.min(render_width.saturating_sub(x));
+    let h = scissor.h.min(render_height.saturating_sub(y));
+    (w > 0 && h > 0).then_some(ScissorRect { x, y, w, h })
 }
 
 /// Build the full native loading-screen instance list (background, solid backing
@@ -829,12 +1363,12 @@ fn player_scheme_bar_rgb(color_index: HouseColorIndex, ramps: &HouseColorRamps) 
 /// the synchronous-repaint sink.
 fn build_native_loading_instances(
     atlas: &LoadingScreenAtlas,
+    composition: Option<&LoadingCompositionSnapshot>,
     progress: &LoadingProgressState,
-    bar_rgb: [f32; 3],
     backing_rgb: [f32; 3],
-    render_width: u32,
+    row_layout: Option<&LoadingProgressRowLayout>,
 ) -> Vec<SpriteInstance> {
-    let mut instances = Vec::with_capacity(4);
+    let mut instances = Vec::with_capacity(12);
     push_entry(
         &mut instances,
         atlas.background,
@@ -842,14 +1376,49 @@ fn build_native_loading_instances(
         BACKGROUND_DEPTH,
     );
 
+    if let Some(composition) = composition {
+        if let (Some(prepared), Some(preview_entry)) = (composition.preview.as_ref(), atlas.preview)
+        {
+            push_entry_sized(
+                &mut instances,
+                preview_entry,
+                [
+                    (prepared.region.x + prepared.fit.pad_x) as f32,
+                    (prepared.region.y + prepared.fit.pad_y) as f32,
+                ],
+                [prepared.fit.width as f32, prepared.fit.height as f32],
+                PREVIEW_DEPTH,
+            );
+        }
+        for marker in &composition.markers {
+            let color_key = scheme_entry_for_priority(i32::from(marker.color_priority)) as u8;
+            let Some(entry) = atlas.mmpb_markers.get(&color_key).copied() else {
+                continue;
+            };
+            push_entry(
+                &mut instances,
+                entry,
+                [marker.anchor.screen_x as f32, marker.anchor.screen_y as f32],
+                MARKER_DEPTH,
+            );
+        }
+    }
+
+    // The LS renderer's compose-only state owns no progress row. The selected-map
+    // path advances to 3 before the first confirmed display blit.
+    if progress.current_value() == 0.0 {
+        return instances;
+    }
+
+    let Some(row_layout) = row_layout else {
+        return instances;
+    };
     let bar_w = atlas.progress_frame0.pixel_size[0];
     let bar_h = atlas.progress_frame0.pixel_size[1];
-    let side_icon_h = atlas
-        .side_icon
-        .map(|icon| icon.pixel_size[1])
-        .unwrap_or(0.0);
-    let row_h = standard_skirmish_row_height(bar_h, side_icon_h);
-    let bar_origin = standard_skirmish_progress_position(render_width, bar_h, row_h);
+    let bar_origin = [
+        row_layout.bar_origin[0] as f32,
+        row_layout.bar_origin[1] as f32,
+    ];
 
     // G3: solid backing fill — full bar frame rect (W x H), filled with the
     // player scheme's `[Colors]` HSV→RGB color, drawn BEFORE the clipped bar so
@@ -863,29 +1432,65 @@ fn build_native_loading_instances(
         backing_rgb,
     );
 
-    // G2: clipped progress span. The bar frame is remapped to the player color
-    // via tint as a follow-up; full palette remap of the baked frame is deferred.
+    // G2: clipped progress span. The session atlas already contains the
+    // player's 16-shade remap, so preserve its per-pixel colors.
     let progress_width = progress.fill_width_gamemd_ftol_positive_domain(bar_w as u32);
     if progress_width > 0 {
-        push_entry_tinted(
+        push_entry_sized(
             &mut instances,
             atlas.progress_frame0,
             bar_origin,
             [progress_width as f32, bar_h],
             PROGRESS_DEPTH,
-            bar_rgb,
         );
     }
 
-    // G4: country side icon to the right of the bar, vertically centered. No
-    // label is drawn (skirmish text pointer is 0).
-    if let Some(icon) = atlas.side_icon {
-        let icon_pos =
-            standard_skirmish_side_icon_position(render_width, bar_w, row_h, icon.pixel_size[1]);
-        push_entry(&mut instances, icon, icon_pos, SIDE_ICON_DEPTH);
+    // Country insignia follows the progress span. The atlas has already applied
+    // the verified RGB-magenta key.
+    if let (Some(icon), Some(icon_origin)) = (atlas.side_icon, row_layout.icon_origin) {
+        push_entry(
+            &mut instances,
+            icon,
+            [icon_origin[0] as f32, icon_origin[1] as f32],
+            SIDE_ICON_DEPTH,
+        );
     }
 
     instances
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_native_loading_frame_plan(
+    font: &BitFont,
+    atlas: &LoadingScreenAtlas,
+    composition: Option<&LoadingCompositionSnapshot>,
+    progress_row: &LoadingProgressRowSnapshot,
+    progress: &LoadingProgressState,
+    backing_rgb: [f32; 3],
+    text_rgb: [f32; 3],
+    render_width: u32,
+) -> NativeLoadingFramePlan {
+    let row_layout = native_loading_row_layout(font, atlas, progress, render_width);
+    let instances = build_native_loading_instances(
+        atlas,
+        composition,
+        progress,
+        backing_rgb,
+        row_layout.as_ref(),
+    );
+    let text_draws = build_native_loading_text_draws(
+        font,
+        atlas,
+        composition,
+        progress_row,
+        row_layout.as_ref(),
+        text_rgb,
+        backing_rgb,
+    );
+    NativeLoadingFramePlan {
+        instances,
+        text_draws,
+    }
 }
 
 /// Acquire a surface frame, render the native loading screen, and present it.
@@ -897,10 +1502,13 @@ fn present_native_loading(
     gpu: &GpuContext,
     depth_view: &wgpu::TextureView,
     batch: &BatchRenderer,
+    font: &BitFont,
     atlas: &LoadingScreenAtlas,
+    composition: Option<&LoadingCompositionSnapshot>,
+    progress_row: &LoadingProgressRowSnapshot,
     progress: &LoadingProgressState,
-    bar_rgb: [f32; 3],
     backing_rgb: [f32; 3],
+    text_rgb: [f32; 3],
     render_width: u32,
 ) -> anyhow::Result<()> {
     let output = gpu
@@ -914,8 +1522,18 @@ fn present_native_loading(
             label: Some("Native Loading Repaint"),
         });
 
-    let instances =
-        build_native_loading_instances(atlas, progress, bar_rgb, backing_rgb, render_width);
+    let frame_plan = build_native_loading_frame_plan(
+        font,
+        atlas,
+        composition,
+        progress_row,
+        progress,
+        backing_rgb,
+        text_rgb,
+        render_width,
+    );
+    let instances = frame_plan.instances;
+    let text_draws = frame_plan.text_draws;
     batch.update_camera(
         gpu,
         gpu.config.width as f32,
@@ -929,6 +1547,14 @@ fn present_native_loading(
             "loading repaint instances could not be uploaded"
         ));
     };
+    let backing_buffers = text_draws
+        .iter()
+        .map(|draw| batch.create_instance_buffer(gpu, &draw.backing))
+        .collect::<Vec<_>>();
+    let text_buffers = text_draws
+        .iter()
+        .map(|draw| batch.create_instance_buffer(gpu, &draw.text.instances))
+        .collect::<Vec<_>>();
 
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -954,6 +1580,26 @@ fn present_native_loading(
             occlusion_query_set: None,
         });
         batch.draw_with_buffer_passthrough(&mut pass, &atlas.texture, &buffer, count);
+        for ((draw, backing_buffer), text_buffer) in text_draws
+            .iter()
+            .zip(backing_buffers.iter())
+            .zip(text_buffers.iter())
+        {
+            if let Some((buffer, count)) = backing_buffer.as_ref() {
+                batch.draw_with_buffer_passthrough(&mut pass, &atlas.texture, buffer, *count);
+            }
+            let Some((buffer, count)) = text_buffer.as_ref() else {
+                continue;
+            };
+            let Some(scissor) =
+                clamp_loading_scissor(draw.text.scissor, gpu.config.width, gpu.config.height)
+            else {
+                continue;
+            };
+            pass.set_scissor_rect(scissor.x, scissor.y, scissor.w, scissor.h);
+            batch.draw_with_buffer_passthrough(&mut pass, font.atlas(), buffer, *count);
+        }
+        pass.set_scissor_rect(0, 0, gpu.config.width, gpu.config.height);
     }
 
     gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -961,35 +1607,82 @@ fn present_native_loading(
     Ok(())
 }
 
+fn advance_and_present_native_progress(
+    gpu: &GpuContext,
+    depth_view: &wgpu::TextureView,
+    batch: &BatchRenderer,
+    font: &BitFont,
+    native: &mut NativeLoadingScreenState,
+    raw_percent: u32,
+    render_width: u32,
+) {
+    let effective_percent = native.progress_cadence.effective_percent(raw_percent);
+    if !native.progress.advance_progress(effective_percent) {
+        return;
+    }
+    let Some(atlas) = native.atlas.as_ref() else {
+        return;
+    };
+    if let Err(err) = present_native_loading(
+        gpu,
+        depth_view,
+        batch,
+        font,
+        atlas,
+        native.composition.as_ref(),
+        &native.progress_row,
+        &native.progress,
+        native.backing_rgb,
+        native.text_rgb,
+        render_width,
+    ) {
+        log::warn!(
+            "Native loading repaint at raw milestone {raw_percent} \
+             (effective {effective_percent}) failed: {err:#}"
+        );
+    }
+}
+
 /// Sink that synchronously re-renders and presents the loading screen on each
-/// advancing milestone, mirroring gamemd's per-milestone `WM_PAINT`. Render or
-/// surface-acquire failures are logged and swallowed so they never abort the
-/// map load.
+/// advancing milestone, implementing gamemd's per-milestone visible handoff
+/// through wgpu. Render or surface-acquire failures are logged and swallowed so
+/// they never abort the map load.
 struct RenderingProgressSink<'a> {
     gpu: &'a GpuContext,
     depth_view: &'a wgpu::TextureView,
     batch: &'a BatchRenderer,
+    font: &'a BitFont,
     progress: &'a mut LoadingProgressState,
+    progress_row: &'a LoadingProgressRowSnapshot,
     atlas: &'a LoadingScreenAtlas,
-    bar_rgb: [f32; 3],
+    composition: Option<&'a LoadingCompositionSnapshot>,
     backing_rgb: [f32; 3],
+    text_rgb: [f32; 3],
     render_width: u32,
+    cadence: NativeLoadingProgressCadence,
 }
 
 impl LoadingProgressSink for RenderingProgressSink<'_> {
-    fn milestone(&mut self, percent: u32) {
-        if self.progress.advance_progress(percent) {
+    fn milestone(&mut self, raw_percent: u32) {
+        let effective_percent = self.cadence.effective_percent(raw_percent);
+        if self.progress.advance_progress(effective_percent) {
             if let Err(err) = present_native_loading(
                 self.gpu,
                 self.depth_view,
                 self.batch,
+                self.font,
                 self.atlas,
+                self.composition,
+                self.progress_row,
                 self.progress,
-                self.bar_rgb,
                 self.backing_rgb,
+                self.text_rgb,
                 self.render_width,
             ) {
-                log::warn!("Native loading repaint at milestone {percent} failed: {err:#}");
+                log::warn!(
+                    "Native loading repaint at raw milestone {raw_percent} \
+                     (effective {effective_percent}) failed: {err:#}"
+                );
             }
         }
     }
@@ -1089,9 +1782,9 @@ mod tests {
                 id: 1,
                 ui_name_key: "GUI:Battle".to_string(),
                 tooltip_key: "STT:ModeBattle".to_string(),
-                override_file: "battlemd.ini".to_string(),
+                override_file: "MPBattleMD.ini".to_string(),
                 map_filter: "standard".to_string(),
-                random_maps_allowed: false,
+                random_maps_allowed: true,
                 allies_allowed: true,
                 must_ally: false,
             },
@@ -1118,11 +1811,63 @@ mod tests {
         }
     }
 
+    struct TestClock(u32);
+
+    impl crate::match_bootstrap::MatchSeedClock for TestClock {
+        fn low_u32(&mut self) -> u32 {
+            self.0
+        }
+
+        fn source(&self) -> crate::match_bootstrap::MatchSeedSource {
+            crate::match_bootstrap::MatchSeedSource::Controlled
+        }
+
+        fn seed_authority_certifying(&self) -> bool {
+            true
+        }
+    }
+
+    fn prepared_startup(next: &mut u64, seed: u32) -> crate::match_bootstrap::PreparedMatchStartup {
+        let launch = test_launch_session(LaunchCountry::America);
+        let accepted = match crate::match_bootstrap::classify_startup_session(&launch) {
+            crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
+                accepted,
+            ) => accepted,
+            other => panic!("fixture was not accepted: {other:?}"),
+        };
+        let correlation = crate::match_bootstrap::allocate_match_correlation(next).unwrap();
+        crate::match_bootstrap::prepare_match_startup(correlation, accepted, &mut TestClock(seed))
+    }
+
+    fn unverified_seed(value: u32) -> crate::match_bootstrap::MatchSeed {
+        crate::match_bootstrap::MatchSeed {
+            value,
+            source: crate::match_bootstrap::MatchSeedSource::Controlled,
+            seed_authority_certifying: false,
+        }
+    }
+
+    fn receipt_for(
+        startup: &crate::match_bootstrap::PreparedMatchStartup,
+    ) -> crate::match_bootstrap::RustL0Receipt {
+        let simulation = crate::sim::world::Simulation::with_seed(u64::from(startup.seed.value));
+        crate::match_bootstrap::RustL0Observation {
+            startup,
+            simulation: &simulation,
+            active_correlation: startup.correlation,
+            prior_receipt: None,
+            screen_is_loading: true,
+            spawn_pick_active: false,
+        }
+        .acknowledge()
+        .expect("valid test startup must acknowledge")
+    }
+
     #[test]
     fn loading_side_comes_from_first_launch_node_country() {
-        let session = LoadingSession::from_request(LoadingRequest::native_selected_skirmish(
-            "mp01t4.map".to_string(),
+        let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
             test_launch_session(LaunchCountry::Korea),
+            unverified_seed(1),
             SkirmishSettings::default(),
         ));
 
@@ -1133,20 +1878,87 @@ mod tests {
     }
 
     #[test]
-    fn loading_session_preserves_selected_map_filename() {
-        let session = LoadingSession::from_request(LoadingRequest::native_selected_skirmish(
-            "mp02t2.map".to_string(),
-            test_launch_session(LaunchCountry::Yuri),
+    fn loading_progress_row_snapshots_the_launch_player_name() {
+        let mut launch = test_launch_session(LaunchCountry::America);
+        launch.player_name = "Commander".to_owned();
+        let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
+            launch,
+            unverified_seed(22),
             SkirmishSettings::default(),
         ));
 
-        assert_eq!(session.request.selected_map_file(), "mp02t2.map");
+        assert_eq!(
+            session
+                .native
+                .as_ref()
+                .map(|native| native.progress_row.label.as_str()),
+            Some("Commander"),
+        );
+    }
+
+    #[test]
+    fn loading_session_preserves_selected_map_filename() {
+        let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
+            test_launch_session(LaunchCountry::Yuri),
+            unverified_seed(2),
+            SkirmishSettings::default(),
+        ));
+
+        assert_eq!(session.request.selected_map_file(), "mp01t4.map");
         assert_eq!(
             session
                 .request
                 .skirmish_launch_session()
                 .and_then(|launch| launch.selected_map_file.as_deref()),
             Some("mp01t4.map")
+        );
+    }
+
+    #[test]
+    fn loading_session_selects_native_progress_cadence_from_map_kind() {
+        let selected = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
+            test_launch_session(LaunchCountry::America),
+            unverified_seed(20),
+            SkirmishSettings::default(),
+        ));
+        assert_eq!(
+            selected
+                .native
+                .as_ref()
+                .map(|native| native.progress_cadence),
+            Some(NativeLoadingProgressCadence::SelectedMap)
+        );
+
+        let mut random_map = test_launch_session(LaunchCountry::America);
+        random_map.selected_map_file = Some("RandMap.Sed".to_string());
+        let random = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
+            random_map,
+            unverified_seed(21),
+            SkirmishSettings::default(),
+        ));
+        assert_eq!(
+            random.native.as_ref().map(|native| native.progress_cadence),
+            Some(NativeLoadingProgressCadence::RandomMapHalved)
+        );
+    }
+
+    #[test]
+    fn random_map_progress_uses_native_integer_halving_and_raw_200_terminal() {
+        let cadence = NativeLoadingProgressCadence::RandomMapHalved;
+
+        assert_eq!(cadence.effective_percent(3), 1);
+        assert_eq!(cadence.effective_percent(90), 45);
+        assert_eq!(
+            cadence.effective_percent(cadence.terminal_raw_percent()),
+            100
+        );
+        assert_eq!(
+            NativeLoadingProgressCadence::SelectedMap.effective_percent(3),
+            3
+        );
+        assert_eq!(
+            NativeLoadingProgressCadence::SelectedMap.terminal_raw_percent(),
+            100
         );
     }
 
@@ -1164,9 +1976,9 @@ mod tests {
 
     #[test]
     fn loading_session_starts_at_initial_map_selection_phase() {
-        let session = LoadingSession::from_request(LoadingRequest::native_selected_skirmish(
-            "mp01t4.map".to_string(),
+        let session = LoadingSession::from_request(LoadingRequest::unverified_legacy_skirmish(
             test_launch_session(LaunchCountry::America),
+            unverified_seed(3),
             SkirmishSettings::default(),
         ));
 
@@ -1174,6 +1986,87 @@ mod tests {
             session.job.phase,
             LoadingJobPhase::InitialMapSelection
         ));
+    }
+
+    #[test]
+    fn loading_request_moves_exact_startup_authority_once() {
+        struct Clock;
+        impl crate::match_bootstrap::MatchSeedClock for Clock {
+            fn low_u32(&mut self) -> u32 {
+                0x1234_5678
+            }
+
+            fn source(&self) -> crate::match_bootstrap::MatchSeedSource {
+                crate::match_bootstrap::MatchSeedSource::Controlled
+            }
+
+            fn seed_authority_certifying(&self) -> bool {
+                true
+            }
+        }
+
+        let session = test_launch_session(LaunchCountry::America);
+        let accepted = match crate::match_bootstrap::classify_startup_session(&session) {
+            crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
+                accepted,
+            ) => accepted,
+            other => panic!("fixture was not accepted: {other:?}"),
+        };
+        let mut next = 1;
+        let correlation = crate::match_bootstrap::allocate_match_correlation(&mut next).unwrap();
+        let mut clock = Clock;
+        let prepared =
+            crate::match_bootstrap::prepare_match_startup(correlation, accepted, &mut clock);
+        let mut request =
+            LoadingRequest::accepted_skirmish(prepared.clone(), SkirmishSettings::default());
+
+        assert_eq!(request.startup().accepted(), Some(&prepared));
+        assert_eq!(request.take_startup(), LoadingStartup::Accepted(prepared));
+        assert!(
+            request.startup.is_none(),
+            "authority transfers exactly once"
+        );
+    }
+
+    #[test]
+    fn replacing_loading_startup_clears_prior_loaded_startup_and_receipt_then_registers_new_correlation()
+     {
+        let mut next = 1;
+        let prior = prepared_startup(&mut next, 0x1111_2222);
+        let replacement = prepared_startup(&mut next, 0x3333_4444);
+        let prior_receipt = receipt_for(&prior);
+        let prior_correlation = prior.correlation;
+        let replacement_correlation = replacement.correlation;
+        let mut active = Some(prior_correlation);
+        let mut loaded = Some(prior);
+        let mut receipt = Some(prior_receipt);
+
+        replace_match_startup_slots(
+            &mut active,
+            &mut loaded,
+            &mut receipt,
+            Some(replacement_correlation),
+        );
+
+        assert_eq!(active, Some(replacement_correlation));
+        assert!(loaded.is_none());
+        assert!(receipt.is_none());
+    }
+
+    #[test]
+    fn failed_startup_cleanup_clears_all_three_slots() {
+        let mut next = 1;
+        let prior = prepared_startup(&mut next, 0x5555_6666);
+        let prior_receipt = receipt_for(&prior);
+        let mut active = Some(prior.correlation);
+        let mut loaded = Some(prior);
+        let mut receipt = Some(prior_receipt);
+
+        replace_match_startup_slots(&mut active, &mut loaded, &mut receipt, None);
+
+        assert!(active.is_none());
+        assert!(loaded.is_none());
+        assert!(receipt.is_none());
     }
 
     #[test]
@@ -1246,13 +2139,15 @@ mod tests {
     fn recording_sink_emits_full_monotonic_ledger_in_our_execution_order() {
         // The values the loaders emit, in the order our pipeline crosses them
         // (3 at present, 100 at Finished are emitted by the pump, not the loaders).
-        let loader_emits: [u32; 25] = [
-            8, 12, 30, 31, 35, 45, 50, 55, 58, 60, 63, 65, 67, 68, 69, 70, 72, 74, 76, 78, 82, 86,
-            93, 96, 98,
-        ];
+        let mut loader_emits = vec![8, 12];
+        loader_emits.extend(theater_ramp_changed_values(42));
+        loader_emits.extend([
+            30, 31, 35, 45, 50, 55, 58, 60, 63, 65, 67, 68, 69, 70, 72, 74, 76, 78, 82, 86, 90, 93,
+            96, 98,
+        ]);
         let mut sink = RecordingProgressSink::standard();
         sink.milestone(3); // present handoff
-        for v in loader_emits {
+        for v in loader_emits.iter().copied() {
             sink.milestone(v);
         }
         sink.milestone(100); // pump Finished
@@ -1278,7 +2173,7 @@ mod tests {
 
     #[test]
     fn loading_progress_standard_skirmish_selected_map_emits_verified_milestone_ledger() {
-        let ramp = [13, 15, 18, 22, 25];
+        let ramp = theater_ramp_changed_values(42);
         let mut expected = Vec::from([3, 8, 12]);
         expected.extend(ramp);
         expected.extend([
@@ -1297,10 +2192,30 @@ mod tests {
     }
 
     #[test]
-    fn loading_progress_theater_ramp_emits_only_changed_dynamic_values() {
-        let emitted = theater_ramp_changed_values([13, 13, 14, 14, 18, 25, 25]);
+    fn loading_progress_theater_ramp_stock_rulesmd_count_emits_13_through_25() {
+        let emitted = theater_ramp_changed_values(42);
 
-        assert_eq!(emitted, vec![13, 14, 18, 25]);
+        assert_eq!(emitted, (13..=25).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn loading_progress_theater_ramp_nonmultiple_base_count_uses_native_quotient() {
+        let emitted = theater_ramp_changed_values(38);
+
+        assert_eq!(emitted, (13..=25).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn loading_progress_theater_ramp_zero_or_invalid_small_count_has_no_dynamic_values() {
+        assert!(theater_ramp_changed_values(0).is_empty());
+        assert!(theater_ramp_changed_values(12).is_empty());
+    }
+
+    #[test]
+    fn loading_theater_cache_mismatch_covers_first_same_and_changed_cases() {
+        assert!(theater_cache_mismatch(false, "TEMPERATE", "TEMPERATE"));
+        assert!(!theater_cache_mismatch(true, "TEMPERATE", "temperate"));
+        assert!(theater_cache_mismatch(true, "TEMPERATE", "SNOW"));
     }
 
     #[test]
@@ -1327,55 +2242,7 @@ mod tests {
     }
 
     #[test]
-    fn bar_origin_uses_helper_offset_and_row_centering() {
-        // Helper +5 plus inset +3 => x = base_x + 8 at both widths.
-        let bar_h = 14.0;
-        let side_icon_h = 0.0;
-        let row_h = standard_skirmish_row_height(bar_h, side_icon_h);
-
-        let pos_800 = standard_skirmish_progress_position(800, bar_h, row_h);
-        assert_eq!(pos_800[0], 0x10 as f32 + 8.0);
-
-        let pos_640 = standard_skirmish_progress_position(640, bar_h, row_h);
-        assert_eq!(pos_640[0], 0x0C as f32 + 8.0);
-
-        // Vertical centering: y = base_y + (row_h - (H + 6)) / 2 + 3.
-        // With no side icon and font_h == H, row_h = (H + 6) + 4, so the
-        // centering term is (row_h - (H + 6)) / 2 = 2; total inset = 2 + 3 = 5.
-        let centering = (row_h - (bar_h + BAR_HEIGHT_BAND)) / 2.0;
-        assert_eq!(centering, 2.0);
-        assert_eq!(pos_800[1], 0x141 as f32 + centering + BAR_Y_INSET);
-        assert_eq!(pos_640[1], 0x100 as f32 + centering + BAR_Y_INSET);
-    }
-
-    #[test]
-    fn row_height_is_dominated_by_tallest_of_band_icon_font_plus_padding() {
-        // Tall icon dominates.
-        assert_eq!(standard_skirmish_row_height(14.0, 40.0), 40.0 + ROW_PADDING);
-        // Otherwise the H + 6 band dominates (font_h == H stand-in).
-        assert_eq!(
-            standard_skirmish_row_height(14.0, 0.0),
-            14.0 + BAR_HEIGHT_BAND + ROW_PADDING
-        );
-    }
-
-    #[test]
-    fn side_icon_sits_one_gap_right_of_bar_and_is_vertically_centered() {
-        let bar_w = 326.0;
-        let row_h = 60.0;
-        let icon_h = 40.0;
-
-        let pos_800 = standard_skirmish_side_icon_position(800, bar_w, row_h, icon_h);
-        assert_eq!(pos_800[0], 0x10 as f32 + bar_w + 0x15 as f32);
-        assert_eq!(pos_800[1], 0x141 as f32 + (row_h - icon_h) / 2.0);
-
-        let pos_640 = standard_skirmish_side_icon_position(640, bar_w, row_h, icon_h);
-        assert_eq!(pos_640[0], 0x0C as f32 + bar_w + 0x15 as f32);
-        assert_eq!(pos_640[1], 0x100 as f32 + (row_h - icon_h) / 2.0);
-    }
-
-    #[test]
-    fn player_scheme_bar_uses_corrected_ramp_shade() {
+    fn native_loading_state_keeps_the_full_player_progress_ramp() {
         let mk = |name: &str, hsv: [u8; 3]| ColorSchemeEntry {
             name: name.into(),
             hsv,
@@ -1384,16 +2251,32 @@ mod tests {
             mk("Gold", [43, 239, 255]),
             mk("DarkBlue", [153, 214, 212]),
         ]);
-        // Bar = shade 0 (brightest), normalized 0..1.
-        let bar = player_scheme_bar_rgb(HouseColorIndex(0), &ramps);
-        assert!(bar.iter().all(|c| (0.0..=1.0).contains(c)));
-        // The brightest shade reads brighter than a dark shade (brightness proxy).
-        let lum = |c: [f32; 3]| c[0] + c[1] + c[2];
-        let dark = player_scheme_shade_rgb(HouseColorIndex(0), 15, &ramps);
-        assert!(lum(dark) < lum(bar));
-        // DarkBlue scheme's bar shade must be more blue than red.
-        let blue = player_scheme_bar_rgb(HouseColorIndex(1), &ramps);
-        assert!(blue[2] > blue[0], "{blue:?}");
+        let mut native = NativeLoadingScreenState::standard_skirmish(
+            LoadingArtVariant::Americans,
+            0,
+            HouseColorIndex(1),
+            LoadingProgressRowSnapshot {
+                label: "Player".to_owned(),
+            },
+            NativeLoadingProgressCadence::SelectedMap,
+        );
+        native.resolve_player_colors(
+            &[mk("Gold", [43, 239, 255]), mk("DarkBlue", [153, 214, 212])],
+            &ramps,
+        );
+
+        assert_eq!(native.runtime_color_scheme_count, 4);
+        assert_eq!(native.progress_ramp, *ramps.ramp(HouseColorIndex(1)));
+        assert_ne!(native.progress_ramp[0], native.progress_ramp[15]);
+        assert!(native.progress_ramp[0].b > native.progress_ramp[0].r);
+    }
+
+    #[test]
+    fn progress_row_starts_at_the_first_advancing_milestone() {
+        let mut progress = LoadingProgressState::standard_skirmish();
+        assert_eq!(progress.current_value(), 0.0);
+        assert!(progress.advance_progress(3));
+        assert!(progress.current_value() > 0.0);
     }
 
     #[test]

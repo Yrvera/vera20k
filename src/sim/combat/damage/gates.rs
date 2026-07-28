@@ -62,26 +62,41 @@ mod tests {
     use crate::sim::combat::damage::ImmunityInputs;
 
     fn base() -> ImmunityInputs {
-        ImmunityInputs { affects_allies: true, ..Default::default() }
+        ImmunityInputs {
+            affects_allies: true,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn type_immune_same_owner_zeroes() {
-        let g = ImmunityInputs { attacker_present: true, type_immune: true, ..base() };
+        let g = ImmunityInputs {
+            attacker_present: true,
+            type_immune: true,
+            ..base()
+        };
         assert_eq!(evaluate_gates(&g), DamageGate::Nullified);
     }
 
     #[test]
     fn type_immune_needs_attacker_present() {
         // type_immune set but no attacker -> not gated by rule 1.
-        let g = ImmunityInputs { attacker_present: false, type_immune: true, ..base() };
+        let g = ImmunityInputs {
+            attacker_present: false,
+            type_immune: true,
+            ..base()
+        };
         assert_eq!(evaluate_gates(&g), DamageGate::Pass);
     }
 
     #[test]
     fn affects_allies_default_hits_ally() {
         // AffectsAllies default true: an allied hit still passes.
-        let g = ImmunityInputs { attacker_present: true, is_allied: true, ..base() };
+        let g = ImmunityInputs {
+            attacker_present: true,
+            is_allied: true,
+            ..base()
+        };
         assert_eq!(evaluate_gates(&g), DamageGate::Pass);
     }
 
@@ -99,7 +114,10 @@ mod tests {
     #[test]
     fn force_shield_zeroes() {
         assert_eq!(
-            evaluate_gates(&ImmunityInputs { force_shield: true, ..base() }),
+            evaluate_gates(&ImmunityInputs {
+                force_shield: true,
+                ..base()
+            }),
             DamageGate::Nullified
         );
     }
@@ -107,7 +125,10 @@ mod tests {
     #[test]
     fn bunker_blocked_zeroes() {
         assert_eq!(
-            evaluate_gates(&ImmunityInputs { bunker_blocked: true, ..base() }),
+            evaluate_gates(&ImmunityInputs {
+                bunker_blocked: true,
+                ..base()
+            }),
             DamageGate::Nullified
         );
     }
@@ -115,7 +136,10 @@ mod tests {
     #[test]
     fn radiation_immune_zeroes() {
         assert_eq!(
-            evaluate_gates(&ImmunityInputs { radiation_immune: true, ..base() }),
+            evaluate_gates(&ImmunityInputs {
+                radiation_immune: true,
+                ..base()
+            }),
             DamageGate::Nullified
         );
     }
@@ -123,7 +147,10 @@ mod tests {
     #[test]
     fn poison_immune_zeroes() {
         assert_eq!(
-            evaluate_gates(&ImmunityInputs { poison_immune: true, ..base() }),
+            evaluate_gates(&ImmunityInputs {
+                poison_immune: true,
+                ..base()
+            }),
             DamageGate::Nullified
         );
     }
@@ -131,14 +158,21 @@ mod tests {
     #[test]
     fn psionic_immune_zeroes() {
         assert_eq!(
-            evaluate_gates(&ImmunityInputs { psychic_immune: true, ..base() }),
+            evaluate_gates(&ImmunityInputs {
+                psychic_immune: true,
+                ..base()
+            }),
             DamageGate::Nullified
         );
     }
 
     #[test]
     fn mindcontrol_warhead_applies_marker() {
-        let g = ImmunityInputs { attacker_present: true, psychedelic: true, ..base() };
+        let g = ImmunityInputs {
+            attacker_present: true,
+            psychedelic: true,
+            ..base()
+        };
         assert_eq!(evaluate_gates(&g), DamageGate::MindControlled);
     }
 

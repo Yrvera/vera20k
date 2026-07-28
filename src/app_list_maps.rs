@@ -14,10 +14,41 @@ use crate::assets::mix_archive::MixArchive;
 use crate::map::briefing::BriefingSection;
 use crate::map::map_file::{self, MapFile};
 use crate::map::preview::{PreviewSection, PreviewSourceBounds, PreviewStartPoint};
-use crate::map::waypoints::{multiplayer_start_waypoints, parse_waypoints};
+use crate::map::waypoints::{
+    DEFAULT_SKIRMISH_PLAYER_CAPACITY, multiplayer_start_waypoints, parse_waypoints,
+    skirmish_player_capacity,
+};
 use crate::rules::ini_parser::IniFile;
 use crate::skirmish_scenarios::{SkirmishScenarioRecord, SkirmishScenarioSource};
 use crate::util::config::GameConfig;
+
+/// Exact source whose bytes were parsed into the active map.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum LoadedMapSource {
+    Loose {
+        path: PathBuf,
+        payload_len: usize,
+    },
+    Mix {
+        logical_name: String,
+        source_archive: String,
+        entry_id: i32,
+        payload_len: usize,
+    },
+    Generated {
+        seed_name: String,
+    },
+    LegacyFallback {
+        label: String,
+    },
+}
+
+/// Parsed map paired with the exact source consumed by the parser.
+pub(crate) struct LoadedMap {
+    pub map: MapFile,
+    pub source: LoadedMapSource,
+}
 
 /// List available maps in the RA2 directory for the main-menu map selector.
 ///
@@ -295,6 +326,7 @@ pub(crate) fn read_map_menu_entry(path: &Path, file_name: &str) -> MapMenuEntry 
         briefing: BriefingSection::default(),
         preview: PreviewSection::default(),
         multiplayer_start_waypoints: Vec::new(),
+        player_capacity: DEFAULT_SKIRMISH_PLAYER_CAPACITY,
         preview_source_bounds: None,
     };
 
@@ -321,6 +353,7 @@ pub(crate) fn read_map_menu_entry_from_ini(ini: &IniFile, file_name: &str) -> Ma
         briefing: crate::map::briefing::parse_briefing_section(&ini),
         preview: crate::map::preview::parse_preview_section(&ini),
         multiplayer_start_waypoints: multiplayer_start_waypoints(&parse_waypoints(ini)),
+        player_capacity: skirmish_player_capacity(ini),
         preview_source_bounds: preview_source_bounds_from_verified_source(ini),
     }
 }
@@ -384,21 +417,21 @@ pub(crate) fn read_map_ini_for_metadata(path: &Path) -> Option<IniFile> {
     }
 }
 
-pub(crate) fn load_map_by_name_or_path(ra2_dir: &Path, map_name: &str) -> Result<MapFile> {
+pub(crate) fn load_map_by_name_or_path(ra2_dir: &Path, map_name: &str) -> Result<LoadedMap> {
     let direct: PathBuf = PathBuf::from(map_name);
     if direct.exists() {
-        return load_map_from_path(&direct);
+        return load_map_from_path_with_source(&direct);
     }
 
     let in_ra2: PathBuf = ra2_dir.join(map_name);
     if in_ra2.exists() {
-        return load_map_from_path(&in_ra2);
+        return load_map_from_path_with_source(&in_ra2);
     }
 
     for ext in ["mmx", "yro", "map", "mpr", "yrm"] {
         let candidate = ra2_dir.join(format!("{}.{}", map_name, ext));
         if candidate.exists() {
-            return load_map_from_path(&candidate);
+            return load_map_from_path_with_source(&candidate);
         }
     }
 
@@ -412,14 +445,23 @@ pub(crate) fn load_map_by_name_or_path_with_assets(
     ra2_dir: &Path,
     map_name: &str,
     assets: &AssetManager,
-) -> Result<MapFile> {
+) -> Result<LoadedMap> {
     match load_map_by_name_or_path(ra2_dir, map_name) {
         Ok(map) => return Ok(map),
         Err(local_err) => {
             for candidate in asset_map_candidates(map_name) {
-                if let Some(bytes) = assets.get_ref(&candidate) {
+                if let Some(resolved) = assets.resolve_ref(&candidate) {
                     log::info!("Loaded map {candidate} from MIX assets");
-                    return MapFile::from_bytes(bytes).map_err(Into::into);
+                    let map = MapFile::from_bytes(resolved.bytes)?;
+                    return Ok(LoadedMap {
+                        map,
+                        source: LoadedMapSource::Mix {
+                            logical_name: candidate,
+                            source_archive: resolved.source_archive.to_string(),
+                            entry_id: resolved.entry_id,
+                            payload_len: resolved.bytes.len(),
+                        },
+                    });
                 }
             }
             Err(local_err)
@@ -443,15 +485,31 @@ pub(crate) fn load_map_from_path(path: &Path) -> Result<MapFile> {
     map_file::load_from_path(path).map_err(Into::into)
 }
 
+fn load_map_from_path_with_source(path: &Path) -> Result<LoadedMap> {
+    let payload_len = std::fs::metadata(path)?.len() as usize;
+    let map = load_map_from_path(path)?;
+    Ok(LoadedMap {
+        map,
+        source: LoadedMapSource::Loose {
+            path: path.to_path_buf(),
+            payload_len,
+        },
+    })
+}
+
 /// Try loading .mmx map files from a list of candidates.
-pub(crate) fn try_load_mmx(ra2_dir: &Path, names: &[&str]) -> Result<MapFile> {
+pub(crate) fn try_load_mmx(ra2_dir: &Path, names: &[&str]) -> Result<LoadedMap> {
     for &name in names {
         let path: PathBuf = ra2_dir.join(name);
         if path.exists() {
             match map_file::load_mmx(&path) {
                 Ok(mf) => {
                     log::info!("Loaded map from {}", name);
-                    return Ok(mf);
+                    let payload_len = std::fs::metadata(&path)?.len() as usize;
+                    return Ok(LoadedMap {
+                        map: mf,
+                        source: LoadedMapSource::Loose { path, payload_len },
+                    });
                 }
                 Err(err) => {
                     log::warn!("Failed to load {}: {:#}", name, err);
@@ -483,7 +541,17 @@ mod tests {
         assert_eq!(indices, vec![0, 3, 7]);
         assert_eq!(entry.multiplayer_start_waypoints[0].rx, 11);
         assert_eq!(entry.multiplayer_start_waypoints[0].ry, 100);
+        assert_eq!(entry.player_capacity, 3);
         assert_eq!(entry.preview_source_bounds, None);
+    }
+
+    #[test]
+    fn menu_entry_carries_random_map_capacity_fallback() {
+        let ini = IniFile::from_str("[RandomMap]\nNumPlayers=4\n");
+        let entry = read_map_menu_entry_from_ini(&ini, "RandMap.Sed");
+
+        assert!(entry.multiplayer_start_waypoints.is_empty());
+        assert_eq!(entry.player_capacity, 4);
     }
 
     #[test]
@@ -536,6 +604,23 @@ mod tests {
     #[test]
     fn asset_map_candidates_keeps_explicit_map_names_exact() {
         assert_eq!(asset_map_candidates("MP01T2.MAP"), vec!["MP01T2.MAP"]);
+    }
+
+    #[test]
+    fn map_source_manifest_preserves_actual_mix_lookup_facts() {
+        let source = LoadedMapSource::Mix {
+            logical_name: "Fight.MAP".to_string(),
+            source_archive: "multimd.mix".to_string(),
+            entry_id: 0x9306_F050_u32 as i32,
+            payload_len: 91_254,
+        };
+        let json = serde_json::to_value(source).expect("serialize source");
+
+        assert_eq!(json["kind"], "mix");
+        assert_eq!(json["logical_name"], "Fight.MAP");
+        assert_eq!(json["source_archive"], "multimd.mix");
+        assert_eq!(json["entry_id"], 0x9306_F050_u32 as i32);
+        assert_eq!(json["payload_len"], 91_254);
     }
 
     fn encode_csf_string(s: &str) -> Vec<u8> {

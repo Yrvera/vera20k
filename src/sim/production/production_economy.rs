@@ -17,18 +17,15 @@ pub(super) fn tick_resource_economy(
     path_grid: Option<&pathfinding::PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
-    // Tick Miner-component-based system (War + Chrono miners).
-    super::super::miner::miner_system::tick_miners_with_overlay_registry(
-        sim,
-        rules,
-        config,
-        path_grid,
-        overlay_registry,
-    );
+    // War + Chrono miners no longer tick here: the Harvest mission handler is
+    // dispatched per-object from the AI host (techno_ai's Unit arm), at the
+    // native Mission_Dispatch position before ground movement.
+    let _ = overlay_registry;
+    let live_order = sim.live_object_order_snapshot();
 
     // Tick Slave Miner subsystems: slave harvest AI + slave regeneration.
-    super::super::slave_miner::tick_slave_harvesters(sim, rules, config, path_grid);
-    super::super::slave_miner::tick_slave_regen(sim, rules);
+    super::super::slave_miner::tick_slave_harvesters(sim, &live_order, rules, config, path_grid);
+    super::super::slave_miner::tick_slave_regen(sim, &live_order, rules);
 }
 
 pub fn is_harvester_type(rules: &RuleSet, type_id: &str) -> bool {

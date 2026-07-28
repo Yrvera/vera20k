@@ -136,22 +136,35 @@ pub fn layout_pass_in_game_options(
 }
 
 /// Resolve one control's pixel rect by re-anchor rule. `dlu` is the raw DLU
-/// resource rect; the owner-draw button rules use only `dlu.y`.
+/// resource rect; the snapped owner-draw rule consumes only `dlu.y`, while the
+/// bottom-row rule is derived entirely from the resolved panel geometry.
 fn apply_anchor(rule: AnchorRule, dlu: RectPx, screen_w: i32, panel: RightPanelRects) -> RectPx {
     match rule {
         AnchorRule::OwnerDrawButtonSnap { cell_w } => {
             geom::snap_button_round_half_up(dlu.y, panel, cell_w)
         }
-        AnchorRule::OwnerDrawButtonRawTop { cell_w } => {
-            let y = geom::mul_div_round(dlu.y, geom::DLU_BASE_Y, 8) + panel.top.y;
+        AnchorRule::OwnerDrawButtonBottomRow { cell_w } => {
+            let y = panel.bottom.y - geom::RIGHT_PANEL_TILE_H;
             let x = panel.top.x + (geom::RIGHT_PANEL_WIDTH - cell_w);
             RectPx::new(x, y, cell_w, geom::SDBTNANM_CELL_H)
         }
         AnchorRule::RightAnchor => {
             right_anchor(screen_w, panel, geom::dlu_rect(dlu.x, dlu.y, dlu.w, dlu.h))
         }
-        AnchorRule::RightAnchorNudge { dy, dh } => {
-            let a = right_anchor(screen_w, panel, geom::dlu_rect(dlu.x, dlu.y, dlu.w, dlu.h));
+        AnchorRule::RightAnchorRuntimeAdjust {
+            resource_dw,
+            resource_dh,
+            dy,
+            dh,
+        } => {
+            let resource = geom::dlu_rect(dlu.x, dlu.y, dlu.w, dlu.h);
+            let adjusted = RectPx::new(
+                resource.x,
+                resource.y,
+                resource.w + resource_dw,
+                resource.h + resource_dh,
+            );
+            let a = right_anchor(screen_w, panel, adjusted);
             RectPx::new(a.x, a.y + dy, a.w, a.h + dh)
         }
     }
@@ -219,7 +232,7 @@ mod tests {
                     0x03EE,
                     ControlKind::Button,
                     RectPx::new(425, 330, 108, 23),
-                    AnchorRule::OwnerDrawButtonRawTop {
+                    AnchorRule::OwnerDrawButtonBottomRow {
                         cell_w: SDBTNANM_CELL_W_NARROW,
                     },
                 ),
@@ -227,7 +240,12 @@ mod tests {
                     0x0694,
                     ControlKind::Static,
                     RectPx::new(425, 1, 108, 10),
-                    AnchorRule::RightAnchorNudge { dy: 7, dh: 1 },
+                    AnchorRule::RightAnchorRuntimeAdjust {
+                        resource_dw: 1,
+                        resource_dh: 1,
+                        dy: 7,
+                        dh: 1,
+                    },
                 ),
                 ctrl(
                     0x071B,
@@ -240,12 +258,25 @@ mod tests {
         let laid = layout_pass(&desc, 800, 600);
         // Snap button: flush-right 156-cell, first row at y=199.
         assert_eq!(rect_for(&laid, 0x0683), RectPx::new(644, 199, 156, 42));
-        // Raw-top Exit: same column, un-snapped low at y=536.
-        assert_eq!(rect_for(&laid, 0x03EE), RectPx::new(644, 536, 156, 42));
-        // Title: right-anchor (635,2,162,16) then +7y/+1h.
-        assert_eq!(rect_for(&laid, 0x0694), RectPx::new(635, 9, 162, 17));
+        // Exit: same column, in the final tile immediately above the bottom cap.
+        assert_eq!(rect_for(&laid, 0x03EE), RectPx::new(644, 535, 156, 42));
+        // Title: compatibility +1w/+1h, right-anchor (635,2,163,17),
+        // then the title finalizer adds +7y/+1h.
+        assert_eq!(rect_for(&laid, 0x0694), RectPx::new(635, 9, 163, 18));
         // Website static: right-anchor of (671,47,92,54) -> x=800-38-92.
         assert_eq!(rect_for(&laid, 0x071B), RectPx::new(670, 47, 92, 54));
+    }
+
+    #[test]
+    fn production_main_menu_title_uses_exact_runtime_rect_at_required_resolutions() {
+        for (screen_w, screen_h, expected) in [
+            (640, 480, RectPx::new(475, 9, 163, 18)),
+            (800, 600, RectPx::new(635, 9, 163, 18)),
+            (1024, 768, RectPx::new(747, 93, 163, 18)),
+        ] {
+            let actual = crate::ui::main_menu_shell::compute_layout(screen_w, screen_h).title;
+            assert_eq!(actual, expected, "{screen_w}x{screen_h}");
+        }
     }
 
     /// Modal-centered dialogs are NOT re-anchored — they keep their DLU->pixel
@@ -275,7 +306,7 @@ mod tests {
 
     /// Re-anchor is oversized-screen aware: 1024x768 reproduces the 0xE2 cells.
     #[test]
-    fn snap_and_raw_top_track_oversized_screen() {
+    fn snap_and_bottom_row_track_supported_screen_sizes() {
         let desc = DialogDescriptor {
             id: DialogId(0x00E2),
             bg_kind: BgKind::RightPanelShell,
@@ -294,15 +325,18 @@ mod tests {
                     0x03EE,
                     ControlKind::Button,
                     RectPx::new(425, 330, 108, 23),
-                    AnchorRule::OwnerDrawButtonRawTop {
+                    AnchorRule::OwnerDrawButtonBottomRow {
                         cell_w: SDBTNANM_CELL_W_NARROW,
                     },
                 ),
             ],
         };
-        let laid = layout_pass(&desc, 1024, 768);
-        assert_eq!(rect_for(&laid, 0x0683), RectPx::new(756, 283, 156, 42));
-        assert_eq!(rect_for(&laid, 0x03EE), RectPx::new(756, 620, 156, 42));
+        let at_640 = layout_pass(&desc, 640, 480);
+        assert_eq!(rect_for(&at_640, 0x03EE), RectPx::new(484, 409, 156, 42));
+
+        let at_1024 = layout_pass(&desc, 1024, 768);
+        assert_eq!(rect_for(&at_1024, 0x0683), RectPx::new(756, 283, 156, 42));
+        assert_eq!(rect_for(&at_1024, 0x03EE), RectPx::new(756, 619, 156, 42));
     }
 
     /// Test anchor with deterministic sidebar-derived button Y values so the

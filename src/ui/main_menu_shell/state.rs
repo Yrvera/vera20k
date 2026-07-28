@@ -67,6 +67,8 @@ pub struct MainMenuShellState {
     /// armed for a network-dialog control that does not exist on this dialog,
     /// so hovering produces no visual change (default frame stays selected).
     pub hovered_owner_draw_button: Option<MainMenuControlId>,
+    /// Retained, paint-driven kind-1 state for title static 0x694.
+    pub(crate) title_reveal: crate::ui::shell::static_reveal::Kind1StaticReveal,
 }
 
 pub fn action_for_control(id: MainMenuControlId) -> MainMenuShellAction {
@@ -129,7 +131,9 @@ mod tests {
     use crate::ui::shell::layout::LaidOutControl;
 
     /// Adapt the laid-out main-menu buttons into the controller's button-only feed.
-    fn button_feed(layout: &crate::ui::main_menu_shell::MainMenuShellLayout) -> Vec<LaidOutControl> {
+    fn button_feed(
+        layout: &crate::ui::main_menu_shell::MainMenuShellLayout,
+    ) -> Vec<LaidOutControl> {
         layout
             .buttons
             .iter()
@@ -171,7 +175,7 @@ mod tests {
     #[test]
     fn controller_hits_main_menu_buttons_by_geometry() {
         // Real layout geometry routed through the shared controller. SinglePlayer
-        // cell (644,199,156,42); Exit cell (644,536,156,42). The flush-right cell's
+        // cell (644,199,156,42); Exit cell (644,535,156,42). The flush-right cell's
         // exclusive right edge (x=800), the 632..644 gutter, and above-top all miss;
         // statics are never fed, so the website/title never register as hits.
         let layout = compute_layout(800, 600);
@@ -183,7 +187,7 @@ mod tests {
             c.pressed(),
             Some(MainMenuControlId::SinglePlayer0x683.resource_id())
         );
-        c.on_pointer_down(700, 537, &feed);
+        c.on_pointer_down(700, 535, &feed);
         assert_eq!(
             c.pressed(),
             Some(MainMenuControlId::ExitGame0x3ee.resource_id())
@@ -193,6 +197,8 @@ mod tests {
         c.on_pointer_down(640, 210, &feed);
         assert_eq!(c.pressed(), None);
         c.on_pointer_down(700, 198, &feed);
+        assert_eq!(c.pressed(), None);
+        c.on_pointer_down(700, 577, &feed);
         assert_eq!(c.pressed(), None);
     }
 

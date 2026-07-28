@@ -20,6 +20,27 @@ pub struct SimRng {
     state: Vec<u32>,
 }
 
+/// Allocation-free logical view of the native-significant RNG fields.
+///
+/// Native padding is deliberately absent: Rust has no verified storage or
+/// comparison policy for those three bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimRngLogicalView<'a> {
+    pub disabled: u8,
+    pub index_a: i32,
+    pub index_b: i32,
+    pub words: &'a [u32],
+}
+
+/// Owned logical RNG evidence captured at a named simulation boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimRngLogicalState {
+    pub disabled: u8,
+    pub index_a: i32,
+    pub index_b: i32,
+    pub words: [u32; RNG_TABLE_LEN],
+}
+
 impl SimRng {
     /// Create a new RNG with the given seed.
     pub fn new(seed: u64) -> Self {
@@ -31,23 +52,6 @@ impl SimRng {
         };
         rng.reseed(seed as u32);
         rng
-    }
-
-    /// Create an RNG in the all-zero "unseeded" state.
-    ///
-    /// Mirrors gamemd's `g_MapGenRng`, a `RandomClass` instance that lives in
-    /// zero-initialized BSS and is never seeded on a non-random map. With every
-    /// state word zero, `next_u32` returns `state[a] ^ state[b] == 0` on every
-    /// draw regardless of the index positions, so the stream yields 0 forever
-    /// until (and unless) it is explicitly reseeded. Do NOT reuse `new(0)`: that
-    /// runs `reseed`, which mixes a non-zero table into the state.
-    pub fn zeroed() -> Self {
-        Self {
-            disabled: 0,
-            index_a: 0,
-            index_b: 0,
-            state: vec![0; RNG_TABLE_LEN],
-        }
     }
 
     /// Compact deterministic fingerprint of the full internal state.
@@ -69,6 +73,28 @@ impl SimRng {
             mix(u64::from(word));
         }
         hash
+    }
+
+    /// Borrow every logical field without copying or exposing mutation.
+    pub fn logical_view(&self) -> SimRngLogicalView<'_> {
+        SimRngLogicalView {
+            disabled: self.disabled,
+            index_a: self.index_a,
+            index_b: self.index_b,
+            words: &self.state,
+        }
+    }
+
+    /// Copy every logical field into immutable boundary evidence.
+    pub fn logical_state(&self) -> SimRngLogicalState {
+        let mut words = [0; RNG_TABLE_LEN];
+        words.copy_from_slice(&self.state);
+        SimRngLogicalState {
+            disabled: self.disabled,
+            index_a: self.index_a,
+            index_b: self.index_b,
+            words,
+        }
     }
 
     /// Test/debug accessor for the secondary lag index. Used by the two-stream
@@ -258,15 +284,29 @@ mod tests {
     use super::SimRng;
 
     #[test]
-    fn zeroed_stream_returns_zero_forever() {
-        let mut rng = SimRng::zeroed();
-        // Draw past one full table wrap (RNG_TABLE_LEN = 250) to cover the
-        // index advance/wrap path, not just the first few draws.
-        for _ in 0..600 {
-            assert_eq!(rng.next_u32(), 0, "unseeded zero-state must draw 0");
-        }
-        // A fresh zeroed stream must be byte-identical to another (deterministic).
-        assert_eq!(SimRng::zeroed().state(), SimRng::zeroed().state());
+    fn sim_rng_logical_view_and_state_expose_all_250_words_without_mutation() {
+        let rng = SimRng::new(0);
+        let before = rng.state();
+        let view = rng.logical_view();
+        let owned = rng.logical_state();
+        assert_eq!(view.disabled, 0);
+        assert_eq!((view.index_a, view.index_b), (0, 0x67));
+        assert_eq!(view.words.len(), 250);
+        assert_eq!(owned.words.as_slice(), view.words);
+        assert_eq!(rng.state(), before, "observation must not advance the RNG");
+    }
+
+    #[test]
+    fn seed_zero_logical_state_matches_native_fixture_edges() {
+        let state = SimRng::new(0).logical_state();
+        assert_eq!(
+            &state.words[..4],
+            &[0xAD2E_AA18, 0x6670_51BB, 0xBEB8_385D, 0x1293_A6D6]
+        );
+        assert_eq!(
+            &state.words[246..],
+            &[0x62FD_BE0F, 0x2034_06B3, 0xAD5E_A053, 0xD72E_1536]
+        );
     }
 
     #[test]

@@ -128,9 +128,9 @@ pub enum AiDifficulty {
 impl AiDifficulty {
     pub const fn as_i32(self) -> i32 {
         match self {
-            Self::Easy => 0,
+            Self::Hard => 0,
             Self::Normal => 1,
-            Self::Hard => 2,
+            Self::Easy => 2,
         }
     }
 }
@@ -147,6 +147,10 @@ pub struct SkirmishLaunchOptions {
     pub unit_count: i32,
     pub tech_level: i32,
     pub game_speed: i32,
+    /// Rules-owned default/global difficulty retained from
+    /// `[MultiplayerDialogSettings]`. Offline AI houses carry their selected
+    /// row difficulty separately; this value is not their shared authority.
+    pub default_ai_difficulty: i32,
     pub short_game: bool,
     pub bases: bool,
     pub bridges_destroyable: bool,
@@ -170,6 +174,7 @@ impl Default for SkirmishLaunchOptions {
             unit_count: defaults.unit_count,
             tech_level: defaults.tech_level,
             game_speed: defaults.game_speed,
+            default_ai_difficulty: defaults.ai_difficulty,
             short_game: defaults.short_game,
             bases: defaults.bases,
             bridges_destroyable: defaults.bridges_destroyable,
@@ -192,15 +197,16 @@ impl SkirmishLaunchOptions {
     /// `[MultiplayerDialogSettings]`. The setup dialog later overrides the
     /// values it exposes as widgets; the remaining fields — tech level and the
     /// non-widget toggles (bases, shroud, tiberium growth, …) — flow straight
-    /// through to the match from this base. AI difficulty and player count are
-    /// supplied separately at launch from the configured opponent slots, so
-    /// they are not carried on this struct.
+    /// through to the match from this base. The rules-owned default AI
+    /// difficulty is retained for the global GameOptions mirror; configured
+    /// opponent difficulty is copied separately into each HouseState.
     pub fn from_game_options(options: &GameOptions) -> Self {
         Self {
             starting_credits: options.starting_credits,
             unit_count: options.unit_count,
             tech_level: options.tech_level,
             game_speed: options.game_speed,
+            default_ai_difficulty: options.ai_difficulty,
             short_game: options.short_game,
             bases: options.bases,
             bridges_destroyable: options.bridges_destroyable,
@@ -217,7 +223,7 @@ impl SkirmishLaunchOptions {
         }
     }
 
-    pub fn to_game_options(&self, ai_players: i32, ai_difficulty: AiDifficulty) -> GameOptions {
+    pub fn to_game_options(&self, ai_players: i32) -> GameOptions {
         GameOptions {
             short_game: self.short_game,
             bases: self.bases,
@@ -236,7 +242,7 @@ impl SkirmishLaunchOptions {
             unit_count: self.unit_count,
             tech_level: self.tech_level,
             game_speed: self.game_speed,
-            ai_difficulty: ai_difficulty.as_i32(),
+            ai_difficulty: self.default_ai_difficulty,
             ai_players,
         }
     }
@@ -246,14 +252,12 @@ impl SkirmishLaunchOptions {
 pub struct SkirmishLocalSlot {
     pub country: LaunchCountry,
     /// When true, `country` is a placeholder to be replaced by a random draw
-    /// during session resolution; see [`SkirmishLaunchSession::resolve_random_assignments`].
+    /// on the app-owned shell Scenario cursor before map loading.
     pub country_random: bool,
     pub color_index: u8,
     /// When true, `color_index` is a placeholder to be replaced by a random
-    /// collision-free color draw during session resolution. The current setup
-    /// UI never sets this (color is always picked concretely), so it is dormant
-    /// today — but the resolver models the engine's color draw faithfully for
-    /// when a "random color" option is wired up.
+    /// collision-free color draw during shell session resolution. The raw UI
+    /// selection and persisted snapshot retain the Random sentinel.
     pub color_random: bool,
     pub start_position: LaunchStartPosition,
     pub team: LaunchTeam,
@@ -263,10 +267,10 @@ pub struct SkirmishLocalSlot {
 pub struct SkirmishAiSlot {
     pub country: LaunchCountry,
     /// When true, `country` is a placeholder to be replaced by a random draw
-    /// during session resolution; see [`SkirmishLaunchSession::resolve_random_assignments`].
+    /// on the app-owned shell Scenario cursor before map loading.
     pub country_random: bool,
     pub color_index: u8,
-    /// See [`SkirmishLocalSlot::color_random`]. Dormant in the current UI.
+    /// See [`SkirmishLocalSlot::color_random`].
     pub color_random: bool,
     pub start_position: LaunchStartPosition,
     pub team: LaunchTeam,
@@ -283,9 +287,94 @@ pub struct SkirmishLaunchSession {
     pub options: SkirmishLaunchOptions,
 }
 
+/// Staged shell assignment copy used by the app's native-order close
+/// transaction. Keeping the phases explicit lets snapshot Slot packing occur
+/// after local country but before local colour without mutating raw controls.
+pub(crate) struct ShellRandomAssignmentState {
+    resolved: SkirmishLaunchSession,
+    used_colors: Vec<u8>,
+}
+
+impl ShellRandomAssignmentState {
+    pub(crate) fn new(session: &SkirmishLaunchSession) -> Self {
+        let mut used_colors = Vec::new();
+        if !session.local.color_random {
+            used_colors.push(session.local.color_index);
+        }
+        for opponent in &session.opponents {
+            if !opponent.color_random {
+                used_colors.push(opponent.color_index);
+            }
+        }
+        Self {
+            resolved: session.clone(),
+            used_colors,
+        }
+    }
+
+    pub(crate) fn resolve_local_country<E>(
+        &mut self,
+        rng: &mut SimRng,
+        draw_country: &mut impl FnMut(RandomCountryRole, &mut SimRng) -> Result<LaunchCountry, E>,
+    ) -> Result<(), E> {
+        if self.resolved.local.country_random {
+            self.resolved.local.country = draw_country(RandomCountryRole::Human, rng)?;
+            self.resolved.local.country_random = false;
+        }
+        Ok(())
+    }
+
+    /// Materialize the AI assignment arrays after the local-country phase.
+    /// The app close transaction starts with an empty opponent list so this
+    /// write occurs at the same native phase as the raw persisted Slot pack.
+    pub(crate) fn pack_ai_assignments(&mut self, opponents: &[SkirmishAiSlot]) {
+        debug_assert!(self.resolved.opponents.is_empty());
+        self.resolved.opponents = opponents.to_vec();
+        self.used_colors.extend(
+            opponents
+                .iter()
+                .filter(|opponent| !opponent.color_random)
+                .map(|opponent| opponent.color_index),
+        );
+    }
+
+    pub(crate) fn resolve_local_color(&mut self, rng: &mut SimRng) {
+        if self.resolved.local.color_random {
+            let color = draw_collision_free_color(rng, &self.used_colors);
+            self.resolved.local.color_index = color;
+            self.resolved.local.color_random = false;
+            self.used_colors.push(color);
+        }
+    }
+
+    pub(crate) fn resolve_ai<E>(
+        &mut self,
+        rng: &mut SimRng,
+        draw_country: &mut impl FnMut(RandomCountryRole, &mut SimRng) -> Result<LaunchCountry, E>,
+    ) -> Result<(), E> {
+        for (index, opponent) in self.resolved.opponents.iter_mut().enumerate() {
+            if opponent.country_random {
+                opponent.country = draw_country(RandomCountryRole::Ai { index }, rng)?;
+                opponent.country_random = false;
+            }
+            if opponent.color_random {
+                let color = draw_collision_free_color(rng, &self.used_colors);
+                opponent.color_index = color;
+                opponent.color_random = false;
+                self.used_colors.push(color);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> SkirmishLaunchSession {
+        self.resolved
+    }
+}
+
 impl SkirmishLaunchSession {
-    /// Resolve every slot left on "random country"/"random color" into concrete
-    /// values by drawing from the supplied scenario RNG, in the engine's order:
+    /// Resolve every slot left on "random country"/"random color" using the
+    /// verified ordinary selected-mode Scenario-RNG order:
     /// **all humans first, then all AI slots**, and **within each slot country
     /// before color**. Each random country is one inclusive `(0, 9)` draw; each
     /// random color is one inclusive `(0, 7)` draw repeated until it does not
@@ -293,69 +382,64 @@ impl SkirmishLaunchSession {
     /// Slots that already hold a concrete value are left untouched and consume
     /// no draw, so the stream only advances for the slots that requested random.
     ///
-    /// Drawing from the scenario stream (rather than a side RNG) keeps the
-    /// resolution deterministic for a given game seed and identical across
-    /// lockstep peers. The color branch is dormant under the current UI (no slot
-    /// sets `color_random`), but is modeled so the pre-tick-0 cursor matches the
-    /// engine the moment a "random color" option exists. This is the SP path;
-    /// the MP country draw uses a network callback (no local RNG) and is out of
-    /// scope until a net layer exists.
-    pub fn resolve_random_assignments(&self, rng: &mut SimRng) -> Self {
-        let mut resolved = self.clone();
+    /// The supplied RNG must be the app-owned frontend/process Scenario cursor,
+    /// never the freshly seeded gameplay cursor.
+    pub fn resolve_shell_random_assignments(&self, rng: &mut SimRng) -> Self {
+        self.resolve_shell_random_assignments_with(rng, |_, rng| {
+            LaunchCountry::from_country_index(rng.next_range_u32_inclusive(0, 9))
+        })
+    }
 
-        // Colors already in use that a random draw must avoid: every slot
-        // holding a concrete (non-random) color, plus colors assigned earlier in
-        // this same pass. Mirrors the engine's collision scan, which checks both
-        // the already-set slot colors and the running color table.
-        let mut used_colors: Vec<u8> = Vec::new();
-        if !resolved.local.color_random {
-            used_colors.push(resolved.local.color_index);
+    /// Resolve shell assignments while delegating country selection to the
+    /// selected MPModes authority. Cooperative uses this hook for eligibility
+    /// retries; colours remain here so every rejected country candidate shifts
+    /// the following colour draw.
+    pub fn resolve_shell_random_assignments_with(
+        &self,
+        rng: &mut SimRng,
+        mut draw_country: impl FnMut(RandomCountryRole, &mut SimRng) -> LaunchCountry,
+    ) -> Self {
+        match self.try_resolve_shell_random_assignments_with(rng, |role, rng| {
+            Ok::<_, std::convert::Infallible>(draw_country(role, rng))
+        }) {
+            Ok(resolved) => resolved,
+            Err(never) => match never {},
         }
-        for opponent in &resolved.opponents {
-            if !opponent.color_random {
-                used_colors.push(opponent.color_index);
-            }
-        }
+    }
+
+    /// Fallible form of shell assignment resolution for selected-mode country
+    /// authorities whose data can be malformed. An error stops the transaction
+    /// immediately, retaining draws already consumed but making no later
+    /// country or colour calls.
+    pub fn try_resolve_shell_random_assignments_with<E>(
+        &self,
+        rng: &mut SimRng,
+        mut draw_country: impl FnMut(RandomCountryRole, &mut SimRng) -> Result<LaunchCountry, E>,
+    ) -> Result<Self, E> {
+        let mut state = ShellRandomAssignmentState::new(self);
 
         // Phase A: humans (here, the single local slot) — COUNTRY then COLOR.
-        if resolved.local.country_random {
-            let index = rng.next_range_u32_inclusive(0, 9);
-            resolved.local.country = LaunchCountry::from_country_index(index);
-            resolved.local.country_random = false;
-        }
-        if resolved.local.color_random {
-            let color = draw_collision_free_color(rng, &used_colors);
-            resolved.local.color_index = color;
-            resolved.local.color_random = false;
-            used_colors.push(color);
-        }
+        state.resolve_local_country(rng, &mut draw_country)?;
+        state.resolve_local_color(rng);
 
         // Phase B: AI slots in order — each COUNTRY then COLOR.
-        for opponent in &mut resolved.opponents {
-            if opponent.country_random {
-                let index = rng.next_range_u32_inclusive(0, 9);
-                opponent.country = LaunchCountry::from_country_index(index);
-                opponent.country_random = false;
-            }
-            if opponent.color_random {
-                let color = draw_collision_free_color(rng, &used_colors);
-                opponent.color_index = color;
-                opponent.color_random = false;
-                used_colors.push(color);
-            }
-        }
+        state.resolve_ai(rng, &mut draw_country)?;
 
-        resolved
+        Ok(state.finish())
     }
 }
 
-/// Draw a house color in the inclusive range `(0, 7)` (8 colors), redrawing
-/// while the result collides with an already-assigned color — one
-/// `RandomRanged(0, 7)` per attempt, each a single scenario-cursor advance, as
-/// the engine's color-pick retry loop does. Assumes at most 8 colored slots
-/// (the stock cap); with more random-color slots than free colors this would
-/// loop, exactly as the engine would — revisit if random color is ever exposed
-/// alongside the >8-player scale target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RandomCountryRole {
+    Human,
+    Ai { index: usize },
+}
+
+/// Draw an unused shell colour in `0..=7`.
+///
+/// Each collision retry advances the supplied Scenario stream once. More
+/// Random colour slots than free colours intentionally has no exit, matching
+/// the native malformed-state behavior.
 fn draw_collision_free_color(rng: &mut SimRng, used: &[u8]) -> u8 {
     loop {
         let color = rng.next_range_u32_inclusive(0, 7) as u8;
@@ -373,7 +457,7 @@ pub enum LaunchValidationError {
     },
     NoEnabledOpponent,
     MapCapacityExceeded {
-        capacity: usize,
+        capacity: i32,
         requested_players: usize,
     },
     SameExplicitTeam {
@@ -396,11 +480,11 @@ mod tests {
     #[test]
     fn launch_options_preserve_build_off_ally_default() {
         let options = SkirmishLaunchOptions::default();
-        let game_options = options.to_game_options(3, AiDifficulty::Hard);
+        let game_options = options.to_game_options(3);
 
         assert!(game_options.build_off_ally);
         assert_eq!(game_options.ai_players, 3);
-        assert_eq!(game_options.ai_difficulty, 2);
+        assert_eq!(game_options.ai_difficulty, 0);
     }
 
     #[test]
@@ -424,9 +508,10 @@ mod tests {
         parsed.bridges_destroyable = false;
         parsed.ally_change_allowed = false;
         parsed.fog_of_war = true;
+        parsed.ai_difficulty = 2;
 
         let base = SkirmishLaunchOptions::from_game_options(&parsed);
-        let launched = base.to_game_options(2, AiDifficulty::Normal);
+        let launched = base.to_game_options(2);
 
         assert_eq!(launched.tech_level, 3);
         assert!(!launched.bases);
@@ -437,10 +522,10 @@ mod tests {
         assert!(!launched.bridges_destroyable);
         assert!(!launched.ally_change_allowed);
         assert!(launched.fog_of_war);
-        // AI difficulty / player count come from the opponent slots, not the
-        // parsed defaults.
+        // The global/default difficulty remains rules-owned; individual AI
+        // rows are copied to HouseState during launch population.
         assert_eq!(launched.ai_players, 2);
-        assert_eq!(launched.ai_difficulty, 1);
+        assert_eq!(launched.ai_difficulty, 2);
     }
 
     #[test]
@@ -520,13 +605,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_random_assignments_is_deterministic_for_a_seed() {
+    fn shell_random_assignments_are_deterministic_for_a_seed() {
         let session = random_test_session();
         let mut rng_a = SimRng::new(0xC0FFEE);
         let mut rng_b = SimRng::new(0xC0FFEE);
 
-        let first = session.resolve_random_assignments(&mut rng_a);
-        let second = session.resolve_random_assignments(&mut rng_b);
+        let first = session.resolve_shell_random_assignments(&mut rng_a);
+        let second = session.resolve_shell_random_assignments(&mut rng_b);
 
         assert_eq!(first, second, "same seed must yield the same assignment");
         assert!(!first.local.country_random);
@@ -534,14 +619,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_random_assignments_only_draws_for_random_slots_in_order() {
+    fn shell_random_assignments_only_draw_for_random_slots_in_order() {
         let session = random_test_session();
 
         // Two random slots (local + opponent 0); opponent 1 is concrete and must
         // not consume a draw or change. The draw order is local first, then AI,
         // so resolving by hand in that order must reproduce the same result.
         let mut rng = SimRng::new(7);
-        let resolved = session.resolve_random_assignments(&mut rng);
+        let resolved = session.resolve_shell_random_assignments(&mut rng);
 
         let mut expected_rng = SimRng::new(7);
         let expected_local =
@@ -559,21 +644,21 @@ mod tests {
     }
 
     #[test]
-    fn resolve_random_assignments_leaves_concrete_session_untouched() {
+    fn shell_random_assignments_leave_concrete_session_untouched() {
         let mut session = random_test_session();
         session.local.country_random = false;
         session.opponents[0].country_random = false;
 
         let before = SimRng::new(42).state();
         let mut rng = SimRng::new(42);
-        let resolved = session.resolve_random_assignments(&mut rng);
+        let resolved = session.resolve_shell_random_assignments(&mut rng);
 
         assert_eq!(resolved, session, "no random slots means no change");
         assert_eq!(rng.state(), before, "no random slots means no draws");
     }
 
     #[test]
-    fn resolve_random_assignments_draws_country_then_color_humans_then_ai() {
+    fn shell_random_assignments_draw_country_then_color_humans_then_ai() {
         // local + ai0 random country AND random color; ai1 concrete (color 2).
         let mut session = random_test_session();
         session.local.color_random = true;
@@ -581,11 +666,12 @@ mod tests {
         assert!(!session.opponents[1].color_random);
 
         let mut rng = SimRng::new(7);
-        let resolved = session.resolve_random_assignments(&mut rng);
+        let resolved = session.resolve_shell_random_assignments(&mut rng);
 
-        // Replay the engine order by hand: ALL humans (country then color), THEN
-        // all AI (country then color). The used-color set seeds with concrete
-        // colors first (here ai1 = 2), then accumulates as colors are assigned.
+        // Replay the Rust compatibility order by hand: ALL humans (country then
+        // color), THEN all AI (country then color). The used-color set seeds
+        // with concrete colors first (here ai1 = 2), then accumulates as colors
+        // are assigned.
         let mut expected_rng = SimRng::new(7);
         let mut used: Vec<u8> = vec![session.opponents[1].color_index];
         let exp_local_country =
@@ -600,16 +686,19 @@ mod tests {
         assert_eq!(resolved.local.color_index, exp_local_color);
         assert_eq!(resolved.opponents[0].country, exp_ai0_country);
         assert_eq!(resolved.opponents[0].color_index, exp_ai0_color);
-        assert_eq!(resolved.opponents[1].color_index, 2, "concrete AI color untouched");
+        assert_eq!(
+            resolved.opponents[1].color_index, 2,
+            "concrete AI color untouched"
+        );
         assert!(!resolved.local.color_random && !resolved.opponents[0].color_random);
-        // The strongest assertion: identical stream state proves the resolver drew
-        // in exactly this order and count (country before color, humans before AI,
-        // collision retries included).
+        // Identical stream state proves this Rust compatibility helper used this
+        // order and count (country before color, humans before AI, collision
+        // retries included).
         assert_eq!(rng.state(), expected_rng.state());
     }
 
     #[test]
-    fn resolve_random_assignments_color_collision_forces_redraw() {
+    fn shell_random_assignments_color_collision_forces_redraw() {
         // Pre-occupy the color the seed would draw first, so the resolver must
         // redraw — proving each collision costs an extra scenario-cursor draw.
         let seed = 12345;
@@ -627,7 +716,7 @@ mod tests {
         session.opponents[0].color_random = true;
 
         let mut rng = SimRng::new(seed);
-        let resolved = session.resolve_random_assignments(&mut rng);
+        let resolved = session.resolve_shell_random_assignments(&mut rng);
 
         assert_ne!(
             resolved.opponents[0].color_index, first_color,
@@ -641,5 +730,35 @@ mod tests {
             one_draw.state(),
             "a color collision must cost an extra draw"
         );
+    }
+
+    #[test]
+    fn fallible_country_authority_stops_before_later_assignment_draws() {
+        let mut session = random_test_session();
+        session.local.color_random = true;
+        session.opponents[0].color_random = true;
+        let seed = 0x4567;
+        let mut rng = SimRng::new(seed);
+        let mut roles = Vec::new();
+
+        let result = session.try_resolve_shell_random_assignments_with(
+            &mut rng,
+            |role, _| -> Result<LaunchCountry, &'static str> {
+                roles.push(role);
+                match role {
+                    RandomCountryRole::Human => Ok(LaunchCountry::America),
+                    RandomCountryRole::Ai { .. } => Err("invalid Cooperative country list"),
+                }
+            },
+        );
+
+        assert_eq!(result, Err("invalid Cooperative country list"));
+        assert_eq!(
+            roles,
+            vec![RandomCountryRole::Human, RandomCountryRole::Ai { index: 0 }]
+        );
+        let mut expected_rng = SimRng::new(seed);
+        let _ = draw_collision_free_color(&mut expected_rng, &[1, 2]);
+        assert_eq!(rng.state(), expected_rng.state());
     }
 }

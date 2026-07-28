@@ -8,7 +8,9 @@
 
 use std::collections::BTreeMap;
 
-use super::{SimSoundEvent, Simulation};
+use super::{
+    PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, SimSoundEvent, Simulation,
+};
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::object_type::ObjectCategory;
@@ -112,7 +114,7 @@ impl Simulation {
             let type_id = self.interner.intern(&map_ent.type_id);
 
             // Build the GameEntity with all required fields.
-            let mut ge = GameEntity::new(
+            let mut ge = GameEntity::new_at_frame(
                 stable_id,
                 map_ent.cell_x,
                 map_ent.cell_y,
@@ -125,6 +127,7 @@ impl Simulation {
                 map_ent.veterancy,
                 sight_range,
                 uses_voxel,
+                self.session.binary_frame,
             );
 
             if self.debug_event_logging {
@@ -206,9 +209,7 @@ impl Simulation {
             let miner_obj = rules.and_then(|r| r.object(&map_ent.type_id));
             let miner_kind = miner_obj.and_then(miner_kind_for_object);
             if let Some(kind) = miner_kind {
-                let mcfg: MinerConfig = rules
-                    .map(|r| MinerConfig::from_general_rules(&r.general))
-                    .unwrap_or_default();
+                let mcfg: MinerConfig = rules.map(MinerConfig::from_rules).unwrap_or_default();
                 let storage = miner_obj.map(|o| o.storage.max(0) as u16).unwrap_or(0);
                 ge.miner = Some(Miner::new(kind, &mcfg, storage));
                 ge.harvest_overlay = Some(HarvestOverlay {
@@ -240,12 +241,39 @@ impl Simulation {
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.foundation = obj.foundation.clone();
             }
-            self.unlimbo(ge);
+            let (stable_id, outcome) = self.unlimbo(ge);
+            debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+            self.commit_spawn_harvest_mission(stable_id);
             count += 1;
         }
 
         log::info!("Spawned {} entities", count);
         count
+    }
+
+    /// Commit the spawn-time Harvest mission for a freshly stored miner so the
+    /// host's mission dispatch has a truthful `current` from birth (cursor
+    /// `SearchOre` == the zeroed handler state a fresh Assign writes).
+    /// UNCHECKED: the native creation-mission family (Enter_Idle_Mode /
+    /// initial-unit assigns, roadmap Track B1) is unverified — this preserves
+    /// the legacy spawn-into-SearchOre behavior. Slave Miners are excluded
+    /// (their own system drives them; never Harvest-dispatched).
+    fn commit_spawn_harvest_mission(&mut self, stable_id: u64) {
+        let is_dispatchable_miner = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|e| e.miner.as_ref())
+            .is_some_and(|m| m.kind != crate::sim::miner::MinerKind::Slave);
+        if !is_dispatchable_miner {
+            return;
+        }
+        let now = self.session.binary_frame;
+        let _ = self.mission_assign_exact(
+            stable_id,
+            crate::sim::mission::MissionId::from_known(crate::sim::mission::MissionType::Harvest),
+            now,
+        );
     }
 
     /// Spawn one object instance (used by production). Returns the stable_id on success.
@@ -293,7 +321,7 @@ impl Simulation {
         let owner_iid = self.interner.intern(owner);
         let type_iid = self.interner.intern(type_id);
 
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame(
             stable_id,
             rx,
             ry,
@@ -306,6 +334,7 @@ impl Simulation {
             0, // veterancy = rookie for production spawns
             sight_range,
             uses_voxel,
+            self.session.binary_frame,
         );
 
         if self.debug_event_logging {
@@ -343,8 +372,7 @@ impl Simulation {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
         }
         if category == EntityCategory::Structure && obj.bunker {
-            ge.bunker_runtime =
-                Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
+            ge.bunker_runtime = Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
         }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
@@ -375,7 +403,7 @@ impl Simulation {
         }
 
         if let Some(kind) = miner_kind_for_object(obj) {
-            let mcfg: MinerConfig = MinerConfig::from_general_rules(&rules.general);
+            let mcfg: MinerConfig = MinerConfig::from_rules(rules);
             let storage = obj.storage.max(0) as u16;
             ge.miner = Some(Miner::new(kind, &mcfg, storage));
             ge.harvest_overlay = Some(HarvestOverlay {
@@ -396,7 +424,10 @@ impl Simulation {
         }
 
         ge.foundation = obj.foundation.clone();
-        Some(self.unlimbo(ge))
+        let (stable_id, outcome) = self.unlimbo(ge);
+        debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+        self.commit_spawn_harvest_mission(stable_id);
+        Some(stable_id)
     }
 
     /// Create an object in limbo: stored in EntityStore and owner counts, but
@@ -432,7 +463,7 @@ impl Simulation {
         let owner_iid = self.interner.intern(owner);
         let type_iid = self.interner.intern(type_id);
 
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame(
             stable_id,
             rx,
             ry,
@@ -445,6 +476,7 @@ impl Simulation {
             0,
             sight_range,
             uses_voxel,
+            self.session.binary_frame,
         );
 
         if self.debug_event_logging {
@@ -481,8 +513,7 @@ impl Simulation {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
         }
         if category == EntityCategory::Structure && obj.bunker {
-            ge.bunker_runtime =
-                Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
+            ge.bunker_runtime = Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
         }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
@@ -509,7 +540,7 @@ impl Simulation {
             ge.aircraft_mission = Some(crate::sim::aircraft::AircraftMission::Idle);
         }
         if let Some(kind) = miner_kind_for_object(obj) {
-            let mcfg: MinerConfig = MinerConfig::from_general_rules(&rules.general);
+            let mcfg: MinerConfig = MinerConfig::from_rules(rules);
             let storage = obj.storage.max(0) as u16;
             ge.miner = Some(Miner::new(kind, &mcfg, storage));
             ge.harvest_overlay = Some(HarvestOverlay {
@@ -528,29 +559,28 @@ impl Simulation {
             };
         }
 
-        Some(self.create_limbo(ge))
+        let stable_id = self.create_limbo(ge);
+        self.commit_spawn_harvest_mission(stable_id);
+        Some(stable_id)
     }
 
-    /// Shared spawn placement. Inserts the entity, then either reveals + occupies
-    /// it (active spawn) or leaves it in limbo. Preserves the exact pre-collapse
-    /// step order (`insert -> reveal -> increment -> occupancy`) so the replay hash
-    /// is bit-identical (pure no-op collapse). Returns the stable id.
-    ///
-    /// `active=true` reproduces the old active 4-step; `active=false` reproduces the
-    /// limbo fork. A later slice adopts the native mark-before-register order — do
-    /// NOT swap occupancy ahead of reveal here.
-    fn place_spawned(&mut self, ge: GameEntity, active: bool) -> u64 {
+    /// Store a freshly constructed object in native-style limbo and account for
+    /// its owner. Placement is a separate, result-bearing Reveal transaction.
+    fn store_spawned_limbo(&mut self, mut ge: GameEntity) -> u64 {
         let stable_id = ge.stable_id;
         let owner = self.interner.resolve(ge.owner).to_string();
         let category = ge.category;
+
+        // This boundary receives newly constructed objects. Make those constructor
+        // facts explicit so storage can never imply cell or logic presence.
+        ge.lifecycle.object_alive = true;
+        ge.lifecycle.in_limbo = true;
+        ge.lifecycle.cell_marked = false;
+        ge.in_logic_vector = false;
+        ge.owned_count_released = false;
+
         self.substrate.entities.insert(ge);
-        if active {
-            self.reveal(stable_id);
-            self.increment_owned_count(&owner, category);
-            self.add_entity_occupancy(stable_id);
-        } else {
-            self.increment_owned_count(&owner, category);
-        }
+        self.increment_owned_count(&owner, category);
         stable_id
     }
 
@@ -558,16 +588,31 @@ impl Simulation {
     /// but NOT registered in the active order or map occupancy. Registration
     /// happens later at reveal/landing (e.g. paradrop drop). Returns the stable id.
     pub(crate) fn create_limbo(&mut self, ge: GameEntity) -> u64 {
-        self.place_spawned(ge, false)
+        self.store_spawned_limbo(ge)
     }
 
-    /// Spawn an object and place it on the playfield in one step: insert, reveal
-    /// (active-object order), increment owner counts, and register map occupancy —
-    /// in that exact order. Returns the stable id. This is the active counterpart
-    /// to [`Self::create_limbo`]; the two differ only by whether reveal+occupancy
-    /// run.
-    pub(crate) fn unlimbo(&mut self, ge: GameEntity) -> u64 {
-        self.place_spawned(ge, true)
+    /// Store a new object, then place it through ObjectClass-style Reveal:
+    /// coordinates commit, Mark(PUT) owns occupancy, and eligible logic
+    /// registration happens last. The stored object remains addressable if a
+    /// future caller-supplied placement result makes Reveal fail.
+    pub(crate) fn unlimbo(&mut self, ge: GameEntity) -> (u64, RevealOutcome) {
+        let position = RevealPosition {
+            rx: ge.position.rx,
+            ry: ge.position.ry,
+            z: ge.position.z,
+            sub_x: ge.position.sub_x,
+            sub_y: ge.position.sub_y,
+        };
+        let stable_id = self.store_spawned_limbo(ge);
+        let outcome = self.try_reveal_entity(
+            stable_id,
+            RevealRequest {
+                position,
+                placement: PlacementEvidence::MarkSucceeded,
+                logic_eligible: true,
+            },
+        );
+        (stable_id, outcome)
     }
 
     /// Update VoxelAnimation frame_counts for all voxel entities from atlas data.
@@ -672,7 +717,9 @@ impl Simulation {
                 let occupied = self.substrate.entities.values().any(|e| {
                     // A Dying structure corpse (sold/destroyed earlier in this
                     // command batch) no longer blocks an MCV deploy footprint.
-                    if e.dying || e.stable_id == stable_id || e.category != EntityCategory::Structure
+                    if e.dying
+                        || e.stable_id == stable_id
+                        || e.category != EntityCategory::Structure
                     {
                         return false;
                     }

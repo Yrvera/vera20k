@@ -12,8 +12,9 @@ mod preview;
 mod text;
 
 pub use draw_order::{
-    choose_map_modal_semantic_draw_order, skirmish_shell_semantic_draw_order,
-    validation_modal_semantic_draw_order, SkirmishShellDrawRole,
+    SkirmishShellDrawRole, choose_map_modal_semantic_draw_order,
+    random_map_setup_semantic_draw_order, skirmish_shell_semantic_draw_order,
+    validation_modal_semantic_draw_order,
 };
 pub(crate) use preview::SkirmishPreviewTexture;
 pub(crate) use text::skirmish_right_panel_label_strings;
@@ -34,19 +35,21 @@ use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::main_menu::SkirmishCountry;
 #[cfg(test)]
 use crate::ui::skirmish_shell::{
-    combo_dropdown_content_rect, player_name_edit_text_rect, SkirmishComboId, COMBO_DROPDOWN_ROW_H,
+    COMBO_DROPDOWN_ROW_H, SkirmishComboId, combo_dropdown_content_rect, player_name_edit_text_rect,
 };
 use crate::ui::skirmish_shell::{
-    compute_choose_map_modal_layout, compute_layout, compute_validation_modal_layout,
     ChooseMapModalLayout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
-    SkirmishShellState, ValidationModalLayout,
+    SkirmishShellState, ValidationModalLayout, compute_choose_map_modal_layout, compute_layout,
+    compute_random_map_setup_layout, compute_saved_seed_layout, compute_validation_modal_layout,
+    player_row_visible,
 };
 
 use self::chrome::*;
 use self::controls::*;
+use self::draw_order::ShellDialogChromeProfile;
 #[cfg(test)]
 use self::draw_order::{
-    lower_strip_role, parent_background_role, LowerStripRole, ParentBackgroundRole,
+    LowerStripRole, ParentBackgroundRole, lower_strip_role, parent_background_role,
 };
 use self::modals::*;
 use self::preview::*;
@@ -201,61 +204,87 @@ pub fn build_skirmish_shell_instances(
     let mut instances = Vec::new();
 
     if let Some(choose_map_layout) = choose_map_layout {
-        push_choose_map_modal_instances(&mut instances, atlas, choose_map_layout, shell, modes);
+        // The setup dialog REPLACES the chooser rather than overlaying it: the
+        // original hides/suspends the chooser while 0x105 is up. Drawing both
+        // collides their listboxes, labels and button captions.
+        if let Some(browser) = shell.saved_seed_browser.as_ref() {
+            let seed_layout = compute_saved_seed_layout(
+                browser.mode,
+                choose_map_layout.screen.w as u32,
+                choose_map_layout.screen.h as u32,
+            );
+            push_saved_seed_modal_instances(&mut instances, atlas, &seed_layout, browser);
+        } else if let Some(modal) = shell.random_map_setup_modal.as_ref() {
+            let setup_layout = compute_random_map_setup_layout(
+                choose_map_layout.screen.w as u32,
+                choose_map_layout.screen.h as u32,
+            );
+            push_right_panel_base_instances(&mut instances, atlas, layout, 0, false);
+            push_lower_strip_instance(&mut instances, atlas, layout);
+            let interior =
+                push_random_map_setup_background_instances(&mut instances, atlas, layout);
+            push_steady_optional_chrome_instances(
+                &mut instances,
+                atlas,
+                layout,
+                ShellDialogChromeProfile::RandomMapSetup0x105,
+            );
+            push_random_map_setup_modal_control_instances(
+                &mut instances,
+                atlas,
+                &setup_layout,
+                interior,
+                modal,
+            );
+        } else {
+            push_right_panel_base_instances(&mut instances, atlas, layout, 0, false);
+            push_lower_strip_instance(&mut instances, atlas, layout);
+            let interior = push_choose_map_background_instances(
+                &mut instances,
+                atlas,
+                layout,
+                choose_map_layout,
+            );
+            push_steady_optional_chrome_instances(
+                &mut instances,
+                atlas,
+                layout,
+                ShellDialogChromeProfile::ChooseMap0x6b,
+            );
+            push_choose_map_modal_control_instances(
+                &mut instances,
+                atlas,
+                choose_map_layout,
+                interior,
+                shell,
+                modes,
+            );
+        }
         return instances;
     }
 
-    if let Some(top) = atlas.right_panel_top_sdtp {
-        let mut rect = layout.right_panel.top;
-        // The one real positional move in the native slide-in: a single discrete
-        // horizontal shift of the radar/SDTP shape, applied only above the high-res
-        // width threshold and only while the wave is mid-flight (keyed by phase, not
-        // ramped). It snaps back to 0 once the wave completes.
-        if wave.is_some_and(|w| !w.is_complete()) && layout.screen.w >= RADAR_TRANSITION_MIN_WIDTH {
-            rect.x += RADAR_TRANSITION_SHIFT_PX;
-        }
-        push_entry(&mut instances, top, rect, 0.00080);
-    }
-
-    if let Some(tile) = atlas.right_panel_tile_sdbtnbkgd {
-        for row in 0..layout.right_panel.tile_count {
-            let rect = RectPx::new(
-                layout.right_panel.tile.x,
-                layout.right_panel.tile.y + row * layout.right_panel.tile.h,
-                layout.right_panel.tile.w,
-                layout.right_panel.tile.h,
-            );
-            push_entry(&mut instances, tile, rect, 0.00079);
-        }
-    }
-
-    if right_panel_frame10_overlay_active(shell) {
-        if let Some(overlay) = atlas.right_panel_overlay_sdbtnanm_frame10 {
-            for row in 0..layout.right_panel.tile_count {
-                push_entry(
-                    &mut instances,
-                    overlay,
-                    right_panel_overlay_rect(layout, row, overlay),
-                    0.000785,
-                );
-            }
-        }
-    }
-
-    if let Some(bottom) = atlas.right_panel_bottom_sdbtm {
-        push_entry_top_clipped_native(&mut instances, bottom, layout.right_panel.bottom, 0.00078);
-    }
+    // The one real positional move in the native slide-in: a single discrete
+    // horizontal shift of the radar/SDTP shape, applied only above the high-res
+    // width threshold and only while the wave is mid-flight (keyed by phase, not
+    // ramped). It snaps back to 0 once the wave completes.
+    let top_offset_x = if wave.is_some_and(|wave| !wave.is_complete())
+        && layout.screen.w >= RADAR_TRANSITION_MIN_WIDTH
+    {
+        RADAR_TRANSITION_SHIFT_PX
+    } else {
+        0
+    };
+    push_right_panel_base_instances(
+        &mut instances,
+        atlas,
+        layout,
+        top_offset_x,
+        right_panel_frame10_overlay_active(shell),
+    );
 
     push_player_name_edit_instances(&mut instances, atlas, font, layout, shell);
 
-    if let Some(lower_strip) = lower_strip_entry(atlas, layout) {
-        push_entry(
-            &mut instances,
-            lower_strip,
-            lower_strip_rect(layout, lower_strip),
-            SHELL_LOWER_STRIP_DEPTH,
-        );
-    }
+    push_lower_strip_instance(&mut instances, atlas, layout);
 
     if let Some(background) = parent_background_entry(atlas, layout) {
         push_entry_native(
@@ -267,22 +296,12 @@ pub fn build_skirmish_shell_instances(
         );
     }
 
-    if let Some(top_highlight) = atlas.right_panel_top_highlight_sdtp_frame1 {
-        push_entry(
-            &mut instances,
-            top_highlight,
-            layout.right_panel.top,
-            SHELL_LOWER_STRIP_DEPTH - 0.00001,
-        );
-    }
-    if let Some(sdmpbtn) = atlas.sd_map_button {
-        push_entry(
-            &mut instances,
-            sdmpbtn,
-            sdmpbtn_rect(layout, sdmpbtn),
-            SHELL_LOWER_STRIP_DEPTH - 0.00002,
-        );
-    }
+    push_steady_optional_chrome_instances(
+        &mut instances,
+        atlas,
+        layout,
+        ShellDialogChromeProfile::SkirmishSetup0x102,
+    );
 
     // Right-column owner-draw buttons. During the Single Player -> Skirmish slide-in
     // wave each button shows its wave-scheduled SDBTNANM frame; slot index = top-to-bottom
@@ -338,7 +357,7 @@ pub fn build_skirmish_shell_instances(
         2,
     );
 
-    push_combo_instances(&mut instances, atlas, color_schemes, layout, shell);
+    push_combo_instances(&mut instances, atlas, color_schemes, layout, shell, maps);
     push_checkbox_instances(&mut instances, atlas, layout, shell);
     push_trackbar_instances(&mut instances, atlas, layout, shell);
 
@@ -349,6 +368,9 @@ pub fn build_skirmish_shell_instances(
         push_flag_entry_native_clipped_centered(&mut instances, flag, layout.flags[0], 0.00057);
     }
     for idx in 1..layout.flags.len() {
+        if !player_row_visible(shell, maps, idx) {
+            continue;
+        }
         let entry = shell
             .opponents
             .get(idx - 1)
@@ -613,6 +635,17 @@ fn render_skirmish_shell_with_atlas(
     atlas: Option<&SkirmishShellChromeAtlas>,
     mode: ShellRenderMode,
 ) -> anyhow::Result<SkirmishShellAction> {
+    // Collect whatever the generator has produced before laying anything out,
+    // so each in-progress preview lands on the next frame drawn and the frame
+    // that clears "Working / Please Wait" is the one showing the finished map.
+    // While a job is in flight the shell keeps asking for frames -- nothing else
+    // is driving redraws, and without this the dialog would freeze on the first
+    // "working" frame until the player moved the mouse.
+    if crate::app::App::poll_random_map_generation(state) {
+        state.window.request_redraw();
+    } else if state.random_map_generation.is_some() {
+        state.window.request_redraw();
+    }
     let layout = compute_layout(state.render_width(), state.render_height());
     let choose_map_layout = state
         .skirmish_shell_state
@@ -636,12 +669,21 @@ fn render_skirmish_shell_with_atlas(
     let selected_entry = state
         .skirmish_shell_maps
         .get(state.skirmish_shell_state.selected_map_idx);
-    let preview_has_baked_start_markers = selected_entry.is_some_and(is_random_map_sentinel_entry);
+    // Both the sentinel's RandMap.img and the setup dialog's generated image
+    // already carry their start markers, so the overlay pass must not add them
+    // a second time.
+    let preview_has_baked_start_markers = selected_entry.is_some_and(is_random_map_sentinel_entry)
+        || state.skirmish_shell_state.random_map_setup_modal.is_some();
     let selected_preview_bounds =
         selected_entry.and_then(|entry| entry.preview_source_bounds.as_ref());
-    let preview_rect = choose_map_layout
-        .as_ref()
-        .map(|layout| layout.preview)
+    let setup_modal_open = state.skirmish_shell_state.random_map_setup_modal.is_some();
+    // While the setup dialog is up it owns the preview box, so the image goes in
+    // its own 0x468 rect rather than the chooser's.
+    let setup_preview_rect = setup_modal_open.then(|| {
+        compute_random_map_setup_layout(state.render_width(), state.render_height()).preview
+    });
+    let preview_rect = setup_preview_rect
+        .or_else(|| choose_map_layout.as_ref().map(|layout| layout.preview))
         .unwrap_or(layout.map_preview);
     let fitted_preview_rect = state
         .skirmish_preview_texture
@@ -721,7 +763,29 @@ fn render_skirmish_shell_with_atlas(
         )
     };
     if let Some(choose_map_layout) = choose_map_layout.as_ref() {
-        push_choose_map_modal_text_draws(&mut shell_draws, state, choose_map_layout);
+        // Mirrors the sprite pass: the setup dialog replaces the chooser, so
+        // only one of the two contributes text.
+        if let Some(mode) = state
+            .skirmish_shell_state
+            .saved_seed_browser
+            .as_ref()
+            .map(|browser| browser.mode)
+        {
+            let seed_layout = compute_saved_seed_layout(
+                mode,
+                choose_map_layout.screen.w as u32,
+                choose_map_layout.screen.h as u32,
+            );
+            push_saved_seed_modal_text_draws(&mut shell_draws, state, &seed_layout);
+        } else if state.skirmish_shell_state.random_map_setup_modal.is_some() {
+            let setup_layout = compute_random_map_setup_layout(
+                choose_map_layout.screen.w as u32,
+                choose_map_layout.screen.h as u32,
+            );
+            push_random_map_setup_modal_text_draws(&mut shell_draws, state, &setup_layout);
+        } else {
+            push_choose_map_modal_text_draws(&mut shell_draws, state, choose_map_layout);
+        }
     }
     if let Some(validation_layout) = validation_layout.as_ref() {
         push_validation_modal_text_draws(
@@ -1426,24 +1490,81 @@ mod tests {
 
     #[test]
     fn choose_map_modal_semantic_draw_order_replaces_parent_shell() {
-        let order = choose_map_modal_semantic_draw_order(true);
+        let layout = compute_layout(800, 600);
+        let order = choose_map_modal_semantic_draw_order(&layout, true);
 
+        assert_eq!(order[0], SkirmishShellDrawRole::RightPanelTopSdtp);
         assert_eq!(
-            order[0],
+            &order[1..10],
+            [SkirmishShellDrawRole::RightPanelTileSdbtnbkgd; 9]
+        );
+        assert_eq!(order[10], SkirmishShellDrawRole::RightPanelBottomSdbtm);
+        assert_eq!(order[11], SkirmishShellDrawRole::LowerSideLwscrnl);
+        assert_eq!(
+            order[12],
             SkirmishShellDrawRole::ChooseMapBackgroundCustomizeBattle800
         );
-        assert_eq!(&order[1..3], [SkirmishShellDrawRole::ChooseMapListbox; 2]);
+        assert!(!order.contains(&SkirmishShellDrawRole::ChooseMapModalBackdrop));
         assert_eq!(
-            &order[3..6],
+            order[13],
+            SkirmishShellDrawRole::RightPanelTopHighlightSdtpFrame1
+        );
+        assert!(!order.contains(&SkirmishShellDrawRole::RightPanelMapButtonSdmpbtn));
+        assert!(!order.contains(&SkirmishShellDrawRole::RightPanelOverlaySdbtnanmFrame10));
+        let first_listbox = order
+            .iter()
+            .position(|role| *role == SkirmishShellDrawRole::ChooseMapListbox)
+            .expect("Choose Map listbox role");
+        assert!(first_listbox > 13);
+        assert_eq!(
+            &order[first_listbox..first_listbox + 2],
+            [SkirmishShellDrawRole::ChooseMapListbox; 2]
+        );
+        assert_eq!(
+            &order[first_listbox + 2..first_listbox + 5],
             [SkirmishShellDrawRole::ChooseMapOwnerDrawButton; 3]
         );
-        assert_eq!(order[6], SkirmishShellDrawRole::ChooseMapPreviewStatic);
-        assert!(!order.contains(&SkirmishShellDrawRole::RightPanelTopSdtp));
+        assert_eq!(
+            order[first_listbox + 5],
+            SkirmishShellDrawRole::ChooseMapPreviewStatic
+        );
         assert!(!order.contains(&SkirmishShellDrawRole::ParentBackgroundCoopGameSetup800));
         assert!(!order.contains(&SkirmishShellDrawRole::OwnerDrawButton));
 
-        let fallback = choose_map_modal_semantic_draw_order(false);
-        assert_eq!(fallback[0], SkirmishShellDrawRole::ChooseMapModalBackdrop);
+        let fallback = choose_map_modal_semantic_draw_order(&layout, false);
+        assert_eq!(fallback[12], SkirmishShellDrawRole::ChooseMapModalBackdrop);
+        assert!(!fallback.contains(&SkirmishShellDrawRole::ChooseMapBackgroundCustomizeBattle800));
+    }
+
+    #[test]
+    fn random_map_setup_semantic_draw_order_uses_generic_shell_profile() {
+        let layout = compute_layout(800, 600);
+        let order = random_map_setup_semantic_draw_order(&layout, true);
+        let background = order
+            .iter()
+            .position(|role| *role == SkirmishShellDrawRole::RandomMapBackgroundMnscrnlLarge)
+            .expect("RMG MNSCRNL role");
+        let highlight = order
+            .iter()
+            .position(|role| *role == SkirmishShellDrawRole::RightPanelTopHighlightSdtpFrame1)
+            .expect("RMG SDTP frame-1 role");
+        let first_control = order
+            .iter()
+            .position(|role| *role == SkirmishShellDrawRole::RandomMapOptionControl)
+            .expect("RMG option-control role");
+
+        assert_eq!(order[0], SkirmishShellDrawRole::RightPanelTopSdtp);
+        assert_eq!(order[10], SkirmishShellDrawRole::RightPanelBottomSdbtm);
+        assert_eq!(order[11], SkirmishShellDrawRole::LowerSideLwscrnl);
+        assert!(background < highlight);
+        assert!(highlight < first_control);
+        assert!(!order.contains(&SkirmishShellDrawRole::RightPanelMapButtonSdmpbtn));
+        assert!(!order.contains(&SkirmishShellDrawRole::RightPanelOverlaySdbtnanmFrame10));
+        assert!(!order.contains(&SkirmishShellDrawRole::ChooseMapBackgroundCustomizeBattle800));
+
+        let fallback = random_map_setup_semantic_draw_order(&layout, false);
+        assert!(fallback.contains(&SkirmishShellDrawRole::RandomMapModalBackdrop));
+        assert!(!fallback.contains(&SkirmishShellDrawRole::RandomMapBackgroundMnscrnlLarge));
     }
 
     #[test]

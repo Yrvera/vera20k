@@ -56,6 +56,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let mut queued: Vec<CommandEnvelope> = Vec::new();
     let mut attack_voice = false;
     let mut consumed_order_mode = false;
+    // Miner-specific order-ack voice (VoiceHarvest / VoiceEnter); when set it
+    // overrides the generic VoiceMove ack for harvest and manual-return orders.
+    let mut miner_order_voice: Option<&'static str> = None;
 
     if let Some(sim) = &mut state.simulation {
         let execute_tick = sim.session.tick.saturating_add(sim.input_delay_ticks);
@@ -136,6 +139,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     },
                 ));
             }
+            // Manual return order plays VoiceEnter (e.g. CMIN ChronoMinerReturn),
+            // not the generic move ack.
+            miner_order_voice = Some("VoiceEnter");
         } else if clicked_ore && !selected_miner_ids.is_empty() {
             // Direct miners to harvest the clicked ore cell.
             for &stable_id in &selected_miner_ids {
@@ -149,6 +155,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     },
                 ));
             }
+            // Harvest order plays VoiceHarvest (e.g. CMIN ChronoMinerHarvest),
+            // not the generic move ack.
+            miner_order_voice = Some("VoiceHarvest");
             // Non-miner units in selection just move to that cell.
             for &stable_id in &selected_units {
                 if !selected_miner_ids.contains(&stable_id) {
@@ -190,6 +199,11 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                 {
                                     Some(Command::UnloadPassengers {
                                         transport_id: target.stable_id,
+                                    })
+                                } else if entity.bunker_occupant.is_some() {
+                                    // Own occupied tank bunker → eject the installed unit.
+                                    Some(Command::EjectBunker {
+                                        bunker_id: target.stable_id,
                                     })
                                 } else if state.rules.as_ref().is_some_and(|rules| {
                                     sim.should_show_undeploy_building_command(
@@ -406,6 +420,88 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                 },
                             ));
                         }
+                        for cmd in queued {
+                            sim.pending_commands.push(cmd);
+                        }
+                        emit_order_voice(state, "VoiceMove");
+                        return true;
+                    }
+                }
+            }
+
+            // Service depot: damaged own vehicles clicking an own UnitRepair
+            // building drive to the depot and auto-repair. Ordered before the
+            // friendly-fallthrough so the click isn't consumed as re-selection.
+            if !force_fire {
+                let depot_target = hover.as_ref().and_then(|target| {
+                    if !matches!(target.kind, HoverTargetKind::FriendlyStructure) {
+                        return None;
+                    }
+                    let rules = state.rules.as_ref()?;
+                    let building = sim.entities().get(target.stable_id)?;
+                    let obj = rules.object(sim.interner.resolve(building.type_ref))?;
+                    obj.unit_repair.then_some(target.stable_id)
+                });
+                if let Some(depot_id) = depot_target {
+                    let repair_ids: Vec<u64> = selected_units
+                        .iter()
+                        .copied()
+                        .filter(|&sid| {
+                            sim.entities().get(sid).is_some_and(|e| {
+                                e.category == EntityCategory::Unit
+                                    && e.health.current < e.health.max
+                                    && !e.is_deployed()
+                            })
+                        })
+                        .collect();
+                    if !repair_ids.is_empty() {
+                        for unit_id in repair_ids {
+                            queued.push(CommandEnvelope::new(
+                                owner_id,
+                                execute_tick,
+                                Command::RepairAtDepot {
+                                    entity_id: unit_id,
+                                    depot_id,
+                                },
+                            ));
+                        }
+                        for cmd in queued {
+                            sim.pending_commands.push(cmd);
+                        }
+                        emit_order_voice(state, "VoiceMove");
+                        return true;
+                    }
+                }
+            }
+
+            // Tank bunker: an own bunkerable vehicle clicking an own EMPTY tank
+            // bunker installs into it. The bunker holds one unit, so only the
+            // first eligible vehicle is sent. Occupied bunkers are ejected via
+            // the self-click path below.
+            if !force_fire {
+                let bunker_target = hover.as_ref().and_then(|target| {
+                    if !matches!(target.kind, HoverTargetKind::FriendlyStructure) {
+                        return None;
+                    }
+                    let building = sim.entities().get(target.stable_id)?;
+                    (building.bunker_runtime.is_some() && building.bunker_occupant.is_none())
+                        .then_some(target.stable_id)
+                });
+                if let Some(bunker_id) = bunker_target {
+                    let unit_id = selected_units.iter().copied().find(|&sid| {
+                        sim.entities().get(sid).is_some_and(|e| !e.is_deployed())
+                            && state.rules.as_ref().is_some_and(|rules| {
+                                crate::sim::docking::bunker_link::can_auto_deploy_here(
+                                    sim, sid, rules,
+                                )
+                            })
+                    });
+                    if let Some(unit_id) = unit_id {
+                        queued.push(CommandEnvelope::new(
+                            owner_id,
+                            execute_tick,
+                            Command::EnterBunker { unit_id, bunker_id },
+                        ));
                         for cmd in queued {
                             sim.pending_commands.push(cmd);
                         }
@@ -710,7 +806,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     if consumed_order_mode && state.queued_order_mode != OrderMode::Move {
         state.queued_order_mode = OrderMode::Move;
     }
-    if attack_voice {
+    if let Some(miner_voice) = miner_order_voice {
+        emit_order_voice(state, miner_voice);
+    } else if attack_voice {
         emit_order_voice(state, "VoiceAttack");
     } else {
         emit_order_voice(state, "VoiceMove");
@@ -757,40 +855,42 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         let factory_type = sim.interner.intern("GAWEAP");
         let tank_type = sim.interner.intern("MTNK");
-        sim.entities_mut().insert(GameEntity::new(
-            1,
-            10,
-            10,
-            0,
-            0,
-            owner,
-            Health {
-                current: 1000,
-                max: 1000,
-            },
-            factory_type,
-            EntityCategory::Structure,
-            0,
-            5,
-            false,
-        ));
-        sim.entities_mut().insert(GameEntity::new(
-            2,
-            11,
-            10,
-            0,
-            0,
-            owner,
-            Health {
-                current: 300,
-                max: 300,
-            },
-            tank_type,
-            EntityCategory::Unit,
-            0,
-            5,
-            true,
-        ));
+        sim.entities_mut()
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                1,
+                10,
+                10,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 1000,
+                    max: 1000,
+                },
+                factory_type,
+                EntityCategory::Structure,
+                0,
+                5,
+                false,
+            ));
+        sim.entities_mut()
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                2,
+                11,
+                10,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 300,
+                    max: 300,
+                },
+                tank_type,
+                EntityCategory::Unit,
+                0,
+                5,
+                true,
+            ));
 
         let producer_ids = selected_rally_producer_ids(&sim, &[2, 1], owner);
 

@@ -18,11 +18,27 @@ const RA2_NORMAL_COUNT: usize = 256;
 /// Number of normals in Tiberian Sun mode (normals_mode = 2).
 const TS_NORMAL_COUNT: usize = 36;
 
-/// 256 RA2 normal vectors. The original engine ships only 245 distinct
-/// vectors; entries 245–249 are byte-duplicates of entry 244, and entries
-/// 250–255 never appear in the binary's lighting LUT (the original engine
-/// leaves them stale in memory). Padded here with +Z fallback for safety;
-/// retail VXL data should never reference indices >= 250.
+/// VPL page stored in normal→page LUT slots 253–255 by the original engine's
+/// lighting precompute (its "ambient" constant). Voxels referencing stale
+/// normal index 255 — present in 8 retail models — render with this page.
+const AMBIENT_PAGE: u8 = 16;
+
+/// 256 RA2 normal vectors. The original engine's table has exactly 245
+/// entries and simply ends there (no duplicate tail in the binary; rows
+/// 245–255 here are our own padding). Retail VXL data DOES reference index
+/// 255 — but only inside limbs named DUMMY01/DUMMY02 (1,931 voxels across 8
+/// retail files, incl. the slave-miner refinery turret; verified by
+/// tests/retail_goldens certify_vxl_structural). Indices 245–254 never occur
+/// in retail data.
+///
+/// The original engine shades index 255 deliberately: its lighting
+/// precompute fills the normal→VPL-page LUT only up to the mode's entry
+/// count, then stores the ambient constant page 16 into LUT slots
+/// 253/254/255 for both modes, and the rasterizer indexes the LUT with the
+/// raw unclamped normal byte — so normal 255 always renders with VPL page
+/// 16. `blinn_phong_pages` mirrors that tail unconditionally; `get_normal`'s
+/// +Z fallback is only a safety for the never-observed 245–252 gap.
+/// Full chain: docs/research/VXL_STALE_NORMAL_255_AMBIENT_PAGE_GHIDRA_REPORT.md.
 #[rustfmt::skip]
 static RA2_NORMALS: [[f32; 3]; RA2_NORMAL_COUNT] = [
     [ 0.526578, -0.359621, -0.770317], [ 0.150482,  0.435984,  0.887284],
@@ -275,16 +291,15 @@ pub fn blinn_phong_pages(normals_mode: u8, facing_rad: f32) -> [u8; 256] {
         result[i] = page;
     }
 
-    // Special shadow normals (253–255): fixed to page 16.
-    if normal_count >= 254 {
-        result[253] = 16;
-    }
-    if normal_count >= 255 {
-        result[254] = 16;
-    }
-    if normal_count >= 256 {
-        result[255] = 16;
-    }
+    // Ambient tail: the original engine's lighting precompute unconditionally
+    // stores page 0x10 into LUT slots 253–255 after filling the mode's table
+    // entries, for BOTH normals modes — retail voxels carrying stale normal
+    // index 255 (DUMMY limbs) render with this fixed ambient page. Must not
+    // be gated on table size: mode 2's table has only 36 entries but its
+    // index-255 voxels still get page 16.
+    result[253] = AMBIENT_PAGE;
+    result[254] = AMBIENT_PAGE;
+    result[255] = AMBIENT_PAGE;
 
     result
 }
@@ -323,6 +338,21 @@ mod tests {
         // Out of range falls back to Vec3::Z.
         let fallback: Vec3 = get_normal(2, 36);
         assert_eq!(fallback, Vec3::Z);
+    }
+
+    #[test]
+    fn stale_normal_255_gets_ambient_page_in_both_modes() {
+        // Retail voxels carry normal index 255 in both normals modes (DUMMY
+        // limbs); the original engine renders them with the fixed ambient
+        // page regardless of mode or facing.
+        for facing in [0.0_f32, 1.3, 4.2] {
+            for mode in [2u8, 4u8] {
+                let pages = blinn_phong_pages(mode, facing);
+                assert_eq!(pages[253], AMBIENT_PAGE, "mode {mode} facing {facing}");
+                assert_eq!(pages[254], AMBIENT_PAGE, "mode {mode} facing {facing}");
+                assert_eq!(pages[255], AMBIENT_PAGE, "mode {mode} facing {facing}");
+            }
+        }
     }
 
     #[test]

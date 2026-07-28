@@ -392,7 +392,8 @@ fn low_power_and_factory_bonus_apply_per_owner_and_category() {
                 })
                 .expect("factory should still exist")
         };
-    let americans_remaining = remaining_frames_for(&sim, americans_id, ProductionCategory::Infantry);
+    let americans_remaining =
+        remaining_frames_for(&sim, americans_id, ProductionCategory::Infantry);
     let soviet_remaining = remaining_frames_for(&sim, soviet_id, ProductionCategory::Vehicle);
 
     // P5D-REVIEW: ignored/retired test. The old per-frame-timer remaining values (59_991 /
@@ -443,16 +444,18 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
         100,
         0,
     );
-    assert!(sim
-        .production
-        .factory_shadow
-        .test_arm_ready(americans_display, ProductionCategory::Vehicle));
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(americans_display, ProductionCategory::Vehicle)
+    );
 
     let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid), 33);
     assert!(spawned, "completed naval production should spawn the unit");
 
     let ship = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .find(|e| {
             sim.interner
@@ -558,14 +561,16 @@ fn tick_production_advances_each_owner_queue() {
         1,
     );
 
-    assert!(sim
-        .production
-        .factory_shadow
-        .test_arm_ready(americans_id, ProductionCategory::Infantry));
-    assert!(sim
-        .production
-        .factory_shadow
-        .test_arm_ready(soviet_id, ProductionCategory::Infantry));
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(americans_id, ProductionCategory::Infantry)
+    );
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(soviet_id, ProductionCategory::Infantry)
+    );
 
     let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
     assert!(spawned, "At least one queue completion should spawn");
@@ -575,7 +580,8 @@ fn tick_production_advances_each_owner_queue() {
     );
 
     let americans = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner
@@ -585,7 +591,8 @@ fn tick_production_advances_each_owner_queue() {
         })
         .count();
     let soviet = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner.resolve(e.owner).eq_ignore_ascii_case("Soviet")
@@ -627,14 +634,16 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
         1,
     );
 
-    assert!(sim
-        .production
-        .factory_shadow
-        .test_arm_ready(americans_id, ProductionCategory::Infantry));
-    assert!(sim
-        .production
-        .factory_shadow
-        .test_arm_ready(americans_id, ProductionCategory::Vehicle));
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(americans_id, ProductionCategory::Infantry)
+    );
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(americans_id, ProductionCategory::Vehicle)
+    );
 
     let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
     assert!(spawned);
@@ -644,7 +653,8 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
     );
 
     let infantry = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner
@@ -654,7 +664,8 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
         })
         .count();
     let vehicles = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|e| {
             sim.interner
@@ -705,10 +716,11 @@ fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
 
     // Force the active (front) vehicle to ready so `tick_production` attempts delivery
     // (which the water grid blocks).
-    assert!(sim
-        .production
-        .factory_shadow
-        .test_arm_ready(americans_id, ProductionCategory::Vehicle));
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(americans_id, ProductionCategory::Vehicle)
+    );
 
     let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid), 1);
     assert!(
@@ -729,12 +741,18 @@ fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
         .expect("vehicle factory should remain");
     // Active (head) is the completed-held MTNK; tail still holds the one queued MTNK
     // (head + tail == the old queue.len() of 2).
-    assert!(view.object.is_some(), "completed-held active build must persist");
+    assert!(
+        view.object.is_some(),
+        "completed-held active build must persist"
+    );
     assert_eq!(view.queue.len(), 1, "one queued tail item must remain");
     // Head state is Done; its derived remaining base frames is 0 (progress == 54).
-    let active_steps_left =
-        super::factory::PRODUCTION_STEPS.saturating_sub(view.progress.min(super::factory::PRODUCTION_STEPS));
-    assert_eq!(active_steps_left, 0, "head is complete -> 0 remaining base frames");
+    let active_steps_left = super::factory::PRODUCTION_STEPS
+        .saturating_sub(view.progress.min(super::factory::PRODUCTION_STEPS));
+    assert_eq!(
+        active_steps_left, 0,
+        "head is complete -> 0 remaining base frames"
+    );
     // Tail item is Queued, not started; its remaining base frames == its full total of 100.
     assert_eq!(
         view.queue[0].total_base_frames, 100,
@@ -789,10 +807,11 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
 
     // Force the front vehicle to ready once. The first (blocked-grid) delivery leaves the
     // registry untouched, so it stays ready for the later clear-grid delivery.
-    assert!(sim
-        .production
-        .factory_shadow
-        .test_arm_ready(americans_id, ProductionCategory::Vehicle));
+    assert!(
+        sim.production
+            .factory_shadow
+            .test_arm_ready(americans_id, ProductionCategory::Vehicle)
+    );
 
     let blocked = tick_production(&mut sim, &rules, &height_map, Some(&blocked_grid), 1);
     assert!(!blocked, "first delivery attempt should remain pending");
@@ -811,7 +830,8 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
     );
 
     let tanks = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter(|entity| {
             sim.interner
@@ -833,8 +853,8 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
     // The promoted build has not been charged this tick (step_delay = 0 -> first charge next
     // tick), so progress is 0 and its remaining base frames == its full total of 100.
     assert_eq!(view.progress, 0);
-    let steps_left =
-        super::factory::PRODUCTION_STEPS.saturating_sub(view.progress.min(super::factory::PRODUCTION_STEPS));
+    let steps_left = super::factory::PRODUCTION_STEPS
+        .saturating_sub(view.progress.min(super::factory::PRODUCTION_STEPS));
     let remaining_base_frames =
         ((100u64 * steps_left as u64) / super::factory::PRODUCTION_STEPS as u64) as u32;
     assert_eq!(
@@ -1040,7 +1060,10 @@ fn no_upfront_charge_at_enqueue() {
     *super::credits_entry_for_owner(&mut sim, "Americans") = 5000;
     let before = credits_for_owner(&sim, "Americans");
     let ok = super::enqueue_by_type(&mut sim, &rules, "Americans", "MTNK");
-    assert!(ok, "an affordable MTNK is enqueuable (the affordability gate still permits START)");
+    assert!(
+        ok,
+        "an affordable MTNK is enqueuable (the affordability gate still permits START)"
+    );
     assert_eq!(
         credits_for_owner(&sim, "Americans"),
         before,

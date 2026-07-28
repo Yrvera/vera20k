@@ -390,9 +390,10 @@ fn collect_build_entries(
     let mut entries: Vec<BuildEntry> = build_options
         .iter()
         .filter(|opt| {
-            opt.queue_category == category
+            (opt.queue_category == category
                 || (category == ProductionCategory::Vehicle
-                    && opt.queue_category == ProductionCategory::Aircraft)
+                    && opt.queue_category == ProductionCategory::Aircraft))
+                && opt.visible_in_sidebar()
         })
         .map(|opt| {
             // Check if this type has a completed building waiting for placement.
@@ -492,6 +493,9 @@ mod tests {
     use super::super::gadget_flash::SidebarGadgetState;
     use super::super::{SidebarAction, SidebarTab};
     use super::build_sidebar_view;
+    use crate::rules::object_type::ObjectCategory;
+    use crate::sim::intern::StringInterner;
+    use crate::sim::production::{BuildDisabledReason, BuildOption, ProductionCategory};
 
     fn approx_eq(a: f32, b: f32) {
         assert!(
@@ -566,6 +570,128 @@ mod tests {
             assert!(button.rect.x + button.rect.w <= view.panel_rect.x + view.panel_rect.w);
             assert!(button.rect.y + button.rect.h <= view.panel_rect.y + view.panel_rect.h);
         }
+    }
+
+    fn option(
+        interner: &mut StringInterner,
+        id: &str,
+        enabled: bool,
+        reason: Option<BuildDisabledReason>,
+    ) -> BuildOption {
+        BuildOption {
+            type_id: interner.intern(id),
+            display_name: id.to_string(),
+            cost: 600,
+            object_category: ObjectCategory::Building,
+            queue_category: ProductionCategory::Building,
+            enabled,
+            reason,
+        }
+    }
+
+    #[test]
+    fn strict_gate_hides_blocked_items_and_greys_credit_shortfalls() {
+        let mut interner = StringInterner::new();
+        let build_options = vec![
+            option(&mut interner, "GACNST", true, None),
+            option(
+                &mut interner,
+                "GAPOWR",
+                false,
+                Some(BuildDisabledReason::MissingPrerequisite("GACNST".into())),
+            ),
+            option(
+                &mut interner,
+                "GAWEAP",
+                false,
+                Some(BuildDisabledReason::NoFactory),
+            ),
+            option(
+                &mut interner,
+                "GAAIRC",
+                false,
+                Some(BuildDisabledReason::WrongOwner),
+            ),
+            option(
+                &mut interner,
+                "GAREFN",
+                false,
+                Some(BuildDisabledReason::InsufficientCredits),
+            ),
+            option(
+                &mut interner,
+                "GADEPT",
+                false,
+                Some(BuildDisabledReason::AtBuildLimit),
+            ),
+        ];
+        let view = build_sidebar_view(
+            1280.0,
+            960.0,
+            SidebarTab::Building,
+            0,
+            0,
+            0,
+            Some([28.0, 27.0]),
+            &[],
+            &build_options,
+            &[],
+            None,
+            &[],
+            0,
+            Some(&interner),
+            &SidebarGadgetState::new(),
+            None,
+            None,
+        );
+
+        // Missing prereq / no factory / wrong faction are hidden entirely.
+        let shown: Vec<&str> = view.items.iter().map(|i| i.type_id.as_str()).collect();
+        assert_eq!(shown, ["GACNST", "GAREFN", "GADEPT"]);
+        // Buildable item is enabled; credit shortfall and build limit are greyed.
+        assert!(view.items[0].enabled);
+        assert!(!view.items[1].enabled);
+        assert!(!view.items[2].enabled);
+    }
+
+    #[test]
+    fn strict_gate_empty_when_no_option_visible() {
+        // Match start before conyard deploy: every option fails prereqs/factory.
+        let mut interner = StringInterner::new();
+        let build_options = vec![
+            option(
+                &mut interner,
+                "GAPOWR",
+                false,
+                Some(BuildDisabledReason::MissingPrerequisite("GACNST".into())),
+            ),
+            option(
+                &mut interner,
+                "GAPILE",
+                false,
+                Some(BuildDisabledReason::NoFactory),
+            ),
+        ];
+        let view = build_sidebar_view(
+            1280.0,
+            960.0,
+            SidebarTab::Building,
+            5000,
+            0,
+            0,
+            Some([28.0, 27.0]),
+            &[],
+            &build_options,
+            &[],
+            None,
+            &[],
+            0,
+            Some(&interner),
+            &SidebarGadgetState::new(),
+            None,
+            None,
+        );
+        assert!(view.items.is_empty());
     }
 
     #[test]

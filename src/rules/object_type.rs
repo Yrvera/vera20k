@@ -258,6 +258,11 @@ pub struct ObjectType {
     pub voice_move: Option<String>,
     /// Sound ID played when this unit is ordered to attack.
     pub voice_attack: Option<String>,
+    /// Sound ID played when a harvester is ordered to harvest a resource cell.
+    pub voice_harvest: Option<String>,
+    /// Sound ID played when a harvester is manually ordered to return to a
+    /// friendly refinery (right-click own refinery).
+    pub voice_enter: Option<String>,
     /// Sound ID played when this entity dies or is destroyed.
     pub die_sound: Option<String>,
     /// Sound ID played while this entity moves (looping engine/footstep).
@@ -330,7 +335,7 @@ pub struct ObjectType {
     pub gap_generator: bool,
     /// When true, this building activates the owner's radar display (minimap).
     /// Radar=yes in rules.ini. Used by GARADR (Allied), NARADR (Soviet), YARADR (Yuri).
-    /// SpySat=yes buildings also implicitly provide radar.
+    /// SpySat=yes is a separate full-map reveal authority and does not imply Radar=yes.
     pub radar: bool,
     /// When true, this unit does NOT appear on enemy radar even when in line of sight.
     /// RadarInvisible= in rules.ini. Used by subs, Night Hawk, dolphins, giant squid.
@@ -518,6 +523,9 @@ pub struct ObjectType {
     /// None for non-factory buildings/units. Data-driven replacement for
     /// hardcoded building-name checks in production queue logic.
     pub factory: Option<FactoryType>,
+    /// Native BuildingType `WeaponsFactory=` classification used by Unit
+    /// ReadyToCommence. Independent from `Factory=` and `Naval=`.
+    pub weapons_factory: bool,
     /// Whether this building clones produced infantry (Cloning=yes in rules.ini).
     pub cloning: bool,
 
@@ -567,6 +575,10 @@ pub struct ObjectType {
     /// `BridgeRepairHut=yes` in rules.ini. Stock CABHUT is the only
     /// consumer in retail. Default `false`.
     pub bridge_repair_hut: bool,
+
+    /// Whether this building type uses the LaserFence runtime connectivity
+    /// exclusion in Spark collision (`LaserFence=yes`).
+    pub laser_fence: bool,
 
     /// Maximum number of infantry passengers this vehicle can carry.
     /// Parsed from `Passengers=N` in rules.ini. >0 enables `Enter` cursor
@@ -897,7 +909,10 @@ impl ObjectType {
             id: id.to_string(),
             category,
             name: section.get("Name").map(|s| s.to_string()),
-            ui_name: section.get("UIName").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+            ui_name: section
+                .get("UIName")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
             strength: section.get_i32("Strength").unwrap_or(0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
@@ -964,6 +979,8 @@ impl ObjectType {
             voice_select: section.get("VoiceSelect").map(|s| s.to_string()),
             voice_move: section.get("VoiceMove").map(|s| s.to_string()),
             voice_attack: section.get("VoiceAttack").map(|s| s.to_string()),
+            voice_harvest: section.get("VoiceHarvest").map(|s| s.to_string()),
+            voice_enter: section.get("VoiceEnter").map(|s| s.to_string()),
             die_sound: section.get("DieSound").map(|s| s.to_string()),
             move_sound: section.get("MoveSound").map(|s| s.to_string()),
             voice_feedback: section.get("VoiceFeedback").map(|s| s.to_string()),
@@ -1097,6 +1114,7 @@ impl ObjectType {
                 .unwrap_or(0x80),
             construction_yard: section.get_bool("ConstructionYard").unwrap_or(false),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
+            weapons_factory: section.get_bool("WeaponsFactory").unwrap_or(false),
             cloning: section.get_bool("Cloning").unwrap_or(false),
             exit_coord: parse_exit_coord(section.get("ExitCoord")),
 
@@ -1110,6 +1128,7 @@ impl ObjectType {
             can_occupy_fire: section.get_bool("CanOccupyFire").unwrap_or(false),
             show_occupant_pips: section.get_bool("ShowOccupantPips").unwrap_or(true),
             bridge_repair_hut: section.get_bool("BridgeRepairHut").unwrap_or(false),
+            laser_fence: section.get_bool("LaserFence").unwrap_or(false),
             passengers: section.get_i32("Passengers").unwrap_or(0).max(0) as u32,
             size_limit: section.get_i32("SizeLimit").unwrap_or(0).max(0) as u32,
             size: section
@@ -1367,6 +1386,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_miner_order_voices() {
+        // Stock [CMIN] harvest ack: VoiceHarvest round-trips into the parsed
+        // type so the order-ack dispatch can play it instead of the generic
+        // move voice.
+        let ini: IniFile = IniFile::from_str(
+            "[CMIN]\nName=Chrono Miner\nVoiceMove=ChronoMinerMove\n\
+             VoiceHarvest=ChronoMinerHarvest\nVoiceEnter=ChronoMinerReturn\n",
+        );
+        let obj = ObjectType::from_ini_section(
+            "CMIN",
+            ini.section("CMIN").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(obj.voice_move, Some("ChronoMinerMove".to_string()));
+        assert_eq!(obj.voice_harvest, Some("ChronoMinerHarvest".to_string()));
+        assert_eq!(obj.voice_enter, Some("ChronoMinerReturn".to_string()));
+
+        // Absent keys default to None (e.g. a plain tank).
+        let none_ini: IniFile = IniFile::from_str("[MTNK]\nName=Grizzly\n");
+        let none_obj = ObjectType::from_ini_section(
+            "MTNK",
+            none_ini.section("MTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(none_obj.voice_harvest, None);
+        assert_eq!(none_obj.voice_enter, None);
+    }
+
+    #[test]
     fn parses_ui_name_key() {
         let ini: IniFile =
             IniFile::from_str("[MTNK]\nName=Grizzly Tank\nUIName=Name:MTNK\nCost=700\n");
@@ -1490,6 +1538,23 @@ mod tests {
         );
         assert!(obj_on.bridge_repair_hut);
         assert!(!obj_off.bridge_repair_hut);
+    }
+
+    #[test]
+    fn parse_laser_fence_flag() {
+        let ini: IniFile = IniFile::from_str("[FENCE]\nLaserFence=yes\n[OTHER]\n");
+        let fence = ObjectType::from_ini_section(
+            "FENCE",
+            ini.section("FENCE").unwrap(),
+            ObjectCategory::Building,
+        );
+        let other = ObjectType::from_ini_section(
+            "OTHER",
+            ini.section("OTHER").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(fence.laser_fence);
+        assert!(!other.laser_fence);
     }
 
     #[test]
@@ -1733,6 +1798,73 @@ mod tests {
         assert!(barracks.has_rally_line());
         assert!(factory.has_rally_line());
         assert!(depot.has_rally_line());
+    }
+
+    #[test]
+    fn weapons_factory_parses_independently_from_factory_type() {
+        let ini = IniFile::from_str(
+            "[MISSING]\n\
+             [EXPLICIT_NO]\nWeaponsFactory=no\n\
+             [EXPLICIT_YES]\nWeaponsFactory=yes\n\
+             [FACTORY_ONLY]\nFactory=UnitType\n\
+             [WEAPONS_FACTORY_ONLY]\nWeaponsFactory=yes\n",
+        );
+
+        let parse = |id| {
+            ObjectType::from_ini_section(
+                id,
+                ini.section(id).expect("fixture section"),
+                ObjectCategory::Building,
+            )
+        };
+
+        assert!(!parse("MISSING").weapons_factory);
+        assert!(!parse("EXPLICIT_NO").weapons_factory);
+        assert!(parse("EXPLICIT_YES").weapons_factory);
+        assert_eq!(parse("FACTORY_ONLY").factory, Some(FactoryType::UnitType));
+        assert!(!parse("FACTORY_ONLY").weapons_factory);
+        assert_eq!(parse("WEAPONS_FACTORY_ONLY").factory, None);
+        assert!(parse("WEAPONS_FACTORY_ONLY").weapons_factory);
+    }
+
+    #[test]
+    fn weapons_factory_flag_includes_stock_land_factories_and_naval_yards() {
+        let merged = IniFile::from_str(
+            "[GAWEAP]\nWeaponsFactory=yes\n\
+             [NAWEAP]\nWeaponsFactory=yes\n\
+             [GAYARD]\nWeaponsFactory=yes\n\
+             [NAYARD]\nWeaponsFactory=yes\n\
+             [YAWEAP]\nWeaponsFactory=yes\n\
+             [YAYARD]\nWeaponsFactory=yes\n\
+             [GAPILE]\nFactory=InfantryType\n\
+             [GAPOWR]\nPower=200\n",
+        );
+
+        for id in ["GAWEAP", "NAWEAP", "GAYARD", "NAYARD", "YAWEAP", "YAYARD"] {
+            let object = ObjectType::from_ini_section(
+                id,
+                merged.section(id).expect("stock building section"),
+                ObjectCategory::Building,
+            );
+            assert!(
+                object.weapons_factory,
+                "{id} must retain WeaponsFactory=yes"
+            );
+        }
+
+        for id in ["GAPILE", "GAPOWR"] {
+            let object = ObjectType::from_ini_section(
+                id,
+                merged
+                    .section(id)
+                    .expect("stock non-weapons-factory section"),
+                ObjectCategory::Building,
+            );
+            assert!(
+                !object.weapons_factory,
+                "{id} must not be inferred as a weapons factory"
+            );
+        }
     }
 
     #[test]
@@ -2042,11 +2174,19 @@ mod tests {
         // type is `Cyborg=yes` AND infantry.
         let ini = IniFile::from_str("[X]\nCyborg=yes\n");
         let s = ini.section("X").unwrap();
-        assert!(ObjectType::from_ini_section("X", s, ObjectCategory::Infantry).emits_damage_spark());
+        assert!(
+            ObjectType::from_ini_section("X", s, ObjectCategory::Infantry).emits_damage_spark()
+        );
         // A Cyborg=yes vehicle/building/aircraft never emits (category gate).
-        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Vehicle).emits_damage_spark());
-        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Building).emits_damage_spark());
-        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Aircraft).emits_damage_spark());
+        assert!(
+            !ObjectType::from_ini_section("X", s, ObjectCategory::Vehicle).emits_damage_spark()
+        );
+        assert!(
+            !ObjectType::from_ini_section("X", s, ObjectCategory::Building).emits_damage_spark()
+        );
+        assert!(
+            !ObjectType::from_ini_section("X", s, ObjectCategory::Aircraft).emits_damage_spark()
+        );
         // Default (no Cyborg key) → false even for infantry (dormant in stock YR).
         let plain = IniFile::from_str("[E1]\n");
         let ps = plain.section("E1").unwrap();
@@ -2260,8 +2400,7 @@ mod tests {
     fn parse_retail_weight_apocalypse_is_three_point_five() {
         // Retail rulesmd.ini: APOC (Apocalypse Tank) has Weight=3.5.
         // The heaviest unit in stock retail is CARRIER (Aircraft Carrier) at Weight=5.
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
-        let ini = IniFile::from_str(&ini_text);
+        let ini = IniFile::from_str("[APOC]\nWeight=3.5\n");
         let apoc = ObjectType::from_ini_section(
             "APOC",
             ini.section("APOC").expect("APOC section"),
@@ -2274,8 +2413,7 @@ mod tests {
     fn parse_retail_weight_grizzly_defaults_to_two() {
         // Retail rulesmd.ini: MTNK (Grizzly) has no Weight= line, so it should
         // fall back to the engine default 2.0.
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
-        let ini = IniFile::from_str(&ini_text);
+        let ini = IniFile::from_str("[MTNK]\nStrength=300\n");
         let mtnk = ObjectType::from_ini_section(
             "MTNK",
             ini.section("MTNK").expect("MTNK section"),

@@ -163,7 +163,8 @@ pub fn tick_aircraft_missions(
     }
 
     let snapshots: Vec<MissionSnap> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .values()
         .filter_map(|e| {
             // A Dying aircraft corpse must not run its mission (move, fire,
@@ -354,8 +355,25 @@ pub fn tick_aircraft_missions(
                 let ammo = entity.aircraft_ammo.as_ref();
                 let ammo_current = ammo.map_or(-1, |a| a.current);
                 let ammo_max = ammo.map_or(-1, |a| a.max);
+                let has_target = entity.attack_target.is_some();
 
-                if ammo_current <= 0 && ammo_max > 0 {
+                // gamemd Mission_Guard RTB decision (default ReturnFire mode):
+                // an in-flight aircraft returns to rearm whenever it has spent
+                // ammo (ammo < maxAmmo) and is not actively engaging a target.
+                // Without the second clause a strike craft whose target dies
+                // mid-sortie with ammo left would hover here indefinitely.
+                // (Mode1 `ammo == 0` / Mode2 `ammo < max/2` are INI-gated
+                // globals not yet mapped to keys — default mode is stock.)
+                let out_of_ammo = ammo_current <= 0 && ammo_max > 0;
+                let spent_and_idle = !has_target && ammo_max > 0 && ammo_current < ammo_max;
+
+                if has_target && ammo_current > 0 {
+                    m.new_mission = AircraftMission::Attack {
+                        sub_state: 0,
+                        has_fired: false,
+                        is_strafe: false,
+                    };
+                } else if out_of_ammo || spent_and_idle {
                     let nearest = find_nearest_airfield_for(
                         sim,
                         rules,
@@ -374,12 +392,6 @@ pub fn tick_aircraft_missions(
                             m.self_destruct = true;
                         }
                     }
-                } else if entity.attack_target.is_some() && ammo_current > 0 {
-                    m.new_mission = AircraftMission::Attack {
-                        sub_state: 0,
-                        has_fired: false,
-                        is_strafe: false,
-                    };
                 }
             }
 
@@ -389,7 +401,8 @@ pub fn tick_aircraft_missions(
                     None => continue,
                 };
                 let af_ok = sim
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*airfield_id)
                     .is_some_and(|af| af.health.current > 0 && !af.dying);
                 if !af_ok {
@@ -444,7 +457,8 @@ pub fn tick_aircraft_missions(
                     0 => {
                         // Wait for dock slot.
                         let af_type_ref = sim
-                            .substrate.entities
+                            .substrate
+                            .entities
                             .get(*airfield_id)
                             .map_or(entity.type_ref, |af| af.type_ref);
                         let type_str = sim.interner.resolve(af_type_ref);
@@ -465,18 +479,21 @@ pub fn tick_aircraft_missions(
                             };
                             // Re-target descent toward the per-pad cell so
                             // multi-pad airfields visibly spread occupants.
-                            if let Some((px, py)) = sim.substrate.entities.get(*airfield_id).and_then(|af| {
-                                let obj = sim.object_type(af.type_ref, rules)?;
-                                let foundation =
-                                    crate::sim::production::foundation_dimensions(&obj.foundation);
-                                obj.pads.get(reserved_pad as usize).map(|pad| {
-                                    crate::sim::docking::pad_geometry::pad_cell_for(
-                                        (af.position.rx, af.position.ry),
-                                        foundation,
-                                        pad,
-                                    )
+                            if let Some((px, py)) =
+                                sim.substrate.entities.get(*airfield_id).and_then(|af| {
+                                    let obj = sim.object_type(af.type_ref, rules)?;
+                                    let foundation = crate::sim::production::foundation_dimensions(
+                                        &obj.foundation,
+                                    );
+                                    obj.pads.get(reserved_pad as usize).map(|pad| {
+                                        crate::sim::docking::pad_geometry::pad_cell_for(
+                                            (af.position.rx, af.position.ry),
+                                            foundation,
+                                            pad,
+                                        )
+                                    })
                                 })
-                            }) {
+                            {
                                 m.move_to = Some((px, py));
                             }
                             // Mirror into AircraftAmmo for downstream consumers.
@@ -563,7 +580,8 @@ pub fn tick_aircraft_missions(
             } => {
                 // Check if airfield still alive.
                 let af_ok = sim
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*airfield_id)
                     .is_some_and(|af| af.health.current > 0 && !af.dying);
                 if !af_ok {
@@ -685,7 +703,8 @@ pub fn tick_aircraft_missions(
         .collect();
     for (id, rx, ry) in air_moves {
         let speed = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(id)
             .and_then(|e| {
                 let obj = sim.object_type(e.type_ref, rules)?;

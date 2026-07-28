@@ -48,12 +48,10 @@ pub const RIGHT_PANEL_TILE_COUNT_CAP: i32 = 9;
 pub const SDBTNANM_CELL_H: i32 = 42;
 pub const LOWER_STRIP_H: i32 = 32;
 
-/// SDBTNANM.SHP button-cell widths. main menu (0xE2) and skirmish (0x102) use the
-/// 156-wide cell flush at the panel right edge; single player (0x100) uses the
-/// 168-wide cell flush at the panel left edge. Load-bearing divergence: a single
-/// hardcoded width would shift 0x100's buttons 12 px.
+/// Native SDBTNANM.SHP button-cell width. The active 0xE2, 0x100, and 0x102
+/// right-panel controls all use the 156-wide canvas flush at the panel's right
+/// edge; the surrounding chrome remains 168 pixels wide.
 pub const SDBTNANM_CELL_W_NARROW: i32 = 156;
-pub const SDBTNANM_CELL_W_WIDE: i32 = 168;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RightPanelRects {
@@ -265,15 +263,20 @@ mod tests {
     }
 
     #[test]
-    fn snap_biased_truncate_reproduces_single_player_0x100_wide_cells() {
-        // 0x100 at 800x600: cell_w=168, flush-left x=632, rows 199/241/283.
+    fn snap_biased_truncate_reproduces_single_player_0x100_native_cells() {
+        // 0x100 at 800x600: the 156-wide SDBTNANM cell is flush-right at
+        // x=644, with rows 199/241/283.
         let panel = right_panel_rects(800, 600);
-        let dlu = [dlu_rect(425, 122, 108, 23), dlu_rect(425, 149, 108, 23), dlu_rect(425, 176, 108, 23)];
+        let dlu = [
+            dlu_rect(425, 122, 108, 23),
+            dlu_rect(425, 149, 108, 23),
+            dlu_rect(425, 176, 108, 23),
+        ];
         let expected_y = [199, 241, 283];
         for (src, ey) in dlu.iter().zip(expected_y) {
             assert_eq!(
-                snap_button_biased_truncate(800, 600, *src, panel, SDBTNANM_CELL_W_WIDE),
-                RectPx::new(632, ey, 168, 42)
+                snap_button_biased_truncate(800, 600, *src, panel, SDBTNANM_CELL_W_NARROW),
+                RectPx::new(644, ey, 156, 42)
             );
         }
     }
@@ -283,11 +286,23 @@ mod tests {
         // 0x102 at 800x600: cell_w=156, flush-right x=644, start/choose 241/283.
         let panel = right_panel_rects(800, 600);
         assert_eq!(
-            snap_button_biased_truncate(800, 600, dlu_rect(425, 149, 108, 23), panel, SDBTNANM_CELL_W_NARROW),
+            snap_button_biased_truncate(
+                800,
+                600,
+                dlu_rect(425, 149, 108, 23),
+                panel,
+                SDBTNANM_CELL_W_NARROW
+            ),
             RectPx::new(644, 241, 156, 42)
         );
         assert_eq!(
-            snap_button_biased_truncate(800, 600, dlu_rect(425, 176, 108, 23), panel, SDBTNANM_CELL_W_NARROW),
+            snap_button_biased_truncate(
+                800,
+                600,
+                dlu_rect(425, 176, 108, 23),
+                panel,
+                SDBTNANM_CELL_W_NARROW
+            ),
             RectPx::new(644, 283, 156, 42)
         );
     }

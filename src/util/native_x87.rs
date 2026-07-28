@@ -1,0 +1,440 @@
+//! Deterministic integer implementation of the finite x87 subset used by gamemd.
+//!
+//! The active process uses 53-bit precision and truncate-toward-zero rounding.
+//! Callers name every operation and memory store so evaluation order stays visible.
+
+use std::cmp::Ordering;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+const SIGNIFICAND_TOP: u64 = 1_u64 << 52;
+const EXTENDED_TOP: u64 = 1_u64 << 55;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NativeF32Bits(u32);
+
+impl NativeF32Bits {
+    pub const POSITIVE_ZERO: Self = Self(0x0000_0000);
+    pub const NEGATIVE_ZERO: Self = Self(0x8000_0000);
+    pub const ONE: Self = Self(0x3f80_0000);
+
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NativeF64Bits(u64);
+
+impl NativeF64Bits {
+    pub const POSITIVE_ZERO: Self = Self(0x0000_0000_0000_0000);
+    pub const NEGATIVE_ZERO: Self = Self(0x8000_0000_0000_0000);
+    pub const HALF: Self = Self(0x3fe0_0000_0000_0000);
+    pub const ONE: Self = Self(0x3ff0_0000_0000_0000);
+
+    pub const fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum X87Ordering {
+    Less,
+    Equal,
+    Greater,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum NativeX87Error {
+    #[error("{format} NaN or infinity is outside the verified x87 domain")]
+    NonFiniteInput { format: &'static str },
+    #[error("{format} subnormal input is outside the verified x87 domain")]
+    SubnormalInput { format: &'static str },
+    #[error("{format} subnormal result is outside the verified x87 domain")]
+    SubnormalResult { format: &'static str },
+    #[error("{format} overflow is outside the verified x87 domain")]
+    StoreOverflow { format: &'static str },
+    #[error("x87 integer conversion is outside the verified signed 64-bit domain")]
+    IntegerConversion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct X87Value {
+    sign: bool,
+    exponent: i32,
+    significand: u64,
+}
+
+impl X87Value {
+    const fn zero(sign: bool) -> Self {
+        Self {
+            sign,
+            exponent: 0,
+            significand: 0,
+        }
+    }
+
+    const fn is_zero(self) -> bool {
+        self.significand == 0
+    }
+
+    fn magnitude_cmp(self, rhs: Self) -> Ordering {
+        self.exponent
+            .cmp(&rhs.exponent)
+            .then_with(|| self.significand.cmp(&rhs.significand))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct X87Chop53;
+
+impl X87Chop53 {
+    pub fn load_i32(value: i32) -> X87Value {
+        if value == 0 {
+            return X87Value::zero(false);
+        }
+        let sign = value.is_negative();
+        let magnitude = value.unsigned_abs() as u64;
+        let top = 63 - magnitude.leading_zeros();
+        X87Value {
+            sign,
+            exponent: top as i32,
+            significand: magnitude << (52 - top),
+        }
+    }
+
+    pub fn load_f32(bits: NativeF32Bits) -> Result<X87Value, NativeX87Error> {
+        let raw = bits.bits();
+        let sign = raw >> 31 != 0;
+        let exponent = (raw >> 23) & 0xff;
+        let fraction = raw & 0x007f_ffff;
+        if exponent == 0xff {
+            return Err(NativeX87Error::NonFiniteInput { format: "f32" });
+        }
+        if exponent == 0 {
+            if fraction == 0 {
+                return Ok(X87Value::zero(sign));
+            }
+            return Err(NativeX87Error::SubnormalInput { format: "f32" });
+        }
+        Ok(X87Value {
+            sign,
+            exponent: exponent as i32 - 127,
+            significand: ((1_u64 << 23) | fraction as u64) << 29,
+        })
+    }
+
+    pub fn load_f64(bits: NativeF64Bits) -> Result<X87Value, NativeX87Error> {
+        let raw = bits.bits();
+        let sign = raw >> 63 != 0;
+        let exponent = (raw >> 52) & 0x7ff;
+        let fraction = raw & 0x000f_ffff_ffff_ffff;
+        if exponent == 0x7ff {
+            return Err(NativeX87Error::NonFiniteInput { format: "f64" });
+        }
+        if exponent == 0 {
+            if fraction == 0 {
+                return Ok(X87Value::zero(sign));
+            }
+            return Err(NativeX87Error::SubnormalInput { format: "f64" });
+        }
+        Ok(X87Value {
+            sign,
+            exponent: exponent as i32 - 1023,
+            significand: (1_u64 << 52) | fraction,
+        })
+    }
+
+    pub fn neg(value: X87Value) -> X87Value {
+        X87Value {
+            sign: !value.sign,
+            ..value
+        }
+    }
+
+    pub fn add(lhs: X87Value, rhs: X87Value) -> X87Value {
+        if lhs.is_zero() && rhs.is_zero() {
+            return X87Value::zero(lhs.sign && rhs.sign);
+        }
+        if lhs.is_zero() {
+            return rhs;
+        }
+        if rhs.is_zero() {
+            return lhs;
+        }
+
+        let mut high = lhs;
+        let mut low = rhs;
+        if high.exponent < low.exponent {
+            std::mem::swap(&mut high, &mut low);
+        }
+        let exponent_gap = (high.exponent - low.exponent) as u32;
+        let high_extended = high.significand << 3;
+        let low_extended = shift_right_jam_u64(low.significand << 3, exponent_gap);
+
+        if high.sign == low.sign {
+            let mut sum = high_extended + low_extended;
+            let mut exponent = high.exponent;
+            if sum & (EXTENDED_TOP << 1) != 0 {
+                sum = shift_right_jam_u64(sum, 1);
+                exponent += 1;
+            }
+            return chop_extended(high.sign, exponent, sum);
+        }
+
+        if high_extended == low_extended {
+            return X87Value::zero(false);
+        }
+        let (sign, mut difference) = if high_extended > low_extended {
+            (high.sign, high_extended - low_extended)
+        } else {
+            (low.sign, low_extended - high_extended)
+        };
+        let top = 63 - difference.leading_zeros();
+        let normalize = 55 - top;
+        difference <<= normalize;
+        chop_extended(sign, high.exponent - normalize as i32, difference)
+    }
+
+    pub fn sub(lhs: X87Value, rhs: X87Value) -> X87Value {
+        Self::add(lhs, Self::neg(rhs))
+    }
+
+    pub fn mul(lhs: X87Value, rhs: X87Value) -> X87Value {
+        if lhs.is_zero() || rhs.is_zero() {
+            return X87Value::zero(lhs.sign ^ rhs.sign);
+        }
+        let product = lhs.significand as u128 * rhs.significand as u128;
+        let top = 127 - product.leading_zeros();
+        let shift = top - 55;
+        let extended = shift_right_jam_u128(product, shift);
+        let exponent = lhs.exponent + rhs.exponent + (top as i32 - 104);
+        chop_extended(lhs.sign ^ rhs.sign, exponent, extended)
+    }
+
+    pub fn compare(lhs: X87Value, rhs: X87Value) -> X87Ordering {
+        if lhs.is_zero() && rhs.is_zero() {
+            return X87Ordering::Equal;
+        }
+        let ordering = if lhs.sign != rhs.sign {
+            if lhs.sign {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        } else {
+            let magnitude = lhs.magnitude_cmp(rhs);
+            if lhs.sign {
+                magnitude.reverse()
+            } else {
+                magnitude
+            }
+        };
+        match ordering {
+            Ordering::Less => X87Ordering::Less,
+            Ordering::Equal => X87Ordering::Equal,
+            Ordering::Greater => X87Ordering::Greater,
+        }
+    }
+
+    pub fn store_f32(value: X87Value) -> Result<NativeF32Bits, NativeX87Error> {
+        let sign = u32::from(value.sign) << 31;
+        if value.is_zero() {
+            return Ok(NativeF32Bits::from_bits(sign));
+        }
+        if value.exponent > 127 {
+            return Err(NativeX87Error::StoreOverflow { format: "f32" });
+        }
+        if value.exponent < -126 {
+            return Err(NativeX87Error::SubnormalResult { format: "f32" });
+        }
+        let exponent = ((value.exponent + 127) as u32) << 23;
+        let fraction = ((value.significand >> 29) as u32) & 0x007f_ffff;
+        Ok(NativeF32Bits::from_bits(sign | exponent | fraction))
+    }
+
+    pub fn store_f64(value: X87Value) -> Result<NativeF64Bits, NativeX87Error> {
+        let sign = u64::from(value.sign) << 63;
+        if value.is_zero() {
+            return Ok(NativeF64Bits::from_bits(sign));
+        }
+        if value.exponent > 1023 {
+            return Err(NativeX87Error::StoreOverflow { format: "f64" });
+        }
+        if value.exponent < -1022 {
+            return Err(NativeX87Error::SubnormalResult { format: "f64" });
+        }
+        let exponent = ((value.exponent + 1023) as u64) << 52;
+        let fraction = value.significand & 0x000f_ffff_ffff_ffff;
+        Ok(NativeF64Bits::from_bits(sign | exponent | fraction))
+    }
+
+    pub fn ftol_i64(value: X87Value) -> Result<i64, NativeX87Error> {
+        if value.is_zero() || value.exponent < 0 {
+            return Ok(0);
+        }
+        if value.exponent > 63 {
+            return Err(NativeX87Error::IntegerConversion);
+        }
+        let magnitude = if value.exponent <= 52 {
+            (value.significand >> (52 - value.exponent)) as u128
+        } else {
+            let shift = (value.exponent - 52) as u32;
+            (value.significand as u128) << shift
+        };
+        if value.sign {
+            if magnitude > (1_u128 << 63) {
+                return Err(NativeX87Error::IntegerConversion);
+            }
+            if magnitude == 1_u128 << 63 {
+                return Ok(i64::MIN);
+            }
+            Ok(-(magnitude as i64))
+        } else {
+            if magnitude > i64::MAX as u128 {
+                return Err(NativeX87Error::IntegerConversion);
+            }
+            Ok(magnitude as i64)
+        }
+    }
+}
+
+fn chop_extended(sign: bool, exponent: i32, extended: u64) -> X87Value {
+    let significand = extended >> 3;
+    debug_assert!(significand == 0 || significand & SIGNIFICAND_TOP != 0);
+    X87Value {
+        sign,
+        exponent,
+        significand,
+    }
+}
+
+fn shift_right_jam_u64(value: u64, distance: u32) -> u64 {
+    if distance == 0 {
+        value
+    } else if distance < 64 {
+        (value >> distance) | u64::from(value << (64 - distance) != 0)
+    } else {
+        u64::from(value != 0)
+    }
+}
+
+fn shift_right_jam_u128(value: u128, distance: u32) -> u64 {
+    if distance == 0 {
+        value as u64
+    } else if distance < 128 {
+        ((value >> distance) as u64) | u64::from(value << (128 - distance) != 0)
+    } else {
+        u64::from(value != 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f32_value(bits: u32) -> X87Value {
+        X87Chop53::load_f32(NativeF32Bits::from_bits(bits)).unwrap()
+    }
+
+    fn f64_value(bits: u64) -> X87Value {
+        X87Chop53::load_f64(NativeF64Bits::from_bits(bits)).unwrap()
+    }
+
+    #[test]
+    fn signed_zero_round_trips_without_canonicalization() {
+        let positive = X87Chop53::load_f32(NativeF32Bits::POSITIVE_ZERO).unwrap();
+        let negative = X87Chop53::load_f32(NativeF32Bits::NEGATIVE_ZERO).unwrap();
+        assert_eq!(X87Chop53::store_f32(positive).unwrap().bits(), 0x0000_0000);
+        assert_eq!(X87Chop53::store_f32(negative).unwrap().bits(), 0x8000_0000);
+        assert_eq!(X87Chop53::compare(positive, negative), X87Ordering::Equal);
+        assert_eq!(
+            X87Chop53::store_f32(X87Chop53::sub(positive, positive))
+                .unwrap()
+                .bits(),
+            0x0000_0000,
+        );
+    }
+
+    #[test]
+    fn i32_to_f32_store_chops_at_the_24_bit_boundary() {
+        let positive = X87Chop53::load_i32(16_777_217);
+        let negative = X87Chop53::load_i32(-16_777_217);
+        assert_eq!(X87Chop53::store_f32(positive).unwrap().bits(), 0x4b80_0000);
+        assert_eq!(X87Chop53::store_f32(negative).unwrap().bits(), 0xcb80_0000);
+    }
+
+    #[test]
+    fn pc53_addition_chops_half_ulp_and_keeps_full_ulp() {
+        let one = f64_value(0x3ff0_0000_0000_0000);
+        let half_ulp = f64_value(0x3ca0_0000_0000_0000);
+        let full_ulp = f64_value(0x3cb0_0000_0000_0000);
+        assert_eq!(
+            X87Chop53::store_f64(X87Chop53::add(one, half_ulp))
+                .unwrap()
+                .bits(),
+            0x3ff0_0000_0000_0000,
+        );
+        assert_eq!(
+            X87Chop53::store_f64(X87Chop53::add(one, full_ulp))
+                .unwrap()
+                .bits(),
+            0x3ff0_0000_0000_0001,
+        );
+    }
+
+    #[test]
+    fn subtraction_and_double_gravity_have_explicit_f32_boundaries() {
+        let zero = f32_value(0x0000_0000);
+        let gravity = f32_value(0x40c0_0000);
+        let persistent = X87Chop53::sub(zero, gravity);
+        let persistent_bits = X87Chop53::store_f32(persistent).unwrap();
+        let probe = X87Chop53::sub(X87Chop53::load_f32(persistent_bits).unwrap(), gravity);
+        assert_eq!(persistent_bits.bits(), 0xc0c0_0000);
+        assert_eq!(X87Chop53::store_f32(probe).unwrap().bits(), 0xc140_0000);
+    }
+
+    #[test]
+    fn multiplication_and_compare_use_chopped_53_bit_values() {
+        let half = f64_value(0x3fe0_0000_0000_0000);
+        let quarter = X87Chop53::mul(half, half);
+        assert_eq!(
+            X87Chop53::store_f64(quarter).unwrap().bits(),
+            0x3fd0_0000_0000_0000,
+        );
+        assert_eq!(X87Chop53::compare(quarter, half), X87Ordering::Less);
+    }
+
+    #[test]
+    fn ftol_chops_positive_and_negative_values_toward_zero() {
+        assert_eq!(
+            X87Chop53::ftol_i64(f64_value(0x400e_0000_0000_0000)).unwrap(),
+            3
+        );
+        assert_eq!(
+            X87Chop53::ftol_i64(f64_value(0xc00e_0000_0000_0000)).unwrap(),
+            -3
+        );
+    }
+
+    #[test]
+    fn unverified_exceptional_domains_return_typed_errors() {
+        assert_eq!(
+            X87Chop53::load_f32(NativeF32Bits::from_bits(0x7f80_0000)),
+            Err(NativeX87Error::NonFiniteInput { format: "f32" }),
+        );
+        assert_eq!(
+            X87Chop53::load_f64(NativeF64Bits::from_bits(0x0000_0000_0000_0001)),
+            Err(NativeX87Error::SubnormalInput { format: "f64" }),
+        );
+    }
+}

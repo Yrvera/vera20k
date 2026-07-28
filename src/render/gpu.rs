@@ -18,8 +18,44 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use winit::window::Window;
+
+/// Largest 2D texture edge the renderer will ask for.
+///
+/// Atlases are packed against the requested limit, so this is the real ceiling on how
+/// many pre-rendered sprites fit. 16384 is what current desktop GPUs offer; asking for
+/// more would fail on hardware that could otherwise run the game, and the request is
+/// clamped to the adapter's own maximum anyway.
+const MAX_USEFUL_TEXTURE_DIM: u32 = 16_384;
+
+/// Borrowed, serialization-ready identity of the adapter selected for this GPU
+/// context. This is observation only: it mirrors the immutable `AdapterInfo`
+/// captured during adapter selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GpuAdapterObservation<'a> {
+    pub name: &'a str,
+    pub vendor: u32,
+    pub device: u32,
+    pub device_type: wgpu::DeviceType,
+    pub driver: &'a str,
+    pub driver_info: &'a str,
+    pub backend: wgpu::Backend,
+}
+
+impl<'a> From<&'a wgpu::AdapterInfo> for GpuAdapterObservation<'a> {
+    fn from(info: &'a wgpu::AdapterInfo) -> Self {
+        Self {
+            name: info.name.as_str(),
+            vendor: info.vendor,
+            device: info.device,
+            device_type: info.device_type,
+            driver: info.driver.as_str(),
+            driver_info: info.driver_info.as_str(),
+            backend: info.backend,
+        }
+    }
+}
 
 /// Holds all wgpu state needed for rendering.
 ///
@@ -36,6 +72,8 @@ pub struct GpuContext {
     pub config: wgpu::SurfaceConfiguration,
     /// The texture format the surface uses (needed when creating pipelines).
     pub surface_format: wgpu::TextureFormat,
+    /// Exact identity returned by the adapter that backs this context.
+    adapter_info: wgpu::AdapterInfo,
 }
 
 impl GpuContext {
@@ -71,15 +109,38 @@ impl GpuContext {
             .await
             .context("No suitable GPU adapter found — is a GPU available?")?;
 
-        log::info!("Using GPU adapter: {}", adapter.get_info().name);
+        let adapter_info = adapter.get_info();
+        log::info!("Using GPU adapter: {}", adapter_info.name);
+
+        // Atlas sizing is bounded by whatever limits we *request*, not by the hardware.
+        let adapter_limits = adapter.limits();
+        log::info!(
+            "GPU limits: max_texture_dimension_2d={} (requesting {})",
+            adapter_limits.max_texture_dimension_2d,
+            adapter_limits
+                .max_texture_dimension_2d
+                .min(MAX_USEFUL_TEXTURE_DIM),
+        );
 
         // Request a logical device and command queue from the adapter.
-        // We don't need any special features or limits for now.
+        //
+        // `Limits::default()` caps 2D textures at 8192, which is a portability baseline
+        // rather than a hardware one — desktop GPUs commonly do 16384. The unit atlas is
+        // sized against whatever we request here, so asking for the default silently
+        // halved the space available for pre-rendered facings. Ask for what the adapter
+        // actually offers, bounded by what the atlases can use, and fall back
+        // automatically on a device that offers less.
+        let required_limits = wgpu::Limits {
+            max_texture_dimension_2d: adapter_limits
+                .max_texture_dimension_2d
+                .min(MAX_USEFUL_TEXTURE_DIM),
+            ..wgpu::Limits::default()
+        };
         let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("RA2 Device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                required_limits,
                 ..Default::default()
             })
             .await
@@ -88,6 +149,24 @@ impl GpuContext {
         // Pick the best texture format for the surface.
         // This is usually Bgra8UnormSrgb on Windows, Bgra8Unorm on some other platforms.
         let surface_caps: wgpu::SurfaceCapabilities = surface.get_capabilities(&adapter);
+        let required_surface_usages = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST;
+        if !surface_caps.usages.contains(required_surface_usages) {
+            bail!(
+                "exact stock-shell presentation requires surface usages \
+                 {required_surface_usages:?}, adapter exposes {:?}",
+                surface_caps.usages
+            );
+        }
+        let downlevel = adapter.get_downlevel_capabilities();
+        if !downlevel.flags.contains(wgpu::DownlevelFlags::VIEW_FORMATS) {
+            bail!(
+                "exact stock-shell presentation requires compatible sRGB/unorm \
+                 texture views, adapter downlevel flags are {:?}",
+                downlevel.flags
+            );
+        }
         let surface_format: wgpu::TextureFormat = surface_caps
             .formats
             .iter()
@@ -98,7 +177,7 @@ impl GpuContext {
         // Configure the surface with our chosen format and the window's current size.
         let window_size: winit::dpi::PhysicalSize<u32> = window.inner_size();
         let config: wgpu::SurfaceConfiguration = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: required_surface_usages,
             format: surface_format,
             width: window_size.width.max(1), // wgpu panics on 0-sized surfaces
             height: window_size.height.max(1),
@@ -122,7 +201,13 @@ impl GpuContext {
             queue,
             config,
             surface_format,
+            adapter_info,
         })
+    }
+
+    /// Return a borrowed capture-only view of the selected adapter identity.
+    pub(crate) fn capture_adapter_observation(&self) -> GpuAdapterObservation<'_> {
+        GpuAdapterObservation::from(&self.adapter_info)
     }
 
     /// Handle window resize — reconfigure the surface with new dimensions.
@@ -211,5 +296,33 @@ impl GpuContext {
         output.present();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GpuAdapterObservation;
+
+    #[test]
+    fn adapter_observation_preserves_every_adapter_info_field() {
+        let info = wgpu::AdapterInfo {
+            name: "fixture adapter".to_string(),
+            vendor: 0x1234,
+            device: 0x5678,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            driver: "fixture driver".to_string(),
+            driver_info: "fixture driver info".to_string(),
+            backend: wgpu::Backend::Vulkan,
+        };
+
+        let observed = GpuAdapterObservation::from(&info);
+
+        assert_eq!(observed.name, "fixture adapter");
+        assert_eq!(observed.vendor, 0x1234);
+        assert_eq!(observed.device, 0x5678);
+        assert_eq!(observed.device_type, wgpu::DeviceType::IntegratedGpu);
+        assert_eq!(observed.driver, "fixture driver");
+        assert_eq!(observed.driver_info, "fixture driver info");
+        assert_eq!(observed.backend, wgpu::Backend::Vulkan);
     }
 }

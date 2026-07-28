@@ -285,7 +285,9 @@ impl MinimapRenderer {
         // Stamp unit dots on top of terrain + overlays. Resolve the per-house
         // ramp table once (the default empty table only when rules are absent).
         let default_ramps = HouseColorRamps::default();
-        let ramps: &HouseColorRamps = rules.map(|r| &r.house_color_ramps).unwrap_or(&default_ramps);
+        let ramps: &HouseColorRamps = rules
+            .map(|r| &r.house_color_ramps)
+            .unwrap_or(&default_ramps);
         for entity in entities.values() {
             let pos = &entity.position;
             let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
@@ -351,6 +353,14 @@ impl MinimapRenderer {
             for event in events.iter() {
                 if !event.event_type.draws_on_minimap() {
                     continue;
+                }
+                // Player-scoped events (BaseUnderAttack/MinerUnderAttack) draw
+                // only on their owner's minimap. Owner-less events are global.
+                // With no visibility owner (sandbox full-vis), draw everything.
+                if let Some(ev_owner) = event.owner {
+                    if visibility_owner.is_some_and(|vo| vo != ev_owner) {
+                        continue;
+                    }
                 }
                 let (sx, sy) = crate::map::terrain::iso_to_screen(event.rx, event.ry, 0);
                 let (cx, cy) = world_to_minimap_pixel(

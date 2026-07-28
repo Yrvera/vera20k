@@ -183,7 +183,8 @@ pub fn tick_superweapons(sim: &mut Simulation, rules: &RuleSet) {
     if !sim.super_weapons_initialized {
         sim.super_weapons_initialized = true;
         let owners: Vec<InternedId> = sim
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .filter(|e| e.category == crate::map::entities::EntityCategory::Structure && !e.dying)
             .map(|e| e.owner)

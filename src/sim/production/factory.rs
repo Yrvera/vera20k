@@ -1,15 +1,12 @@
-//! Per-(house, category) factory shadow + deterministic registry.
+//! Per-(house, category) factory + deterministic registry — AUTHORITATIVE.
 //!
-//! P2 introduced these as DERIVED, non-serialized shadow state on `ProductionState`,
-//! rebuilt each tick from the authoritative `queues_by_owner`. P3 adds the per-step
-//! charge state machine (`advance_one_step`) and the rate (`set_rate`), exercised
-//! against an ORACLE (clone) economy — the legacy queue + upfront-charge stay
-//! authoritative through the authority flip (P5, out of scope). Divergence is
-//! SURFACED, never equalized — the unit-AI shadow discipline.
-//!
-//! P2/P3 scope: NO `Serialize`/`Deserialize` derive on any type here, so the registry
-//! field is provably hash-neutral and `SNAPSHOT_VERSION` stays put. The serde derive
-//! + hash fold + the authority flip (oracle -> real wallet) are P5.
+//! Since the P5b authority flip (registry authoritative, per-step charge to the
+//! real house wallet, SNAPSHOT_VERSION 17->18) and P5d (queue-of-record moved
+//! into `Factory.queue`, 18->19), this module owns production charging: enqueue
+//! only checks affordability, `step_all` charges `balance/steps_left` per step
+//! at the tick's production phase, a shortfall rewinds the step onto on-hold,
+//! and cancel refunds exactly the unspent remainder. State here is serialized
+//! and folded into the lockstep hash.
 //!
 //! Determinism: `BTreeMap<(InternedId, ProductionCategory), Factory>` (both key
 //! components derive `Ord`) gives sorted iteration for replay/lockstep; no
@@ -232,7 +229,10 @@ impl Factory {
         // zeroed the balance, so there is NO second charge here (the engine's
         // completion spend runs as spend(0); charging the remainder twice double-spends).
         if self.progress >= PRODUCTION_STEPS {
-            debug_assert_eq!(self.balance, 0, "the steps_left==1 step must have zeroed the balance");
+            debug_assert_eq!(
+                self.balance, 0,
+                "the steps_left==1 step must have zeroed the balance"
+            );
             self.balance = 0; // idempotent; the contract value
             self.suspended = true; // complete-but-not-delivered
             self.step_timer = 0; // the engine zeroes the per-step timer on completion
@@ -519,11 +519,7 @@ pub(crate) struct RevalAction {
 
 impl FactoryRegistry {
     /// Read-only sidebar projection. Never mutates.
-    pub fn view(
-        &self,
-        owner: InternedId,
-        category: ProductionCategory,
-    ) -> Option<FactoryView<'_>> {
+    pub fn view(&self, owner: InternedId, category: ProductionCategory) -> Option<FactoryView<'_>> {
         let f = self.factories.get(&(owner, category))?;
         Some(FactoryView {
             progress: f.progress,
@@ -636,7 +632,10 @@ impl FactoryRegistry {
             f.balance = seeded;
             f.original_balance = seeded;
             f.active_total_base_frames = total_base_frames;
-            f.object = Some(PendingObject { type_id, entity_id: None });
+            f.object = Some(PendingObject {
+                type_id,
+                entity_id: None,
+            });
             f.on_hold = false;
             f.suspended = false;
             f.manual = false;
@@ -657,7 +656,10 @@ impl FactoryRegistry {
                 balance: seeded,
                 original_balance: seeded,
                 active_total_base_frames: total_base_frames,
-                object: Some(PendingObject { type_id, entity_id: None }),
+                object: Some(PendingObject {
+                    type_id,
+                    entity_id: None,
+                }),
                 on_hold: false,
                 suspended: false,
                 manual: false,
@@ -1062,7 +1064,6 @@ impl FactoryRegistry {
         // (R3) no queued copy, active is a different type (or none) -> no-op.
         CancelOutcome::NoMatch
     }
-
 }
 
 #[cfg(test)]
@@ -1106,14 +1107,20 @@ mod tests {
             insertion_seq: 0,
             ..Factory::default()
         };
-        reg.factories.insert((owner, ProductionCategory::Building), fa);
-        reg.factories.insert((owner, ProductionCategory::Infantry), fb);
+        reg.factories
+            .insert((owner, ProductionCategory::Building), fa);
+        reg.factories
+            .insert((owner, ProductionCategory::Infantry), fb);
         let ordered: Vec<u64> = reg
             .iter_insertion_ordered()
             .iter()
             .map(|f| f.insertion_seq)
             .collect();
-        assert_eq!(ordered, vec![0, 1], "iteration is insertion_seq order, not map key order");
+        assert_eq!(
+            ordered,
+            vec![0, 1],
+            "iteration is insertion_seq order, not map key order"
+        );
     }
 
     // ---- P3 set_rate / charge tests ----
@@ -1139,7 +1146,10 @@ mod tests {
                 ..Factory::default()
             };
             f.set_rate(total);
-            assert_eq!(f.step_rate_frames, expected, "set_rate({total}) with object must be {expected}");
+            assert_eq!(
+                f.step_rate_frames, expected,
+                "set_rate({total}) with object must be {expected}"
+            );
         }
     }
 
@@ -1149,10 +1159,16 @@ mod tests {
         let mut f = Factory::default();
         assert!(f.object.is_none());
         f.set_rate(14000);
-        assert_eq!(f.step_rate_frames, 0, "no-object factory yields the rate-0 sentinel");
+        assert_eq!(
+            f.step_rate_frames, 0,
+            "no-object factory yields the rate-0 sentinel"
+        );
         // A suspended/queued-only (no-object) factory does not step.
         f.suspended = true;
-        assert!(matches!(f.advance_one_step(&mut Economy::default()), StepOutcome::Idle));
+        assert!(matches!(
+            f.advance_one_step(&mut Economy::default()),
+            StepOutcome::Idle
+        ));
     }
 
     #[test]
@@ -1160,7 +1176,10 @@ mod tests {
         // From a fresh armed start with funds: 53 `Stepped` then 1 `Completed` (C2);
         // progress reaches 54 (E1: the 54th call is Completed, not a plain Stepped).
         let mut f = armed_factory(700);
-        let mut econ = Economy { credits: 700, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 700,
+            ..Economy::default()
+        };
         let mut stepped = 0;
         let mut completed = 0;
         for _ in 0..PRODUCTION_STEPS {
@@ -1173,8 +1192,14 @@ mod tests {
         assert_eq!(stepped, 53, "exactly 53 Stepped before the final Completed");
         assert_eq!(completed, 1, "exactly one Completed at step 54");
         assert_eq!(f.progress, PRODUCTION_STEPS, "progress reaches 54");
-        assert!(f.suspended && f.object.is_some(), "complete-but-not-delivered");
-        assert!(matches!(f.advance_one_step(&mut econ), StepOutcome::Idle), "a settled factory is Idle");
+        assert!(
+            f.suspended && f.object.is_some(),
+            "complete-but-not-delivered"
+        );
+        assert!(
+            matches!(f.advance_one_step(&mut econ), StepOutcome::Idle),
+            "a settled factory is Idle"
+        );
     }
 
     #[test]
@@ -1183,7 +1208,10 @@ mod tests {
         // (C3/C15). Boundary set {1, 25, 700, 99991}.
         for cost in [1i32, 25, 700, 99991] {
             let mut f = armed_factory(cost);
-            let mut econ = Economy { credits: cost, ..Economy::default() };
+            let mut econ = Economy {
+                credits: cost,
+                ..Economy::default()
+            };
             loop {
                 match f.advance_one_step(&mut econ) {
                     StepOutcome::Stepped => {}
@@ -1191,7 +1219,10 @@ mod tests {
                     other => panic!("cost {cost}: unexpected {other:?} with exact funds"),
                 }
             }
-            assert_eq!(econ.spent_credits, cost, "cost {cost}: total spent == full cost");
+            assert_eq!(
+                econ.spent_credits, cost,
+                "cost {cost}: total spent == full cost"
+            );
             assert_eq!(econ.credits, 0, "cost {cost}: oracle drained to exactly 0");
             assert_eq!(f.balance, 0, "cost {cost}: balance ends 0");
         }
@@ -1204,7 +1235,10 @@ mod tests {
         // Stepped); the final value-54 step charges 0. Conservation depends on the
         // /1 step, not the guard step.
         let mut f = armed_factory(1);
-        let mut econ = Economy { credits: 1, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 1,
+            ..Economy::default()
+        };
         let mut total = 0;
         loop {
             let before = econ.spent_credits;
@@ -1217,7 +1251,10 @@ mod tests {
                 other => panic!("unexpected {other:?}"),
             }
         }
-        assert_eq!(total, 1, "the single credit is charged exactly once across the build");
+        assert_eq!(
+            total, 1,
+            "the single credit is charged exactly once across the build"
+        );
         assert_eq!(f.balance, 0);
     }
 
@@ -1226,23 +1263,50 @@ mod tests {
         // The balance drains on the steps_left==1 step (value 53, charge=balance/1),
         // NOT the final value-54 step (the div-by-zero guard, which charges 0).
         let mut f = armed_factory(700);
-        let mut econ = Economy { credits: 700, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 700,
+            ..Economy::default()
+        };
         while f.progress < PRODUCTION_STEPS - 2 {
-            assert!(matches!(f.advance_one_step(&mut econ), StepOutcome::Stepped));
+            assert!(matches!(
+                f.advance_one_step(&mut econ),
+                StepOutcome::Stepped
+            ));
         }
-        assert_eq!(f.progress, PRODUCTION_STEPS - 2, "stopped two before completion (progress 52)");
+        assert_eq!(
+            f.progress,
+            PRODUCTION_STEPS - 2,
+            "stopped two before completion (progress 52)"
+        );
         let remainder = f.balance;
         assert!(remainder > 0, "balance is nonzero at progress 52");
         // The steps_left==1 step (value 53) charges the WHOLE remainder, once.
         let spent_before = econ.spent_credits;
-        assert!(matches!(f.advance_one_step(&mut econ), StepOutcome::Stepped), "value-53 is a Stepped");
-        assert_eq!(econ.spent_credits - spent_before, remainder, "drains the whole remainder once");
+        assert!(
+            matches!(f.advance_one_step(&mut econ), StepOutcome::Stepped),
+            "value-53 is a Stepped"
+        );
+        assert_eq!(
+            econ.spent_credits - spent_before,
+            remainder,
+            "drains the whole remainder once"
+        );
         assert_eq!(f.balance, 0, "balance zeroed on the steps_left==1 step");
         // The final value-54 step is the div-by-zero guard: charges 0, Completed.
         let spent_before2 = econ.spent_credits;
-        assert!(matches!(f.advance_one_step(&mut econ), StepOutcome::Completed));
-        assert_eq!(econ.spent_credits - spent_before2, 0, "the final step charges 0 (guard)");
-        assert_eq!(f.balance, 0, "completion leaves balance 0 (no second remainder charge)");
+        assert!(matches!(
+            f.advance_one_step(&mut econ),
+            StepOutcome::Completed
+        ));
+        assert_eq!(
+            econ.spent_credits - spent_before2,
+            0,
+            "the final step charges 0 (guard)"
+        );
+        assert_eq!(
+            f.balance, 0,
+            "completion leaves balance 0 (no second remainder charge)"
+        );
     }
 
     #[test]
@@ -1251,12 +1315,25 @@ mod tests {
         // progress unchanged, NOTHING spent (C4). cost 700 -> first charge 700/53 = 13.
         let mut f = armed_factory(700);
         let first_charge = 700 / (PRODUCTION_STEPS as i32 - 1); // 700/53 = 13
-        let mut econ = Economy { credits: first_charge - 1, ..Economy::default() };
-        assert!(matches!(f.advance_one_step(&mut econ), StepOutcome::Stalled));
+        let mut econ = Economy {
+            credits: first_charge - 1,
+            ..Economy::default()
+        };
+        assert!(matches!(
+            f.advance_one_step(&mut econ),
+            StepOutcome::Stalled
+        ));
         assert!(f.on_hold, "a shortfall latches on_hold");
-        assert_eq!(f.progress, 0, "the tentative step is rewound (net-zero advance)");
+        assert_eq!(
+            f.progress, 0,
+            "the tentative step is rewound (net-zero advance)"
+        );
         assert_eq!(econ.spent_credits, 0, "a stall spends nothing");
-        assert_eq!(econ.credits, first_charge - 1, "the oracle wallet is untouched");
+        assert_eq!(
+            econ.credits,
+            first_charge - 1,
+            "the oracle wallet is untouched"
+        );
     }
 
     #[test]
@@ -1264,8 +1341,14 @@ mod tests {
         // available == charge PROCEEDS (the strict-< boundary).
         let mut f = armed_factory(700);
         let first_charge = 700 / (PRODUCTION_STEPS as i32 - 1); // 13
-        let mut econ = Economy { credits: first_charge, ..Economy::default() };
-        assert!(matches!(f.advance_one_step(&mut econ), StepOutcome::Stepped));
+        let mut econ = Economy {
+            credits: first_charge,
+            ..Economy::default()
+        };
+        assert!(matches!(
+            f.advance_one_step(&mut econ),
+            StepOutcome::Stepped
+        ));
         assert_eq!(f.progress, 1);
         assert_eq!(econ.spent_credits, first_charge);
     }
@@ -1287,7 +1370,10 @@ mod tests {
                 other => panic!("unexpected {other:?} for a free build"),
             }
         }
-        assert_eq!(steps, PRODUCTION_STEPS as i32, "a free build still takes 54 steps");
+        assert_eq!(
+            steps, PRODUCTION_STEPS as i32,
+            "a free build still takes 54 steps"
+        );
         assert_eq!(econ.spent_credits, 0, "free build spends nothing");
         assert_eq!(f.balance, 0);
     }
@@ -1297,7 +1383,10 @@ mod tests {
         // remaining_balance_after must equal the balance the stepper actually holds.
         for cost in [1i32, 25, 700, 99991] {
             let mut f = armed_factory(cost);
-            let mut econ = Economy { credits: cost, ..Economy::default() };
+            let mut econ = Economy {
+                credits: cost,
+                ..Economy::default()
+            };
             for k in 0..PRODUCTION_STEPS {
                 assert_eq!(
                     f.balance,
@@ -1315,7 +1404,10 @@ mod tests {
         // floor division never loses/gains a credit: the last charging step takes the
         // whole remainder, so the per-step charges sum to exactly the cost.
         let mut f = armed_factory(25);
-        let mut econ = Economy { credits: 25, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 25,
+            ..Economy::default()
+        };
         loop {
             if matches!(f.advance_one_step(&mut econ), StepOutcome::Completed) {
                 break;
@@ -1349,16 +1441,33 @@ mod tests {
         // the refund equals the SPENT portion (original_balance - balance) and the
         // oracle returns to its pre-build credits (C8/C15). The factory resets to idle.
         let mut f = armed_factory(700);
-        let mut econ = Economy { credits: 700, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 700,
+            ..Economy::default()
+        };
         while f.progress < 20 {
-            assert!(matches!(f.advance_one_step(&mut econ), StepOutcome::Stepped));
+            assert!(matches!(
+                f.advance_one_step(&mut econ),
+                StepOutcome::Stepped
+            ));
         }
         let spent = econ.spent_credits;
         let expected_refund = f.original_balance - f.balance;
-        assert_eq!(expected_refund, spent, "spent portion == original_balance - balance");
-        let refund = f.cancel_active(&mut econ).expect("active build is abandonable");
-        assert_eq!(refund, spent, "C8: refund the already-paid spent portion only");
-        assert_eq!(econ.credits, 700, "C15: oracle returns to pre-build credits");
+        assert_eq!(
+            expected_refund, spent,
+            "spent portion == original_balance - balance"
+        );
+        let refund = f
+            .cancel_active(&mut econ)
+            .expect("active build is abandonable");
+        assert_eq!(
+            refund, spent,
+            "C8: refund the already-paid spent portion only"
+        );
+        assert_eq!(
+            econ.credits, 700,
+            "C15: oracle returns to pre-build credits"
+        );
         assert!(f.object.is_none(), "the partial object is destroyed");
         assert_eq!(f.progress, 0);
         assert_eq!(f.balance, 0);
@@ -1371,17 +1480,30 @@ mod tests {
     fn cancel_active_at_progress_zero_refunds_nothing() {
         // A never-stepped active object ACTED but refunds 0 (spent nothing) — Some(0), not None.
         let mut f = armed_factory(700);
-        let mut econ = Economy { credits: 0, ..Economy::default() };
-        assert_eq!(f.cancel_active(&mut econ), Some(0), "acted, refund 0 (spent nothing yet)");
+        let mut econ = Economy {
+            credits: 0,
+            ..Economy::default()
+        };
+        assert_eq!(
+            f.cancel_active(&mut econ),
+            Some(0),
+            "acted, refund 0 (spent nothing yet)"
+        );
         assert_eq!(econ.credits, 0, "no credits added for a zero refund");
-        assert!(f.object.is_none(), "factory reset even on a zero-refund cancel");
+        assert!(
+            f.object.is_none(),
+            "factory reset even on a zero-refund cancel"
+        );
         assert_eq!(f.progress, 0);
     }
 
     #[test]
     fn cancel_active_no_object_is_noop() {
         let mut f = Factory::default();
-        let mut econ = Economy { credits: 500, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 500,
+            ..Economy::default()
+        };
         assert_eq!(f.cancel_active(&mut econ), None);
         assert_eq!(econ.credits, 500, "no-op leaves the oracle untouched");
     }
@@ -1390,7 +1512,10 @@ mod tests {
     fn cancel_active_completed_is_noop() {
         // A complete-but-held object (progress 54, suspended) is NOT abandoned here.
         let mut f = armed_factory(700);
-        let mut econ = Economy { credits: 700, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 700,
+            ..Economy::default()
+        };
         loop {
             if matches!(f.advance_one_step(&mut econ), StepOutcome::Completed) {
                 break;
@@ -1400,7 +1525,10 @@ mod tests {
         assert!(f.suspended && f.object.is_some(), "completed-but-held");
         let credits_before = econ.credits;
         assert_eq!(f.cancel_active(&mut econ), None, "no-op after completion");
-        assert_eq!(econ.credits, credits_before, "no refund on a completed build");
+        assert_eq!(
+            econ.credits, credits_before,
+            "no refund on a completed build"
+        );
         assert!(f.object.is_some(), "the completed object is NOT destroyed");
         assert_eq!(f.progress, PRODUCTION_STEPS, "progress unchanged");
     }
@@ -1412,7 +1540,10 @@ mod tests {
         for cost in [1i32, 25, 700, 99991] {
             for stop_at in [0u16, 1, 20, 53] {
                 let mut f = armed_factory(cost);
-                let mut econ = Economy { credits: cost, ..Economy::default() };
+                let mut econ = Economy {
+                    credits: cost,
+                    ..Economy::default()
+                };
                 while f.progress < stop_at {
                     if !matches!(f.advance_one_step(&mut econ), StepOutcome::Stepped) {
                         break; // a free build may Complete early; harmless
@@ -1468,7 +1599,10 @@ mod tests {
         let f = Factory {
             owner,
             category: ProductionCategory::Vehicle,
-            object: Some(PendingObject { type_id: a, entity_id: None }),
+            object: Some(PendingObject {
+                type_id: a,
+                entity_id: None,
+            }),
             balance: 300,
             original_balance: 700,
             progress: 20,
@@ -1476,9 +1610,16 @@ mod tests {
             ..Factory::default()
         };
         let mut reg = reg_with(owner, ProductionCategory::Vehicle, f);
-        let mut econ = Economy { credits: 1000, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 1000,
+            ..Economy::default()
+        };
         let outcome = reg.cancel_one(owner, ProductionCategory::Vehicle, a, &mut econ);
-        assert_eq!(outcome, CancelOutcome::QueuedRemoved, "tail copy removed first");
+        assert_eq!(
+            outcome,
+            CancelOutcome::QueuedRemoved,
+            "tail copy removed first"
+        );
         assert_eq!(econ.credits, 1000, "no refund (queued removal)");
         let view = reg.view(owner, ProductionCategory::Vehicle).unwrap();
         assert!(view.queue.is_empty(), "the one tail copy is gone");
@@ -1495,7 +1636,10 @@ mod tests {
         let f = Factory {
             owner,
             category: ProductionCategory::Vehicle,
-            object: Some(PendingObject { type_id: a, entity_id: None }),
+            object: Some(PendingObject {
+                type_id: a,
+                entity_id: None,
+            }),
             balance: 300,
             original_balance: 700,
             progress: 20,
@@ -1503,18 +1647,28 @@ mod tests {
             ..Factory::default()
         };
         let mut reg = reg_with(owner, ProductionCategory::Vehicle, f);
-        let mut econ = Economy { credits: 0, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 0,
+            ..Economy::default()
+        };
         let outcome = reg.cancel_one(owner, ProductionCategory::Vehicle, a, &mut econ);
         assert_eq!(
             outcome,
             CancelOutcome::AbandonedActive { refund: 400 },
             "spent portion = original_balance 700 - balance 300 = 400"
         );
-        assert_eq!(econ.credits, 400, "the spent portion is refunded to the oracle");
+        assert_eq!(
+            econ.credits, 400,
+            "the spent portion is refunded to the oracle"
+        );
         let view = reg.view(owner, ProductionCategory::Vehicle).unwrap();
         assert!(view.object.is_none(), "active object abandoned");
         let q: Vec<InternedId> = view.queue.iter().map(|e| e.type_id).collect();
-        assert_eq!(q, vec![b], "the tail is left intact (no auto-advance in P4)");
+        assert_eq!(
+            q,
+            vec![b],
+            "the tail is left intact (no auto-advance in P4)"
+        );
     }
 
     #[test]
@@ -1526,7 +1680,10 @@ mod tests {
         let f = Factory {
             owner,
             category: ProductionCategory::Vehicle,
-            object: Some(PendingObject { type_id: a, entity_id: None }),
+            object: Some(PendingObject {
+                type_id: a,
+                entity_id: None,
+            }),
             progress: PRODUCTION_STEPS,
             suspended: true,
             balance: 0,
@@ -1534,7 +1691,10 @@ mod tests {
             ..Factory::default()
         };
         let mut reg = reg_with(owner, ProductionCategory::Vehicle, f);
-        let mut econ = Economy { credits: 100, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 100,
+            ..Economy::default()
+        };
         let outcome = reg.cancel_one(owner, ProductionCategory::Vehicle, a, &mut econ);
         assert_eq!(outcome, CancelOutcome::NoMatch, "no-op after completion");
         assert_eq!(econ.credits, 100, "no refund on a completed build");
@@ -1550,7 +1710,10 @@ mod tests {
         let a = InternedId::from_index(1);
         let z = InternedId::from_index(9);
         let mut empty = FactoryRegistry::default();
-        let mut econ = Economy { credits: 50, ..Economy::default() };
+        let mut econ = Economy {
+            credits: 50,
+            ..Economy::default()
+        };
         assert_eq!(
             empty.cancel_one(owner, ProductionCategory::Vehicle, a, &mut econ),
             CancelOutcome::NoMatch,
@@ -1559,7 +1722,10 @@ mod tests {
         let f = Factory {
             owner,
             category: ProductionCategory::Vehicle,
-            object: Some(PendingObject { type_id: a, entity_id: None }),
+            object: Some(PendingObject {
+                type_id: a,
+                entity_id: None,
+            }),
             balance: 300,
             original_balance: 700,
             queue: std::collections::VecDeque::from(vec![qe(a)]),
@@ -1602,7 +1768,11 @@ mod tests {
             progress: 30,
             ..Factory::default()
         };
-        assert_eq!(f.start_next_queued(0, 0), None, "a held object blocks the advance");
+        assert_eq!(
+            f.start_next_queued(0, 0),
+            None,
+            "a held object blocks the advance"
+        );
         let q: Vec<InternedId> = f.queue.iter().map(|e| e.type_id).collect();
         assert_eq!(q, vec![x], "queue unchanged while blocked");
         assert_eq!(f.progress, 30, "the held object's progress is untouched");
@@ -1634,12 +1804,18 @@ mod tests {
         };
         let popped = f.start_next_queued(500, 0);
         assert_eq!(popped, Some(x));
-        assert_eq!(f.insertion_seq, 42, "insertion_seq becomes the popped entry's stamp (D1)");
+        assert_eq!(
+            f.insertion_seq, 42,
+            "insertion_seq becomes the popped entry's stamp (D1)"
+        );
         assert_eq!(f.balance, 500);
         assert_eq!(f.original_balance, 500);
         assert_eq!(f.active_total_base_frames, 99);
         assert_eq!(f.progress, 0);
-        assert_eq!(f.step_timer, 0, "delivery step_delay 0 -> charged next sweep, not this one");
+        assert_eq!(
+            f.step_timer, 0,
+            "delivery step_delay 0 -> charged next sweep, not this one"
+        );
         assert!(f.queue.is_empty());
     }
 
@@ -1658,7 +1834,10 @@ mod tests {
             Factory {
                 owner,
                 category: ProductionCategory::Infantry,
-                object: Some(PendingObject { type_id: e1, entity_id: None }),
+                object: Some(PendingObject {
+                    type_id: e1,
+                    entity_id: None,
+                }),
                 balance: 100,
                 original_balance: 200,
                 progress: 10,
@@ -1671,7 +1850,10 @@ mod tests {
             Factory {
                 owner,
                 category: ProductionCategory::Vehicle,
-                object: Some(PendingObject { type_id: mtnk, entity_id: None }),
+                object: Some(PendingObject {
+                    type_id: mtnk,
+                    entity_id: None,
+                }),
                 balance: 300,
                 original_balance: 700,
                 progress: 20,
@@ -1703,12 +1885,12 @@ mod tests {
     fn bst(cost: i32) -> BuildStepTimeInputs {
         BuildStepTimeInputs {
             cost,
-            build_time_bonus_ppm: PRODUCTION_RATE_SCALE,      // 1.0
+            build_time_bonus_ppm: PRODUCTION_RATE_SCALE, // 1.0
             build_time_multiplier_ppm: PRODUCTION_RATE_SCALE, // 1.0
-            power_ratio_ppm: PRODUCTION_RATE_SCALE,           // 1.0 (full power)
+            power_ratio_ppm: PRODUCTION_RATE_SCALE,      // 1.0 (full power)
             low_power_penalty_modifier_ppm: PRODUCTION_RATE_SCALE,
-            min_clamp_ppm: PRODUCTION_RATE_SCALE / 2,             // 0.5
-            max_clamp_ppm: (PRODUCTION_RATE_SCALE * 9) / 10,      // 0.9
+            min_clamp_ppm: PRODUCTION_RATE_SCALE / 2, // 0.5
+            max_clamp_ppm: (PRODUCTION_RATE_SCALE * 9) / 10, // 0.9
             multiple_factory_ppm: (PRODUCTION_RATE_SCALE * 8) / 10, // 0.8
             factory_count: 1,
             is_wall: false,
@@ -1721,7 +1903,10 @@ mod tests {
         // cost 700, all-1.0, count 1, no wall -> TOTAL 700, NOT 630 (the REFUTED ×0.9).
         // Then set_rate(700) -> 700/54 = 12.
         let total = build_step_time(&bst(700));
-        assert_eq!(total, 700, "x0.9-free base: trunc(1.0 * 700) = 700, not 630");
+        assert_eq!(
+            total, 700,
+            "x0.9-free base: trunc(1.0 * 700) = 700, not 630"
+        );
         assert_ne!(total, 630, "the legacy x0.9 (630) must NOT appear");
         let mut f = Factory {
             object: Some(PendingObject::default()),
@@ -1749,7 +1934,11 @@ mod tests {
         // base 67 x mult 1.15 -> trunc(67 * 1.15) = trunc(77.05) = 77.
         let mut inp = bst(67);
         inp.build_time_multiplier_ppm = (PRODUCTION_RATE_SCALE * 115) / 100; // 1.15
-        assert_eq!(build_step_time(&inp), 77, "T2 truncates: trunc(67 * 1.15) = 77");
+        assert_eq!(
+            build_step_time(&inp),
+            77,
+            "T2 truncates: trunc(67 * 1.15) = 77"
+        );
     }
 
     #[test]
@@ -1758,12 +1947,20 @@ mod tests {
         // 0.5 keeps it. cost 100 -> trunc(100 / 0.5) = 200.
         let mut inp = bst(100);
         inp.power_ratio_ppm = PRODUCTION_RATE_SCALE / 2; // 0.5
-        assert_eq!(build_step_time(&inp), 200, "under-power doubles the step total");
+        assert_eq!(
+            build_step_time(&inp),
+            200,
+            "under-power doubles the step total"
+        );
 
         // ratio 1.0 (full power): the Max clamp is NOT applied; d = 1.0 -> total = cost.
         let mut full = bst(100);
         full.max_clamp_ppm = PRODUCTION_RATE_SCALE / 2; // a Max that WOULD bite if applied
-        assert_eq!(build_step_time(&full), 100, "ratio==1.0 skips the Max clamp");
+        assert_eq!(
+            build_step_time(&full),
+            100,
+            "ratio==1.0 skips the Max clamp"
+        );
 
         // ratio 0.0, LPPM 1.0 -> d = 0.0 -> floored to 0.01 -> trunc(100 / 0.01) = 10000.
         let mut zero = bst(100);
@@ -1786,7 +1983,10 @@ mod tests {
         let single = (11i128 * (((PRODUCTION_RATE_SCALE * 8) / 10) as i128).pow(2)
             / (PRODUCTION_RATE_SCALE as i128).pow(2)) as i32;
         assert_eq!(single, 7, "single-truncate MF^2 would be 7");
-        assert_ne!(per_iter, single, "per-iteration trunc must DIFFER from MF^2 single");
+        assert_ne!(
+            per_iter, single,
+            "per-iteration trunc must DIFFER from MF^2 single"
+        );
     }
 
     #[test]
@@ -1812,13 +2012,21 @@ mod tests {
         // is_wall=false leaves the total unchanged.
         let mut not_wall = bst(400);
         not_wall.wall_build_speed_ppm = PRODUCTION_RATE_SCALE / 2;
-        assert_eq!(build_step_time(&not_wall), 400, "non-wall ignores BuildSpeed");
+        assert_eq!(
+            build_step_time(&not_wall),
+            400,
+            "non-wall ignores BuildSpeed"
+        );
     }
 
     #[test]
     fn build_step_time_zero_cost_is_zero() {
         assert_eq!(build_step_time(&bst(0)), 0, "cost 0 -> total 0");
-        assert_eq!(build_step_time(&bst(-5)), 0, "negative cost clamps to 0 -> total 0");
+        assert_eq!(
+            build_step_time(&bst(-5)),
+            0,
+            "negative cost clamps to 0 -> total 0"
+        );
     }
 
     #[test]
@@ -1828,7 +2036,11 @@ mod tests {
         big.power_ratio_ppm = 0; // forces a big divide (d floors to 0.01 when min=0)
         big.min_clamp_ppm = 0;
         big.max_clamp_ppm = PRODUCTION_RATE_SCALE;
-        assert_eq!(build_step_time(&big), 5_000_000, "no overflow, exact (50000 / 0.01)");
+        assert_eq!(
+            build_step_time(&big),
+            5_000_000,
+            "no overflow, exact (50000 / 0.01)"
+        );
         // Push past i32 to prove the clamp.
         let mut huge = bst(2_000_000_000);
         huge.power_ratio_ppm = 0;
@@ -1856,11 +2068,31 @@ mod tests {
         let air = rules.object("BEAG").unwrap();
         let bld = rules.object("GAPOWR").unwrap();
         let def = rules.object("GAPILL").unwrap();
-        assert_eq!(category_for_object(inf), ProductionCategory::Infantry, "infantry -> Infantry (NOT the refuted inverse)");
-        assert_eq!(category_for_object(veh), ProductionCategory::Vehicle, "vehicle -> Vehicle");
-        assert_eq!(category_for_object(air), ProductionCategory::Aircraft, "aircraft -> Aircraft (NOT the refuted inverse)");
-        assert_eq!(category_for_object(bld), ProductionCategory::Building, "plain building -> Building");
-        assert_eq!(category_for_object(def), ProductionCategory::Defense, "BuildCat=Combat building -> Defense");
+        assert_eq!(
+            category_for_object(inf),
+            ProductionCategory::Infantry,
+            "infantry -> Infantry (NOT the refuted inverse)"
+        );
+        assert_eq!(
+            category_for_object(veh),
+            ProductionCategory::Vehicle,
+            "vehicle -> Vehicle"
+        );
+        assert_eq!(
+            category_for_object(air),
+            ProductionCategory::Aircraft,
+            "aircraft -> Aircraft (NOT the refuted inverse)"
+        );
+        assert_eq!(
+            category_for_object(bld),
+            ProductionCategory::Building,
+            "plain building -> Building"
+        );
+        assert_eq!(
+            category_for_object(def),
+            ProductionCategory::Defense,
+            "BuildCat=Combat building -> Defense"
+        );
         // The delegate must agree with the routing source it wraps (no fork).
         assert_eq!(
             category_for_object(veh),

@@ -136,7 +136,10 @@ mod tests {
         assert!(r.contains(14, 23), "last interior pixel IN");
         assert!(!r.contains(15, 20), "right edge OUT (half-open)");
         assert!(!r.contains(10, 24), "bottom edge OUT (half-open)");
-        assert!(!r.contains(9, 20), "negative delta rejects via unsigned wrap");
+        assert!(
+            !r.contains(9, 20),
+            "negative delta rejects via unsigned wrap"
+        );
         assert!(!r.contains(10, 19));
     }
 

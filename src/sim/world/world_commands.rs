@@ -136,7 +136,8 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -145,7 +146,7 @@ impl Simulation {
                 // Drop any dock reservation (depot + aircraft + docked-idle) and
                 // retask onto a fresh Move via the verb API. The legacy field
                 // clears below stay authoritative in Slice 6.
-                self.assign_mission_with_teardown(*entity_id, MissionType::Move, DockTeardown::All);
+                self.queue_mission_with_teardown(*entity_id, MissionType::Move, DockTeardown::All);
                 // Clear attack and order intent.
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
@@ -287,7 +288,11 @@ impl Simulation {
                     return false;
                 }
                 // Cancel any depot dock reservation, then retask onto Stop.
-                self.assign_mission_with_teardown(*entity_id, MissionType::Stop, DockTeardown::Depot);
+                self.queue_mission_with_teardown(
+                    *entity_id,
+                    MissionType::Stop,
+                    DockTeardown::Depot,
+                );
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     movement::clear_navigation_for_entity(e);
                     e.movement_target = None;
@@ -328,7 +333,7 @@ impl Simulation {
                 }
                 // Cancel aircraft RTB/wait + docked-idle (not depot), then retask
                 // onto Attack keeping the interrupt stack (combat sets the target).
-                self.assign_mission_keep_fields(
+                self.queue_mission_with_teardown(
                     *attacker_id,
                     MissionType::Attack,
                     DockTeardown::AircraftOnly,
@@ -357,7 +362,7 @@ impl Simulation {
                 }
                 // Force-attack bypasses friendship check (Ctrl+click). Release a
                 // docked-idle aircraft only, then retask onto Attack keeping fields.
-                self.assign_mission_keep_fields(
+                self.queue_mission_with_teardown(
                     *attacker_id,
                     MissionType::Attack,
                     DockTeardown::IdleOnly,
@@ -383,7 +388,7 @@ impl Simulation {
                 }
                 // No target-entity existence check — cells always "exist". Release
                 // a docked-idle aircraft only, then retask onto Attack keeping fields.
-                self.assign_mission_keep_fields(
+                self.queue_mission_with_teardown(
                     *attacker_id,
                     MissionType::Attack,
                     DockTeardown::IdleOnly,
@@ -411,7 +416,8 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -419,7 +425,7 @@ impl Simulation {
                 }
                 // Release a docked-idle aircraft only, then retask onto AttackMove
                 // (the order_intent set after the move issues is the real driver).
-                self.assign_mission_keep_fields(
+                self.queue_mission_with_teardown(
                     *entity_id,
                     MissionType::AttackMove,
                     DockTeardown::IdleOnly,
@@ -510,11 +516,15 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
-                if self.substrate.entities.get(*entity_id).is_some_and(|entity| {
-                    self
-                        .object_type(entity.type_ref, rules)
-                        .is_some_and(|obj| obj.enslaves.is_some() && obj.deploys_into.is_some())
-                }) {
+                if self
+                    .substrate
+                    .entities
+                    .get(*entity_id)
+                    .is_some_and(|entity| {
+                        self.object_type(entity.type_ref, rules)
+                            .is_some_and(|obj| obj.enslaves.is_some() && obj.deploys_into.is_some())
+                    })
+                {
                     return crate::sim::slave_miner::deploy_slave_miner(self, *entity_id, rules)
                         .is_some();
                 }
@@ -525,11 +535,16 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
-                if self.substrate.entities.get(*entity_id).is_some_and(|entity| {
-                    self
-                        .object_type(entity.type_ref, rules)
-                        .is_some_and(|obj| obj.enslaves.is_some() && obj.undeploys_into.is_some())
-                }) {
+                if self
+                    .substrate
+                    .entities
+                    .get(*entity_id)
+                    .is_some_and(|entity| {
+                        self.object_type(entity.type_ref, rules).is_some_and(|obj| {
+                            obj.enslaves.is_some() && obj.undeploys_into.is_some()
+                        })
+                    })
+                {
                     return crate::sim::slave_miner::undeploy_slave_miner(self, *entity_id, rules)
                         .is_some();
                 }
@@ -694,7 +709,8 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -716,7 +732,8 @@ impl Simulation {
                     None => None,
                 };
                 let previous_refinery = self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*entity_id)
                     .and_then(|e| e.miner.as_ref())
                     .and_then(|m| m.reserved_refinery);
@@ -744,9 +761,25 @@ impl Simulation {
                     }
                 }
                 miner.forced_return = true;
-                miner.state = crate::sim::miner::MinerState::ForcedReturn;
                 // Clear any in-progress movement — the miner system will path to refinery.
                 e.movement_target = None;
+                // Commit the Harvest mission and the ForcedReturn cursor of
+                // record. Assign resets the handler state and dispatch timer
+                // (prompt redispatch); the cursor write lands after it.
+                // UNCHECKED: the native return-order mission shape is
+                // unverified — this preserves the legacy immediate-effect
+                // command behavior.
+                let now = self.session.binary_frame;
+                let _ = self.mission_assign_exact(
+                    *entity_id,
+                    crate::sim::mission::MissionId::from_known(MissionType::Harvest),
+                    now,
+                );
+                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
+                    e.mission.set_handler_state(
+                        crate::sim::miner::MinerState::ForcedReturn.cursor(),
+                    );
+                }
                 true
             }
             Command::RepairAtDepot {
@@ -758,7 +791,8 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -791,7 +825,11 @@ impl Simulation {
                     return false;
                 }
                 // Cancel any existing depot reservation, then retask onto Enter.
-                self.assign_mission_with_teardown(*entity_id, MissionType::Enter, DockTeardown::Depot);
+                self.queue_mission_with_teardown(
+                    *entity_id,
+                    MissionType::Enter,
+                    DockTeardown::Depot,
+                );
                 // Set dock state and issue move toward depot.
                 let (dock_rx, dock_ry) =
                     building_dock::depot_dock_cell(depot_rx, depot_ry, &foundation);
@@ -851,7 +889,8 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*passenger_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -890,7 +929,7 @@ impl Simulation {
                 }
                 // Retask onto Enter (no dock reservation touched); the legacy
                 // field clears below stay authoritative.
-                self.assign_mission_with_teardown(
+                self.queue_mission_with_teardown(
                     *passenger_id,
                     MissionType::Enter,
                     DockTeardown::None,
@@ -947,7 +986,8 @@ impl Simulation {
                     return false;
                 }
                 let has_passengers = self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*transport_id)
                     .and_then(|t| t.passenger_role.cargo())
                     .is_some_and(|c| !c.is_empty());
@@ -968,7 +1008,8 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -981,9 +1022,21 @@ impl Simulation {
                     return false;
                 };
                 miner.target_ore_cell = Some((*target_rx, *target_ry));
-                miner.state = crate::sim::miner::MinerState::MoveToOre;
                 // Clear in-progress movement so the miner re-paths to the new target.
                 e.movement_target = None;
+                // Commit the Harvest mission and the MoveToOre cursor of
+                // record (same shape as MinerReturn above; UNCHECKED native
+                // command mission shape, legacy behavior preserved).
+                let now = self.session.binary_frame;
+                let _ = self.mission_assign_exact(
+                    *entity_id,
+                    crate::sim::mission::MissionId::from_known(MissionType::Harvest),
+                    now,
+                );
+                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
+                    e.mission
+                        .set_handler_state(crate::sim::miner::MinerState::MoveToOre.cursor());
+                }
                 true
             }
             Command::PlantC4 {
@@ -995,7 +1048,8 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*attacker_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -1012,25 +1066,29 @@ impl Simulation {
                 // Validate target is a CanC4, non-invisible enemy building, not iron-curtained.
                 // TODO(parity): also reject selling-in-progress buildings (Mission==0x13);
                 // requires building Mission state which isn't modeled yet.
-                let target_info = self.substrate.entities.get(*target_building_id).and_then(|b| {
-                    if b.category != crate::map::entities::EntityCategory::Structure {
-                        return None;
-                    }
-                    if b.dying {
-                        return None;
-                    }
-                    let obj = self.object_type(b.type_ref, rules)?;
-                    if !obj.can_c4 || obj.invisible_in_game {
-                        return None;
-                    }
-                    if crate::sim::superweapon::invulnerability::is_invulnerable(
-                        b.invulnerability.as_ref(),
-                        self.session.tick as u32,
-                    ) {
-                        return None;
-                    }
-                    Some((b.position.rx, b.position.ry, b.owner))
-                });
+                let target_info = self
+                    .substrate
+                    .entities
+                    .get(*target_building_id)
+                    .and_then(|b| {
+                        if b.category != crate::map::entities::EntityCategory::Structure {
+                            return None;
+                        }
+                        if b.dying {
+                            return None;
+                        }
+                        let obj = self.object_type(b.type_ref, rules)?;
+                        if !obj.can_c4 || obj.invisible_in_game {
+                            return None;
+                        }
+                        if crate::sim::superweapon::invulnerability::is_invulnerable(
+                            b.invulnerability.as_ref(),
+                            self.session.tick as u32,
+                        ) {
+                            return None;
+                        }
+                        Some((b.position.rx, b.position.ry, b.owner))
+                    });
                 let Some((trx, try_, target_owner)) = target_info else {
                     return false;
                 };
@@ -1044,7 +1102,7 @@ impl Simulation {
                 }
                 // Retask onto Sabotage (no dock reservation touched); the legacy
                 // field clears below stay authoritative.
-                self.assign_mission_with_teardown(
+                self.queue_mission_with_teardown(
                     *attacker_id,
                     MissionType::Sabotage,
                     DockTeardown::None,
@@ -1106,7 +1164,8 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .substrate.entities
+                    .substrate
+                    .entities
                     .get(*engineer_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -1121,19 +1180,23 @@ impl Simulation {
                     return false;
                 }
                 // Validate target is a capturable enemy building.
-                let target_info = self.substrate.entities.get(*target_building_id).and_then(|b| {
-                    if b.category != crate::map::entities::EntityCategory::Structure {
-                        return None;
-                    }
-                    if b.dying {
-                        return None;
-                    }
-                    let obj = self.object_type(b.type_ref, rules)?;
-                    if !obj.capturable && !obj.bridge_repair_hut {
-                        return None;
-                    }
-                    Some((b.position.rx, b.position.ry, b.owner))
-                });
+                let target_info = self
+                    .substrate
+                    .entities
+                    .get(*target_building_id)
+                    .and_then(|b| {
+                        if b.category != crate::map::entities::EntityCategory::Structure {
+                            return None;
+                        }
+                        if b.dying {
+                            return None;
+                        }
+                        let obj = self.object_type(b.type_ref, rules)?;
+                        if !obj.capturable && !obj.bridge_repair_hut {
+                            return None;
+                        }
+                        Some((b.position.rx, b.position.ry, b.owner))
+                    });
                 let Some((trx, try_, target_owner)) = target_info else {
                     return false;
                 };
@@ -1147,7 +1210,7 @@ impl Simulation {
                 }
                 // Retask onto Capture (no dock reservation touched); the legacy
                 // field clears below stay authoritative.
-                self.assign_mission_with_teardown(
+                self.queue_mission_with_teardown(
                     *engineer_id,
                     MissionType::Capture,
                     DockTeardown::None,
@@ -1349,14 +1412,13 @@ impl Simulation {
                 );
                 // Retask onto Enter (no dock reservation), mark the unit as
                 // approaching THIS bunker (the install machine's keep-alive gate).
-                self.assign_mission_with_teardown(*unit_id, MissionType::Enter, DockTeardown::None);
+                self.queue_mission_with_teardown(*unit_id, MissionType::Enter, DockTeardown::None);
                 if let Some(e) = self.substrate.entities.get_mut(*unit_id) {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.c4_plant = None;
-                    e.bunker_link =
-                        crate::sim::game_entity::BunkerLink::Approaching(*bunker_id);
+                    e.bunker_link = crate::sim::game_entity::BunkerLink::Approaching(*bunker_id);
                 }
                 // Issue an approach move toward the bunker cell (mirror EnterTransport).
                 let bunker_cell = self
@@ -1438,13 +1500,17 @@ impl Simulation {
         ids.sort_unstable();
         ids.dedup();
         for stable_id in ids {
-            let eligible = self.substrate.entities.get(stable_id).is_some_and(|entity| {
-                entity.category == crate::map::entities::EntityCategory::Structure
-                    && command_owner.eq_ignore_ascii_case(self.interner.resolve(entity.owner))
-                    && self
-                        .object_type(entity.type_ref, rules)
-                        .is_some_and(|obj| obj.has_rally_line())
-            });
+            let eligible = self
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|entity| {
+                    entity.category == crate::map::entities::EntityCategory::Structure
+                        && command_owner.eq_ignore_ascii_case(self.interner.resolve(entity.owner))
+                        && self
+                            .object_type(entity.type_ref, rules)
+                            .is_some_and(|obj| obj.has_rally_line())
+                });
             if eligible {
                 if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
                     entity.rally_target = Some((rx, ry));
@@ -1536,7 +1602,8 @@ impl Simulation {
 
     /// Check ownership using stable_id via EntityStore.
     pub(crate) fn entity_owned_by_id(&self, command_owner: &str, stable_id: u64) -> bool {
-        self.substrate.entities
+        self.substrate
+            .entities
             .get(stable_id)
             .is_some_and(|e| command_owner.eq_ignore_ascii_case(self.interner.resolve(e.owner)))
     }
@@ -1602,7 +1669,8 @@ impl Simulation {
             return false;
         }
         let anchor = self
-            .substrate.entities
+            .substrate
+            .entities
             .get(entity_id)
             .map(|e| (e.position.rx, e.position.ry));
         let Some((anchor_rx, anchor_ry)) = anchor else {
@@ -1656,6 +1724,7 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::house_state::HouseState;
     use crate::sim::miner::{Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase};
+    use crate::sim::mission::MissionId;
     use crate::sim::movement::locomotor::LocomotorState;
 
     fn amcv_move_rules() -> RuleSet {
@@ -1681,7 +1750,7 @@ mod tests {
         let type_ref = sim.interner.intern(type_id);
         let obj = rules.object(type_id).expect("object type");
         let health = obj.strength.clamp(0, u16::MAX as i32) as u16;
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             sid,
             20,
             20,
@@ -1824,7 +1893,7 @@ mod tests {
     fn spawn_miner(sim: &mut Simulation, sid: u64) {
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("HARV");
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             sid,
             20,
             20,
@@ -1848,7 +1917,7 @@ mod tests {
     fn spawn_refinery(sim: &mut Simulation, sid: u64, type_id: &str, rx: u16, ry: u16) {
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern(type_id);
-        let entity = GameEntity::new(
+        let entity = GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -1896,23 +1965,25 @@ mod tests {
     ) {
         let owner = sim.interner.intern(owner_name);
         let type_ref = sim.interner.intern(type_id);
-        sim.substrate.entities.insert(GameEntity::new(
-            sid,
-            rx,
-            ry,
-            0,
-            0,
-            owner,
-            Health {
-                current: 1000,
-                max: 1000,
-            },
-            type_ref,
-            EntityCategory::Structure,
-            0,
-            5,
-            false,
-        ));
+        sim.substrate
+            .entities
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                sid,
+                rx,
+                ry,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 1000,
+                    max: 1000,
+                },
+                type_ref,
+                EntityCategory::Structure,
+                0,
+                5,
+                false,
+            ));
     }
 
     #[test]
@@ -1942,8 +2013,14 @@ mod tests {
         };
 
         assert!(sim.apply_command("Americans", &command, Some(&rules), None, &BTreeMap::new()));
-        assert_eq!(sim.substrate.entities.get(2).unwrap().rally_target, Some((40, 41)));
-        assert_eq!(sim.substrate.entities.get(3).unwrap().rally_target, Some((40, 41)));
+        assert_eq!(
+            sim.substrate.entities.get(2).unwrap().rally_target,
+            Some((40, 41))
+        );
+        assert_eq!(
+            sim.substrate.entities.get(3).unwrap().rally_target,
+            Some((40, 41))
+        );
         assert_eq!(sim.substrate.entities.get(4).unwrap().rally_target, None);
         assert_eq!(sim.substrate.entities.get(5).unwrap().rally_target, None);
         assert_eq!(sim.houses.get(&owner).unwrap().rally_point, Some((40, 41)));
@@ -1957,7 +2034,14 @@ mod tests {
         spawn_refinery(&mut sim, 2, "GAREFN", 10, 10);
         spawn_refinery(&mut sim, 3, "GAREFN", 30, 30);
         {
-            let miner = sim.substrate.entities.get_mut(1).unwrap().miner.as_mut().unwrap();
+            let miner = sim
+                .substrate
+                .entities
+                .get_mut(1)
+                .unwrap()
+                .miner
+                .as_mut()
+                .unwrap();
             miner.reserved_refinery = Some(2);
             miner.dock_queued = true;
             miner.dock_phase = RefineryDockPhase::Unloading;
@@ -1976,10 +2060,20 @@ mod tests {
         );
 
         assert!(applied);
-        let miner = sim.substrate.entities.get(1).unwrap().miner.as_ref().unwrap();
+        let miner = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .miner
+            .as_ref()
+            .unwrap();
         assert_eq!(miner.reserved_refinery, Some(3));
         assert!(miner.forced_return);
-        assert_eq!(miner.state, MinerState::ForcedReturn);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().miner_state(),
+            Some(MinerState::ForcedReturn)
+        );
         assert!(!miner.dock_queued);
         assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
         assert!(!sim.production.dock_reservations.is_occupied(2));
@@ -2002,10 +2096,20 @@ mod tests {
         );
 
         assert!(applied);
-        let miner = sim.substrate.entities.get(1).unwrap().miner.as_ref().unwrap();
+        let miner = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .miner
+            .as_ref()
+            .unwrap();
         assert_eq!(miner.reserved_refinery, None);
         assert!(miner.forced_return);
-        assert_eq!(miner.state, MinerState::ForcedReturn);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().miner_state(),
+            Some(MinerState::ForcedReturn)
+        );
     }
 
     #[test]
@@ -2027,10 +2131,20 @@ mod tests {
         );
 
         assert!(!applied);
-        let miner = sim.substrate.entities.get(1).unwrap().miner.as_ref().unwrap();
+        let miner = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .miner
+            .as_ref()
+            .unwrap();
         assert_eq!(miner.reserved_refinery, None);
         assert!(!miner.forced_return);
-        assert_eq!(miner.state, MinerState::SearchOre);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().miner_state(),
+            Some(MinerState::SearchOre)
+        );
     }
 
     fn bunker_rules() -> RuleSet {
@@ -2047,7 +2161,7 @@ mod tests {
     fn spawn_bunker_struct(sim: &mut Simulation, sid: u64, owner: &str, rx: u16, ry: u16) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern("NATBNK");
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -2068,10 +2182,17 @@ mod tests {
         sim.substrate.entities.insert(ge);
     }
 
-    fn spawn_bunkerable(sim: &mut Simulation, sid: u64, owner: &str, type_name: &str, rx: u16, ry: u16) {
+    fn spawn_bunkerable(
+        sim: &mut Simulation,
+        sid: u64,
+        owner: &str,
+        type_name: &str,
+        rx: u16,
+        ry: u16,
+    ) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern(type_name);
-        let ge = GameEntity::new(
+        let ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -2114,8 +2235,17 @@ mod tests {
         assert!(applied);
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::Approaching(2));
-        assert_eq!(unit.mission.current, MissionType::Enter);
-        let rt = sim.substrate.entities.get(2).unwrap().bunker_runtime.unwrap();
+        assert_eq!(
+            unit.mission.queued(),
+            MissionId::from_known(MissionType::Enter)
+        );
+        let rt = sim
+            .substrate
+            .entities
+            .get(2)
+            .unwrap()
+            .bunker_runtime
+            .unwrap();
         assert_eq!(rt.state, BunkerState::ArriveWait);
         assert_eq!(rt.installing_unit, Some(1));
     }
@@ -2147,7 +2277,13 @@ mod tests {
             BunkerLink::None
         );
         assert_eq!(
-            sim.substrate.entities.get(2).unwrap().bunker_runtime.unwrap().state,
+            sim.substrate
+                .entities
+                .get(2)
+                .unwrap()
+                .bunker_runtime
+                .unwrap()
+                .state,
             BunkerState::Idle,
             "rejected admission leaves the machine idle"
         );
@@ -2184,7 +2320,10 @@ mod tests {
         sim.reveal(1);
         sim.add_entity_occupancy(1);
         crate::sim::docking::bunker_link::install_bunker_link(&mut sim, 2, 1);
-        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, Some(1));
+        assert_eq!(
+            sim.substrate.entities.get(2).unwrap().bunker_occupant,
+            Some(1)
+        );
 
         let applied = sim.apply_command(
             "Americans",
@@ -2203,7 +2342,10 @@ mod tests {
         // Released at the anchor SW of the bunker (10,10) + (-1,+1) when no grid.
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!((unit.position.rx, unit.position.ry), (9, 11));
-        assert_eq!(unit.mission.current, MissionType::Move);
+        assert_eq!(
+            unit.mission.queued(),
+            MissionId::from_known(MissionType::Move)
+        );
     }
 
     #[test]
@@ -2225,7 +2367,7 @@ mod tests {
 
     #[test]
     fn bunker_full_lifecycle_enter_install_then_eject() {
-        use crate::sim::docking::bunker_install::{tick_bunker_install, BunkerState};
+        use crate::sim::docking::bunker_install::{BunkerState, tick_bunker_install};
         use crate::sim::game_entity::BunkerLink;
         let rules = bunker_rules();
         let mut sim = Simulation::new();
@@ -2260,9 +2402,18 @@ mod tests {
                 u.facing_target = None;
             }
         }
-        let rt = sim.substrate.entities.get(2).unwrap().bunker_runtime.unwrap();
+        let rt = sim
+            .substrate
+            .entities
+            .get(2)
+            .unwrap()
+            .bunker_runtime
+            .unwrap();
         assert_eq!(rt.state, BunkerState::Occupied);
-        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, Some(1));
+        assert_eq!(
+            sim.substrate.entities.get(2).unwrap().bunker_occupant,
+            Some(1)
+        );
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::Installed(2));
         assert!(!unit.in_logic_vector, "occupant hidden while installed");
@@ -2285,7 +2436,10 @@ mod tests {
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::None);
         assert!(unit.in_logic_vector, "occupant revealed on eject");
-        assert_eq!(unit.mission.current, MissionType::Move);
+        assert_eq!(
+            unit.mission.queued(),
+            MissionId::from_known(MissionType::Move)
+        );
         assert_eq!(
             sim.bunker_wall_events.iter().filter(|e| !e.up).count(),
             1,

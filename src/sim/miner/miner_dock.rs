@@ -356,7 +356,10 @@ mod tests {
         );
 
         // The slot is free; miner 2 docks only by re-probing (winning on demand).
-        assert_eq!(contacts.hello_or_wait(100, 2, 1), ContactAdmission::Accepted);
+        assert_eq!(
+            contacts.hello_or_wait(100, 2, 1),
+            ContactAdmission::Accepted
+        );
         assert!(contacts.has_contact(100, 2));
     }
 }

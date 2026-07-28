@@ -249,11 +249,7 @@ fn parse_leading_hex(s: &str) -> i32 {
         any = true;
         acc = acc.wrapping_mul(16).wrapping_add(d);
     }
-    if any {
-        acc as i32
-    } else {
-        0
-    }
+    if any { acc as i32 } else { 0 }
 }
 
 /// C-atoi-equivalent leading-numeric parse (P3): optional leading sign, then
@@ -359,8 +355,9 @@ mod tests {
 
     #[test] // P6/P18
     fn test_read_bool_first_char() {
-        let ini =
-            sec("[S]\nA=yes\nB=Y\nC=T\nD=true\nE=1\nF=no\nG=N\nH=F\nI=false\nJ=0\nK=off\nL=xyz\nM=\n");
+        let ini = sec(
+            "[S]\nA=yes\nB=Y\nC=T\nD=true\nE=1\nF=no\nG=N\nH=F\nI=false\nJ=0\nK=off\nL=xyz\nM=\n",
+        );
         let s = ini.section("S").unwrap();
         for k in ["A", "B", "C", "D", "E"] {
             assert!(s.read_bool(k, false), "{k}");
@@ -417,7 +414,10 @@ mod tests {
     #[test] // P8 partial keeps default component
     fn test_read_3int_partial_keeps_default() {
         let ini = sec("[S]\nA=10,20\n"); // only 2 of 3 fields
-        assert_eq!(ini.section("S").unwrap().read_3int("A", [1, 2, 3]), [10, 20, 3]);
+        assert_eq!(
+            ini.section("S").unwrap().read_3int("A", [1, 2, 3]),
+            [10, 20, 3]
+        );
     }
 
     #[test] // P21
@@ -456,13 +456,14 @@ mod tests {
 /// consumer flip.
 #[cfg(test)]
 mod corpus_tests {
+    use std::path::Path;
+
+    use crate::assets::asset_manager::AssetManager;
     use crate::rules::ini_parser::IniFile;
 
-    // `ini_value.rs` lives in `src/rules/`, so `../../ini/` reaches the repo
-    // `ini/` corpus (two levels up). `skirmish_modes.rs` uses `../ini/` only
-    // because it is in `src/`.
-    const STOCK_RULESMD: &str = include_str!("../../ini/rulesmd.ini");
-    const STOCK_ARTMD: &str = include_str!("../../ini/artmd.ini");
+    const CONTRACT_RULES: &str =
+        include_str!("../../tests/fixtures/ini/accessor_rules_contract.ini");
+    const CONTRACT_ART: &str = include_str!("../../tests/fixtures/ini/accessor_art_contract.ini");
 
     /// Smallest gamemd per-accessor ReadString cap; values over (cap-1) chars
     /// would truncate in an enum/zone/action read.
@@ -485,13 +486,33 @@ mod corpus_tests {
     }
 
     #[test]
-    fn test_ini_accessor_corpus_parity() {
+    fn test_ini_accessor_contract_corpus_parity() {
+        let mut ini = IniFile::from_str(CONTRACT_RULES);
+        ini.merge(&IniFile::from_str(CONTRACT_ART));
+        assert_ini_accessor_corpus_parity(ini);
+    }
+
+    #[test]
+    #[ignore = "requires RA2_DIR with installed retail RA2/YR assets"]
+    fn test_retail_ini_accessor_corpus_parity() {
+        let root =
+            std::env::var("RA2_DIR").expect("set RA2_DIR to the installed retail RA2/YR directory");
+        let assets = AssetManager::new(Path::new(&root)).expect("load retail archive stack");
+        let rulesmd = assets
+            .get("rulesmd.ini")
+            .expect("rulesmd.ini in retail archive stack");
+        let artmd = assets
+            .get("artmd.ini")
+            .expect("artmd.ini in retail archive stack");
+        let mut ini = IniFile::from_bytes(&rulesmd).expect("parse retail rulesmd.ini");
+        ini.merge(&IniFile::from_bytes(&artmd).expect("parse retail artmd.ini"));
+        assert_ini_accessor_corpus_parity(ini);
+    }
+
+    fn assert_ini_accessor_corpus_parity(ini: IniFile) {
         // Scans the MERGED view (rules then art on top). Production keeps them
         // separate, but a per-key parse-EQUIVALENCE scan is unaffected: the
         // old and new accessor see the same stored string for each key.
-        let mut ini = IniFile::from_str(STOCK_RULESMD);
-        ini.merge(&IniFile::from_str(STOCK_ARTMD));
-
         let mut undocumented: Vec<String> = Vec::new();
         let mut zero_x: Vec<String> = Vec::new();
         let mut present_empty_transform: Vec<String> = Vec::new();

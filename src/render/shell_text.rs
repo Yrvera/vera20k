@@ -5,6 +5,7 @@
 
 use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
+use crate::render::shell_text_reveal::PathAReveal;
 
 /// Character reveal window for kind-1 static text animation (v1: wipe only).
 /// `count` = number of leading characters drawn; characters at index >= count
@@ -128,6 +129,69 @@ pub fn draw_in_rect(
             color,
             cam_offset,
             reveal.map(|r| (consumed, r.count)),
+        );
+        consumed = new_consumed;
+        instances.append(&mut line_instances);
+        line_y += line_advance;
+    }
+    ShellTextDraw { instances, scissor }
+}
+
+/// Path-A counterpart to [`draw_in_rect`]. Only explicitly opted-in labels use
+/// UTF-16 unit tinting; the existing scalar reveal and plain paths are untouched.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_in_rect_path_a(
+    font: &BitFont,
+    text: &str,
+    rect: TextRect,
+    flags: ShellAlign,
+    cam_offset: [f32; 2],
+    depth: f32,
+    reveal: PathAReveal,
+) -> ShellTextDraw {
+    let scissor = ScissorRect {
+        x: rect.x.max(0) as u32,
+        y: rect.y.max(0) as u32,
+        w: rect.w,
+        h: rect.h,
+    };
+    if text.is_empty() {
+        return ShellTextDraw {
+            instances: Vec::new(),
+            scissor,
+        };
+    }
+    let layout = font.wrap_layout(text, rect.w);
+    let base_x = rect.x as f32;
+    let mut line_y = rect.y as f32;
+    if flags.contains(ShellAlign::V_CENTER) && layout.height < rect.h {
+        line_y += ((rect.h - layout.height) / 2) as f32;
+    }
+    let line_advance = font.cell_height();
+    let mut instances = Vec::with_capacity(text.len());
+    let mut consumed = 0u32;
+
+    for span in &layout.lines {
+        if line_y + font.glyph_height() > rect.y as f32 + rect.h as f32 {
+            break;
+        }
+        let line_x_offset = if flags.contains(ShellAlign::H_CENTER) && span.width < rect.w {
+            ((rect.w - span.width) / 2) as f32
+        } else if flags.contains(ShellAlign::H_RIGHT) && span.width < rect.w {
+            (rect.w - span.width) as f32
+        } else {
+            0.0
+        };
+        let segment = &text[span.start_byte..span.end_byte];
+        let (mut line_instances, new_consumed) = font.build_text_path_a(
+            segment,
+            base_x + line_x_offset,
+            line_y,
+            1.0,
+            depth,
+            cam_offset,
+            consumed,
+            reveal,
         );
         consumed = new_consumed;
         instances.append(&mut line_instances);
@@ -331,5 +395,60 @@ mod tests {
         );
         let full_glyphs = font.build_text("xax", 0.0, 0.0, 1.0, 0.5, [1.0, 1.0, 1.0], [0.0, 0.0]);
         assert_eq!(a.instances.len(), full_glyphs.len());
+    }
+
+    #[test]
+    fn path_a_count_one_is_hidden_and_count_two_draws_first_unit() {
+        let font = test_font();
+        let reveal = |count| PathAReveal {
+            count,
+            range: 8,
+            base_rgb: [255, 255, 0],
+            highlight_rgb: [255; 3],
+        };
+        let blank = draw_in_rect_path_a(
+            &font,
+            "xax",
+            rect_100x30(),
+            ShellAlign::NONE,
+            [0.0, 0.0],
+            0.5,
+            reveal(1),
+        );
+        assert!(blank.instances.is_empty());
+        let first = draw_in_rect_path_a(
+            &font,
+            "xax",
+            rect_100x30(),
+            ShellAlign::NONE,
+            [0.0, 0.0],
+            0.5,
+            reveal(2),
+        );
+        assert_eq!(first.instances.len(), 1);
+    }
+
+    #[test]
+    fn path_a_uses_utf16_units_for_surrogate_halves_spaces_and_tabs() {
+        let font = test_font();
+        let reveal = PathAReveal {
+            count: 6,
+            range: 8,
+            base_rgb: [255, 255, 0],
+            highlight_rgb: [255; 3],
+        };
+        // x=1 unit, 😀=2 surrogate units, space=1, tab=1, x=1. At count 6,
+        // positions 1..5 are visible and position 6 is cut. The two surrogate
+        // halves use the missing glyph, while space/tab emit no quads.
+        let draw = draw_in_rect_path_a(
+            &font,
+            "x😀 \tx",
+            rect_100x30(),
+            ShellAlign::NONE,
+            [0.0, 0.0],
+            0.5,
+            reveal,
+        );
+        assert_eq!(draw.instances.len(), 3);
     }
 }

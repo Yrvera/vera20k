@@ -38,12 +38,54 @@ pub const CHOOSE_MAP_MODAL_H: i32 = 369;
 pub const CHOOSE_MAP_LIST_ROW_H: i32 = 19;
 pub const CHOOSE_MAP_LISTBOX_ROW_H: i32 = CHOOSE_MAP_LIST_ROW_H;
 pub const CHOOSE_MAP_LISTBOX_SCROLLBAR_W: i32 = 20;
-// Validation popup child pixel size. This is the MapDialogRect 6x13 candidate
-// derived from the 300x200-DLU template; the exact post-creation client size
-// (runtime DLU->pixel conversion) has not been captured, so treat as unconfirmed
-// pending a native GetClientRect/screenshot.
+// Validation popup child pixel size, using the 6x13 dialog-unit base. The parent
+// chooser resource is a 533x369-DLU template; the exact post-creation client size
+// for this child popup (runtime DLU->pixel conversion) has not been captured, so
+// treat as unconfirmed pending a native GetClientRect/screenshot.
 pub const VALIDATION_MODAL_W: i32 = 450;
 pub const VALIDATION_MODAL_H: i32 = 325;
+
+// Random-map setup dialog 0x105. Same 533x369-DLU frame, font and background as
+// choose-map. Its right-column controls sit 2-3 DLU left of choose-map's in the
+// resource (and the preview 2 DLU right), but every right-column helper here is
+// panel-anchored and discards the source x, so those differences do not reach
+// the output. The left column is plain dlu_rect, where x and y both matter.
+const SETUP_LABEL_X: i32 = 74;
+const SETUP_LABEL_W: i32 = 93;
+const SETUP_CONTROL_X: i32 = 179;
+const SETUP_CONTROL_W: i32 = 150;
+/// Row tops for map type, time, theater, size, resources, players.
+const SETUP_ROW_Y: [i32; 6] = [41, 65, 90, 114, 138, 163];
+/// Label tops; the taller rows sit one DLU above their control.
+const SETUP_LABEL_Y: [i32; 6] = [40, 64, 90, 114, 138, 162];
+/// Label heights are NOT uniform: rows 0/1/5 are 14 DLU, rows 2/3/4 are 12.
+const SETUP_LABEL_H: [i32; 6] = [14, 14, 12, 12, 12, 14];
+const SETUP_COMBO_H: i32 = 103;
+/// The time combo's dropdown is two DLU shorter than the others.
+const SETUP_TIME_COMBO_H: i32 = 101;
+const SETUP_TRACKBAR_H: i32 = 13;
+const SETUP_ACTION_Y: i32 = 257;
+const SETUP_ACTION_W: i32 = 83;
+const SETUP_ACTION_H: i32 = 15;
+const SETUP_RANDOMIZE_X: i32 = 74;
+const SETUP_GENERATE_X: i32 = 246;
+/// Display-only seed field.
+const SETUP_SEED_RECT: (i32, i32, i32, i32) = (279, 287, 50, 12);
+// Right column, using the 0x105 resource's own x values.
+const SETUP_RIGHT_X: i32 = 422;
+const SETUP_RIGHT_W: i32 = 108;
+const SETUP_RIGHT_H: i32 = 23;
+const SETUP_TITLE_RECT: (i32, i32, i32, i32) = (422, 1, 108, 10);
+const SETUP_PREVIEW_RECT: (i32, i32, i32, i32) = (430, 23, 96, 69);
+const SETUP_USE_MAP_Y: i32 = 122;
+const SETUP_LOAD_Y: i32 = 149;
+const SETUP_SAVE_Y: i32 = 176;
+const SETUP_DELETE_Y: i32 = 203;
+/// Bottom status line, the one control whose x matches choose-map exactly.
+const SETUP_BLANK_RECT: (i32, i32, i32, i32) = (2, 355, 303, 12);
+/// Hidden until the generate block runs.
+const SETUP_PROGRESS_TEXT_RECT: (i32, i32, i32, i32) = (74, 219, 150, 11);
+const SETUP_PROGRESS_BAR_RECT: (i32, i32, i32, i32) = (229, 217, 100, 21);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellControlId {
@@ -163,6 +205,24 @@ pub enum ChooseMapModalButton {
     CreateRandomMap0x583,
 }
 
+/// Every interactive control in the random-map setup dialog `0x105`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RandomMapSetupControl {
+    MapType0x405,
+    Time0x3ea,
+    Theater0x407,
+    Size0x406,
+    Resources0x408,
+    Players0x3eb,
+    Randomize0x621,
+    Generate0x620,
+    Ok0x6c5,
+    Load0x6c2,
+    Save0x6c3,
+    Delete0x6c4,
+    Cancel0x5c0,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChooseMapListboxId {
     Mode0x6eb,
@@ -184,6 +244,30 @@ pub struct ChooseMapModalLayout {
     pub game_map_heading: RectPx,
     pub status_help: RectPx,
     pub preview: RectPx,
+}
+
+/// Pixel rects for the random-map setup dialog `0x105`.
+///
+/// Rows are ordered map type, time, theater, size, resources, players.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RandomMapSetupLayout {
+    pub screen: RectPx,
+    pub dialog: RectPx,
+    pub label_rects: [RectPx; 6],
+    pub control_rects: [RectPx; 6],
+    pub randomize: RectPx,
+    pub generate: RectPx,
+    pub seed_field: RectPx,
+    pub title: RectPx,
+    pub preview: RectPx,
+    pub use_map: RectPx,
+    pub load: RectPx,
+    pub save: RectPx,
+    pub delete: RectPx,
+    pub cancel: RectPx,
+    pub blank: RectPx,
+    pub progress_text: RectPx,
+    pub progress_bar: RectPx,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -497,9 +581,15 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
         screen: RectPx::new(0, 0, screen_w, screen_h),
         right_panel: panel,
         right_panel_text,
-        start_button: snap_button_biased_truncate(screen_w, screen_h, start_base, panel, SDBTNANM_W),
+        start_button: snap_button_biased_truncate(
+            screen_w, screen_h, start_base, panel, SDBTNANM_W,
+        ),
         choose_map_button: snap_button_biased_truncate(
-            screen_w, screen_h, choose_base, panel, SDBTNANM_W,
+            screen_w,
+            screen_h,
+            choose_base,
+            panel,
+            SDBTNANM_W,
         ),
         back_button: back_rect(screen_w, panel),
         map_preview: right_anchor(screen_w, screen_h, preview_base),
@@ -565,7 +655,11 @@ pub fn compute_choose_map_modal_layout(screen_w: u32, screen_h: u32) -> ChooseMa
         mode_list: dlu_rect(77, 78, 130, 211),
         map_list: dlu_rect(225, 78, 130, 211),
         use_map_button: snap_button_biased_truncate(
-            screen_w, screen_h, use_map_base, panel, SDBTNANM_W,
+            screen_w,
+            screen_h,
+            use_map_base,
+            panel,
+            SDBTNANM_W,
         ),
         cancel_button: back_rect(screen_w, panel),
         create_random_map_button: snap_button_biased_truncate(
@@ -589,6 +683,328 @@ pub fn compute_fixed_800_choose_map_modal_layout(
     screen_h: u32,
 ) -> ChooseMapModalLayout {
     compute_choose_map_modal_layout(screen_w, screen_h)
+}
+
+/// Layout for the random-map setup dialog `0x105`.
+///
+/// Shares choose-map's frame and right-panel anchoring; only the left column
+/// differs. Rows are map type, time, theater, size, resources, players — the
+/// players row is a trackbar, so it is shorter than the five combos.
+pub fn compute_random_map_setup_layout(screen_w: u32, screen_h: u32) -> RandomMapSetupLayout {
+    let screen_w = screen_w as i32;
+    let screen_h = screen_h as i32;
+    let panel = right_panel_rects(screen_w, screen_h);
+
+    let control_h = |row: usize| match row {
+        1 => SETUP_TIME_COMBO_H,
+        5 => SETUP_TRACKBAR_H,
+        _ => SETUP_COMBO_H,
+    };
+    let label_rects = std::array::from_fn(|row| {
+        dlu_rect(
+            SETUP_LABEL_X,
+            SETUP_LABEL_Y[row],
+            SETUP_LABEL_W,
+            SETUP_LABEL_H[row],
+        )
+    });
+    let control_rects = std::array::from_fn(|row| {
+        dlu_rect(
+            SETUP_CONTROL_X,
+            SETUP_ROW_Y[row],
+            SETUP_CONTROL_W,
+            control_h(row),
+        )
+    });
+
+    let right_button = |y: i32| {
+        snap_button_biased_truncate(
+            screen_w,
+            screen_h,
+            dlu_rect(SETUP_RIGHT_X, y, SETUP_RIGHT_W, SETUP_RIGHT_H),
+            panel,
+            SDBTNANM_W,
+        )
+    };
+    let (title_x, title_y, title_w, title_h) = SETUP_TITLE_RECT;
+    let (preview_x, preview_y, preview_w, preview_h) = SETUP_PREVIEW_RECT;
+    let (seed_x, seed_y, seed_w, seed_h) = SETUP_SEED_RECT;
+    let (blank_x, blank_y, blank_w, blank_h) = SETUP_BLANK_RECT;
+    let (ptext_x, ptext_y, ptext_w, ptext_h) = SETUP_PROGRESS_TEXT_RECT;
+    let (pbar_x, pbar_y, pbar_w, pbar_h) = SETUP_PROGRESS_BAR_RECT;
+
+    RandomMapSetupLayout {
+        screen: RectPx::new(0, 0, screen_w, screen_h),
+        dialog: RectPx::new(0, 0, screen_w, screen_h),
+        label_rects,
+        control_rects,
+        randomize: dlu_rect(
+            SETUP_RANDOMIZE_X,
+            SETUP_ACTION_Y,
+            SETUP_ACTION_W,
+            SETUP_ACTION_H,
+        ),
+        generate: dlu_rect(
+            SETUP_GENERATE_X,
+            SETUP_ACTION_Y,
+            SETUP_ACTION_W,
+            SETUP_ACTION_H,
+        ),
+        seed_field: dlu_rect(seed_x, seed_y, seed_w, seed_h),
+        title: right_anchor(
+            screen_w,
+            screen_h,
+            dlu_rect(title_x, title_y, title_w, title_h),
+        )
+        .translate(0, 1),
+        preview: right_anchor(
+            screen_w,
+            screen_h,
+            dlu_rect(preview_x, preview_y, preview_w, preview_h),
+        ),
+        use_map: right_button(SETUP_USE_MAP_Y),
+        load: right_button(SETUP_LOAD_Y),
+        save: right_button(SETUP_SAVE_Y),
+        delete: right_button(SETUP_DELETE_Y),
+        cancel: back_rect(screen_w, panel),
+        blank: dlu_rect(blank_x, blank_y, blank_w, blank_h),
+        progress_text: dlu_rect(ptext_x, ptext_y, ptext_w, ptext_h),
+        progress_bar: dlu_rect(pbar_x, pbar_y, pbar_w, pbar_h),
+    }
+}
+
+/// Topmost interactive control at `(x, y)`, or `None`.
+///
+/// Tested in draw order: the option rows first, then the action row, then the
+/// right column — matching `choose_map_modal_button_at`.
+pub fn random_map_setup_control_at(
+    layout: &RandomMapSetupLayout,
+    x: i32,
+    y: i32,
+) -> Option<RandomMapSetupControl> {
+    const ROW_CONTROLS: [RandomMapSetupControl; 6] = [
+        RandomMapSetupControl::MapType0x405,
+        RandomMapSetupControl::Time0x3ea,
+        RandomMapSetupControl::Theater0x407,
+        RandomMapSetupControl::Size0x406,
+        RandomMapSetupControl::Resources0x408,
+        RandomMapSetupControl::Players0x3eb,
+    ];
+    // A closed combo only occupies its face, not the dropdown extent the
+    // resource reserves, so hit-test the face height the shell already uses.
+    for (row, control) in ROW_CONTROLS.iter().enumerate() {
+        let rect = layout.control_rects[row];
+        let face_h = if row == 5 { rect.h } else { COMBO_FACE_H };
+        if RectPx::new(rect.x, rect.y, rect.w, face_h).contains(x, y) {
+            return Some(*control);
+        }
+    }
+    let others = [
+        (layout.randomize, RandomMapSetupControl::Randomize0x621),
+        (layout.generate, RandomMapSetupControl::Generate0x620),
+        (layout.use_map, RandomMapSetupControl::Ok0x6c5),
+        (layout.load, RandomMapSetupControl::Load0x6c2),
+        (layout.save, RandomMapSetupControl::Save0x6c3),
+        (layout.delete, RandomMapSetupControl::Delete0x6c4),
+        (layout.cancel, RandomMapSetupControl::Cancel0x5c0),
+    ];
+    others
+        .iter()
+        .find(|(rect, _)| rect.contains(x, y))
+        .map(|(_, control)| *control)
+}
+
+/// The open list of a combo row: directly under the face, as tall as its
+/// entries. The resource reserves a taller extent per combo, but a Windows
+/// dropdown sizes itself to the item count up to that reserve, and none of
+/// these lists come close to it.
+pub const fn random_map_setup_dropdown_rect(
+    layout: &RandomMapSetupLayout,
+    row: usize,
+    item_count: usize,
+) -> RectPx {
+    let face = layout.control_rects[row];
+    RectPx::new(
+        face.x,
+        face.y + COMBO_FACE_H,
+        face.w,
+        COMBO_DROPDOWN_ROW_H * item_count as i32,
+    )
+}
+
+/// Which entry of an open dropdown `(x, y)` falls on.
+pub fn random_map_setup_dropdown_row_at(
+    layout: &RandomMapSetupLayout,
+    row: usize,
+    item_count: usize,
+    x: i32,
+    y: i32,
+) -> Option<usize> {
+    let list = random_map_setup_dropdown_rect(layout, row, item_count);
+    if !list.contains(x, y) {
+        return None;
+    }
+    let index = ((y - list.y) / COMBO_DROPDOWN_ROW_H) as usize;
+    (index < item_count).then_some(index)
+}
+
+// Saved-seed browser (Load 0xB7 / Save 0x2B4 / Delete 0x2B5). All three share
+// the 533x369 frame, the right column and the bottom status line with the
+// chooser; only the list extent, the prompt and the action button differ.
+/// List rects per mode: Load, Save, Delete. Save's is shorter to leave room for
+/// the file-name edit beneath it.
+const SEED_LIST_RECTS: [(i32, i32, i32, i32); 3] =
+    [(79, 78, 266, 187), (79, 80, 266, 157), (78, 76, 266, 187)];
+/// Prompt static above each list.
+const SEED_PROMPT_RECTS: [(i32, i32, i32, i32); 3] =
+    [(79, 44, 266, 24), (79, 46, 266, 24), (78, 42, 266, 24)];
+/// The file-name edit, Save only.
+const SEED_NAME_EDIT_RECT: (i32, i32, i32, i32) = (80, 253, 266, 14);
+/// The action button sits where the chooser puts Use Map, but is one DLU
+/// shorter than Back -- 22 against 23.
+const SEED_ACTION_Y: i32 = 122;
+const SEED_ACTION_H: i32 = 22;
+const SEED_RIGHT_X: i32 = 425;
+const SEED_RIGHT_W: i32 = 108;
+const SEED_TITLE_RECT: (i32, i32, i32, i32) = (425, 1, 108, 10);
+/// Load and Delete put the status line one pixel lower than Save does.
+const SEED_BLANK_RECTS: [(i32, i32, i32, i32); 3] =
+    [(2, 355, 303, 12), (2, 356, 303, 12), (2, 355, 303, 12)];
+
+/// Which of the three saved-seed dialogs is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedSeedMode {
+    Load,
+    Save,
+    Delete,
+}
+
+impl SavedSeedMode {
+    const fn index(self) -> usize {
+        match self {
+            Self::Load => 0,
+            Self::Save => 1,
+            Self::Delete => 2,
+        }
+    }
+
+    /// Caption key and English fallback for the action button.
+    pub const fn action_label(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Load => ("GUI:Load", "Load"),
+            Self::Save => ("GUI:Save", "Save"),
+            Self::Delete => ("GUI:Delete", "Delete"),
+        }
+    }
+
+    /// Caption key and fallback for the top-right title.
+    pub const fn title_label(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Load => ("GUI:LoadMissionMenu", "Load Mission"),
+            Self::Save => ("GUI:SaveMissionMenu", "Save Mission"),
+            Self::Delete => ("GUI:DeleteMissionMenu", "Delete Mission"),
+        }
+    }
+
+    /// Caption key and fallback for the prompt above the list.
+    pub const fn prompt_label(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Load => ("GUI:SelectMission", "Select a mission"),
+            Self::Save => ("GUI:SaveMission", "Save mission"),
+            Self::Delete => ("GUI:DeleteMission", "Delete mission"),
+        }
+    }
+}
+
+/// Clickable controls of the saved-seed browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedSeedControl {
+    /// Load 0x40F / Save 0x6C7 / Delete 0x6C8, by mode.
+    Action,
+    /// Back 0x686, shared by all three.
+    Back0x686,
+    /// The list, 0x525 / 0x527 / 0x528.
+    List,
+    /// The file-name edit 0x526; Save only.
+    NameEdit0x526,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SavedSeedLayout {
+    pub screen: RectPx,
+    pub dialog: RectPx,
+    pub title: RectPx,
+    pub prompt: RectPx,
+    pub list: RectPx,
+    /// Present only in Save mode.
+    pub name_edit: Option<RectPx>,
+    pub action: RectPx,
+    pub back: RectPx,
+    pub blank: RectPx,
+}
+
+pub fn compute_saved_seed_layout(
+    mode: SavedSeedMode,
+    screen_w: u32,
+    screen_h: u32,
+) -> SavedSeedLayout {
+    let screen_w = screen_w as i32;
+    let screen_h = screen_h as i32;
+    let panel = right_panel_rects(screen_w, screen_h);
+    let index = mode.index();
+
+    let rect_of = |(x, y, w, h): (i32, i32, i32, i32)| dlu_rect(x, y, w, h);
+    let right_button = |y: i32, h: i32| {
+        snap_button_biased_truncate(
+            screen_w,
+            screen_h,
+            dlu_rect(SEED_RIGHT_X, y, SEED_RIGHT_W, h),
+            panel,
+            SDBTNANM_W,
+        )
+    };
+
+    SavedSeedLayout {
+        screen: RectPx::new(0, 0, screen_w, screen_h),
+        dialog: RectPx::new(0, 0, screen_w, screen_h),
+        title: rect_of(SEED_TITLE_RECT),
+        prompt: rect_of(SEED_PROMPT_RECTS[index]),
+        list: rect_of(SEED_LIST_RECTS[index]),
+        name_edit: (mode == SavedSeedMode::Save).then(|| rect_of(SEED_NAME_EDIT_RECT)),
+        action: right_button(SEED_ACTION_Y, SEED_ACTION_H),
+        back: back_rect(screen_w, panel),
+        blank: rect_of(SEED_BLANK_RECTS[index]),
+    }
+}
+
+/// Topmost saved-seed control at `(x, y)`, or `None`.
+pub fn saved_seed_control_at(layout: &SavedSeedLayout, x: i32, y: i32) -> Option<SavedSeedControl> {
+    if let Some(edit) = layout.name_edit {
+        if edit.contains(x, y) {
+            return Some(SavedSeedControl::NameEdit0x526);
+        }
+    }
+    if layout.list.contains(x, y) {
+        return Some(SavedSeedControl::List);
+    }
+    if layout.action.contains(x, y) {
+        return Some(SavedSeedControl::Action);
+    }
+    if layout.back.contains(x, y) {
+        return Some(SavedSeedControl::Back0x686);
+    }
+    None
+}
+
+/// Which list row `(x, y)` falls on, given the row count.
+pub fn saved_seed_list_row_at(
+    layout: &SavedSeedLayout,
+    row_count: usize,
+    top_index: usize,
+    x: i32,
+    y: i32,
+) -> Option<usize> {
+    choose_map_listbox_row_at(layout.list, row_count, top_index, x, y)
 }
 
 pub const fn choose_map_listbox_rect(
@@ -743,6 +1159,7 @@ pub fn compute_validation_modal_layout(screen_w: u32, screen_h: u32) -> Validati
 
 #[cfg(test)]
 mod tests {
+    use super::RandomMapSetupControl;
     use super::{
         CHOOSE_MAP_LIST_ROW_H, COMBO_DROPDOWN_SCROLLBAR_BUTTON_H, ChooseMapModalButton, RectPx,
         SkirmishCheckboxId, checkbox_icon_rect, checkbox_text_rect,
@@ -752,7 +1169,8 @@ mod tests {
         choose_map_modal_list_row_at, combo_arrow_rect, combo_face_rect, combo_swatch_rect,
         combo_text_rect, compute_choose_map_modal_layout,
         compute_fixed_800_choose_map_modal_layout, compute_fixed_800_layout, compute_layout,
-        compute_validation_modal_layout, player_name_edit_client_rect, player_name_edit_text_rect,
+        compute_random_map_setup_layout, compute_validation_modal_layout, dlu_rect,
+        player_name_edit_client_rect, player_name_edit_text_rect, random_map_setup_control_at,
         trackbar_active_width, trackbar_pixel_offset, trackbar_plaque_rect, trackbar_thumb_rect,
         trackbar_value_text_rect,
     };
@@ -899,6 +1317,89 @@ mod tests {
         assert_eq!(layout.color_combos[0], RectPx::new(423, 59, 44, 119));
         assert_eq!(layout.rows.start_combos[0], RectPx::new(486, 59, 38, 119));
         assert_eq!(layout.rows.team_combos[0], RectPx::new(546, 59, 38, 119));
+    }
+
+    #[test]
+    fn setup_left_column_matches_800x600_resource_geometry() {
+        let setup = compute_random_map_setup_layout(800, 600);
+        // Rows: map type, time, theater, size, resources, players.
+        assert_eq!(setup.control_rects[0], dlu_rect(179, 41, 150, 103));
+        assert_eq!(
+            setup.control_rects[1],
+            dlu_rect(179, 65, 150, 101),
+            "the time combo's dropdown is two DLU shorter"
+        );
+        assert_eq!(setup.control_rects[2], dlu_rect(179, 90, 150, 103));
+        assert_eq!(
+            setup.control_rects[5],
+            dlu_rect(179, 163, 150, 13),
+            "players is a trackbar, not a combo"
+        );
+        assert_eq!(setup.randomize, dlu_rect(74, 257, 83, 15));
+        assert_eq!(setup.generate, dlu_rect(246, 257, 83, 15));
+        assert_eq!(setup.seed_field, dlu_rect(279, 287, 50, 12));
+        assert_eq!(setup.blank, dlu_rect(2, 355, 303, 12));
+        assert_eq!(setup.progress_text, dlu_rect(74, 219, 150, 11));
+        assert_eq!(setup.progress_bar, dlu_rect(229, 217, 100, 21));
+    }
+
+    #[test]
+    fn setup_label_heights_are_not_uniform() {
+        // The resource gives rows 0/1/5 a 14-DLU label and rows 2/3/4 a 12-DLU
+        // one; a single shared height would make three rows too tall.
+        let setup = compute_random_map_setup_layout(800, 600);
+        assert_eq!(setup.label_rects[0], dlu_rect(74, 40, 93, 14));
+        assert_eq!(setup.label_rects[1], dlu_rect(74, 64, 93, 14));
+        assert_eq!(setup.label_rects[2], dlu_rect(74, 90, 93, 12));
+        assert_eq!(setup.label_rects[4], dlu_rect(74, 138, 93, 12));
+        assert_eq!(setup.label_rects[5], dlu_rect(74, 162, 93, 14));
+    }
+
+    #[test]
+    fn setup_shares_the_choose_map_frame_and_right_column() {
+        let choose = compute_choose_map_modal_layout(800, 600);
+        let setup = compute_random_map_setup_layout(800, 600);
+
+        assert_eq!(setup.screen, choose.screen);
+        assert_eq!(setup.dialog, choose.dialog);
+        // The 0x105 resource puts these 2-3 DLU left of 0x6B's (and the preview
+        // 2 DLU right), but right_anchor / snap_button_biased_truncate / back_rect
+        // are all panel-anchored and discard the source x, so the pixel output is
+        // identical. Sharing the chrome is therefore safe.
+        assert_eq!(setup.use_map, choose.use_map_button);
+        assert_eq!(setup.cancel, choose.cancel_button);
+        assert_eq!(setup.title, choose.title);
+        assert_eq!(setup.preview, choose.preview);
+        // Load reuses the slot 0x6B gives Create Random Map (both at y=149).
+        assert_eq!(setup.load, choose.create_random_map_button);
+    }
+
+    #[test]
+    fn setup_hit_test_returns_controls_in_draw_order() {
+        let setup = compute_random_map_setup_layout(800, 600);
+        let centre = |rect: RectPx| (rect.x + rect.w / 2, rect.y + 2);
+
+        let (x, y) = centre(setup.control_rects[0]);
+        assert_eq!(
+            random_map_setup_control_at(&setup, x, y),
+            Some(RandomMapSetupControl::MapType0x405)
+        );
+        let (x, y) = centre(setup.control_rects[5]);
+        assert_eq!(
+            random_map_setup_control_at(&setup, x, y),
+            Some(RandomMapSetupControl::Players0x3eb)
+        );
+        let (x, y) = centre(setup.randomize);
+        assert_eq!(
+            random_map_setup_control_at(&setup, x, y),
+            Some(RandomMapSetupControl::Randomize0x621)
+        );
+        let (x, y) = centre(setup.generate);
+        assert_eq!(
+            random_map_setup_control_at(&setup, x, y),
+            Some(RandomMapSetupControl::Generate0x620)
+        );
+        assert_eq!(random_map_setup_control_at(&setup, 0, 0), None);
     }
 
     #[test]
@@ -1278,5 +1779,41 @@ mod tests {
             ),
             Some(2)
         );
+    }
+}
+
+#[cfg(test)]
+mod setup_bounds {
+    use super::*;
+
+    /// Every control of the setup dialog has to land inside the 800x600 shell
+    /// surface. The right column anchors to the panel rather than to its own
+    /// resource x, so an anchoring change is the plausible way this breaks.
+    #[test]
+    fn random_map_setup_rects_stay_inside_the_screen() {
+        let layout = compute_random_map_setup_layout(800, 600);
+        let mut rects: Vec<(&str, RectPx)> = vec![
+            ("title", layout.title),
+            ("preview", layout.preview),
+            ("randomize", layout.randomize),
+            ("generate", layout.generate),
+            ("seed_field", layout.seed_field),
+            ("use_map", layout.use_map),
+            ("load", layout.load),
+            ("save", layout.save),
+            ("delete", layout.delete),
+            ("cancel", layout.cancel),
+            ("blank", layout.blank),
+            ("progress_text", layout.progress_text),
+            ("progress_bar", layout.progress_bar),
+        ];
+        rects.extend(layout.label_rects.iter().map(|rect| ("label", *rect)));
+        rects.extend(layout.control_rects.iter().map(|rect| ("control", *rect)));
+        for (name, rect) in rects {
+            assert!(
+                rect.x >= 0 && rect.y >= 0 && rect.x + rect.w <= 800 && rect.y + rect.h <= 600,
+                "{name} escapes the 800x600 screen: {rect:?}"
+            );
+        }
     }
 }

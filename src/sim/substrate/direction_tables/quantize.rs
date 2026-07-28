@@ -55,7 +55,11 @@ mod tests {
         for hi in 0u8..=255 {
             for lo in [0u8, 1, 127, 255] {
                 let f16 = ((hi as u16) << 8) | lo as u16;
-                assert_eq!(dir_from_facing16(f16), dir_from_facing8(hi), "hi={hi} lo={lo}");
+                assert_eq!(
+                    dir_from_facing16(f16),
+                    dir_from_facing8(hi),
+                    "hi={hi} lo={lo}"
+                );
             }
         }
     }
@@ -80,7 +84,10 @@ mod tests {
         // f=0 → bucket 0 → anim 1 (the +1 rotation).
         assert_eq!(muzzle_anim_index_8way(0x0000), 1);
         for f16 in [0u16, 0x2000, 0x4000, 0x8000, 0xE000] {
-            assert_eq!(muzzle_anim_index_8way(f16), (dir_from_facing16(f16) + 1) & 7);
+            assert_eq!(
+                muzzle_anim_index_8way(f16),
+                (dir_from_facing16(f16) + 1) & 7
+            );
         }
     }
 }

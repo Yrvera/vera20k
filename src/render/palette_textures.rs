@@ -384,11 +384,7 @@ mod tests {
         // matching the shader's house_color_to_remap_row.
         let pal: Palette = dummy_palette();
         let ramps = test_ramps();
-        let houses = [
-            HouseColorIndex(1),
-            HouseColorIndex(5),
-            HouseColorIndex(10),
-        ];
+        let houses = [HouseColorIndex(1), HouseColorIndex(5), HouseColorIndex(10)];
         let bytes: Vec<u8> = build_house_ramp_bytes(&pal, &ramps, &houses);
         for &hc in &houses {
             assert_row_matches(&bytes, hc.0 as usize + 1, ramps.ramp(hc));

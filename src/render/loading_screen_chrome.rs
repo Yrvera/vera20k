@@ -1,13 +1,14 @@
 //! Native standard Skirmish loading-screen chrome.
 //!
 //! Loads verified `0x00552D60` LS country art and the `PROGBARM.SHP` frame-0
-//! progress source into a batch texture. Blocked marker/text layers are not
-//! substituted here.
+//! progress source into a batch texture. Callers may also supply a prepared
+//! selected-map preview and the distinct house-color ramps needed to decode
+//! retail `mmpb.shp` marker variants.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::assets::asset_manager::AssetManager;
-use crate::assets::pal_file::Palette;
+use crate::assets::pal_file::{Color, Palette};
 use crate::assets::pcx_file::PcxFile;
 use crate::assets::shp_file::ShpFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
@@ -19,32 +20,31 @@ const ATLAS_PADDING: u32 = 2;
 /// fill (G3) as a tinted quad. Not an asset on disk.
 const SOLID_TEXEL_LABEL: &str = "__solid_texel__";
 
-/// Palette index treated as transparent when decoding the country side-icon PCX.
-/// The insignia PCX files use index 0 for their background.
-const SIDE_ICON_TRANSPARENT_INDEX: u8 = 0;
+/// Synthetic label for the caller-prepared selected-map preview.
+const LOADING_PREVIEW_LABEL: &str = "__selected_map_preview__";
 
-/// Screen-width breakpoints that select the marker projection region rect.
-///
-/// The native loader compares the live screen width against two breakpoints
-/// (800 and 1024) to pick a fixed region rect for projecting per-player start
-/// markers; widths below 800 use the 640 fallback rect.
-const MMPB_REGION_BREAKPOINT_800: u32 = 800;
-const MMPB_REGION_BREAKPOINT_1024: u32 = 1024;
+const MMPB_ASSET_NAME: &str = "mmpb.shp";
+const MMPB_MARKER_LABEL_PREFIX: &str = "__mmpb_marker_color_";
 
-/// Fixed region rect (origin_x, size_x, size_y, origin_y) used to project the
-/// per-player start markers (`mmpb.shp` frame 0) onto the loading background.
+/// Native converts this RGB key to the active DirectDraw format before blitting
+/// the standard Skirmish country insignia.
+const SIDE_ICON_TRANSPARENT_RGB: [u8; 3] = [255, 0, 255];
+
+/// Native screen widths that select dedicated marker projection rectangles.
+const MMPB_REGION_WIDTH_800: u32 = 800;
+const MMPB_REGION_WIDTH_1024: u32 = 1024;
+
+/// Fixed `(x, y, width, height)` region used to composite the selected-map
+/// preview and `mmpb.shp` frame-0 markers onto the loading background.
 ///
 /// These four values are the verified, screen-width-keyed region constants
-/// (origin and size in screen pixels). The size pair (size_x, size_y) sizes the
-/// projection surface; the origin pair anchors it on screen. Marker X uses
-/// `origin_x` (after the per-axis `-3` nudge) and marker Y uses `origin_y`
-/// (after the per-axis `-2` nudge).
+/// in loading-destination pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MmpbRegionRect {
-    pub origin_x: i32,
-    pub size_x: i32,
-    pub size_y: i32,
-    pub origin_y: i32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 /// Per-axis screen nudge applied to a projected marker before the region origin
@@ -54,31 +54,28 @@ pub const MMPB_MARKER_NUDGE_Y: i32 = -2;
 
 /// Select the marker projection region rect for the current screen width.
 ///
-/// >=1024 and >=800 use their dedicated rects; anything narrower falls back to
-/// the 640 rect. These constants are pinned from the loader's region-const block
-/// and must not be interpolated between breakpoints.
+/// Native uses equality for its dedicated 800 and 1024 branches. Every other
+/// width uses the 640-style fallback; the rectangles are never interpolated.
 pub fn mmpb_region_rect(render_width: u32) -> MmpbRegionRect {
-    if render_width >= MMPB_REGION_BREAKPOINT_1024 {
-        MmpbRegionRect {
-            origin_x: 0x23a,
-            size_x: 0x1a8,
-            size_y: 0x12c,
-            origin_y: 0x104,
-        }
-    } else if render_width >= MMPB_REGION_BREAKPOINT_800 {
-        MmpbRegionRect {
-            origin_x: 0x1f3,
-            size_x: 0x17b,
-            size_y: 0xd8,
-            origin_y: 0xa6,
-        }
-    } else {
-        MmpbRegionRect {
-            origin_x: 0x181,
-            size_x: 0x10e,
-            size_y: 0xc8,
-            origin_y: 0xc8,
-        }
+    match render_width {
+        MMPB_REGION_WIDTH_800 => MmpbRegionRect {
+            x: 499,
+            y: 379,
+            width: 216,
+            height: 166,
+        },
+        MMPB_REGION_WIDTH_1024 => MmpbRegionRect {
+            x: 570,
+            y: 424,
+            width: 300,
+            height: 260,
+        },
+        _ => MmpbRegionRect {
+            x: 385,
+            y: 270,
+            width: 200,
+            height: 200,
+        },
     }
 }
 
@@ -190,17 +187,49 @@ impl LoadingArtManifest {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoadingScreenEntry {
     pub uv_origin: [f32; 2],
     pub uv_size: [f32; 2],
     pub pixel_size: [f32; 2],
 }
 
+/// CPU-side selected-map preview prepared by the loading composition owner.
+///
+/// Invalid dimensions or byte length omit the optional preview and marker
+/// layers without affecting mandatory loading chrome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedLoadingPreviewRgba {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// One distinct assigned-house color variant requested for retail
+/// `mmpb.shp` frame 0.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmpbMarkerRemap {
+    /// Stable scheme-entry / `HouseColorIndex` byte supplied by app composition.
+    pub color_key: u8,
+    /// The 16-color house ramp replacing palette indices 16..31.
+    pub ramp: [Color; 16],
+}
+
+/// Optional selected-map layers packed alongside mandatory loading chrome.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadingScreenCompositionAtlasInput<'a> {
+    pub preview: &'a PreparedLoadingPreviewRgba,
+    pub marker_remaps: &'a [MmpbMarkerRemap],
+}
+
 pub struct LoadingScreenAtlas {
     pub texture: BatchTexture,
     pub background: LoadingScreenEntry,
     pub progress_frame0: LoadingScreenEntry,
+    /// Caller-prepared selected-map preview, when its RGBA payload is valid.
+    pub preview: Option<LoadingScreenEntry>,
+    /// Retail `mmpb.shp` frame 0 decoded for each distinct assigned-house color.
+    pub mmpb_markers: BTreeMap<u8, LoadingScreenEntry>,
     /// Country insignia drawn right of the bar (G4). `None` when the PCX is
     /// missing — the bar still draws without it.
     pub side_icon: Option<LoadingScreenEntry>,
@@ -221,12 +250,40 @@ pub fn build_loading_screen_atlas(
     assets: &AssetManager,
     variant: LoadingArtVariant,
     width: LoadingScreenWidth,
+    progress_ramp: &[Color; 16],
+) -> Option<LoadingScreenAtlas> {
+    build_loading_screen_atlas_with_composition(
+        gpu,
+        batch,
+        assets,
+        variant,
+        width,
+        progress_ramp,
+        None,
+    )
+}
+
+/// Build the native loading atlas with optional selected-map preview/marker
+/// layers.
+///
+/// Background and progress assets remain mandatory. Invalid preview input,
+/// missing `mmpb.shp`, or an unavailable color variant only removes optional
+/// layers.
+pub fn build_loading_screen_atlas_with_composition(
+    gpu: &GpuContext,
+    batch: &BatchRenderer,
+    assets: &AssetManager,
+    variant: LoadingArtVariant,
+    width: LoadingScreenWidth,
+    progress_ramp: &[Color; 16],
+    composition: Option<LoadingScreenCompositionAtlasInput<'_>>,
 ) -> Option<LoadingScreenAtlas> {
     let manifest = variant.manifest();
     let background_name = manifest.background_asset(width);
     let background_palette = load_named_ui_palette(assets, manifest.palette_name)?;
-    let progress_palette = load_named_ui_palette(assets, "MPLS.PAL")
+    let remap_base_palette = load_named_ui_palette(assets, "MPLS.PAL")
         .or_else(|| load_named_ui_palette(assets, manifest.palette_name))?;
+    let progress_palette = progress_palette_with_player_ramp(&remap_base_palette, progress_ramp);
 
     let mut rendered = vec![
         mandatory_shp(
@@ -239,6 +296,13 @@ pub fn build_loading_screen_atlas(
         mandatory_shp(assets, "PROGBARM.SHP", &progress_palette, 0, "MPLS.PAL")?,
         solid_texel_entry(),
     ];
+
+    let (preview_label, marker_labels) = append_optional_composition_entries(
+        assets,
+        &remap_base_palette,
+        composition,
+        &mut rendered,
+    );
 
     // Side-icon is non-fatal: if its PCX is missing or malformed the bar still
     // draws. Record its label so it can be looked up after packing.
@@ -262,13 +326,117 @@ pub fn build_loading_screen_atlas(
         .zip(packed)
         .collect();
     let side_icon = side_icon_label.and_then(|label| by_label.get(&label).copied());
+    let (preview, mmpb_markers) =
+        lookup_optional_atlas_entries(&by_label, preview_label.as_deref(), &marker_labels);
     Some(LoadingScreenAtlas {
         texture,
         background: *by_label.get(&background_name.to_ascii_lowercase())?,
         progress_frame0: *by_label.get("progbarm.shp")?,
+        preview,
+        mmpb_markers,
         side_icon,
         solid_texel: *by_label.get(SOLID_TEXEL_LABEL)?,
     })
+}
+
+fn progress_palette_with_player_ramp(palette: &Palette, progress_ramp: &[Color; 16]) -> Palette {
+    palette.with_house_colors(progress_ramp)
+}
+
+fn append_optional_composition_entries(
+    assets: &AssetManager,
+    remap_base_palette: &Palette,
+    composition: Option<LoadingScreenCompositionAtlasInput<'_>>,
+    rendered: &mut Vec<RenderedLoadingEntry>,
+) -> (Option<String>, Vec<(u8, String)>) {
+    let Some(composition) = composition else {
+        return (None, Vec::new());
+    };
+    let Some(preview_entry) = prepared_preview_entry(composition.preview) else {
+        return (None, Vec::new());
+    };
+
+    let preview_label = preview_entry.label.clone();
+    rendered.push(preview_entry);
+
+    if composition.marker_remaps.is_empty() {
+        return (Some(preview_label), Vec::new());
+    }
+    if assets.get_ref(MMPB_ASSET_NAME).is_none() {
+        log::warn!(
+            "Missing optional standard Skirmish loading marker asset {MMPB_ASSET_NAME}; preview remains available"
+        );
+        return (Some(preview_label), Vec::new());
+    }
+
+    let mut distinct_remaps = BTreeMap::new();
+    for remap in composition.marker_remaps {
+        distinct_remaps
+            .entry(remap.color_key)
+            .or_insert(&remap.ramp);
+    }
+
+    let mut marker_labels = Vec::with_capacity(distinct_remaps.len());
+    for (color_key, ramp) in distinct_remaps {
+        let palette = remap_base_palette.with_house_colors(ramp);
+        let Some(mut marker_entry) = render_shp_entry(assets, MMPB_ASSET_NAME, &palette, 0) else {
+            log::warn!(
+                "Could not prepare optional standard Skirmish loading marker color {color_key}"
+            );
+            continue;
+        };
+        let label = mmpb_marker_label(color_key);
+        marker_entry.label.clone_from(&label);
+        rendered.push(marker_entry);
+        marker_labels.push((color_key, label));
+    }
+
+    (Some(preview_label), marker_labels)
+}
+
+fn prepared_preview_entry(preview: &PreparedLoadingPreviewRgba) -> Option<RenderedLoadingEntry> {
+    let expected_len = preview
+        .width
+        .checked_mul(preview.height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok());
+    if preview.width == 0 || preview.height == 0 || expected_len != Some(preview.rgba.len()) {
+        log::warn!(
+            "Invalid optional standard Skirmish loading preview: {}x{} with {} RGBA bytes",
+            preview.width,
+            preview.height,
+            preview.rgba.len()
+        );
+        return None;
+    }
+    Some(RenderedLoadingEntry {
+        label: LOADING_PREVIEW_LABEL.to_string(),
+        width: preview.width,
+        height: preview.height,
+        rgba: preview.rgba.clone(),
+    })
+}
+
+fn mmpb_marker_label(color_key: u8) -> String {
+    format!("{MMPB_MARKER_LABEL_PREFIX}{color_key}")
+}
+
+fn lookup_optional_atlas_entries(
+    by_label: &HashMap<String, LoadingScreenEntry>,
+    preview_label: Option<&str>,
+    marker_labels: &[(u8, String)],
+) -> (Option<LoadingScreenEntry>, BTreeMap<u8, LoadingScreenEntry>) {
+    let preview = preview_label.and_then(|label| by_label.get(label).copied());
+    let markers = marker_labels
+        .iter()
+        .filter_map(|(color_key, label)| {
+            by_label
+                .get(label)
+                .copied()
+                .map(|entry| (*color_key, entry))
+        })
+        .collect();
+    (preview, markers)
 }
 
 /// A 1x1 opaque-white texel. Drawn scaled and tinted to produce the G3 solid
@@ -282,8 +450,8 @@ fn solid_texel_entry() -> RenderedLoadingEntry {
     }
 }
 
-/// Decode a palettized country-insignia PCX into an atlas entry, treating
-/// index 0 as transparent.
+/// Decode a country-insignia PCX into an atlas entry using the native
+/// RGB-magenta transparency key.
 fn render_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<RenderedLoadingEntry> {
     let bytes = assets.get_ref(file_name)?;
     let pcx = PcxFile::from_bytes(bytes)
@@ -292,7 +460,7 @@ fn render_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<RenderedLo
             err
         })
         .ok()?;
-    let rgba = pcx.to_rgba(Some(SIDE_ICON_TRANSPARENT_INDEX));
+    let rgba = pcx.to_rgba_with_color_key(SIDE_ICON_TRANSPARENT_RGB);
     Some(RenderedLoadingEntry {
         label: file_name.to_ascii_lowercase(),
         width: pcx.width as u32,
@@ -462,44 +630,125 @@ fn pack_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        LoadingArtVariant, LoadingScreenWidth, MmpbRegionRect, mmpb_region_rect, render_shp_entry,
+        LOADING_PREVIEW_LABEL, LoadingArtVariant, LoadingScreenEntry, LoadingScreenWidth,
+        MmpbRegionRect, PreparedLoadingPreviewRgba, lookup_optional_atlas_entries,
+        mmpb_marker_label, mmpb_region_rect, prepared_preview_entry,
+        progress_palette_with_player_ramp, render_pcx_entry, render_shp_entry,
     };
+    use crate::assets::pal_file::{Color, Palette};
+    use std::collections::HashMap;
 
     #[test]
-    fn mmpb_region_rect_uses_pinned_constants_per_breakpoint() {
-        // 640 fallback (any width below 800).
+    fn progress_palette_replaces_only_the_house_color_band() {
+        let mut colors = [Color::rgb(3, 4, 5); 256];
+        colors[16] = Color::rgb(7, 8, 9);
+        colors[31] = Color::rgb(10, 11, 12);
+        let palette = Palette { colors };
+        let ramp = std::array::from_fn(|index| {
+            Color::rgb(index as u8, (index as u8) + 32, (index as u8) + 64)
+        });
+
+        let remapped = progress_palette_with_player_ramp(&palette, &ramp);
+
+        assert_eq!(&remapped.colors[16..32], &ramp);
+        assert_eq!(remapped.colors[15], palette.colors[15]);
+        assert_eq!(remapped.colors[32], palette.colors[32]);
+    }
+
+    #[test]
+    fn mmpb_region_rect_uses_exact_native_width_equality() {
         assert_eq!(
             mmpb_region_rect(640),
             MmpbRegionRect {
-                origin_x: 385,
-                size_x: 270,
-                size_y: 200,
-                origin_y: 200,
+                x: 385,
+                y: 270,
+                width: 200,
+                height: 200,
             }
         );
-        // Exactly at the 800 breakpoint.
         assert_eq!(
             mmpb_region_rect(800),
             MmpbRegionRect {
-                origin_x: 499,
-                size_x: 379,
-                size_y: 216,
-                origin_y: 166,
+                x: 499,
+                y: 379,
+                width: 216,
+                height: 166,
             }
         );
-        // Between 800 and 1024 still uses the 800 rect (no interpolation).
-        assert_eq!(mmpb_region_rect(1023), mmpb_region_rect(800));
-        // Exactly at the 1024 breakpoint and above.
         assert_eq!(
             mmpb_region_rect(1024),
             MmpbRegionRect {
-                origin_x: 570,
-                size_x: 424,
-                size_y: 300,
-                origin_y: 260,
+                x: 570,
+                y: 424,
+                width: 300,
+                height: 260,
             }
         );
-        assert_eq!(mmpb_region_rect(1920), mmpb_region_rect(1024));
+        assert_eq!(mmpb_region_rect(799), mmpb_region_rect(640));
+        assert_eq!(mmpb_region_rect(801), mmpb_region_rect(640));
+        assert_eq!(mmpb_region_rect(1023), mmpb_region_rect(640));
+        assert_eq!(mmpb_region_rect(1920), mmpb_region_rect(640));
+    }
+
+    #[test]
+    fn prepared_preview_entry_validates_rgba_shape() {
+        let valid = PreparedLoadingPreviewRgba {
+            width: 2,
+            height: 1,
+            rgba: vec![1, 2, 3, 4, 5, 6, 7, 8],
+        };
+        let entry = prepared_preview_entry(&valid).expect("valid preview");
+        assert_eq!(entry.label, LOADING_PREVIEW_LABEL);
+        assert_eq!((entry.width, entry.height), (2, 1));
+        assert_eq!(entry.rgba, valid.rgba);
+
+        let invalid = PreparedLoadingPreviewRgba {
+            width: 2,
+            height: 1,
+            rgba: vec![0; 4],
+        };
+        assert!(prepared_preview_entry(&invalid).is_none());
+    }
+
+    #[test]
+    fn optional_entry_bookkeeping_keeps_marker_colors_distinct() {
+        let preview = LoadingScreenEntry {
+            uv_origin: [0.0, 0.0],
+            uv_size: [0.25, 0.25],
+            pixel_size: [200.0, 100.0],
+        };
+        let red = LoadingScreenEntry {
+            uv_origin: [0.25, 0.0],
+            uv_size: [0.02, 0.02],
+            pixel_size: [12.0, 12.0],
+        };
+        let blue = LoadingScreenEntry {
+            uv_origin: [0.27, 0.0],
+            uv_size: [0.02, 0.02],
+            pixel_size: [12.0, 12.0],
+        };
+        let red_label = mmpb_marker_label(3);
+        let blue_label = mmpb_marker_label(11);
+        let by_label = HashMap::from([
+            (LOADING_PREVIEW_LABEL.to_string(), preview),
+            (red_label.clone(), red),
+            (blue_label.clone(), blue),
+        ]);
+
+        let (resolved_preview, markers) = lookup_optional_atlas_entries(
+            &by_label,
+            Some(LOADING_PREVIEW_LABEL),
+            &[
+                (3, red_label),
+                (11, blue_label),
+                (19, mmpb_marker_label(19)),
+            ],
+        );
+
+        assert_eq!(resolved_preview, Some(preview));
+        assert_eq!(markers.get(&3), Some(&red));
+        assert_eq!(markers.get(&11), Some(&blue));
+        assert!(!markers.contains_key(&19));
     }
 
     #[test]
@@ -709,6 +958,13 @@ mod tests {
             assets.get_ref("MPLS.PAL").is_some(),
             "MPLS.PAL should resolve from configured RA2 install"
         );
+        let marker_palette = crate::assets::pal_file::Palette::from_bytes_gamemd_ui(
+            assets.get_ref("MPLS.PAL").expect("MPLS palette"),
+        )
+        .expect("MPLS palette should decode");
+        let marker = render_shp_entry(&assets, super::MMPB_ASSET_NAME, &marker_palette, 0)
+            .expect("retail mmpb.shp frame 0 should decode");
+        assert_eq!((marker.width, marker.height), (12, 12));
 
         for variant in [
             LoadingArtVariant::Yuri,
@@ -744,6 +1000,12 @@ mod tests {
             .unwrap_or_else(|| panic!("{variant:?} 800px loading background should decode"));
             assert_eq!(decoded.width, 800);
             assert_eq!(decoded.height, 600);
+            let icon = render_pcx_entry(&assets, variant.side_icon_pcx())
+                .unwrap_or_else(|| panic!("{variant:?} country insignia should decode"));
+            assert!(
+                icon.rgba.chunks_exact(4).any(|pixel| pixel[3] == 0),
+                "{variant:?} country insignia should contain transparent keyed pixels"
+            );
         }
     }
 }

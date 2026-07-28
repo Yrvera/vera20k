@@ -641,43 +641,6 @@ pub struct BuildingAnimOverlays {
     pub anims: Vec<AnimOverlayState>,
 }
 
-/// Persistent fire/smoke overlays on damaged buildings.
-///
-/// Separate from the 21-slot BuildingAnimOverlays system. These mirror the
-/// native 8 damage-fire slots as far as the current app-side overlay surface
-/// allows: created together on the damage threshold transition, kept until the
-/// building repairs above that threshold or leaves the world, and looped
-/// independently.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DamageFireOverlays {
-    pub fires: Vec<DamageFireAnim>,
-}
-
-/// A single looping fire/smoke animation in a native damage-fire slot.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DamageFireAnim {
-    /// Native damage-fire slot index, 0..7.
-    #[serde(default)]
-    pub slot: u8,
-    /// SHP type interned ID (e.g., "FIRE01").
-    pub shp_name: InternedId,
-    /// Pixel X offset from building screen origin.
-    pub pixel_x: i32,
-    /// Pixel Y offset from building screen origin.
-    pub pixel_y: i32,
-    /// Current animation frame.
-    pub frame: u16,
-    /// Total frames in the SHP (loops at this boundary).
-    pub total_frames: u16,
-    /// Milliseconds per frame (from art.ini Rate=).
-    pub rate_ms: u32,
-    /// Accumulated ms since last frame advance.
-    pub elapsed_ms: u32,
-    /// Native AnimClass ZAdjust written after constructor.
-    #[serde(default)]
-    pub z_adjust: i32,
-}
-
 /// App-side runtime state for a normal AnimClass-like SHP animation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AnimRuntime {

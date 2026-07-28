@@ -1,4 +1,4 @@
-//! Building animation lifecycle, damage fire overlays, sidebar UI tick, and sound playback.
+//! Building animation lifecycle, sidebar UI tick, and sound playback.
 //!
 //! These are per-frame runtime updates that run after the sim tick advances.
 //! Extracted from app_sim_tick.rs to separate animation/audio/UI concerns from
@@ -10,20 +10,14 @@
 use crate::app::AppState;
 use crate::app_commands::preferred_local_owner_name;
 use crate::app_types::SIM_TICK_MS;
-use crate::map::entities::EntityCategory;
 use crate::sim::components::{
-    AnimOverlayState, AnimRuntime, BuildingAnimOverlays, DamageFireAnim, DamageFireOverlays,
-    GarrisonMuzzleFlash,
+    AnimOverlayState, AnimRuntime, BuildingAnimOverlays, GarrisonMuzzleFlash,
 };
 use crate::sim::intern::InternedId;
 use crate::sim::production;
-use crate::sim::rng::SimRng;
 use crate::sim::world::Simulation;
 
 const GARRISON_OCCUPANT_ANIM_Z_ADJUST: i32 = -200;
-const DAMAGE_FIRE_SLOT_COUNT: usize = 8;
-const DAMAGE_FIRE_HEIGHT_STEP_PX: i32 = 15;
-const DAMAGE_FIRE_Z_ADJUST_BIAS: i32 = -10;
 
 /// Advance one-shot building animation overlays stored as ECS components,
 /// and the global idle animation timer.
@@ -69,234 +63,6 @@ pub(crate) fn tick_crane_animations(state: &mut AppState, dt_ms: u32) {
 
     // Advance the global idle animation timer (looping anims: flags, smokestacks, etc.).
     state.idle_anim_elapsed_ms += dt_ms;
-}
-
-/// Spawn, remove, and advance DamageFireAnim overlays on buildings.
-///
-/// Gamemd creates the native damage-fire AnimClass slots when BuildingClass::Update
-/// flips its cached damage-fire byte false->true. This app-side bridge keeps that
-/// slot lifetime and RNG order as far as the current overlay surface allows.
-pub(crate) fn tick_damage_fire_overlays(state: &mut AppState, dt_ms: u32) {
-    let Some(rules) = state.rules.as_ref() else {
-        return;
-    };
-    let condition_yellow = rules.general.condition_yellow;
-    let condition_red = rules.general.condition_red;
-    let fire_types: Vec<(String, u32)> = rules
-        .general
-        .damage_fire_types
-        .iter()
-        .map(|f| (f.name.clone(), f.rate_ms))
-        .collect();
-
-    if fire_types.is_empty() {
-        return;
-    }
-
-    let spawn_plans: Vec<DamageFireSpawnPlan> = {
-        let Some(sim) = state.simulation.as_ref() else {
-            return;
-        };
-        let Some(art_reg) = state.art_registry.as_ref() else {
-            return;
-        };
-
-        sim.entities()
-            .values()
-            .filter_map(|entity| {
-                if entity.category != EntityCategory::Structure {
-                    return None;
-                }
-                if entity.health.max == 0 || entity.damage_fire_overlays.is_some() {
-                    return None;
-                }
-                let ratio = entity.health.current as f32 / entity.health.max as f32;
-                let threshold = damage_fire_threshold_for_current_surface(
-                    condition_yellow,
-                    condition_red,
-                    None,
-                );
-                if ratio > threshold {
-                    return None;
-                }
-
-                let type_ref = sim.interner.resolve(entity.type_ref);
-                let rules_obj = rules.object(type_ref);
-                let rules_image = rules_obj.map(|obj| obj.image.as_str()).unwrap_or(type_ref);
-                let art_entry = art_reg.resolve_metadata_entry(type_ref, rules_image)?;
-                let offsets: Vec<(i32, i32)> = art_entry
-                    .damage_fire_offsets
-                    .iter()
-                    .take(DAMAGE_FIRE_SLOT_COUNT)
-                    .copied()
-                    .collect();
-                if offsets.is_empty() {
-                    return None;
-                }
-
-                let foundation = rules_obj
-                    .map(|obj| obj.foundation.as_str())
-                    .or(art_entry.foundation.as_deref())
-                    .unwrap_or("1x1");
-                let (foundation_width, foundation_height) =
-                    crate::rules::foundation::foundation_dimensions(foundation);
-
-                Some(DamageFireSpawnPlan {
-                    entity_id: entity.stable_id,
-                    offsets,
-                    foundation_width,
-                    foundation_height,
-                })
-            })
-            .collect()
-    };
-
-    let sim = match &mut state.simulation {
-        Some(s) => s,
-        None => return,
-    };
-
-    if !spawn_plans.is_empty() {
-        let damage_fire_types: Vec<DamageFireTypePlan> = fire_types
-            .iter()
-            .map(|(name, rate_ms)| {
-                let shp_name = sim.interner.intern(name);
-                let total_frames = sim.effect_frame_counts.get(&shp_name).copied().unwrap_or(1);
-                DamageFireTypePlan {
-                    shp_name,
-                    total_frames: total_frames.max(1),
-                    rate_ms: *rate_ms,
-                }
-            })
-            .collect();
-
-        for plan in spawn_plans {
-            let should_spawn = sim
-                .entities()
-                .get(plan.entity_id)
-                .is_some_and(|entity| entity.damage_fire_overlays.is_none());
-            if !should_spawn {
-                continue;
-            }
-
-            let fires = create_damage_fire_slot_anims(
-                sim.anim_rng(),
-                &damage_fire_types,
-                &plan.offsets,
-                plan.foundation_width,
-                plan.foundation_height,
-            );
-            if fires.is_empty() {
-                continue;
-            }
-            if let Some(entity) = sim.entities_mut().get_mut(plan.entity_id) {
-                if entity.damage_fire_overlays.is_none() {
-                    entity.damage_fire_overlays = Some(DamageFireOverlays { fires });
-                }
-            }
-        }
-    }
-
-    let keys: Vec<u64> = sim.entities().keys_sorted();
-    for &id in &keys {
-        let entity = match sim.entities_mut().get_mut(id) {
-            Some(e) => e,
-            None => continue,
-        };
-        if entity.category != EntityCategory::Structure || entity.health.max == 0 {
-            continue;
-        }
-        let ratio = entity.health.current as f32 / entity.health.max as f32;
-        let threshold =
-            damage_fire_threshold_for_current_surface(condition_yellow, condition_red, None);
-
-        if ratio > threshold {
-            if entity.damage_fire_overlays.is_some() {
-                entity.damage_fire_overlays = None;
-            }
-        } else if let Some(overlays) = entity.damage_fire_overlays.as_mut() {
-            for fire in &mut overlays.fires {
-                fire.elapsed_ms += dt_ms;
-                while fire.elapsed_ms >= fire.rate_ms && fire.rate_ms > 0 {
-                    fire.elapsed_ms -= fire.rate_ms;
-                    fire.frame += 1;
-                    if fire.frame >= fire.total_frames {
-                        fire.frame = 0;
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct DamageFireSpawnPlan {
-    entity_id: u64,
-    offsets: Vec<(i32, i32)>,
-    foundation_width: u16,
-    foundation_height: u16,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct DamageFireTypePlan {
-    shp_name: InternedId,
-    total_frames: u16,
-    rate_ms: u32,
-}
-
-fn create_damage_fire_slot_anims(
-    rng: &mut SimRng,
-    fire_types: &[DamageFireTypePlan],
-    offsets: &[(i32, i32)],
-    foundation_width: u16,
-    foundation_height: u16,
-) -> Vec<DamageFireAnim> {
-    if fire_types.is_empty() {
-        return Vec::new();
-    }
-
-    let mut fire_type_index = rng.next_range_u32(fire_types.len() as u32) as usize;
-    let mut fires = Vec::with_capacity(offsets.len().min(DAMAGE_FIRE_SLOT_COUNT));
-    for (slot, &(pixel_x, pixel_y)) in offsets.iter().take(DAMAGE_FIRE_SLOT_COUNT).enumerate() {
-        let fire_type = fire_types[fire_type_index];
-        let total_frames = fire_type.total_frames.max(1);
-        let frame = rng.next_range_u32(total_frames as u32) as u16;
-        fires.push(DamageFireAnim {
-            slot: slot as u8,
-            shp_name: fire_type.shp_name,
-            pixel_x,
-            pixel_y,
-            frame,
-            total_frames,
-            rate_ms: fire_type.rate_ms,
-            elapsed_ms: 0,
-            z_adjust: damage_fire_z_adjust(pixel_y, foundation_width, foundation_height),
-        });
-
-        fire_type_index += 1;
-        if fire_type_index >= fire_types.len() {
-            fire_type_index = 0;
-        }
-    }
-    fires
-}
-
-fn damage_fire_z_adjust(offset_y: i32, foundation_width: u16, foundation_height: u16) -> i32 {
-    let foundation_sum = i32::from(foundation_width) + i32::from(foundation_height);
-    let raw = ((offset_y - foundation_sum * DAMAGE_FIRE_HEIGHT_STEP_PX) * 3 >> 1)
-        + DAMAGE_FIRE_Z_ADJUST_BIAS;
-    raw.min(0)
-}
-
-fn damage_fire_threshold_for_current_surface(
-    condition_yellow: f32,
-    _condition_red: f32,
-    _unresolved_type_0x157b: Option<bool>,
-) -> f32 {
-    // TODO(parity): expose the raw BuildingType+0x157B byte before selecting
-    // ConditionRed. Current Rust has semantic fields with disputed labels, not
-    // this verified raw selector, so keep the previous ConditionYellow fallback.
-    condition_yellow
 }
 
 /// Trigger a one-shot crane animation on the active producer (ConYard) for an owner.
@@ -569,22 +335,23 @@ fn bunker_special_overlay(
     config: &crate::rules::art_data::BuildingAnimConfig,
     damaged: bool,
 ) -> Option<AnimOverlayState> {
-    let (anim_type, loop_start, loop_end, start_frame, rate) = match (damaged, &config.damaged_variant) {
-        (true, Some(v)) => (
-            v.anim_type.as_str(),
-            v.loop_start,
-            v.loop_end,
-            v.start_frame.max(v.loop_start),
-            v.rate,
-        ),
-        _ => (
-            config.anim_type.as_str(),
-            config.loop_start,
-            config.loop_end,
-            config.start_frame.max(config.loop_start),
-            config.rate,
-        ),
-    };
+    let (anim_type, loop_start, loop_end, start_frame, rate) =
+        match (damaged, &config.damaged_variant) {
+            (true, Some(v)) => (
+                v.anim_type.as_str(),
+                v.loop_start,
+                v.loop_end,
+                v.start_frame.max(v.loop_start),
+                v.rate,
+            ),
+            _ => (
+                config.anim_type.as_str(),
+                config.loop_start,
+                config.loop_end,
+                config.start_frame.max(config.loop_start),
+                config.rate,
+            ),
+        };
     if loop_end <= loop_start {
         return None;
     }
@@ -856,6 +623,60 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     &state.audio_indices,
                 );
             }
+            GameSoundEvent::AnimationStarted {
+                anim_id,
+                sound_id,
+                screen_pos,
+            } => {
+                let spatial_vol = if let Some((sx, sy)) = screen_pos {
+                    let (range, min_vol) = state
+                        .sound_registry
+                        .get(sound_id)
+                        .map(|entry| (entry.range, entry.min_volume))
+                        .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
+                    calc_spatial_volume(*sx, *sy, vp_w, vp_h, cam_x, cam_y, range, min_vol)
+                } else {
+                    1.0
+                };
+                if spatial_vol > 0.0 {
+                    sfx.play_animation_sound_with_volume(
+                        *anim_id,
+                        sound_id,
+                        spatial_vol,
+                        &state.sound_registry,
+                        assets,
+                        &state.audio_indices,
+                    );
+                }
+            }
+            GameSoundEvent::AnimationStopped {
+                anim_id,
+                stop_sound_id,
+                screen_pos,
+            } => {
+                sfx.stop_animation_sound(*anim_id);
+                if let Some(stop_sound_id) = stop_sound_id.as_deref().filter(|id| !id.is_empty()) {
+                    let spatial_vol = if let Some((sx, sy)) = screen_pos {
+                        let (range, min_vol) = state
+                            .sound_registry
+                            .get(stop_sound_id)
+                            .map(|entry| (entry.range, entry.min_volume))
+                            .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
+                        calc_spatial_volume(*sx, *sy, vp_w, vp_h, cam_x, cam_y, range, min_vol)
+                    } else {
+                        1.0
+                    };
+                    if spatial_vol > 0.0 {
+                        sfx.play_sound_with_volume(
+                            stop_sound_id,
+                            spatial_vol,
+                            &state.sound_registry,
+                            assets,
+                            &state.audio_indices,
+                        );
+                    }
+                }
+            }
             GameSoundEvent::BridgeRepaired {
                 sound_id,
                 screen_pos,
@@ -890,6 +711,16 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                         &state.audio_indices,
                     );
                 }
+            }
+            GameSoundEvent::UnderAttackEva { eva_sound_id } => {
+                // Voice-queued (not immediate): under-attack announcements
+                // wait behind whatever EVA line is currently speaking.
+                let _ = sfx.queue_eva_sound(
+                    eva_sound_id,
+                    &state.sound_registry,
+                    assets,
+                    &state.audio_indices,
+                );
             }
             // Spatial events — apply distance-based volume scaling using
             // per-sound Range and MinVolume from sound.ini.
@@ -1259,68 +1090,7 @@ mod tests {
     use super::*;
     use crate::rules::art_data::{ArtRegistry, DEFAULT_ART_RATE_LOGIC_FRAMES};
     use crate::rules::ini_parser::IniFile;
-    use crate::sim::rng::SimRng;
     use crate::sim::world::Simulation;
-
-    #[test]
-    fn damage_fire_slot_creation_uses_rng_start_index_then_wraps() {
-        let mut sim = Simulation::new();
-        let fire01 = sim.interner.intern("FIRE01");
-        let fire02 = sim.interner.intern("FIRE02");
-        let fire03 = sim.interner.intern("FIRE03");
-        let fire_types = [
-            DamageFireTypePlan {
-                shp_name: fire01,
-                total_frames: 5,
-                rate_ms: 450,
-            },
-            DamageFireTypePlan {
-                shp_name: fire02,
-                total_frames: 6,
-                rate_ms: 450,
-            },
-            DamageFireTypePlan {
-                shp_name: fire03,
-                total_frames: 7,
-                rate_ms: 450,
-            },
-        ];
-        let offsets = [(-24, -1), (64, 36), (12, 8)];
-        let mut rng = SimRng::new(1);
-        let mut expected_rng = rng.clone();
-
-        let start = expected_rng.next_range_u32(fire_types.len() as u32) as usize;
-        let expected_indices = [start, (start + 1) % 3, (start + 2) % 3];
-        let expected_frames = expected_indices
-            .map(|idx| expected_rng.next_range_u32(fire_types[idx].total_frames as u32) as u16);
-
-        let fires = create_damage_fire_slot_anims(&mut rng, &fire_types, &offsets, 4, 4);
-
-        assert_eq!(fires.len(), 3);
-        for (slot, fire) in fires.iter().enumerate() {
-            let expected_type = fire_types[expected_indices[slot]];
-            assert_eq!(fire.slot, slot as u8);
-            assert_eq!(fire.shp_name, expected_type.shp_name);
-            assert_eq!(fire.frame, expected_frames[slot]);
-            assert_eq!(fire.total_frames, expected_type.total_frames);
-            assert_eq!(fire.rate_ms, expected_type.rate_ms);
-        }
-        assert_eq!(rng.state(), expected_rng.state());
-    }
-
-    #[test]
-    fn damage_fire_z_adjust_uses_native_formula_and_clamps_positive() {
-        assert_eq!(damage_fire_z_adjust(30, 4, 4), -145);
-        assert_eq!(damage_fire_z_adjust(100, 1, 1), 0);
-    }
-
-    #[test]
-    fn damage_fire_threshold_keeps_yellow_until_raw_selector_is_exposed() {
-        assert_eq!(
-            damage_fire_threshold_for_current_surface(0.5, 0.25, None),
-            0.5
-        );
-    }
 
     #[test]
     fn garrison_occupant_anim_rate_uses_art_section_rate_logic_frames() {

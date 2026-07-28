@@ -85,13 +85,22 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
     match button {
         MouseButton::Left => {
             if btn_state.is_pressed() {
-                if state.targeting_mode.is_some() {
-                    return; // suppress selection drag while either targeting mode is active
+                if state.targeting_mode.is_some()
+                    || state.sidebar_gadget_state.repair_mode_on
+                    || state.sidebar_gadget_state.sell_mode_on
+                {
+                    return; // suppress selection drag while a targeting / repair / sell mode is active
                 }
                 state
                     .selection_state
                     .begin_drag(state.cursor_x, state.cursor_y);
             } else {
+                // Repair / Sell cursor modes consume the click — toggle repair or
+                // sell the own building under the cursor. The mode stays active
+                // (sticky) so the player can act on several buildings in a row.
+                if crate::app_commands::try_repair_sell_mode_click(state) {
+                    return;
+                }
                 if let Some(section) = state.armed_super_weapon_type().map(str::to_owned) {
                     crate::app_commands::launch_super_weapon_at_cursor(state, &section);
                     return;
@@ -179,6 +188,15 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 state.building_placement_preview = None;
                 return;
             }
+            // Right-click first dismisses an active repair/sell cursor mode
+            // (matches gamemd — the special cursor is cancelled before any
+            // deselect), leaving the current selection intact.
+            if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on
+            {
+                state.sidebar_gadget_state.repair_mode_on = false;
+                state.sidebar_gadget_state.sell_mode_on = false;
+                return;
+            }
             // Clear the current selection.
             queue_selection_snapshot_command(state, Vec::new(), false);
         }
@@ -202,9 +220,7 @@ pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state
         MouseButton::Right => {
             // A right-press centers the view on the clicked cell (no command);
             // right-release just releases the gadget's sticky capture.
-            if btn_state.is_pressed()
-                && crate::app_sidebar_render::is_cursor_over_minimap(state)
-            {
+            if btn_state.is_pressed() && crate::app_sidebar_render::is_cursor_over_minimap(state) {
                 crate::app_sidebar_render::update_camera_from_minimap_cursor(state);
             }
         }
@@ -285,7 +301,6 @@ pub(crate) fn try_sidebar_scroll(state: &mut AppState, delta_lines: f32) -> bool
     }
     true
 }
-
 
 pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
     match action {
@@ -373,6 +388,90 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
 /// debug logs on enable and frees them on disable, and sets the sim flag
 /// `debug_event_logging`. Called by both the X hotkey and the dev overlay
 /// checkbox so the two paths cannot drift.
+/// Explain every terrain cell that draws as black, and say which cause is responsible.
+///
+/// A cell renders black for exactly two reasons, and they need completely different
+/// fixes: the vision system never revealed it, or it was revealed but its tile key is
+/// missing from the atlas. Both look identical on screen, so this counts them separately
+/// instead of leaving the diagnosis to guesswork.
+pub(crate) fn report_black_cell_causes(state: &mut AppState) {
+    let Some(grid) = state.terrain_grid.as_ref() else {
+        log::info!("Black-cell report: no terrain grid loaded");
+        return;
+    };
+
+    let owner = crate::app_commands::preferred_local_owner_name(state)
+        .and_then(|name| state.simulation.as_ref()?.interner.get(&name));
+    let fog = match (&state.simulation, owner) {
+        _ if state.sandbox_full_visibility => None,
+        (Some(sim), Some(id)) => Some((id, &sim.fog)),
+        _ => None,
+    };
+
+    let mut unrevealed: u32 = 0;
+    let mut missing_tile: u32 = 0;
+    // Checked for every cell regardless of shroud. The fog-gated count above only sees
+    // cells the player has explored, so on an unexplored map it can report zero while the
+    // rest of the map is full of unresolvable tiles. This one cannot be fooled that way.
+    let mut missing_tile_anywhere: u32 = 0;
+    let mut missing_samples: Vec<(u16, u16, u16, u8)> = Vec::new();
+    let mut unrevealed_samples: Vec<(u16, u16)> = Vec::new();
+
+    for cell in &grid.cells {
+        if let Some(atlas) = state.tile_atlas.as_ref() {
+            let key = crate::map::theater::TileKey {
+                tile_id: cell.tile_id,
+                sub_tile: cell.sub_tile,
+                variant: 0,
+            };
+            if atlas.get_uv(key).is_none() {
+                missing_tile_anywhere += 1;
+            }
+        }
+        if let Some((id, fog_state)) = fog {
+            if !fog_state.is_cell_revealed(id, cell.rx, cell.ry) {
+                unrevealed += 1;
+                if unrevealed_samples.len() < 12 {
+                    unrevealed_samples.push((cell.rx, cell.ry));
+                }
+                // An unrevealed cell is never drawn, so its tile is irrelevant.
+                continue;
+            }
+        }
+        if let Some(atlas) = state.tile_atlas.as_ref() {
+            let key = crate::map::theater::TileKey {
+                tile_id: cell.tile_id,
+                sub_tile: cell.sub_tile,
+                variant: 0,
+            };
+            if atlas.get_uv(key).is_none() {
+                missing_tile += 1;
+                if missing_samples.len() < 12 {
+                    missing_samples.push((cell.rx, cell.ry, cell.tile_id, cell.sub_tile));
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "Black-cell report: {} cells total | fog {} | unrevealed={} | revealed-but-no-tile={}          | no-tile-anywhere={}",
+        grid.cells.len(),
+        if fog.is_some() { "ON" } else { "OFF" },
+        unrevealed,
+        missing_tile,
+        missing_tile_anywhere,
+    );
+    if !unrevealed_samples.is_empty() {
+        log::info!("  unrevealed sample (rx,ry): {unrevealed_samples:?}");
+    }
+    if !missing_samples.is_empty() {
+        log::info!("  no-tile sample (rx,ry,tile_id,sub_tile): {missing_samples:?}");
+    }
+    if unrevealed == 0 && missing_tile == 0 {
+        log::info!("  no cell is black for either reason — the black must come from elsewhere");
+    }
+}
+
 pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
     state.debug_unit_inspector = !state.debug_unit_inspector;
     if let Some(sim) = &mut state.simulation {
@@ -430,9 +529,18 @@ pub(crate) fn toggle_debug_pause(state: &mut AppState) {
 }
 
 /// Handle one-shot gameplay hotkeys (called on key press, not held).
+///
+/// Dev/debug functions all live behind the Ctrl+Shift chord (same base keys)
+/// so bare keys stay free for stock game hotkeys. The chord never collides
+/// with stock modifiers: stock uses bare keys, Ctrl+digit (team assign), and
+/// Ctrl/Alt/Ctrl+Shift as CLICK modifiers, not key chords.
 pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
     if let Some(group_idx) = control_group_index(code) {
         handle_control_group_hotkey(state, group_idx);
+        return;
+    }
+    if is_ctrl_held(state) && is_shift_held(state) {
+        handle_dev_hotkey_pressed(state, code);
         return;
     }
     match code {
@@ -450,6 +558,11 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             } else if state.targeting_mode.is_some() {
                 state.targeting_mode = None;
                 state.building_placement_preview = None;
+            } else if state.sidebar_gadget_state.repair_mode_on
+                || state.sidebar_gadget_state.sell_mode_on
+            {
+                state.sidebar_gadget_state.repair_mode_on = false;
+                state.sidebar_gadget_state.sell_mode_on = false;
             } else {
                 state.paused = true;
                 // Opening the in-game Options overlay: reset the transient
@@ -463,24 +576,11 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                 log::info!("Game paused");
             }
         }
-        KeyCode::KeyB => {
-            state.queued_order_mode = OrderMode::Move;
-        }
         KeyCode::KeyS => queue_stop_for_selected(state),
         KeyCode::KeyD => queue_deploy_undeploy_for_selected(state),
-        KeyCode::KeyA => {
-            state.queued_order_mode = OrderMode::AttackMove;
-            log::info!("Order mode armed: AttackMove");
-        }
         KeyCode::KeyG => {
             state.queued_order_mode = OrderMode::Guard;
             log::info!("Order mode armed: Guard");
-        }
-        KeyCode::KeyM => {
-            quicksave(state);
-        }
-        KeyCode::KeyN => {
-            quickload(state);
         }
         KeyCode::KeyQ => {
             apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Building))
@@ -491,20 +591,39 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
         }
         KeyCode::KeyR => apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Vehicle)),
         KeyCode::KeyT => select_same_type(state, is_shift_held(state)),
-        KeyCode::Delete => crate::app_commands::sell_selected_buildings(state),
-        KeyCode::KeyL => {
-            state.debug_show_cell_grid = !state.debug_show_cell_grid;
-            log::info!(
-                "Debug cell grid overlay: {}",
-                if state.debug_show_cell_grid {
-                    "ON (blue=terrain, yellow=overlay)"
-                } else {
-                    "OFF"
-                }
-            );
-        }
         KeyCode::F1 => {
             state.show_hotkey_help = !state.show_hotkey_help;
+        }
+        KeyCode::KeyH => {
+            jump_camera_to_base(state);
+        }
+        KeyCode::Space => {
+            // Spacebar cycles through recent radar events and jumps the camera.
+            if let Some(sim) = &mut state.simulation {
+                if let Some((rx, ry)) = sim.radar_events.cycle_event() {
+                    let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                    let sw: f32 = state.render_width() as f32;
+                    let sh: f32 = state.render_height() as f32;
+                    let z = state.zoom_level;
+                    state.camera_x = sx - sw / (2.0 * z);
+                    state.camera_y = sy - sh / (2.0 * z);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Dev/debug hotkeys — all require Ctrl+Shift so the bare keys stay free for
+/// stock game hotkeys (bare X/P/L/K/M/N/B/A/Delete/F5-F12 previously
+/// shadowed stock functions like Scatter and Beacon).
+fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
+    match code {
+        KeyCode::KeyM => {
+            quicksave(state);
+        }
+        KeyCode::KeyN => {
+            quickload(state);
         }
         KeyCode::F5 => {
             state.show_save_load_panel = !state.show_save_load_panel;
@@ -519,8 +638,25 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                 state.window.set_cursor_visible(false);
             }
         }
-        KeyCode::KeyH => {
-            jump_camera_to_base(state);
+        // Interim order-mode arms until the stock click modifiers
+        // (Ctrl+Shift+click attack move, beacon key) are implemented.
+        KeyCode::KeyA => {
+            state.queued_order_mode = OrderMode::AttackMove;
+            log::info!("Order mode armed: AttackMove");
+        }
+        KeyCode::KeyB => {
+            state.queued_order_mode = OrderMode::Move;
+        }
+        KeyCode::KeyL => {
+            state.debug_show_cell_grid = !state.debug_show_cell_grid;
+            log::info!(
+                "Debug cell grid overlay: {}",
+                if state.debug_show_cell_grid {
+                    "ON (blue=terrain, yellow=overlay)"
+                } else {
+                    "OFF"
+                }
+            );
         }
         KeyCode::KeyK => {
             state.debug_show_heightmap = !state.debug_show_heightmap;
@@ -563,18 +699,8 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                 }
             );
         }
-        KeyCode::Space => {
-            // Spacebar cycles through recent radar events and jumps the camera.
-            if let Some(sim) = &mut state.simulation {
-                if let Some((rx, ry)) = sim.radar_events.cycle_event() {
-                    let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
-                    let sw: f32 = state.render_width() as f32;
-                    let sh: f32 = state.render_height() as f32;
-                    let z = state.zoom_level;
-                    state.camera_x = sx - sw / (2.0 * z);
-                    state.camera_y = sy - sh / (2.0 * z);
-                }
-            }
+        KeyCode::F8 => {
+            report_black_cell_causes(state);
         }
         KeyCode::KeyX => {
             toggle_unit_inspector(state);
@@ -1155,7 +1281,9 @@ fn jump_camera_to_base(state: &mut AppState) {
     }
 }
 
-/// Emit a voice sound (VoiceMove or VoiceAttack) for the first selected unit.
+/// Emit an order-acknowledgement voice sound for the first selected unit; the
+/// specific voice (VoiceMove / VoiceAttack / VoiceHarvest / VoiceEnter) is
+/// chosen by `voice_field`.
 pub(crate) fn emit_order_voice(state: &mut AppState, voice_field: &str) {
     let Some(sim) = &state.simulation else { return };
     let Some(rules) = &state.rules else { return };
@@ -1169,6 +1297,8 @@ pub(crate) fn emit_order_voice(state: &mut AppState, voice_field: &str) {
         let voice_id: Option<&String> = match voice_field {
             "VoiceMove" => obj.voice_move.as_ref(),
             "VoiceAttack" => obj.voice_attack.as_ref(),
+            "VoiceHarvest" => obj.voice_harvest.as_ref(),
+            "VoiceEnter" => obj.voice_enter.as_ref(),
             _ => None,
         };
         if let Some(id) = voice_id {

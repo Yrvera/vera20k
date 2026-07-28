@@ -11,9 +11,27 @@
 //! `stable_id` so deterministic iteration order is preserved.
 
 use crate::rules::particle_system_type::ParticleSystemBehavesLike;
+use crate::rules::particle_type::{ParticleBehavesLike, ParticleTypeId};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::particles::ParticleSystem;
 use crate::sim::world::Simulation;
+use thiserror::Error;
+
+use super::spark::{
+    SparkCollisionFacts, SparkKernelError, SparkMotionStep, begin_particle_tick,
+    finish_particle_tick, gravity_as_stored_f32,
+};
+use super::spark_world::{SparkCollisionWorld, SparkWorldError};
+
+#[derive(Debug, Error)]
+pub(crate) enum SparkSystemTickError {
+    #[error("particle type {0:?} is not behavior-3 Spark")]
+    NonSparkParticle(ParticleTypeId),
+    #[error(transparent)]
+    Kernel(#[from] SparkKernelError),
+    #[error(transparent)]
+    World(#[from] SparkWorldError),
+}
 
 /// Resolve the SHP frame count for a particle's `Image=` field via the
 /// existing `Simulation::effect_frame_counts` map. Returns 0 when the
@@ -124,13 +142,73 @@ fn tick_fire(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
     super::fire::tick_system(sys, sim, rules);
 }
 
+/// Internal activation-gate owner for the Ghidra-backed Spark path.
+///
+/// Normal particle-system dispatch deliberately does not call this yet. The
+/// function exists so parity tests and the eventual activation change use the
+/// verified begin/query/finish ownership boundary instead of inventing another.
+pub(crate) fn tick_spark_system_compat(
+    sys: &mut ParticleSystem,
+    sim: &mut Simulation,
+    rules: &RuleSet,
+) -> Result<(), SparkSystemTickError> {
+    tick_spark_system_with_query(sys, sim, rules, |sim, rules, motion| {
+        SparkCollisionWorld::new(sim, rules)?.query(motion)
+    })
+}
+
+fn tick_spark_system_with_query<F>(
+    sys: &mut ParticleSystem,
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    mut query: F,
+) -> Result<(), SparkSystemTickError>
+where
+    F: FnMut(
+        &Simulation,
+        &RuleSet,
+        SparkMotionStep,
+    ) -> Result<SparkCollisionFacts, SparkWorldError>,
+{
+    let gravity = gravity_as_stored_f32(rules.general.gravity)?;
+    for particle in &mut sys.particles {
+        let particle_type = rules.particle_type(particle.type_id);
+        if particle_type.behaves_like != ParticleBehavesLike::Spark {
+            return Err(SparkSystemTickError::NonSparkParticle(particle.type_id));
+        }
+
+        let motion = begin_particle_tick(particle, gravity)?;
+        let collision = query(sim, rules, motion)?;
+        finish_particle_tick(
+            particle,
+            motion,
+            collision,
+            particle_type.color_speed,
+            particle_type.color_list.len(),
+            sim.particle_rng(),
+        )?;
+    }
+
+    // Native container cleanup walks backward so removals cannot perturb the
+    // forward tick/RNG order of surviving particles.
+    for index in (0..sys.particles.len()).rev() {
+        if sys.particles[index].marked_for_deletion {
+            sys.particles.remove(index);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::particle_system_type::ParticleSystemTypeId;
-    use crate::sim::particles::ParticleSystem;
+    use crate::rules::particle_type::ParticleTypeId;
+    use crate::sim::particles::{Particle, ParticleSystem, SparkRuntimeState};
+    use crate::sim::rng::SimRng;
     use crate::util::fixed_math::SimFixed;
+    use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
     use glam::IVec3;
 
     fn empty_rules() -> RuleSet {
@@ -166,6 +244,60 @@ mod tests {
             target_coords: IVec3::ZERO,
             owner_house: None,
             done_spawning: false,
+        }
+    }
+
+    fn spark_rules(gravity: i32) -> RuleSet {
+        let ini = IniFile::from_str(&format!(
+            "[General]\n[AudioVisual]\nGravity={gravity}\n\
+             [Particles]\n1=SparkP\n\
+             [SparkP]\nBehavesLike=Spark\nColorList=255,255,255,128,128,64\nColorSpeed=.13\n"
+        ));
+        RuleSet::from_ini(&ini).expect("Spark rules parse")
+    }
+
+    fn spark_particle(x: i32, lifetime: i16) -> Particle {
+        Particle {
+            type_id: ParticleTypeId(0),
+            coords: IVec3::new(x, 0, 100),
+            previous_coords: IVec3::ZERO,
+            origin: IVec3::ZERO,
+            direction: [SimFixed::from_num(0); 3],
+            velocity: SimFixed::from_num(0),
+            lifetime_remaining: lifetime,
+            damage_counter: 0,
+            state_ai_advance: 0,
+            animation_state: 0,
+            translucency: 0,
+            hit_ground: false,
+            marked_for_deletion: false,
+            drift_x: 0,
+            drift_y: 0,
+            drift_z: 0,
+            current_color: [0; 3],
+            color_index: 0,
+            color_accumulator: SimFixed::from_num(0),
+            spark: Some(SparkRuntimeState {
+                velocity_x: NativeF32Bits::POSITIVE_ZERO,
+                velocity_y: NativeF32Bits::POSITIVE_ZERO,
+                velocity_z: NativeF32Bits::POSITIVE_ZERO,
+                start_rgb: [255; 3],
+                color_index: 0,
+                color_accumulator: NativeF64Bits::POSITIVE_ZERO,
+            }),
+            prev_delta: [SimFixed::from_num(0); 3],
+            state_advance_counter: 0,
+        }
+    }
+
+    fn flat_facts() -> SparkCollisionFacts {
+        SparkCollisionFacts {
+            ground_z: 0,
+            slope_matrix: super::super::spark_world::slope_matrix(0).unwrap(),
+            old_has_structural_bridge: false,
+            candidate_has_structural_bridge: false,
+            accepted_building: false,
+            wall_overlay_id: None,
         }
     }
 
@@ -223,6 +355,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compat_owner_ticks_forward_then_removes_backward() {
+        let rules = spark_rules(0);
+        let mut sim = Simulation::with_seed(123);
+        let mut sys = fake_system(ParticleSystemTypeId(0), 100);
+        sys.particles.push(spark_particle(11, 1));
+        sys.particles.push(spark_particle(22, 2));
+        let mut seen = Vec::new();
+
+        tick_spark_system_with_query(&mut sys, &mut sim, &rules, |_, _, motion| {
+            seen.push(motion.old_coords.x);
+            Ok(flat_facts())
+        })
+        .unwrap();
+
+        assert_eq!(seen, vec![11, 22]);
+        assert_eq!(sys.particles.len(), 1);
+        assert_eq!(sys.particles[0].coords.x, 22);
+        assert_eq!(sys.particles[0].lifetime_remaining, 1);
+
+        let mut expected_rng = SimRng::new(123);
+        expected_rng.next_range_u32_inclusive(0, 0x7fff_fffe);
+        expected_rng.next_range_u32_inclusive(0, 0x7fff_fffe);
+        assert_eq!(sim.rng_views().scenario, expected_rng.logical_view());
+    }
+
+    #[test]
+    fn unavailable_query_keeps_persistent_z_but_consumes_no_rng_or_lifetime() {
+        let rules = spark_rules(6);
+        let mut sim = Simulation::with_seed(456);
+        let rng_before = sim.rng_state().scenario;
+        let mut sys = fake_system(ParticleSystemTypeId(0), 100);
+        sys.particles.push(spark_particle(11, 9));
+
+        let error = tick_spark_system_with_query(&mut sys, &mut sim, &rules, |_, _, _| {
+            Err(SparkWorldError::MissingTerrain)
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SparkSystemTickError::World(SparkWorldError::MissingTerrain)
+        ));
+        assert_eq!(sys.particles[0].coords, IVec3::new(11, 0, 100));
+        assert_eq!(sys.particles[0].lifetime_remaining, 9);
+        assert_eq!(
+            sys.particles[0].spark.unwrap().velocity_z.bits(),
+            0xc0c0_0000
+        );
+        assert_eq!(sim.rng_state().scenario, rng_before);
+    }
+
     mod advance_state_tests {
         use super::*;
         use crate::rules::particle_type::ParticleTypeId;
@@ -256,6 +440,7 @@ mod tests {
                 current_color: [0; 3],
                 color_index: 0,
                 color_accumulator: SimFixed::from_num(0),
+                spark: None,
                 prev_delta: [SimFixed::from_num(0); 3],
                 state_advance_counter: 0,
             }

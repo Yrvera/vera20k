@@ -8,10 +8,14 @@
 use crate::rules::ruleset::RuleSet;
 use crate::sim::docking::bunker_install::{BunkerRuntime, BunkerState};
 use crate::sim::game_entity::BunkerLink;
-use crate::sim::mission::{verb, MissionType};
+use crate::sim::mission::authority::EntityReadyInputProvider;
+use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::radio::{transmit, RadioMessage, RadioPayload};
-use crate::sim::world::{SimSoundEvent, Simulation};
+use crate::sim::radio::{RadioMessage, RadioPayload, transmit};
+use crate::sim::world::{
+    ConcealOutcome, PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, SimSoundEvent,
+    Simulation,
+};
 
 /// Exit-search ring limit for the normal release (mirrors the refinery exit).
 const BUNKER_EXIT_SEARCH_MAX_RADIUS: i32 = 16;
@@ -51,12 +55,38 @@ pub fn install_bunker_link(sim: &mut Simulation, building_id: u64, unit_id: u64)
         u.movement_target = None;
         u.facing_target = None;
         u.forced_drive_track = None;
-        verb::assign_mission(&mut u.mission, MissionType::Guard, now);
     }
-    // Hide: drop cell occupancy + leave the active set.
-    sim.remove_entity_occupancy(unit_id);
-    sim.conceal(unit_id);
-    emit_bunker_wall_sound(sim, building_id, true);
+    // Native bunker install queues Guard on the occupant with synchronous
+    // promotion (Queue `0x00459337=5/1`). The exact locomotor readiness
+    // producers are not live, so the flag-1 form cannot validate; the same
+    // outcome is committed as queue + explicit Commence (the occupant is
+    // stationary — the skipped moving-defer gate is the recorded residual).
+    let _ = sim.mission_queue_exact(
+        unit_id,
+        MissionId::from_known(MissionType::Guard),
+        0,
+        now,
+        &EntityReadyInputProvider,
+    );
+    let _ = sim.mission_commence_exact(unit_id, now);
+    // Techno Limbo broadcasts BREAK before Object Conceal removes Mark and
+    // LogicVector membership. Reciprocal bunker state remains class-owned.
+    match sim.techno_limbo(unit_id) {
+        ConcealOutcome::Concealed | ConcealOutcome::AlreadyConcealed => {
+            emit_bunker_wall_sound(sim, building_id, true);
+        }
+        ConcealOutcome::MissingOrDead => {
+            if let Some(unit) = sim.substrate.entities.get_mut(unit_id) {
+                unit.bunker_link = BunkerLink::None;
+            }
+            if let Some(building) = sim.substrate.entities.get_mut(building_id) {
+                building.bunker_occupant = None;
+                if let Some(runtime) = building.bunker_runtime.as_mut() {
+                    *runtime = BunkerRuntime::idle();
+                }
+            }
+        }
+    }
 }
 
 /// Clear BOTH sides of the link and send the radio BREAK. Returns the unit id
@@ -113,16 +143,20 @@ pub fn release_normal(
     };
     let now = sim.session.binary_frame;
     if let Some((rx, ry)) = cell {
-        if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
-            u.position.rx = rx;
-            u.position.ry = ry;
-        }
-        sim.reveal(unit_id);
-        sim.add_entity_occupancy(unit_id);
+        let _ = reveal_bunker_unit_at(sim, unit_id, rx, ry);
     }
-    if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
-        verb::assign_mission(&mut u.mission, MissionType::Move, now);
-    }
+    // Preserve the class-specific release behavior independently of whether
+    // the caller-owned placement attempt found or admitted a destination.
+    // Move is queued through the exact authority (the release mission choice
+    // is carried over from the prior Rust behavior; its native counterpart is
+    // UNCHECKED) and promoted by the host's next Ready→Commence.
+    let _ = sim.mission_queue_exact(
+        unit_id,
+        MissionId::from_known(MissionType::Move),
+        0,
+        now,
+        &EntityReadyInputProvider,
+    );
     reset_bunker_idle(sim, building_id);
 }
 
@@ -143,13 +177,16 @@ pub fn release_sell_destroy(sim: &mut Simulation, building_id: u64) {
         return;
     };
     if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
-        u.position.rx = brx;
-        u.position.ry = bry;
         // South per facing convention; gamemd UndockUnit head, no orderly move.
         u.facing = 0x80;
     }
-    sim.reveal(unit_id);
-    sim.add_entity_occupancy(unit_id);
+    match reveal_bunker_unit_at(sim, unit_id, brx, bry) {
+        Some(RevealOutcome::Revealed { .. }) => {}
+        Some(RevealOutcome::AlreadyRevealed | RevealOutcome::Failed(_)) | None => {
+            // Preserve the object for the caller/next lifecycle attempt. A
+            // failed Mark is not a deletion request.
+        }
+    }
     // No Move mission, no sound, no anims (matches UndockUnit).
 }
 
@@ -207,6 +244,34 @@ fn reset_bunker_idle(sim: &mut Simulation, building_id: u64) {
     }
 }
 
+fn reveal_bunker_unit_at(
+    sim: &mut Simulation,
+    unit_id: u64,
+    rx: u16,
+    ry: u16,
+) -> Option<RevealOutcome> {
+    let position = sim
+        .substrate
+        .entities
+        .get(unit_id)
+        .map(|unit| RevealPosition {
+            rx,
+            ry,
+            z: unit.position.z,
+            sub_x: unit.position.sub_x,
+            sub_y: unit.position.sub_y,
+        })?;
+    Some(sim.try_reveal_entity(
+        unit_id,
+        RevealRequest {
+            position,
+            // Both release paths have already selected their destination.
+            placement: PlacementEvidence::MarkSucceeded,
+            logic_eligible: true,
+        },
+    ))
+}
+
 /// gamemd exit anchor for the normal release: building NW corner + (-1 west,
 /// +1 south), then the nearest passable cell (modulo-spread pick). Falls back to
 /// the anchor cell when no path grid is available (headless tests).
@@ -245,8 +310,11 @@ pub(crate) fn emit_bunker_wall_anim(
     let Some(b) = sim.substrate.entities.get(building_id) else {
         return;
     };
-    let damaged =
-        at_or_below_condition_red(b.health.current, b.health.max, rules.general.condition_red_x1000);
+    let damaged = at_or_below_condition_red(
+        b.health.current,
+        b.health.max,
+        rules.general.condition_red_x1000,
+    );
     sim.bunker_wall_events
         .push(crate::sim::components::BunkerWallAnimEvent {
             building_id,
@@ -270,7 +338,8 @@ mod tests {
     use crate::rules::ini_parser::IniFile;
     use crate::sim::components::Health;
     use crate::sim::docking::bunker_install::BunkerRuntime;
-    use crate::sim::game_entity::{GameEntity, Presence};
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::mission::MissionId;
 
     fn rules() -> RuleSet {
         RuleSet::from_ini(&IniFile::from_str(
@@ -286,7 +355,7 @@ mod tests {
     fn spawn_bunker(sim: &mut Simulation, sid: u64, owner: &str) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern("NATBNK");
-        let mut ge = GameEntity::new(
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             10,
             10,
@@ -310,7 +379,7 @@ mod tests {
     fn spawn_tank(sim: &mut Simulation, sid: u64, owner: &str, type_name: &str) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern(type_name);
-        let ge = GameEntity::new(
+        let ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             12,
             12,
@@ -346,8 +415,7 @@ mod tests {
         spawn_bunker(&mut sim, 2, "Americans");
         spawn_tank(&mut sim, 1, "Americans", "TANK");
         // The unit must be a live (InCell) member before it can be concealed.
-        sim.reveal(1);
-        sim.add_entity_occupancy(1);
+        assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
 
         install_bunker_link(&mut sim, 2, 1);
 
@@ -358,8 +426,13 @@ mod tests {
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::Installed(2));
         assert!(!unit.in_logic_vector, "installed unit left the active set");
-        assert_eq!(unit.presence, Presence::Limbo);
-        assert_eq!(unit.mission.current, MissionType::Guard);
+        assert!(unit.lifecycle.object_alive);
+        assert!(unit.lifecycle.in_limbo);
+        assert!(!unit.lifecycle.cell_marked);
+        assert_eq!(
+            unit.mission.current(),
+            MissionId::from_known(MissionType::Guard)
+        );
 
         let up = sim
             .sound_events
@@ -374,8 +447,7 @@ mod tests {
         let mut sim = Simulation::new();
         spawn_bunker(&mut sim, 2, "Americans");
         spawn_tank(&mut sim, 1, "Americans", "TANK");
-        sim.reveal(1);
-        sim.add_entity_occupancy(1);
+        assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
         install_bunker_link(&mut sim, 2, 1);
 
         let released = break_bunker_link(&mut sim, 2);
@@ -391,8 +463,7 @@ mod tests {
         let mut sim = Simulation::new();
         spawn_bunker(&mut sim, 2, "Americans");
         spawn_tank(&mut sim, 1, "Americans", "TANK");
-        sim.reveal(1);
-        sim.add_entity_occupancy(1);
+        assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
         install_bunker_link(&mut sim, 2, 1);
         sim.sound_events.clear(); // drop the install up-sound; assert on down events
         sim
@@ -412,9 +483,16 @@ mod tests {
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::None);
         assert!(unit.in_logic_vector, "unit revealed");
+        assert!(unit.lifecycle.object_alive);
+        assert!(!unit.lifecycle.in_limbo);
+        assert!(unit.lifecycle.cell_marked);
         // anchor = building NW (10,10) + (-1,+1) = (9,11)
         assert_eq!((unit.position.rx, unit.position.ry), (9, 11));
-        assert_eq!(unit.mission.current, MissionType::Move);
+        // Release queues Move (the host's Ready→Commence promotes it next pass).
+        assert_eq!(
+            unit.mission.queued(),
+            MissionId::from_known(MissionType::Move)
+        );
         assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
         assert_eq!(down_sounds(&sim), 1, "one walls-down on normal eject");
     }
@@ -426,9 +504,16 @@ mod tests {
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::None);
         assert!(unit.in_logic_vector, "unit revealed at building cell");
+        assert!(unit.lifecycle.object_alive);
+        assert!(!unit.lifecycle.in_limbo);
+        assert!(unit.lifecycle.cell_marked);
         assert_eq!((unit.position.rx, unit.position.ry), (10, 10));
         assert_eq!(unit.facing, 0x80);
-        assert_eq!(unit.mission.current, MissionType::Guard, "no Move order");
+        assert_eq!(
+            unit.mission.current(),
+            MissionId::from_known(MissionType::Guard),
+            "no Move order"
+        );
         assert_eq!(down_sounds(&sim), 0, "sell teardown is silent");
     }
 
@@ -439,6 +524,9 @@ mod tests {
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::None);
         assert!(!unit.in_logic_vector, "clear does not reveal");
+        assert!(unit.lifecycle.object_alive);
+        assert!(unit.lifecycle.in_limbo);
+        assert!(!unit.lifecycle.cell_marked);
         assert_eq!(
             (unit.position.rx, unit.position.ry),
             (12, 12),
@@ -484,10 +572,17 @@ mod tests {
         let mut sim = installed_sim();
         sim.bunker_wall_events.clear();
         release_normal(&mut sim, 2, &rules(), None);
-        assert_eq!(down_anim_events(&sim), 1, "one walls-down anim on normal eject");
+        assert_eq!(
+            down_anim_events(&sim),
+            1,
+            "one walls-down anim on normal eject"
+        );
         let ev = sim.bunker_wall_events.iter().find(|e| !e.up).unwrap();
         assert_eq!(ev.building_id, 2);
-        assert!(!ev.damaged, "full-health bunker uses the non-damaged variant");
+        assert!(
+            !ev.damaged,
+            "full-health bunker uses the non-damaged variant"
+        );
     }
 
     #[test]
@@ -517,7 +612,10 @@ mod tests {
         sim.substrate.entities.get_mut(2).unwrap().health.current = 100;
         release_normal(&mut sim, 2, &rules(), None);
         let ev = sim.bunker_wall_events.iter().find(|e| !e.up).unwrap();
-        assert!(ev.damaged, "below-ConditionRed bunker selects the damaged variant");
+        assert!(
+            ev.damaged,
+            "below-ConditionRed bunker selects the damaged variant"
+        );
     }
 
     #[test]

@@ -104,7 +104,16 @@ mod tests {
         // scaled = ftol(62*0.5) = ftol(31) = 31.
         // (Kernel = AoE = 256 leptons/cell, so Q1 is resolved and this is no
         //  longer #[ignore]'d; value is 31, NOT the mis-converted-128 "12".)
-        let d = apply_warhead_damage(100, 1.0, 0.25, &verses(0.5), ArmorClass(5), 128, false, MAXD);
+        let d = apply_warhead_damage(
+            100,
+            1.0,
+            0.25,
+            &verses(0.5),
+            ArmorClass(5),
+            128,
+            false,
+            MAXD,
+        );
         assert_eq!(d, 31);
     }
 
@@ -132,7 +141,8 @@ mod tests {
     fn kernel_pam_one_is_flat() {
         // PAM==1.0 => branch guard false => flat damage at any distance.
         let near = apply_warhead_damage(100, 5.0, 1.0, &verses(1.0), ArmorClass(5), 0, false, MAXD);
-        let far = apply_warhead_damage(100, 5.0, 1.0, &verses(1.0), ArmorClass(5), 600, false, MAXD);
+        let far =
+            apply_warhead_damage(100, 5.0, 1.0, &verses(1.0), ArmorClass(5), 600, false, MAXD);
         assert_eq!(near, 100);
         assert_eq!(far, 100);
     }

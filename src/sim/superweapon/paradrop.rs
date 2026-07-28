@@ -197,7 +197,8 @@ fn spawn_pdplane(
             };
         }
         let boarded = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get_mut(pdplane_id)
             .and_then(|a| a.passenger_role.cargo_mut())
             .map(|c| {

@@ -117,6 +117,9 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
         }
     }
 
+    // Spawn-pick completes match launch: pin the match-scoped local player
+    // here too (same contract as the skirmish-session launch path).
+    state.local_player_owner = seeded_owner.clone();
     state.local_owner_override = seeded_owner;
     state.spawn_pick_pending = false;
 

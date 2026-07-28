@@ -325,6 +325,7 @@ mod tests {
     fn make_tunnel_loco() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Tunnel,
+            mission_ready_state: None,
             primary_kind: Some(LocomotorKind::Tunnel),
             piggyback: None,
             layer: MovementLayer::Ground,
@@ -352,6 +353,8 @@ mod tests {
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
+            hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
     }
 

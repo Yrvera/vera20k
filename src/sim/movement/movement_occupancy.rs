@@ -147,6 +147,12 @@ pub(super) fn evaluate_runtime_can_enter_cell(
     let explicit_parent = args
         .parent_current_cell
         .and_then(|coord| grid.cell(coord.0, coord.1).map(|cell| (cell, coord)));
+    let resolved_parent = crate::sim::pathfinding::resolve_parent_for_bridge_traversal(
+        grid,
+        args.target_cell,
+        args.direction,
+        explicit_parent,
+    );
 
     let mut object_list_layer = if candidate.has_structural_bridge()
         && (args.height == -1 || (args.height - candidate.signed_level()).abs() >= 2)
@@ -156,32 +162,53 @@ pub(super) fn evaluate_runtime_can_enter_cell(
         MovementLayer::Ground
     };
 
-    let bridge_traversal = crate::sim::pathfinding::check_bridge_traversal(
-        grid,
-        BridgeTraversalInput {
-            candidate,
-            candidate_coord: args.target_cell,
-            direction: args.direction,
-            path_height: args.height,
-            parent: explicit_parent,
-        },
-    );
-    if !bridge_traversal.allowed {
-        return RuntimeCanEnterCellEvaluation {
-            args,
-            layers: base,
-            bridge_traversal_allowed: false,
-        };
-    }
-    if bridge_traversal.force_bridge_list {
-        object_list_layer = MovementLayer::Bridge;
-    }
+    // Mirror the A* neighbor-expansion gate: structural→structural bridge
+    // edges with no bridgehead involved (plain deck driving — ramp→body,
+    // body→body) are planned WITHOUT the traversal legality check, so the
+    // runtime crossing must not re-run it there either (the original's
+    // locomotor relink re-checks nothing at the boundary; this evaluation is
+    // a stricter-than-native safety net and must at least accept every edge
+    // the plan legally produced).
+    let skip_traversal_check = args.height >= 0
+        && resolved_parent.is_some_and(|(parent, _)| {
+            !crate::sim::pathfinding::needs_bridge_traversal_for_edge(
+                args.height as u8,
+                parent,
+                candidate,
+            )
+        });
+
+    let path_height = if skip_traversal_check {
+        args.height
+    } else {
+        let bridge_traversal = crate::sim::pathfinding::check_bridge_traversal(
+            grid,
+            BridgeTraversalInput {
+                candidate,
+                candidate_coord: args.target_cell,
+                direction: args.direction,
+                path_height: args.height,
+                parent: resolved_parent,
+            },
+        );
+        if !bridge_traversal.allowed {
+            return RuntimeCanEnterCellEvaluation {
+                args,
+                layers: base,
+                bridge_traversal_allowed: false,
+            };
+        }
+        if bridge_traversal.force_bridge_list {
+            object_list_layer = MovementLayer::Bridge;
+        }
+        bridge_traversal.path_height
+    };
 
     let layers = crate::sim::pathfinding::can_enter_layer_context(
         next_layer,
         object_list_layer,
         candidate,
-        bridge_traversal.path_height,
+        path_height,
     );
     RuntimeCanEnterCellEvaluation {
         args,
@@ -327,10 +354,15 @@ pub(super) fn build_live_building_entry_skip_map(
             && building
                 .building_gate
                 .is_some_and(|state| state.can_garrison_passable());
+        let infantry_entry_target = mover.category == EntityCategory::Infantry
+            && (mover.capture_target == Some(building.stable_id)
+                || mover
+                    .c4_plant
+                    .is_some_and(|plant| plant.target_building_id == building.stable_id));
         let has_contact = vehicle_row_helpers && mover.has_live_contact_with(building.stable_id);
         let has_vehicle_exception =
             vehicle_row_helpers && (has_contact || obj.unit_repair || obj.bunker || obj.bib);
-        if !has_vehicle_exception && !gate_skip {
+        if !has_vehicle_exception && !gate_skip && !infantry_entry_target {
             continue;
         }
         let is_bunker_occupied = obj.bunker
@@ -386,6 +418,7 @@ pub(super) fn build_live_building_entry_skip_map(
                 )
                 || bib_skip
                 || gate_skip
+                || infantry_entry_target
             {
                 skips
                     .entry((cx, cy))
@@ -642,8 +675,17 @@ pub(super) fn handle_deferred_occupancy(
             // Remove crush victims from occupancy immediately (matches gamemd's
             // PerCellProcess which calls RemoveFromGame before continuing).
             for &vid in &victims {
-                if let Some(v) = entities.get(vid) {
-                    occupancy.remove(v.position.rx, v.position.ry, vid);
+                let victim_cell = entities
+                    .get(vid)
+                    .map(|victim| (victim.position.rx, victim.position.ry));
+                if let Some((rx, ry)) = victim_cell {
+                    occupancy.remove(rx, ry, vid);
+                    if let Some(victim) = entities.get_mut(vid) {
+                        // UNCHECKED: movement still owns this pre-UnInit unmark
+                        // until the unified per-object scheduler can place the
+                        // exact native Mark(0) boundary.
+                        victim.lifecycle.cell_marked = false;
+                    }
                 }
             }
             crush_kills.extend(victims.into_iter().map(|victim_id| PendingCrushKill {

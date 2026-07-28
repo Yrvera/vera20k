@@ -28,9 +28,7 @@ const MISSION_TEXT_TIMEOUT_MS: u64 = 4_000;
 /// clock — never the raw `app_tooltips::now_ms` — so a pause freezes the
 /// remaining lifetime of every visible row.
 pub(crate) fn message_now_ms(state: &AppState) -> u64 {
-    state
-        .message_clock
-        .now(crate::app_tooltips::now_ms(state))
+    state.message_clock.now(crate::app_tooltips::now_ms(state))
 }
 
 /// Post a system message (mission/trigger text, future house notifications).

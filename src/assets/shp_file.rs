@@ -78,6 +78,12 @@ pub struct ShpFrame {
     pub frame_width: u16,
     /// Height of this frame's pixel data.
     pub frame_height: u16,
+    /// Per-frame radar/minimap colour baked into the frame header.
+    ///
+    /// Ore and gem overlays carry one of these per growth stage, and the engine
+    /// indexes them by the cell's density byte to colour minimap and preview
+    /// pixels — the frame's artwork is not sampled for that.
+    pub radar_color: [u8; 3],
     /// Decoded pixel data (palette indices). Length = frame_width * frame_height.
     /// Index 0 means transparent.
     pub pixels: Vec<u8>,
@@ -138,9 +144,14 @@ impl ShpFile {
             let frame_height: u16 = read_u16_le(data, hdr_offset + 6);
             let format: u8 = data[hdr_offset + 8];
             // Bytes 9-11: padding/reserved
-            // Bytes 12-15: radar minimap color (RGB packed into u32)
+            // Bytes 12-14: radar minimap colour (R, G, B); byte 15 unused
             // Bytes 16-19: reserved (always 0)
             // Bytes 20-23: data_offset (absolute file offset to this frame's pixel data)
+            let radar_color: [u8; 3] = [
+                data[hdr_offset + 12],
+                data[hdr_offset + 13],
+                data[hdr_offset + 14],
+            ];
             let data_offset: u32 = read_u32_le(data, hdr_offset + 20);
 
             // A frame with zero dimensions has no pixel data (empty frame).
@@ -150,6 +161,7 @@ impl ShpFile {
                     frame_y,
                     frame_width,
                     frame_height,
+                    radar_color,
                     pixels: Vec::new(),
                 });
                 continue;
@@ -210,6 +222,7 @@ impl ShpFile {
                 frame_y,
                 frame_width,
                 frame_height,
+                radar_color,
                 pixels,
             });
         }
@@ -307,7 +320,9 @@ mod tests {
         data.extend_from_slice(&2u16.to_le_bytes()); // +4: frame_width
         data.extend_from_slice(&2u16.to_le_bytes()); // +6: frame_height
         data.push(0x00); // +8: format (0 = raw)
-        data.extend_from_slice(&[0u8; 11]); // +9: padding (11 bytes)
+        data.extend_from_slice(&[0u8; 3]); // +9: padding (3 bytes)
+        data.extend_from_slice(&[0x40, 0x80, 0xC0]); // +12: radar colour R,G,B
+        data.extend_from_slice(&[0u8; 5]); // +15: unused + reserved
         data.extend_from_slice(&data_offset.to_le_bytes()); // +20: data_offset
 
         // Pixel data: 2x2 = 4 bytes (palette indices: 1, 2, 3, 0)
@@ -385,5 +400,29 @@ mod tests {
 
         // Frame index 5 doesn't exist (only 1 frame).
         assert!(shp.frame_to_rgba(5, &palette).is_err());
+    }
+
+    /// The frame header's radar colour is what the engine samples for minimap
+    /// and preview pixels on ore/gem overlays -- indexed by growth stage, never
+    /// read out of the frame's artwork.
+    #[test]
+    fn frame_radar_colour_is_read_from_the_header() {
+        let shp = ShpFile::from_bytes(&make_test_shp_raw()).expect("parse");
+        assert_eq!(shp.frames[0].radar_color, [0x40, 0x80, 0xC0]);
+    }
+
+    /// A zero-sized frame still carries a header, so its radar colour must
+    /// survive the early-out that skips pixel decoding.
+    #[test]
+    fn an_empty_frame_still_carries_its_radar_colour() {
+        let mut data = make_test_shp_raw();
+        // Zero this frame's width and height (header bytes +4 and +6).
+        data[8 + 4] = 0;
+        data[8 + 5] = 0;
+        data[8 + 6] = 0;
+        data[8 + 7] = 0;
+        let shp = ShpFile::from_bytes(&data).expect("parse");
+        assert!(shp.frames[0].pixels.is_empty(), "no pixel data");
+        assert_eq!(shp.frames[0].radar_color, [0x40, 0x80, 0xC0]);
     }
 }

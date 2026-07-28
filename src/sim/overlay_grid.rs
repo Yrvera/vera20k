@@ -1057,8 +1057,16 @@ Strength=400
             r.changed_cells.is_empty() && r.destroyed_cells.is_empty(),
             "roll == damage must be a no-op"
         );
-        assert_eq!(grid.cell(5, 5).overlay_data, 0, "no nibble change at roll == damage");
-        assert_eq!(grid.cell(5, 5).overlay_id, Some(2), "wall intact at roll == damage");
+        assert_eq!(
+            grid.cell(5, 5).overlay_data,
+            0,
+            "no nibble change at roll == damage"
+        );
+        assert_eq!(
+            grid.cell(5, 5).overlay_id,
+            Some(2),
+            "wall intact at roll == damage"
+        );
 
         // Damage applied just below the boundary (same seed -> same roll 213).
         // (This registry leaves DamageLevels at its low default, so a single hit

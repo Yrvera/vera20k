@@ -406,7 +406,9 @@ pub(crate) fn current_sidebar_theme(
     state: &AppState,
 ) -> crate::render::sidebar_chrome::SidebarTheme {
     preferred_local_owner_name(state)
-        .and_then(|owner| sidebar_theme_for_owner(state, &owner))
+        .and_then(|owner| {
+            sidebar_theme_for_owner_sources(state.simulation.as_ref(), &state.house_roster, &owner)
+        })
         .unwrap_or(crate::render::sidebar_chrome::SidebarTheme::Allied)
 }
 
@@ -418,39 +420,57 @@ pub(crate) fn current_sidebar_chrome(
     set.for_theme(theme)
 }
 
-fn sidebar_theme_for_owner(
-    state: &AppState,
+pub(crate) fn sidebar_theme_for_owner_sources(
+    simulation: Option<&crate::sim::world::Simulation>,
+    house_roster: &crate::map::houses::HouseRoster,
     owner: &str,
 ) -> Option<crate::render::sidebar_chrome::SidebarTheme> {
-    let house = state
-        .house_roster
+    if let Some(house) = house_roster
         .houses
         .iter()
-        .find(|house| house.name.eq_ignore_ascii_case(owner))?;
-
-    let side = house
-        .side
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let country = house
-        .country
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    if side.contains("yuri") || country.contains("yuri") {
-        return Some(crate::render::sidebar_chrome::SidebarTheme::Yuri);
-    }
-    if side.contains("soviet")
-        || matches!(
-            country.as_str(),
-            "russia" | "iraq" | "cuba" | "libya" | "soviet"
-        )
+        .find(|house| house.name.eq_ignore_ascii_case(owner))
     {
-        return Some(crate::render::sidebar_chrome::SidebarTheme::Soviet);
+        let side = house
+            .side
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let country = house
+            .country
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        if side.contains("yuri") || country.contains("yuri") {
+            return Some(crate::render::sidebar_chrome::SidebarTheme::Yuri);
+        }
+        if side.contains("soviet")
+            || matches!(
+                country.as_str(),
+                "russia" | "iraq" | "cuba" | "libya" | "soviet"
+            )
+        {
+            return Some(crate::render::sidebar_chrome::SidebarTheme::Soviet);
+        }
+        return Some(crate::render::sidebar_chrome::SidebarTheme::Allied);
     }
-    Some(crate::render::sidebar_chrome::SidebarTheme::Allied)
+
+    // Map-loaded houses can still default a missing Side= to Allied. Preserve
+    // the existing roster decision until that producer is exact; ordinary
+    // explicit launch names miss the map roster and carry the resolved live
+    // side. A deliberate name collision therefore keeps the roster decision.
+    let simulation = simulation?;
+    let live_house = crate::sim::house_state::house_state_for_owner(
+        &simulation.houses,
+        owner,
+        &simulation.interner,
+    )?;
+    match live_house.side_index {
+        0 => Some(crate::render::sidebar_chrome::SidebarTheme::Allied),
+        1 => Some(crate::render::sidebar_chrome::SidebarTheme::Soviet),
+        2 => Some(crate::render::sidebar_chrome::SidebarTheme::Yuri),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

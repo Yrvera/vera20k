@@ -11,7 +11,7 @@ use anyhow::Result;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -65,11 +65,103 @@ use crate::sim::world::Simulation;
 use crate::ui::game_screen::GameScreen;
 use crate::ui::main_menu::{self, SkirmishSettings};
 use crate::ui::shell::controller::ShellKey;
+use crate::ui::skirmish_shell::{SavedSeedBrowserState, SavedSeedMode};
 use crate::util::config::GameConfig;
+
+#[path = "app_startup_splash.rs"]
+mod app_startup_splash;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellFramePreludeStep {
+    MaintainIntro,
+    ObserveEntry,
+}
+
+const MAIN_MENU_SHELL_PRELUDE: &[ShellFramePreludeStep] = &[
+    ShellFramePreludeStep::MaintainIntro,
+    ShellFramePreludeStep::ObserveEntry,
+];
+
+/// The random-map seed file the `.SED` launch branch recognises. Written into
+/// the RA2 directory so `map_load` finds it where the original puts it.
+const RANDMAP_SED_FILE: &str = "RandMap.Sed";
+/// Description the setup dialog stamps onto a randomized configuration; it also
+/// becomes the sentinel row's displayed name.
+const RANDOM_MAP_DESCRIPTION_KEY: &str = "TXT_RANDOM_MAP_DESCRIPTION";
+const RANDOM_MAP_DESCRIPTION_FALLBACK: &str = "Random Map";
+/// The players slider is the last of the setup dialog's six option rows, and the
+/// dialog gives it a range of 2..8 with a step of one.
+const SETUP_PLAYERS_ROW: usize = 5;
+const SETUP_PLAYERS_MIN: i32 = 2;
+const SETUP_PLAYERS_MAX: i32 = 8;
+const SETUP_PLAYERS_STEP: i32 = 1;
+/// Matches the rules default the map-load path falls back to; the preview only
+/// needs it because terrain resolution takes it, not because cliffs affect the
+/// image.
+const RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY: u8 = 2;
+/// Where the generated preview is written. The chooser's sentinel row reads this
+/// back, so writing it is what makes the random-map thumbnail appear there.
+const RANDMAP_PREVIEW_FILE: &str = "RandMap.img";
 
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
 const SHELL_WINDOW_WIDTH: u32 = 800;
 const SHELL_WINDOW_HEIGHT: u32 = 600;
+
+/// A random-map generation handed to a worker thread.
+///
+/// The worker only *generates*; colouring a preview needs the terrain resolver
+/// and therefore the asset manager, so the main thread rasterises everything the
+/// worker hands it. What matters is that the expensive part is off the UI
+/// thread — that is what lets frames render while it runs.
+pub(crate) struct RandomMapGenerationJob {
+    receiver: std::sync::mpsc::Receiver<RandomMapUpdate>,
+    /// Kept back from the worker because rasterising needs it: the resolver
+    /// reads theater data to decide each cell's final tile.
+    theater: Box<crate::map::theater::TheaterData>,
+    terrain_rules: Box<crate::rules::terrain_rules::TerrainRules>,
+    /// Set when OK started this generation. Accept cannot run until the map
+    /// exists, so it is deferred to whoever collects the result.
+    accept_on_finish: bool,
+}
+
+/// What the generator worker sends back as it goes.
+enum RandomMapUpdate {
+    /// The map at one of the boundaries the original redraws its preview at.
+    Progress(Box<crate::map::rmg::build::GenerationSnapshot>),
+    /// The finished map.
+    Finished(Box<crate::map::rmg::GeneratedMap>),
+}
+
+/// Whether the original redraws its preview at this generation boundary.
+///
+/// It draws eight times while generating, reporting 55, 60, 70, 80, 85, 90 and
+/// 95 percent on the seven after the first. Two of those pairs have no
+/// generation between them at all — only a progress-report helper runs — so the
+/// 60 and 85 redraws reproduce the image already on screen and are dropped here:
+/// eight calls, six distinct pictures.
+///
+/// The percentages are the anchor the boundaries below were chosen from; they
+/// have no home in the port yet, because the dialog's progress bar is still
+/// drawn empty.
+fn draws_preview(point: crate::map::rmg::build::GenerationPoint) -> bool {
+    use crate::map::rmg::Stage;
+    use crate::map::rmg::build::GenerationPoint;
+    matches!(
+        point,
+        // Clears the box before any terrain exists.
+        GenerationPoint::Initial
+            // 55 (and again at 60): the water is in.
+            | GenerationPoint::After(Stage::WaterFinalize)
+            // 70: regions, island passes and the green spread.
+            | GenerationPoint::After(Stage::RecalcAfterTerrain)
+            // 80 (and again at 85): starts, tech buildings and tiberium.
+            | GenerationPoint::After(Stage::RecalcAfterTiberium)
+            // 90: the hills.
+            | GenerationPoint::After(Stage::Hills)
+            // 95: LAT patches, trees and rocks.
+            | GenerationPoint::After(Stage::Rocks)
+    )
+}
 
 /// All initialized state. Created in `resumed()` when the window is available.
 /// pub(crate) so app_render.rs can access fields.
@@ -81,6 +173,8 @@ pub(crate) struct AppState {
     pub(crate) instance_pool: crate::render::batch::InstanceBufferPool,
     pub(crate) tile_atlas: Option<TileAtlas>,
     pub(crate) map_basic: BasicSection,
+    /// Exact source whose bytes produced the active parsed map.
+    pub(crate) loaded_map_source: Option<crate::app_list_maps::LoadedMapSource>,
     pub(crate) terrain_grid: Option<TerrainGrid>,
     pub(crate) resolved_terrain: Option<ResolvedTerrainGrid>,
     pub(crate) simulation: Option<Simulation>,
@@ -120,6 +214,8 @@ pub(crate) struct AppState {
     pub(crate) game_config: Option<GameConfig>,
     /// GPU depth texture for back-to-front depth ordering. Recreated on window resize.
     pub(crate) depth_view: wgpu::TextureView,
+    /// Shell-only encoded-byte RGB565 presentation boundary for dialog 0xE2.
+    pub(crate) shell_surface_presenter: crate::render::shell_surface_present::ShellSurfacePresenter,
     /// Optional Catmull-Rom bicubic upscale pass (render at lower res, upscale to window).
     pub(crate) upscale_pass: Option<crate::render::upscale_pass::UpscalePass>,
     pub(crate) camera_x: f32,
@@ -153,15 +249,30 @@ pub(crate) struct AppState {
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     pub(crate) loading_session: Option<crate::app_loading::LoadingSession>,
+    /// Process-lifetime monotonic identity source; zero is permanently reserved.
+    pub(crate) next_match_correlation: u64,
+    /// Correlation owned by the currently loading accepted attempt.
+    pub(crate) active_loading_correlation: Option<crate::match_bootstrap::MatchCorrelationId>,
+    /// Accepted startup authority retained after successful installation.
+    pub(crate) loaded_startup: Option<crate::match_bootstrap::PreparedMatchStartup>,
+    /// Immutable pre-first-tick evidence for the loaded accepted startup.
+    pub(crate) rust_l0_receipt: Option<crate::match_bootstrap::RustL0Receipt>,
     /// Opt-in research shell path. Defaults off so the egui Skirmish setup is visible.
     pub(crate) dev_skirmish_shell_enabled: bool,
     pub(crate) skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState,
+    /// Process-lifetime offline shell snapshot, Scenario cursor, and
+    /// Cooperative progress authority.
+    pub(crate) offline_skirmish_runtime: crate::app_skirmish_session::OfflineSkirmishRuntime,
     /// Last owner-draw Skirmish button state observed by the native render path.
     /// Used for the retail GenericClick paint-transition sound.
     pub(crate) skirmish_shell_last_painted_pressed_button:
         Option<crate::ui::skirmish_shell::OwnerDrawButton>,
     pub(crate) skirmish_shell_chrome:
         Option<crate::render::skirmish_shell_chrome::SkirmishShellChromeAtlas>,
+    /// Generation running on a worker, if any. Generating a map takes long
+    /// enough to freeze the window if done inline, which also means the
+    /// dialog's "Working / Please Wait" never gets a frame to appear in.
+    pub(crate) random_map_generation: Option<RandomMapGenerationJob>,
     pub(crate) skirmish_preview_texture:
         Option<crate::app_skirmish_shell_render::SkirmishPreviewTexture>,
     /// Minimap renderer — created at map load time.
@@ -178,7 +289,8 @@ pub(crate) struct AppState {
     pub(crate) main_menu_shell_chrome:
         Option<crate::render::main_menu_shell_chrome::MainMenuShellChromeAtlas>,
     pub(crate) main_menu_movie: Option<crate::render::bink_movie::BinkMovieSurface>,
-    pub(crate) main_menu_movie_base: Option<crate::ui::main_menu_shell::MainMenuMovieBase>,
+    pub(crate) main_menu_movie_identity:
+        Option<crate::app_main_menu_shell_render::Ra2tsMovieSessionIdentity>,
     pub(crate) main_menu_movie_last_step: Instant,
     pub(crate) main_menu_shell_failed: bool,
     /// Contents of `VERSION.TXT` from the retail install, used by the
@@ -197,6 +309,8 @@ pub(crate) struct AppState {
     /// edge detection so the slide (re)starts on entry into each shell and is
     /// cancelled on leaving all of them.
     pub(crate) shell_slide_active_shell: Option<crate::app_shell_transition::ShellSlideKind>,
+    /// Monotonic identity for each newly armed exact Main Menu `0xE2` instance.
+    pub(crate) shell_slide_generation: u64,
     /// Active graceful quit cascade (music fade → trailing-voice wait → hard stop
     /// → exit). Some only between Exit-confirm OK and window close; freezes shell
     /// input while it runs.
@@ -211,6 +325,12 @@ pub(crate) struct AppState {
     pub(crate) middle_mouse_anchor_y: f32,
     /// Animated radar chrome — plays 33-frame open/close animation when radar gained/lost.
     pub(crate) radar_anim: Option<crate::render::radar_anim::RadarAnimState>,
+    /// Requested-versus-resolved atlas identity used to construct `radar_anim`.
+    ///
+    /// Kept beside the animation so tactical evidence never reconstructs
+    /// provenance from the currently selected sidebar theme.
+    pub(crate) radar_animation_source:
+        Option<crate::render::sidebar_chrome::ResolvedSidebarChromeIdentity>,
     /// Animated power bar — segment-by-segment transition matching original PowerClass.
     pub(crate) power_bar_anim: crate::sidebar::PowerBarAnimState,
     /// Persistent flash + mode state for in-game sidebar gadgets. Ticked from
@@ -263,6 +383,11 @@ pub(crate) struct AppState {
     pub(crate) path_grid: Option<PathGrid>,
     /// Sequence definitions per entity type for animation ticking.
     pub(crate) animation_sequences: BTreeMap<String, SequenceSet>,
+    /// Optional per-tick parity digest stream, opened only when the environment asks.
+    ///
+    /// Lives here rather than on `Simulation` so the sim tick performs no file I/O and a
+    /// capture run stays identical to an uncaptured one.
+    pub(crate) parity_digest_sink: Option<crate::sim::parity_digest::ParityDigestSink>,
     /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
     pub(crate) rules: Option<crate::rules::ruleset::RuleSet>,
     /// Art.ini registry — needed for building animation overlay lookups at render time.
@@ -306,8 +431,27 @@ pub(crate) struct AppState {
     pub(crate) queued_order_mode: app_render::OrderMode,
     /// Control group slots (0-9) storing stable entity ids.
     pub(crate) control_groups: Vec<Vec<u64>>,
+    /// Match-scoped local player identity, pinned ONCE at match launch
+    /// (skirmish session / spawn-pick) and never rewritten mid-match. All
+    /// command/HUD owner resolution reads this first — selection must never
+    /// repoint the local player (lockstep: each client issues commands as its
+    /// fixed house). `None` only in dev/sandbox flows with no launch identity,
+    /// where the legacy heuristic + debug override below take over.
+    pub(crate) local_player_owner: Option<String>,
     /// Explicit local owner preference for HUD/commands (set by debug actions).
+    /// Only consulted when `local_player_owner` is `None` (sandbox/dev flows).
     pub(crate) local_owner_override: Option<String>,
+    /// EVA edge-detection: local player was in low-power state last frame.
+    pub(crate) eva_low_power_active: bool,
+    /// EVA edge-detection: a local factory was in an underfunded stall last frame.
+    pub(crate) eva_funds_stalled: bool,
+    /// EVA edge-detection: local mobile entities whose death has already been
+    /// announced (pruned as the corpses despawn).
+    pub(crate) eva_announced_dying: std::collections::HashSet<u64>,
+    /// Sim tick until which the under-attack EVA voice is suppressed. The
+    /// native per-house attack-voice repeat delay is UNVERIFIED-pending-trace;
+    /// ~30 s is a conservative interim so sustained fire doesn't spam the line.
+    pub(crate) eva_under_attack_block_until_tick: u64,
     /// Seeded empty-map sandbox keeps full map visibility while still locking control.
     pub(crate) sandbox_full_visibility: bool,
     /// When true, computer-controlled players do nothing (no AI commands issued).
@@ -379,8 +523,8 @@ pub(crate) struct AppState {
     /// (the sidebar-anchored button Y is render-derived; see KD-6). None until the
     /// overlay first renders.
     pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
-    /// Hold the loading splash on screen briefly before showing the client UI.
-    pub(crate) startup_splash_until: Option<Instant>,
+    /// Retail process-start splash, held until its post-present deadline.
+    pub(crate) startup_splash: Option<app_startup_splash::StartupSplashPresentation>,
     /// Global elapsed time for looping IdleAnim overlays (flags, smokestacks, etc.).
     pub(crate) idle_anim_elapsed_ms: u32,
     /// Debug overlay: show terrain cost / pathgrid overlay. Toggle with P / F9.
@@ -427,6 +571,8 @@ pub(crate) struct AppState {
     pub(crate) cached_overlay_instances: Vec<crate::render::batch::SpriteInstance>,
     /// Unit (voxel) instance scratch vec — cleared and refilled each frame.
     pub(crate) cached_unit_instances: Vec<crate::render::batch::SpriteInstance>,
+    /// UnitAtlas texture-page tags aligned with `cached_unit_instances`.
+    pub(crate) cached_unit_pages: Vec<usize>,
 }
 
 impl AppState {
@@ -451,6 +597,14 @@ impl AppState {
             && !self.paused
             && !self.show_save_load_panel
             && !self.main_menu_dialog_open()
+    }
+
+    /// Capture-only observation of the exact font and scale inputs consumed by
+    /// the most recently completed egui pass.
+    pub(crate) fn capture_egui_observation(
+        &self,
+    ) -> crate::render::egui_integration::EguiCaptureObservation<'_> {
+        self.egui.capture_observation(&self.window)
     }
 
     /// Whether any main-menu modal dialog (exit confirm, options, movies,
@@ -482,6 +636,8 @@ impl AppState {
 /// Top-level application. Implements winit's ApplicationHandler.
 pub struct App {
     state: Option<AppState>,
+    shell_capture: Option<crate::app_shell_capture::ShellCaptureSession>,
+    tactical_capture: Option<crate::app_tactical_capture::session::TacticalCaptureSession>,
 }
 
 impl Default for App {
@@ -494,6 +650,7 @@ impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
         state.gpu.resize(size.width, size.height);
         state.depth_view = state.gpu.create_depth_texture();
+        state.shell_surface_presenter.resize(&state.gpu);
         // The frame-index wave is driven by wall-clock ticks and repaints every
         // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
         let new_scale = auto_detect_ui_scale(size.width, size.height);
@@ -598,11 +755,130 @@ impl App {
         state.skirmish_shell_state.validation_modal = None;
         state.skirmish_shell_state.open_combo_dropdown = None;
         state.skirmish_shell_state.dropdown_scroll_drag = None;
+        state.skirmish_shell_state.dropdown_scroll_press = None;
         state.skirmish_shell_state.trackbar_drag = None;
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         crate::ui::skirmish_shell::blur_player_name_edit(&mut state.skirmish_shell_state);
         state.skirmish_shell_last_painted_pressed_button = None;
+        state.skirmish_preview_texture = None;
         Self::enter_shell_window_mode(state);
+    }
+
+    fn selected_skirmish_mode_is_cooperative(state: &AppState, mode_id: i32) -> bool {
+        crate::skirmish_modes::mode_by_id(&state.skirmish_modes, mode_id)
+            .is_some_and(|mode| mode.override_file.eq_ignore_ascii_case("MPCoopMD.ini"))
+    }
+
+    fn selected_shell_map_file(state: &AppState) -> Option<String> {
+        state
+            .skirmish_shell_maps
+            .get(state.skirmish_shell_state.selected_map_idx)
+            .map(|map| map.file_name.clone())
+    }
+
+    fn apply_selected_shell_map_file(state: &mut AppState, file_name: &str) -> bool {
+        let Some(map_idx) = state
+            .skirmish_shell_maps
+            .iter()
+            .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+        else {
+            log::warn!("No loadable Skirmish map entry exists for {file_name}");
+            return false;
+        };
+        crate::ui::skirmish_shell::accept_selected_map(
+            &mut state.skirmish_shell_state,
+            &state.skirmish_shell_maps,
+            map_idx,
+        );
+        if let Some(legacy_idx) = state
+            .available_maps
+            .iter()
+            .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+        {
+            state.skirmish_settings.selected_map_idx = legacy_idx;
+        }
+        state.skirmish_preview_texture = None;
+        true
+    }
+
+    fn ensure_active_cooperative_shell_selection(state: &mut AppState) {
+        if !Self::selected_skirmish_mode_is_cooperative(
+            state,
+            state.skirmish_shell_state.selected_mode_id,
+        ) {
+            return;
+        }
+        let Some(file_name) = Self::selected_shell_map_file(state) else {
+            return;
+        };
+        let chosen_map = match state
+            .offline_skirmish_runtime
+            .ensure_cooperative_selection(&file_name, &state.skirmish_shell_maps)
+        {
+            Ok(chosen_map) => chosen_map,
+            Err(err) => {
+                log::warn!("Could not bind Cooperative shell progress: {err}");
+                None
+            }
+        };
+        if let Some(chosen_map) = chosen_map {
+            Self::apply_selected_shell_map_file(state, &chosen_map);
+        }
+    }
+
+    fn ensure_active_cooperative_modal_selection(state: &mut AppState) {
+        let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_ref() else {
+            return;
+        };
+        let mode_id = modal.selected_mode_id;
+        let record_index = modal.selected_record_index();
+        if !Self::selected_skirmish_mode_is_cooperative(state, mode_id) {
+            return;
+        }
+        let Some(file_name) = record_index
+            .and_then(|index| state.skirmish_scenario_records.get(index))
+            .map(|record| record.file_name.clone())
+        else {
+            return;
+        };
+        if let Err(err) = state
+            .offline_skirmish_runtime
+            .ensure_cooperative_selection(&file_name, &state.skirmish_shell_maps)
+        {
+            log::warn!("Could not bind Cooperative Choose Map progress: {err}");
+        }
+    }
+
+    fn sync_legacy_skirmish_settings_from_shell(state: &mut AppState) {
+        let selected_file = Self::selected_shell_map_file(state);
+        let mut settings = crate::ui::skirmish_shell::launch_settings(&state.skirmish_shell_state);
+        settings.selected_map_idx = selected_file
+            .as_deref()
+            .and_then(|file_name| {
+                state
+                    .available_maps
+                    .iter()
+                    .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+            })
+            .unwrap_or(0);
+        state.skirmish_settings = settings;
+    }
+
+    fn teardown_skirmish_shell_for_start(state: &mut AppState) {
+        state.main_menu_show_native_skirmish_shell = false;
+        state.main_menu_show_single_player_shell = false;
+        state.skirmish_shell_return_to_single_player_shell = false;
+        state.shell_first_paint_slide = None;
+        state.skirmish_shell_state.choose_map_modal = None;
+        state.skirmish_shell_state.validation_modal = None;
+        state.skirmish_shell_state.open_combo_dropdown = None;
+        state.skirmish_shell_state.dropdown_scroll_drag = None;
+        state.skirmish_shell_state.dropdown_scroll_press = None;
+        state.skirmish_shell_state.trackbar_drag = None;
+        state.skirmish_shell_state.pressed_owner_draw_button = None;
+        crate::ui::skirmish_shell::blur_player_name_edit(&mut state.skirmish_shell_state);
+        state.skirmish_shell_last_painted_pressed_button = None;
+        state.skirmish_preview_texture = None;
     }
 
     fn refresh_single_player_load_state(state: &mut AppState) {
@@ -613,9 +889,14 @@ impl App {
 
     fn open_single_player_shell(state: &mut AppState) {
         Self::enter_shell_window_mode(state);
+        // Native destroys 0xE2 (including child 0x71A) before constructing
+        // 0x100. Invalidate at the route edge rather than waiting for a paint:
+        // a queued Back/Escape can otherwise return to 0xE2 before 0x100 draws
+        // and incorrectly preserve the old main-menu movie timeline.
+        crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
+        crate::app_shell_transition::invalidate_main_menu_dialog_instance(state);
         state.main_menu_show_single_player_shell = true;
         state.main_menu_show_native_skirmish_shell = false;
-        state.shell_first_paint_slide = None;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
@@ -624,6 +905,11 @@ impl App {
     }
 
     fn close_single_player_shell(state: &mut AppState) {
+        // Result 0x12 destroys 0x100 before the main-menu loop constructs a new
+        // 0xE2. Clear immediately so a same-event-loop round trip cannot reuse
+        // the source dialog's movie session.
+        crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
+        crate::app_shell_transition::invalidate_main_menu_dialog_instance(state);
         state.main_menu_show_single_player_shell = false;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
@@ -631,12 +917,17 @@ impl App {
     }
 
     fn enter_native_skirmish_from_single_player(state: &mut AppState) {
+        // Native destroys dialog 0x100 and its child 0x71A movie handle before
+        // constructing 0x102. Drop the hidden Rust session as well so returning
+        // to 0x100 cannot continue the pre-Skirmish RA2TS timeline.
+        crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
         state.main_menu_show_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = true;
         state.skirmish_shell_return_to_single_player_shell = true;
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         Self::ensure_skirmish_shell_chrome(state);
+        Self::ensure_active_cooperative_shell_selection(state);
         // The skirmish dialog (0x102) slides its controls in on first paint like
         // every shell dialog; the per-frame slide trigger starts that wave once
         // the skirmish shell becomes the showing screen. Clear any stale wave
@@ -652,10 +943,12 @@ impl App {
         state.skirmish_shell_state.validation_modal = None;
         state.skirmish_shell_state.open_combo_dropdown = None;
         state.skirmish_shell_state.dropdown_scroll_drag = None;
+        state.skirmish_shell_state.dropdown_scroll_press = None;
         state.skirmish_shell_state.trackbar_drag = None;
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         crate::ui::skirmish_shell::blur_player_name_edit(&mut state.skirmish_shell_state);
         state.skirmish_shell_last_painted_pressed_button = None;
+        state.skirmish_preview_texture = None;
         Self::open_single_player_shell(state);
     }
 
@@ -684,21 +977,48 @@ impl App {
         state: &mut AppState,
         session: crate::skirmish_launch::SkirmishLaunchSession,
     ) {
-        let map_name = session
-            .selected_map_file
-            .clone()
-            .unwrap_or_else(|| "auto".to_string());
+        let request = match crate::match_bootstrap::classify_startup_session(&session) {
+            crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
+                accepted,
+            ) => {
+                let correlation = match crate::match_bootstrap::allocate_match_correlation(
+                    &mut state.next_match_correlation,
+                ) {
+                    Ok(correlation) => correlation,
+                    Err(err) => {
+                        log::error!("Cannot start accepted match: {err}");
+                        return;
+                    }
+                };
+                let mut clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
+                let startup = crate::match_bootstrap::prepare_match_startup(
+                    correlation,
+                    accepted,
+                    &mut clock,
+                );
+                crate::app_loading::LoadingRequest::accepted_skirmish(
+                    startup,
+                    state.skirmish_settings.clone(),
+                )
+            }
+            crate::match_bootstrap::StartupSessionClassification::UnverifiedLegacy(reason) => {
+                log::warn!("Skirmish startup uses unverified compatibility path: {reason:?}");
+                let mut clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
+                let seed = crate::match_bootstrap::read_match_seed(&mut clock);
+                crate::app_loading::LoadingRequest::unverified_legacy_skirmish(
+                    session,
+                    seed,
+                    state.skirmish_settings.clone(),
+                )
+            }
+        };
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         state.main_menu_show_single_player_shell = false;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = false;
         state.shell_first_paint_slide = None;
-        let request = crate::app_loading::LoadingRequest::native_selected_skirmish(
-            map_name,
-            session,
-            state.skirmish_settings.clone(),
-        );
+        state.skirmish_preview_texture = None;
         crate::app_loading::begin_loading(state, request);
         Self::enter_game_window_mode(state);
         state.zoom_level = 1.0;
@@ -846,7 +1166,27 @@ impl App {
                     &state.skirmish_shell_maps,
                     &state.skirmish_modes,
                 ) {
-                    Ok(session) => Self::start_skirmish_session(state, session),
+                    Ok(raw_session) => {
+                        match state.offline_skirmish_runtime.close_shell_transaction(
+                            &state.skirmish_shell_state,
+                            &state.skirmish_shell_maps,
+                            &state.skirmish_modes,
+                            &raw_session,
+                        ) {
+                            Ok(resolved_session) => {
+                                Self::sync_legacy_skirmish_settings_from_shell(state);
+                                Self::teardown_skirmish_shell_for_start(state);
+                                state.offline_skirmish_runtime.persist_snapshot();
+                                Self::start_skirmish_session(state, resolved_session);
+                            }
+                            Err(err) => {
+                                log::error!(
+                                    "Could not resolve Cooperative shell assignments: {err}"
+                                );
+                                state.window.request_redraw();
+                            }
+                        }
+                    }
                     Err(err) => {
                         if let Some(modal) = Self::skirmish_validation_modal_for_error(state, &err)
                         {
@@ -859,13 +1199,38 @@ impl App {
                 }
             }
             crate::ui::skirmish_shell::SkirmishShellAction::BackOrExit => {
+                match crate::ui::skirmish_shell::pack_launch_session_without_start_validation(
+                    &state.skirmish_shell_state,
+                    &state.skirmish_shell_maps,
+                    &state.skirmish_modes,
+                ) {
+                    Ok(raw_session) => {
+                        if let Err(err) = state.offline_skirmish_runtime.close_shell_transaction(
+                            &state.skirmish_shell_state,
+                            &state.skirmish_shell_maps,
+                            &state.skirmish_modes,
+                            &raw_session,
+                        ) {
+                            // Invalid Cooperative content has no parity-safe
+                            // retry cap. Keep Back usable, surface the malformed
+                            // data, and retain every draw consumed before error.
+                            log::error!("Could not complete Cooperative Back randomization: {err}");
+                        }
+                    }
+                    Err(err) => {
+                        log::warn!("Could not pack raw Skirmish Back session: {err:?}");
+                    }
+                }
                 if state.skirmish_shell_return_to_single_player_shell {
                     Self::return_from_skirmish_to_single_player_shell(state);
                 } else if Self::native_skirmish_shell_active(state) {
                     Self::close_native_skirmish_shell(state);
                 } else {
+                    state.offline_skirmish_runtime.persist_snapshot();
                     event_loop.exit();
+                    return;
                 }
+                state.offline_skirmish_runtime.persist_snapshot();
             }
             crate::ui::skirmish_shell::SkirmishShellAction::ChooseMap => {
                 Self::open_choose_map_modal(state);
@@ -957,6 +1322,7 @@ impl App {
                 &state.skirmish_modes,
                 &state.skirmish_scenario_records,
             ));
+        Self::ensure_active_cooperative_modal_selection(state);
     }
 
     fn current_choose_map_record_index(state: &AppState) -> Option<usize> {
@@ -983,23 +1349,40 @@ impl App {
     fn commit_choose_map_selection(
         state: &mut AppState,
         selection: crate::ui::skirmish_shell::ChooseMapSelection,
-    ) {
+    ) -> bool {
         let Some(record_idx) = selection.record_index else {
-            return;
+            return false;
         };
         let Some(record) = state.skirmish_scenario_records.get(record_idx) else {
-            return;
+            return false;
         };
+        let clicked_file_name = record.file_name.clone();
+        let selected_file_name =
+            if Self::selected_skirmish_mode_is_cooperative(state, selection.mode_id) {
+                match state
+                    .offline_skirmish_runtime
+                    .accept_cooperative_selection(&clicked_file_name, &state.skirmish_shell_maps)
+                {
+                    Ok(Some(chosen_map)) => chosen_map,
+                    Ok(None) => clicked_file_name,
+                    Err(err) => {
+                        log::warn!("Could not accept Cooperative campaign selection: {err}");
+                        return false;
+                    }
+                }
+            } else {
+                clicked_file_name
+            };
         let Some(map_idx) = state
             .skirmish_shell_maps
             .iter()
-            .position(|map| map.file_name.eq_ignore_ascii_case(&record.file_name))
+            .position(|map| map.file_name.eq_ignore_ascii_case(&selected_file_name))
         else {
             log::warn!(
                 "Choose Map selected {}, but no loadable map entry exists yet",
-                record.file_name
+                selected_file_name
             );
-            return;
+            return false;
         };
 
         state.skirmish_shell_state.selected_mode_id = selection.mode_id;
@@ -1007,11 +1390,15 @@ impl App {
             &mut state.skirmish_shell_state,
             &state.skirmish_modes,
         );
-        state.skirmish_shell_state.selected_map_idx = map_idx;
+        crate::ui::skirmish_shell::accept_selected_map(
+            &mut state.skirmish_shell_state,
+            &state.skirmish_shell_maps,
+            map_idx,
+        );
         if let Some(legacy_idx) = state
             .available_maps
             .iter()
-            .position(|map| map.file_name.eq_ignore_ascii_case(&record.file_name))
+            .position(|map| map.file_name.eq_ignore_ascii_case(&selected_file_name))
         {
             state.skirmish_settings.selected_map_idx = legacy_idx;
         }
@@ -1032,6 +1419,7 @@ impl App {
             .skirmish_shell_state
             .map_label_reveal
             .start(&map_label, now);
+        true
     }
 
     fn handle_choose_map_modal_mouse_down(state: &mut AppState) -> bool {
@@ -1046,6 +1434,7 @@ impl App {
             Self::play_main_menu_button_sound(state);
             return true;
         }
+        let prior_mode = modal.selected_mode_id;
         if modal.handle_listbox_mouse_down(
             &layout,
             &state.skirmish_modes,
@@ -1053,6 +1442,11 @@ impl App {
             x,
             y,
         ) {
+            let mode_changed = modal.selected_mode_id != prior_mode;
+            let _ = modal;
+            if mode_changed {
+                Self::ensure_active_cooperative_modal_selection(state);
+            }
             return true;
         }
         layout.dialog.contains(x, y)
@@ -1074,25 +1468,823 @@ impl App {
 
         let mut selection_to_commit = None;
         let mut close_modal = false;
+        // Copied out inside the arm so the `modal` borrow ends before anything
+        // below reborrows `state`. `ChooseMapSelection` is `Copy`.
+        let mut open_random_map_setup = None;
         match released_button.expect("checked equal to pressed button") {
             crate::ui::skirmish_shell::ChooseMapModalButton::UseMap0x6c5 => {
                 selection_to_commit = modal.accept_selection();
-                close_modal = true;
             }
             crate::ui::skirmish_shell::ChooseMapModalButton::Cancel0x5c0 => {
                 close_modal = true;
             }
             crate::ui::skirmish_shell::ChooseMapModalButton::CreateRandomMap0x583 => {
-                log::info!(
-                    "Create Random Map button is recognized, but random map generation is not implemented yet"
-                );
+                open_random_map_setup = Some(modal.cancel_selection());
             }
         }
         if let Some(selection) = selection_to_commit {
-            Self::commit_choose_map_selection(state, selection);
+            close_modal = Self::commit_choose_map_selection(state, selection);
+        }
+        if let Some(previous) = open_random_map_setup {
+            // The setup dialog opens OVER the chooser, which stays open behind
+            // it so a cancel returns to the untouched selection.
+            state.skirmish_shell_state.random_map_setup_modal =
+                Some(crate::ui::skirmish_shell::RandomMapSetupModalState::open(
+                    crate::map::rmg::RmgOptions::default(),
+                    Some(previous),
+                    // Saved-seed browsing (0x6C2/0x6C3/0x6C4) is not implemented.
+                    false,
+                    &mut crate::ui::skirmish_shell::DialogRng::from_entropy(),
+                ));
         }
         if close_modal {
             Self::close_choose_map_modal(state);
+        }
+        true
+    }
+
+    /// Kick off generation on a worker and return immediately.
+    ///
+    /// Everything that needs the asset manager is done here, up front; only
+    /// plain data crosses to the worker.
+    fn start_random_map_generation(
+        state: &mut AppState,
+        options: &crate::map::rmg::RmgOptions,
+        accept_on_finish: bool,
+    ) -> bool {
+        let Some(asset_manager) = state.asset_manager.as_mut() else {
+            return false;
+        };
+        let settings = crate::map::rmg::RmgSettings::load(asset_manager);
+        let theater_name = crate::map::rmg::emit::theater_name(options.theater);
+        let Some(theater) = crate::map::theater::load_theater(asset_manager, theater_name) else {
+            log::warn!("random map: theater {theater_name} unavailable");
+            return false;
+        };
+        let terrain_rules = asset_manager
+            .get_ref("rulesmd.ini")
+            .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
+            .map(|ini| crate::rules::terrain_rules::TerrainRules::from_ini(&ini))
+            .unwrap_or_default();
+        let resolved_inputs = crate::map::rmg::build::ResolvedTheaterInputs::from_theater(
+            &theater,
+            &terrain_rules,
+            crate::map::rmg::trig::global().cloned(),
+        );
+        let blocks =
+            crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
+                asset_manager.get(name)
+            });
+        // `[AI] NeutralTechBuildings` plus each type's `Foundation=`, resolved
+        // here because only plain data may cross to the worker.
+        let tech_types = crate::app_init_helpers::load_neutral_tech_types(asset_manager);
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let options = options.clone();
+        // Generation stays single-threaded and seed-driven; the thread changes
+        // only where it runs, never the order it consumes its RNG in.
+        let spawned = std::thread::Builder::new()
+            .name("random-map-generate".to_string())
+            .spawn(move || {
+                let generated = crate::map::rmg::build::generate_map_observed(
+                    &options,
+                    &settings,
+                    &resolved_inputs,
+                    &blocks,
+                    &tech_types,
+                    // A closed receiver means the dialog went away; dropping
+                    // what we produce is the correct outcome, not an error.
+                    &mut |view| {
+                        if !draws_preview(view.point()) {
+                            return;
+                        }
+                        let _ = sender.send(RandomMapUpdate::Progress(Box::new(view.snapshot())));
+                    },
+                );
+                if generated.unfilled_start_slots > 0 {
+                    log::warn!(
+                        "Random map is short of spawns: {} start slot(s) could \
+                         not be filled; those players have no start position",
+                        generated.unfilled_start_slots
+                    );
+                }
+                let _ = sender.send(RandomMapUpdate::Finished(Box::new(generated)));
+            });
+        match spawned {
+            Ok(_handle) => {
+                state.random_map_generation = Some(RandomMapGenerationJob {
+                    receiver,
+                    theater: Box::new(theater),
+                    terrain_rules: Box::new(terrain_rules),
+                    accept_on_finish,
+                });
+                true
+            }
+            Err(err) => {
+                log::warn!("random map: could not spawn the generator thread: {err}");
+                false
+            }
+        }
+    }
+
+    /// Collect whatever the generator has produced since the last frame.
+    ///
+    /// Called every frame while a job is in flight. Returns true when the dialog
+    /// changed, so the caller knows to redraw.
+    ///
+    /// Only the newest of several progress snapshots is rasterised. Colouring is
+    /// the expensive half, and an image the worker overtook before a frame was
+    /// drawn was never on screen to be seen.
+    pub(crate) fn poll_random_map_generation(state: &mut AppState) -> bool {
+        if state.random_map_generation.is_some()
+            && state.skirmish_shell_state.random_map_setup_modal.is_none()
+        {
+            // The dialog went away without the job going with it. Drop it here
+            // rather than trusting every close path to remember: a job with no
+            // dialog has nowhere to deliver, and letting it finish would write
+            // a preview file for a map nobody asked for.
+            state.random_map_generation = None;
+            return false;
+        }
+        let Some(job) = state.random_map_generation.as_ref() else {
+            return false;
+        };
+        let mut latest_progress = None;
+        let mut finished = None;
+        let mut died = false;
+        loop {
+            match job.receiver.try_recv() {
+                Ok(RandomMapUpdate::Progress(snapshot)) => latest_progress = Some(snapshot),
+                Ok(RandomMapUpdate::Finished(generated)) => {
+                    finished = Some(generated);
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    died = true;
+                    break;
+                }
+            }
+        }
+
+        if let Some(generated) = finished {
+            let job = state
+                .random_map_generation
+                .take()
+                .expect("checked present above");
+            let preview = Self::rasterise_generated_map(state, &job, &generated);
+            if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+                modal.finish_generate(preview);
+            }
+            if job.accept_on_finish {
+                Self::accept_random_map_setup(state);
+            }
+            return true;
+        }
+
+        if died {
+            // The worker ended without a result. Clear the job so the dialog
+            // does not sit disabled forever waiting on it.
+            log::warn!("random map: the generator thread ended without a result");
+            state.random_map_generation = None;
+            if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+                modal.finish_generate(None);
+            }
+            return true;
+        }
+
+        let Some(snapshot) = latest_progress else {
+            return false;
+        };
+        // Lifted out and put straight back: rasterising reads the job and the
+        // rest of the app state at once, and the job lives inside that state.
+        let job = state
+            .random_map_generation
+            .take()
+            .expect("checked present above");
+        let preview =
+            Self::rasterise_map(state, &job, &snapshot.map_file, &snapshot.start_waypoints);
+        state.random_map_generation = Some(job);
+        if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+            if let Some(preview) = preview {
+                modal.show_progress_preview(preview);
+            }
+        }
+        true
+    }
+
+    /// Close the setup dialog, abandoning any generation still running for it.
+    ///
+    /// Dropping the job drops the receiver, so a worker still going finds a
+    /// closed channel on its next send and its remaining output goes nowhere.
+    /// That matters beyond tidiness: a late finish would otherwise overwrite
+    /// `RandMap.img`, changing the chooser's thumbnail to a map the player
+    /// walked away from.
+    fn close_random_map_setup(state: &mut AppState) {
+        state.skirmish_shell_state.random_map_setup_modal = None;
+        state.random_map_generation = None;
+    }
+
+    /// Commit the dialog's options and close it. Shared by the immediate accept
+    /// and the one deferred behind a generation.
+    fn accept_random_map_setup(state: &mut AppState) {
+        let Some(crate::ui::skirmish_shell::AcceptOutcome::Commit(options)) = state
+            .skirmish_shell_state
+            .random_map_setup_modal
+            .as_ref()
+            .map(|modal| modal.accept())
+        else {
+            return;
+        };
+        match Self::commit_random_map_setup(state, &options) {
+            Ok(()) => Self::close_random_map_setup(state),
+            Err(err) => {
+                // Staying open is deliberate: a missing seed file makes the
+                // launch path fall back to defaults, which would silently
+                // start a different map than the one configured.
+                log::error!("random map: could not write {RANDMAP_SED_FILE}: {err}");
+            }
+        }
+    }
+
+    /// Rasterise the finished map and persist it as the chooser's thumbnail.
+    fn rasterise_generated_map(
+        state: &AppState,
+        job: &RandomMapGenerationJob,
+        generated: &crate::map::rmg::GeneratedMap,
+    ) -> Option<crate::map::rmg::preview::PreviewImage> {
+        let preview =
+            Self::rasterise_map(state, job, &generated.map_file, &generated.start_waypoints)?;
+        // Only the finished map is written out: the file is what the chooser
+        // row shows later, and a half-built map is not that map.
+        Self::write_random_map_preview_file(state, &preview);
+        Some(preview)
+    }
+
+    /// Colour and rasterise a map. Main thread only: the resolver reads theater
+    /// data and the ore/gem colours come out of overlay SHPs.
+    ///
+    /// Mid-generation snapshots go through here too, so an in-progress preview
+    /// is coloured by exactly the path that colours the finished one.
+    fn rasterise_map(
+        state: &AppState,
+        job: &RandomMapGenerationJob,
+        map_file: &crate::map::map_file::MapFile,
+        start_waypoints: &[(u8, u16, u16)],
+    ) -> Option<crate::map::rmg::preview::PreviewImage> {
+        // LAT defaults off for runtime maps, so resolve the same way the load
+        // path will; a different setting here would colour cells the player
+        // never sees.
+        let resolved_terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::build(
+            map_file,
+            Some(&job.theater),
+            state.asset_manager.as_ref(),
+            Some(&job.terrain_rules),
+            None,
+            false,
+            RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
+        );
+        // Ore and gem cells take their colour from the overlay's own SHP: the
+        // growth stage indexes the frame list and the frame header carries the
+        // radar triple. The artwork is never sampled for it, so there is no
+        // substitute for loading the file.
+        let overlay_registry = state.overlay_registry.as_ref();
+        let assets = state.asset_manager.as_ref();
+        let theater_ext = job.theater.extension;
+        let overlay_radar = |overlay_id: u8, stage: u8| -> Option<[u8; 3]> {
+            let registry = overlay_registry?;
+            // The tiberium flag is the gate: walls, roads and bridges are
+            // overlays too, and they keep the terrain colour underneath.
+            if !registry.flags(overlay_id)?.tiberium {
+                return None;
+            }
+            // The stage's colour out of the overlay SHP wins; the type's
+            // RadarColor= stands in when that comes back essentially black,
+            // which is also what happens when the art is missing entirely.
+            let from_art = (|| {
+                let name = registry.name(overlay_id)?;
+                let bytes = crate::map::overlay_types::overlay_shp_candidates(name, theater_ext)
+                    .iter()
+                    .find_map(|candidate| assets?.get_ref(candidate))?;
+                let shp = crate::assets::shp_file::ShpFile::from_bytes(bytes).ok()?;
+                Some(shp.frames.get(stage as usize)?.radar_color)
+            })()
+            .filter(|rgb| *rgb != [0, 0, 0]);
+            from_art.or_else(|| registry.flags(overlay_id)?.radar_color)
+        };
+        let cells = crate::map::rmg::preview::preview_cells_from_map(
+            map_file,
+            &resolved_terrain,
+            &overlay_radar,
+        );
+        let waypoints = crate::map::rmg::preview::marker_waypoints(start_waypoints);
+        crate::map::rmg::preview::render_preview(&cells, &waypoints)
+    }
+
+    /// Persist the generated preview so the chooser's random-map row can show it.
+    ///
+    /// Failure is logged rather than propagated: the dialog's own preview box
+    /// draws from memory, so a write failure costs the chooser thumbnail and
+    /// nothing else.
+    fn write_random_map_preview_file(
+        state: &AppState,
+        preview: &crate::map::rmg::preview::PreviewImage,
+    ) {
+        let Some(ra2_dir) = state
+            .game_config
+            .as_ref()
+            .map(|config| config.paths.ra2_dir.clone())
+        else {
+            return;
+        };
+        let (Ok(width), Ok(height)) = (u16::try_from(preview.width), u16::try_from(preview.height))
+        else {
+            log::warn!(
+                "random map: preview {}x{} does not fit a PCX header",
+                preview.width,
+                preview.height
+            );
+            return;
+        };
+        let rgb: Vec<u8> = preview
+            .rgba
+            .chunks_exact(4)
+            .flat_map(|px| [px[0], px[1], px[2]])
+            .collect();
+        match crate::assets::pcx_file::encode_direct_rgb(width, height, &rgb) {
+            Ok(encoded) => {
+                let path = ra2_dir.join(RANDMAP_PREVIEW_FILE);
+                if let Err(err) = std::fs::write(&path, encoded) {
+                    log::warn!("random map: could not write {}: {err}", path.display());
+                }
+            }
+            Err(err) => log::warn!("random map: could not encode the preview: {err}"),
+        }
+    }
+
+    /// Where saved seeds live: the game directory, the same place the dialog's
+    /// own working file is written.
+    fn saved_seed_dir(state: &AppState) -> Option<std::path::PathBuf> {
+        state
+            .game_config
+            .as_ref()
+            .map(|config| config.paths.ra2_dir.clone())
+    }
+
+    fn skirmish_saved_seed_layout(
+        state: &AppState,
+        mode: SavedSeedMode,
+    ) -> crate::ui::skirmish_shell::SavedSeedLayout {
+        crate::ui::skirmish_shell::compute_saved_seed_layout(
+            mode,
+            state.render_width(),
+            state.render_height(),
+        )
+    }
+
+    fn handle_saved_seed_browser_mouse_down(state: &mut AppState) -> bool {
+        let Some(mode) = state
+            .skirmish_shell_state
+            .saved_seed_browser
+            .as_ref()
+            .map(|browser| browser.mode)
+        else {
+            return false;
+        };
+        let layout = Self::skirmish_saved_seed_layout(state, mode);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        let mut play_sound = false;
+        if let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_mut() {
+            match crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y) {
+                Some(crate::ui::skirmish_shell::SavedSeedControl::List) => {
+                    if let Some(row) = crate::ui::skirmish_shell::saved_seed_list_row_at(
+                        &layout,
+                        browser.entries.len(),
+                        browser.top_index,
+                        x,
+                        y,
+                    ) {
+                        browser.select(row);
+                    }
+                }
+                // The list selects on press; the buttons arm instead, so
+                // dragging off one cancels it.
+                Some(crate::ui::skirmish_shell::SavedSeedControl::Action)
+                | Some(crate::ui::skirmish_shell::SavedSeedControl::Back0x686) => {
+                    browser.pressed_control =
+                        crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y);
+                    play_sound = true;
+                }
+                _ => {}
+            }
+        }
+        if play_sound {
+            Self::play_main_menu_button_sound(state);
+        }
+        true
+    }
+
+    fn handle_saved_seed_browser_mouse_up(state: &mut AppState) -> bool {
+        let Some(mode) = state
+            .skirmish_shell_state
+            .saved_seed_browser
+            .as_ref()
+            .map(|browser| browser.mode)
+        else {
+            return false;
+        };
+        let layout = Self::skirmish_saved_seed_layout(state, mode);
+        let dir = Self::saved_seed_dir(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+
+        use crate::ui::skirmish_shell::SavedSeedControl as SeedControl;
+        use crate::ui::skirmish_shell::SavedSeedOutcome as Outcome;
+
+        let outcome = {
+            let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_mut() else {
+                return false;
+            };
+            let pressed = browser.pressed_control.take();
+            let released = crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y);
+            if pressed.is_none() || pressed != released {
+                return true;
+            }
+            match released {
+                Some(SeedControl::Back0x686) => Some(Outcome::Close),
+                Some(SeedControl::Action) => browser.action_outcome(),
+                _ => None,
+            }
+        };
+        let Some(outcome) = outcome else {
+            return true;
+        };
+        let Some(dir) = dir else {
+            state.skirmish_shell_state.saved_seed_browser = None;
+            return true;
+        };
+
+        match outcome {
+            Outcome::Close => state.skirmish_shell_state.saved_seed_browser = None,
+            Outcome::Load(file_name) => {
+                match crate::map::rmg::saved_seeds::load_saved_seed(&dir.join(&file_name)) {
+                    Ok(options) => {
+                        // Loading replaces the working options and invalidates
+                        // any generated result, exactly as an edit would.
+                        if let Some(modal) =
+                            state.skirmish_shell_state.random_map_setup_modal.as_mut()
+                        {
+                            modal.options = options;
+                            modal.generated = false;
+                            modal.generated_preview = None;
+                        }
+                        state.skirmish_shell_state.saved_seed_browser = None;
+                    }
+                    Err(err) => log::warn!("saved seed: could not read {file_name}: {err}"),
+                }
+            }
+            Outcome::Save(name) => {
+                let options = state
+                    .skirmish_shell_state
+                    .random_map_setup_modal
+                    .as_ref()
+                    .map(|modal| modal.options.clone());
+                let path = crate::map::rmg::saved_seeds::seed_path_for_name(&dir, &name);
+                match (options, path) {
+                    (Some(options), Some(path)) => {
+                        if let Err(err) =
+                            crate::map::rmg::saved_seeds::save_saved_seed(&path, &options)
+                        {
+                            log::warn!("saved seed: could not write {name}: {err}");
+                        }
+                        state.skirmish_shell_state.saved_seed_browser = None;
+                    }
+                    // A refused name leaves the browser open so the player can
+                    // retype rather than silently losing the save.
+                    _ => log::warn!("saved seed: {name} is not a usable save name"),
+                }
+            }
+            Outcome::Delete(file_name) => {
+                if let Err(err) =
+                    crate::map::rmg::saved_seeds::delete_saved_seed(&dir.join(&file_name))
+                {
+                    log::warn!("saved seed: could not delete {file_name}: {err}");
+                }
+                // Delete stays open so several can be removed in one visit.
+                if let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_mut() {
+                    browser.remove_entry(&file_name);
+                }
+            }
+        }
+        true
+    }
+
+    /// Persist accepted random-map setup, refresh the sentinel record, and
+    /// select it so launch generates from it.
+    ///
+    /// A failed write is fatal to the commit: `map_load` treats a missing seed
+    /// file as "use defaults", so committing anyway would silently start a
+    /// different map than the one the player configured.
+    fn commit_random_map_setup(
+        state: &mut AppState,
+        options: &crate::map::rmg::RmgOptions,
+    ) -> anyhow::Result<()> {
+        let ra2_dir = state
+            .game_config
+            .as_ref()
+            .map(|config| config.paths.ra2_dir.clone())
+            .ok_or_else(|| anyhow::anyhow!("no game config; cannot locate the RA2 directory"))?;
+        std::fs::write(ra2_dir.join(RANDMAP_SED_FILE), options.to_sed_bytes())?;
+
+        let display = if options.description.is_empty() {
+            RANDOM_MAP_DESCRIPTION_FALLBACK
+        } else {
+            options.description.as_str()
+        };
+        // Reuse the modal helper: it upserts the single sentinel, honours the
+        // mode's random-map admission, and refreshes the filtered record list.
+        let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
+            return Ok(());
+        };
+        let index = modal.create_random_map(
+            &mut state.skirmish_scenario_records,
+            &state.skirmish_modes,
+            display,
+            options.num_players,
+        );
+        let mode_id = modal.selected_mode_id;
+        let _ = modal;
+        if let Some(index) = index {
+            // The scenario record alone is not enough to play: committing a
+            // selection resolves it against the loadable map list, which has no
+            // entry for a seed file until one is put there.
+            let entry = state.skirmish_scenario_records[index].to_map_menu_entry();
+            match state
+                .skirmish_shell_maps
+                .iter()
+                .position(|map| map.file_name.eq_ignore_ascii_case(&entry.file_name))
+            {
+                Some(existing) => state.skirmish_shell_maps[existing] = entry,
+                None => state.skirmish_shell_maps.push(entry),
+            }
+            let selection = crate::ui::skirmish_shell::ChooseMapSelection {
+                mode_id,
+                record_index: Some(index),
+            };
+            let _ = Self::commit_choose_map_selection(state, selection);
+            Self::close_choose_map_modal(state);
+        }
+        Ok(())
+    }
+
+    fn skirmish_random_map_setup_layout(
+        state: &AppState,
+    ) -> crate::ui::skirmish_shell::RandomMapSetupLayout {
+        crate::ui::skirmish_shell::compute_random_map_setup_layout(
+            state.render_width(),
+            state.render_height(),
+        )
+    }
+
+    fn handle_random_map_setup_mouse_down(state: &mut AppState) -> bool {
+        let layout = Self::skirmish_random_map_setup_layout(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
+            return false;
+        };
+        // An open list covers the rows under it, so it gets first refusal on the
+        // click. Clicking anywhere else closes it without acting on whatever is
+        // underneath, the way a dismissed dropdown behaves.
+        if let Some(combo) = modal.open_combo {
+            let items = crate::ui::skirmish_shell::setup_combo_items(combo);
+            let on_list = crate::ui::skirmish_shell::random_map_setup_dropdown_row_at(
+                &layout,
+                combo.row(),
+                items.len(),
+                x,
+                y,
+            )
+            .is_some();
+            let on_face = crate::ui::skirmish_shell::random_map_setup_control_at(&layout, x, y)
+                == Some(combo.control());
+            if !on_list && !on_face {
+                modal.open_combo = None;
+                return true;
+            }
+            if on_list {
+                return true;
+            }
+        }
+        if let Some(control) = crate::ui::skirmish_shell::random_map_setup_control_at(&layout, x, y)
+        {
+            // The players slider is not a button: it acts on press, not on
+            // release, so it never arms a pressed control.
+            if control == crate::ui::skirmish_shell::RandomMapSetupControl::Players0x3eb {
+                if modal.is_enabled(control) {
+                    Self::press_setup_players_trackbar(modal, &layout, x, y);
+                }
+                return true;
+            }
+            // A disabled control swallows the click without arming a press, so
+            // releasing over it cannot fire.
+            if modal.is_enabled(control) {
+                modal.pressed_control = Some(control);
+                Self::play_main_menu_button_sound(state);
+            }
+            return true;
+        }
+        layout.dialog.contains(x, y)
+    }
+
+    /// Press behaviour for the players slider, mirroring the shell's other
+    /// trackbars: grabbing the thumb starts a tracking drag, while a press on
+    /// the rail jumps the value once and tracks nothing.
+    fn press_setup_players_trackbar(
+        modal: &mut crate::ui::skirmish_shell::RandomMapSetupModalState,
+        layout: &crate::ui::skirmish_shell::RandomMapSetupLayout,
+        x: i32,
+        y: i32,
+    ) {
+        let rect = layout.control_rects[SETUP_PLAYERS_ROW];
+        if !crate::ui::skirmish_shell::trackbar_mouse_allowed_y(rect, y) {
+            return;
+        }
+        let pixel_offset = crate::ui::skirmish_shell::trackbar_pixel_offset(
+            modal.options.num_players,
+            SETUP_PLAYERS_MIN,
+            SETUP_PLAYERS_MAX,
+            SETUP_PLAYERS_STEP,
+            rect,
+        );
+        if crate::ui::skirmish_shell::trackbar_thumb_hit(rect, pixel_offset, x, y) {
+            modal.dragging_players_thumb = true;
+        } else if rect.contains(x, y) {
+            modal.set_num_players(crate::ui::skirmish_shell::trackbar_mouse_value(
+                rect,
+                x,
+                SETUP_PLAYERS_MIN,
+                SETUP_PLAYERS_MAX,
+                SETUP_PLAYERS_STEP,
+            ));
+        }
+    }
+
+    fn handle_random_map_setup_mouse_move(state: &mut AppState) {
+        let layout = Self::skirmish_random_map_setup_layout(state);
+        let x = state.cursor_x.round() as i32;
+        let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
+            return;
+        };
+        if !modal.dragging_players_thumb {
+            return;
+        }
+        let rect = layout.control_rects[SETUP_PLAYERS_ROW];
+        modal.set_num_players(crate::ui::skirmish_shell::trackbar_mouse_value(
+            rect,
+            x,
+            SETUP_PLAYERS_MIN,
+            SETUP_PLAYERS_MAX,
+            SETUP_PLAYERS_STEP,
+        ));
+        state.window.request_redraw();
+    }
+
+    fn handle_random_map_setup_mouse_up(state: &mut AppState) -> bool {
+        use crate::ui::skirmish_shell::RandomMapSetupControl as Control;
+
+        let layout = Self::skirmish_random_map_setup_layout(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        // RMGMD.INI drives the randomizer's vegetation bounds; without it the
+        // derived vegetation collapses to zero and randomized maps lose trees.
+        let settings = state
+            .asset_manager
+            .as_ref()
+            .map(crate::map::rmg::RmgSettings::load)
+            .unwrap_or_default();
+        let description = state
+            .csf
+            .as_ref()
+            .and_then(|csf| csf.get(RANDOM_MAP_DESCRIPTION_KEY))
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| RANDOM_MAP_DESCRIPTION_FALLBACK.to_string());
+        let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
+            return false;
+        };
+        if modal.dragging_players_thumb {
+            modal.dragging_players_thumb = false;
+            return true;
+        }
+        // Releasing over an open list commits that entry. The press was never
+        // armed for list clicks, so this has to run before the pressed check.
+        if let Some(combo) = modal.open_combo {
+            let items = crate::ui::skirmish_shell::setup_combo_items(combo);
+            if let Some(index) = crate::ui::skirmish_shell::random_map_setup_dropdown_row_at(
+                &layout,
+                combo.row(),
+                items.len(),
+                x,
+                y,
+            ) {
+                modal.set_combo_value(combo, items[index].value);
+                return true;
+            }
+        }
+        let pressed = modal.pressed_control.take();
+        let released = crate::ui::skirmish_shell::random_map_setup_control_at(&layout, x, y);
+        if pressed.is_none() || pressed != released {
+            return layout.dialog.contains(x, y) || pressed.is_some();
+        }
+
+        let mut close_setup = false;
+        // Generating needs the whole app state, so it cannot run while the modal
+        // is mutably borrowed; the actions below only record what to do.
+        let mut generate_requested = false;
+        let mut accept_requested = false;
+        let mut open_browser: Option<SavedSeedMode> = None;
+        match released.expect("checked equal to pressed control") {
+            Control::Randomize0x621 => {
+                modal.randomize_options(
+                    &settings,
+                    &mut crate::ui::skirmish_shell::DialogRng::from_entropy(),
+                    &description,
+                );
+            }
+            Control::Generate0x620 => {
+                modal.begin_generate();
+                generate_requested = true;
+            }
+            Control::Ok0x6c5 => {
+                // Accept generates first when nothing has been generated yet,
+                // so the committed options always describe a map that exists.
+                if matches!(
+                    modal.accept(),
+                    crate::ui::skirmish_shell::AcceptOutcome::NeedsGenerate
+                ) {
+                    modal.begin_generate();
+                    generate_requested = true;
+                }
+                accept_requested = true;
+            }
+            Control::Cancel0x5c0 => {
+                // Result 2 in the original: no seed file, no sentinel, no
+                // selection change. The chooser underneath is left untouched.
+                close_setup = true;
+            }
+            Control::Load0x6c2 => open_browser = Some(SavedSeedMode::Load),
+            Control::Save0x6c3 => open_browser = Some(SavedSeedMode::Save),
+            Control::Delete0x6c4 => open_browser = Some(SavedSeedMode::Delete),
+            Control::MapType0x405
+            | Control::Time0x3ea
+            | Control::Theater0x407
+            | Control::Size0x406
+            | Control::Resources0x408 => {
+                if let Some(combo) =
+                    crate::ui::skirmish_shell::SetupCombo::from_control(released.expect("matched"))
+                {
+                    modal.toggle_combo(combo);
+                }
+            }
+            // Dragging the players slider is a separate input mode; clicking the
+            // track alone does not move it.
+            Control::Players0x3eb => {}
+        }
+
+        if let Some(mode) = open_browser {
+            let entries = Self::saved_seed_dir(state)
+                .map(|dir| crate::map::rmg::saved_seeds::list_saved_seeds(&dir))
+                .unwrap_or_default();
+            state.skirmish_shell_state.saved_seed_browser =
+                Some(SavedSeedBrowserState::open(mode, entries));
+            return true;
+        }
+        if generate_requested {
+            let options = state
+                .skirmish_shell_state
+                .random_map_setup_modal
+                .as_ref()
+                .map(|modal| modal.options.clone());
+            let started = options.is_some_and(|options| {
+                Self::start_random_map_generation(state, &options, accept_requested)
+            });
+            if !started {
+                // Nothing will arrive, so the dialog must not be left sitting
+                // in its generating state with every control disabled.
+                log::warn!("random map: could not start generation for the configured options");
+                if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+                    modal.finish_generate(None);
+                }
+            }
+            // Accept, if it was asked for, is now the job's responsibility.
+            return true;
+        }
+        if accept_requested {
+            Self::accept_random_map_setup(state);
+        }
+        if close_setup {
+            Self::close_random_map_setup(state);
         }
         true
     }
@@ -1308,6 +2500,16 @@ impl App {
         if Self::route_validation_modal_mouse_down(state) {
             return;
         }
+        // The browser sits over the setup dialog, which sits over the
+        // chooser, so input is offered in that order.
+        if state.skirmish_shell_state.saved_seed_browser.is_some() {
+            Self::handle_saved_seed_browser_mouse_down(state);
+            return;
+        }
+        if state.skirmish_shell_state.random_map_setup_modal.is_some() {
+            Self::handle_random_map_setup_mouse_down(state);
+            return;
+        }
         if Self::handle_choose_map_modal_mouse_down(state) {
             return;
         }
@@ -1359,6 +2561,16 @@ impl App {
         if Self::route_validation_modal_mouse_up(state) {
             return;
         }
+        // The browser sits over the setup dialog, which sits over the
+        // chooser, so input is offered in that order.
+        if state.skirmish_shell_state.saved_seed_browser.is_some() {
+            Self::handle_saved_seed_browser_mouse_up(state);
+            return;
+        }
+        if state.skirmish_shell_state.random_map_setup_modal.is_some() {
+            Self::handle_random_map_setup_mouse_up(state);
+            return;
+        }
         if state.skirmish_shell_state.choose_map_modal.is_some() {
             Self::handle_choose_map_modal_mouse_up(state);
             return;
@@ -1391,6 +2603,10 @@ impl App {
     }
 
     fn handle_skirmish_shell_mouse_move(state: &mut AppState) {
+        if state.skirmish_shell_state.random_map_setup_modal.is_some() {
+            Self::handle_random_map_setup_mouse_move(state);
+            return;
+        }
         if state.skirmish_shell_state.choose_map_modal.is_some() {
             let layout = Self::skirmish_choose_map_layout(state);
             let x = state.cursor_x.round() as i32;
@@ -1722,6 +2938,21 @@ impl App {
         Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
     }
 
+    /// Active-retail `ShellButtonSlideSound` completion hook. The stock key is
+    /// empty in both rules layers, so this named edge intentionally has no
+    /// audible output in the exact stock route.
+    pub(crate) fn play_shell_slide_completion_sound(_state: &mut AppState) {}
+
+    fn maintain_main_menu_intro(state: &mut AppState) {
+        if state.screen != GameScreen::MainMenu || state.quit_cascade.is_some() {
+            return;
+        }
+        if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
+            player.play_menu_theme(assets);
+            player.update(assets);
+        }
+    }
+
     fn drain_skirmish_shell_ui_sounds(state: &mut AppState) {
         let _trackbar_parent_notifications =
             state.skirmish_shell_state.drain_pending_trackbar_hscrolls();
@@ -1988,16 +3219,46 @@ impl App {
         let movie_base =
             crate::ui::main_menu_shell::movie_base_for_screen_width(state.gpu.config.width);
         if state
-            .main_menu_movie_base
-            .is_some_and(|base| base != movie_base)
+            .main_menu_movie_identity
+            .is_some_and(|identity| identity.base() != movie_base)
         {
-            state.main_menu_movie = None;
-            state.main_menu_movie_base = None;
+            crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
         }
     }
 
     pub fn new() -> Self {
-        Self { state: None }
+        Self {
+            state: None,
+            shell_capture: None,
+            tactical_capture: None,
+        }
+    }
+
+    pub fn new_shell_capture(request: crate::app_shell_capture::ShellCaptureRequest) -> Self {
+        Self {
+            state: None,
+            shell_capture: Some(crate::app_shell_capture::ShellCaptureSession::new(request)),
+            tactical_capture: None,
+        }
+    }
+
+    pub fn new_tactical_capture(request: crate::app_launch::TacticalCaptureRequest) -> Self {
+        Self {
+            state: None,
+            shell_capture: None,
+            tactical_capture: Some(
+                crate::app_tactical_capture::session::TacticalCaptureSession::new(request),
+            ),
+        }
+    }
+
+    pub fn finish_capture(&mut self) -> Result<()> {
+        match (self.shell_capture.as_mut(), self.tactical_capture.as_mut()) {
+            (Some(session), None) => session.take_outcome(),
+            (None, Some(session)) => session.take_outcome(),
+            (None, None) => Ok(()),
+            (Some(_), Some(_)) => anyhow::bail!("multiple capture modes were active"),
+        }
     }
 }
 
@@ -2007,20 +3268,187 @@ impl ApplicationHandler for App {
             return;
         }
         log::info!("Application resumed — creating window and GPU context");
-        match Self::initialize(event_loop) {
-            Ok(state) => {
+        let capture_dimensions = match (self.shell_capture.as_ref(), self.tactical_capture.as_ref())
+        {
+            (Some(session), None) => Some((session.request().width(), session.request().height())),
+            (None, Some(session)) => Some((session.request().width(), session.request().height())),
+            (None, None) => None,
+            (Some(_), Some(_)) => {
+                log::error!("Shell and tactical capture modes are mutually exclusive");
+                event_loop.exit();
+                return;
+            }
+        };
+        match Self::initialize(event_loop, capture_dimensions) {
+            Ok(mut state) => {
+                if let Some(session) = self.shell_capture.as_mut() {
+                    session.prepare_state(&mut state);
+                }
+                if let Some(session) = self.tactical_capture.as_mut()
+                    && let Err(err) = session.prepare_state(&mut state)
+                {
+                    log::error!("Tactical capture preparation failed: {err:#}");
+                    session.fail(format!("tactical capture preparation failed: {err:#}"));
+                    event_loop.exit();
+                    return;
+                }
                 self.state = Some(state);
                 log::info!("Initialization complete — showing main menu");
             }
             Err(err) => {
                 log::error!("Failed to initialize: {:#}", err);
+                if let Some(session) = self.shell_capture.as_mut() {
+                    session.fail(format!("shell capture initialization failed: {err:#}"));
+                }
+                if let Some(session) = self.tactical_capture.as_mut() {
+                    session.fail(format!("tactical capture initialization failed: {err:#}"));
+                }
                 event_loop.exit();
             }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let shell_capture_active = self.shell_capture.is_some();
+        let tactical_capture_active = self.tactical_capture.is_some();
         let Some(state) = &mut self.state else { return };
+
+        // This checkpoint is driven entirely from `about_to_wait`. Focused
+        // input would contaminate its hidden, no-input production oracle.
+        if tactical_capture_active {
+            let session = self
+                .tactical_capture
+                .as_mut()
+                .expect("tactical capture session exists");
+            match event {
+                WindowEvent::CloseRequested => {
+                    session.fail("tactical-capture window closed before bundle completion");
+                    event_loop.exit();
+                }
+                WindowEvent::Resized(size) => {
+                    let expected =
+                        PhysicalSize::new(session.request().width(), session.request().height());
+                    if size != expected {
+                        session.fail(format!(
+                            "tactical-capture surface resized to {}x{}, expected {}x{}",
+                            size.width, size.height, expected.width, expected.height
+                        ));
+                        event_loop.exit();
+                    } else {
+                        Self::resize_surface_for_window_size(state, size);
+                    }
+                }
+                WindowEvent::Focused(true) => {
+                    session.record_focus_violation();
+                    event_loop.exit();
+                }
+                WindowEvent::KeyboardInput { .. }
+                | WindowEvent::ModifiersChanged(_)
+                | WindowEvent::Ime(_)
+                | WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorEntered { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::PinchGesture { .. }
+                | WindowEvent::PanGesture { .. }
+                | WindowEvent::DoubleTapGesture { .. }
+                | WindowEvent::RotationGesture { .. }
+                | WindowEvent::TouchpadPressure { .. }
+                | WindowEvent::AxisMotion { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::DroppedFile(_)
+                | WindowEvent::HoveredFile(_)
+                | WindowEvent::HoveredFileCancelled => {
+                    session.record_input_violation("window");
+                    event_loop.exit();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // A hidden Windows HWND is not guaranteed to receive WM_PAINT, so
+        // capture frames are pumped from `about_to_wait`, never window input.
+        if shell_capture_active {
+            let session = self.shell_capture.as_mut().expect("capture session exists");
+            match event {
+                WindowEvent::CloseRequested => {
+                    log::info!("Shell-capture window close requested");
+                    session.fail("shell-capture window closed before bundle completion");
+                    event_loop.exit();
+                }
+                WindowEvent::Resized(size) => {
+                    let expected =
+                        PhysicalSize::new(session.request().width(), session.request().height());
+                    if size != expected {
+                        session.fail(format!(
+                            "shell-capture surface resized to {}x{}, expected {}x{}",
+                            size.width, size.height, expected.width, expected.height
+                        ));
+                        event_loop.exit();
+                    } else {
+                        Self::resize_surface_for_window_size(state, size);
+                    }
+                }
+                WindowEvent::Focused(true) => {
+                    session.fail("shell-capture window unexpectedly received focus");
+                    event_loop.exit();
+                }
+                WindowEvent::KeyboardInput { .. }
+                | WindowEvent::ModifiersChanged(_)
+                | WindowEvent::Ime(_)
+                | WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorEntered { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::PinchGesture { .. }
+                | WindowEvent::PanGesture { .. }
+                | WindowEvent::DoubleTapGesture { .. }
+                | WindowEvent::RotationGesture { .. }
+                | WindowEvent::TouchpadPressure { .. }
+                | WindowEvent::AxisMotion { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::DroppedFile(_)
+                | WindowEvent::HoveredFile(_)
+                | WindowEvent::HoveredFileCancelled => {
+                    session.fail("shell-capture received unexpected window input");
+                    event_loop.exit();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Native does not expose menu/game input while its process-start splash
+        // owns the display. Keep close/resize/redraw operational, but discard
+        // player input until the post-present deadline has elapsed.
+        if state
+            .startup_splash
+            .as_ref()
+            .is_some_and(|splash| splash.is_active(Instant::now()))
+            && matches!(
+                &event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::ModifiersChanged(_)
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::CursorEntered { .. }
+                    | WindowEvent::CursorLeft { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::PinchGesture { .. }
+                    | WindowEvent::PanGesture { .. }
+                    | WindowEvent::DoubleTapGesture { .. }
+                    | WindowEvent::RotationGesture { .. }
+                    | WindowEvent::TouchpadPressure { .. }
+                    | WindowEvent::AxisMotion { .. }
+                    | WindowEvent::Touch(_)
+            )
+        {
+            return;
+        }
 
         // Always let egui see the event first for input handling.
         let egui_response: egui_winit::EventResponse =
@@ -2038,6 +3466,12 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("Close requested");
+                if Self::native_skirmish_shell_active(state) {
+                    // Pump/quit exits write the last durable snapshot after
+                    // teardown, without a fresh control pack or RNG draw.
+                    Self::teardown_skirmish_shell_for_start(state);
+                    state.offline_skirmish_runtime.persist_snapshot();
+                }
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
@@ -2089,11 +3523,19 @@ impl ApplicationHandler for App {
 
                     if Self::native_skirmish_shell_active(state) && is_escape {
                         if state.skirmish_shell_state.choose_map_modal.is_some() {
+                            // Native chooser `0x6B` has no verified Escape
+                            // dismissal. Consume the key without applying the
+                            // Cancel transaction or changing its selection.
                             state.window.request_redraw();
                             return;
                         }
-                        Self::close_native_skirmish_shell(state);
+                        Self::handle_skirmish_shell_action(
+                            state,
+                            crate::ui::skirmish_shell::SkirmishShellAction::BackOrExit,
+                            event_loop,
+                        );
                         state.window.request_redraw();
+                        return;
                     }
 
                     if Self::single_player_shell_active(state) && is_escape {
@@ -2112,6 +3554,9 @@ impl ApplicationHandler for App {
 
                     if in_game && (is_escape || !egui_consumed) {
                         if event.state.is_pressed() && !event.repeat {
+                            if code == KeyCode::KeyN {
+                                crate::app_loading::clear_match_startup_state(state);
+                            }
                             app_input::handle_hotkey_pressed(state, code);
                         }
                     }
@@ -2275,7 +3720,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Err(err) = Self::render_frame(state, event_loop) {
+                if let Err(err) = Self::render_frame(state, event_loop, None, None) {
                     log::error!("Render: {:#}", err);
                 }
             }
@@ -2283,9 +3728,50 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = &self.state {
-            state.window.request_redraw();
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let (Some(state), Some(session)) = (self.state.as_mut(), self.tactical_capture.as_mut())
+        {
+            if let Err(err) = Self::render_frame(state, event_loop, None, Some(&mut *session)) {
+                log::error!("Tactical capture render: {err:#}");
+                session.fail(format!("tactical capture render failed: {err:#}"));
+                event_loop.exit();
+                return;
+            }
+            if !session.is_finished() {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(session.next_wake_deadline()));
+            }
+        } else if let (Some(state), Some(session)) =
+            (self.state.as_mut(), self.shell_capture.as_mut())
+        {
+            if let Err(err) = Self::render_frame(state, event_loop, Some(&mut *session), None) {
+                log::error!("Shell capture render: {err:#}");
+                session.fail(format!("shell capture render failed: {err:#}"));
+                event_loop.exit();
+                return;
+            }
+            if !session.is_finished() {
+                let mut deadline = session.next_wake_deadline();
+                if let Some(wave_deadline) =
+                    crate::app_shell_transition::main_menu_presented_wake_deadline(state)
+                {
+                    deadline = deadline.max(wave_deadline);
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+        } else if let Some(state) = &self.state {
+            if crate::app_shell_transition::main_menu_presented_is_poisoned(state) {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else if let Some(deadline) =
+                crate::app_shell_transition::main_menu_presented_wake_deadline(state)
+            {
+                if Instant::now() >= deadline {
+                    state.window.request_redraw();
+                } else {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                }
+            } else {
+                state.window.request_redraw();
+            }
         }
     }
 }
@@ -2294,17 +3780,28 @@ impl App {
     /// Create window, GPU context, and egui integration. Does NOT load a map —
     /// starts in MainMenu state. Map loading is deferred to when the user
     /// clicks "Quick Play".
-    fn initialize(event_loop: &ActiveEventLoop) -> Result<AppState> {
+    fn initialize(
+        event_loop: &ActiveEventLoop,
+        capture_dimensions: Option<(u32, u32)>,
+    ) -> Result<AppState> {
+        let (window_width, window_height, window_visible) = capture_dimensions
+            .map_or((SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT, true), |size| {
+                (size.0, size.1, false)
+            });
         let window_attrs: WindowAttributes = WindowAttributes::default()
             .with_title("RA2 Engine")
-            .with_inner_size(PhysicalSize::new(SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT))
-            .with_resizable(false);
+            .with_inner_size(PhysicalSize::new(window_width, window_height))
+            .with_resizable(false)
+            .with_visible(window_visible)
+            .with_active(window_visible);
         let window: Arc<Window> = Arc::new(event_loop.create_window(window_attrs)?);
         let gpu: GpuContext = GpuContext::new(window.clone())?;
         let egui: EguiIntegration = EguiIntegration::new(&gpu, &window);
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
         let mut bit_font = BitFont::fallback_5x7(&gpu, &batch_renderer);
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
+        let shell_surface_presenter =
+            crate::render::shell_surface_present::ShellSurfacePresenter::new(&gpu)?;
         let game_config = GameConfig::load().ok();
         let input_delay_ticks: u64 = game_config
             .as_ref()
@@ -2344,10 +3841,15 @@ impl App {
             );
         }
         let startup_asset_manager = Self::build_startup_asset_manager(game_config.as_ref());
+        // Native process startup seeds Scenario before the MPModes loader. The
+        // Cooperative factory reached by that loader then advances this cursor
+        // before the first shell is shown.
+        let mut frontend_seed_clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
+        let frontend_seed = crate::match_bootstrap::read_match_seed(&mut frontend_seed_clock);
         let startup_rules = startup_asset_manager
             .as_ref()
-            // Startup shell: no map selected yet, so no map rules overrides.
-            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None));
+            // Startup shell: no mode or map selected yet, so no overrides.
+            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
         let startup_csf = startup_asset_manager
             .as_ref()
             .and_then(crate::app_init::load_csf);
@@ -2363,14 +3865,51 @@ impl App {
             .as_ref()
             .map(crate::app_transitions::load_eva_registry)
             .unwrap_or_default();
-        if let Some(fnt) = startup_asset_manager.as_ref().and_then(|assets| {
+        let startup_fnt = startup_asset_manager.as_ref().and_then(|assets| {
             assets.get_ref("GAME.FNT").and_then(|data| {
                 crate::assets::fnt_file::FntFile::from_bytes(data)
                     .map_err(|err| log::warn!("Failed to parse startup GAME.FNT: {err}"))
                     .ok()
             })
-        }) {
+        });
+        if let Some(fnt) = startup_fnt.as_ref() {
             bit_font = BitFont::from_fnt(&gpu, &batch_renderer, &fnt);
+        }
+        let mut startup_splash = if capture_dimensions.is_none() {
+            startup_asset_manager
+                .as_ref()
+                .zip(startup_fnt.as_ref())
+                .and_then(|(assets, fnt)| {
+                    app_startup_splash::StartupSplashPresentation::build(
+                        &gpu,
+                        &batch_renderer,
+                        assets,
+                        startup_csf.as_ref(),
+                        fnt,
+                        gpu.config.width,
+                        gpu.config.height,
+                    )
+                    .map_err(|err| log::warn!("Could not build retail startup splash: {err:#}"))
+                    .ok()
+                })
+        } else {
+            None
+        };
+        if let Some(splash) = startup_splash.as_mut() {
+            match app_startup_splash::render_and_present(
+                &gpu,
+                &batch_renderer,
+                &shell_surface_presenter,
+                &depth_view,
+                splash,
+            ) {
+                Ok(()) => splash.mark_presented(Instant::now()),
+                Err(err) => {
+                    // Surface acquisition can be transient before the first
+                    // event-loop redraw. Keep the unarmed splash for retry.
+                    log::warn!("Initial retail startup splash present deferred: {err:#}");
+                }
+            }
         }
         let skirmish_shell_chrome = if dev_skirmish_shell_enabled {
             startup_asset_manager.as_ref().and_then(|assets| {
@@ -2420,8 +3959,16 @@ impl App {
             .collect();
         let skirmish_modes = startup_asset_manager
             .as_ref()
-            .map(crate::skirmish_modes::skirmish_modes_from_assets)
-            .unwrap_or_else(crate::skirmish_modes::stock_skirmish_modes);
+            .and_then(
+                |assets| match crate::skirmish_modes::skirmish_modes_from_assets(assets) {
+                    Ok(modes) => Some(modes),
+                    Err(err) => {
+                        log::warn!("Could not load Skirmish mode roster: {err}");
+                        None
+                    }
+                },
+            )
+            .unwrap_or_default();
         let mut skirmish_shell_state = crate::ui::skirmish_shell::SkirmishShellState::default();
         // Seed the Credits/Unit Count slider ranges from rulesmd's
         // [MultiplayerDialogSettings] so a mod that changes the money/unit bounds
@@ -2438,6 +3985,22 @@ impl App {
             let dialog_options = crate::app_init_helpers::load_skirmish_game_options(assets);
             skirmish_shell_state.apply_multiplayer_dialog_values(&dialog_options);
         }
+        let skirmish_defaults =
+            crate::app_skirmish_session::skirmish_global_defaults(&skirmish_shell_state);
+        let offline_skirmish_runtime =
+            crate::app_skirmish_session::OfflineSkirmishRuntime::initialize(
+                frontend_seed.value,
+                game_config
+                    .as_ref()
+                    .map(|config| config.paths.ra2_dir.as_path()),
+                startup_asset_manager.as_ref(),
+                skirmish_defaults,
+            );
+        offline_skirmish_runtime.hydrate_shell(
+            &mut skirmish_shell_state,
+            &skirmish_shell_maps,
+            &skirmish_modes,
+        );
         // Pre-fill the player-name field from the persistent profile name when
         // configured, mirroring the original seeding the field from a profile
         // source rather than always showing a fixed default.
@@ -2452,6 +4015,22 @@ impl App {
             &mut skirmish_shell_state,
             &skirmish_modes,
         );
+        crate::ui::skirmish_shell::initialize_rows_for_selected_map(
+            &mut skirmish_shell_state,
+            &skirmish_shell_maps,
+        );
+        let selected_shell_map = skirmish_shell_maps
+            .get(skirmish_shell_state.selected_map_idx)
+            .map(|map| map.file_name.as_str());
+        let mut skirmish_settings =
+            crate::ui::skirmish_shell::launch_settings(&skirmish_shell_state);
+        skirmish_settings.selected_map_idx = selected_shell_map
+            .and_then(|file_name| {
+                available_maps
+                    .iter()
+                    .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+            })
+            .unwrap_or(0);
 
         // Build the software cursor at startup so the main menu draws the SHP
         // arrow and hides the OS cursor, matching the original which hides the
@@ -2461,6 +4040,7 @@ impl App {
         });
 
         let mut state = AppState {
+            random_map_generation: None,
             window,
             gpu,
             batch_renderer,
@@ -2492,6 +4072,7 @@ impl App {
             overlay_registry: None,
             game_config,
             depth_view,
+            shell_surface_presenter,
             upscale_pass,
             camera_x: 0.0,
             camera_y: 0.0,
@@ -2508,10 +4089,15 @@ impl App {
             skirmish_shell_maps,
             skirmish_modes,
             skirmish_scenario_records,
-            skirmish_settings: SkirmishSettings::default(),
+            skirmish_settings,
             loading_session: None,
+            next_match_correlation: 1,
+            active_loading_correlation: None,
+            loaded_startup: None,
+            rust_l0_receipt: None,
             dev_skirmish_shell_enabled,
             skirmish_shell_state,
+            offline_skirmish_runtime,
             skirmish_shell_last_painted_pressed_button: None,
             skirmish_shell_chrome,
             skirmish_preview_texture: None,
@@ -2523,7 +4109,7 @@ impl App {
             shell_controller: crate::ui::shell::controller::DialogController::default(),
             main_menu_shell_chrome,
             main_menu_movie: None,
-            main_menu_movie_base: None,
+            main_menu_movie_identity: None,
             main_menu_movie_last_step: Instant::now(),
             main_menu_shell_failed,
             version_txt,
@@ -2533,6 +4119,7 @@ impl App {
             skirmish_shell_return_to_single_player_shell: false,
             shell_first_paint_slide: None,
             shell_slide_active_shell: None,
+            shell_slide_generation: 0,
             quit_cascade: None,
             minimap: None,
             minimap_dragging: false,
@@ -2540,6 +4127,7 @@ impl App {
             middle_mouse_anchor_x: 0.0,
             middle_mouse_anchor_y: 0.0,
             radar_anim: None,
+            radar_animation_source: None,
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
             sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
             in_game_gadgets: crate::app_gadget_input::InGameGadgets::new(),
@@ -2561,8 +4149,21 @@ impl App {
             bit_font,
             software_cursor: startup_software_cursor,
             selection_state: SelectionState::new(),
+            loaded_map_source: None,
             path_grid: None,
             animation_sequences: BTreeMap::new(),
+            parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
+                Ok(sink) => {
+                    if let Some(sink) = sink.as_ref() {
+                        log::info!("parity digest capture -> {}", sink.path().display());
+                    }
+                    sink
+                }
+                Err(error) => {
+                    log::error!("parity digest sink could not be opened: {error}");
+                    None
+                }
+            },
             rules: startup_rules,
             art_registry: None,
             infantry_sequences: HashMap::new(),
@@ -2583,7 +4184,12 @@ impl App {
             configured_input_delay_ticks: input_delay_ticks,
             queued_order_mode: app_render::OrderMode::Move,
             control_groups: vec![Vec::new(); 10],
+            local_player_owner: None,
             local_owner_override: None,
+            eva_low_power_active: false,
+            eva_funds_stalled: false,
+            eva_announced_dying: std::collections::HashSet::new(),
+            eva_under_attack_block_until_tick: 0,
             sandbox_full_visibility: false,
             disable_ai: true,
             spawn_pick_pending: false,
@@ -2621,7 +4227,7 @@ impl App {
                 ..Default::default()
             },
             in_game_options_anchor: None,
-            startup_splash_until: None,
+            startup_splash,
             idle_anim_elapsed_ms: 0,
             debug_show_pathgrid: false,
             debug_terrain_cost_speed_type: None,
@@ -2643,6 +4249,7 @@ impl App {
             displayed_credits: HashMap::new(),
             cached_overlay_instances: Vec::new(),
             cached_unit_instances: Vec::new(),
+            cached_unit_pages: Vec::new(),
         };
 
         // Seed the live music volume from the user's saved RA2MD.INI
@@ -2659,6 +4266,10 @@ impl App {
             player.set_volume(saved_volume);
         }
 
+        if state.dev_skirmish_shell_enabled {
+            Self::ensure_active_cooperative_shell_selection(&mut state);
+        }
+
         if std::env::var("RA2_QUICKPLAY").is_ok() {
             let skirmish_settings = state.skirmish_settings.clone();
             let request =
@@ -2670,46 +4281,48 @@ impl App {
     }
 
     /// Dispatch rendering based on current GameScreen state.
-    fn render_frame(state: &mut AppState, event_loop: &ActiveEventLoop) -> Result<()> {
-        state.frame_timer.sample(Instant::now());
-        let main_menu_shell_live = state.screen == GameScreen::MainMenu
-            && !state.main_menu_shell_failed
-            && !state.main_menu_show_skirmish_setup
-            && !Self::single_player_shell_active(state)
-            && !Self::native_skirmish_shell_active(state);
-        crate::app_tooltips::update(state, main_menu_shell_live);
-        crate::app_messages::update(state);
-        if let Some(until) = state.startup_splash_until {
-            if Instant::now() < until {
-                let output: wgpu::SurfaceTexture = state
-                    .gpu
-                    .surface
-                    .get_current_texture()
-                    .map_err(|e| anyhow::anyhow!("Surface texture: {}", e))?;
-                let view: wgpu::TextureView = output.texture.create_view(&Default::default());
-                let mut encoder: wgpu::CommandEncoder =
-                    state
-                        .gpu
-                        .device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("Startup Splash Frame"),
-                        });
-                app_transitions::clear_screen(&mut encoder, &view);
-                state.egui.begin_frame(&state.window);
-                main_menu::draw_loading_screen(&state.egui.ctx, "Initializing client");
-                state.egui.end_frame_and_render(
-                    &state.gpu,
-                    &mut encoder,
-                    &view,
-                    &state.window,
-                    state.use_software_cursor(),
-                );
-                state.gpu.queue.submit(std::iter::once(encoder.finish()));
-                output.present();
-                return Ok(());
-            }
-            state.startup_splash_until = None;
+    fn render_frame(
+        state: &mut AppState,
+        event_loop: &ActiveEventLoop,
+        mut shell_capture: Option<&mut crate::app_shell_capture::ShellCaptureSession>,
+        mut tactical_capture: Option<
+            &mut crate::app_tactical_capture::session::TacticalCaptureSession,
+        >,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            shell_capture.is_none() || tactical_capture.is_none(),
+            "shell and tactical capture cannot share a render"
+        );
+        if let Some(session) = tactical_capture.as_deref_mut() {
+            session.drive_before_render(state)?;
         }
+        state.frame_timer.sample(Instant::now());
+        crate::app_tooltips::update(state);
+        crate::app_messages::update(state);
+        if state
+            .startup_splash
+            .as_ref()
+            .is_some_and(|splash| splash.is_active(Instant::now()))
+        {
+            let splash = state
+                .startup_splash
+                .as_ref()
+                .expect("active startup splash exists");
+            app_startup_splash::render_and_present(
+                &state.gpu,
+                &state.batch_renderer,
+                &state.shell_surface_presenter,
+                &state.depth_view,
+                splash,
+            )?;
+            state
+                .startup_splash
+                .as_mut()
+                .expect("active startup splash exists")
+                .mark_presented(Instant::now());
+            return Ok(());
+        }
+        state.startup_splash = None;
 
         // Drive the graceful quit cascade (started on Exit-confirm OK). Compute the
         // voice poll before borrowing the cascade mutably to avoid aliasing.
@@ -2739,10 +4352,41 @@ impl App {
             }
         }
 
-        if matches!(state.screen, GameScreen::InGame) {
+        if tactical_capture.is_none() && matches!(state.screen, GameScreen::InGame) {
             let now = Instant::now();
             let elapsed_ms = app_sim_tick::update_elapsed_ms(state, now);
             app_sim_tick::advance_in_game_runtime(state, elapsed_ms);
+        }
+
+        // Native queues/maintains [INTRO] before arming the 0xE2 first-paint
+        // owner. An arm stays silent until the matching surface is acquired.
+        for step in MAIN_MENU_SHELL_PRELUDE {
+            match step {
+                ShellFramePreludeStep::MaintainIntro => Self::maintain_main_menu_intro(state),
+                ShellFramePreludeStep::ObserveEntry => {
+                    crate::app_shell_transition::prepare_main_menu_first_paint_before_acquire(state)
+                }
+            }
+        }
+        match crate::app_shell_transition::poll_main_menu_first_paint_before_acquire(
+            state,
+            Instant::now(),
+        )? {
+            crate::app_shell_transition::MainMenuFirstPaintPoll::WaitUntil(_) => {
+                return Ok(());
+            }
+            crate::app_shell_transition::MainMenuFirstPaintPoll::Completed => {
+                if let Some(session) = shell_capture.as_deref_mut()
+                    && session.completion_handoff()
+                        == crate::app_shell_capture::ShellCompletionHandoff::
+                            FinalizeExitReturnBeforeAcquire
+                {
+                    session.complete_entry_sequence_after_wave(state)?;
+                    event_loop.exit();
+                    return Ok(());
+                }
+            }
+            crate::app_shell_transition::MainMenuFirstPaintPoll::Acquire => {}
         }
 
         let output: wgpu::SurfaceTexture = state
@@ -2758,37 +4402,31 @@ impl App {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Frame"),
                 });
+        let mut pending_main_menu_entry_token = None;
+        let mut pending_main_menu_title_receipt = None;
 
-        // Start/cancel the shell first-paint controls-reveal slide on entry into
-        // (or exit from) each shell dialog. Edge-detected once per frame so launch,
-        // navigation, and return-from-game all (re)trigger the slide uniformly.
-        crate::app_shell_transition::update_shell_first_paint_slide_trigger(state);
+        crate::app_shell_transition::activate_shell_first_paint_after_acquire(state);
         // Advance the Skirmish right-panel static text reveals (started at the
         // slide's completion edge). 30 ms-gated internally; a no-op when idle.
         crate::app_shell_transition::advance_shell_static_reveals(state);
+        crate::app_shell_transition::poll_main_menu_title_reveal(state);
+        let shell_capture_current_frame = match shell_capture.as_deref_mut() {
+            Some(session) => session.should_capture_current_frame(state)?,
+            None => false,
+        };
+        let mut game_render_output: Option<crate::app_render::GameRenderOutput> = None;
 
         match &state.screen {
             GameScreen::MainMenu => {
-                // The shell loops the menu [INTRO] theme the whole time the
-                // player is on the main menu. Idempotent start + per-frame
-                // update (the sim tick that normally pumps music does not run
-                // on the menu) keeps the looping theme alive on every entry
-                // path: initial launch, return-from-game, and mission result.
-                // Suppressed during the quit cascade so the hard music stop is not
-                // immediately undone by the per-frame menu-theme re-assert.
-                if state.quit_cascade.is_none() {
-                    if let (Some(player), Some(assets)) =
-                        (&mut state.music_player, &state.asset_manager)
-                    {
-                        player.play_menu_theme(assets);
-                        player.update(assets);
-                    }
-                }
-                if crate::app_shell_transition::render_shell_first_paint_slide(
+                if let crate::app_shell_transition::ShellFirstPaintRenderResult::Rendered {
+                    main_menu_entry_token,
+                } = crate::app_shell_transition::render_shell_first_paint_slide(
                     state,
                     &mut encoder,
+                    &output.texture,
                     &view,
                 )? {
+                    pending_main_menu_entry_token = main_menu_entry_token;
                 } else if Self::native_skirmish_shell_active(state) {
                     crate::app_skirmish_shell_render::render_skirmish_shell(
                         state,
@@ -2831,9 +4469,12 @@ impl App {
                     match crate::app_main_menu_shell_render::render_main_menu_shell(
                         state,
                         &mut encoder,
-                        &view,
+                        &output.texture,
                     )? {
-                        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered => {
+                        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered {
+                            title_receipt,
+                        } => {
+                            pending_main_menu_title_receipt = title_receipt;
                             state.egui.begin_frame(&state.window);
                             // The SHP shell renders the quit-confirm as an SHP
                             // overlay (and OK exits via its hit-test), so the egui
@@ -2850,6 +4491,24 @@ impl App {
                             if confirm_quit {
                                 state.gpu.queue.submit(std::iter::once(encoder.finish()));
                                 output.present();
+                                if let Some(token) =
+                                    pending_main_menu_entry_token.take()
+                                {
+                                    crate::app_shell_transition::record_main_menu_entry_presented(
+                                        state, token,
+                                    )?;
+                                }
+                                if let Some(receipt) =
+                                    pending_main_menu_title_receipt.take()
+                                {
+                                    anyhow::ensure!(
+                                        state
+                                            .main_menu_shell_state
+                                            .title_reveal
+                                            .record_presented(receipt),
+                                        "main-menu title receipt was stale at present commit"
+                                    );
+                                }
                                 event_loop.exit();
                                 return Ok(());
                             }
@@ -2889,6 +4548,7 @@ impl App {
                         app_transitions::clear_screen(&mut encoder, &view);
                         log::warn!("Could not render native loading screen: {err:#}");
                         crate::app_loading::clear_loading_state(state);
+                        crate::app_loading::clear_match_startup_state(state);
                         state.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
@@ -2897,7 +4557,7 @@ impl App {
                 }
             }
             GameScreen::InGame => {
-                let sidebar_view = if state.upscale_pass.is_some() {
+                let game_output = if state.upscale_pass.is_some() {
                     // Render game to intermediate texture, then upscale to swapchain.
                     let up = state.upscale_pass.as_ref().unwrap();
                     let game_view = up.color_view().clone();
@@ -2905,16 +4565,17 @@ impl App {
                     let saved_depth = std::mem::replace(&mut state.depth_view, game_depth);
                     let result = app_render::render_game(state, &mut encoder, &game_view);
                     state.depth_view = saved_depth;
-                    let sv = result?;
+                    let render_output = result?;
                     state
                         .upscale_pass
                         .as_ref()
                         .unwrap()
                         .draw(&mut encoder, &view);
-                    sv
+                    render_output
                 } else {
                     app_render::render_game(state, &mut encoder, &view)?
                 };
+                let sidebar_view = game_output.sidebar_view.as_ref();
                 // Paused: draw the native in-game Options (0xBBB) overlay over the
                 // frozen battlefield before egui. The egui pause card is retired;
                 // egui below now only carries the sidebar text + dev overlay.
@@ -2924,12 +4585,12 @@ impl App {
                         state,
                         &mut encoder,
                         &view,
-                        sidebar_view.as_ref(),
+                        sidebar_view,
                     )?;
                 }
                 // Always run egui in-game for sidebar text overlay (Ready labels, credits).
                 state.egui.begin_frame(&state.window);
-                if let Some(ref sv) = sidebar_view {
+                if let Some(sv) = sidebar_view {
                     crate::app_sidebar_text::draw_sidebar_text_overlay(
                         &state.egui.ctx,
                         sv,
@@ -2976,6 +4637,7 @@ impl App {
                     &state.window,
                     state.use_software_cursor(),
                 );
+                game_render_output = Some(game_output);
             }
             GameScreen::MissionResult { title, detail } => {
                 app_transitions::clear_screen(&mut encoder, &view);
@@ -2985,6 +4647,12 @@ impl App {
                     title,
                     detail,
                 ) {
+                    // Persist the replay before the sim is torn down (symmetric
+                    // with return_to_main_menu) so a match that ended in
+                    // victory/defeat still leaves a replayable log on disk.
+                    crate::app_sim_tick::flush_replay_log(state);
+                    Self::capture_returned_skirmish_rng(state);
+                    crate::app_loading::clear_match_startup_state(state);
                     state.screen = GameScreen::MainMenu;
                     Self::enter_shell_window_mode(state);
                     state.zoom_level = 1.0;
@@ -3012,8 +4680,103 @@ impl App {
             }
         }
 
-        state.gpu.queue.submit(std::iter::once(encoder.finish()));
+        let entry_sequence_identity = match shell_capture.as_deref_mut() {
+            Some(session) if session.is_entry_sequence() => {
+                let token = pending_main_menu_entry_token
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("entry-sequence frame produced no token"))?;
+                session.observe_entry_sequence_after_render(state, token)?
+            }
+            _ => None,
+        };
+        let pending_entry_sequence = if entry_sequence_identity.is_some() {
+            Some(crate::render::frame_readback::PendingBgra8Readback::encode(
+                &state.gpu.device,
+                &mut encoder,
+                &output.texture,
+                state.gpu.config.format,
+                state.gpu.config.width,
+                state.gpu.config.height,
+            )?)
+        } else {
+            None
+        };
+        let tactical_capture_current_frame =
+            match (tactical_capture.as_deref_mut(), game_render_output.as_ref()) {
+                (Some(session), Some(render_output)) => {
+                    session.observe_after_render(state, render_output)?
+                }
+                (Some(_), None) | (None, _) => false,
+            };
+        let capture_current_frame = shell_capture_current_frame || tactical_capture_current_frame;
+        let pending_capture = if capture_current_frame {
+            Some(crate::render::frame_readback::PendingBgra8Readback::encode(
+                &state.gpu.device,
+                &mut encoder,
+                &output.texture,
+                state.gpu.config.format,
+                state.gpu.config.width,
+                state.gpu.config.height,
+            )?)
+        } else {
+            None
+        };
+        let capture_timeout = if capture_current_frame {
+            Some(if shell_capture_current_frame {
+                shell_capture
+                    .as_deref()
+                    .expect("shell capture session exists when readback is requested")
+                    .readback_timeout()?
+            } else {
+                tactical_capture
+                    .as_deref()
+                    .expect("tactical capture session exists when readback is requested")
+                    .readback_timeout()?
+            })
+        } else {
+            None
+        };
+        let submission = state.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+        if let Some(token) = pending_main_menu_entry_token.take() {
+            crate::app_shell_transition::record_main_menu_entry_presented(state, token)?;
+        }
+        if let (Some(identity), Some(readback)) = (entry_sequence_identity, pending_entry_sequence)
+        {
+            shell_capture
+                .as_deref_mut()
+                .expect("entry-sequence session exists for retained readback")
+                .record_entry_sequence_submission(identity, readback, submission.clone())?;
+        }
+        if let Some(receipt) = pending_main_menu_title_receipt.take() {
+            anyhow::ensure!(
+                state
+                    .main_menu_shell_state
+                    .title_reveal
+                    .record_presented(receipt),
+                "main-menu title receipt was stale at present commit"
+            );
+        }
+        if let Some(pending_capture) = pending_capture {
+            let pixels = pending_capture.finish(
+                &state.gpu.device,
+                submission,
+                capture_timeout.expect("capture timeout exists with pending readback"),
+            )?;
+            let surface_format = state.gpu.config.format;
+            if shell_capture_current_frame {
+                shell_capture
+                    .as_deref_mut()
+                    .expect("shell capture session exists when readback completes")
+                    .complete(state, surface_format, &pixels)?;
+            } else {
+                tactical_capture
+                    .as_deref_mut()
+                    .expect("tactical capture session exists when readback completes")
+                    .complete_after_readback(state, surface_format, &pixels)?;
+            }
+            event_loop.exit();
+        }
 
         // Deferred loading: after presenting the Loading screen frame,
         // pump one loading phase. The next patch will continue splitting the
@@ -3032,6 +4795,7 @@ impl App {
                     log::warn!("Could not load map: {err:#}");
                     if native_loading {
                         crate::app_loading::clear_loading_state(state);
+                        crate::app_loading::clear_match_startup_state(state);
                         state.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
@@ -3051,8 +4815,27 @@ impl App {
     /// dialog has no quit button and the egui pause card is retired, so
     /// quit-to-menu survives as a dev-overlay shortcut until the native
     /// Abort-Mission dialog is built (a later 5a step).
+    fn capture_returned_skirmish_rng(state: &mut AppState) {
+        let gameplay_rng = state
+            .simulation
+            .as_ref()
+            .map(crate::sim::world::Simulation::clone_scenario_rng);
+        if let Some(gameplay_rng) = gameplay_rng
+            && state
+                .offline_skirmish_runtime
+                .capture_returned_gameplay_rng(gameplay_rng)
+        {
+            log::info!("Returned gameplay Scenario cursor to the offline shell");
+        }
+    }
+
     fn return_to_main_menu(state: &mut AppState) {
         state.paused = false;
+        // Persist the recorded replay before the sim (which owns the log) is
+        // torn down — every finished match leaves a replayable log on disk.
+        crate::app_sim_tick::flush_replay_log(state);
+        Self::capture_returned_skirmish_rng(state);
+        crate::app_loading::clear_match_startup_state(state);
         if let Some(ref mut player) = state.music_player {
             player.stop();
         }
@@ -3129,6 +4912,7 @@ impl App {
 
         match action {
             SaveLoadAction::Load(path) => {
+                crate::app_loading::clear_match_startup_state(state);
                 app_input::load_save_file(state, &path);
             }
             SaveLoadAction::Delete(path) => {
@@ -3296,6 +5080,7 @@ impl App {
             DevOverlayAction::ReloadLastLoad => {
                 if let Some(path) = state.last_loaded_save_path.clone() {
                     if path.exists() {
+                        crate::app_loading::clear_match_startup_state(state);
                         app_input::load_save_file(state, &path);
                     } else {
                         log::warn!(
@@ -3306,6 +5091,7 @@ impl App {
                 }
             }
             DevOverlayAction::LoadSave(path) => {
+                crate::app_loading::clear_match_startup_state(state);
                 app_input::load_save_file(state, &path);
             }
         }
@@ -3331,6 +5117,42 @@ fn auto_detect_ui_scale(screen_width: u32, screen_height: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_menu_intro_precedes_entry_observation() {
+        assert_eq!(
+            MAIN_MENU_SHELL_PRELUDE,
+            [
+                ShellFramePreludeStep::MaintainIntro,
+                ShellFramePreludeStep::ObserveEntry,
+            ]
+        );
+    }
+
+    #[test]
+    fn six_preview_boundaries_cover_the_originals_eight_redraws() {
+        use crate::map::rmg::STAGE_ORDER;
+        use crate::map::rmg::build::GenerationPoint;
+
+        let drawn: Vec<GenerationPoint> = std::iter::once(GenerationPoint::Initial)
+            .chain(
+                STAGE_ORDER
+                    .iter()
+                    .map(|stage| GenerationPoint::After(*stage)),
+            )
+            .filter(|point| draws_preview(*point))
+            .collect();
+        // Eight redraws in the original, two of them repeats of the image
+        // already on screen.
+        assert_eq!(drawn.len(), 6, "{drawn:?}");
+        assert_eq!(drawn[0], GenerationPoint::Initial);
+        // The last one precedes the final recalc, so the finished map still
+        // differs from it and the closing draw is not a repeat either.
+        assert_eq!(
+            drawn[5],
+            GenerationPoint::After(crate::map::rmg::Stage::Rocks)
+        );
+    }
 
     #[test]
     fn shell_key_translation_matches_dialog_controller_route() {

@@ -1027,7 +1027,8 @@ fn kill_ground_occupants_at(sim: &mut Simulation, rx: u16, ry: u16, c4_inf_death
     use crate::sim::animation::death_sequence_for_inf_death;
     let death_seq = death_sequence_for_inf_death(c4_inf_death);
     let victims: Vec<u64> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .iter_sorted()
         .filter(|(_, e)| {
             e.position.rx == rx
@@ -1362,7 +1363,8 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
         .unwrap_or(0);
 
     let to_snap: Vec<u64> = sim
-        .substrate.entities
+        .substrate
+        .entities
         .iter_sorted()
         .filter(|(_, e)| e.position.rx == rx && e.position.ry == ry && e.is_on_bridge_layer())
         .map(|(id, _)| id)
@@ -1612,6 +1614,7 @@ mod tests {
     fn drive_loco_on_bridge() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Drive,
+            mission_ready_state: None,
             primary_kind: Some(LocomotorKind::Drive),
             piggyback: None,
             layer: MovementLayer::Bridge,
@@ -1639,12 +1642,14 @@ mod tests {
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
+            hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
     }
 
     /// Insert a vehicle on the bridge deck at (5,5) with deck_level=3.
     fn spawn_deck_unit(sim: &mut Simulation) -> u64 {
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             5,
             5,
@@ -1692,7 +1697,8 @@ mod tests {
         drop_in_bridge_deck_entities(&mut sim, 5, 5);
 
         let e = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(id)
             .expect("deck entity must SURVIVE collapse over water");
         assert_eq!(e.position.z, 0, "snapped to ground level");
@@ -1707,7 +1713,11 @@ mod tests {
             "layer flipped Bridge → Ground"
         );
         assert_eq!(loco.phase, GroundMovePhase::Idle, "phase reset to Idle");
-        let cell = sim.substrate.occupancy.get(5, 5).expect("occupancy retained");
+        let cell = sim
+            .substrate
+            .occupancy
+            .get(5, 5)
+            .expect("occupancy retained");
         assert_eq!(cell.count_on(MovementLayer::Ground), 1);
         assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }
@@ -1901,10 +1911,12 @@ mod tests {
     /// outer-95% → jitter×2 → metallic-50% → optional metallic-slot →
     /// explosion-delay → explosion-slot. Wrong order desyncs lockstep.
     #[test]
-    fn debris_consumes_correct_rng_count_per_cell() {
+    fn bridge_blowup_debris_uses_scenario_only() {
         let mut sim = Simulation::new();
         let seed = 0xDEAD_BEEF_u64;
-        sim.reseed_both(seed);
+        sim.reseed_scenario_and_main(seed);
+        let main_before = sim.main_rng.logical_state();
+        let mapgen_before = sim.mapgen_rng.logical_state();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.bridge_explosions
             .extend([test_intern("BRIDGEEXP1"), test_intern("BRIDGEEXP2")]);
@@ -1935,9 +1947,85 @@ mod tests {
         spawn_bridge_debris(&mut sim, &rules, &cells);
 
         assert_eq!(
-            sim.scenario_rng.state(),
-            predicted.state(),
+            sim.scenario_rng.logical_state(),
+            predicted.logical_state(),
             "RNG draw order/count diverged from binary parity sequence"
+        );
+        assert_eq!(
+            sim.main_rng.logical_state(),
+            main_before,
+            "bridge destruction presentation must not consume Main"
+        );
+        assert_eq!(
+            sim.mapgen_rng.logical_state(),
+            mapgen_before,
+            "bridge destruction presentation must not consume MapGen"
+        );
+    }
+
+    /// The hut-collapse walk creates its pre-destroy presentation effects from
+    /// Scenario only. A non-terminal one-step fixture makes the receiver real
+    /// without adding BlowUpBridge fallout draws after the walker effects.
+    #[test]
+    fn hut_collapse_walker_presentation_uses_scenario_only() {
+        let mut sim = Simulation::new();
+        let seed = 0x48A7_51DE_u64;
+        sim.reseed_scenario_and_main(seed);
+        sim.resolved_terrain = Some(water_below_bridge_terrain(3));
+        sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
+
+        // The X-major hut scan first sees (4,3), then canonicalizes to (4,4).
+        // 0xE0 is a non-terminal presentation overlay whose destruction
+        // transition is NoChange, while the missing next EW cell bounds the
+        // physical walker to exactly one step with no fallout outcome.
+        let mut bridge_state = BridgeRuntimeState::default();
+        bridge_state.test_seed_cell(4, 3, seed_bridge_cell(0xE0));
+        bridge_state.test_seed_cell(4, 4, seed_bridge_cell(0xE0));
+        sim.bridge_state = Some(bridge_state);
+
+        let before = sim.rng_state();
+        let mut predicted = crate::sim::rng::SimRng::new(seed);
+        for _ in 0..3 {
+            predicted.next_range_u32_inclusive(0, NORMALIZED_RNG_MAX_INCLUSIVE);
+            predicted.next_range_u32_inclusive(0, NORMALIZED_RNG_MAX_INCLUSIVE);
+            predicted.next_range_u32_inclusive(1, 5);
+            predicted.next_range_u32(1);
+        }
+
+        let rules = rules_with_voxel_max(3);
+        let collapsed = dispatch_bridge_collapse_from_hut(&mut sim, &rules, (4, 4));
+
+        assert!(
+            !collapsed,
+            "intermediate-only fixture must not add BlowUpBridge fallout draws"
+        );
+        assert_eq!(
+            sim.bridge_state
+                .as_ref()
+                .and_then(|state| state.cell(4, 4))
+                .map(|cell| cell.overlay_byte),
+            Some(0xE0),
+            "fixture must run the real hut dispatcher without a terminal transition"
+        );
+        assert_eq!(
+            sim.world_effects.len(),
+            3,
+            "one walker step must emit one effect for each perpendicular cell"
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            predicted.logical_state(),
+            "hut walker presentation must consume exactly three jitter/delay/slot groups"
+        );
+        assert_eq!(
+            sim.main_rng.logical_state(),
+            before.main,
+            "hut walker presentation must not consume Main"
+        );
+        assert_eq!(
+            sim.mapgen_rng.logical_state(),
+            before.mapgen,
+            "hut walker presentation must not consume MapGen"
         );
     }
 
@@ -1954,7 +2042,7 @@ mod tests {
     fn dispatcher_in_band_cell_consumes_two_block_strength_draws() {
         let mut sim = Simulation::new();
         let seed = 0x0B11_D6E5_u64;
-        sim.reseed_both(seed);
+        sim.reseed_scenario_and_main(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(4));
         let mut bs = BridgeRuntimeState::default();
         bs.test_seed_cell(5, 5, seed_bridge_cell(0xCD));
@@ -1991,7 +2079,7 @@ mod tests {
     fn bridge_debris_no_metallic_when_gate_fails_even_with_voxel_zero() {
         let mut sim = Simulation::new();
         let seed = 0xDEAD_BEEF_u64;
-        sim.reseed_both(seed);
+        sim.reseed_scenario_and_main(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
         sim.metallic_debris.push(test_intern("METALDEB1"));
@@ -2028,7 +2116,7 @@ mod tests {
             .expect("fixture seed with metallic pass");
 
         let mut sim = Simulation::new();
-        sim.reseed_both(seed);
+        sim.reseed_scenario_and_main(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
         sim.metallic_debris.push(test_intern("METALDEB1"));
@@ -2052,7 +2140,7 @@ mod tests {
     #[test]
     fn bridge_debris_requires_bridge_explosion_list() {
         let mut sim = Simulation::new();
-        sim.reseed_both(7);
+        sim.reseed_scenario_and_main(7);
         let baseline_state = sim.scenario_rng.state();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.metallic_debris.push(test_intern("METALDEB1"));
@@ -2142,7 +2230,7 @@ mod tests {
     fn drop_in_ignores_ground_layer_entities_at_destroyed_cell() {
         let mut sim = Simulation::new();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             5,
             5,
@@ -2176,7 +2264,11 @@ mod tests {
         drop_in_bridge_deck_entities(&mut sim, 5, 5);
 
         // Ground entity untouched — still alive, still ground layer.
-        let e = sim.substrate.entities.get(1).expect("ground entity untouched");
+        let e = sim
+            .substrate
+            .entities
+            .get(1)
+            .expect("ground entity untouched");
         assert_eq!(e.health.current, 256);
         assert!(!e.on_bridge);
         assert_eq!(e.locomotor.as_ref().unwrap().layer, MovementLayer::Bridge);
@@ -2209,7 +2301,7 @@ mod tests {
         let mut sim = Simulation::new();
 
         // Ground unit at (5,5): no locomotor => Ground layer, on_bridge=false.
-        let ground = GameEntity::new(
+        let ground = GameEntity::new_at_frame_zero_for_test(
             1,
             5,
             5,
@@ -2229,7 +2321,7 @@ mod tests {
         sim.substrate.entities.insert(ground);
 
         // Aircraft hovering over (5,5): Air layer, on_bridge=false.
-        let mut air = GameEntity::new(
+        let mut air = GameEntity::new_at_frame_zero_for_test(
             2,
             5,
             5,

@@ -12,8 +12,8 @@
 //! - ui/ does NOT depend on: assets/, render/, sidebar/, audio/, net/
 
 pub mod client_theme;
-pub mod game_screen;
 pub mod gadget;
+pub mod game_screen;
 pub mod main_menu;
 pub mod main_menu_dialogs;
 pub mod main_menu_shell;

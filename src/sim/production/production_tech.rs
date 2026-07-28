@@ -64,7 +64,13 @@ pub(super) fn build_option_for_owner(
     }
     if reason.is_none()
         && mode == BuildMode::Strict
-        && !has_factory_for_owner(&sim.substrate.entities, rules, owner, queue_category, &sim.interner)
+        && !has_factory_for_owner(
+            &sim.substrate.entities,
+            rules,
+            owner,
+            queue_category,
+            &sim.interner,
+        )
     {
         reason = Some(BuildDisabledReason::NoFactory);
     }
@@ -225,7 +231,8 @@ fn count_owned_and_queued(sim: &Simulation, owner: &str, type_id: &str) -> u32 {
 
     let owned = match (owner_id, type_interned) {
         (Some(oid), Some(tid)) => sim
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .filter(|e| !e.dying && e.owner == oid && e.type_ref == tid)
             .count() as u32,
@@ -407,8 +414,13 @@ pub(super) fn effective_progress_rate_ppm_for_category(
     // power_speed and queue_time are both scaled by PRODUCTION_RATE_SCALE (1M).
     // effective_rate = power_speed / queue_time, also at 1M scale.
     let power_speed: u64 = owner_effective_production_speed_ppm(sim, rules, owner);
-    let queue_time: u64 =
-        matching_factory_time_multiplier_ppm(&sim.substrate.entities, rules, owner, category, &sim.interner);
+    let queue_time: u64 = matching_factory_time_multiplier_ppm(
+        &sim.substrate.entities,
+        rules,
+        owner,
+        category,
+        &sim.interner,
+    );
     // (power_speed / queue_time) * PRODUCTION_RATE_SCALE
     // = power_speed * PRODUCTION_RATE_SCALE / queue_time
     let rate: u64 = (u128::from(power_speed) * u128::from(PRODUCTION_RATE_SCALE)
@@ -456,7 +468,13 @@ fn effective_time_to_build_frames_for_object(
     time_to_build = apply_multiple_factory_scaling_ppm(
         time_to_build,
         rules.production.multiple_factory_ppm,
-        matching_factory_count_for_owner(&sim.substrate.entities, rules, owner, obj.category, &sim.interner),
+        matching_factory_count_for_owner(
+            &sim.substrate.entities,
+            rules,
+            owner,
+            obj.category,
+            &sim.interner,
+        ),
     );
     if obj.category == ObjectCategory::Building && obj.wall {
         // Wall coefficient is f32 in rules and only consumed by this UI-display

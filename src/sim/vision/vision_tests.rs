@@ -8,7 +8,7 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::intern;
 
 fn spawn_with_vision(store: &mut EntityStore, id: u64, owner: &str, rx: u16, ry: u16, range: u16) {
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -195,7 +195,7 @@ fn test_sight_capped_at_max_range() {
 fn test_veteran_sight_bonus() {
     let mut store = EntityStore::new();
     // Spawn veteran unit (veterancy >= 100) with base sight 5.
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -236,7 +236,7 @@ fn test_veteran_sight_bonus() {
 fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
     let mut store = EntityStore::new();
     // z=8, LeptonsPerSightIncrease=2000: bonus = 8*256/2000 = 1 (integer division).
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -276,7 +276,7 @@ fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
 #[test]
 fn test_elevation_sight_bonus_z0_gives_no_bonus() {
     let mut store = EntityStore::new();
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -315,7 +315,7 @@ fn test_elevation_sight_bonus_z0_gives_no_bonus() {
 fn test_elevation_sight_bonus_disabled_when_zero() {
     let mut store = EntityStore::new();
     // High z — would give large bonus if enabled.
-    let entity = GameEntity::new(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
         10,
@@ -754,14 +754,20 @@ fn test_height_los_plus_two_obstruction_offset() {
     let mut hg = vec![0u8; width as usize * height as usize];
     hg[5 * width as usize + 7] = 5; // (7,5) — the pre-fix obstruction guess
     reveal_radius_into(&mut vis, 5, 5, 5, 0, true, Some(&hg), width, height);
-    assert!(vis.is_visible(8, 5), "naive (7,5) cliff must not block with the +2 offset");
+    assert!(
+        vis.is_visible(8, 5),
+        "naive (7,5) cliff must not block with the +2 offset"
+    );
 
     // Cliff at the +2 location (9,7) must block (8,5).
     let mut vis2 = OwnerVisibility::new(20, 20);
     let mut hg2 = vec![0u8; width as usize * height as usize];
     hg2[7 * width as usize + 9] = 5; // (9,7) — the actual obstruction cell
     reveal_radius_into(&mut vis2, 5, 5, 5, 0, true, Some(&hg2), width, height);
-    assert!(!vis2.is_visible(8, 5), "+2 obstruction cell (9,7) must block");
+    assert!(
+        !vis2.is_visible(8, 5),
+        "+2 obstruction cell (9,7) must block"
+    );
 }
 
 #[test]
@@ -918,4 +924,148 @@ fn gap_coverage_clears_when_no_generator_present() {
     }
     apply_gap_generators(&mut fog, &[], &interner);
     assert!(!fog.is_cell_gap_covered(enemy, 30, 35));
+}
+
+/// A stationary viewer must reveal a solid disc — no unrevealed cells trapped inside it.
+///
+/// Scattered black cells surrounded by lit terrain look exactly like a spiral table with
+/// gaps in it, so this pins the shape directly rather than inferring it from a screenshot.
+#[test]
+fn reveal_covers_a_solid_disc_with_no_interior_holes() {
+    let owner = intern::test_intern("Americans");
+    for range in 1..=MAX_SIGHT_RANGE {
+        let mut fog = FogState {
+            width: 64,
+            height: 64,
+            ..Default::default()
+        };
+        reveal_radius(&mut fog, owner, 32, 32, range);
+
+        let mut holes: Vec<(u16, u16)> = Vec::new();
+        let reach = i32::from(range);
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
+                // Stay well inside the outer edge: the boundary is a discretization
+                // choice, but anything comfortably within the radius must be lit.
+                if dx * dx + dy * dy > (reach - 1).max(0) * (reach - 1).max(0) {
+                    continue;
+                }
+                let (rx, ry) = ((32 + dx) as u16, (32 + dy) as u16);
+                if !fog.is_cell_revealed(owner, rx, ry) {
+                    holes.push((rx, ry));
+                }
+            }
+        }
+        assert!(
+            holes.is_empty(),
+            "sight {range} left {} interior cell(s) unrevealed: {:?}",
+            holes.len(),
+            &holes[..holes.len().min(20)]
+        );
+    }
+}
+
+/// Driving in a straight line must leave a continuous swept corridor behind.
+///
+/// If reveal were applied only at whole-cell arrivals, or the spiral were re-centred
+/// wrongly per step, the trail would come out dashed — lit patches with black gaps
+/// between them, which is what the reported artifact looks like.
+#[test]
+fn a_moving_viewer_leaves_no_gaps_along_its_path() {
+    let owner = intern::test_intern("Americans");
+    let mut fog = FogState {
+        width: 64,
+        height: 64,
+        ..Default::default()
+    };
+    let range = 4u16;
+    for step in 0..40u16 {
+        reveal_radius(&mut fog, owner, 10 + step, 32, range);
+    }
+    let mut holes: Vec<(u16, u16)> = Vec::new();
+    for step in 0..40u16 {
+        let rx = 10 + step;
+        for dy in -1i32..=1 {
+            let ry = (32 + dy) as u16;
+            if !fog.is_cell_revealed(owner, rx, ry) {
+                holes.push((rx, ry));
+            }
+        }
+    }
+    assert!(
+        holes.is_empty(),
+        "the swept corridor has {} gap(s): {:?}",
+        holes.len(),
+        &holes[..holes.len().min(20)]
+    );
+}
+
+/// With height-LOS enabled but perfectly flat terrain, reveal must be identical to
+/// reveal with LOS disabled.
+///
+/// Nothing can block sight when nothing is raised, so any difference here is the
+/// obstruction math misfiring rather than terrain doing its job.
+#[test]
+fn height_los_on_flat_terrain_blocks_nothing() {
+    let owner = intern::test_intern("Americans");
+    let (w, h) = (64u16, 64u16);
+    let flat: Vec<u8> = vec![0; usize::from(w) * usize::from(h)];
+
+    for range in 1..=MAX_SIGHT_RANGE {
+        let mut with_los = OwnerVisibility::new(w, h);
+        let mut without_los = OwnerVisibility::new(w, h);
+        super::reveal_radius_into(&mut with_los, 32, 32, range, 0, true, Some(&flat), w, h);
+        super::reveal_radius_into(&mut without_los, 32, 32, range, 0, false, None, w, h);
+
+        let mut blocked: Vec<(u16, u16)> = Vec::new();
+        for ry in 0..h {
+            for rx in 0..w {
+                if without_los.is_revealed(rx, ry) && !with_los.is_revealed(rx, ry) {
+                    blocked.push((rx, ry));
+                }
+            }
+        }
+        assert!(
+            blocked.is_empty(),
+            "sight {range}: height-LOS blocked {} cell(s) on flat ground: {:?}",
+            blocked.len(),
+            &blocked[..blocked.len().min(20)]
+        );
+        let _ = owner;
+    }
+}
+
+/// A raised cell well outside the sight radius must not block anything inside it.
+///
+/// The obstruction sample is derived from the target cell plus a mirror step, a fixed
+/// +2 on each axis, and the z-shift undo. If that arithmetic lands on the wrong cell,
+/// unrelated terrain starts blocking sight — which shows up as black cells scattered
+/// through otherwise-lit ground rather than as a shadow behind a cliff.
+#[test]
+fn distant_terrain_cannot_block_nearby_sight() {
+    let (w, h) = (64u16, 64u16);
+    let mut heights: Vec<u8> = vec![0; usize::from(w) * usize::from(h)];
+    // A tall cell 20 cells away — far outside a sight-5 circle centred at (32,32).
+    heights[usize::from(52u16) * usize::from(w) + usize::from(52u16)] = 12;
+
+    let mut with_obstacle = OwnerVisibility::new(w, h);
+    let mut flat_only = OwnerVisibility::new(w, h);
+    let flat: Vec<u8> = vec![0; usize::from(w) * usize::from(h)];
+    super::reveal_radius_into(&mut with_obstacle, 32, 32, 5, 0, true, Some(&heights), w, h);
+    super::reveal_radius_into(&mut flat_only, 32, 32, 5, 0, true, Some(&flat), w, h);
+
+    let mut differing: Vec<(u16, u16)> = Vec::new();
+    for ry in 0..h {
+        for rx in 0..w {
+            if flat_only.is_revealed(rx, ry) != with_obstacle.is_revealed(rx, ry) {
+                differing.push((rx, ry));
+            }
+        }
+    }
+    assert!(
+        differing.is_empty(),
+        "a cell 20 away changed reveal for {} cell(s): {:?}",
+        differing.len(),
+        &differing[..differing.len().min(20)]
+    );
 }

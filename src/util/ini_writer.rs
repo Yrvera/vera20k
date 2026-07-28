@@ -99,6 +99,138 @@ pub fn set_ini_value(content: &[u8], section: &str, key: &str, value: &str) -> V
     out
 }
 
+/// Update several keys in the first matching section in one traversal and one
+/// output buffer.
+///
+/// Existing keys keep their position and line terminator. Missing keys are
+/// appended after the last key in the section in `values` order; a missing
+/// section is appended with every key in that same order. Matching remains
+/// case-insensitive, while written key casing comes from `values`. Duplicate
+/// update keys are collapsed case-insensitively: the last supplied spelling and
+/// value win without changing the first occurrence's order. If the file itself
+/// repeats a key, its last occurrence is updated, matching the parser's
+/// later-value-wins lookup policy.
+///
+/// This is the preservation-safe path for native writers that update a whole
+/// settings snapshot in memory before performing one final file save.
+pub fn set_ini_values(content: &[u8], section: &str, values: &[(&str, &str)]) -> Vec<u8> {
+    if values.is_empty() {
+        return content.to_vec();
+    }
+
+    let target_section = section.trim();
+    let mut updates: Vec<(&str, &str)> = Vec::with_capacity(values.len());
+    for &(key, value) in values {
+        let key = key.trim();
+        if let Some(existing) = updates
+            .iter_mut()
+            .find(|(existing_key, _)| existing_key.eq_ignore_ascii_case(key))
+        {
+            *existing = (key, value);
+        } else {
+            updates.push((key, value));
+        }
+    }
+
+    let lines = split_lines(content);
+    let mut section_found = false;
+    let mut in_first_block = false;
+    let mut insert_after: Option<usize> = None;
+    let mut key_lines = vec![None; updates.len()];
+
+    for (line_index, (text, _)) in lines.iter().enumerate() {
+        let Ok(line) = std::str::from_utf8(text) else {
+            continue;
+        };
+        if let Some(name) = section_header_name(line) {
+            if !section_found && name.eq_ignore_ascii_case(target_section) {
+                section_found = true;
+                in_first_block = true;
+                insert_after = Some(line_index);
+            } else {
+                in_first_block = false;
+            }
+            continue;
+        }
+        if !in_first_block {
+            continue;
+        }
+        if let Some(existing_key) = key_name(line) {
+            if let Some(update_index) = updates
+                .iter()
+                .position(|update| update.0.eq_ignore_ascii_case(existing_key))
+            {
+                key_lines[update_index] = Some(line_index);
+            }
+            insert_after = Some(line_index);
+        }
+    }
+
+    let added_len: usize = updates
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| key_lines[*index].is_none())
+        .map(|(_, (key, value))| key.len() + 1 + value.len() + CRLF.len())
+        .sum();
+    let replacement_growth: usize = updates
+        .iter()
+        .enumerate()
+        .filter_map(|(update_index, (key, value))| {
+            let line_index = key_lines[update_index]?;
+            Some((key.len() + 1 + value.len()).saturating_sub(lines[line_index].0.len()))
+        })
+        .sum();
+    let mut out =
+        Vec::with_capacity(content.len() + added_len + replacement_growth + section.len() + 4);
+
+    for (line_index, (text, terminator)) in lines.iter().enumerate() {
+        if let Some(update_index) = key_lines.iter().position(|line| *line == Some(line_index)) {
+            let (key, value) = updates[update_index];
+            out.extend_from_slice(key.as_bytes());
+            out.push(b'=');
+            out.extend_from_slice(value.as_bytes());
+            out.extend_from_slice(terminator);
+        } else {
+            out.extend_from_slice(text);
+            out.extend_from_slice(terminator);
+        }
+
+        if section_found && Some(line_index) == insert_after {
+            let mut wrote_any = false;
+            for (update_index, (key, value)) in updates.iter().enumerate() {
+                if key_lines[update_index].is_some() {
+                    continue;
+                }
+                if !wrote_any && terminator.is_empty() {
+                    out.extend_from_slice(CRLF);
+                }
+                out.extend_from_slice(key.as_bytes());
+                out.push(b'=');
+                out.extend_from_slice(value.as_bytes());
+                out.extend_from_slice(CRLF);
+                wrote_any = true;
+            }
+        }
+    }
+
+    if !section_found {
+        if !out.is_empty() && !out.ends_with(b"\n") {
+            out.extend_from_slice(CRLF);
+        }
+        out.push(b'[');
+        out.extend_from_slice(section.as_bytes());
+        out.extend_from_slice(b"]\r\n");
+        for (key, value) in updates {
+            out.extend_from_slice(key.as_bytes());
+            out.push(b'=');
+            out.extend_from_slice(value.as_bytes());
+            out.extend_from_slice(CRLF);
+        }
+    }
+
+    out
+}
+
 /// Terminator for lines this writer *adds* (an inserted key or a created
 /// section): always CRLF, the convention the original game's settings writer
 /// (Win32 `WritePrivateProfileString`) emits regardless of the file's existing
@@ -191,7 +323,10 @@ ScoreVolume=0.600000\r\nInGameMusic=yes\r\n[Network]\r\nNetID=ffff,ffff,ffff,\r\
     fn appends_missing_section_at_eof() {
         let input = b"[Options]\r\nGameSpeed=3\r\n";
         let out = s(set_ini_value(input, "Audio", "ScoreVolume", "0.5"));
-        assert_eq!(out, "[Options]\r\nGameSpeed=3\r\n[Audio]\r\nScoreVolume=0.5\r\n");
+        assert_eq!(
+            out,
+            "[Options]\r\nGameSpeed=3\r\n[Audio]\r\nScoreVolume=0.5\r\n"
+        );
     }
 
     /// Empty input yields a fresh section (CRLF default).
@@ -252,7 +387,10 @@ ScoreVolume=0.600000\r\nInGameMusic=yes\r\n[Network]\r\nNetID=ffff,ffff,ffff,\r\
     fn replaces_only_first_duplicate_section_key() {
         let input = b"[Audio]\r\nScoreVolume=0.6\r\n[Audio]\r\nScoreVolume=0.9\r\n";
         let out = s(set_ini_value(input, "Audio", "ScoreVolume", "0.1"));
-        assert_eq!(out, "[Audio]\r\nScoreVolume=0.1\r\n[Audio]\r\nScoreVolume=0.9\r\n");
+        assert_eq!(
+            out,
+            "[Audio]\r\nScoreVolume=0.1\r\n[Audio]\r\nScoreVolume=0.9\r\n"
+        );
     }
 
     /// A key appended into an LF-only file is written with CRLF (the original
@@ -262,5 +400,61 @@ ScoreVolume=0.600000\r\nInGameMusic=yes\r\n[Network]\r\nNetID=ffff,ffff,ffff,\r\
         let input = b"[Audio]\nSoundVolume=0.7\n";
         let out = s(set_ini_value(input, "Audio", "ScoreVolume", "0.5"));
         assert_eq!(out, "[Audio]\nSoundVolume=0.7\nScoreVolume=0.5\r\n");
+    }
+
+    #[test]
+    fn batch_replaces_and_appends_in_one_preservation_pass() {
+        let input = b"[Skirmish]\n; retained\nGameMode=1\nCredits=5000\n\n[Other]\nCredits=7\n";
+        let out = s(set_ini_values(
+            input,
+            "Skirmish",
+            &[
+                ("GameMode", "3"),
+                ("Credits", "10000"),
+                ("Slot01", "6,-2,-2"),
+            ],
+        ));
+        assert_eq!(
+            out,
+            "[Skirmish]\n; retained\nGameMode=3\nCredits=10000\nSlot01=6,-2,-2\r\n\n\
+[Other]\nCredits=7\n"
+        );
+    }
+
+    #[test]
+    fn batch_creates_missing_section_in_input_order() {
+        let out = s(set_ini_values(
+            b"[Options]\r\nFoo=bar\r\n",
+            "Skirmish",
+            &[("GameMode", "1"), ("ScenIndex", "12"), ("ShortGame", "yes")],
+        ));
+        assert_eq!(
+            out,
+            "[Options]\r\nFoo=bar\r\n[Skirmish]\r\nGameMode=1\r\nScenIndex=12\r\n\
+ShortGame=yes\r\n"
+        );
+    }
+
+    #[test]
+    fn batch_updates_last_duplicate_key_in_first_section() {
+        let input = b"[skirmish]\r\ngamemode=1\r\nGameMode=8\r\n\
+[Skirmish]\r\nGameMode=9\r\n";
+        let out = s(set_ini_values(
+            input,
+            "Skirmish",
+            &[("GameMode", "2"), ("Credits", "10000")],
+        ));
+        assert_eq!(
+            out,
+            "[skirmish]\r\ngamemode=1\r\nGameMode=2\r\nCredits=10000\r\n\
+[Skirmish]\r\nGameMode=9\r\n"
+        );
+    }
+
+    #[test]
+    fn batch_preserves_non_utf8_lines_verbatim() {
+        let input = b"[Skirmish]\r\n\xff\xfe\r\nGameMode=1\r\n";
+        let out = set_ini_values(input, "Skirmish", &[("GameMode", "4")]);
+        assert_eq!(out, b"[Skirmish]\r\n\xff\xfe\r\nGameMode=4\r\n");
     }
 }

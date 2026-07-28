@@ -139,7 +139,12 @@ fn scroll_sizes(state: &AppState) -> (Option<[f32; 2]>, Option<[f32; 2]>) {
         return (None, None);
     };
     let sz = |e: Option<&crate::render::sidebar_chrome::SidebarChromeEntry>| {
-        e.map(|e| [e.pixel_size[0] * state.ui_scale, e.pixel_size[1] * state.ui_scale])
+        e.map(|e| {
+            [
+                e.pixel_size[0] * state.ui_scale,
+                e.pixel_size[1] * state.ui_scale,
+            ]
+        })
     };
     (
         sz(atlas.scroll_down_frames[0].as_ref()),
@@ -172,7 +177,11 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
         let list = &mut gadgets.list;
         let zero = GadgetRect::new(0, 0, 0, 0);
         let tabs = [0u16, 1, 2, 3].map(|i| {
-            list.add_tail(GadgetSpec::button(zero, ID_TAB_BASE + i, ToggleKind::LatchOn))
+            list.add_tail(GadgetSpec::button(
+                zero,
+                ID_TAB_BASE + i,
+                ToggleKind::LatchOn,
+            ))
         });
         let repair = list.add_tail(GadgetSpec::button(zero, ID_REPAIR, ToggleKind::Flip));
         let sell = list.add_tail(GadgetSpec::button(zero, ID_SELL, ToggleKind::Flip));
@@ -201,14 +210,47 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
         }
     };
     for i in 0..4 {
-        let rect = tab_rects.get(i).copied().unwrap_or(GadgetRect::new(0, 0, 0, 0));
+        let rect = tab_rects
+            .get(i)
+            .copied()
+            .unwrap_or(GadgetRect::new(0, 0, 0, 0));
         let active = tab_active.get(i).copied().unwrap_or(false);
-        sync(&mut gadgets.list, handles.tabs[i], rect, gs.tab_disabled[i], Some(active));
+        sync(
+            &mut gadgets.list,
+            handles.tabs[i],
+            rect,
+            gs.tab_disabled[i],
+            Some(active),
+        );
     }
-    sync(&mut gadgets.list, handles.repair, repair_rect, gs.repair_disabled, Some(gs.repair_mode_on));
-    sync(&mut gadgets.list, handles.sell, sell_rect, gs.sell_disabled, Some(gs.sell_mode_on));
-    sync(&mut gadgets.list, handles.scroll_down, rect_px(down_rect), false, None);
-    sync(&mut gadgets.list, handles.scroll_up, rect_px(up_rect), false, None);
+    sync(
+        &mut gadgets.list,
+        handles.repair,
+        repair_rect,
+        gs.repair_disabled,
+        Some(gs.repair_mode_on),
+    );
+    sync(
+        &mut gadgets.list,
+        handles.sell,
+        sell_rect,
+        gs.sell_disabled,
+        Some(gs.sell_mode_on),
+    );
+    sync(
+        &mut gadgets.list,
+        handles.scroll_down,
+        rect_px(down_rect),
+        false,
+        None,
+    );
+    sync(
+        &mut gadgets.list,
+        handles.scroll_up,
+        rect_px(up_rect),
+        false,
+        None,
+    );
     sync_regions(state, view);
     sync_cameos(state, view);
     sync_controls(state, view);
@@ -314,9 +356,7 @@ fn sync_regions(state: &mut AppState, view: &SidebarView) {
 /// holds capture (defensive — cameos themselves are never sticky).
 fn sync_cameos(state: &mut AppState, view: &SidebarView) {
     let want = view.items.len();
-    if state.in_game_gadgets.cameos.len() < want
-        && state.in_game_gadgets.focus.sticky.is_none()
-    {
+    if state.in_game_gadgets.cameos.len() < want && state.in_game_gadgets.focus.sticky.is_none() {
         let zero = GadgetRect::new(0, 0, 0, 0);
         while state.in_game_gadgets.cameos.len() < want {
             let slot = state.in_game_gadgets.cameos.len();
@@ -409,7 +449,12 @@ fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume
     // region (study tactical lane §5).
     let prev_sticky = state.in_game_gadgets.focus.sticky;
     let gadgets = &mut state.in_game_gadgets;
-    let result = tick(&mut gadgets.list, &mut gadgets.focus, &input, &mut gadgets.out);
+    let result = tick(
+        &mut gadgets.list,
+        &mut gadgets.focus,
+        &input,
+        &mut gadgets.out,
+    );
     let routed = state.in_game_gadgets.out.consumed_by.or(prev_sticky);
     let fired = (result & RESULT_BUTTON) != 0;
     if fired {

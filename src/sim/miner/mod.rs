@@ -8,19 +8,24 @@
 //! - Part of sim/ -- may depend on rules/ for data-driven miner detection.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+mod harvest_mission;
 pub mod miner_dock;
 mod miner_dock_sequence;
-mod harvest_mission;
 pub(crate) mod miner_system;
 
 #[cfg(test)]
 #[path = "miner_tests.rs"]
 mod miner_tests;
 
+#[cfg(test)]
+#[path = "outbound_drive_tests.rs"]
+mod outbound_drive_tests;
+
+pub(crate) use self::harvest_mission::dispatch_harvest_for_object;
 pub(crate) use self::miner_dock_sequence::interrupt_refinery_docked_miners;
 // Generic nearby-passable-cell search, reused by the tank-bunker exit placement.
 pub(crate) use self::miner_dock_sequence::find_nearby_passable_cell_with_index;
-pub(crate) use self::miner_system::{extract_bale, search_local_ore};
+pub(crate) use self::miner_system::{extract_bale, search_local_ore, sweep_dead_dock_reservations};
 
 #[cfg(test)]
 use std::collections::BTreeMap;
@@ -63,24 +68,64 @@ pub enum MinerKind {
 }
 
 /// State machine for the miner harvest loop.
+///
+/// Since the substate-authority flip this is the *decoded vocabulary* of the
+/// Harvest mission cursor: the value of record lives in
+/// `MissionCom::handler_state` and round-trips through
+/// [`MinerState::cursor`] / [`MinerState::from_cursor`]. The discriminants are
+/// explicit because they are the persisted/hashed cursor encoding.
+/// `SearchOre = 0` deliberately coincides with the zeroed handler state every
+/// mission transition writes, so a fresh Harvest assignment lands on the
+/// FSM's initial state without a separate write.
+///
+/// NOTE: this vocabulary is finer-grained than the native Mission_Harvest
+/// handler states (0..=4); the exact native substate mapping is deferred to
+/// the full handler-body port (recorded residual, UNCHECKED).
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MinerState {
     /// Looking for the nearest ore/gem cell to harvest.
-    SearchOre,
+    SearchOre = 0,
     /// Pathing toward the target ore cell.
-    MoveToOre,
+    MoveToOre = 1,
     /// Extracting bales from the current cell.
-    Harvest,
+    Harvest = 2,
     /// Heading back (or teleporting) to the assigned refinery.
-    ReturnToRefinery,
+    ReturnToRefinery = 3,
     /// Waiting in the dock queue outside the refinery.
-    Dock,
+    Dock = 4,
     /// Incrementally unloading cargo bales into credits.
-    Unload,
+    Unload = 5,
     /// No ore found anywhere on the map; idle.
-    WaitNoOre,
+    WaitNoOre = 6,
     /// Player issued a manual return order.
-    ForcedReturn,
+    ForcedReturn = 7,
+}
+
+impl MinerState {
+    /// Encode this state as the `MissionCom::handler_state` cursor dword.
+    #[inline]
+    pub fn cursor(self) -> u32 {
+        self as u32
+    }
+
+    /// Decode a `MissionCom::handler_state` cursor dword. Unknown values yield
+    /// `None`; callers decide the fallback (dispatch treats it as `SearchOre`
+    /// with a debug assert — the only writers are the FSM commit and the
+    /// zeroing mission transitions, so an unknown value is a logic error).
+    pub fn from_cursor(raw: u32) -> Option<Self> {
+        Some(match raw {
+            0 => Self::SearchOre,
+            1 => Self::MoveToOre,
+            2 => Self::Harvest,
+            3 => Self::ReturnToRefinery,
+            4 => Self::Dock,
+            5 => Self::Unload,
+            6 => Self::WaitNoOre,
+            7 => Self::ForcedReturn,
+            _ => return None,
+        })
+    }
 }
 
 /// Sub-state machine for the refinery docking sequence.
@@ -167,14 +212,16 @@ pub struct MinerConfig {
     pub chrono_miner_capacity: u16,
 
     // -- Timing (in sim ticks at 15Hz = RA2 game frames) --
-    /// Ticks between each harvest action (extract one bale).
+    /// Frame span for the nine native harvest StepTimer expiries:
+    /// `9 * HarvesterLoadRate`. Mission dispatch observes the ninth post-mission
+    /// increment on the following frame, so harvest gates arm for this value + 1.
     pub harvest_tick_interval: u8,
-    /// Tenths-of-a-tick between each unload action (deposit one bale).
-    /// Default 144 = 14.4 ticks/bale, matching gamemd's
-    /// `HarvesterDumpRate(0.016) × 900 = 14.4`. The fractional precision
-    /// is preserved by counting an `unload_timer` in tenths and
-    /// decrementing by 10 per tick — bales deposit on average every 14.4
-    /// ticks instead of an integer-truncated 14.
+    /// Whole-frame dump gate: the unload accumulator advances one frame per
+    /// unloading tick and a resource slot drains once it reaches this value.
+    /// Default 15 = ceil(HarvesterDumpRate(0.016) × 900) = ceil(14.4). Because
+    /// the accumulator is integer-stepped, storing the ceiling reproduces
+    /// gamemd's `rate × 900 <= accumulator` crossing exactly — no float in the
+    /// gate, no tenths-rounding drift for modded rates.
     pub unload_tick_interval: u16,
 
     // -- Search radii --
@@ -202,14 +249,14 @@ impl Default for MinerConfig {
             war_miner_capacity: 40,
             // Chrono Miner: 20 bales * 25 = 500 ore, 20 * 50 = 1000 gems
             chrono_miner_capacity: 20,
-            // HarvesterLoadRate=2 (frames per StepTimer step). One bale requires
-            // 9 steps, so interval = 2 * 9 = 18 frames/bale at 15fps (~1.2s).
+            // HarvesterLoadRate=2 and nine expiries produce the 18-frame threshold.
+            // Mission dispatch runs before timer maintenance, so it observes step 9 on
+            // frame 19; call sites preserve that with harvest_tick_interval + 1.
             harvest_tick_interval: 18,
-            // HarvesterDumpRate=0.016 min/bale × 900 (60s × 15fps) = 14.4 frames/bale.
-            // Stored in tenths so fractional ticks accumulate exactly (no
-            // 0.4-tick-per-bale drift from u8 truncation). War Miner full ore:
-            // 40 × 14.4 = 576 ticks ≈ 38.4s. Chrono Miner: 20 × 14.4 ≈ 19.2s.
-            unload_tick_interval: 144,
+            // HarvesterDumpRate=0.016 × 900 = 14.4 frames/gate; the integer
+            // accumulator crosses at ceil(14.4) = 15. The whole slot drains per
+            // gate (one ore gate + one gem gate, ~15 frames each).
+            unload_tick_interval: 15,
             local_continuation_radius: 6,
             long_scan_radius: 48,
             too_far_threshold_standard: 5,
@@ -230,10 +277,10 @@ impl MinerConfig {
         // HarvesterLoadRate: frames per step. 9 steps per bale.
         let load_rate = general.harvester_load_rate.max(1);
         let harvest_interval = (load_rate * 9).min(255) as u8;
-        // HarvesterDumpRate is a double in gamemd (default 0.016 min/bale).
-        // We store frames × 10 so the 0.4-frame fraction at default rate is
-        // preserved exactly: 0.016 × 9000 = 144 tenths = 14.4 ticks.
-        let unload_interval = general.harvester_dump_tenths.max(1);
+        // HarvesterDumpRate is a double in gamemd (default 0.016). The dump gate
+        // is `rate × 900 <= accumulator`; ruleset already stored ceil(rate × 900)
+        // as a whole-frame threshold, so the gate stays integer-exact here.
+        let unload_interval = general.harvester_dump_frames.max(1);
 
         Self {
             local_continuation_radius: general.tiberium_short_scan.max(1) as u16,
@@ -245,6 +292,39 @@ impl MinerConfig {
             ..Self::default()
         }
     }
+
+    /// Create a `MinerConfig` from a full `RuleSet`, sourcing per-bale credit
+    /// values from the `[Tiberiums]` registry so ore/gem payout tracks the mod's
+    /// `Value=` overrides instead of hardcoded constants.
+    ///
+    /// Ore payout comes from the first `[Tiberiums]` entry (Riparius/ore image)
+    /// and gem payout from the second (Cruentus/gem image), matching the native
+    /// tiberium-type ordering. A registry entry that is absent or non-positive
+    /// keeps the stock default (25 ore / 50 gem), so stock output stays
+    /// byte-identical.
+    pub fn from_rules(rules: &crate::rules::ruleset::RuleSet) -> Self {
+        let defaults = Self::default();
+        let bale_value = |id: crate::rules::tiberium_type::TiberiumTypeId, fallback: u16| -> u16 {
+            rules
+                .tiberium_types
+                .get(id)
+                .map(|t| t.value)
+                .filter(|&v| v > 0)
+                .map(|v| v.min(u16::MAX as i32) as u16)
+                .unwrap_or(fallback)
+        };
+        Self {
+            ore_bale_value: bale_value(
+                crate::rules::tiberium_type::TiberiumTypeId(0),
+                defaults.ore_bale_value,
+            ),
+            gem_bale_value: bale_value(
+                crate::rules::tiberium_type::TiberiumTypeId(1),
+                defaults.gem_bale_value,
+            ),
+            ..Self::from_general_rules(&rules.general)
+        }
+    }
 }
 
 /// ECS component: miner state machine and cargo hold.
@@ -254,7 +334,9 @@ impl MinerConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Miner {
     pub kind: MinerKind,
-    pub state: MinerState,
+    // NOTE: the FSM cursor (`state`) retired from this struct at the
+    // substate-authority flip — `MissionCom::handler_state` is the cursor of
+    // record. Read it via `GameEntity::miner_state()`.
     /// StableEntityId of the "home" refinery (may change after unloading).
     pub home_refinery: Option<u64>,
     /// StableEntityId of the refinery this miner has reserved a dock slot at.
@@ -265,11 +347,9 @@ pub struct Miner {
     pub cargo: Vec<CargoBale>,
     /// Maximum number of bales this miner can carry.
     pub capacity_bales: u16,
-    /// Frame-anchored gate for the next harvest action (was a per-tick `u8`
-    /// countdown). When `due`, a bale extracts and the timer re-arms for
-    /// `harvest_tick_interval + 1` frames (the +1 preserves the old
-    /// fire-when-zero fence-post: a seed of N decremented to 0 fires on the
-    /// (N+1)th call).
+    /// Frame-anchored gate for the next harvest helper call. Call sites arm for
+    /// `harvest_tick_interval + 1`: the ninth native StepTimer expiry occurs after
+    /// the frame-18 mission call, so the mission first observes it on frame 19.
     pub harvest_timer: MissionTimer,
     /// Whether the player issued a manual return order.
     pub forced_return: bool,
@@ -278,11 +358,10 @@ pub struct Miner {
     /// Frame-anchored cooldown before re-scanning for ore in WaitNoOre state
     /// (was a per-tick `u8` countdown; same +1 fence-post as `harvest_timer`).
     pub rescan_cooldown: MissionTimer,
-    /// Archive ("ghost cell") of a nearby still-productive ore patch,
-    /// saved on the `Harvest` → `ReturnToRefinery` transition (when the
-    /// miner becomes full). Survives the entire dock cycle so the next
-    /// `SearchOre` returns directly to it; consumed and cleared at
-    /// `SearchOre` entry.
+    /// Archive ("ghost cell") of a nearby still-productive ore patch, saved
+    /// after the due full gate selects `ReturnToRefinery`. Survives the entire
+    /// dock cycle so the next `SearchOre` returns directly to it; consumed and
+    /// cleared at `SearchOre` entry.
     pub last_harvest_cell: Option<(u16, u16)>,
     /// Current phase of the refinery docking sequence.
     /// Only meaningful when `state == MinerState::Dock`.
@@ -300,6 +379,12 @@ pub struct Miner {
     /// the `dock_enter_retry_start_frame`/`_duration` pair.)
     #[serde(default)]
     pub dock_enter_retry: MissionTimer,
+    /// Approach-phase re-HELLO cadence gate. gamemd's Mission_Harvest state 2
+    /// dispatches HELLO once per `[Harvest] Rate` cadence (~14-16f), not every
+    /// tick; this frame-anchored timer throttles the re-HELLO to one per due
+    /// window so contested-dock admission is decided per dispatch, not per tick.
+    #[serde(default)]
+    pub approach_hello_timer: MissionTimer,
     /// Queued mission 0x10 (`Unload`) deploy-delay timer (was the
     /// `mission_deploy_start_frame`/`_duration` pair).
     #[serde(default)]
@@ -362,7 +447,6 @@ impl Miner {
         };
         Self {
             kind,
-            state: MinerState::SearchOre,
             home_refinery: None,
             reserved_refinery: None,
             target_ore_cell: None,
@@ -376,6 +460,7 @@ impl Miner {
             dock_phase: RefineryDockPhase::default(),
             dock_pivot_facing: None,
             dock_enter_retry: MissionTimer::default(),
+            approach_hello_timer: MissionTimer::default(),
             mission_deploy_timer: MissionTimer::default(),
             unload_active: false,
             unload_accumulator: 0,
@@ -591,6 +676,75 @@ mod tests {
         assert_eq!(cfg.too_far_threshold_standard, 8);
         assert_eq!(cfg.too_far_threshold_chrono, 40);
         // Bale values stay at defaults.
+        assert_eq!(cfg.ore_bale_value, 25);
+        assert_eq!(cfg.gem_bale_value, 50);
+    }
+
+    #[test]
+    fn from_rules_sources_bale_values_from_tiberiums() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+
+        // Full-skeleton ruleset (so from_ini succeeds) with modded ore/gem Value=.
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=HARV\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAREFN\n\
+             [HARV]\n\
+             Name=War Miner\n\
+             Harvester=yes\n\
+             [GAREFN]\n\
+             Name=Ore Refinery\n\
+             Refinery=yes\n\
+             [Tiberiums]\n\
+             0=Riparius\n\
+             1=Cruentus\n\
+             [Riparius]\n\
+             Name=Tiberium Riparius\n\
+             Image=1\n\
+             Value=77\n\
+             [Cruentus]\n\
+             Name=Tiberium Cruentus\n\
+             Image=2\n\
+             Value=88\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let cfg = MinerConfig::from_rules(&rules);
+        assert_eq!(
+            cfg.ore_bale_value, 77,
+            "ore bale value comes from [Riparius] Value="
+        );
+        assert_eq!(
+            cfg.gem_bale_value, 88,
+            "gem bale value comes from [Cruentus] Value="
+        );
+    }
+
+    #[test]
+    fn from_rules_empty_tiberiums_keeps_stock_defaults() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+
+        // No [Tiberiums] section -> stock byte-identical 25/50.
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=HARV\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAREFN\n\
+             [HARV]\n\
+             Name=War Miner\n\
+             Harvester=yes\n\
+             [GAREFN]\n\
+             Name=Ore Refinery\n\
+             Refinery=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let cfg = MinerConfig::from_rules(&rules);
         assert_eq!(cfg.ore_bale_value, 25);
         assert_eq!(cfg.gem_bale_value, 50);
     }

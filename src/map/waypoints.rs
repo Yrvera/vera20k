@@ -18,6 +18,37 @@ pub struct Waypoint {
 /// Standard multiplayer/skirmish start waypoints in RA2/YR.
 pub const MULTIPLAYER_START_WAYPOINTS: std::ops::RangeInclusive<u32> = 0..=7;
 
+/// Native fallback when a map defines neither a usable `[Waypoints]` start nor
+/// a non-zero `[RandomMap] NumPlayers` value.
+pub const DEFAULT_SKIRMISH_PLAYER_CAPACITY: i32 = 8;
+
+/// Return the player capacity used by the Skirmish setup shell.
+///
+/// `gamemd` reads the eight numeric `[Waypoints]` keys with an integer default
+/// of `-1` and counts every result other than `-1`; the coordinate itself is not
+/// validated by this UI query. Only when that count is zero does it consult
+/// `[RandomMap] NumPlayers`, with zero/missing falling back to eight.
+pub fn skirmish_player_capacity(ini: &IniFile) -> i32 {
+    let waypoint_count = ini.section("Waypoints").map_or(0, |section| {
+        MULTIPLAYER_START_WAYPOINTS
+            .filter(|index| section.get_i32(&index.to_string()).unwrap_or(-1) != -1)
+            .count()
+    });
+    if waypoint_count != 0 {
+        return i32::try_from(waypoint_count).expect("the native query examines only eight keys");
+    }
+
+    let random_map_players = ini
+        .section("RandomMap")
+        .and_then(|section| section.get_i32("NumPlayers"))
+        .unwrap_or(0);
+    if random_map_players == 0 {
+        DEFAULT_SKIRMISH_PLAYER_CAPACITY
+    } else {
+        random_map_players
+    }
+}
+
 /// Parse `[Waypoints]` into a waypoint index -> cell mapping.
 ///
 /// RA2/YR maps typically use `NewINIFormat=5`, which packs coordinates as
@@ -133,5 +164,41 @@ mod tests {
         assert_eq!(starts[0].index, 0);
         assert_eq!(starts[1].index, 3);
         assert_eq!(first_multiplayer_start(&waypoints), Some(starts[0]));
+    }
+
+    #[test]
+    fn skirmish_capacity_counts_native_non_minus_one_waypoint_values() {
+        let ini = IniFile::from_str("[Waypoints]\n0=100011\n1=-1\n2=-2\n7=120034\n8=130040\n");
+
+        assert_eq!(skirmish_player_capacity(&ini), 3);
+    }
+
+    #[test]
+    fn skirmish_capacity_uses_random_map_fallback_only_when_no_starts_exist() {
+        let fallback = IniFile::from_str("[Waypoints]\n0=-1\n7=-1\n[RandomMap]\nNumPlayers=4\n");
+        assert_eq!(skirmish_player_capacity(&fallback), 4);
+
+        let concrete = IniFile::from_str("[Waypoints]\n0=100011\n[RandomMap]\nNumPlayers=6\n");
+        assert_eq!(skirmish_player_capacity(&concrete), 1);
+    }
+
+    #[test]
+    fn skirmish_capacity_zero_or_missing_falls_back_to_eight() {
+        assert_eq!(
+            skirmish_player_capacity(&IniFile::from_str("[RandomMap]\nNumPlayers=0\n")),
+            DEFAULT_SKIRMISH_PLAYER_CAPACITY
+        );
+        assert_eq!(
+            skirmish_player_capacity(&IniFile::from_str("[Basic]\nName=No Starts\n")),
+            DEFAULT_SKIRMISH_PLAYER_CAPACITY
+        );
+    }
+
+    #[test]
+    fn skirmish_capacity_preserves_nonzero_signed_random_map_value() {
+        assert_eq!(
+            skirmish_player_capacity(&IniFile::from_str("[RandomMap]\nNumPlayers=-2\n")),
+            -2
+        );
     }
 }

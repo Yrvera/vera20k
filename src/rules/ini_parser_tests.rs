@@ -237,7 +237,10 @@ fn map_overrides_merge_only_existing_value_sections() {
     );
     let applied = rules.merge_rules_overrides(&map);
     assert_eq!(applied, 2);
-    assert_eq!(rules.section("General").unwrap().get("BuildSpeed"), Some("2"));
+    assert_eq!(
+        rules.section("General").unwrap().get("BuildSpeed"),
+        Some("2")
+    );
     assert_eq!(
         rules.section("General").unwrap().get("FlightLevel"),
         Some("1500")
@@ -261,7 +264,10 @@ fn map_overrides_skip_type_registries_and_numbered_lists() {
     let map = IniFile::from_str("[VehicleTypes]\n0=EVILTANK\n[Animations]\n0=EVILANIM\n");
     let applied = rules.merge_rules_overrides(&map);
     assert_eq!(applied, 0);
-    assert_eq!(rules.section("VehicleTypes").unwrap().get("0"), Some("MTNK"));
+    assert_eq!(
+        rules.section("VehicleTypes").unwrap().get("0"),
+        Some("MTNK")
+    );
     assert_eq!(rules.section("Animations").unwrap().get("0"), Some("RING1"));
 }
 
@@ -281,7 +287,10 @@ fn map_overrides_no_op_without_rules_shaped_sections() {
     let mut rules = IniFile::from_str("[General]\nBuildSpeed=.7\n");
     let map = IniFile::from_str("[Basic]\nName=Clean\n[IsoMapPack5]\n1=AAAA\n");
     assert_eq!(rules.merge_rules_overrides(&map), 0);
-    assert_eq!(rules.section("General").unwrap().get("BuildSpeed"), Some(".7"));
+    assert_eq!(
+        rules.section("General").unwrap().get("BuildSpeed"),
+        Some(".7")
+    );
 }
 
 /// RC-1 hardening: a registry section with MIXED keys (one stray named key
@@ -295,7 +304,10 @@ fn map_overrides_skip_mixed_key_particle_registries() {
         "[Particles]\n30=EvilFire\nName=oops\n[ParticleSystems]\n10=EvilSys\nStray=1\n",
     );
     assert_eq!(rules.merge_rules_overrides(&map), 0);
-    assert_eq!(rules.section("Particles").unwrap().get("30"), Some("FireStream"));
+    assert_eq!(
+        rules.section("Particles").unwrap().get("30"),
+        Some("FireStream")
+    );
     assert_eq!(
         rules.section("ParticleSystems").unwrap().get("10"),
         Some("GasCloudSys")
@@ -314,7 +326,10 @@ fn map_overrides_skip_empty_valued_keys() {
     );
     let map = IniFile::from_str("[General]\nBuildSpeed=\n[CombatDamage]\nC4Delay=.06\n");
     let applied = rules.merge_rules_overrides(&map);
-    assert_eq!(applied, 1, "the empty BuildSpeed= must not count as an override");
+    assert_eq!(
+        applied, 1,
+        "the empty BuildSpeed= must not count as an override"
+    );
     assert_eq!(
         rules.section("General").unwrap().get("BuildSpeed"),
         Some(".7"),
@@ -357,7 +372,6 @@ fn content_hash_is_deterministic_and_value_sensitive() {
     assert_ne!(a.content_hash(), b.content_hash());
 
     // Comments and surrounding whitespace are stripped at parse → no effect.
-    let c =
-        IniFile::from_str("; header\n[General]\nBuildSpeed = .7   ; speed\nFlightLevel=1500\n");
+    let c = IniFile::from_str("; header\n[General]\nBuildSpeed = .7   ; speed\nFlightLevel=1500\n");
     assert_eq!(a.content_hash(), c.content_hash());
 }

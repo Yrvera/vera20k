@@ -77,7 +77,11 @@ impl GadgetSpec {
     /// G4 — base ctor: geometry + mask + sticky; `sticky ⇒ Flags |= 0x05`;
     /// everything else zeroed.
     pub fn new(rect: GadgetRect, flags: u16, sticky: bool) -> Self {
-        let flags = if sticky { flags | STICKY_CTOR_MASK } else { flags };
+        let flags = if sticky {
+            flags | STICKY_CTOR_MASK
+        } else {
+            flags
+        };
         Self {
             rect,
             flags,
@@ -303,7 +307,10 @@ mod tests {
 
         let region = GadgetSpec::click_region(GadgetRect::new(0, 0, 800, 600), 0x7F);
         assert!(region.sticky, "click region is sticky");
-        assert_eq!(region.flags, 0x7F, "0x7F already includes the sticky |5 bits");
+        assert_eq!(
+            region.flags, 0x7F,
+            "0x7F already includes the sticky |5 bits"
+        );
         assert_eq!(region.id, 0, "no id");
         assert!(matches!(region.behavior, GadgetBehavior::ClickRegion));
     }
@@ -374,7 +381,11 @@ mod tests {
         set_focus(&mut l, &mut f, b);
         assert_eq!(f.keyboard, Some(b));
         let ga = l.get(a).unwrap();
-        assert_eq!(ga.flags & FLAG_KEYBOARD, 0, "old holder loses the 0x100 bit");
+        assert_eq!(
+            ga.flags & FLAG_KEYBOARD,
+            0,
+            "old holder loses the 0x100 bit"
+        );
         assert!(ga.is_to_redraw, "old holder redrawn");
         assert_eq!(l.get(b).unwrap().flags & FLAG_KEYBOARD, FLAG_KEYBOARD);
         // The G18 focus clear is self-conditional.

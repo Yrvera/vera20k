@@ -27,6 +27,18 @@ struct AssetLocation {
     entry_id: i32,
 }
 
+/// Borrowed first-match resolution from the production archive stack.
+///
+/// This is observational only: callers receive the same bytes that `get_ref`
+/// would return plus the archive-chain identity and hashed entry ID that
+/// selected them. It must not be used to bypass normal lookup precedence.
+#[derive(Clone, Copy, Debug)]
+pub struct AssetResolutionRef<'a> {
+    pub bytes: &'a [u8],
+    pub source_archive: &'a str,
+    pub entry_id: i32,
+}
+
 /// Manages loaded MIX archives and provides name-based lookups.
 ///
 /// Archives are searched in priority order. Earlier archives win.
@@ -91,6 +103,8 @@ const KNOWN_NESTED_MIX_NAMES: &[&str] = &[
     "sidec01md.mix",
     "sidec02.mix",
     "sidec02md.mix",
+    "sidenc01.mix",
+    "sidenc02.mix",
     "snow.mix",
     "temperat.mix",
     "theme.mix",
@@ -292,11 +306,21 @@ impl AssetManager {
 
     /// Look up a file by name and return both the borrowed bytes and source archive name.
     pub fn get_with_source_ref(&self, name: &str) -> Option<(&[u8], &str)> {
+        let resolved = self.resolve_ref(name)?;
+        Some((resolved.bytes, resolved.source_archive))
+    }
+
+    /// Resolve one file through the normal first-match archive lookup.
+    pub fn resolve_ref(&self, name: &str) -> Option<AssetResolutionRef<'_>> {
         let (named, entry_id) = self.lookup_asset_entry(name)?;
         named
             .archive
             .get_by_id(entry_id)
-            .map(|data| (data, named.name.as_str()))
+            .map(|bytes| AssetResolutionRef {
+                bytes,
+                source_archive: named.name.as_str(),
+                entry_id,
+            })
     }
 
     /// Load an additional nested archive from within already-loaded archives.
@@ -563,6 +587,13 @@ mod tests {
             .expect("indexed lookup should find audio.idx");
         assert_eq!(bytes, b"westwood");
         assert_eq!(source, "theme.mix");
+
+        let resolved = manager
+            .resolve_ref("audio.idx")
+            .expect("observational resolution should preserve first match");
+        assert_eq!(resolved.bytes, b"westwood");
+        assert_eq!(resolved.source_archive, "theme.mix");
+        assert_eq!(resolved.entry_id, westwood_hash("audio.idx"));
     }
 
     #[test]
@@ -597,5 +628,33 @@ mod tests {
 
         assert!(manager.archive("audio.mix").is_some());
         assert!(manager.archive("language.mix -> audio.mix").is_some());
+    }
+
+    #[test]
+    fn neutral_sidebar_mix_names_match_retail_hashes_and_can_be_guessed() {
+        let expected = [("sidenc01.mix", 0x330A_4ADF), ("sidenc02.mix", 0x74AA_300F)];
+
+        for (name, entry_id) in expected {
+            assert_eq!(mix_hash(name), entry_id);
+            assert_eq!(guess_nested_mix_name(entry_id), Some(name));
+        }
+    }
+
+    #[test]
+    fn neutral_sidebar_nested_names_expose_leaf_lookup_keys() {
+        assert_eq!(
+            archive_lookup_keys("ra2.mix -> sidenc01.mix"),
+            vec![
+                "ra2.mix -> sidenc01.mix".to_string(),
+                "sidenc01.mix".to_string(),
+            ]
+        );
+        assert_eq!(
+            archive_lookup_keys("ra2md.mix -> sidenc02.mix"),
+            vec![
+                "ra2md.mix -> sidenc02.mix".to_string(),
+                "sidenc02.mix".to_string(),
+            ]
+        );
     }
 }

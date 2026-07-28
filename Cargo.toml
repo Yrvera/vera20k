@@ -11,6 +11,10 @@ name = "vera20k"
 path = "src/main.rs"
 
 [[bin]]
+name = "parity-digest"
+path = "src/bin/parity-digest.rs"
+
+[[bin]]
 name = "mix-browser"
 path = "src/bin/mix-browser.rs"
 

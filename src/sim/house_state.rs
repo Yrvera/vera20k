@@ -10,6 +10,44 @@
 use crate::sim::economy::Economy;
 use crate::sim::intern::InternedId;
 
+/// Native per-house AI difficulty index stored by `HouseClass`.
+///
+/// The discriminants are part of the gameplay contract: stock
+/// `AIVirtualPurifiers=4,2,0` is indexed directly in Hard/Normal/Easy order.
+#[repr(i32)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum HouseDifficulty {
+    Hard = 0,
+    Normal = 1,
+    Easy = 2,
+}
+
+impl Default for HouseDifficulty {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+impl HouseDifficulty {
+    /// Convert a native HouseClass difficulty value without accepting drifted
+    /// or out-of-range values.
+    pub const fn from_native(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Hard),
+            1 => Some(Self::Normal),
+            2 => Some(Self::Easy),
+            _ => None,
+        }
+    }
+
+    /// Exact index into native hardest-first difficulty-control tables.
+    pub const fn table_index(self) -> usize {
+        self as usize
+    }
+}
+
 /// Per-player game state.
 ///
 /// Created once per player at game start, lives for the duration of the match.
@@ -25,6 +63,10 @@ pub struct HouseState {
     pub country: Option<InternedId>,
     /// True if this house is human-controlled.
     pub is_human: bool,
+    /// Per-house native difficulty. Human houses retain Normal unless a map or
+    /// game-mode initializer explicitly assigns another native value.
+    #[serde(default)]
+    pub difficulty: HouseDifficulty,
     /// Current credit balance.
     pub credits: i32,
     /// Rally point for newly produced units (isometric cell coords).
@@ -69,6 +111,7 @@ impl HouseState {
             side_index,
             country,
             is_human,
+            difficulty: HouseDifficulty::Normal,
             credits,
             rally_point: None,
             is_defeated: false,
@@ -178,6 +221,32 @@ pub fn closest_edge_for(anchor: (u16, u16), map_width: u32, map_height: u32) -> 
         }
     }
     best_edge
+}
+
+#[cfg(test)]
+mod difficulty_tests {
+    use super::{HouseDifficulty, HouseState};
+
+    #[test]
+    fn native_difficulty_values_are_hardest_first() {
+        assert_eq!(HouseDifficulty::Hard as i32, 0);
+        assert_eq!(HouseDifficulty::Normal as i32, 1);
+        assert_eq!(HouseDifficulty::Easy as i32, 2);
+        assert_eq!(HouseDifficulty::from_native(0), Some(HouseDifficulty::Hard));
+        assert_eq!(
+            HouseDifficulty::from_native(1),
+            Some(HouseDifficulty::Normal)
+        );
+        assert_eq!(HouseDifficulty::from_native(2), Some(HouseDifficulty::Easy));
+        assert_eq!(HouseDifficulty::from_native(-1), None);
+        assert_eq!(HouseDifficulty::from_native(3), None);
+    }
+
+    #[test]
+    fn new_house_defaults_to_normal_difficulty() {
+        let house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+        assert_eq!(house.difficulty, HouseDifficulty::Normal);
+    }
 }
 
 #[cfg(test)]

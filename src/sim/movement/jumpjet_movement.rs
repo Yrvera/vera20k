@@ -283,6 +283,7 @@ mod tests {
         use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
         LocomotorState {
             kind: LocomotorKind::Jumpjet,
+            mission_ready_state: None,
             primary_kind: Some(LocomotorKind::Jumpjet),
             piggyback: None,
             layer: MovementLayer::Air,
@@ -310,6 +311,8 @@ mod tests {
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
+            hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
     }
 }

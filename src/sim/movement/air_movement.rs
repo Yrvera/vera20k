@@ -741,6 +741,7 @@ mod tests {
     fn make_fly_loco() -> LocomotorState {
         LocomotorState {
             kind: crate::rules::locomotor_type::LocomotorKind::Fly,
+            mission_ready_state: None,
             primary_kind: Some(crate::rules::locomotor_type::LocomotorKind::Fly),
             piggyback: None,
             layer: MovementLayer::Air,
@@ -768,12 +769,15 @@ mod tests {
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
+            hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
     }
 
     fn make_jumpjet_loco() -> LocomotorState {
         LocomotorState {
             kind: crate::rules::locomotor_type::LocomotorKind::Jumpjet,
+            mission_ready_state: None,
             primary_kind: Some(crate::rules::locomotor_type::LocomotorKind::Jumpjet),
             piggyback: None,
             layer: MovementLayer::Air,
@@ -801,6 +805,8 @@ mod tests {
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
+            hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
     }
 

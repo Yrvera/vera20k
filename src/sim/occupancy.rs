@@ -120,6 +120,12 @@ impl OccupancyGrid {
         let mut ordered: Vec<&GameEntity> = entities.values().collect();
         ordered.sort_by_key(|entity| (entity.occupancy_enter_order, entity.stable_id));
         for entity in ordered {
+            // Global storage, native-alive, limbo, and cell-list membership are
+            // independent facts. Only an object whose Mark transaction succeeded
+            // participates in this rebuilt cache.
+            if !entity.lifecycle.cell_marked {
+                continue;
+            }
             // Entities inside transports don't occupy cells.
             if entity.passenger_role.is_inside_transport() {
                 continue;
@@ -853,7 +859,10 @@ mod tests {
             CellListInsertion::PrependNonBuilding,
         );
         grid.remove_on_layer(5, 5, 7, MovementLayer::Bridge);
-        assert!(grid.contains_entity(5, 5, 7), "wrong-layer remove must miss");
+        assert!(
+            grid.contains_entity(5, 5, 7),
+            "wrong-layer remove must miss"
+        );
         grid.remove_on_layer(5, 5, 7, MovementLayer::Ground);
         assert!(grid.get(5, 5).is_none(), "right-layer remove must hit");
     }
@@ -902,12 +911,15 @@ mod tests {
         let mut first = crate::sim::game_entity::GameEntity::test_default(1, "E1", "Allies", 5, 5);
         first.category = EntityCategory::Infantry;
         first.sub_cell = Some(2);
+        first.lifecycle.cell_marked = true;
         let mut second =
             crate::sim::game_entity::GameEntity::test_default(2, "HTNK", "Allies", 5, 5);
         second.category = EntityCategory::Unit;
+        second.lifecycle.cell_marked = true;
         let mut structure =
             crate::sim::game_entity::GameEntity::test_default(100, "GAPOWR", "Allies", 5, 5);
         structure.category = EntityCategory::Structure;
+        structure.lifecycle.cell_marked = true;
         entities.insert(first);
         entities.insert(second);
         entities.insert(structure);
@@ -928,14 +940,17 @@ mod tests {
             crate::sim::game_entity::GameEntity::test_default(100, "GAPOWR", "Allies", 5, 5);
         structure.category = EntityCategory::Structure;
         structure.occupancy_enter_order = 1;
+        structure.lifecycle.cell_marked = true;
         let mut older_mobile =
             crate::sim::game_entity::GameEntity::test_default(50, "MTNK", "Allies", 5, 5);
         older_mobile.category = EntityCategory::Unit;
         older_mobile.occupancy_enter_order = 2;
+        older_mobile.lifecycle.cell_marked = true;
         let mut newer_mobile =
             crate::sim::game_entity::GameEntity::test_default(10, "HTNK", "Allies", 5, 5);
         newer_mobile.category = EntityCategory::Unit;
         newer_mobile.occupancy_enter_order = 3;
+        newer_mobile.lifecycle.cell_marked = true;
 
         entities.insert(newer_mobile);
         entities.insert(older_mobile);
@@ -958,6 +973,7 @@ mod tests {
             crate::sim::game_entity::GameEntity::test_default(100, "GAPOWR", "Allies", 5, 5);
         structure.category = EntityCategory::Structure;
         structure.foundation = "2x2".to_string();
+        structure.lifecycle.cell_marked = true;
         entities.insert(structure);
 
         let grid = OccupancyGrid::rebuild(&entities);
@@ -969,5 +985,20 @@ mod tests {
             );
         }
         assert_eq!(grid.occupied_cell_count(), 4);
+    }
+
+    #[test]
+    fn lifecycle_authority_alive_limbo_does_not_rebuild_occupancy() {
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        let limbo = crate::sim::game_entity::GameEntity::test_default(1, "MTNK", "Allies", 5, 5);
+
+        assert!(limbo.lifecycle.object_alive);
+        assert!(limbo.lifecycle.in_limbo);
+        assert!(!limbo.lifecycle.cell_marked);
+        entities.insert(limbo);
+
+        let grid = OccupancyGrid::rebuild(&entities);
+        assert!(!grid.contains_entity(5, 5, 1));
+        assert_eq!(grid.occupied_cell_count(), 0);
     }
 }

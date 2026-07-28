@@ -431,7 +431,7 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         let factory_type = sim.interner.intern("GAWEAP");
         let power_type = sim.interner.intern("GAPOWR");
-        let mut factory = GameEntity::new(
+        let mut factory = GameEntity::new_at_frame_zero_for_test(
             10,
             10,
             10,

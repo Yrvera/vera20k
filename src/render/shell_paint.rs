@@ -27,6 +27,7 @@ use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_text::{ShellAlign, ShellTextDraw};
+use crate::render::shell_text_reveal::PathAReveal;
 use crate::render::skirmish_shell_chrome::SkirmishShellChromeEntry;
 use crate::ui::shell::geom::{RectPx, RightPanelRects};
 
@@ -48,19 +49,14 @@ pub const SHELL_TEXT_RGB_ENABLED: [f32; 3] = [1.0, 1.0, 0.0];
 pub const SHELL_TEXT_RGB_DISABLED: [f32; 3] = [0x9F as f32 / 255.0, 0.0, 0.0];
 /// Button art alpha when a control is disabled (0x80/255 ≈ 0.502). 0x100 only.
 pub const BUTTON_DISABLED_ALPHA: f32 = 0x80 as f32 / 255.0;
-/// On press, gamemd's 0xE2 owner-draw button sinks the whole button content
-/// down by +2 px in Y (in addition to the +1 px right shift from
-/// `pressed_content_offset_x`). Both the button art and its label move together.
-/// Y+ is downward in this screen-space render path. 0x100 has NO art/text Y sink.
-pub const PRESSED_CONTENT_OFFSET_Y: f32 = 2.0;
-
 /// How a button's SDBTNANM art is fit into its cell rect.
 #[derive(Clone, Copy)]
 pub enum ArtFit {
-    /// Native `pixel_size` at `(rect.x, rect.y + art_sink_y)`. (0xE2)
+    /// Native `pixel_size` at `(rect.x, rect.y + art_sink_y)`. Active 0xE2 and
+    /// 0x100 both use this path.
     Native,
-    /// Scale by `(rect.w / panel_w, rect.h / tile_h)`, right-anchor x, v-center
-    /// y. NO press sink. (0x100)
+    /// Optional fit policy: scale by `(rect.w / panel_w, rect.h / tile_h)`,
+    /// right-anchor x, and vertically center. No press sink.
     FitRightAnchored { panel_w: f32, tile_h: f32 },
 }
 
@@ -70,10 +66,10 @@ pub enum ArtFit {
 #[derive(Clone, Copy)]
 pub struct ButtonPolicy {
     pub art_fit: ArtFit,
-    /// 0x100 = true (frame-3 ~1 Hz flash); 0xE2 = false (never reaches frame 3).
+    /// Opt-in frame-3 ~1 Hz flash. Active 0xE2 and 0x100 both leave this false.
     pub hover_flash: bool,
-    /// Vertical art sink applied while pressed. 0xE2 = `PRESSED_CONTENT_OFFSET_Y`,
-    /// 0x100 = 0.0. Float because it routes through the art emit path.
+    /// Policy-specific vertical art sink while pressed. The verified 0xE2 and
+    /// 0x100 policies both use 0.0. Float because it routes through art emission.
     pub art_sink_y: f32,
     /// 0x100 = true (alpha 0.502 on disabled art); 0xE2 = false (never disables).
     pub disabled_dim: bool,
@@ -99,6 +95,8 @@ pub struct PaintLabel<'a> {
     pub rect: RectPx,
     pub align: ShellAlign,
     pub rgb: [f32; 3],
+    /// Opt-in BITFONT Path-A reveal/tint. Ordinary labels keep this `None`.
+    pub path_a_reveal: Option<PathAReveal>,
 }
 
 fn push_entry_sized(
@@ -210,7 +208,7 @@ pub fn paint_chrome(
 enum SteadyFrame {
     /// SDBTNANM frame 2.
     Default,
-    /// SDBTNANM frame 3 (0x100 hover flash, high phase only).
+    /// SDBTNANM frame 3 (opt-in hover flash, high phase only).
     Hover,
     /// SDBTNANM frame 4 (pressed).
     Pressed,
@@ -241,7 +239,7 @@ fn steady_frame_choice(
 }
 
 /// Pick the SDBTNANM frame for a button: wave frame (clamped down one), else
-/// pressed (frame 4), else hover-flash (frame 3, 0x100 only), else default
+/// pressed (frame 4), else opt-in hover-flash (frame 3), else default
 /// (frame 2). Returns `None` only when a wave index resolves to no baked frame
 /// (the button holds and draws nothing — never panics on a short SHP).
 fn select_frame(
@@ -257,18 +255,19 @@ fn select_frame(
         let wave_frame = |i: usize| atlas.button_wave_frames.get(i).copied().flatten();
         return wave_frame(idx).or_else(|| wave_frame(idx.saturating_sub(1)));
     }
-    Some(match steady_frame_choice(b, policy, now, hover_started_at) {
-        SteadyFrame::Default => atlas.button_default,
-        SteadyFrame::Hover => atlas.button_hover,
-        SteadyFrame::Pressed => atlas.button_pressed,
-    })
+    Some(
+        match steady_frame_choice(b, policy, now, hover_started_at) {
+            SteadyFrame::Default => atlas.button_default,
+            SteadyFrame::Hover => atlas.button_hover,
+            SteadyFrame::Pressed => atlas.button_pressed,
+        },
+    )
 }
 
 /// Emit the owner-draw buttons at `BUTTON_DEPTH`, applying the per-shell policy
 /// (frame select 2/3/4 or wave frame, art fit, art sink, disabled dim). The
-/// 0x100 wave path runs through the SAME `ArtFit::FitRightAnchored` + disabled
-/// dim as its steady path; the 0xE2 wave path runs native, un-dimmed — both fall
-/// out of the policy without a special-case branch.
+/// Wave and steady paths use the same supplied art-fit and disabled-dim policy;
+/// both fall out of the policy without a per-dialog branch.
 pub fn paint_buttons(
     atlas: &MainMenuShellChromeAtlas,
     buttons: &[PaintButton],
@@ -348,16 +347,27 @@ pub fn paint_labels_at_depth(
                 w: label.rect.w.max(0) as u32,
                 h: label.rect.h.max(0) as u32,
             };
-            crate::render::shell_text::draw_in_rect(
-                font,
-                label.text,
-                text_rect,
-                label.rgb,
-                label.align,
-                [0.0, 0.0],
-                depth,
-                None,
-            )
+            match label.path_a_reveal {
+                Some(reveal) => crate::render::shell_text::draw_in_rect_path_a(
+                    font,
+                    label.text,
+                    text_rect,
+                    label.align,
+                    [0.0, 0.0],
+                    depth,
+                    reveal,
+                ),
+                None => crate::render::shell_text::draw_in_rect(
+                    font,
+                    label.text,
+                    text_rect,
+                    label.rgb,
+                    label.align,
+                    [0.0, 0.0],
+                    depth,
+                    None,
+                ),
+            }
         })
         .collect()
 }
@@ -509,10 +519,11 @@ fn push_skirmish_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::bit_font::tests::make_test_font;
     use std::time::Duration;
 
-    const SP_PANEL_W: f32 = 168.0;
-    const SP_TILE_H: f32 = 42.0;
+    const FIT_PANEL_W: f32 = 168.0;
+    const FIT_TILE_H: f32 = 42.0;
 
     fn fake_entry(w: f32, h: f32) -> MainMenuShellChromeEntry {
         MainMenuShellChromeEntry {
@@ -532,17 +543,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn plain_label_path_remains_byte_identical_to_direct_shell_text() {
+        let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6)], 4);
+        let rect = RectPx::new(9, 11, 80, 20);
+        let labels = [PaintLabel {
+            text: "aba",
+            rect,
+            align: ShellAlign::H_CENTER,
+            rgb: [1.0, 1.0, 0.0],
+            path_a_reveal: None,
+        }];
+        let actual = paint_labels(&font, &labels).pop().expect("one label");
+        let expected = crate::render::shell_text::draw_in_rect(
+            &font,
+            "aba",
+            crate::render::shell_text::TextRect {
+                x: rect.x,
+                y: rect.y,
+                w: rect.w as u32,
+                h: rect.h as u32,
+            },
+            [1.0, 1.0, 0.0],
+            ShellAlign::H_CENTER,
+            [0.0, 0.0],
+            TEXT_DEPTH,
+            None,
+        );
+        assert_eq!(
+            bytemuck::cast_slice::<SpriteInstance, u8>(&actual.instances),
+            bytemuck::cast_slice::<SpriteInstance, u8>(&expected.instances)
+        );
+        assert_eq!(
+            (
+                actual.scissor.x,
+                actual.scissor.y,
+                actual.scissor.w,
+                actual.scissor.h,
+            ),
+            (
+                expected.scissor.x,
+                expected.scissor.y,
+                expected.scissor.w,
+                expected.scissor.h,
+            )
+        );
+    }
+
     const NATIVE_POLICY: ButtonPolicy = ButtonPolicy {
         art_fit: ArtFit::Native,
         hover_flash: false,
-        art_sink_y: PRESSED_CONTENT_OFFSET_Y,
+        art_sink_y: 0.0,
         disabled_dim: false,
     };
 
-    /// 0xE2 native art: native pixel_size at rect top-left, +2 px Y sink only
-    /// when pressed, no horizontal shift on the art (the +1 px is text-only).
+    /// 0xE2 native art stays at the cell top-left when frame 4 is selected.
     #[test]
-    fn native_art_sinks_two_px_down_when_pressed() {
+    fn native_art_stays_fixed_when_pressed() {
         let frame = fake_entry(156.0, 42.0);
         let rect = RectPx::new(644, 199, 156, 42);
 
@@ -551,24 +608,27 @@ mod tests {
         assert_eq!(pos_up, [644.0, 199.0]);
         assert_eq!(size_up, [156.0, 42.0]);
 
-        // Pressed: same X, +2 px Y, native size.
+        // Pressed: frame selection changes elsewhere; geometry is identical.
         let (pos_dn, size_dn) = native_emit(frame, rect, true);
-        assert_eq!(pos_dn, [644.0, 201.0]);
+        assert_eq!(pos_dn, [644.0, 199.0]);
         assert_eq!(size_dn, [156.0, 42.0]);
-        assert_eq!(pos_dn[1] - pos_up[1], PRESSED_CONTENT_OFFSET_Y);
+        assert_eq!(pos_dn, pos_up);
     }
 
     /// Mirror `paint_buttons`' Native art branch for an entry+rect without an
     /// atlas (the frame is already resolved).
-    fn native_emit(frame: MainMenuShellChromeEntry, rect: RectPx, pressed: bool) -> ([f32; 2], [f32; 2]) {
+    fn native_emit(
+        frame: MainMenuShellChromeEntry,
+        rect: RectPx,
+        pressed: bool,
+    ) -> ([f32; 2], [f32; 2]) {
         let policy = NATIVE_POLICY;
         let sink = if pressed { policy.art_sink_y } else { 0.0 };
         ([rect.x as f32, rect.y as f32 + sink], frame.pixel_size)
     }
 
-    /// Mirror `paint_buttons`' FitRightAnchored branch. Pins 0x100 geometry as a
-    /// function of the REAL frame canvas width (`frame.pixel_size[0]`), NOT a
-    /// hardcoded 156/168 — a contradictory literal would silently pass.
+    /// Mirror `paint_buttons`' optional FitRightAnchored branch as a function of
+    /// the real frame canvas width (`frame.pixel_size[0]`).
     fn fit_emit(
         frame: MainMenuShellChromeEntry,
         rect: RectPx,
@@ -584,14 +644,11 @@ mod tests {
         ([x, y], [fw, fh])
     }
 
-    /// 0x100 fit-anchored art at the canonical 168-wide cell with tile_h=42.
-    /// Geometry is expressed in terms of the frame's native canvas width so the
-    /// test pins true 0x100 placement for whatever SDBTNANM.SHP actually is.
+    /// Optional fit-anchored art at a 168-wide cell with tile_h=42.
     #[test]
     fn fit_right_anchored_scales_anchors_and_never_sinks() {
-        let panel_w = SP_PANEL_W;
-        let tile_h = SP_TILE_H;
-        // 0x100 cell at 800x600 row 0: x=632, w=168, h=42.
+        let panel_w = FIT_PANEL_W;
+        let tile_h = FIT_TILE_H;
         let rect = RectPx::new(632, 199, 168, 42);
         // Use a frame whose canvas width equals the cell width so sx=1.0 — the
         // common steady case — but assert in terms of the input, not a literal.
@@ -623,8 +680,8 @@ mod tests {
     /// gap of `(cell_w - frame_w)` and v-centers — pins the non-trivial case.
     #[test]
     fn fit_right_anchored_left_gap_for_narrow_canvas() {
-        let panel_w = SP_PANEL_W; // 168
-        let tile_h = SP_TILE_H; // 42
+        let panel_w = FIT_PANEL_W; // 168
+        let tile_h = FIT_TILE_H; // 42
         let rect = RectPx::new(632, 199, 168, 42);
         let frame = fake_entry(156.0, 42.0); // canvas narrower than the cell
         let (pos, size) = fit_emit(frame, rect, panel_w, tile_h);
@@ -635,8 +692,8 @@ mod tests {
 
     const FLASH_POLICY: ButtonPolicy = ButtonPolicy {
         art_fit: ArtFit::FitRightAnchored {
-            panel_w: SP_PANEL_W,
-            tile_h: SP_TILE_H,
+            panel_w: FIT_PANEL_W,
+            tile_h: FIT_TILE_H,
         },
         hover_flash: true,
         art_sink_y: 0.0,
@@ -657,7 +714,7 @@ mod tests {
         );
     }
 
-    /// 0xE2 (hover_flash = false) never reaches frame 3 even while hovered.
+    /// A no-flash policy never reaches frame 3 even while hovered.
     #[test]
     fn steady_choice_no_flash_never_hovers() {
         let start = Instant::now();
@@ -669,8 +726,8 @@ mod tests {
         );
     }
 
-    /// 0x100 (hover_flash = true) shows frame 3 only on the high phase of the
-    /// ~1 Hz square wave: elapsed_ms / 1000 % 2 == 1.
+    /// An opt-in flash policy shows frame 3 only on the high phase of the ~1 Hz
+    /// square wave: elapsed_ms / 1000 % 2 == 1.
     #[test]
     fn steady_choice_flash_phase() {
         let start = Instant::now();
@@ -761,12 +818,12 @@ mod tests {
         assert_eq!(SHELL_TEXT_RGB_ENABLED, [1.0, 1.0, 0.0]);
     }
 
-    /// FitRightAnchored geometry pinned against the REAL SDBTNANM.SHP canvas
-    /// width read out of the retail asset (NOT a hardcoded 156/168). The pass
+    /// Optional FitRightAnchored geometry pinned against the real
+    /// SDBTNANM.SHP canvas width read out of the retail asset. The pass
     /// reads `frame.pixel_size[0]` = the SHP header width parsed at load time
     /// (`render::main_menu_shell_chrome::render_shp_entry` sets `pixel_size` from
     /// `shp.width`). This test loads the actual file, so a future edit that
-    /// re-introduces a wrong canvas assumption (or an art Y-sink on 0x100) fails.
+    /// re-introduces a wrong canvas assumption fails.
     /// Skips gracefully when retail assets are absent.
     #[test]
     fn fit_right_anchored_pins_real_sdbtnanm_canvas_width() {
@@ -806,15 +863,14 @@ mod tests {
         eprintln!("SDBTNANM.SHP real canvas size: {canvas_w} x {canvas_h}");
         assert!(canvas_w > 0.0 && canvas_h > 0.0);
 
-        // 0x100 cell at 800x600 row 0.
         let rect = RectPx::new(632, 199, 168, 42);
         let frame = fake_entry(canvas_w, canvas_h);
-        let (pos, size) = fit_emit(frame, rect, SP_PANEL_W, SP_TILE_H);
+        let (pos, size) = fit_emit(frame, rect, FIT_PANEL_W, FIT_TILE_H);
 
         // Independently recompute the expected fit/anchor/center from the REAL
         // canvas width — the pass must produce exactly this.
-        let sx = rect.w as f32 / SP_PANEL_W;
-        let sy = rect.h as f32 / SP_TILE_H;
+        let sx = rect.w as f32 / FIT_PANEL_W;
+        let sy = rect.h as f32 / FIT_TILE_H;
         let expect_fw = canvas_w * sx;
         let expect_fh = canvas_h * sy;
         let expect_x = rect.x as f32 + (rect.w as f32 - expect_fw);

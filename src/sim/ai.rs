@@ -630,7 +630,8 @@ fn find_buildable_refinery(
 }
 
 fn count_refineries(sim: &Simulation, owner: &str, rules: &RuleSet) -> usize {
-    sim.substrate.entities
+    sim.substrate
+        .entities
         .values()
         .filter(|e| {
             !e.dying
@@ -751,7 +752,7 @@ mod tests {
     ) {
         let owner_id = sim.interner.intern(owner);
         let type_id_interned = sim.interner.intern(type_id);
-        let ge = crate::sim::game_entity::GameEntity::new(
+        let ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -769,8 +770,8 @@ mod tests {
             false,
         );
         sim.substrate.entities.insert(ge);
-        if sim.substrate.next_stable_entity_id <= sid {
-            sim.substrate.next_stable_entity_id = sid + 1;
+        if sim.substrate.next_stable_object_id <= sid {
+            sim.substrate.next_stable_object_id = sid + 1;
         }
     }
 
@@ -819,7 +820,7 @@ mod tests {
             let mut sim = Simulation::new();
             let owner_id = sim.interner.intern("Americans");
             let mcv_type = sim.interner.intern("TSTMCV");
-            let ge = crate::sim::game_entity::GameEntity::new(
+            let ge = crate::sim::game_entity::GameEntity::new_at_frame_zero_for_test(
                 1,
                 5,
                 5,
@@ -1105,7 +1106,8 @@ mod tests {
         ));
 
         let refinery_sid = sim
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .find_map(|e| {
                 (sim.interner
@@ -1118,7 +1120,8 @@ mod tests {
             .expect("placed refinery should exist");
 
         let miner_sid = sim
-            .substrate.entities
+            .substrate
+            .entities
             .values()
             .find_map(|e| {
                 (sim.interner
@@ -1157,12 +1160,13 @@ mod tests {
         for _ in 0..2000 {
             let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
 
-            let miner = sim
-                .substrate.entities
+            let entity = sim
+                .substrate
+                .entities
                 .get(miner_sid)
-                .and_then(|e| e.miner.as_ref())
-                .expect("miner component should exist");
-            match miner.state {
+                .expect("miner entity should exist");
+            let miner = entity.miner.as_ref().expect("miner component should exist");
+            match entity.miner_state().expect("miner cursor") {
                 MinerState::Harvest => saw_harvest = true,
                 MinerState::ReturnToRefinery => saw_return = true,
                 MinerState::Dock => {
@@ -1194,7 +1198,8 @@ mod tests {
         }
 
         let miner = sim
-            .substrate.entities
+            .substrate
+            .entities
             .get(miner_sid)
             .and_then(|e| e.miner.as_ref())
             .expect("miner component should exist");

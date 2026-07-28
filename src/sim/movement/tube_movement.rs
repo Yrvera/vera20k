@@ -183,6 +183,16 @@ pub fn try_begin_path_tube_step(
     if target.next_index >= target.path.len() {
         return TubePathStepResult::NotTubeStep;
     }
+    // A bypass-grid mover is a deliberate straight-line direct move (refinery
+    // pad entry, exit hops) whose two path nodes may span many cells — never
+    // a tube traversal. The non-adjacent-step heuristic below exists for
+    // pathfinder outputs, where a multi-cell jump encodes a tube crossing;
+    // applying it to direct moves classified every distant pad entry as a
+    // failed tube step and stranded the miner outside the refinery (the
+    // stuck chrono close-return dock).
+    if target.bypass_grid {
+        return TubePathStepResult::NotTubeStep;
+    }
     let current = (position.rx, position.ry);
     let next = target.path[target.next_index];
     let dx = next.0 as i32 - current.0 as i32;
@@ -191,17 +201,25 @@ pub fn try_begin_path_tube_step(
         return TubePathStepResult::NotTubeStep;
     }
 
+    // A tube traversal can only begin FROM a tube portal cell. Off-tube, a
+    // non-adjacent next node is not a tube crossing — it appears legitimately
+    // on ordinary pathfinder moves whenever a sharp-turn (>=135°) fallback
+    // drive track consumes the first path node at issuance: the track carries
+    // the mover through the skipped node, leaving next_index two cells out.
+    // Treating that as a failed tube step killed the move on its issue tick
+    // and stranded every miner whose post-dock outbound leg began with a
+    // sharp turn (standing on the pad still facing the refinery).
     let Some(terrain) = terrain else {
-        return TubePathStepResult::Blocked;
+        return TubePathStepResult::NotTubeStep;
     };
     let Some(tube_id) = terrain
         .cell(current.0, current.1)
         .and_then(|cell| cell.tube_index)
     else {
-        return TubePathStepResult::Blocked;
+        return TubePathStepResult::NotTubeStep;
     };
     let Some(tube) = terrain.tube(tube_id) else {
-        return TubePathStepResult::Blocked;
+        return TubePathStepResult::NotTubeStep;
     };
     if tube.exit != next {
         return TubePathStepResult::Blocked;
@@ -515,7 +533,7 @@ mod tests {
         };
         let terrain = ResolvedTerrainGrid::from_cells_with_tubes(3, 1, cells, vec![tube]);
         let mut entities = EntityStore::new();
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,
@@ -577,7 +595,7 @@ mod tests {
             vec![TubeFact::auto_low_bridge((0, 0), 2)],
         );
         let mut entities = EntityStore::new();
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,
@@ -747,7 +765,7 @@ mod tests {
     #[test]
     fn unit_tube_final_empty_ground_list_keeps_accumulated_z() {
         let tube = TubeFact::explicit((0, 0), (1, 0), 2, vec![2]);
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,
@@ -789,7 +807,7 @@ mod tests {
     #[test]
     fn unit_tube_final_blocked_ground_list_keeps_active_tube() {
         let tube = TubeFact::explicit((0, 0), (1, 0), 2, vec![2]);
-        let mut entity = GameEntity::new(
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,

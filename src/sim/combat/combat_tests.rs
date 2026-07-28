@@ -16,6 +16,7 @@ use crate::sim::intern::{InternedId, test_intern, test_interner};
 use crate::sim::miner::{ResourceNode, ResourceType};
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::power_system::PowerState;
+use crate::sim::rng::SimRng;
 use crate::sim::vision::FogState;
 
 /// Build a minimal RuleSet for combat testing.
@@ -146,6 +147,166 @@ fn make_structure_entity(
     entity
 }
 
+fn run_combat_death_handoff(
+    entities: &mut EntityStore,
+    rules: &RuleSet,
+    interner: &mut crate::sim::intern::StringInterner,
+    dead_entities: &[u64],
+) -> DeathEffects {
+    let mut occupancy = OccupancyGrid::new();
+    let mut resource_nodes = BTreeMap::new();
+    handle_entity_deaths(
+        entities,
+        &mut occupancy,
+        rules,
+        interner,
+        dead_entities,
+        &[],
+        &mut resource_nodes,
+        None,
+        None,
+        None,
+        0,
+    )
+}
+
+#[test]
+fn lifecycle_authority_immediate_combat_death_reaches_uninit_without_precleanup() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+
+    let mut dead = make_entity(1, "MTNK", 5, 5, 0);
+    dead.selected = true;
+    dead.attack_target = Some(AttackTarget::new(2));
+    dead.movement_target = Some(crate::sim::components::MovementTarget::default());
+    dead.in_logic_vector = true;
+    dead.lifecycle.in_limbo = false;
+    dead.lifecycle.cell_marked = true;
+    dead.radio_contacts.insert(2);
+    store.insert(dead);
+
+    let mut observer = make_entity(2, "MTNK", 6, 5, 300);
+    observer.attack_target = Some(AttackTarget::new(1));
+    store.insert(observer);
+
+    let mut interner = test_interner();
+    let result = run_combat_death_handoff(&mut store, &rules, &mut interner, &[1]);
+
+    assert_eq!(result.immediate_uninit_ids, vec![1]);
+    assert_eq!(result.despawned_ids, vec![1]);
+    let dead = store
+        .get(1)
+        .expect("world must still be able to UnInit the victim");
+    assert_eq!(dead.health.current, 0);
+    assert!(
+        !dead.dying,
+        "immediate UnInit, not combat, owns the death gate"
+    );
+    assert!(dead.selected, "UnInit owns deselection");
+    assert!(dead.attack_target.is_some(), "UnInit owns attack cleanup");
+    assert!(
+        dead.movement_target.is_some(),
+        "UnInit owns movement cleanup"
+    );
+    assert!(dead.in_logic_vector, "UnInit owns LogicVector removal");
+    assert!(dead.lifecycle.object_alive);
+    assert!(!dead.lifecycle.in_limbo);
+    assert!(dead.lifecycle.cell_marked);
+    assert!(dead.radio_contacts.contains(2), "Techno Limbo owns BREAK");
+    assert!(
+        !dead.owned_count_released,
+        "world lifecycle owns count release"
+    );
+    assert!(
+        store.get(2).unwrap().attack_target.is_some(),
+        "combat must not bulk-clear other objects' targets"
+    );
+}
+
+#[test]
+fn lifecycle_authority_combat_leaves_transport_cargo_for_carrier_uninit() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+
+    let mut cargo = crate::sim::passenger::PassengerCargo::new(2, 1);
+    assert!(cargo.board(2, 1));
+    let mut carrier = make_entity(1, "MTNK", 5, 5, 0);
+    carrier.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
+    store.insert(carrier);
+
+    let mut passenger = make_infantry_entity(2, "E1", 5, 5, 125);
+    passenger.passenger_role = crate::sim::passenger::PassengerRole::Inside { transport_id: 1 };
+    passenger.selected = true;
+    passenger.attack_target = Some(AttackTarget::new(3));
+    passenger.movement_target = Some(crate::sim::components::MovementTarget::default());
+    store.insert(passenger);
+    store.insert(make_entity(3, "MTNK", 6, 5, 300));
+
+    let mut interner = test_interner();
+    let result = run_combat_death_handoff(&mut store, &rules, &mut interner, &[1]);
+
+    assert_eq!(result.immediate_uninit_ids, vec![1]);
+    assert!(result.destroyed_garrison_buildings.is_empty());
+    let carrier = store.get(1).unwrap();
+    assert_eq!(carrier.passenger_role.cargo().unwrap().passengers, vec![2]);
+    let passenger = store.get(2).unwrap();
+    assert_eq!(passenger.health.current, 125);
+    assert!(!passenger.dying);
+    assert!(matches!(
+        passenger.passenger_role,
+        crate::sim::passenger::PassengerRole::Inside { transport_id: 1 }
+    ));
+    assert!(passenger.selected);
+    assert!(passenger.attack_target.is_some());
+    assert!(passenger.movement_target.is_some());
+}
+
+#[test]
+fn lifecycle_authority_animated_combat_handoff_changes_only_dying_and_sequence() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+
+    let mut dead = make_infantry_entity(1, "E1", 5, 5, 0);
+    dead.selected = true;
+    dead.attack_target = Some(AttackTarget::new(2));
+    dead.movement_target = Some(crate::sim::components::MovementTarget::default());
+    dead.in_logic_vector = true;
+    dead.lifecycle.in_limbo = false;
+    dead.lifecycle.cell_marked = true;
+    dead.radio_contacts.insert(2);
+    store.insert(dead);
+
+    let mut observer = make_entity(2, "MTNK", 6, 5, 300);
+    observer.attack_target = Some(AttackTarget::new(1));
+    store.insert(observer);
+
+    let mut interner = test_interner();
+    let result = run_combat_death_handoff(&mut store, &rules, &mut interner, &[1]);
+
+    assert!(result.immediate_uninit_ids.is_empty());
+    assert_eq!(result.despawned_ids, vec![1]);
+    let dead = store.get(1).unwrap();
+    assert_eq!(dead.health.current, 0);
+    assert!(dead.dying);
+    assert_eq!(
+        dead.animation.as_ref().unwrap().sequence,
+        SequenceKind::Die1
+    );
+    assert!(dead.selected);
+    assert!(dead.attack_target.is_some());
+    assert!(dead.movement_target.is_some());
+    assert!(dead.in_logic_vector);
+    assert!(dead.lifecycle.object_alive);
+    assert!(!dead.lifecycle.in_limbo);
+    assert!(dead.lifecycle.cell_marked);
+    assert!(dead.radio_contacts.contains(2));
+    assert!(!dead.owned_count_released);
+    assert!(
+        store.get(2).unwrap().attack_target.is_some(),
+        "selective removal listeners, not combat, own target invalidation"
+    );
+}
+
 fn considered_aircraft_weapon_rules() -> RuleSet {
     let ini_str: &str = "\
 [InfantryTypes]
@@ -250,7 +411,11 @@ fn considered_aircraft_infantry_is_air_for_projectile_legality() {
         .spawn_object("ROCK", "Soviet", 8, 5, 0, &rules, &heights)
         .expect("Rocketeer should spawn");
 
-    let target_entity = sim.substrate.entities.get(target).expect("target should exist");
+    let target_entity = sim
+        .substrate
+        .entities
+        .get(target)
+        .expect("target should exist");
     assert_eq!(target_entity.category, EntityCategory::Infantry);
     assert!(
         rules
@@ -262,7 +427,14 @@ fn considered_aircraft_infantry_is_air_for_projectile_legality() {
         EntityCategory::Aircraft
     );
 
-    issue_attack_command(&mut sim.substrate.entities, attacker, target, None, &sim.interner);
+    issue_attack_command(
+        &mut sim.substrate.entities,
+        attacker,
+        target,
+        None,
+        &sim.interner,
+    );
+    let mut main_rng = SimRng::new(1);
     let result = tick_combat(
         &mut sim.substrate.entities,
         &mut sim.substrate.occupancy,
@@ -272,6 +444,7 @@ fn considered_aircraft_infantry_is_air_for_projectile_legality() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert_eq!(result.fire_events.len(), 1);
@@ -294,14 +467,25 @@ fn ordinary_infantry_remains_ground_for_projectile_legality() {
         .spawn_object("E1", "Soviet", 8, 5, 0, &rules, &heights)
         .expect("ordinary infantry should spawn");
 
-    let target_entity = sim.substrate.entities.get(target).expect("target should exist");
+    let target_entity = sim
+        .substrate
+        .entities
+        .get(target)
+        .expect("target should exist");
     assert_eq!(target_entity.category, EntityCategory::Infantry);
     assert_eq!(
         combat_target_category(target_entity, &rules, &sim.interner),
         EntityCategory::Infantry
     );
 
-    issue_attack_command(&mut sim.substrate.entities, attacker, target, None, &sim.interner);
+    issue_attack_command(
+        &mut sim.substrate.entities,
+        attacker,
+        target,
+        None,
+        &sim.interner,
+    );
+    let mut main_rng = SimRng::new(1);
     let result = tick_combat(
         &mut sim.substrate.entities,
         &mut sim.substrate.occupancy,
@@ -311,6 +495,7 @@ fn ordinary_infantry_remains_ground_for_projectile_legality() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert_eq!(result.fire_events.len(), 1);
@@ -359,6 +544,7 @@ fn test_tick_combat_applies_damage() {
     store.insert(make_entity(2, "MTNK", 8, 5, 300));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -369,6 +555,7 @@ fn test_tick_combat_applies_damage() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -387,6 +574,7 @@ fn combat_damage_crossing_condition_yellow_sets_building_damage_state() {
     store.insert(make_structure_entity(2, "GAPOWR", 8, 5, 60, 100));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -397,6 +585,7 @@ fn combat_damage_crossing_condition_yellow_sets_building_damage_state() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert!(
@@ -415,6 +604,7 @@ fn combat_damage_above_condition_yellow_leaves_building_damage_state_false() {
     store.insert(make_structure_entity(2, "GAPOWR", 8, 5, 100, 100));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -425,6 +615,7 @@ fn combat_damage_above_condition_yellow_leaves_building_damage_state_false() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert!(
@@ -443,6 +634,7 @@ fn aoe_damage_crossing_condition_yellow_sets_building_damage_state() {
     store.insert(make_structure_entity(2, "GAPOWR", 8, 5, 60, 100));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -453,6 +645,7 @@ fn aoe_damage_crossing_condition_yellow_sets_building_damage_state() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert!(
@@ -471,6 +664,7 @@ fn combat_damage_landed_applies_infantry_fear() {
     store.insert(make_infantry_entity(2, "E1", 8, 5, 125));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -481,6 +675,7 @@ fn combat_damage_landed_applies_infantry_fear() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert_eq!(
@@ -507,6 +702,7 @@ fn ic_target_takes_zero_damage() {
         });
     }
     let initial_hp = store.get(2).expect("target alive").health.current;
+    let mut main_rng = SimRng::new(1);
     tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -516,6 +712,7 @@ fn ic_target_takes_zero_damage() {
         10u64,
         100,
         0u32,
+        &mut main_rng,
     );
     assert_eq!(
         store.get(2).expect("target alive").health.current,
@@ -541,6 +738,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
     store.insert(make_entity(2, "MTNK", 8, 5, 300));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
     let result = tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -558,6 +756,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         0u32,
         &[],
         None,
+        &mut main_rng,
     );
     assert!(
         result.bridge_damage_events.is_empty(),
@@ -602,6 +801,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         0u32,
         &[],
         None,
+        &mut main_rng,
     );
     assert_eq!(
         wall_result.bridge_damage_events,
@@ -630,6 +830,7 @@ fn test_tick_combat_respects_cooldown() {
     store.insert(make_entity(2, "MTNK", 8, 5, 300));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     // First shot fires immediately (cooldown=0).
     tick_combat(
@@ -641,6 +842,7 @@ fn test_tick_combat_respects_cooldown() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
     let h1: u16 = store.get(2).unwrap().health.current;
 
@@ -654,6 +856,7 @@ fn test_tick_combat_respects_cooldown() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
     let h2: u16 = store.get(2).unwrap().health.current;
     assert_eq!(h1, h2, "Should not fire during cooldown");
@@ -669,6 +872,7 @@ fn test_tick_combat_respects_cooldown() {
             0u64,
             100,
             0u32,
+            &mut main_rng,
         );
     }
     let h3: u16 = store.get(2).unwrap().health.current;
@@ -688,6 +892,7 @@ fn test_tick_combat_kills_target() {
     store.insert(target);
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -698,6 +903,7 @@ fn test_tick_combat_kills_target() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
 
     assert!(store.get(2).is_none(), "Dead entity should be removed");
@@ -720,6 +926,7 @@ fn test_tick_combat_out_of_range() {
     store.insert(make_entity(2, "MTNK", 10, 0, 300));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -730,6 +937,7 @@ fn test_tick_combat_out_of_range() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
 
     let target_health = store.get(2).unwrap().health.current;
@@ -753,6 +961,7 @@ fn undeployed_guardian_gi_vs_infantry_uses_m60() {
     store.insert(make_infantry_entity(2, "E2", 3, 0, 125));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -763,6 +972,7 @@ fn undeployed_guardian_gi_vs_infantry_uses_m60() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert_eq!(result.fire_events.len(), 1);
@@ -783,6 +993,7 @@ fn deployed_guardian_gi_vs_rhino_at_six_cells_uses_missilelauncher() {
     store.insert(make_entity(2, "HTNK", 6, 0, 400));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -793,6 +1004,7 @@ fn deployed_guardian_gi_vs_rhino_at_six_cells_uses_missilelauncher() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert_eq!(result.fire_events.len(), 1);
@@ -813,6 +1025,7 @@ fn deployed_guardian_gi_vs_rocketeer_uses_missilelauncher() {
     store.insert(make_infantry_entity(2, "ROCK", 6, 0, 125));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -823,6 +1036,7 @@ fn deployed_guardian_gi_vs_rocketeer_uses_missilelauncher() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert_eq!(result.fire_events.len(), 1);
@@ -842,6 +1056,7 @@ fn test_infantry_vs_heavy_armor() {
     store.insert(make_entity(2, "MTNK", 8, 5, 300));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -852,6 +1067,7 @@ fn test_infantry_vs_heavy_armor() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
 
     let h: u16 = store.get(2).unwrap().health.current;
@@ -870,6 +1086,7 @@ fn infantry_standing_fire_waits_for_fire_frame() {
     store.insert(make_infantry_entity(2, "E2", 8, 5, 125));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -880,6 +1097,7 @@ fn infantry_standing_fire_waits_for_fire_frame() {
         0,
         100,
         0,
+        &mut main_rng,
     );
 
     assert_eq!(store.get(2).unwrap().health.current, 125);
@@ -907,6 +1125,7 @@ fn infantry_standing_fire_waits_for_fire_frame() {
         1,
         100,
         0,
+        &mut main_rng,
     );
     assert_eq!(store.get(2).unwrap().health.current, 125);
     assert!(result.fire_events.is_empty());
@@ -921,6 +1140,7 @@ fn infantry_standing_fire_waits_for_fire_frame() {
         2,
         100,
         0,
+        &mut main_rng,
     );
     assert_eq!(store.get(2).unwrap().health.current, 100);
     assert_eq!(result.fire_events.len(), 1);
@@ -956,6 +1176,7 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
     store.insert(make_infantry_entity(2, "E2", 8, 5, 125));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -966,6 +1187,7 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
         0,
         100,
         0,
+        &mut main_rng,
     );
     let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
     assert!(result.fire_events.is_empty());
@@ -988,6 +1210,7 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
         1,
         100,
         0,
+        &mut main_rng,
     );
     assert_eq!(store.get(2).unwrap().health.current, 125);
     assert!(result.fire_events.is_empty());
@@ -1002,6 +1225,7 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
         2,
         100,
         0,
+        &mut main_rng,
     );
     assert_eq!(store.get(2).unwrap().health.current, 100);
     assert_eq!(result.fire_events.len(), 1);
@@ -1025,6 +1249,7 @@ fn deployed_gi_uses_deployed_fire_visual_with_deploy_fire_weapon() {
     store.insert(make_entity(2, "MTNK", 8, 5, 300));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -1035,6 +1260,7 @@ fn deployed_gi_uses_deployed_fire_visual_with_deploy_fire_weapon() {
         0,
         100,
         0,
+        &mut main_rng,
     );
     let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
     assert!(result.fire_events.is_empty());
@@ -1057,6 +1283,7 @@ fn deployed_gi_uses_deployed_fire_visual_with_deploy_fire_weapon() {
         1,
         100,
         0,
+        &mut main_rng,
     );
     assert_eq!(
         store.get(2).unwrap().health.current,
@@ -1103,6 +1330,7 @@ fn garrison_fire_keeps_occupant_anim_and_sound_path() {
     let mut interner = test_interner();
     issue_attack_command(&mut store, 10, 2, None, &interner);
     let mut sounds = Vec::new();
+    let mut main_rng = SimRng::new(1);
     let result = tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -1120,6 +1348,7 @@ fn garrison_fire_keeps_occupant_anim_and_sound_path() {
         0,
         &[],
         None,
+        &mut main_rng,
     );
 
     assert_eq!(result.fire_events.len(), 1);
@@ -1144,6 +1373,7 @@ fn delayed_infantry_fire_cancels_when_target_dies_before_fire_frame() {
     store.insert(make_infantry_entity(2, "E2", 8, 5, 125));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -1154,6 +1384,7 @@ fn delayed_infantry_fire_cancels_when_target_dies_before_fire_frame() {
         0,
         100,
         0,
+        &mut main_rng,
     );
     store.get_mut(2).unwrap().health.current = 0;
     set_anim_frame(&mut store, 1, 2);
@@ -1167,6 +1398,7 @@ fn delayed_infantry_fire_cancels_when_target_dies_before_fire_frame() {
         1,
         100,
         0,
+        &mut main_rng,
     );
 
     assert_eq!(store.get(2).unwrap().health.current, 0);
@@ -1202,6 +1434,7 @@ fn test_prone_infantry_takes_scaled_direct_damage() {
 
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -1212,6 +1445,7 @@ fn test_prone_infantry_takes_scaled_direct_damage() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -1246,6 +1480,7 @@ fn test_prone_infantry_takes_scaled_aoe_damage() {
 
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     tick_combat(
         &mut store,
@@ -1256,6 +1491,7 @@ fn test_prone_infantry_takes_scaled_aoe_damage() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -1282,6 +1518,7 @@ fn test_tick_combat_visibility_blocks_fire() {
     issue_attack_command(&mut store, 1, 2, None, &interner);
 
     let fog = FogState::default();
+    let mut main_rng = SimRng::new(1);
     tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -1299,6 +1536,7 @@ fn test_tick_combat_visibility_blocks_fire() {
         0u32,
         &[],
         None,
+        &mut main_rng,
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -1322,6 +1560,7 @@ fn test_tick_combat_retargets_by_distance_then_stable_id() {
 
     let mut fog = FogState::default();
     fog.mark_visible_for_owner(test_intern("Americans"), 7, 5);
+    let mut main_rng = SimRng::new(1);
     tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -1339,6 +1578,7 @@ fn test_tick_combat_retargets_by_distance_then_stable_id() {
         0u32,
         &[],
         None,
+        &mut main_rng,
     );
 
     let attack = store
@@ -1372,6 +1612,7 @@ fn test_tick_combat_retargets_prefers_threat_class_when_distance_equal() {
 
     let mut fog = FogState::default();
     fog.mark_visible_for_owner(test_intern("Americans"), 7, 5);
+    let mut main_rng = SimRng::new(1);
     tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -1389,6 +1630,7 @@ fn test_tick_combat_retargets_prefers_threat_class_when_distance_equal() {
         0u32,
         &[],
         None,
+        &mut main_rng,
     );
 
     let attack = store
@@ -1451,6 +1693,7 @@ fn test_weapon_fire_destroys_ore_in_spread() {
         },
     );
 
+    let mut main_rng = SimRng::new(1);
     let result = tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -1468,6 +1711,7 @@ fn test_weapon_fire_destroys_ore_in_spread() {
         0u32,
         &[],
         None,
+        &mut main_rng,
     );
 
     // Combat emits TiberiumReductionRequests (applied later by World via the
@@ -1519,6 +1763,7 @@ fn test_direct_hit_weapon_destroys_center_ore() {
         },
     );
 
+    let mut main_rng = SimRng::new(1);
     let result = tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -1536,6 +1781,7 @@ fn test_direct_hit_weapon_destroys_center_ore() {
         0u32,
         &[],
         None,
+        &mut main_rng,
     );
 
     // Combat emits a TiberiumReductionRequest (applied later by World). 105mm
@@ -1579,6 +1825,7 @@ fn test_weak_weapon_partial_ore_reduction() {
         },
     );
 
+    let mut main_rng = SimRng::new(1);
     let result = tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -1596,6 +1843,7 @@ fn test_weak_weapon_partial_ore_reduction() {
         0u32,
         &[],
         None,
+        &mut main_rng,
     );
 
     // Combat emits a TiberiumReductionRequest (applied later by World). M60
@@ -1668,7 +1916,8 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
     let (mut sim, rules, registry) = build_minimal_sim_with_gawall(5, 5);
 
     let initial_wall_entities = sim
-        .substrate.entities
+        .substrate
+        .entities
         .iter_sorted()
         .filter(|(_, e)| {
             rules
@@ -1705,7 +1954,8 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
 
     // Wall entity removed.
     let remaining = sim
-        .substrate.entities
+        .substrate
+        .entities
         .iter_sorted()
         .filter(|(_, e)| {
             rules
@@ -1747,7 +1997,7 @@ fn wall_destruction_routes_through_uninit_no_leak() {
         max: 400,
     };
     // Active spawn: insert -> reveal (logic order) -> increment count -> occupancy.
-    let id = sim.unlimbo(entity);
+    let (id, _) = sim.unlimbo(entity);
 
     // Pre-destruction: the wall is a live, occupying member.
     assert!(
@@ -1758,10 +2008,10 @@ fn wall_destruction_routes_through_uninit_no_leak() {
         sim.substrate.occupancy.contains_entity(5, 5, id),
         "active wall must occupy its cell"
     );
-    assert_eq!(
-        sim.substrate.entities.get(id).unwrap().presence,
-        crate::sim::game_entity::Presence::InCell
-    );
+    let wall = sim.substrate.entities.get(id).unwrap();
+    assert!(wall.lifecycle.object_alive);
+    assert!(!wall.lifecycle.in_limbo);
+    assert!(wall.lifecycle.cell_marked);
 
     // Forced destruction (u16::MAX bypasses the probabilistic gate).
     let events = [WallDamageEvent {
@@ -1783,9 +2033,12 @@ fn wall_destruction_routes_through_uninit_no_leak() {
         !sim.substrate.occupancy.contains_entity(5, 5, id),
         "destroyed wall must release its occupancy"
     );
-    assert_eq!(
-        sim.substrate.entities.get(id).unwrap().presence,
-        crate::sim::game_entity::Presence::Dying,
+    let wall = sim.substrate.entities.get(id).unwrap();
+    assert!(!wall.lifecycle.object_alive);
+    assert!(wall.lifecycle.in_limbo);
+    assert!(!wall.lifecycle.cell_marked);
+    assert!(
+        wall.dying,
         "wall is a deferred-death corpse until the flush"
     );
 
@@ -1794,6 +2047,111 @@ fn wall_destruction_routes_through_uninit_no_leak() {
     assert!(
         sim.substrate.entities.get(id).is_none(),
         "flush_pending_delete frees the wall slot"
+    );
+}
+
+#[test]
+fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
+    // A `Crusher=yes` drive vehicle standing on a wall cell after ground movement
+    // flattens the wall (gamemd movement-side PerCellProcess crush), taking no
+    // damage itself; a non-crusher on the same cell leaves the wall intact.
+    // GAWALL is both a BuildingType (Wall=yes ObjectType) and an OverlayType;
+    // BFRT is a Crusher drive vehicle, MTNK a plain drive vehicle.
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n0=BFRT\n1=MTNK\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n0=GAWALL\n\
+         [OverlayTypes]\n0=GASAND\n1=CYCL\n2=GAWALL\n\
+         [GAWALL]\nStrength=400\nArmor=concrete\nWall=yes\nDamageLevels=4\n\
+         [BFRT]\nCrusher=yes\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n\
+         [MTNK]\nLocomotor={4A582741-9839-11D1-B709-00A024DDAFD1}\n",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("rules parse");
+    let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+    // Build a sim with a GAWALL (overlay + active wall entity) at (5,5) and one
+    // vehicle of `veh_type` placed on that same cell, its crusher flag +
+    // locomotor derived from the real ObjectType.
+    let build = |veh_type: &str| -> Simulation {
+        let mut sim = Simulation::new();
+        let mut grid = OverlayGrid::new(10, 10);
+        grid.place_overlay(5, 5, 2, 0); // GAWALL overlay_id=2
+        sim.overlay_grid = Some(grid);
+
+        let owner_id = sim.interner.intern("Test");
+        let wall_type = sim.interner.intern("GAWALL");
+        let mut wall = GameEntity::test_default(1, "GAWALL", "Test", 5, 5);
+        wall.owner = owner_id;
+        wall.type_ref = wall_type;
+        wall.category = EntityCategory::Structure;
+        wall.health = Health {
+            current: 400,
+            max: 400,
+        };
+        let _ = sim.unlimbo(wall);
+
+        let obj = rules.object(veh_type).expect("veh object");
+        let veh_type_id = sim.interner.intern(veh_type);
+        let mut veh = GameEntity::test_default(2, veh_type, "Test", 5, 5);
+        veh.owner = owner_id;
+        veh.type_ref = veh_type_id;
+        veh.regular_crusher = obj.crusher;
+        veh.omni_crusher = obj.omni_crusher;
+        veh.locomotor =
+            Some(crate::sim::movement::locomotor::LocomotorState::from_object_type(obj, 0));
+        veh.health = Health {
+            current: 300,
+            max: 300,
+        };
+        sim.substrate.entities.insert(veh);
+        sim.substrate.entities.rebuild_owner_index();
+        sim
+    };
+
+    let wall_present = |sim: &Simulation| -> bool {
+        sim.overlay_grid
+            .as_ref()
+            .unwrap()
+            .cell(5, 5)
+            .overlay_id
+            .is_some()
+    };
+
+    // Crusher (BFRT): wall destroyed, crusher unharmed, wall entity despawned.
+    let mut sim = build("BFRT");
+    sim.apply_wall_crush_on_driveover(Some(&rules), Some(&registry));
+    sim.flush_pending_delete();
+    assert!(
+        !wall_present(&sim),
+        "crusher drive-over must remove the wall overlay"
+    );
+    assert!(
+        sim.substrate
+            .entities
+            .get(2)
+            .is_some_and(|e| e.health.current == 300),
+        "crusher takes no damage from crushing the wall"
+    );
+    let walls_left = sim
+        .substrate
+        .entities
+        .iter_sorted()
+        .filter(|(_, e)| {
+            rules
+                .object(sim.interner.resolve(e.type_ref))
+                .is_some_and(|o| o.wall)
+        })
+        .count();
+    assert_eq!(walls_left, 0, "wall entity despawned after crush");
+
+    // Non-crusher (MTNK): wall stays intact.
+    let mut sim = build("MTNK");
+    sim.apply_wall_crush_on_driveover(Some(&rules), Some(&registry));
+    sim.flush_pending_delete();
+    assert!(
+        wall_present(&sim),
+        "a non-crusher drive vehicle must not remove the wall"
     );
 }
 
@@ -1877,7 +2235,7 @@ fn build_minimal_sim_with_gawall_seeded(
     seed: u64,
 ) -> (Simulation, RuleSet, OverlayTypeRegistry) {
     let (mut sim, rules, registry) = build_minimal_sim_with_gawall(rx, ry);
-    sim.reseed_both(seed);
+    sim.reseed_scenario_and_main(seed);
     (sim, rules, registry)
 }
 
@@ -2013,6 +2371,7 @@ fn v3_non_killing_aoe_emits_one_smudge_request() {
     store.insert(make_entity(2, "MTNK", 8, 5, 300)); // full HP — won't die
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -2023,6 +2382,7 @@ fn v3_non_killing_aoe_emits_one_smudge_request() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
 
     assert!(
@@ -2070,6 +2430,7 @@ fn v3_killing_aoe_emits_exactly_one_smudge_request() {
     store.insert(make_entity(2, "WEAK", 8, 5, 10)); // dies in one hit
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -2080,6 +2441,7 @@ fn v3_killing_aoe_emits_exactly_one_smudge_request() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
 
     assert_eq!(
@@ -2131,6 +2493,7 @@ fn death_weapon_aoe_emits_separate_anim_from_killing_shot() {
     store.insert(make_entity(2, "DEMO", 8, 5, 100));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
+    let mut main_rng = SimRng::new(1);
 
     let result = tick_combat(
         &mut store,
@@ -2141,6 +2504,7 @@ fn death_weapon_aoe_emits_separate_anim_from_killing_shot() {
         0u64,
         100,
         0u32,
+        &mut main_rng,
     );
 
     let tankexp = interner.intern("TANKEXP");
@@ -2167,6 +2531,225 @@ fn death_weapon_aoe_emits_separate_anim_from_killing_shot() {
         2,
         "exactly two distinct anim names — killing shot + death explosion"
     );
+}
+
+fn inviso_weapon_rules(inviso: bool, with_anim: bool) -> RuleSet {
+    let anim_list = if with_anim { "AnimList=PIFF\n" } else { "" };
+    let ini = IniFile::from_str(&format!(
+        "\
+[InfantryTypes]\n\n\
+[VehicleTypes]\n0=SHOOTER\n1=TARGET\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[SHOOTER]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=GUN\n\n\
+[TARGET]\nStrength=500\nArmor=heavy\nSpeed=6\n\n\
+[GUN]\nDamage=10\nROF=20\nRange=10\nProjectile=TESTPROJ\nWarhead=TESTWH\n\n\
+[TESTPROJ]\nInviso={}\n\n\
+[TESTWH]\n{}\
+Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        if inviso { "yes" } else { "no" },
+        anim_list,
+    ));
+    RuleSet::from_ini(&ini).expect("Inviso test rules should parse")
+}
+
+fn explosion_coord(effect: &ExplosionEffect) -> (u16, u16, SimFixed, SimFixed) {
+    (effect.rx, effect.ry, effect.sub_x, effect.sub_y)
+}
+
+#[test]
+fn inviso_scatter_uses_scenario_rng_only_for_effect_and_paired_smudge() {
+    let rules = inviso_weapon_rules(true, true);
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "SHOOTER", 5, 5, 300));
+    store.insert(make_entity(2, "TARGET", 8, 5, 500));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+    let target_coord = (
+        store.get(2).unwrap().position.rx,
+        store.get(2).unwrap().position.ry,
+        store.get(2).unwrap().position.sub_x,
+        store.get(2).unwrap().position.sub_y,
+    );
+
+    let mut scenario_rng = SimRng::new(1);
+    let mut expected_rng = scenario_rng.clone();
+    let expected_effect = inviso_scatter::scatter_inviso_effect_coord(
+        &mut expected_rng,
+        target_coord.0,
+        target_coord.1,
+        target_coord.2,
+        target_coord.3,
+    );
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut scenario_rng,
+    );
+
+    assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
+    assert_eq!(store.get(2).unwrap().health.current, 490);
+    assert_eq!(result.explosion_effects.len(), 1);
+    assert_eq!(
+        explosion_coord(&result.explosion_effects[0]),
+        expected_effect
+    );
+    assert_ne!(expected_effect, target_coord);
+    assert!(
+        result
+            .tiberium_reduction_requests
+            .iter()
+            .any(|request| request.rx == target_coord.0 && request.ry == target_coord.1),
+        "ore damage must keep the original detonation cell"
+    );
+    match &result.smudge_spawn_requests[0] {
+        SmudgeSpawnRequest::Anim {
+            rx,
+            ry,
+            sub_x,
+            sub_y,
+            ..
+        } => assert_eq!((*rx, *ry, *sub_x, *sub_y), expected_effect),
+        other => panic!("expected paired animation smudge, got {other:?}"),
+    }
+}
+
+#[test]
+fn inviso_empty_animlist_still_consumes_one_draw() {
+    let rules = inviso_weapon_rules(true, false);
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "SHOOTER", 5, 5, 300));
+    store.insert(make_entity(2, "TARGET", 8, 5, 500));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let mut scenario_rng = SimRng::new(1);
+    let mut expected_rng = scenario_rng.clone();
+    expected_rng.next_u32();
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut scenario_rng,
+    );
+
+    assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
+    assert!(result.explosion_effects.is_empty());
+    assert!(result.smudge_spawn_requests.is_empty());
+}
+
+#[test]
+fn non_inviso_projectile_does_not_advance_scenario_rng() {
+    let rules = inviso_weapon_rules(false, true);
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "SHOOTER", 5, 5, 300));
+    store.insert(make_entity(2, "TARGET", 8, 5, 500));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+    let target_coord = (
+        store.get(2).unwrap().position.rx,
+        store.get(2).unwrap().position.ry,
+        store.get(2).unwrap().position.sub_x,
+        store.get(2).unwrap().position.sub_y,
+    );
+
+    let mut scenario_rng = SimRng::new(1);
+    let before = scenario_rng.logical_state();
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut scenario_rng,
+    );
+
+    assert_eq!(scenario_rng.logical_state(), before);
+    assert_eq!(explosion_coord(&result.explosion_effects[0]), target_coord);
+}
+
+#[test]
+fn two_inviso_attackers_consume_consecutive_draws_in_live_order() {
+    let rules = inviso_weapon_rules(true, true);
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "SHOOTER", 5, 5, 300));
+    store.insert(make_entity(2, "SHOOTER", 6, 5, 300));
+    store.insert(make_entity(3, "TARGET", 8, 5, 500));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 3, None, &interner);
+    issue_attack_command(&mut store, 2, 3, None, &interner);
+    let target = store.get(3).unwrap();
+    let target_coord = (
+        target.position.rx,
+        target.position.ry,
+        target.position.sub_x,
+        target.position.sub_y,
+    );
+
+    let mut scenario_rng = SimRng::new(1);
+    let mut expected_rng = scenario_rng.clone();
+    let expected = [
+        inviso_scatter::scatter_inviso_effect_coord(
+            &mut expected_rng,
+            target_coord.0,
+            target_coord.1,
+            target_coord.2,
+            target_coord.3,
+        ),
+        inviso_scatter::scatter_inviso_effect_coord(
+            &mut expected_rng,
+            target_coord.0,
+            target_coord.1,
+            target_coord.2,
+            target_coord.3,
+        ),
+    ];
+    let result = tick_combat_with_fog(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        None,
+        &BTreeMap::<InternedId, PowerState>::new(),
+        None,
+        &mut BTreeMap::new(),
+        None,
+        None,
+        None,
+        0,
+        100,
+        0,
+        &[2, 1],
+        None,
+        &mut scenario_rng,
+    );
+
+    assert_eq!(
+        result
+            .fire_events
+            .iter()
+            .map(|event| event.attacker_id)
+            .collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+    assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
+    assert_eq!(result.explosion_effects.len(), 2);
+    assert_eq!(explosion_coord(&result.explosion_effects[0]), expected[0]);
+    assert_eq!(explosion_coord(&result.explosion_effects[1]), expected[1]);
 }
 
 // --- emit_warhead_detonation_effects helper tests ---------------------------
@@ -2233,11 +2816,15 @@ fn emit_warhead_detonation_effects_single_animlist_entry_emits_one_pair() {
             anim_name,
             rx,
             ry,
+            sub_x,
+            sub_y,
             z,
         } => {
             assert_eq!(*anim_name, expected_id);
             assert_eq!(*rx, 5);
             assert_eq!(*ry, 5);
+            assert_eq!(sub_x.to_num::<i32>(), 160);
+            assert_eq!(sub_y.to_num::<i32>(), 96);
             assert_eq!(*z, 0);
         }
         other => panic!("expected Anim variant, got {:?}", other),
@@ -2326,6 +2913,7 @@ fn combat_resolves_in_live_object_order_not_stable_id() {
         issue_attack_command(&mut store, 2, 3, None, &interner);
         (store, rules, interner)
     }
+    let mut main_rng = SimRng::new(1);
 
     // Run 1: live order [B(2), A(1)] (reversed vs stable-id). B resolves first:
     // it fires first and lands the lethal shot.
@@ -2348,6 +2936,7 @@ fn combat_resolves_in_live_object_order_not_stable_id() {
             0u32,
             &[2, 1],
             None,
+            &mut main_rng,
         );
         assert_eq!(
             result.fire_events[0].attacker_id, 2,
@@ -2381,6 +2970,7 @@ fn combat_resolves_in_live_object_order_not_stable_id() {
             0u32,
             &[],
             None,
+            &mut main_rng,
         );
         assert_eq!(
             result.fire_events[0].attacker_id, 1,
@@ -2418,7 +3008,10 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     // Victim: armed MTNK last hit by attacker id 2; idle (no attack_target / order).
     fn victim() -> GameEntity {
         let mut v = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
-        v.health = Health { current: 300, max: 300 };
+        v.health = Health {
+            current: 300,
+            max: 300,
+        };
         v.last_attacker_id = Some(2);
         v
     }
@@ -2444,7 +3037,10 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     let mut store_dying = EntityStore::new();
     store_dying.insert(victim());
     let mut dead = GameEntity::test_default(2, "TARGV", "Russia", 6, 5);
-    dead.health = Health { current: 0, max: 200 };
+    dead.health = Health {
+        current: 0,
+        max: 200,
+    };
     dead.dying = true;
     store_dying.insert(dead);
     tick_retaliation(&mut store_dying, &rules, &interner, &live_order);
@@ -2452,7 +3048,10 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     // Parity: identical victim outcome — no retaliation issued in either case.
     let va = store_absent.get(1).unwrap();
     let vb = store_dying.get(1).unwrap();
-    assert!(va.attack_target.is_none(), "absent-attacker: no retaliation");
+    assert!(
+        va.attack_target.is_none(),
+        "absent-attacker: no retaliation"
+    );
     assert!(vb.attack_target.is_none(), "dying-attacker: no retaliation");
     assert_eq!(
         va.last_attacker_id, vb.last_attacker_id,
@@ -2463,7 +3062,10 @@ fn dying_attacker_retaliation_matches_absent_attacker() {
     let mut store_live = EntityStore::new();
     store_live.insert(victim());
     let mut live = GameEntity::test_default(2, "TARGV", "Russia", 6, 5);
-    live.health = Health { current: 200, max: 200 };
+    live.health = Health {
+        current: 200,
+        max: 200,
+    };
     store_live.insert(live);
     tick_retaliation(&mut store_live, &rules, &interner, &live_order);
     let vc = store_live.get(1).unwrap();
@@ -2532,6 +3134,7 @@ fn rad_combat_tick(
         binary_frame,
         &[],
         Some(&mut radiation),
+        &mut sim.scenario_rng,
     );
     sim.radiation = radiation;
     result
@@ -2566,7 +3169,10 @@ fn rad_damage_fires_on_application_delay_boundary_only() {
     // Frame 15: not an application boundary — nobody takes damage.
     rad_combat_tick(&mut sim, &rules, 15);
     assert_eq!(sim.substrate.entities.get(inf).unwrap().health.current, 300);
-    assert_eq!(sim.substrate.entities.get(tank).unwrap().health.current, 300);
+    assert_eq!(
+        sim.substrate.entities.get(tank).unwrap().health.current,
+        300
+    );
 
     // Frame 16: boundary. E2 stands on the center cell (level 500, clamped
     // 500): trunc(500 × 0.2) = 100, Verses none = 100% → 100 damage. The
@@ -2661,7 +3267,12 @@ fn deployed_desolator_self_irradiates_and_refires_below_third() {
     let result = rad_combat_tick(&mut sim, &rules, 2);
     assert_eq!(result.fire_events.len(), 0, "gate closed after re-arm");
     assert!(
-        sim.substrate.entities.get(deso).unwrap().attack_target.is_none(),
+        sim.substrate
+            .entities
+            .get(deso)
+            .unwrap()
+            .attack_target
+            .is_none(),
         "synthesized self-target is cleared once the gate closes"
     );
 
@@ -2678,4 +3289,83 @@ fn deployed_desolator_self_irradiates_and_refires_below_third() {
     assert_eq!(result.fire_events.len(), 1, "gate reopens below one third");
     let site = sim.radiation.site_at((10, 10)).expect("merged site");
     assert!(site.level > 500, "re-detonation merged effective + added");
+}
+
+#[test]
+fn under_attack_events_fire_for_enemy_hit_structures_and_miners_only() {
+    // The Phase-4 damage-apply producer: an enemy-damaged Structure emits a
+    // base ping, an enemy-damaged harvester a miner ping; same-owner damage
+    // and plain-unit victims emit nothing.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\n\
+         [VehicleTypes]\n0=HARV\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n0=CAGAS\n\n\
+         [CAGAS]\nStrength=800\nArmor=wood\n\n\
+         [HARV]\nStrength=1000\nArmor=heavy\nSpeed=4\nHarvester=yes\n\n\
+         [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
+         [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
+         [SA]\nVerses=100%,100%,100%,90%,70%,25%,100%,25%,25%,0%,0%\n",
+    ))
+    .expect("rules parse");
+
+    let mut main_rng = SimRng::new(1);
+    let mut run_attack = |victim: GameEntity| -> CombatTickResult {
+        let mut store = EntityStore::new();
+        store.insert(victim);
+        let mut attacker = make_infantry_entity(1, "E1", 5, 5, 125);
+        attacker.owner = test_intern("Attacker");
+        store.insert(attacker);
+        let mut interner = test_interner();
+        issue_attack_command(&mut store, 1, 10, None, &interner);
+        tick_combat(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            &mut BTreeMap::new(),
+            0,
+            100,
+            0,
+            &mut main_rng,
+        )
+    };
+
+    // Enemy-owned Structure → one base ping for the VICTIM's owner.
+    let mut building = make_entity_owned(10, "CAGAS", 8, 5, 800, "Defender");
+    building.category = EntityCategory::Structure;
+    let result = run_attack(building);
+    assert_eq!(result.under_attack_events.len(), 1, "structure hit pings");
+    let ev = &result.under_attack_events[0];
+    assert!(!ev.miner);
+    assert_eq!(ev.owner, test_intern("Defender"));
+    assert_eq!((ev.rx, ev.ry), (8, 5));
+
+    // Enemy-owned harvester (Miner component) → miner ping.
+    let mut harv = make_entity_owned(10, "HARV", 8, 5, 1000, "Defender");
+    harv.miner = Some(crate::sim::miner::Miner::new(
+        crate::sim::miner::MinerKind::War,
+        &crate::sim::miner::MinerConfig::default(),
+        7,
+    ));
+    let result = run_attack(harv);
+    assert_eq!(result.under_attack_events.len(), 1, "harvester hit pings");
+    assert!(result.under_attack_events[0].miner);
+
+    // SAME-owner structure damage → no ping (owner-differs hostility gate).
+    let mut friendly = make_entity_owned(10, "CAGAS", 8, 5, 800, "Attacker");
+    friendly.category = EntityCategory::Structure;
+    let result = run_attack(friendly);
+    assert!(
+        result.under_attack_events.is_empty(),
+        "same-owner damage never pings"
+    );
+
+    // Enemy plain unit (no miner, not a structure) → no ping.
+    let plain = make_entity_owned(10, "HARV", 8, 5, 1000, "Defender");
+    let result = run_attack(plain);
+    assert!(
+        result.under_attack_events.is_empty(),
+        "plain unit hits do not ping"
+    );
 }

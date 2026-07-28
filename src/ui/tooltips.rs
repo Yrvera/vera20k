@@ -293,7 +293,10 @@ mod tests {
         s.poll(1000);
         assert!(s.active().is_some(), "inclusive edge hits");
         let gadget_rect = crate::ui::gadget::GadgetRect::new(10, 10, 5, 5);
-        assert!(!gadget_rect.contains(15, 15), "same point misses the gadget rect");
+        assert!(
+            !gadget_rect.contains(15, 15),
+            "same point misses the gadget rect"
+        );
         // One past the inclusive edge misses.
         let mut s2 = service_with(&[region(1, 10, 10, 5, 5, "tip")]);
         s2.on_mouse_move(16, 15, 0);
@@ -319,7 +322,10 @@ mod tests {
     #[test]
     fn duplicate_register_rejected_unregister_hides() {
         let mut s = service_with(&[region(1, 0, 0, 10, 10, "tip")]);
-        assert!(!s.register(region(1, 50, 50, 5, 5, "dup")), "dup id rejected");
+        assert!(
+            !s.register(region(1, 50, 50, 5, 5, "dup")),
+            "dup id rejected"
+        );
         s.on_mouse_move(5, 5, 0);
         s.poll(1000);
         assert!(s.active().is_some());
@@ -333,7 +339,10 @@ mod tests {
         let mut s = service_with(&[region(1, 0, 0, 10, 10, "")]);
         s.on_mouse_move(5, 5, 0);
         s.poll(1000);
-        assert!(s.active().is_none(), "NULL/empty text ⇒ Show fails ⇒ no tip");
+        assert!(
+            s.active().is_none(),
+            "NULL/empty text ⇒ Show fails ⇒ no tip"
+        );
     }
 
     #[test]

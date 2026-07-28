@@ -56,6 +56,21 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     let Some(sim) = &state.simulation else {
         return None;
     };
+    // Repair / Sell cursor modes take over the tactical map regardless of
+    // selection — the wrench/dollar shows over own buildings, no-repair/no-sell
+    // elsewhere. Placed before the empty-selection early return below because
+    // gamemd shows these cursors even with nothing selected.
+    if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on {
+        let repair = state.sidebar_gadget_state.repair_mode_on;
+        let (wx, wy) =
+            crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+        let valid = crate::app_commands::own_building_under_point(state, wx, wy).is_some();
+        return Some(if repair {
+            CursorFeedbackKind::RepairMode(valid)
+        } else {
+            CursorFeedbackKind::SellMode(valid)
+        });
+    }
     let selected = crate::app_input::selected_stable_ids_sorted(sim.entities());
     if selected.is_empty() {
         return None;
@@ -202,6 +217,10 @@ fn capability_cursor_for_hover(
                             return CursorFeedbackKind::Deploy;
                         }
                     }
+                }
+                // Own occupied tank bunker self-hover → eject (deploy cursor).
+                if entity.bunker_occupant.is_some() {
+                    return CursorFeedbackKind::Deploy;
                 }
                 if rules.is_some_and(|rules| {
                     sim.should_show_undeploy_building_command(hover.stable_id, rules)
@@ -354,6 +373,29 @@ fn capability_cursor_for_hover(
                 && matches!(hover.kind, HoverTargetKind::FriendlyStructure)
                 && hovered_entity.is_some_and(|e| {
                     rules.is_some_and(|r| r.is_refinery_type(sim.interner.resolve(e.type_ref)))
+                })
+            {
+                return CursorFeedbackKind::Enter;
+            }
+
+            // Service depot — a damaged own vehicle over an own UnitRepair
+            // building shows the enter/dock cursor (the click issues
+            // RepairAtDepot; see app_context_order.rs).
+            if sel_entity.category == EntityCategory::Unit
+                && sel_entity.health.current < sel_entity.health.max
+                && matches!(hover.kind, HoverTargetKind::FriendlyStructure)
+                && hovered_obj.map_or(false, |o| o.unit_repair)
+            {
+                return CursorFeedbackKind::Enter;
+            }
+
+            // Tank bunker — an own bunkerable vehicle over an own EMPTY tank
+            // bunker shows the enter cursor (the click issues EnterBunker).
+            if matches!(hover.kind, HoverTargetKind::FriendlyStructure)
+                && hovered_entity
+                    .is_some_and(|he| he.bunker_runtime.is_some() && he.bunker_occupant.is_none())
+                && rules.is_some_and(|r| {
+                    crate::sim::docking::bunker_link::can_auto_deploy_here(sim, best_id, r)
                 })
             {
                 return CursorFeedbackKind::Enter;
@@ -538,6 +580,16 @@ pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorI
         CursorFeedbackKind::EngineerRepair => Some(CursorId::EngineerRepair),
         CursorFeedbackKind::Demolish => Some(CursorId::Demolish),
         CursorFeedbackKind::Deploy => Some(CursorId::Deploy),
+        CursorFeedbackKind::RepairMode(valid) => Some(if valid {
+            CursorId::Repair
+        } else {
+            CursorId::NoRepair
+        }),
+        CursorFeedbackKind::SellMode(valid) => Some(if valid {
+            CursorId::Sell
+        } else {
+            CursorId::NoSell
+        }),
         CursorFeedbackKind::SuperWeaponTarget(id) => Some(id),
     }
 }
@@ -681,21 +733,43 @@ mod tests {
     use crate::sim::world::Simulation;
     use std::collections::BTreeMap;
 
+    fn cursor_contract_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             0=GHOST\n\
+             [VehicleTypes]\n\
+             0=CMIN\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=NAPOWR\n\
+             1=GAREFN\n\
+             [GHOST]\n\
+             Strength=100\n\
+             C4=yes\n\
+             [CMIN]\n\
+             Strength=1000\n\
+             Harvester=yes\n\
+             Dock=GAREFN\n\
+             [NAPOWR]\n\
+             Strength=750\n\
+             CanC4=yes\n\
+             [GAREFN]\n\
+             Strength=1000\n\
+             Refinery=yes\n",
+        );
+        RuleSet::from_ini(&ini).expect("cursor contract rules")
+    }
+
     /// Repro for "SEAL right-click on enemy buildings does nothing".
-    /// Loads the actual retail INIs the runtime uses, spawns a SEAL via
+    /// Loads a narrow stock-shaped rules contract, spawns a SEAL via
     /// `spawn_object` (the same code path the barracks uses on production
     /// completion), then calls `capability_cursor_for_hover` and asserts
     /// the returned cursor is `Demolish`. If it isn't, the body of the
     /// function prints which gate condition rejected it.
     #[test]
     fn seal_hovering_enemy_building_shows_demolish() {
-        // 1. Load and merge retail INIs (same as app_init_helpers::load_rules_ini).
-        let base = std::fs::read_to_string("ini/rules.ini").expect("ini/rules.ini");
-        let patch = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
-        let mut ini = IniFile::from_str(&base);
-        let patch_ini = IniFile::from_str(&patch);
-        ini.merge(&patch_ini);
-        let mut rules = RuleSet::from_ini(&ini).expect("parse merged rules");
+        // 1. Load the narrow stock-shaped contract consumed by this cursor path.
+        let mut rules = cursor_contract_rules();
 
         // 2. Build a Simulation. resolve_bridge_warheads is required by the
         //    c4 tick path even though we don't tick here — keeps the sim in a
@@ -752,12 +826,7 @@ mod tests {
     /// for any harvester targeting a same-owner refinery.
     #[test]
     fn chrono_miner_hovering_own_refinery_shows_enter() {
-        let base = std::fs::read_to_string("ini/rules.ini").expect("ini/rules.ini");
-        let patch = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
-        let mut ini = IniFile::from_str(&base);
-        let patch_ini = IniFile::from_str(&patch);
-        ini.merge(&patch_ini);
-        let mut rules = RuleSet::from_ini(&ini).expect("parse merged rules");
+        let mut rules = cursor_contract_rules();
 
         let mut sim = Simulation::new();
         rules.resolve_bridge_warheads(&mut sim.interner);

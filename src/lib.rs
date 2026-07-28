@@ -45,19 +45,28 @@ pub mod app;
 // Extracted from app.rs to keep the orchestrator under 600 lines.
 pub mod app_init;
 pub mod app_init_helpers;
+pub mod app_launch;
 pub mod app_list_maps;
 pub mod app_loading;
+pub mod app_loading_composition;
+pub mod app_loading_progress_row;
 pub mod app_main_menu_shell_render;
 pub mod app_quit_cascade;
 pub mod app_radiation_light;
+pub mod app_shell_capture;
 pub mod app_shell_transition;
 pub mod app_single_player_shell_render;
 pub mod app_skirmish;
+pub mod app_skirmish_session;
 pub mod app_skirmish_shell_render;
+pub mod app_tactical_capture;
+pub mod match_bootstrap;
 
 // App-level skirmish startup contract shared by the menu shell and map loader.
+pub mod skirmish_cooperative;
 pub mod skirmish_launch;
 pub mod skirmish_modes;
+pub mod skirmish_persistence;
 pub mod skirmish_scenarios;
 
 // Shared type definitions and constants used across app_* modules.

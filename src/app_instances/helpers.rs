@@ -21,10 +21,11 @@ pub(crate) enum CellVisibilityState {
 
 /// Compute depth for a sprite from screen position.
 ///
-/// Used ONLY for terrain occlusion (cliff depth test). Sprites do not write
-/// to the depth buffer — sprite-vs-sprite ordering is handled by draw order
-/// (painter's algorithm). The depth value determines whether a sprite pixel
-/// passes the LessEqual test against terrain Z-data.
+/// The depth value serves two roles: it is the painter's sort key for
+/// sprite-vs-sprite ordering (merge pass sorts instances by depth
+/// descending — largest = furthest back = drawn first), and it feeds the
+/// terrain-occlusion (cliff) depth test. Sprites do not write the depth
+/// buffer themselves.
 ///
 /// Lower screen_y → larger depth (further from camera).
 /// Higher elevation (z) → slightly smaller depth (closer to camera).
@@ -50,6 +51,37 @@ pub(crate) fn compute_sprite_depth_params(
     let normalized: f32 = ((iso_row - origin_y) / world_height).clamp(0.0, 1.0);
     let z_bias: f32 = z as f32 * 0.0001;
     (1.0 - normalized - z_bias).clamp(0.001, 0.999)
+}
+
+/// Extra depth bias carried by every anim SHP draw in the original engine's
+/// standard shape-depth expression, on top of the anim's own `ZAdjust=`.
+pub(crate) const ANIM_DRAW_DEPTH_BIAS_PX: i32 = -2;
+
+/// Apply a native `ZAdjust=` depth-sort bias to a computed sprite depth.
+///
+/// The original engine composes a draw's sort value as a cell/row base plus a
+/// signed pixel bias, with the height correction subtracted — smaller value =
+/// closer to the camera. Our normalized depth axis points the same way (lower
+/// = closer) and the base depth already encodes the row term, so a ZAdjust of
+/// N pixels maps to a depth delta of `N / world_height`. Negative ZAdjust
+/// pulls the sprite toward the camera (damage fires, muzzle flashes, arrows
+/// and parachutes all use negative values to draw in front).
+///
+/// Note: 1000 is NOT a neutral value here — that convention belongs to the
+/// per-cell terrain z path, which is a separate mechanism. Neutral is 0.
+pub(crate) fn apply_shape_z_adjust(depth: f32, z_adjust_px: i32, world_height: f32) -> f32 {
+    (depth + z_adjust_px as f32 / world_height.max(1.0)).clamp(0.001, 0.999)
+}
+
+/// Effective anim `ZAdjust`: a nonzero per-slot override (e.g. a building's
+/// `ActiveAnimZAdjust=`) wins; zero falls back to the anim type's own
+/// `ZAdjust=` from its art section.
+pub(crate) fn effective_anim_z_adjust(slot_z_adjust: i32, type_z_adjust: i32) -> i32 {
+    if slot_z_adjust != 0 {
+        slot_z_adjust
+    } else {
+        type_z_adjust
+    }
 }
 
 pub(crate) fn is_near_bridge_cell(state: &AppState, rx: u16, ry: u16) -> bool {

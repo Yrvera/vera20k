@@ -67,14 +67,8 @@ pub(crate) fn draw_hotkey_help(ctx: &egui::Context) {
             let game_keys: &[(&str, &str)] = &[
                 ("S", "Stop selected units"),
                 ("D", "Deploy / Undeploy"),
-                ("A", "Attack move mode"),
                 ("G", "Guard mode"),
-                ("M", "Quicksave"),
-                ("N", "Load most recent save"),
-                ("F5", "Save/load panel"),
                 ("T", "Select same type"),
-                ("Del", "Sell building"),
-                ("B", "Move mode"),
                 ("0-9", "Select control group"),
                 ("Ctrl+0-9", "Assign control group"),
                 ("H", "Jump to base (MCV)"),
@@ -94,15 +88,29 @@ pub(crate) fn draw_hotkey_help(ctx: &egui::Context) {
                     .strong()
                     .color(egui::Color32::from_rgb(20, 20, 20)),
             );
+            // Dev functions all require the Ctrl+Shift chord so bare keys
+            // stay free for stock game hotkeys.
             let debug_keys: &[(&str, &str)] = &[
                 ("F1", "This help panel"),
-                ("P / F9", "Terrain costs + debug panel"),
-                ("[ ]", "Cycle SpeedType (when P active)"),
-                ("K", "Height map (blue=bridge)"),
-                ("L", "Cell grid (cyan+yellow)"),
-                ("V / F10", "Toggle fog of war"),
-                ("X", "Unit inspector (event log)"),
+                ("^+M", "Quicksave"),
+                ("^+N", "Load most recent save"),
+                ("^+F5", "Save/load panel"),
+                ("^+A", "Attack move mode (interim)"),
+                ("^+B", "Move mode (interim)"),
+                ("^+P/F9", "Terrain costs + debug panel"),
+                ("^+[ ]", "Cycle SpeedType (when active)"),
+                ("^+K", "Height map (blue=bridge)"),
+                ("^+L", "Cell grid (cyan+yellow)"),
+                ("^+V/F10", "Toggle fog of war"),
+                ("^+X", "Unit inspector (event log)"),
+                ("^+J", "Debug pause"),
+                ("^+.", "Frame step (while paused)"),
             ];
+            ui.label(
+                egui::RichText::new("^+ = Ctrl+Shift")
+                    .small()
+                    .color(egui::Color32::from_rgb(90, 90, 90)),
+            );
             for (key, desc) in debug_keys {
                 ui.horizontal(|ui| {
                     ui.colored_label(egui::Color32::from_rgb(0, 90, 160), format!("{:>10}", key));
@@ -386,7 +394,10 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                         ))
                         .strong(),
                     );
-                    let state_color = match miner.state {
+                    let miner_state = entity
+                        .miner_state()
+                        .unwrap_or(crate::sim::miner::MinerState::SearchOre);
+                    let state_color = match miner_state {
                         crate::sim::miner::MinerState::Harvest => {
                             egui::Color32::from_rgb(20, 120, 20)
                         }
@@ -407,8 +418,8 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                         }
                         _ => egui::Color32::from_rgb(80, 80, 80),
                     };
-                    ui.colored_label(state_color, format!("State: {:?}", miner.state));
-                    if matches!(miner.state, crate::sim::miner::MinerState::Dock) {
+                    ui.colored_label(state_color, format!("State: {miner_state:?}"));
+                    if matches!(miner_state, crate::sim::miner::MinerState::Dock) {
                         ui.label(format!("  Dock phase: {:?}", miner.dock_phase));
                     }
                     ui.label(format!(

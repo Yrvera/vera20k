@@ -1,8 +1,9 @@
 //! Radar availability detection and event system.
 //!
 //! In RA2/YR, the minimap (Radar Screen) only appears when the player owns a
-//! powered radar-providing building. Buildings with `Radar=yes` or `SpySat=yes`
-//! provide radar. Radar goes offline when power balance is negative (produced < drained).
+//! radar-providing building. Buildings with `Radar=yes` provide the tactical
+//! radar; `SpySat=yes` is handled by the separate shroud-reveal path. Radar goes
+//! offline when the house power balance is negative (produced < drained).
 //!
 //! Also implements the radar event (ping) system: animated rectangles that flash
 //! on the minimap when combat or other events occur. Spacebar cycles through the
@@ -20,8 +21,9 @@ use std::collections::VecDeque;
 
 /// Check if the given owner has at least one operational radar-providing building.
 ///
-/// A building provides radar if its ObjectType has `Radar=yes` OR `SpySat=yes`
-/// AND the building is powered (not disabled by low-power state).
+/// A building provides radar if its ObjectType has `Radar=yes` and the house is
+/// not in low power. This is a house-level gate; stock Allied `GAAIRC` and
+/// `AMRADR` omit `Powered=yes`.
 pub fn has_radar_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> bool {
     let Some(owner_id) = sim.interner.get(owner) else {
         return false;
@@ -93,6 +95,11 @@ pub struct RadarEvent {
     pub rotation: f32,
     /// Rotation speed in radians per tick.
     pub rotation_speed: f32,
+    /// Owning house for player-scoped events (BaseUnderAttack /
+    /// MinerUnderAttack): only that player's view renders them. `None` =
+    /// global event (Combat, BridgeRepaired, …), visible to everyone.
+    #[serde(default)]
+    pub owner: Option<crate::sim::intern::InternedId>,
 }
 
 impl RadarEvent {
@@ -151,6 +158,20 @@ impl RadarEventQueue {
     /// Returns `true` when the event was actually enqueued. YR uses this return
     /// value to gate some EVA calls, including `BridgeRepaired`.
     pub fn push(&mut self, event_type: RadarEventType, rx: u16, ry: u16, duration_ms: u32) -> bool {
+        self.push_owned(event_type, rx, ry, duration_ms, None)
+    }
+
+    /// `push` with an owning house for player-scoped events (BaseUnderAttack /
+    /// MinerUnderAttack). Suppression stays type+distance based regardless of
+    /// owner, matching the single shared queue.
+    pub fn push_owned(
+        &mut self,
+        event_type: RadarEventType,
+        rx: u16,
+        ry: u16,
+        duration_ms: u32,
+        owner: Option<crate::sim::intern::InternedId>,
+    ) -> bool {
         // Suppress if a recent event of same type is within suppression distance.
         let dominated: bool = self.events.iter().any(|e| {
             e.event_type == event_type
@@ -169,6 +190,7 @@ impl RadarEventQueue {
             duration_ms,
             rotation: std::f32::consts::FRAC_PI_4,
             rotation_speed: 0.05,
+            owner,
         };
         if self.events.len() >= self.max_events {
             self.events.pop_front();
@@ -249,7 +271,7 @@ mod tests {
     fn spawn_building(sim: &mut Simulation, id: u64, owner: &str, type_id: &str) {
         let owner_id = sim.interner.intern(owner);
         let type_ref = sim.interner.intern(type_id);
-        let mut e = GameEntity::new(
+        let mut e = GameEntity::new_at_frame_zero_for_test(
             id,
             0,
             0,
@@ -313,6 +335,30 @@ mod tests {
     }
 
     #[test]
+    fn spy_sat_does_not_replace_a_radar_provider() {
+        let mut sim = Simulation::new();
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+             [BuildingTypes]\n0=GASPYSAT\n\
+             [GASPYSAT]\nName=Spy Satellite\nSpySat=yes\nPower=0\nFoundation=2x2\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("spy satellite test rules");
+        spawn_building(&mut sim, 1, "Americans", "GASPYSAT");
+        crate::sim::power_system::tick_power_states(
+            &mut sim.power_states,
+            &mut sim.substrate.entities,
+            &rules,
+            16,
+            &sim.interner,
+        );
+
+        assert!(
+            !has_radar_for_owner(&sim, &rules, "Americans"),
+            "SpySat full-map reveal is separate from the native Radar=yes gate"
+        );
+    }
+
+    #[test]
     fn radar_event_push_and_tick() {
         let mut queue = RadarEventQueue::default();
         assert!(queue.push(RadarEventType::Combat, 10, 20, 4000));
@@ -340,6 +386,17 @@ mod tests {
         // Different type at same location — NOT suppressed.
         assert!(queue.push(RadarEventType::BaseUnderAttack, 10, 20, 4000));
         assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn push_owned_tags_owner_and_push_stays_global() {
+        let mut queue = RadarEventQueue::default();
+        let owner = crate::sim::intern::test_intern("PlayerA");
+        assert!(queue.push_owned(RadarEventType::BaseUnderAttack, 10, 20, 4000, Some(owner)));
+        assert!(queue.push(RadarEventType::Combat, 40, 40, 4000));
+        let owners: Vec<_> = queue.iter().map(|e| (e.event_type, e.owner)).collect();
+        assert!(owners.contains(&(RadarEventType::BaseUnderAttack, Some(owner))));
+        assert!(owners.contains(&(RadarEventType::Combat, None)));
     }
 
     #[test]

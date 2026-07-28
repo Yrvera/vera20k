@@ -151,13 +151,14 @@ impl ChooseMapModalState {
         records: &mut Vec<SkirmishScenarioRecord>,
         modes: &[SkirmishGameMode],
         display_name: impl Into<String>,
+        player_capacity: i32,
     ) -> Option<usize> {
         let mode = mode_by_id(modes, self.selected_mode_id)?;
         if !mode.random_maps_allowed {
             return None;
         }
 
-        let record_index = upsert_random_map_sentinel(records, display_name);
+        let record_index = upsert_random_map_sentinel(records, display_name, player_capacity);
         self.refresh_records(modes, records, Some(record_index));
         Some(record_index)
     }

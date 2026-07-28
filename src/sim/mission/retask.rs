@@ -1,16 +1,18 @@
 //! Verb-driven retasking on [`Simulation`] — the single funnel the player-command
-//! sites use to drop the old mission and commit a new one.
+//! sites use to queue a fresh mission.
 //!
-//! Behavior-preserving in Slice 6: the legacy `Option<T>` machines stay
-//! authoritative; these helpers run the verified dock-reservation teardown and
-//! write `MissionCom` in parallel via the verb API. The per-site *legacy* field
-//! clears (`attack_target`/`order_intent`/`dock_state`/`c4_plant`/`capture_target`/
-//! aircraft dock phase) stay inline at the call site — the sites cancel different
-//! field subsets (e.g. ForceAttack clears only `order_intent`; ForceAttackCell
-//! also clears the aircraft dock phase), so they cannot be folded into a fixed
+//! The mission write is the native event-execute shape: synchronized command
+//! execution queues the selected mission with `commence_now = 0`
+//! (`EventClass` execute, Queue callsite `0x004C73B9=dynamic/0`); the
+//! per-object AI host promotes it via Ready→Commence on its next update. The
+//! legacy `Option<T>` machines stay the behavior drivers; the per-site field
+//! clears (`attack_target`/`order_intent`/`dock_state`/`c4_plant`/
+//! `capture_target`/aircraft dock phase) stay inline at the call site — the
+//! sites cancel different field subsets, so they cannot be folded into a fixed
 //! teardown without diverging.
 
-use crate::sim::mission::{verb, MissionType};
+use crate::sim::mission::authority::EntityReadyInputProvider;
+use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::world::Simulation;
 
 /// Which dock-reservation teardown a retasking command performs.
@@ -64,12 +66,14 @@ impl Simulation {
         }
     }
 
-    /// Retask `id` onto a fresh `mission`: run the dock teardown, then commit the
-    /// mission to the substrate via [`verb::assign_mission`] (clears the queued/
-    /// suspended interrupt stack + resets the dispatch timer). Use for commands
-    /// that start a brand-new order (Move, Stop, RepairAtDepot, EnterTransport,
-    /// PlantC4, CaptureBuilding).
-    pub fn assign_mission_with_teardown(
+    /// Retask `id` onto a fresh `mission`: run the dock teardown, then queue
+    /// the mission through the exact authority with `commence_now = 0` — the
+    /// native event-execute shape (Queue `0x004C73B9=dynamic/0`). Promotion to
+    /// `current` happens at the per-object AI host's Ready→Commence. Used by
+    /// every player command site (Move, Stop, Attack, ForceAttack,
+    /// ForceAttackCell, AttackMove, RepairAtDepot, EnterTransport, PlantC4,
+    /// CaptureBuilding).
+    pub fn queue_mission_with_teardown(
         &mut self,
         id: u64,
         mission: MissionType,
@@ -77,24 +81,14 @@ impl Simulation {
     ) {
         self.run_dock_teardown(id, teardown);
         let now = self.session.binary_frame;
-        if let Some(e) = self.substrate.entities.get_mut(id) {
-            verb::assign_mission(&mut e.mission, mission, now);
-        }
-    }
-
-    /// Like [`Simulation::assign_mission_with_teardown`] but **keeps** the
-    /// queued/suspended interrupt stack and dispatch timer — only the current
-    /// selector is updated. Use for follow-on combat orders (Attack, ForceAttack,
-    /// ForceAttackCell, AttackMove) that should not wipe a pending restore.
-    pub fn assign_mission_keep_fields(
-        &mut self,
-        id: u64,
-        mission: MissionType,
-        teardown: DockTeardown,
-    ) {
-        self.run_dock_teardown(id, teardown);
-        if let Some(e) = self.substrate.entities.get_mut(id) {
-            e.mission.current = mission;
-        }
+        // A missing receiver performs no write (same as the native event path
+        // skipping a dead target); Queue's own guards decide the rest.
+        let _ = self.mission_queue_exact(
+            id,
+            MissionId::from_known(mission),
+            0,
+            now,
+            &EntityReadyInputProvider,
+        );
     }
 }

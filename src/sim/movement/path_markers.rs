@@ -54,7 +54,7 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
 
     fn entity(id: u64, pos: (u16, u16), path: Vec<(u16, u16)>) -> GameEntity {
-        let mut e = GameEntity::new(
+        let mut e = GameEntity::new_at_frame_zero_for_test(
             id,
             pos.0,
             pos.1,

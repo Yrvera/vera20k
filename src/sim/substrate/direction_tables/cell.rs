@@ -21,7 +21,10 @@ pub fn cell_delta(dir: u8) -> Option<(i32, i32)> {
 /// (no mask/bounds; callers sanitize upstream). Debug-asserts `dir <= 7` and
 /// masks `&7` to stay memory-safe; use only when mirroring that contract.
 pub fn cell_delta_unchecked(dir: u8) -> (i32, i32) {
-    debug_assert!(dir <= 7, "cell_delta_unchecked: dir {dir} > 7 (gamemd OOB read)");
+    debug_assert!(
+        dir <= 7,
+        "cell_delta_unchecked: dir {dir} > 7 (gamemd OOB read)"
+    );
     CELL_DELTAS[(dir & 7) as usize]
 }
 

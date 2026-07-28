@@ -24,13 +24,14 @@ fn intern_in_sim(state: &mut AppState, s: &str) -> InternedId {
         .unwrap_or_default()
 }
 
-/// Resolve the local owner, set the override, and return the owned String.
-/// Centralizes the common pattern of getting the owner + updating the override,
-/// reducing one clone per call site compared to doing it inline.
+/// Resolve the local owner and return the owned String.
+///
+/// Read-only: identity comes from the match-scoped pin (or the sandbox
+/// heuristic when unpinned). Command issue must never REWRITE identity —
+/// the old per-action override write made "who am I" drift with whatever
+/// the heuristic last returned, a lockstep hazard.
 fn resolve_owner(state: &mut AppState) -> String {
-    let owner: String = preferred_local_owner(state).unwrap_or_else(|| DEFAULT_OWNER.to_string());
-    state.local_owner_override = Some(owner.clone());
-    owner
+    preferred_local_owner(state).unwrap_or_else(|| DEFAULT_OWNER.to_string())
 }
 
 pub(crate) fn queue_default_build(state: &mut AppState) {
@@ -198,6 +199,66 @@ pub(crate) fn sell_selected_buildings(state: &mut AppState) {
     if count > 0 {
         log::info!("Sell command queued for {} buildings", count);
     }
+}
+
+/// Stable id of the local player's own building under the given world point, if
+/// any. Shared by the repair/sell cursor feedback (`app_cursor`) and the
+/// repair/sell click handler below so the two can never disagree about what is
+/// an eligible target. Only OWN structures qualify — allied buildings are not
+/// repairable/sellable by the local player (the sim `ToggleRepair` /
+/// `SellBuilding` handlers also enforce ownership).
+pub(crate) fn own_building_under_point(
+    state: &AppState,
+    world_x: f32,
+    world_y: f32,
+) -> Option<u64> {
+    let sim = state.simulation.as_ref()?;
+    let owner = preferred_local_owner(state)?;
+    let hover = crate::app_entity_pick::hover_target_at_point(
+        sim,
+        world_x,
+        world_y,
+        &owner,
+        state.sandbox_full_visibility,
+        state.rules.as_ref(),
+        &state.height_map,
+        Some(&state.tactical_bridge_inverse_map),
+    )?;
+    let entity = sim.entities().get(hover.stable_id)?;
+    (entity.category == EntityCategory::Structure
+        && sim
+            .interner
+            .resolve(entity.owner)
+            .eq_ignore_ascii_case(&owner))
+    .then_some(hover.stable_id)
+}
+
+/// Handle a tactical left-click while the sidebar Repair or Sell cursor mode is
+/// active. Issues `ToggleRepair` / `SellBuilding` on the own building under the
+/// cursor. The mode stays active afterwards — gamemd repair/sell modes are
+/// sticky: the player keeps repairing/selling until right-click, Esc, or a
+/// second click on the sidebar button clears the mode. Returns `true` when a
+/// repair/sell mode was active (the click is consumed by the mode regardless of
+/// whether it landed on a building), `false` when neither mode is on.
+pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
+    let repair = state.sidebar_gadget_state.repair_mode_on;
+    let sell = state.sidebar_gadget_state.sell_mode_on;
+    if !repair && !sell {
+        return false;
+    }
+    let (world_x, world_y) =
+        crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+    if let Some(entity_id) = own_building_under_point(state, world_x, world_y) {
+        let owner: String =
+            preferred_local_owner(state).unwrap_or_else(|| DEFAULT_OWNER.to_string());
+        let payload = if repair {
+            Command::ToggleRepair { entity_id }
+        } else {
+            Command::SellBuilding { entity_id }
+        };
+        schedule_command(state, &owner, payload);
+    }
+    true
 }
 
 pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str) {
@@ -558,6 +619,13 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
 }
 
 pub(crate) fn cycle_local_owner(state: &mut AppState) {
+    // Debug-only control: inert whenever a match pinned the local player at
+    // launch — identity must not move mid-match. Cycling remains available in
+    // unpinned sandbox flows (empty-map dev sessions).
+    if state.local_player_owner.is_some() {
+        log::info!("Cycle owner ignored: local player is pinned for this match");
+        return;
+    }
     let mut owners = collect_playable_owners(state);
     if owners.is_empty() {
         return;
@@ -580,8 +648,16 @@ pub(crate) fn preferred_local_owner_name(state: &AppState) -> Option<String> {
 }
 
 pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
+    // Match-scoped pinned identity — set once at launch, never rewritten.
+    // Selection must NEVER repoint the local player: under lockstep each
+    // client issues commands as its fixed house, so identity cannot be a
+    // per-call heuristic. Everything below is the legacy dev/sandbox
+    // fallback, reachable only when no launch flow pinned an owner.
+    if let Some(owner) = &state.local_player_owner {
+        return Some(owner.clone());
+    }
     let sim = state.simulation.as_ref()?;
-    // Prefer owner of selected unit first.
+    // Sandbox fallback: prefer owner of selected unit first.
     for entity in sim.entities().values() {
         let owner_str = sim.interner.resolve(entity.owner);
         if entity.selected && is_playable_house_name(owner_str) {
@@ -688,17 +764,37 @@ fn pick_building_for_owner(
     None
 }
 
-pub(crate) fn schedule_command(state: &mut AppState, owner: &str, payload: Command) {
-    let execute_tick = state
+fn schedule_command_in_sim(
+    sim: &mut crate::sim::world::Simulation,
+    owner: &str,
+    payload: Command,
+) -> u64 {
+    let execute_tick = sim.session.tick.saturating_add(sim.input_delay_ticks);
+    let owner_id = sim.interner.intern(owner);
+    sim.queue_command(CommandEnvelope::new(owner_id, execute_tick, payload));
+    execute_tick
+}
+
+/// Queue one ordinary deterministic command and return its actual execute tick.
+///
+/// Tactical certification records this value rather than reconstructing it
+/// from app configuration: the live simulation owns the input-delay value used
+/// by the command queue. Absence of a simulation is a rejected schedule, not a
+/// synthetic future tick.
+pub(crate) fn try_schedule_command(
+    state: &mut AppState,
+    owner: &str,
+    payload: Command,
+) -> Option<u64> {
+    state
         .simulation
-        .as_ref()
-        .map_or(state.configured_input_delay_ticks, |s| {
-            s.session.tick.saturating_add(s.input_delay_ticks)
-        });
-    if let Some(sim) = &mut state.simulation {
-        let owner_id = sim.interner.intern(owner);
-        sim.queue_command(CommandEnvelope::new(owner_id, execute_tick, payload));
-    }
+        .as_mut()
+        .map(|sim| schedule_command_in_sim(sim, owner, payload))
+}
+
+/// Preserve the existing unit-returning command boundary for ordinary callers.
+pub(crate) fn schedule_command(state: &mut AppState, owner: &str, payload: Command) {
+    let _ = try_schedule_command(state, owner, payload);
 }
 
 pub(crate) fn is_playable_house_name(name: &str) -> bool {
@@ -707,4 +803,46 @@ pub(crate) fn is_playable_house_name(name: &str) -> bool {
         up.as_str(),
         "NEUTRAL" | "SPECIAL" | "CIVILIAN" | "GOODGUY" | "BADGUY" | "JP"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::schedule_command_in_sim;
+    use crate::sim::command::Command;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn recorded_scheduler_uses_live_tick_and_live_input_delay() {
+        let mut sim = Simulation::new();
+        sim.session.tick = 41;
+        sim.input_delay_ticks = 7;
+
+        let execute_tick =
+            schedule_command_in_sim(&mut sim, "Russians", Command::DeployMcv { entity_id: 99 });
+
+        assert_eq!(execute_tick, 48);
+        assert_eq!(sim.pending_commands.len(), 1);
+        assert_eq!(sim.pending_commands[0].execute_tick, execute_tick);
+        assert_eq!(
+            sim.interner.resolve(sim.pending_commands[0].owner),
+            "Russians"
+        );
+        assert_eq!(
+            sim.pending_commands[0].payload,
+            Command::DeployMcv { entity_id: 99 }
+        );
+    }
+
+    #[test]
+    fn recorded_scheduler_saturates_at_tick_space_end() {
+        let mut sim = Simulation::new();
+        sim.session.tick = u64::MAX - 1;
+        sim.input_delay_ticks = 8;
+
+        let execute_tick =
+            schedule_command_in_sim(&mut sim, "YuriCountry", Command::DeployMcv { entity_id: 7 });
+
+        assert_eq!(execute_tick, u64::MAX);
+        assert_eq!(sim.pending_commands[0].execute_tick, u64::MAX);
+    }
 }

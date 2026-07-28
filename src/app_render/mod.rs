@@ -36,6 +36,33 @@ use crate::sidebar::SidebarView;
 
 use build_instances::{DebugInstances, SidebarInstances, UiInstances, WorldInstances};
 
+/// Exact sidebar-related instance counts emitted by the production render path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct GameRenderInstanceCounts {
+    pub minimap: usize,
+    pub viewport_rect: usize,
+    pub radar_animation: usize,
+}
+
+impl GameRenderInstanceCounts {
+    fn from_lengths(minimap: usize, viewport_rect: usize, radar_animation: usize) -> Self {
+        Self {
+            minimap,
+            viewport_rect,
+            radar_animation,
+        }
+    }
+}
+
+/// Output retained from one production game render.
+///
+/// `sidebar_view` is the existing UI handoff. The counts are observation-only
+/// evidence derived from the same vectors uploaded and dispatched this frame.
+pub(crate) struct GameRenderOutput {
+    pub sidebar_view: Option<SidebarView>,
+    pub instance_counts: GameRenderInstanceCounts,
+}
+
 /// Render one in-game frame: terrain, units, overlays, UI, sidebar.
 ///
 /// Orchestrates the 7-phase pipeline described in the module doc.
@@ -44,7 +71,7 @@ pub(crate) fn render_game(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
-) -> Result<Option<SidebarView>> {
+) -> Result<GameRenderOutput> {
     let (sw, sh) = (state.render_width() as f32, state.render_height() as f32);
 
     let local_owner = preferred_local_owner_name(state);
@@ -104,12 +131,15 @@ pub(crate) fn render_game(
         view,
         &draw_passes::DrawPassData {
             bridge_unit_instances: &world.bridge_unit,
+            bridge_unit_pages: &world.bridge_unit_pages,
             bridge_unit_transition_paged: &world.bridge_unit_transition_paged,
             bridge_shp_paged: &world.bridge_shp_paged,
             unit_instances: &world.unit,
+            unit_pages: &world.unit_pages,
             unit_transition_paged: &world.unit_transition_paged,
             shp_paged: &world.shp_paged,
             wall_instances: &world.wall,
+            building_turret_pages: &world.building_turret_pages,
             particle_paged: &world.particle_paged,
             ghost_page: ui.ghost_page,
         },
@@ -118,7 +148,11 @@ pub(crate) fn render_game(
     // Return unit instances vec to AppState (deferred until after the draw pass
     // because the multi-way merge needs the CPU-side Y values).
     state.cached_unit_instances = world.unit;
-    Ok(sidebar.view)
+    state.cached_unit_pages = world.unit_pages;
+    Ok(GameRenderOutput {
+        instance_counts: sidebar.emitted_instance_counts(),
+        sidebar_view: sidebar.view,
+    })
 }
 
 /// Upload all per-frame instance vectors to the GPU buffer pool.
@@ -258,5 +292,28 @@ fn upload_to_gpu(
 }
 
 #[cfg(test)]
-#[path = "../app_render_tests.rs"]
-mod tests;
+mod tests {
+    include!("../app_render_tests.rs");
+
+    #[test]
+    fn game_render_counts_preserve_exact_emitted_lengths() {
+        let sprite = crate::render::batch::SpriteInstance::default();
+        let instances = super::build_instances::SidebarInstances {
+            sidebar: Vec::new(),
+            chrome: Vec::new(),
+            cameo: Vec::new(),
+            gclock: Vec::new(),
+            cameo_overlay: Vec::new(),
+            text: Vec::new(),
+            minimap: vec![sprite],
+            viewport_rect: vec![sprite; 4],
+            radar_anim: vec![sprite; 2],
+            view: None,
+        };
+        let counts = instances.emitted_instance_counts();
+
+        assert_eq!(counts.minimap, 1);
+        assert_eq!(counts.viewport_rect, 4);
+        assert_eq!(counts.radar_animation, 2);
+    }
+}

@@ -48,7 +48,9 @@ pub struct GameOptions {
     pub tech_level: i32,
     /// Game speed (0=fastest, 6=slowest). Rules+0x14A0.
     pub game_speed: i32,
-    /// AI difficulty (0=Easy, 1=Normal, 2=Hard). Rules+0x14A4.
+    /// Rules-owned default AI difficulty in the native HouseClass convention:
+    /// 0=Hard, 1=Normal, 2=Easy. Offline lobby rows copy their own selected
+    /// value into each HouseState. Rules+0x14A4.
     pub ai_difficulty: i32,
     /// Number of AI opponents. Rules+0x14A8.
     pub ai_players: i32,
@@ -102,8 +104,10 @@ impl GameOptions {
     /// `ShadowGrow` and `CaptureTheFlag` drive systems this engine does not
     /// model, and the per-mode allies setting is sourced from the selected game
     /// mode rather than this global default. `AIDifficulty` / `AIPlayers` are
-    /// parsed for a faithful round-trip, but a skirmish launch overrides both
-    /// from the configured opponent slots.
+    /// parsed for a faithful round-trip. A skirmish launch replaces `AIPlayers`
+    /// from the configured slots, while each AI row's selected difficulty is
+    /// copied to its own `HouseState` and this rules-owned difficulty remains
+    /// the global/default mirror.
     pub fn from_multiplayer_dialog_settings(ini: &IniFile) -> Self {
         let mut options = Self::default();
         let Some(section) = ini.section("MultiplayerDialogSettings") else {

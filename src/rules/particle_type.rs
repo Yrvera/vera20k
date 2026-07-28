@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::rules::ini_parser::IniSection;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
+use crate::util::native_x87::NativeF64Bits;
 
 /// Interned identifier for a `ParticleType`. Resolved at INI parse time;
 /// cross-references between types (e.g., `NextParticle=`) store the ID, not the name.
@@ -116,7 +117,9 @@ pub struct ParticleType {
     /// no padding; empty/missing key yields an empty Vec.
     pub color_list: Vec<[u8; 3]>,
     /// Rate of color interpolation across the ColorList.
-    pub color_speed: SimFixed,
+    /// Stored as the exact widened `ReadDouble` result because Spark consumes
+    /// the native double bits directly.
+    pub color_speed: NativeF64Bits,
     /// Spark: starting color 1 (RGB).
     pub start_color_1: [u8; 3],
     /// Spark: starting color 2 (RGB).
@@ -234,10 +237,7 @@ impl ParticleType {
                 .unwrap_or(IVec3::ZERO),
 
             color_list: parse_color_list(section.get("ColorList")),
-            color_speed: section
-                .get_f32("ColorSpeed")
-                .map(sim_from_f32)
-                .unwrap_or(SIM_ZERO),
+            color_speed: NativeF64Bits::from_bits(section.read_double("ColorSpeed", 0.0).to_bits()),
             start_color_1: section
                 .get("StartColor1")
                 .map(parse_rgb_color)
@@ -409,6 +409,7 @@ mod tests {
         assert_eq!(pt.next_particle, None);
         assert_eq!(pt.next_particle_offset, IVec3::ZERO);
         assert_eq!(pt.velocity, SIM_ZERO);
+        assert_eq!(pt.color_speed, NativeF64Bits::POSITIVE_ZERO);
     }
 
     #[test]
@@ -466,12 +467,14 @@ mod tests {
             "[Spark]\n\
              BehavesLike=Spark\n\
              ColorList=255,255,255,200,200,80\n\
+             ColorSpeed=.13\n\
              StartColor1=255,128,0\n\
              StartColor2=128,64,32\n",
         );
         let section = ini.section("Spark").unwrap();
         let pt = ParticleType::from_ini_section("Spark", section);
         assert_eq!(pt.color_list, vec![[255, 255, 255], [200, 200, 80]]);
+        assert_eq!(pt.color_speed.bits(), 0x3fc0_a3d7_0000_0000);
         assert_eq!(pt.start_color_1, [255, 128, 0]);
         assert_eq!(pt.start_color_2, [128, 64, 32]);
     }

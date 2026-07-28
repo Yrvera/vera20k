@@ -514,6 +514,7 @@ mod tests {
     fn make_loco(layer: MovementLayer) -> Option<LocomotorState> {
         Some(LocomotorState {
             kind: LocomotorKind::Drive,
+            mission_ready_state: None,
             primary_kind: Some(LocomotorKind::Drive),
             piggyback: None,
             layer,
@@ -541,6 +542,8 @@ mod tests {
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
+            hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         })
     }
 

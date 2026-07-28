@@ -208,7 +208,7 @@ mod tests {
     }
 
     fn infantry(hp: u16) -> GameEntity {
-        let mut e = GameEntity::new(
+        let mut e = GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,

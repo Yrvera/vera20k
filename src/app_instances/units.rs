@@ -47,6 +47,12 @@ enum UnitRenderSlopeState {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnitTextureSource {
+    Stable(usize),
+    Transition(usize),
+}
+
 fn warn_unexpected_slope_once(slope: u8, rx: u16, ry: u16) {
     if WARNED_SLOPE_GE_17.load(Ordering::Relaxed) {
         return;
@@ -136,7 +142,9 @@ fn unit_render_slope_state(
 pub(crate) fn build_unit_instances(
     state: &AppState,
     instances: &mut Vec<SpriteInstance>,
+    instance_pages: &mut Vec<usize>,
     bridge_instances: &mut Vec<SpriteInstance>,
+    bridge_instance_pages: &mut Vec<usize>,
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
     bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
     shp_paged: &mut [Vec<SpriteInstance>],
@@ -232,9 +240,8 @@ pub(crate) fn build_unit_instances(
         // (not depth-space) so the correction scales naturally with map size.
         // One full tile height pushes the sort point past the foundation bottom.
         let dock_depth_y_offset: f32 = if entity
-            .miner
-            .as_ref()
-            .is_some_and(|m| matches!(m.state, crate::sim::miner::MinerState::Dock))
+            .miner_state()
+            .is_some_and(|s| matches!(s, crate::sim::miner::MinerState::Dock))
         {
             TILE_HEIGHT
         } else {
@@ -247,10 +254,10 @@ pub(crate) fn build_unit_instances(
         // WarpOut animation overlay; the unit itself stays fully opaque.
         let alpha: f32 = 1.0;
         let is_bridge_unit = is_under_bridge_render_state(state, entity);
-        let target_instances = if is_bridge_unit {
-            &mut *bridge_instances
+        let (target_instances, target_instance_pages) = if is_bridge_unit {
+            (&mut *bridge_instances, &mut *bridge_instance_pages)
         } else {
-            &mut *instances
+            (&mut *instances, &mut *instance_pages)
         };
 
         if let Some(turret_facing) = entity
@@ -261,6 +268,7 @@ pub(crate) fn build_unit_instances(
             // Turret unit: emit body, turret, and barrel as separate sprites.
             emit_turret_unit_sprites(
                 target_instances,
+                target_instance_pages,
                 atlas,
                 art_reg,
                 entity,
@@ -290,7 +298,7 @@ pub(crate) fn build_unit_instances(
                 frame: anim_frame,
                 slope_type: stable_slope_for_key(slope_state),
             };
-            if let Some((entry, transition_page)) =
+            if let Some((entry, texture_source)) =
                 unit_entry_for_slope_state(state, atlas, &key, slope_state)
             {
                 let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
@@ -312,10 +320,11 @@ pub(crate) fn build_unit_instances(
                 };
                 push_unit_sprite(
                     target_instances,
+                    target_instance_pages,
                     transition_instances,
                     bridge_transition_instances,
                     is_bridge_unit,
-                    transition_page,
+                    texture_source,
                     sprite,
                 );
             }
@@ -450,7 +459,7 @@ fn unit_entry_for_slope_state(
     atlas: &crate::render::unit_atlas::UnitAtlas,
     key: &UnitSpriteKey,
     slope_state: UnitRenderSlopeState,
-) -> Option<(UnitSpriteEntry, Option<usize>)> {
+) -> Option<(UnitSpriteEntry, UnitTextureSource)> {
     if let Some(transition_key) = transition_key_for_unit(key, slope_state) {
         if let Some(asset_manager) = state.asset_manager.as_ref() {
             if let Some(TransitionUnitSpriteEntry { page, entry }) =
@@ -463,14 +472,14 @@ fn unit_entry_for_slope_state(
                     transition_key,
                 )
             {
-                return Some((entry, Some(page)));
+                return Some((entry, UnitTextureSource::Transition(page)));
             }
         }
     }
 
     atlas_get_with_frame_fallback(atlas, key)
         .copied()
-        .map(|e| (e, None))
+        .map(|entry| (entry, UnitTextureSource::Stable(entry.page)))
 }
 
 fn push_transition_sprite(
@@ -486,20 +495,24 @@ fn push_transition_sprite(
 
 fn push_unit_sprite(
     stable_instances: &mut Vec<SpriteInstance>,
+    stable_instance_pages: &mut Vec<usize>,
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
     bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
     is_bridge_unit: bool,
-    transition_page: Option<usize>,
+    texture_source: UnitTextureSource,
     sprite: SpriteInstance,
 ) {
-    match transition_page {
-        Some(page) if is_bridge_unit => {
+    match texture_source {
+        UnitTextureSource::Transition(page) if is_bridge_unit => {
             push_transition_sprite(bridge_transition_instances, page, sprite);
         }
-        Some(page) => {
+        UnitTextureSource::Transition(page) => {
             push_transition_sprite(transition_instances, page, sprite);
         }
-        None => stable_instances.push(sprite),
+        UnitTextureSource::Stable(page) => {
+            stable_instances.push(sprite);
+            stable_instance_pages.push(page);
+        }
     }
 }
 
@@ -510,6 +523,7 @@ fn push_unit_sprite(
 /// sits on its correct pivot point on the hull.
 fn emit_turret_unit_sprites(
     instances: &mut Vec<SpriteInstance>,
+    instance_pages: &mut Vec<usize>,
     atlas: &crate::render::unit_atlas::UnitAtlas,
     art_reg: Option<&crate::rules::art_data::ArtRegistry>,
     entity: &crate::sim::game_entity::GameEntity,
@@ -576,7 +590,7 @@ fn emit_turret_unit_sprites(
     );
 
     // Emit body first (always). Uses frame fallback for mismatched HVA counts.
-    if let Some((entry, transition_page)) = body_entry_opt {
+    if let Some((entry, texture_source)) = body_entry_opt {
         let sprite = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
             size: entry.pixel_size,
@@ -590,10 +604,11 @@ fn emit_turret_unit_sprites(
         };
         push_unit_sprite(
             instances,
+            instance_pages,
             transition_instances,
             bridge_transition_instances,
             is_bridge_unit,
-            transition_page,
+            texture_source,
             sprite,
         );
     }
@@ -611,7 +626,7 @@ fn emit_turret_unit_sprites(
     };
 
     for key in [first_key, second_key] {
-        if let Some((entry, transition_page)) =
+        if let Some((entry, texture_source)) =
             unit_entry_for_slope_state(state, atlas, key, slope_state)
         {
             let sprite = SpriteInstance {
@@ -630,10 +645,11 @@ fn emit_turret_unit_sprites(
             };
             push_unit_sprite(
                 instances,
+                instance_pages,
                 transition_instances,
                 bridge_transition_instances,
                 is_bridge_unit,
-                transition_page,
+                texture_source,
                 sprite,
             );
         }
@@ -754,5 +770,68 @@ mod tests {
     fn drive_vxl_slope_transition_rejects_out_of_range_remaining() {
         assert_eq!(slope_transition_phase_num(4), None);
         assert_eq!(slope_transition_phase_num(u8::MAX), None);
+    }
+
+    #[test]
+    fn stable_and_transition_sources_route_to_distinct_texture_streams() {
+        let sprite = SpriteInstance {
+            fx_flags: 7,
+            ..Default::default()
+        };
+        let mut stable = Vec::new();
+        let mut stable_pages = Vec::new();
+        let mut transition = Vec::new();
+        let mut bridge_transition = Vec::new();
+
+        push_unit_sprite(
+            &mut stable,
+            &mut stable_pages,
+            &mut transition,
+            &mut bridge_transition,
+            false,
+            UnitTextureSource::Stable(3),
+            sprite,
+        );
+        push_unit_sprite(
+            &mut stable,
+            &mut stable_pages,
+            &mut transition,
+            &mut bridge_transition,
+            false,
+            UnitTextureSource::Transition(2),
+            sprite,
+        );
+
+        assert_eq!(stable.len(), 1);
+        assert_eq!(stable_pages, vec![3]);
+        assert_eq!(transition.len(), 3);
+        assert_eq!(transition[2].len(), 1);
+        assert!(bridge_transition.is_empty());
+
+        let mut bridge_stable = Vec::new();
+        let mut bridge_stable_pages = Vec::new();
+        push_unit_sprite(
+            &mut bridge_stable,
+            &mut bridge_stable_pages,
+            &mut transition,
+            &mut bridge_transition,
+            true,
+            UnitTextureSource::Stable(5),
+            sprite,
+        );
+        push_unit_sprite(
+            &mut bridge_stable,
+            &mut bridge_stable_pages,
+            &mut transition,
+            &mut bridge_transition,
+            true,
+            UnitTextureSource::Transition(1),
+            sprite,
+        );
+
+        assert_eq!(bridge_stable.len(), 1);
+        assert_eq!(bridge_stable_pages, vec![5]);
+        assert_eq!(bridge_transition.len(), 2);
+        assert_eq!(bridge_transition[1].len(), 1);
     }
 }

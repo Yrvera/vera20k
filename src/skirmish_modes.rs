@@ -7,8 +7,6 @@
 use crate::assets::asset_manager::AssetManager;
 use crate::rules::ini_parser::IniFile;
 
-const STOCK_MPMODESMD: &str = include_str!("../ini/mpmodesmd.ini");
-
 const STOCK_MODE_CATEGORIES: [&str; 6] = [
     "Battle",
     "ManBattle",
@@ -17,6 +15,16 @@ const STOCK_MODE_CATEGORIES: [&str; 6] = [
     "FreeForAll",
     "Cooperative",
 ];
+
+#[derive(Debug, thiserror::Error)]
+pub enum SkirmishModeLoadError {
+    #[error("MPModesMD.ini is missing from the configured retail archive stack")]
+    MissingRoster,
+    #[error("MPModesMD.ini from {archive} could not be parsed: {message}")]
+    InvalidRoster { archive: String, message: String },
+    #[error("MPModesMD.ini from {archive} did not contain any usable mode rows")]
+    EmptyRoster { archive: String },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkirmishGameMode {
@@ -49,12 +57,6 @@ impl SkirmishGameMode {
             must_ally: false,
         })
     }
-
-    fn from_roster_row(id: i32, value: &str) -> Option<Self> {
-        let mut mode = Self::from_roster_row_native_defaults(id, value)?;
-        apply_known_stock_dialog_defaults(&mut mode);
-        Some(mode)
-    }
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
@@ -62,26 +64,6 @@ fn parse_bool(value: &str) -> Option<bool> {
         "yes" | "true" | "1" => Some(true),
         "no" | "false" | "0" => Some(false),
         _ => None,
-    }
-}
-
-fn apply_known_stock_dialog_defaults(mode: &mut SkirmishGameMode) {
-    // The retail override INI payloads are not currently mirrored as standalone
-    // files under ini/. Preserve the verified stock defaults from the Ghidra
-    // MPModes report until MIX-backed override parsing is wired in.
-    match mode.override_file.to_ascii_lowercase().as_str() {
-        "mpteammd.ini" => {
-            mode.allies_allowed = true;
-            mode.must_ally = true;
-        }
-        "mpfreeforallmd.ini" | "mpcoopmd.ini" => {
-            mode.allies_allowed = false;
-            mode.must_ally = false;
-        }
-        _ => {
-            mode.allies_allowed = true;
-            mode.must_ally = false;
-        }
     }
 }
 
@@ -122,8 +104,6 @@ where
             };
             if let Some(override_ini) = override_ini(&mode.override_file) {
                 apply_common_override(&mut mode, &override_ini);
-            } else {
-                apply_known_stock_dialog_defaults(&mut mode);
             }
             modes.push(mode);
         }
@@ -133,69 +113,70 @@ where
 }
 
 pub fn parse_mpmodes_ini(ini: &IniFile) -> Vec<SkirmishGameMode> {
-    let mut modes = Vec::new();
-    for category in STOCK_MODE_CATEGORIES {
-        let Some(section) = ini.section(category) else {
-            continue;
-        };
-        for key in section.keys() {
-            let Ok(id) = key.parse::<i32>() else {
-                continue;
-            };
-            let Some(value) = section.get(key) else {
-                continue;
-            };
-            if let Some(mode) = SkirmishGameMode::from_roster_row(id, value) {
-                modes.push(mode);
-            }
-        }
-    }
-    modes.sort_by_key(|mode| mode.id);
-    modes
+    parse_mpmodes_ini_with_overrides(ini, |_| None)
 }
 
-pub fn skirmish_modes_from_assets(assets: &AssetManager) -> Vec<SkirmishGameMode> {
-    let roster_ini = assets
+pub fn skirmish_modes_from_assets(
+    assets: &AssetManager,
+) -> Result<Vec<SkirmishGameMode>, SkirmishModeLoadError> {
+    let (data, source) = assets
         .get_with_source("MPModesMD.ini")
-        .and_then(|(data, source)| {
-            log::info!(
-                "Loading MPModesMD.ini ({} bytes) from {}",
-                data.len(),
-                source
-            );
-            IniFile::from_bytes(&data)
-                .map_err(|err| log::warn!("Failed to parse MPModesMD.ini from {source}: {err}"))
-                .ok()
-        })
-        .unwrap_or_else(|| IniFile::from_str(STOCK_MPMODESMD));
+        .ok_or(SkirmishModeLoadError::MissingRoster)?;
+    log::info!(
+        "Loading MPModesMD.ini ({} bytes) from {}",
+        data.len(),
+        source
+    );
+    let roster_ini =
+        IniFile::from_bytes(&data).map_err(|err| SkirmishModeLoadError::InvalidRoster {
+            archive: source.clone(),
+            message: err.to_string(),
+        })?;
 
     let modes = parse_mpmodes_ini_with_overrides(&roster_ini, |name| {
-        assets.get_with_source(name).and_then(|(data, source)| {
-            log::debug!(
-                "Loading Skirmish MPMode override {} ({} bytes) from {}",
-                name,
-                data.len(),
-                source
+        let Some((data, override_source)) = assets.get_with_source(name) else {
+            log::warn!(
+                "Skirmish MPMode override {name} is missing; using native constructor defaults"
             );
-            IniFile::from_bytes(&data)
-                .map_err(|err| {
-                    log::warn!(
-                        "Failed to parse Skirmish MPMode override {name} from {source}: {err}"
-                    )
-                })
-                .ok()
-        })
+            return None;
+        };
+        log::debug!(
+            "Loading Skirmish MPMode override {} ({} bytes) from {}",
+            name,
+            data.len(),
+            override_source
+        );
+        IniFile::from_bytes(&data)
+            .map_err(|err| {
+                log::warn!(
+                    "Failed to parse Skirmish MPMode override {name} from \
+                     {override_source}; using native constructor defaults: {err}"
+                )
+            })
+            .ok()
     });
 
     if modes.is_empty() {
-        stock_skirmish_modes()
+        Err(SkirmishModeLoadError::EmptyRoster { archive: source })
     } else {
-        modes
+        Ok(modes)
     }
 }
 
-pub fn stock_skirmish_modes() -> Vec<SkirmishGameMode> {
-    parse_mpmodes_ini(&IniFile::from_str(STOCK_MPMODESMD))
+#[cfg(test)]
+pub(crate) fn stock_skirmish_modes() -> Vec<SkirmishGameMode> {
+    const TEST_ROSTER: &str = include_str!("../tests/fixtures/ini/mpmodesmd_stock_contract.ini");
+    let roster = IniFile::from_str(TEST_ROSTER);
+    parse_mpmodes_ini_with_overrides(&roster, |name| {
+        let settings = match name.to_ascii_lowercase().as_str() {
+            "mpteammd.ini" => "AlliesAllowed=yes\nMustAlly=yes\n",
+            "mpfreeforallmd.ini" | "mpcoopmd.ini" => "AlliesAllowed=no\n",
+            _ => "AlliesAllowed=yes\n",
+        };
+        Some(IniFile::from_str(&format!(
+            "[MultiplayerDialogSettings]\n{settings}"
+        )))
+    })
 }
 
 pub fn mode_by_id(modes: &[SkirmishGameMode], id: i32) -> Option<&SkirmishGameMode> {
@@ -265,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn mpmode_missing_override_preserves_known_stock_defaults() {
+    fn mpmode_missing_override_uses_native_constructor_defaults() {
         let ini = IniFile::from_str(
             "[FreeForAll]\n2=GUI:FreeForAll, STT:ModeFreeForAll, MPFreeForAllMD.ini, standard, true\n\
              [ManBattle]\n9=GUI:TeamGame, STT:ModeTeamGame, MPTeamMD.ini, teamgame, false\n",
@@ -274,12 +255,12 @@ mod tests {
         let modes = parse_mpmodes_ini_with_overrides(&ini, |_| None);
 
         let ffa = mode_by_id(&modes, 2).expect("free for all");
-        assert!(!ffa.allies_allowed);
+        assert!(ffa.allies_allowed);
         assert!(!ffa.must_ally);
 
         let team = mode_by_id(&modes, 9).expect("team game");
         assert!(team.allies_allowed);
-        assert!(team.must_ally);
+        assert!(!team.must_ally);
     }
 
     #[test]

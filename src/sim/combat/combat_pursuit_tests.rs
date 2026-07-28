@@ -133,7 +133,14 @@ fn entity_target_dying_pursuit_skips() {
     let rules = pursuit_rules();
 
     sim.tick_attack_pursuit(&rules, Some(&grid));
-    assert!(sim.substrate.entities.get(1).unwrap().attack_target.is_some());
+    assert!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .attack_target
+            .is_some()
+    );
 }
 
 #[test]

@@ -189,8 +189,20 @@ pub struct ParachuteRenderConfig {
 }
 
 /// Global gameplay constants from `[General]` that affect vision, gap generators, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageFireHealthRatio {
+    pub numerator: i32,
+    pub denominator: i32,
+}
+
+/// Global gameplay constants from `[General]` that affect vision, gap generators, etc.
 #[derive(Debug, Clone)]
 pub struct GeneralRules {
+    /// Per-tick Spark gravity AND hover-bob amplitude, from `[AudioVisual]
+    /// Gravity=` (NOT `[General]` — stock rulesmd.ini defines it under
+    /// [AudioVisual], value 6; the engine's code default is 3). Native stores a
+    /// signed integer and converts to f32 at the behavior-3 tick boundary.
+    pub gravity: i32,
     /// Additive sight bonus for veteran+ units (VeteranSight=).
     /// Default 0 in vanilla RA2 (no sight bonus from veterancy).
     pub veteran_sight: i32,
@@ -220,6 +232,25 @@ pub struct GeneralRules {
     /// rulesmd.ini always supplies its own (1500), so the fallback only fires
     /// for a non-retail INI missing the key. Per-type override not yet implemented.
     pub flight_level: i32,
+    /// Hover locomotor cruise altitude in leptons (`[General] HoverHeight=`, default 120).
+    /// The damped-spring vertical controller holds hover units at this height.
+    pub hover_height: i32,
+    /// Hover bob PERIOD in minutes (`[General] HoverBob=`, default 0.04). The visible
+    /// `2·cos` float wobble completes one cycle every `round(HoverBob × 900)` ticks
+    /// (≈36 moving). NOTE: this is the period, not the amplitude (amplitude = `Gravity`).
+    pub hover_bob: SimFixed,
+    /// Hover straightaway speed boost (`[General] HoverBoost=`, default 1.5 / 150%).
+    /// Applied as `SpeedMult` when two same-direction path steps are queued, but the
+    /// throttle target is clamped to 1.0 afterward, so it only bites at approach speed.
+    pub hover_boost: SimFixed,
+    /// Hover acceleration TIME in minutes (`[General] HoverAcceleration=`, default 0.02).
+    /// Per-tick throttle ramp-up = `1 / (HoverAcceleration × 900)` → 18 ticks 0→full.
+    pub hover_acceleration: SimFixed,
+    /// Hover brake TIME in minutes (`[General] HoverBrake=`, default 0.03).
+    /// Per-tick throttle ramp-down = `1 / (HoverBrake × 900)` → 27 ticks full→0.
+    pub hover_brake: SimFixed,
+    /// Hover vertical damped-spring coefficient (`[General] HoverDampen=`, default 0.4 / 40%).
+    pub hover_dampen: SimFixed,
     /// Descent rate cap for parachuted units, in leptons/tick (signed).
     /// Per gamemd, the rate field accumulates by `-1` per tick and clamps
     /// to this value. Default `-3` matches `[General] ParachuteMaxFallRate=-3`.
@@ -291,6 +322,14 @@ pub struct GeneralRules {
     /// `condition_red` pre-scaled to integer ×1000 for deterministic sim comparisons.
     /// Computed once at parse time: `(condition_red * 1000.0) as i64`.
     pub condition_red_x1000: i64,
+    /// Exact integer cutoff used by ordinary-building damage fire after the
+    /// startup validator certifies stock `ConditionYellow=50%`.
+    pub damage_fire_ordinary_ratio: DamageFireHealthRatio,
+    /// Exact integer cutoff used by occupiable-building damage fire after the
+    /// startup validator certifies stock `ConditionRed=25%`.
+    pub damage_fire_occupied_ratio: DamageFireHealthRatio,
+    condition_yellow_native: f64,
+    condition_red_native: f64,
     /// `ConditionRedSparkingProbability=` ([General]) — per-tick probability that
     /// the `AI_Update` damage-Spark particle system spawns while health is below
     /// ConditionRed. Default **0.02** (verified `RulesClass__Constructor`; stock INI
@@ -360,12 +399,14 @@ pub struct GeneralRules {
     /// values keep the body tilted longer between successive impulses. Default 0.1.
     pub fallback_coefficient: SimFixed,
     /// Fallback sound played at the arrival cell of a self-teleport when the
-    /// per-unit `ChronoInSound=` is unset. Parsed from `[General] ChronoInSound=`
-    /// (stock default `ChronoMinerTeleport`). `None` = no sound.
+    /// per-unit `ChronoInSound=` is unset. Parsed from `[AudioVisual]
+    /// ChronoInSound=` (stock ships `ChronoMinerTeleport`). A genuinely-absent
+    /// key yields `None` = no sound, not a fabricated fallback.
     pub chrono_in_sound: Option<String>,
     /// Fallback sound played at the departure cell of a self-teleport when the
-    /// per-unit `ChronoOutSound=` is unset. Parsed from `[General] ChronoOutSound=`
-    /// (stock default `ChronoMinerTeleport`). `None` = no sound.
+    /// per-unit `ChronoOutSound=` is unset. Parsed from `[AudioVisual]
+    /// ChronoOutSound=` (stock ships `ChronoMinerTeleport`). A genuinely-absent
+    /// key yields `None` = no sound, not a fabricated fallback.
     pub chrono_out_sound: Option<String>,
     /// Interval in minutes between low-power degradation damage ticks on Powered=yes buildings.
     /// Parsed from DamageDelay= in [General]. Default 1.0 minute.
@@ -421,12 +462,15 @@ pub struct GeneralRules {
     /// Frames per StepTimer increment during ore gathering (HarvesterLoadRate=).
     /// One bale requires 9 steps, so harvest_interval = rate * 9. Default 2.
     pub harvester_load_rate: i32,
-    /// Tenths-of-a-frame per bale during refinery unloading (HarvesterDumpRate=).
-    /// Pre-computed from INI double: `(rate * 9000.0).round() as u16`.
-    /// Default 144 (from 0.016 × 9000 = 14.4 frames per bale, exact).
-    /// The miner timer counts in tenths so the 0.4-frame fractional component
-    /// at default rate is preserved instead of being truncated to 14.
-    pub harvester_dump_tenths: u16,
+    /// Whole-frame dump gate for refinery unloading (HarvesterDumpRate=).
+    /// The unload accumulator advances one whole frame per unloading tick and a
+    /// slot drains once it reaches this threshold; gamemd's gate is the full
+    /// `HarvesterDumpRate(double) × 900 <= accumulator`. Because the accumulator
+    /// is integer-stepped, the first crossing is exactly `ceil(rate × 900)`, so
+    /// storing the ceiling (not a tenths-quantized value) reproduces gamemd's
+    /// crossing bit-for-bit with no float in the sim gate.
+    /// Default 15 (from ceil(0.016 × 900) = ceil(14.4) = 15 frames per gate).
+    pub harvester_dump_frames: u16,
 
     // -- Chrono warp delay constants --
     /// Post-warp lock duration in game frames (ChronoDelay= in [General]).
@@ -448,9 +492,11 @@ pub struct GeneralRules {
     /// (ChronoRangeMinimum= in [General]). Default 0.
     pub chrono_range_minimum: i32,
 
-    /// Ore Purifier bonus as integer percentage (PurifierBonus= in [General]).
-    /// Stored as `round(float_value * 100)`. 25 = 25% bonus. Default 25.
-    pub purifier_bonus_pct: i32,
+    /// Ore Purifier bonus as a fixed-point fraction in parts-per-million
+    /// (PurifierBonus= in [General]; `INCOME_PPM_SCALE` = 1.0×). Stored at full
+    /// precision so modded fractional percentages (e.g. `.333`) are not quantized
+    /// to whole percent. Stock `.25` -> 250_000 (25%). Default 250_000.
+    pub purifier_bonus_ppm: i64,
     /// AI virtual purifier counts indexed by difficulty
     /// (AIVirtualPurifiers= in [General]). Each entry is added to the AI
     /// player's real purifier count when computing the deposit bonus. INI
@@ -674,6 +720,7 @@ fn parse_paradrop_list(
 impl Default for GeneralRules {
     fn default() -> Self {
         Self {
+            gravity: 3,
             veteran_sight: 0,
             leptons_per_sight_increase: 0,
             gap_radius: 10,
@@ -681,6 +728,12 @@ impl Default for GeneralRules {
             tunnel_speed: sim_from_f32(6.0),
             missile_rot_var: sim_from_f32(1.0),
             flight_level: 500,
+            hover_height: 120,
+            hover_bob: sim_from_f32(0.04),
+            hover_boost: sim_from_f32(1.5),
+            hover_acceleration: sim_from_f32(0.02),
+            hover_brake: sim_from_f32(0.03),
+            hover_dampen: sim_from_f32(0.4),
             parachute_max_fall_rate: -3,
             paradrop_radius: 1024,
             paradrop_aircraft_type: "PDPLANE".to_string(),
@@ -720,6 +773,16 @@ impl Default for GeneralRules {
             condition_yellow_x1000: 500,
             condition_red: 0.25,
             condition_red_x1000: 250,
+            damage_fire_ordinary_ratio: DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 2,
+            },
+            damage_fire_occupied_ratio: DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 4,
+            },
+            condition_yellow_native: 0.5,
+            condition_red_native: 0.25,
             condition_red_sparking_probability: 0.02,
             condition_yellow_sparking_probability: 0.01,
             condition_red_spark_threshold: damage_spark_spawn_threshold(0.02),
@@ -755,14 +818,14 @@ impl Default for GeneralRules {
             harvester_too_far_distance: 5,
             chrono_harv_too_far_distance: 50,
             harvester_load_rate: 2,
-            harvester_dump_tenths: 144,
+            harvester_dump_frames: 15,
             chrono_delay: 60,
             chrono_reinf_delay: 180,
             chrono_distance_factor: 48,
             chrono_trigger: true,
             chrono_minimum_delay: 16,
             chrono_range_minimum: 0,
-            purifier_bonus_pct: 25,
+            purifier_bonus_ppm: 250_000,
             ai_virtual_purifiers: [4, 2, 0],
             allied_survivor_divisor: 500,
             soviet_survivor_divisor: 250,
@@ -1006,8 +1069,7 @@ impl RadiationRules {
         let Some(section) = ini.section("Radiation") else {
             return d;
         };
-        let get_i32 =
-            |key: &str, default: i32| -> i32 { section.get_i32(key).unwrap_or(default) };
+        let get_i32 = |key: &str, default: i32| -> i32 { section.get_i32(key).unwrap_or(default) };
         Self {
             duration_multiple: get_i32("RadDurationMultiple", d.duration_multiple),
             // Delays are used as divisors/modulo periods — clamp to >= 1 so a
@@ -1069,12 +1131,14 @@ impl GeneralRules {
                 .to_string()
         };
         let defaults = Self::default();
-        let condition_yellow_f32: f32 = audio_visual
-            .and_then(|s| s.get_percent("ConditionYellow"))
+        let condition_yellow_native = audio_visual
+            .map(|s| s.read_double("ConditionYellow", 0.5))
             .unwrap_or(0.5);
-        let condition_red_f32: f32 = audio_visual
-            .and_then(|s| s.get_percent("ConditionRed"))
+        let condition_red_native = audio_visual
+            .map(|s| s.read_double("ConditionRed", 0.25))
             .unwrap_or(0.25);
+        let condition_yellow_f32 = condition_yellow_native as f32;
+        let condition_red_f32 = condition_red_native as f32;
         // [General] damage-Spark spawn probabilities (verified ctor defaults
         // 0.02/0.01; stock INI omits them). Raw doubles, not percentages. Bound
         // before `Self` so each band feeds both its stored value and its derived
@@ -1092,6 +1156,12 @@ impl GeneralRules {
             condition_yellow_spark_threshold: damage_spark_spawn_threshold(
                 condition_yellow_spark_prob,
             ),
+            // Gravity lives in [AudioVisual] (stock value 6). Reading it from
+            // [General] silently fell back to the code default 3 — half stock
+            // gravity for spark ballistics and the hover bob amplitude.
+            gravity: audio_visual
+                .and_then(|s| s.get_i32("Gravity"))
+                .unwrap_or(defaults.gravity),
             veteran_sight: general.get_i32("VeteranSight").unwrap_or(0),
             leptons_per_sight_increase: general.get_i32("LeptonsPerSightIncrease").unwrap_or(0),
             gap_radius: general.get_i32("GapRadius").unwrap_or(10),
@@ -1105,6 +1175,30 @@ impl GeneralRules {
                 .map(sim_from_f32)
                 .unwrap_or(sim_from_f32(1.0)),
             flight_level: general.get_i32("FlightLevel").unwrap_or(500),
+            // Hover keys. gamemd reads these with the %-aware Get_Double (150% → 1.5),
+            // which `get_percent` matches (it also passes bare floats like `.02` through).
+            // The three time keys (bob/accel/brake) are in MINUTES; ×900 = ticks.
+            hover_height: general.get_i32("HoverHeight").unwrap_or(120),
+            hover_bob: general
+                .get_percent("HoverBob")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(0.04)),
+            hover_boost: general
+                .get_percent("HoverBoost")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(1.5)),
+            hover_acceleration: general
+                .get_percent("HoverAcceleration")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(0.02)),
+            hover_brake: general
+                .get_percent("HoverBrake")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(0.03)),
+            hover_dampen: general
+                .get_percent("HoverDampen")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(0.4)),
             parachute_max_fall_rate: general.get_i32("ParachuteMaxFallRate").unwrap_or(-3),
             paradrop_radius: general.get_i32("ParadropRadius").unwrap_or(1024),
             paradrop_aircraft_type: general
@@ -1165,6 +1259,16 @@ impl GeneralRules {
             condition_yellow_x1000: (condition_yellow_f32 as f64 * 1000.0) as i64,
             condition_red: condition_red_f32,
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
+            damage_fire_ordinary_ratio: DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 2,
+            },
+            damage_fire_occupied_ratio: DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 4,
+            },
+            condition_yellow_native,
+            condition_red_native,
             building_garrisoned_sound: audio_visual
                 .and_then(|s| s.get("BuildingGarrisonedSound"))
                 .map(str::trim)
@@ -1236,16 +1340,18 @@ impl GeneralRules {
                 .and_then(|s| s.get_f32("FallBackCoefficient"))
                 .map(sim_from_f32)
                 .unwrap_or(SimFixed::lit("0.1")),
-            chrono_in_sound: general
-                .get("ChronoInSound")
+            // ChronoInSound/ChronoOutSound live in [AudioVisual], not [General].
+            // No hardcoded fallback: a genuinely-absent key means no fallback
+            // sound (silence), matching gamemd. Stock ships these keys present
+            // (= ChronoMinerTeleport), so stock audio is unchanged.
+            chrono_in_sound: audio_visual
+                .and_then(|s| s.get("ChronoInSound"))
                 .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .or_else(|| Some("ChronoMinerTeleport".to_string())),
-            chrono_out_sound: general
-                .get("ChronoOutSound")
+                .filter(|s| !s.is_empty()),
+            chrono_out_sound: audio_visual
+                .and_then(|s| s.get("ChronoOutSound"))
                 .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .or_else(|| Some("ChronoMinerTeleport".to_string())),
+                .filter(|s| !s.is_empty()),
             warp_in: AnimRef {
                 name: parse_anim_name("WarpIn", "WARPIN"),
                 rate_ms: defaults.warp_in.rate_ms,
@@ -1298,11 +1404,14 @@ impl GeneralRules {
             harvester_too_far_distance: general.get_i32("HarvesterTooFarDistance").unwrap_or(5),
             chrono_harv_too_far_distance: general.get_i32("ChronoHarvTooFarDistance").unwrap_or(50),
             harvester_load_rate: general.get_i32("HarvesterLoadRate").unwrap_or(2),
-            harvester_dump_tenths: {
-                let rate = general.get_f32("HarvesterDumpRate").unwrap_or(0.016);
-                // Tenths of a frame: 0.016 × 9000 = 144 (= 14.4 frames/bale).
-                // Clamp to u16::MAX (~6553 ticks/bale) to keep the timer wraparound-safe.
-                (rate * 9000.0).clamp(0.0, u16::MAX as f32).round() as u16
+            harvester_dump_frames: {
+                // gamemd reads HarvesterDumpRate with ReadDouble and gates on
+                // `rate × 900 <= accumulator`; the accumulator is integer-stepped,
+                // so the first crossing is ceil(rate × 900). Take the ceiling at
+                // full double precision to match that crossing exactly (no tenths
+                // rounding). Clamp to u16::MAX to keep the frame threshold in range.
+                let rate = general.get_f64("HarvesterDumpRate").unwrap_or(0.016);
+                (rate * 900.0).clamp(0.0, u16::MAX as f64).ceil() as u16
             },
             chrono_delay: general.get_i32("ChronoDelay").unwrap_or(60),
             chrono_reinf_delay: general.get_i32("ChronoReinfDelay").unwrap_or(180),
@@ -1310,8 +1419,11 @@ impl GeneralRules {
             chrono_trigger: general.get_bool("ChronoTrigger").unwrap_or(true),
             chrono_minimum_delay: general.get_i32("ChronoMinimumDelay").unwrap_or(16),
             chrono_range_minimum: general.get_i32("ChronoRangeMinimum").unwrap_or(0),
-            purifier_bonus_pct: (general.get_percent("PurifierBonus").unwrap_or(0.25) * 100.0)
-                .round() as i32,
+            // Parse-time float -> fixed-point ppm (mirrors the IncomeMult parse); the runtime
+            // bonus math is all integer. Full precision — no whole-percent quantize.
+            purifier_bonus_ppm: (general.get_percent("PurifierBonus").unwrap_or(0.25) as f64
+                * INCOME_PPM_SCALE as f64)
+                .round() as i64,
             ai_virtual_purifiers: {
                 let defaults = [4, 2, 0];
                 general
@@ -1702,6 +1814,22 @@ impl RuleSet {
         let mut building_ids: Vec<String> = Vec::new();
         let production: ProductionRules = ProductionRules::from_ini(ini);
         let general: GeneralRules = GeneralRules::from_ini(ini);
+        if general.condition_yellow_native != 0.5 {
+            return Err(RulesError::InvalidValue {
+                section: "AudioVisual".to_string(),
+                key: "ConditionYellow".to_string(),
+                expected: "50% (the currently certified damage-fire ratio)".to_string(),
+                value: general.condition_yellow_native.to_string(),
+            });
+        }
+        if general.condition_red_native != 0.25 {
+            return Err(RulesError::InvalidValue {
+                section: "AudioVisual".to_string(),
+                key: "ConditionRed".to_string(),
+                expected: "25% (the currently certified damage-fire ratio)".to_string(),
+                value: general.condition_red_native.to_string(),
+            });
+        }
         let terrain_rules: TerrainRules = TerrainRules::from_ini(ini);
         let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
@@ -2447,9 +2575,7 @@ fn parse_country_rules(ini: &IniFile) -> HashMap<String, CountryRules> {
 /// Collect all weapon and warhead IDs referenced by objects.
 ///
 /// Returns (weapon_ids, warhead_ids) as sets (deduplicated).
-fn collect_weapon_refs(
-    objects: &[ObjectType],
-) -> (HashSet<String>, HashSet<String>) {
+fn collect_weapon_refs(objects: &[ObjectType]) -> (HashSet<String>, HashSet<String>) {
     let mut weapon_ids: HashSet<String> = HashSet::new();
     let warhead_ids: HashSet<String> = HashSet::new();
 
@@ -2839,6 +2965,21 @@ MutateWarhead=MyMutate\n\
     }
 
     #[test]
+    fn parse_spark_gravity_preserves_signed_integer_storage() {
+        assert_eq!(GeneralRules::default().gravity, 3);
+        // Gravity lives in [AudioVisual] (stock rulesmd.ini), NOT [General].
+        let stock =
+            GeneralRules::from_ini(&IniFile::from_str("[General]\n[AudioVisual]\nGravity=6\n"));
+        assert_eq!(stock.gravity, 6);
+        let signed =
+            GeneralRules::from_ini(&IniFile::from_str("[General]\n[AudioVisual]\nGravity=-7\n"));
+        assert_eq!(signed.gravity, -7);
+        // A [General] Gravity is ignored (the engine reads it in ReadAudioVisual).
+        let misplaced = GeneralRules::from_ini(&IniFile::from_str("[General]\nGravity=9\n"));
+        assert_eq!(misplaced.gravity, 3);
+    }
+
+    #[test]
     fn parse_rules_rocking_coefficients_explicit() {
         let ini = IniFile::from_str(
             "[General]\n[AudioVisual]\nDirectRockingCoefficient=2.0\nFallBackCoefficient=0.05\n",
@@ -2850,8 +2991,9 @@ MutateWarhead=MyMutate\n\
 
     #[test]
     fn parse_retail_rules_rocking_coefficients() {
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
-        let ini = IniFile::from_str(&ini_text);
+        let ini = IniFile::from_str(
+            "[AudioVisual]\nDirectRockingCoefficient=1.5\nFallBackCoefficient=0.1\n",
+        );
         let r = GeneralRules::from_ini(&ini);
         assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("1.5"));
         assert_eq!(r.fallback_coefficient, SimFixed::lit("0.1"));
@@ -2991,7 +3133,7 @@ MutateWarhead=MyMutate\n\
         assert_eq!(rules.general.slave_miner_kick_frame_delay, 200);
         assert_eq!(rules.general.harvester_too_far_distance, 8);
         assert_eq!(rules.general.chrono_harv_too_far_distance, 40);
-        assert_eq!(rules.general.purifier_bonus_pct, 30);
+        assert_eq!(rules.general.purifier_bonus_ppm, 300_000);
     }
 
     #[test]
@@ -3013,7 +3155,27 @@ MutateWarhead=MyMutate\n\
         assert_eq!(rules.general.slave_miner_kick_frame_delay, 150);
         assert_eq!(rules.general.harvester_too_far_distance, 5);
         assert_eq!(rules.general.chrono_harv_too_far_distance, 50);
-        assert_eq!(rules.general.purifier_bonus_pct, 25);
+        assert_eq!(rules.general.purifier_bonus_ppm, 250_000);
+    }
+
+    /// Fractional-percent PurifierBonus survives at full fixed-point precision
+    /// (parts-per-million), NOT quantized to whole percent. `.333` -> 333_000 ppm,
+    /// not 330_000. Stock `.25` stays exactly 250_000 (byte-identical to the old
+    /// integer-percent form).
+    #[test]
+    fn purifier_bonus_keeps_fractional_precision() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [General]\n\
+             PurifierBonus=.333\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("Should parse");
+        assert_eq!(rules.general.purifier_bonus_ppm, 333_000);
+        // The old integer-percent path would have rounded to 33% (330_000) — the drift.
+        assert_ne!(rules.general.purifier_bonus_ppm, 330_000);
     }
 
     #[test]
@@ -3160,6 +3322,72 @@ ChuteSound=ParachuteDrop
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.chute_sound.as_deref(), Some("ParachuteDrop"));
+    }
+
+    #[test]
+    fn test_stock_chrono_sounds_parsed_from_audiovisual() {
+        // Stock ships both keys under [AudioVisual] with value ChronoMinerTeleport.
+        let ini_str = "\
+[General]
+[AudioVisual]
+ChronoInSound=ChronoMinerTeleport
+ChronoOutSound=ChronoMinerTeleport
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(
+            general.chrono_in_sound.as_deref(),
+            Some("ChronoMinerTeleport")
+        );
+        assert_eq!(
+            general.chrono_out_sound.as_deref(),
+            Some("ChronoMinerTeleport")
+        );
+    }
+
+    #[test]
+    fn test_chrono_sounds_absent_yield_none() {
+        // A genuinely-absent key must be silence (None), not a fabricated
+        // fallback. Guards against reading the wrong section or re-adding a
+        // hardcoded default. [General] present so from_ini does not early-return.
+        let ini_str = "\
+[General]
+[AudioVisual]
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.chrono_in_sound, None);
+        assert_eq!(general.chrono_out_sound, None);
+    }
+
+    #[test]
+    fn harvester_dump_frames_uses_ceil_of_rate_times_900_not_tenths() {
+        // The dump gate crosses at ceil(HarvesterDumpRate × 900). The old code
+        // quantized to tenths and could cross a frame early for modded rates.
+        let frames = |line: &str| {
+            let ini = IniFile::from_str(&format!("[General]\n{line}\n"));
+            GeneralRules::from_ini(&ini).harvester_dump_frames
+        };
+        // Stock (key absent -> default 0.016): ceil(14.4) = 15, unchanged.
+        assert_eq!(frames(""), 15, "stock 0.016 stays at 15 frames");
+        // Modded 0.0156: ceil(14.04) = 15. Old tenths code crossed at 14 (bug).
+        assert_eq!(
+            frames("HarvesterDumpRate=0.0156"),
+            15,
+            "0.0156 must ceil to 15, not 14"
+        );
+        // Modded 0.02: ceil(18.0) = 18.
+        assert_eq!(
+            frames("HarvesterDumpRate=0.02"),
+            18,
+            "0.02 -> exactly 18 frames"
+        );
+        // Modded 0.0201: ceil(18.09) = 19 (round-to-nearest would give 18).
+        assert_eq!(
+            frames("HarvesterDumpRate=0.0201"),
+            19,
+            "0.0201 must ceil up to 19"
+        );
     }
 
     #[test]
@@ -3509,6 +3737,33 @@ DefaultSparkSystem=SparkSys
     }
 
     #[test]
+    fn damage_fire_thresholds_accept_only_the_certified_stock_ratios() {
+        let stock = IniFile::from_str(
+            "[General]\nDamageFireTypes=FIRE01\n\n[AudioVisual]\nConditionYellow=50%\nConditionRed=25%\n",
+        );
+        let rules = RuleSet::from_ini(&stock).expect("stock thresholds");
+        assert_eq!(
+            rules.general.damage_fire_ordinary_ratio,
+            DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 2,
+            }
+        );
+        assert_eq!(
+            rules.general.damage_fire_occupied_ratio,
+            DamageFireHealthRatio {
+                numerator: 1,
+                denominator: 4,
+            }
+        );
+
+        let unsupported = IniFile::from_str(
+            "[General]\nDamageFireTypes=FIRE01\n\n[AudioVisual]\nConditionYellow=49%\nConditionRed=25%\n",
+        );
+        assert!(RuleSet::from_ini(&unsupported).is_err());
+    }
+
+    #[test]
     fn empty_particles_section_leaves_registries_empty() {
         // Pre-existing rules without [Particles]/[ParticleSystems] still parse.
         let ini = IniFile::from_str(&make_particle_test_rules(""));
@@ -3561,8 +3816,14 @@ DefaultSparkSystem=SparkSys
         // gamemd's 80-bit product exactly at the boundary.)
         let scale = f64::from_bits(0x3E00_0000_0040_0000);
         for (band, t) in [(0.02_f64, 42_949_673_u32), (0.01, 21_474_837)] {
-            assert!((t as f64 - 1.0) * scale < band, "roll=t-1 must pass for band {band}");
-            assert!(!((t as f64) * scale < band), "roll=t must fail for band {band}");
+            assert!(
+                (t as f64 - 1.0) * scale < band,
+                "roll=t-1 must pass for band {band}"
+            );
+            assert!(
+                !((t as f64) * scale < band),
+                "roll=t must fail for band {band}"
+            );
         }
 
         // Degenerate bands.
@@ -3809,10 +4070,30 @@ ZAdjust=-10
 
     #[test]
     fn retail_rulesmd_c4_flags_parse_correctly() {
-        // Load the actual retail rulesmd.ini from the repo's ini/ directory.
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
-        let ini = IniFile::from_str(&ini_text);
-        let rules = RuleSet::from_ini(&ini).expect("parse retail rulesmd");
+        let ini = IniFile::from_str(
+            "[CombatDamage]\nC4Delay=0.03\n\
+             [InfantryTypes]\n\
+             0=GHOST\n1=TANY\n2=PTROOP\n3=E1\n4=ENGINEER\n5=CCOMAND\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=CAMISC01\n1=CAMISC02\n2=CAMISC06\n3=AMMOCRAT\n\
+             4=GAPILE\n5=NAHAND\n6=GAREFN\n\
+             [GHOST]\nC4=yes\n\
+             [TANY]\nC4=yes\n\
+             [PTROOP]\nC4=yes\n\
+             [E1]\n\
+             [ENGINEER]\n\
+             [CCOMAND]\n\
+             [CAMISC01]\nCanC4=no\n\
+             [CAMISC02]\nCanC4=no\n\
+             [CAMISC06]\nCanC4=no\n\
+             [AMMOCRAT]\nCanC4=no\n\
+             [GAPILE]\n\
+             [NAHAND]\n\
+             [GAREFN]\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("parse C4 stock-contract fixture");
 
         // C4-capable units must have c4=true.
         for unit in &["GHOST", "TANY", "PTROOP"] {
@@ -3854,22 +4135,25 @@ ZAdjust=-10
     #[test]
     fn type_lookups_are_case_insensitive() {
         // Parity: the original engine resolves type names case-insensitively
-        // (stricmp-style find-or-allocate). Load real retail data and prove every
+        // (stricmp-style find-or-allocate). Use a hermetic rules graph and prove every
         // type accessor resolves a stored name regardless of case, to the same entry.
-        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
+        let ini_text = format!(
+            "{}\n[SuperWeaponTypes]\n0=FixtureSW\n[FixtureSW]\nType=MultiMissile\n",
+            make_test_rules()
+        );
         let ini = IniFile::from_str(&ini_text);
-        let rules = RuleSet::from_ini(&ini).expect("parse retail rulesmd");
+        let rules = RuleSet::from_ini(&ini).expect("parse case-lookup fixture");
 
-        // Concrete, readable anchor: [HTNK] exists in stock rulesmd.
-        assert!(rules.object("HTNK").is_some());
+        // Concrete, readable anchor from the fixture.
+        assert!(rules.object("MTNK").is_some());
         assert!(
-            rules.object("htnk").is_some(),
+            rules.object("mtnk").is_some(),
             "lowercase must resolve (gamemd parity)"
         );
-        assert!(rules.object("Htnk").is_some(), "mixed case must resolve");
+        assert!(rules.object("Mtnk").is_some(), "mixed case must resolve");
         assert_eq!(
-            rules.object("htnk").map(|o| o as *const _),
-            rules.object("HTNK").map(|o| o as *const _),
+            rules.object("mtnk").map(|o| o as *const _),
+            rules.object("MTNK").map(|o| o as *const _),
             "all casings resolve to the same object",
         );
 
@@ -3907,7 +4191,11 @@ ZAdjust=-10
         check_ci(&rules.weapons, |k| rules.weapon(k), "weapon");
         check_ci(&rules.warheads, |k| rules.warhead(k), "warhead");
         check_ci(&rules.projectiles, |k| rules.projectile(k), "projectile");
-        check_ci(&rules.super_weapons, |k| rules.super_weapon(k), "super_weapon");
+        check_ci(
+            &rules.super_weapons,
+            |k| rules.super_weapon(k),
+            "super_weapon",
+        );
     }
 
     /// Slice 8 acceptance: the sim TypeHandleTable resolves every interned type id
@@ -3935,7 +4223,10 @@ ZAdjust=-10
             .get("mtnk")
             .expect("MTNK interned case-insensitively");
         assert_eq!(table.handle_for(mtnk_lower), rules.type_handle("MTNK"));
-        assert!(rules.object("mtnk").is_some(), "lowercased object() resolves");
+        assert!(
+            rules.object("mtnk").is_some(),
+            "lowercased object() resolves"
+        );
     }
 
     /// Helper: parse a (rules.ini, art.ini) pair into a merged RuleSet for

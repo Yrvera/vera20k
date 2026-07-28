@@ -371,11 +371,13 @@ pub fn drain_smudge_spawn_requests(
                 anim_name,
                 rx,
                 ry,
+                sub_x,
+                sub_y,
                 z,
             } => {
                 let coord = SimCoord {
-                    x: (*rx as i32) * 256 + 128,
-                    y: (*ry as i32) * 256 + 128,
+                    x: (*rx as i32) * 256 + sub_x.to_num::<i32>(),
+                    y: (*ry as i32) * 256 + sub_y.to_num::<i32>(),
                     z: *z,
                 };
                 // Ground level is sourced from the resolved terrain cell; cells

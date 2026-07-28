@@ -1,7 +1,8 @@
 //! Tooltip service driver (study S1): the ONLY wall-clock reader for tooltip
-//! timing. Feeds cursor moves + button kills into `ui::tooltips`, re-syncs
-//! the region set per frame (in-game sidebar buttons + cameos; main-menu
-//! shell buttons), and builds the in-game tooltip draw instances.
+//! timing. Feeds cursor moves + button kills into `ui::tooltips`, re-syncs the
+//! in-game sidebar/cameo region set per frame, and builds the in-game tooltip
+//! draw instances. Pregame shell status lines use their dialog hover state
+//! directly because they are not the delayed native tooltip mechanism.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
@@ -13,10 +14,8 @@ use crate::ui::game_screen::GameScreen;
 use crate::ui::tooltips::{TipRect, TipRegion};
 
 /// In-game tip ids mirror the gamemd id space: button ids as-is, cameo slots
-/// at 1000+. Shell tips are namespaced above the in-game range (Rust-side
-/// convention; gamemd separates them by registration epoch instead).
+/// at 1000+.
 pub(crate) const CAMEO_TIP_ID_BASE: u32 = 1000;
-pub(crate) const SHELL_TIP_NAMESPACE: u32 = 0x0001_0000;
 
 /// Interim cameo tip shape: localized name, newline, $cost. gamemd formats
 /// through CSF#0xC6E (label unmapped — plan deferred item); name+cost args
@@ -50,15 +49,12 @@ pub(crate) fn on_button_event(state: &mut AppState) {
     state.tooltips.on_button(now);
 }
 
-/// Per-frame update: refresh regions for the live surface, then pump the
-/// timer. `main_menu_shell_live` is computed by the caller (app.rs owns the
-/// shell-activity predicates).
-pub(crate) fn update(state: &mut AppState, main_menu_shell_live: bool) {
+/// Per-frame update: refresh regions for the live in-game surface, then pump
+/// the delayed-tooltip timer.
+pub(crate) fn update(state: &mut AppState) {
     let now = now_ms(state);
     if state.screen == GameScreen::InGame {
         sync_in_game_regions(state);
-    } else if main_menu_shell_live {
-        sync_main_menu_regions(state);
     } else {
         state.tooltips.sync_regions(&[]);
     }
@@ -114,10 +110,18 @@ fn sync_in_game_regions(state: &mut AppState) {
         let (down_size, up_size) = {
             let atlas = crate::app_sidebar_render::current_sidebar_chrome(state);
             let sz = |e: Option<&crate::render::sidebar_chrome::SidebarChromeEntry>| {
-                e.map(|e| [e.pixel_size[0] * state.ui_scale, e.pixel_size[1] * state.ui_scale])
+                e.map(|e| {
+                    [
+                        e.pixel_size[0] * state.ui_scale,
+                        e.pixel_size[1] * state.ui_scale,
+                    ]
+                })
             };
             match atlas {
-                Some(a) => (sz(a.scroll_down_frames[0].as_ref()), sz(a.scroll_up_frames[0].as_ref())),
+                Some(a) => (
+                    sz(a.scroll_down_frames[0].as_ref()),
+                    sz(a.scroll_up_frames[0].as_ref()),
+                ),
                 None => (None, None),
             }
         };
@@ -166,37 +170,16 @@ fn sync_in_game_regions(state: &mut AppState) {
     state.tooltips.sync_regions(&regions);
 }
 
-/// Main-menu shell regions: button rects + their STT CSF texts. The render
-/// pass shows the active tip in the bottom tooltip line (timing changes,
-/// placement stays — the native floating-box visual is a deferred item).
-fn sync_main_menu_regions(state: &mut AppState) {
-    let layout = crate::ui::main_menu_shell::compute_layout(
-        state.gpu.config.width,
-        state.gpu.config.height,
-    );
-    let mut regions: Vec<TipRegion> = Vec::with_capacity(layout.buttons.len());
-    for b in &layout.buttons {
-        // Already `pub` and re-exported from ui::main_menu_shell (state.rs:111
-        // via mod.rs:11-14) — the same helper app_main_menu_shell_render.rs
-        // imports for its own emission.
-        let key = crate::ui::main_menu_shell::tooltip_csf_key_for_control(b.id);
-        regions.push(TipRegion {
-            id: SHELL_TIP_NAMESPACE | u32::from(b.id.resource_id()),
-            rect: TipRect::new(b.rect.x, b.rect.y, b.rect.w, b.rect.h),
-            text: csf_text(state, key),
-        });
-    }
-    state.tooltips.sync_regions(&regions);
-}
-
 /// In-game tooltip draw: (fill instances on the darken texture, text
 /// instances on the GAME.FNT atlas), drawn between the chat overlay and the
-/// software cursor (study O10). Shell tips draw via the shell text path.
-pub(crate) fn build_tooltip_instances(state: &AppState) -> (Vec<SpriteInstance>, Vec<SpriteInstance>) {
+/// software cursor (study O10).
+pub(crate) fn build_tooltip_instances(
+    state: &AppState,
+) -> (Vec<SpriteInstance>, Vec<SpriteInstance>) {
     let Some(tip) = state.tooltips.active() else {
         return (Vec::new(), Vec::new());
     };
-    if (tip.id & SHELL_TIP_NAMESPACE) != 0 || state.screen != GameScreen::InGame {
+    if state.screen != GameScreen::InGame {
         return (Vec::new(), Vec::new());
     }
     let font = &state.bit_font;

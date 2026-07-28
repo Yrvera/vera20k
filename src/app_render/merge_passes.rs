@@ -24,13 +24,22 @@ enum DrawKind {
     Voxel,
 }
 
+#[derive(Clone, Copy)]
+enum DrawTexture<'tex, 'inst> {
+    Single(&'tex BatchTexture),
+    UnitPages {
+        atlas: &'tex UnitAtlas,
+        pages: &'inst [usize],
+    },
+}
+
 /// Tracks a single draw group during the multi-way merge.
 ///
 /// Each group represents one GPU buffer + texture pair (e.g., VXL units, one SHP page,
 /// wall overlays). The `cursor` advances through the buffer as sub-ranges are drawn.
 /// `kind` determines which pipeline is used to dispatch the draw.
 struct DrawGroup<'tex, 'inst> {
-    texture: &'tex BatchTexture,
+    texture: DrawTexture<'tex, 'inst>,
     buffer: &'tex wgpu::Buffer,
     instances: &'inst [SpriteInstance],
     cursor: u32,
@@ -46,7 +55,7 @@ impl<'tex, 'inst> DrawGroup<'tex, 'inst> {
         total: u32,
     ) -> Self {
         Self {
-            texture,
+            texture: DrawTexture::Single(texture),
             buffer,
             instances,
             cursor: 0,
@@ -62,7 +71,29 @@ impl<'tex, 'inst> DrawGroup<'tex, 'inst> {
         total: u32,
     ) -> Self {
         Self {
-            texture,
+            texture: DrawTexture::Single(texture),
+            buffer,
+            instances,
+            cursor: 0,
+            total,
+            kind: DrawKind::Voxel,
+        }
+    }
+
+    fn new_unit_pages(
+        atlas: &'tex UnitAtlas,
+        pages: &'inst [usize],
+        buffer: &'tex wgpu::Buffer,
+        instances: &'inst [SpriteInstance],
+        total: u32,
+    ) -> Self {
+        assert_eq!(
+            instances.len(),
+            pages.len(),
+            "stable UnitAtlas instances and page tags must stay aligned"
+        );
+        Self {
+            texture: DrawTexture::UnitPages { atlas, pages },
             buffer,
             instances,
             cursor: 0,
@@ -88,6 +119,7 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
     batch: &'a BatchRenderer,
     pool: &'a InstanceBufferPool,
     unit_instances: &[SpriteInstance],
+    unit_pages: &[usize],
     unit_transition_paged: &[Vec<SpriteInstance>],
     shp_paged: &[Vec<SpriteInstance>],
     unit_atlas: Option<&'a UnitAtlas>,
@@ -98,8 +130,9 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
     let mut groups: Vec<DrawGroup<'a, '_>> = Vec::new();
     if let (Some(ua), Some((buf, count))) = (unit_atlas, pool.get("unit_bridge")) {
         if count > 0 {
-            groups.push(DrawGroup::new_voxel(
-                &ua.texture,
+            groups.push(DrawGroup::new_unit_pages(
+                ua,
+                unit_pages,
                 buf,
                 unit_instances,
                 count,
@@ -173,23 +206,15 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
             end += 1;
         }
         let g = &groups[best_idx];
-        match g.kind {
-            DrawKind::Voxel => {
-                if let Some(ps) = palette_set {
-                    batch.draw_voxel_sprites_range(
-                        pass,
-                        g.texture,
-                        &ps.bind_group,
-                        g.buffer,
-                        start,
-                        end - start,
-                    );
-                }
-                // If palette_set is None, silently skip — shouldn't happen in
-                // practice since voxel groups only exist when a unit_atlas exists.
+        match (g.kind, g.texture) {
+            (DrawKind::Voxel, _) => {
+                draw_group_range(pass, batch, g, palette_set, start, end - start);
             }
-            DrawKind::Shp => {
-                batch.draw_depth_range(pass, g.texture, g.buffer, start, end - start);
+            (DrawKind::Shp, DrawTexture::Single(texture)) => {
+                batch.draw_depth_range(pass, texture, g.buffer, start, end - start);
+            }
+            (DrawKind::Shp, DrawTexture::UnitPages { .. }) => {
+                unreachable!("SHP draw groups cannot use UnitAtlas pages")
             }
         }
         groups[best_idx].cursor = end;
@@ -208,6 +233,7 @@ pub(super) fn draw_merged_object_pass<'a>(
     batch: &'a BatchRenderer,
     pool: &'a InstanceBufferPool,
     unit_instances: &[SpriteInstance],
+    unit_pages: &[usize],
     unit_transition_paged: &[Vec<SpriteInstance>],
     shp_paged: &[Vec<SpriteInstance>],
     wall_instances: &[SpriteInstance],
@@ -228,8 +254,9 @@ pub(super) fn draw_merged_object_pass<'a>(
     // VXL units draw group -- voxel sprite pipeline (R8Uint atlas + PaletteSet).
     if let (Some(ua), Some((buf, count))) = (unit_atlas, pool.get("unit")) {
         if count > 0 {
-            groups.push(DrawGroup::new_voxel(
-                &ua.texture,
+            groups.push(DrawGroup::new_unit_pages(
+                ua,
+                unit_pages,
                 buf,
                 unit_instances,
                 count,
@@ -338,25 +365,197 @@ pub(super) fn draw_merged_object_pass<'a>(
         // go through passthrough (RGBA atlas, no depth test).
         let count = run_end - run_start;
         let g = &groups[gi];
-        match g.kind {
-            DrawKind::Voxel => {
-                if let Some(ps) = palette_set {
-                    batch.draw_voxel_sprites_range(
-                        pass,
-                        g.texture,
-                        &ps.bind_group,
-                        g.buffer,
-                        run_start,
-                        count,
-                    );
-                }
-                // If palette_set is None, silently skip (shouldn't happen in
-                // normal flow — voxel groups only exist when unit_atlas does).
-            }
-            DrawKind::Shp => {
-                batch.draw_passthrough_range(pass, g.texture, g.buffer, run_start, count);
+        draw_group_range(pass, batch, g, palette_set, run_start, count);
+        groups[gi].cursor = run_end;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnitPageRun {
+    page: usize,
+    start: u32,
+    count: u32,
+}
+
+struct UnitPageRuns<'a> {
+    pages: &'a [usize],
+    cursor: usize,
+    end: usize,
+}
+
+fn unit_page_runs(pages: &[usize], start: u32, count: u32) -> UnitPageRuns<'_> {
+    let start = start as usize;
+    let end = start
+        .checked_add(count as usize)
+        .expect("UnitAtlas page-run range overflow");
+    assert!(
+        end <= pages.len(),
+        "UnitAtlas page-run range must fit the aligned page tags"
+    );
+    UnitPageRuns {
+        pages,
+        cursor: start,
+        end,
+    }
+}
+
+impl Iterator for UnitPageRuns<'_> {
+    type Item = UnitPageRun;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cursor >= self.end {
+            return None;
+        }
+        let start = self.cursor;
+        let page = self.pages[start];
+        self.cursor += 1;
+        while self.cursor < self.end && self.pages[self.cursor] == page {
+            self.cursor += 1;
+        }
+        Some(UnitPageRun {
+            page,
+            start: start as u32,
+            count: (self.cursor - start) as u32,
+        })
+    }
+}
+
+/// Draw a flat UnitAtlas stream in its existing order, rebinding textures only
+/// at contiguous page changes. Page assignment never becomes a merge tie-break.
+pub(super) fn draw_unit_atlas_page_runs<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    batch: &'a BatchRenderer,
+    atlas: &'a UnitAtlas,
+    palette_set: &'a PaletteSet,
+    buffer: &'a wgpu::Buffer,
+    pages: &[usize],
+    start: u32,
+    count: u32,
+) {
+    for run in unit_page_runs(pages, start, count) {
+        let texture = atlas.page_texture(run.page).unwrap_or_else(|| {
+            panic!(
+                "UnitAtlas instance references missing page {} of {}",
+                run.page,
+                atlas.page_count()
+            )
+        });
+        batch.draw_voxel_sprites_range(
+            pass,
+            texture,
+            &palette_set.bind_group,
+            buffer,
+            run.start,
+            run.count,
+        );
+    }
+}
+
+fn draw_group_range<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    batch: &'a BatchRenderer,
+    group: &DrawGroup<'a, '_>,
+    palette_set: Option<&'a PaletteSet>,
+    start: u32,
+    count: u32,
+) {
+    match (group.kind, group.texture) {
+        (DrawKind::Voxel, DrawTexture::Single(texture)) => {
+            if let Some(palette_set) = palette_set {
+                batch.draw_voxel_sprites_range(
+                    pass,
+                    texture,
+                    &palette_set.bind_group,
+                    group.buffer,
+                    start,
+                    count,
+                );
             }
         }
-        groups[gi].cursor = run_end;
+        (DrawKind::Voxel, DrawTexture::UnitPages { atlas, pages }) => {
+            if let Some(palette_set) = palette_set {
+                draw_unit_atlas_page_runs(
+                    pass,
+                    batch,
+                    atlas,
+                    palette_set,
+                    group.buffer,
+                    pages,
+                    start,
+                    count,
+                );
+            }
+        }
+        (DrawKind::Shp, DrawTexture::Single(texture)) => {
+            batch.draw_passthrough_range(pass, texture, group.buffer, start, count);
+        }
+        (DrawKind::Shp, DrawTexture::UnitPages { .. }) => {
+            unreachable!("SHP draw groups cannot use UnitAtlas pages")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_page_runs_preserve_equal_depth_layer_order() {
+        // Body, barrel, and turret deliberately share a depth. Their page
+        // assignment must not become a new ordering authority.
+        let pages = [1usize, 0, 2];
+        let runs: Vec<UnitPageRun> = unit_page_runs(&pages, 0, 3).collect();
+        assert_eq!(
+            runs,
+            vec![
+                UnitPageRun {
+                    page: 1,
+                    start: 0,
+                    count: 1,
+                },
+                UnitPageRun {
+                    page: 0,
+                    start: 1,
+                    count: 1,
+                },
+                UnitPageRun {
+                    page: 2,
+                    start: 2,
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unit_page_runs_cover_subrange_once_without_reordering() {
+        let pages = [9usize, 2, 2, 3, 3, 3, 4];
+        let runs: Vec<UnitPageRun> = unit_page_runs(&pages, 1, 5).collect();
+        assert_eq!(
+            runs,
+            vec![
+                UnitPageRun {
+                    page: 2,
+                    start: 1,
+                    count: 2,
+                },
+                UnitPageRun {
+                    page: 3,
+                    start: 3,
+                    count: 3,
+                },
+            ]
+        );
+        assert_eq!(runs.iter().map(|run| run.count).sum::<u32>(), 5);
+    }
+
+    #[test]
+    fn building_turret_page_runs_preserve_emission_order() {
+        let pages = [2usize, 0, 2, 2, 1];
+        let visited = unit_page_runs(&pages, 0, pages.len() as u32)
+            .flat_map(|run| run.start..run.start + run.count)
+            .collect::<Vec<_>>();
+
+        assert_eq!(visited, vec![0, 1, 2, 3, 4]);
     }
 }

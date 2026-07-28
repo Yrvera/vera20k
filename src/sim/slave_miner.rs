@@ -18,12 +18,12 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::rules::ruleset::RuleSet;
+use crate::sim::economy::apply_income_mult;
+use crate::sim::house_state::{house_state_for_owner_mut, income_ppm_for_owner};
 use crate::sim::intern::InternedId;
 use crate::sim::miner::miner_system::{effective_purifier_count, is_cell_path_clear_for_scan};
 use crate::sim::miner::{CargoBale, MinerConfig};
 use crate::sim::miner::{extract_bale, search_local_ore};
-use crate::sim::economy::apply_income_mult;
-use crate::sim::house_state::{house_state_for_owner_mut, income_ppm_for_owner};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_entry_for_owner;
 use crate::sim::world::Simulation;
@@ -130,14 +130,14 @@ fn build_slave_scan_filter<'a>(
 /// Uses the two-phase snapshot pattern: snapshot → process → write back.
 pub(super) fn tick_slave_harvesters(
     sim: &mut Simulation,
+    live_order: &[u64],
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
 ) {
     // Phase 1: Snapshot all slave harvesters.
-    let keys = sim.substrate.entities.keys_sorted();
     let mut snapshots: Vec<SlaveSnapshot> = Vec::new();
-    for &id in &keys {
+    for &id in live_order {
         let Some(entity) = sim.substrate.entities.get(id) else {
             continue;
         };
@@ -179,7 +179,12 @@ fn process_slave(
     snap: &mut SlaveSnapshot,
 ) {
     // Check master is still alive.
-    if sim.substrate.entities.get(snap.harvester.master_id).is_none() {
+    if sim
+        .substrate
+        .entities
+        .get(snap.harvester.master_id)
+        .is_none()
+    {
         // Master destroyed — slave becomes idle (in real RA2, freed slaves wander).
         snap.harvester.state = SlaveHarvestState::Idle;
         return;
@@ -207,7 +212,8 @@ fn handle_slave_search(
 
     // Search from the master's position (slaves harvest around their deployed base).
     let master_pos = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.harvester.master_id)
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
@@ -343,9 +349,9 @@ fn handle_slave_deposit(
     // houses also receive the AI virtual-purifier bonus. Single-truncation credit + stat
     // (the shared economy helpers), amount = 1 bale.
     let purifier_count = effective_purifier_count(sim, rules, &owner_str);
-    let bonus_pct = rules.general.purifier_bonus_pct;
+    let bonus_ppm = rules.general.purifier_bonus_ppm;
     let bonus_credits =
-        crate::sim::economy::purifier_bonus_credits(value, purifier_count, bonus_pct, income_ppm);
+        crate::sim::economy::purifier_bonus_credits(value, purifier_count, bonus_ppm, income_ppm);
 
     {
         let credits: &mut i32 = credits_entry_for_owner(sim, &owner_str);
@@ -359,7 +365,7 @@ fn handle_slave_deposit(
             .add_harvested_raw(crate::sim::economy::purifier_bonus_harvested(
                 1,
                 purifier_count,
-                bonus_pct,
+                bonus_ppm,
             ));
     }
 
@@ -380,7 +386,8 @@ fn handle_slave_idle(
     // Try to find ore every few ticks (reuse search logic).
     let scan_radius: u16 = rules.general.slave_miner_slave_scan.max(1) as u16;
     let master_pos = sim
-        .substrate.entities
+        .substrate
+        .entities
         .get(snap.harvester.master_id)
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
@@ -602,9 +609,32 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
 ///
 /// When a slave dies (removed from entity store), spawn a replacement after
 /// `SlaveRegenRate` ticks. `SlaveReloadRate` is the minimum gap between spawns.
-pub(super) fn tick_slave_regen(sim: &mut Simulation, rules: &RuleSet) {
-    // Collect master IDs that have slave bindings.
-    let master_ids: Vec<u64> = sim.production.slave_bindings.keys().copied().collect();
+pub(super) fn tick_slave_regen(sim: &mut Simulation, live_order: &[u64], rules: &RuleSet) {
+    // Missing/dead masters are lifecycle cleanup, not AI visitation. Remove
+    // those bindings even though the master is no longer in LogicVector.
+    let stale_master_ids = sim
+        .production
+        .slave_bindings
+        .keys()
+        .copied()
+        .filter(|&master_id| {
+            !sim.substrate
+                .entities
+                .get(master_id)
+                .is_some_and(|master| master.lifecycle.object_alive)
+        })
+        .collect::<Vec<_>>();
+    for master_id in stale_master_ids {
+        sim.production.slave_bindings.remove(&master_id);
+    }
+
+    // Regeneration is master AI work and therefore follows authoritative
+    // LogicVector order. An explicit empty vector performs no regeneration.
+    let master_ids = live_order
+        .iter()
+        .copied()
+        .filter(|master_id| sim.production.slave_bindings.contains_key(master_id))
+        .collect::<Vec<_>>();
 
     for master_id in master_ids {
         let Some(master) = sim.substrate.entities.get(master_id) else {
@@ -703,7 +733,7 @@ pub fn check_scan_correction(
 
     let short_scan: u16 = rules.general.slave_miner_short_scan.max(1) as u16;
     let correction: u16 = rules.general.slave_miner_scan_correction.max(0) as u16;
-    let cfg = MinerConfig::from_general_rules(&rules.general);
+    let cfg = MinerConfig::from_rules(rules);
 
     let scan_filter = build_slave_scan_filter(sim, path_grid, master_id);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = Some(&*scan_filter);
@@ -793,7 +823,11 @@ mod tests {
         assert!(sim.production.slave_bindings.get(&yarefn).is_none());
         assert_eq!(sim.production.slave_bindings.get(&smin), Some(&slave_ids));
         for slave_id in slave_ids {
-            let slave = sim.substrate.entities.get(slave_id).expect("slave remains live");
+            let slave = sim
+                .substrate
+                .entities
+                .get(slave_id)
+                .expect("slave remains live");
             assert_eq!(slave.slave_harvester.as_ref().unwrap().master_id, smin);
         }
     }
