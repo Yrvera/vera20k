@@ -1916,8 +1916,9 @@ fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_
         entity.movement_target = None;
     }
 
-    // Advance the frame so the waiter's per-frame dispatch timer is due again.
-    sim.session.binary_frame += 1;
+    // The state-2 dispatch exits through the Rate epilogue (~14-16f); cross
+    // the full window so the waiter's next dispatch is due again.
+    sim.session.binary_frame += 17;
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
     let waiter_miner = get_miner(&sim, waiter);
     assert_eq!(
@@ -6525,13 +6526,15 @@ fn full_miner_losing_dying_refinery_keeps_returning() {
     );
     assert!(!m.dock_queued, "stale dock queue state must be cleared");
 
-    tick_miners_n(&mut sim, &rules, 1);
+    // The state-2 dispatch exits through the Rate epilogue (~14-16f); run
+    // past the full window so the next due dispatch performs re-selection.
+    tick_miners_n(&mut sim, &rules, 17);
 
     let m = get_miner(&sim, miner_id);
     assert_eq!(
         m.reserved_refinery,
         Some(3),
-        "next return tick must choose the remaining live refinery, not the dying one",
+        "the next due return dispatch must choose the remaining live refinery, not the dying one",
     );
 }
 

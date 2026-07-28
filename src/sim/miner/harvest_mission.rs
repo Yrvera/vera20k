@@ -14,13 +14,21 @@
 //! `MinerSnapshot::state`, runs the FSM step, and commits the cursor + the
 //! dispatch delay back through the mission component.
 //!
-//! Cadence: every FSM path defaults to `DISPATCH_NEXT_FRAME` (per-frame
-//! dispatch — exactly the pre-absorption global tick's cadence). Only the
-//! Mission_Deploy state-4 exit installs a real delay (`[Harvest] Rate × 900`
-//! + `RandomRanged(0,2)`), the one epilogue verified in live decompilation.
-//! All other native per-path delays (the `[Harvest] Rate` default epilogue,
-//! the 0x69 no-ore wait, the 0x1c2 no-harvester hold) remain modeled by the
-//! FSM's internal frame-anchored timers — recorded UNCHECKED residuals.
+//! Cadence (verified against the native handler): the harvesting and dock
+//! states plus the productive search paths return `DISPATCH_NEXT_FRAME`
+//! (per-frame); the return/finding-home state, the idle state, the search
+//! state's archive-consume and still-driving returns, and every cursor
+//! outside the native switch exit through the default epilogue
+//! (`ftol([Harvest] Rate × 900)` + `RandomRanged(0,2)` on the scenario
+//! stream, ~14-16 frames stock); the no-ore transition into idle returns the
+//! fixed 105-frame wait with no RNG draw. The Mission_Deploy state-4 dock
+//! exit installs the same Rate epilogue at its own site.
+//!
+//! Structural residuals (native returns with no Rust dispatch equivalent):
+//! the 450-frame non-harvester hold — dispatch is gated on Miner-component
+//! presence, so a non-harvester never reaches the handler; and the
+//! slave-host preamble's Rate epilogue — Slave hosts are dispatched by
+//! `slave_miner.rs`, never through this handler.
 //!
 //! Dispatch gating residual: the host dispatches on Miner-component presence,
 //! not strictly on `current == Harvest`. A player retask (Move/Stop/Attack)

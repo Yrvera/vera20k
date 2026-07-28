@@ -461,21 +461,37 @@ fn process_pending_drive_arrivals(
         if entity.movement_target.is_some() || entity.drive_track.is_some() {
             continue;
         }
-        if entity.navigation.nav_queue.is_empty() {
+        // Process-entry rebuild: an owner destination that survived the
+        // end-of-track resolution (off-destination finish, or a queued
+        // waypoint advanced at arrival) gets a fresh path toward it here —
+        // the drive locomotor's no-track process-entry position. Entities
+        // deferred with a non-cell owner target fall back to the queue
+        // advance, then to the owner-null clear.
+        let (rx, ry) = if let Some(NavTargetRef::Cell { rx, ry }) = entity.navigation.nav_com {
+            (rx, ry)
+        } else if let Some(NavTargetRef::Cell { rx, ry }) =
+            entity.navigation.nav_queue.first().copied()
+        {
+            entity.navigation.nav_queue.remove(0);
+            (rx, ry)
+        } else {
             super::navcom::set_destination_internal_null(entity);
             continue;
-        }
-        let Some(NavTargetRef::Cell { rx, ry }) = entity.navigation.nav_queue.first().copied()
-        else {
-            continue;
         };
-        entity.navigation.nav_queue.remove(0);
         super::navcom::foot_stop_moving(entity);
         super::navcom::set_destination_internal_cell(entity, (rx, ry), resolved_terrain);
 
         let current = (entity.position.rx, entity.position.ry);
         let current_layer = entity.movement_layer_or_ground();
         let Some(loco) = entity.locomotor.as_ref() else {
+            // VERA-internal retry policy: `set_destination_internal_cell`
+            // above cleared the deferred flag, so bailing out here would
+            // strand a live owner destination with no path, no movement, and
+            // no retry — a permanent dead-end (callers gate on
+            // `nav_com.is_some()`). Re-arm the flag so the next tick retries.
+            // The gamemd fallback on a failed process-entry repath is
+            // UNCHECKED.
+            entity.navigation.pending_arrival_clear = true;
             continue;
         };
         let layered_pathing = supports_layered_bridge_pathing(loco, grid, entity.on_bridge);
@@ -513,9 +529,19 @@ fn process_pending_drive_arrivals(
                         | MovementZone::CrusherAll
                 ),
         ) else {
+            // VERA-internal retry policy: pathfinding failed, so re-arm the
+            // deferred flag (cleared by `set_destination_internal_cell`
+            // above) and retry next tick toward the surviving owner
+            // destination instead of stranding it as a permanent dead-end.
+            // The gamemd fallback on a failed process-entry repath is
+            // UNCHECKED.
+            entity.navigation.pending_arrival_clear = true;
             continue;
         };
         if path.len() < 2 {
+            // VERA-internal retry policy, same as the pathfinding-failure
+            // branch above; the gamemd equivalent is UNCHECKED.
+            entity.navigation.pending_arrival_clear = true;
             continue;
         }
         let obj = rules.and_then(|r| r.object(interner.resolve(entity.type_ref)));
@@ -1801,7 +1827,13 @@ pub(crate) fn tick_movement_with_grids(
         }
     }
 
-    finalize_finished_entities(entities, &finished_entities, &crush_kills, sim_tick);
+    finalize_finished_entities(
+        entities,
+        &finished_entities,
+        &crush_kills,
+        sim_tick,
+        resolved_terrain,
+    );
     update_locomotor_phases(entities, &crush_kills, sim_tick);
 
     // Hover vertical controller — every hover unit, moving OR parked (idle
@@ -1933,16 +1965,14 @@ fn finalize_finished_entities(
     finished: &[u64],
     crush_kills: &[PendingCrushKill],
     sim_tick: u64,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
 ) {
     for &entity_id in finished {
         if contains_crush_victim(crush_kills, entity_id) {
             continue;
         }
         if let Some(entity) = entities.get_mut(entity_id) {
-            if !super::navcom::defer_drive_arrival_clear(entity) {
-                super::navcom::set_destination_internal_null(entity);
-                entity.navigation.nav_queue.clear();
-            }
+            super::navcom::finish_drive_navigation(entity, resolved_terrain);
             entity.movement_target = None;
             entity.drive_track = None; // clear any active drive track curve
             entity.body_facing = None; // steering/turn interpolator ends with the move

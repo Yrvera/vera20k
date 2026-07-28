@@ -542,7 +542,16 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
                 "native FootClass::AI releases retired Drive"
             );
         }
-        assert_eq!(sim.rng_state(), rng_before_search, "{type_id} outbound RNG");
+        // The outbound leg legitimately consumes scenario RNG now: each
+        // still-driving dispatch exits through the default Rate epilogue,
+        // drawing one RandomRanged(0,2). Only the non-scenario streams stay
+        // untouched across the leg.
+        let rng_after = sim.rng_state();
+        assert_eq!(rng_after.main, rng_before_search.main, "{type_id} main RNG");
+        assert_eq!(
+            rng_after.mapgen, rng_before_search.mapgen,
+            "{type_id} mapgen RNG"
+        );
         assert_ore_intact(&sim, &oracle, target);
     }
 }
@@ -560,10 +569,18 @@ fn production_harv_outbound_drive_uses_rule_profile() {
 
     advance(&mut sim, &oracle, &grid);
     advance(&mut sim, &oracle, &grid);
+    // Search and issue consume no scenario RNG.
+    assert_eq!(sim.rng_state(), rng_before);
     assert_command_state(&sim, &oracle, entity_id, "HARV", target);
     let harv = oracle.rules.object("HARV").expect("HARV");
     assert!(3 * 256 > harv.slowdown_distance);
     let acceleration = harv.accel_factor;
+
+    // The next dispatch sees the non-null owner destination and exits through
+    // the default Rate epilogue: exactly one RandomRanged(0,2) draw.
+    let mut probe = sim.miner_jitter_rng().clone();
+    let _ = probe.next_range_u32_inclusive(0, 2);
+    let expected_scenario_after_draw = probe.logical_state();
 
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
@@ -577,7 +594,10 @@ fn production_harv_outbound_drive_uses_rule_profile() {
         movement.speed * (acceleration + acceleration)
     );
     assert!(movement.current_speed > SIM_ZERO);
-    assert_eq!(sim.rng_state(), rng_before);
+    let rng_after = sim.rng_state();
+    assert_eq!(rng_after.scenario, expected_scenario_after_draw);
+    assert_eq!(rng_after.main, rng_before.main);
+    assert_eq!(rng_after.mapgen, rng_before.mapgen);
 }
 
 #[test]
@@ -877,7 +897,12 @@ fn production_cmin_outbound_drive_keeps_teleport_primary() {
         }
     }
     assert!(reached_harvest);
-    assert_eq!(sim.rng_state(), rng_before);
+    // The still-driving dispatches draw one scenario RandomRanged(0,2) each
+    // (the default Rate epilogue); only the non-scenario streams are
+    // untouched across the outbound leg.
+    let rng_after = sim.rng_state();
+    assert_eq!(rng_after.main, rng_before.main);
+    assert_eq!(rng_after.mapgen, rng_before.mapgen);
 }
 
 #[test]
@@ -958,6 +983,11 @@ fn production_harv_navcom_without_movement_target_is_not_reissued() {
         },
     );
     let rng_before = sim.rng_state();
+    // The still-driving dispatch (non-null NavCom) exits through the default
+    // Rate epilogue: exactly one scenario RandomRanged(0,2) draw, no scan.
+    let mut probe = sim.miner_jitter_rng().clone();
+    let _ = probe.next_range_u32_inclusive(0, 2);
+    let expected_scenario_after_draw = probe.logical_state();
 
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
@@ -973,7 +1003,10 @@ fn production_harv_navcom_without_movement_target_is_not_reissued() {
         entity.movement_target.is_none(),
         "non-null NavCom must suppress scan and command reissue",
     );
-    assert_eq!(sim.rng_state(), rng_before);
+    let rng_after = sim.rng_state();
+    assert_eq!(rng_after.scenario, expected_scenario_after_draw);
+    assert_eq!(rng_after.main, rng_before.main);
+    assert_eq!(rng_after.mapgen, rng_before.mapgen);
 }
 
 #[test]
@@ -1016,6 +1049,11 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
         },
     );
     let rng_before = sim.rng_state();
+    // The still-driving dispatch (non-null NavCom) exits through the default
+    // Rate epilogue: exactly one scenario RandomRanged(0,2) draw, no scan.
+    let mut probe = sim.miner_jitter_rng().clone();
+    let _ = probe.next_range_u32_inclusive(0, 2);
+    let expected_scenario_after_draw = probe.logical_state();
 
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
@@ -1030,11 +1068,14 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
         entity.movement_target.is_none(),
         "non-null NavCom must defer depletion validation and command reissue",
     );
-    assert_eq!(sim.rng_state(), rng_before);
+    let rng_after = sim.rng_state();
+    assert_eq!(rng_after.scenario, expected_scenario_after_draw);
+    assert_eq!(rng_after.main, rng_before.main);
+    assert_eq!(rng_after.mapgen, rng_before.mapgen);
 }
 
 #[test]
-fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
+fn production_cmin_arrival_clears_navcom_same_tick_and_releases_drive() {
     let oracle = outbound_contract_oracle();
     let target = (32, 31);
     let mut sim = production_sim(0x0715_D007, &oracle);
@@ -1047,23 +1088,18 @@ fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
     advance(&mut sim, &oracle, &grid);
     assert_command_state(&sim, &oracle, entity_id, "CMIN", target);
 
-    let mut saw_pending_owner = false;
+    // Drive leg → arrival tick. A track that ends at the owner destination
+    // clears the owner NavCom pair on the SAME tick (no deferred interval),
+    // and the same tick's piggyback-restore pass releases the retired Drive.
+    let mut arrived = false;
     for _ in 0..128 {
         advance(&mut sim, &oracle, &grid);
         let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
         assert!(entity.teleport_state.is_none());
-        if entity.navigation.pending_arrival_clear {
-            saw_pending_owner = true;
-            assert_eq!((entity.position.rx, entity.position.ry), target);
-            assert!(entity.movement_target.is_none());
-            assert_eq!(
-                entity.navigation.nav_com,
-                Some(NavTargetRef::cell(target.0, target.1)),
-            );
-            assert_eq!(
-                entity.miner_state().expect("miner"),
-                MinerState::MoveToOre,
-            );
+        if (entity.position.rx, entity.position.ry) == target && entity.movement_target.is_none() {
+            arrived = true;
+            assert_eq!(entity.navigation.nav_com, None);
+            assert!(!entity.navigation.pending_arrival_clear);
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
             assert_eq!(locomotor.kind, LocomotorKind::Teleport);
             assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
@@ -1075,24 +1111,27 @@ fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
             break;
         }
     }
-    assert!(
-        saw_pending_owner,
-        "must observe track-end owner-NavCom interval"
-    );
+    assert!(arrived, "CMIN must complete the outbound drive leg");
 
-    advance(&mut sim, &oracle, &grid);
-    // Dispatch precedes movement, so the arrival tick's FSM step still saw
-    // the pre-arrival position; the MoveToOre→Harvest transition lands on the
-    // following dispatch.
-    advance(&mut sim, &oracle, &grid);
-    let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
-    assert_eq!(entity.navigation.nav_com, None);
-    assert!(!entity.navigation.pending_arrival_clear);
-    assert_eq!(
-        entity.miner_state().expect("miner"),
-        MinerState::Harvest,
+    // The MoveToOre→Harvest transition lands on the next due dispatch; the
+    // still-driving dispatches are paced at the Rate-epilogue cadence, so the
+    // next due dispatch can be up to ~16 frames after physical arrival.
+    let mut reached_harvest = false;
+    for _ in 0..32 {
+        advance(&mut sim, &oracle, &grid);
+        let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
+        if entity.miner_state().expect("miner") == MinerState::Harvest {
+            reached_harvest = true;
+            assert_eq!(entity.navigation.nav_com, None);
+            assert!(!entity.navigation.pending_arrival_clear);
+            assert!(entity.drive_locomotion.is_none());
+            break;
+        }
+    }
+    assert!(
+        reached_harvest,
+        "MoveToOre→Harvest lands on the next due dispatch"
     );
-    assert!(entity.drive_locomotion.is_none());
     assert_ore_intact(&sim, &oracle, target);
 }
 
