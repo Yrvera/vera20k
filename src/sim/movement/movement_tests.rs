@@ -145,7 +145,7 @@ fn test_tick_movement_removes_target_at_goal() {
 }
 
 #[test]
-fn test_drive_arrival_keeps_navcom_until_next_no_track_pass() {
+fn test_drive_arrival_clears_navcom_same_tick() {
     let mut entities = EntityStore::new();
 
     let mut e = GameEntity::test_default(1, "HTNK", "Americans", 0, 0);
@@ -168,6 +168,8 @@ fn test_drive_arrival_keeps_navcom_until_next_no_track_pass() {
     });
     entities.insert(e);
 
+    // A track that ends at the owner destination stops immediately: the owner
+    // destination pair clears on the SAME movement tick, not a deferred pass.
     let mut lifecycle_requests = Vec::new();
     tick_movement(
         &mut entities,
@@ -177,30 +179,14 @@ fn test_drive_arrival_keeps_navcom_until_next_no_track_pass() {
     );
     let entity = entities.get(1).expect("entity exists");
     assert!(entity.movement_target.is_none());
-    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(0, 0)));
-    assert!(entity.navigation.pending_arrival_clear);
+    assert_eq!(entity.navigation.nav_com, None);
+    assert!(!entity.navigation.pending_arrival_clear);
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
     assert_eq!(drive.head_to, None);
     assert!(!drive.track_valid);
     assert_eq!(drive.track_index, -1);
     assert_eq!(drive.point_index, 0);
-
-    tick_movement(
-        &mut entities,
-        16,
-        &mut test_interner(),
-        &mut lifecycle_requests,
-    );
-    let entity = entities.get(1).expect("entity exists");
-    assert_eq!(entity.navigation.nav_com, None);
-    assert!(!entity.navigation.pending_arrival_clear);
-    assert_eq!(
-        entity
-            .drive_locomotion
-            .as_ref()
-            .and_then(|drive| drive.destination),
-        None
-    );
+    assert_eq!(drive.destination, None);
 }
 
 #[test]
@@ -256,6 +242,20 @@ fn test_drive_queued_arrival_pops_navqueue_and_reissues_destination() {
 
     let mut e = GameEntity::test_default(1, "HTNK", "Americans", 0, 0);
     e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    // The arrival advance (queue pop) is gated on a current Move mission.
+    e.mission
+        .apply_test_fixture(crate::sim::mission::state::MissionTestFixture {
+            current: crate::sim::mission::MissionId::from_known(
+                crate::sim::mission::MissionType::Move,
+            ),
+            suspended: crate::sim::mission::MissionId::NONE,
+            queued: crate::sim::mission::MissionId::NONE,
+            movement_bypass_latch: 0,
+            handler_state: 0,
+            mission_start_frame: 0,
+            ai_counter: 0,
+            dispatch_timer: crate::sim::mission::MissionDispatchTimer::at_frame(0),
+        });
     e.navigation.nav_com = Some(NavTargetRef::cell(0, 0));
     e.navigation.nav_queue.push(NavTargetRef::cell(3, 0));
     e.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
@@ -275,6 +275,10 @@ fn test_drive_queued_arrival_pops_navqueue_and_reissues_destination() {
     });
     entities.insert(e);
 
+    // Arrival tick: the owner destination clears and the queued waypoint is
+    // advanced into a fresh destination on the SAME tick (the arrival
+    // advance under a Move mission); the path build stays deferred to the
+    // next tick's process-entry pass.
     let mut lifecycle_requests = Vec::new();
     tick_movement_with_grid(
         &mut entities,
@@ -290,8 +294,8 @@ fn test_drive_queued_arrival_pops_navqueue_and_reissues_destination() {
     );
     let entity = entities.get(1).expect("entity exists");
     assert!(entity.movement_target.is_none());
-    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(0, 0)));
-    assert_eq!(entity.navigation.nav_queue, vec![NavTargetRef::cell(3, 0)]);
+    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(3, 0)));
+    assert!(entity.navigation.nav_queue.is_empty());
     assert!(entity.navigation.pending_arrival_clear);
 
     tick_movement_with_grid(

@@ -141,8 +141,14 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// legacy reconstructions — so all three constants move together. All three
 /// absolute RNG stream pins and record/replay tick equality held unchanged
 /// (this scenario's miner never docks, so no draw moved).
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 271370323554276941;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 3383850218108790906;
+/// Re-baselined with the native same-tick drive-arrival owner clear: the
+/// harness harvester's NavCom now clears on the arrival tick itself (no
+/// deferred pass), so its dispatch resumes one tick earlier — a
+/// behavior-bearing timing shift in hashed navigation/mission/position
+/// state. All three absolute RNG stream pins held their values (the arrival
+/// clear draws nothing), and record/replay tick equality still holds.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 733684070086703891;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 17736517586681189907;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -152,7 +158,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 3383850218108790906;
 /// positions, mission/miner state, and scenario-stream consumption in this
 /// fixture. Both schema probes shift with it (movement diverges from early
 /// ticks). Record/replay tick equality still holds.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x76CC_1637_D665_4B53;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x979F_4B09_BDC0_D900;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

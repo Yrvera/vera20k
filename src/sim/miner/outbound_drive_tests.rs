@@ -1034,7 +1034,7 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
 }
 
 #[test]
-fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
+fn production_cmin_arrival_clears_navcom_same_tick_and_releases_drive() {
     let oracle = outbound_contract_oracle();
     let target = (32, 31);
     let mut sim = production_sim(0x0715_D007, &oracle);
@@ -1047,23 +1047,20 @@ fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
     advance(&mut sim, &oracle, &grid);
     assert_command_state(&sim, &oracle, entity_id, "CMIN", target);
 
-    let mut saw_pending_owner = false;
+    // Drive leg → arrival tick. A track that ends at the owner destination
+    // clears the owner NavCom pair on the SAME tick (no deferred interval),
+    // and the same tick's piggyback-restore pass releases the retired Drive.
+    let mut arrived = false;
     for _ in 0..128 {
         advance(&mut sim, &oracle, &grid);
         let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
         assert!(entity.teleport_state.is_none());
-        if entity.navigation.pending_arrival_clear {
-            saw_pending_owner = true;
-            assert_eq!((entity.position.rx, entity.position.ry), target);
-            assert!(entity.movement_target.is_none());
-            assert_eq!(
-                entity.navigation.nav_com,
-                Some(NavTargetRef::cell(target.0, target.1)),
-            );
-            assert_eq!(
-                entity.miner_state().expect("miner"),
-                MinerState::MoveToOre,
-            );
+        if (entity.position.rx, entity.position.ry) == target
+            && entity.movement_target.is_none()
+        {
+            arrived = true;
+            assert_eq!(entity.navigation.nav_com, None);
+            assert!(!entity.navigation.pending_arrival_clear);
             let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
             assert_eq!(locomotor.kind, LocomotorKind::Teleport);
             assert_eq!(locomotor.primary_kind, Some(LocomotorKind::Teleport));
@@ -1075,24 +1072,26 @@ fn production_cmin_arrival_waits_for_navcom_and_releases_drive() {
             break;
         }
     }
-    assert!(
-        saw_pending_owner,
-        "must observe track-end owner-NavCom interval"
-    );
+    assert!(arrived, "CMIN must complete the outbound drive leg");
 
-    advance(&mut sim, &oracle, &grid);
-    // Dispatch precedes movement, so the arrival tick's FSM step still saw
-    // the pre-arrival position; the MoveToOre→Harvest transition lands on the
-    // following dispatch.
-    advance(&mut sim, &oracle, &grid);
-    let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
-    assert_eq!(entity.navigation.nav_com, None);
-    assert!(!entity.navigation.pending_arrival_clear);
-    assert_eq!(
-        entity.miner_state().expect("miner"),
-        MinerState::Harvest,
+    // The MoveToOre→Harvest transition lands on the next due dispatch after
+    // the arrival tick's owner clear.
+    let mut reached_harvest = false;
+    for _ in 0..32 {
+        advance(&mut sim, &oracle, &grid);
+        let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
+        if entity.miner_state().expect("miner") == MinerState::Harvest {
+            reached_harvest = true;
+            assert_eq!(entity.navigation.nav_com, None);
+            assert!(!entity.navigation.pending_arrival_clear);
+            assert!(entity.drive_locomotion.is_none());
+            break;
+        }
+    }
+    assert!(
+        reached_harvest,
+        "MoveToOre→Harvest lands on the next due dispatch"
     );
-    assert!(entity.drive_locomotion.is_none());
     assert_ore_intact(&sim, &oracle, target);
 }
 

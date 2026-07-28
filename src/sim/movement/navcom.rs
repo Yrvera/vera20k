@@ -8,6 +8,7 @@ use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, NavTargetRef};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
+use crate::sim::mission::MissionType;
 use crate::util::fixed_math::SimFixed;
 
 const DRIVE_STOP_SPEED_CLAMP: SimFixed = SimFixed::lit("0.3");
@@ -85,25 +86,100 @@ pub(super) fn set_destination_internal_null(entity: &mut GameEntity) {
     }
 }
 
-/// FootClass::Stop_Moving-equivalent owner clear used by queued arrival.
+/// FootClass::Stop_Moving-equivalent owner clear: zeroes only the owner
+/// destination pair (NavCom and its auxiliary slot), nothing else.
 pub(super) fn foot_stop_moving(entity: &mut GameEntity) {
     entity.navigation.nav_com_aux = None;
     entity.navigation.nav_com = None;
 }
 
-/// Track/path execution finished at the owner destination, but gamemd clears
-/// owner NavCom on the next no-active-track Drive process pass.
-pub(super) fn defer_drive_arrival_clear(entity: &mut GameEntity) -> bool {
-    if !is_drive_locomotor(entity) || entity.navigation.nav_com.is_none() {
-        return false;
-    }
-    entity.navigation.pending_arrival_clear = true;
+/// Return the drive-track runtime to rest: no aim point, no active curve.
+fn reset_drive_track_runtime(entity: &mut GameEntity) {
     if let Some(drive) = entity.drive_locomotion.as_mut() {
         drive.head_to = None;
         drive.track_valid = false;
         drive.track_index = -1;
         drive.point_index = 0;
     }
+}
+
+/// End-of-track owner-navigation resolution for a mover whose path finished
+/// this tick. Native contract (drive end-of-track block): when the track ends
+/// at the owner destination on a live object, the stop is immediate — the
+/// owner destination pair clears the same tick, the path head resets, and,
+/// only when the current mission is Move, the arrival advance pops the queued
+/// waypoint into a fresh destination. Dying/limbo objects skip the clear
+/// entirely (only the ended track's aim point drops). A track that ends away
+/// from the owner destination (or a non-cell owner target) keeps the
+/// destination; the deferred process-entry pass repaths toward it next tick.
+pub(super) fn finish_drive_navigation(
+    entity: &mut GameEntity,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+) {
+    if is_drive_locomotor(entity) && entity.navigation.nav_com.is_some() {
+        if entity.dying {
+            // Native liveness gate: no owner clear for a dying object; the
+            // ended track still loses its aim point.
+            if let Some(drive) = entity.drive_locomotion.as_mut() {
+                drive.head_to = None;
+            }
+            return;
+        }
+        let arrived = matches!(
+            entity.navigation.nav_com,
+            Some(NavTargetRef::Cell { rx, ry })
+                if rx == entity.position.rx && ry == entity.position.ry
+        );
+        if arrived {
+            finish_drive_arrival(entity, resolved_terrain);
+        } else {
+            defer_drive_arrival_clear(entity);
+        }
+        return;
+    }
+    // Non-drive movers (and drive movers with no owner destination) keep the
+    // pre-existing immediate cleanup.
+    set_destination_internal_null(entity);
+    entity.navigation.nav_queue.clear();
+}
+
+/// Same-tick arrival at the owner destination: clear the owner destination
+/// pair immediately, return the drive runtime to rest, and — only under a
+/// current Move mission (the native arrival gate) — advance the queued
+/// waypoint into a fresh destination. The path toward the fresh destination
+/// is built by the deferred process-entry pass at the top of the next
+/// movement tick, matching the native next-process track build.
+fn finish_drive_arrival(entity: &mut GameEntity, resolved_terrain: Option<&ResolvedTerrainGrid>) {
+    foot_stop_moving(entity);
+    entity.navigation.pending_arrival_clear = false;
+    reset_drive_track_runtime(entity);
+    // VERA-internal rest-state cleanup (speed clamp + drive destination
+    // drop) — the same rest state the deferred clear used to reach one tick
+    // later; the native drive-runtime equivalent is UNCHECKED.
+    drive_stop_moving(entity);
+    if entity.mission.effective().known() != Some(MissionType::Move) {
+        return;
+    }
+    let Some(NavTargetRef::Cell { rx, ry }) = entity.navigation.nav_queue.first().copied() else {
+        return;
+    };
+    entity.navigation.nav_queue.remove(0);
+    set_destination_internal_cell(entity, (rx, ry), resolved_terrain);
+    entity.navigation.pending_arrival_clear = true;
+}
+
+/// Track/path execution finished away from the owner destination (or the
+/// owner target is not a plain cell): the owner keeps its destination, and
+/// the deferred pass at the top of the next movement tick rebuilds a path
+/// toward it — the drive locomotor's process-entry fallback. Arrivals AT the
+/// owner destination never come through here; they clear immediately via
+/// [`finish_drive_arrival`].
+pub(super) fn defer_drive_arrival_clear(entity: &mut GameEntity) -> bool {
+    if !is_drive_locomotor(entity) || entity.navigation.nav_com.is_none() {
+        return false;
+    }
+    entity.navigation.pending_arrival_clear = true;
+    reset_drive_track_runtime(entity);
     true
 }
 
