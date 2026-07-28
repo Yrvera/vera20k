@@ -18,16 +18,16 @@ VERA20K operates after contributor-owned cooperative principles. Contributors ea
 
 <small>
 
-**1. Faithful Engine Replacement**
+**1.**
 A drop-in replacement for `gamemd.exe` focused first on retail-convincing stock
 skirmish: experienced Yuri's Revenge players should be able to complete ordinary
 matches without repeatedly noticing differences in gameplay, visuals, sound, or
 response.
 
-**2. Built for Scale**
+**2.**
 Constructed from the ground up for large multiplayer — targeting support for up to **30 players** and **20,000 units** on significantly bigger maps.
 
-**3. Extendable**
+**3.**
 Offer known old and new rts feautures never seen before to enhance the cnc ra2 experience.
 
 ## Current Status
