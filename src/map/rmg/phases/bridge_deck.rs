@@ -18,6 +18,8 @@ use crate::map::rmg::scratch::RmgScratch;
 use crate::map::rmg::tiles::TileIds;
 use crate::map::rmg::x87::{self, TruncF64};
 
+use super::area::{corners_in_diamond, tile_is_placeable};
+
 /// Turns an infinite native loop into a `None` and nothing else — see
 /// [`pick_seed_cell`]. Not a retry budget: the original has no bound here.
 const SEED_PICK_SPIN_LIMIT: u32 = 10_000_000;
@@ -213,31 +215,12 @@ pub fn end_area_is_placeable(
             if cell.level != reference_level {
                 return false;
             }
-            if ids.is_paved_road(cell.tile) || ids.is_paved_road_end(cell.tile) {
-                return false;
-            }
-            if !ids.is_clear(cell.tile) && !ids.is_misc_pave(cell.tile) && !ids.is_pave(cell.tile) {
+            if !tile_is_placeable(ids, cell.tile) {
                 return false;
             }
         }
     }
     true
-}
-
-/// The four corners of `rect`, each tested against the map diamond.
-///
-/// The diamond is convex, so four corners inside it put the whole rectangle
-/// inside — which is what lets both sweeps read cells without re-testing.
-fn corners_in_diamond(scratch: &RmgScratch, rect: (i32, i32, i32, i32)) -> bool {
-    let (rx, ry, w, h) = rect;
-    [
-        (rx, ry),
-        (rx + w - 1, ry),
-        (rx, ry + h - 1),
-        (rx + w - 1, ry + h - 1),
-    ]
-    .iter()
-    .all(|&(x, y)| scratch.in_diamond(x, y))
 }
 
 #[cfg(test)]
