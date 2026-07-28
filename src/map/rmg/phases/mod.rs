@@ -8,6 +8,7 @@ pub mod adjacency;
 pub mod blob;
 pub mod bridge;
 pub mod carve;
+pub mod carve_driver;
 pub mod connector;
 pub mod green_spread;
 pub mod hills;

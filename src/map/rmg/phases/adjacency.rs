@@ -35,7 +35,7 @@ pub(crate) fn neighbour_ids(scratch: &RmgScratch, region: i32, region_count: i32
     }
     let mut touched = vec![false; region_count as usize];
 
-    for (x, y) in border_cells(scratch, region) {
+    for (x, y) in border_cells_of(scratch, region) {
         for dir in 0..8usize {
             let (nx, ny) = RmgGrid::step(x, y, dir);
             if !scratch.in_diamond(nx, ny) {
@@ -66,7 +66,7 @@ pub(crate) fn neighbour_ids(scratch: &RmgScratch, region: i32, region_count: i32
 }
 
 /// Cells belonging to `region` that touch a differently-owned in-bounds cell.
-fn border_cells(scratch: &RmgScratch, region: i32) -> Vec<(i32, i32)> {
+pub(crate) fn border_cells_of(scratch: &RmgScratch, region: i32) -> Vec<(i32, i32)> {
     let width = scratch.width() as i32;
     let mut border = Vec::new();
     for y in 0..width {
