@@ -39,7 +39,7 @@ AGENTS.md
 /replays/
 
 tools/vendor-eval/
-tools/research_index/.cache/
+tools/research_index/
 
 /*.md
 !/README.md
