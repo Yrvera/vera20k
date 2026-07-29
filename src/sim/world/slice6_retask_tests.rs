@@ -114,7 +114,18 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 10767158924782362086;
 // legacy per-tick projection is deleted, so every hashed mission value —
 // including the reduced subset the legacy pre-v29 composition folds —
 // changes together. Behavior-bearing Rust ratchet, not gamemd evidence.
-const SLICE6_BASELINE_HASH: u64 = 5165059427831540523;
+//
+// Re-baselined 2026-07-29 for the locomotion S2 readiness producers (Drive,
+// Ship, Teleport, Jumpjet now write `mission_ready_state`). The ceremony this
+// file requires — the two schema probes proving the shift is composition-only —
+// is satisfied: BOTH probes above are unchanged and green, so only the
+// current-schema hash moved, i.e. the delta is the hashed field going
+// `None → Some` and not a behaviour divergence. Independently confirmed by
+// neutralising the behaviour path (making the readiness gate ignore the
+// produced state while the producers still ran): the hash was identical to
+// this new value, so the deferral change contributes nothing here.
+// Rust regression ratchet, not gamemd evidence.
+const SLICE6_BASELINE_HASH: u64 = 3347056836990737804;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
