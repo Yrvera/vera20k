@@ -125,8 +125,24 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 10767158924782362086;
 // neutralising the behaviour path (making the readiness gate ignore the
 // produced state while the producers still ran): the hash was identical to
 // this new value, so the deferral change contributes nothing here.
+//
+// Re-baselined 2026-07-30 when the readiness inputs stopped being stored on the
+// locomotor and became derived at the Mission gate instead. gamemd's readiness
+// virtual performs a fresh locomotor call at every one of its ~two dozen call
+// sites, with no cached per-frame flag anywhere on that path, so a per-tick
+// cache answered nearly all of them with stale state; verified from the Infantry
+// and Unit readiness overrides and the queue-then-commence caller.
+//
+// Composition-only here, and this file's ceremony proves it: BOTH schema probes
+// above are unchanged and green. The pre-v29 probe still hashes every position,
+// facing and movement field, so if the derivation had changed *when* any unit
+// commenced, that probe would have moved too. It did not — only the
+// current-schema hash did, and its delta is exactly the removed readiness bytes.
+// (Behaviour-neutral in THIS fixture is not behaviour-neutral in general: the
+// paths the change exists for — dock, unlink, unload and deploy handoffs that
+// stop a unit and queue-and-commence in the same tick — are not covered here.)
 // Rust regression ratchet, not gamemd evidence.
-const SLICE6_BASELINE_HASH: u64 = 17415733938837095788;
+const SLICE6_BASELINE_HASH: u64 = 10769305515705145341;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

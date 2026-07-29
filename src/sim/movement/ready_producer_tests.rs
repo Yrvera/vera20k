@@ -1,4 +1,4 @@
-//! Producer tests for `mission_ready_state`.
+//! Producer tests for the Mission gate's readiness inputs.
 //!
 //! These assert the mapping direction, not native parity. The predicate they
 //! feed is separately proven exhaustively in `locomotor_ready.rs`.

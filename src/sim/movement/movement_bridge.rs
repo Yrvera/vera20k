@@ -514,7 +514,6 @@ mod tests {
     fn make_loco(layer: MovementLayer) -> Option<LocomotorState> {
         Some(LocomotorState {
             kind: LocomotorKind::Drive,
-            mission_ready_state: None,
             primary_kind: Some(LocomotorKind::Drive),
             piggyback: None,
             layer,

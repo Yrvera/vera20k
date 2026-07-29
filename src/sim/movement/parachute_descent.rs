@@ -153,7 +153,6 @@ mod tests {
     fn make_walk_loco() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Walk,
-            mission_ready_state: None,
             primary_kind: Some(LocomotorKind::Walk),
             piggyback: None,
             layer: MovementLayer::Ground,

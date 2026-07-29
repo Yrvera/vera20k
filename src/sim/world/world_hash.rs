@@ -120,66 +120,6 @@ fn hash_mission_leaf(leaf: &crate::sim::mission::MissionLeafState, hasher: &mut 
     }
 }
 
-fn hash_locomotor_ready(
-    state: crate::sim::movement::locomotor_ready::LocomotorReadyState,
-    hasher: &mut impl Hasher,
-) {
-    use crate::sim::movement::locomotor_ready::LocomotorReadyState;
-
-    match state {
-        LocomotorReadyState::Drive {
-            turning_active,
-            slot_moving,
-            head_to_nonnull,
-            owner_speed,
-        } => {
-            0u8.hash(hasher);
-            turning_active.hash(hasher);
-            slot_moving.hash(hasher);
-            head_to_nonnull.hash(hasher);
-            owner_speed.hash(hasher);
-        }
-        LocomotorReadyState::Ship {
-            turning_active,
-            slot_moving,
-            head_to_nonnull,
-            owner_speed,
-        } => {
-            1u8.hash(hasher);
-            turning_active.hash(hasher);
-            slot_moving.hash(hasher);
-            head_to_nonnull.hash(hasher);
-            owner_speed.hash(hasher);
-        }
-        LocomotorReadyState::Hover {
-            slot_moving,
-            speed_bits,
-        } => {
-            2u8.hash(hasher);
-            slot_moving.hash(hasher);
-            speed_bits.hash(hasher);
-        }
-        LocomotorReadyState::Walk {
-            moving_byte,
-            applied_speed_bits,
-            destination_nonnull,
-        } => {
-            3u8.hash(hasher);
-            moving_byte.hash(hasher);
-            applied_speed_bits.hash(hasher);
-            destination_nonnull.hash(hasher);
-        }
-        LocomotorReadyState::Teleport { state } => {
-            4u8.hash(hasher);
-            state.hash(hasher);
-        }
-        LocomotorReadyState::Jumpjet { state } => {
-            5u8.hash(hasher);
-            state.hash(hasher);
-        }
-    }
-}
-
 impl Simulation {
     /// Deterministic state hash over canonicalized simulation state.
     ///
@@ -774,15 +714,11 @@ impl Simulation {
                 loco.hover_throttle.to_bits().hash(hasher);
                 loco.hover_bob_offset.to_bits().hash(hasher);
                 loco.altitude.to_bits().hash(hasher);
-                if include_mission_v29 {
-                    match loco.mission_ready_state {
-                        Some(ready) => {
-                            1u8.hash(hasher);
-                            hash_locomotor_ready(ready, hasher);
-                        }
-                        None => 0u8.hash(hasher),
-                    }
-                }
+                // Mission readiness inputs are NOT hashed: they are derived at
+                // the gate from state already hashed above (and from position,
+                // facing and movement target, likewise hashed). Hashing a
+                // derived predicate would pin a projection of the same state
+                // twice, and it cannot diverge independently of its inputs.
             } else {
                 0u8.hash(hasher);
             }
@@ -1056,14 +992,11 @@ mod lifecycle_hash_tests {
 #[cfg(test)]
 mod mission_authority_hash_tests {
     use super::Simulation;
-    use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::combat::TargetKind;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::mission::leaf::MissionLeafState;
     use crate::sim::mission::state::MissionTestFixture;
     use crate::sim::mission::{MissionDispatchTimer, MissionId};
-    use crate::sim::movement::locomotor::LocomotorState;
-    use crate::sim::movement::locomotor_ready::LocomotorReadyState;
 
     fn hash_entity(entity: GameEntity) -> u64 {
         let mut sim = Simulation::new();
@@ -1087,61 +1020,6 @@ mod mission_authority_hash_tests {
         let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
         entity.suspended_attack_target = target;
         hash_entity(entity)
-    }
-
-    fn hash_locomotor_ready(state: Option<LocomotorReadyState>) -> u64 {
-        let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
-        let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Drive);
-        locomotor.set_mission_ready_state_for_test(state);
-        entity.locomotor = Some(locomotor);
-        hash_entity(entity)
-    }
-
-    fn drive_ready(
-        turning_active: bool,
-        slot_moving: bool,
-        head_to_nonnull: bool,
-        owner_speed: i32,
-    ) -> LocomotorReadyState {
-        LocomotorReadyState::Drive {
-            turning_active,
-            slot_moving,
-            head_to_nonnull,
-            owner_speed,
-        }
-    }
-
-    fn ship_ready(
-        turning_active: bool,
-        slot_moving: bool,
-        head_to_nonnull: bool,
-        owner_speed: i32,
-    ) -> LocomotorReadyState {
-        LocomotorReadyState::Ship {
-            turning_active,
-            slot_moving,
-            head_to_nonnull,
-            owner_speed,
-        }
-    }
-
-    fn hover_ready(slot_moving: bool, speed_bits: u64) -> LocomotorReadyState {
-        LocomotorReadyState::Hover {
-            slot_moving,
-            speed_bits,
-        }
-    }
-
-    fn walk_ready(
-        moving_byte: u8,
-        applied_speed_bits: u64,
-        destination_nonnull: bool,
-    ) -> LocomotorReadyState {
-        LocomotorReadyState::Walk {
-            moving_byte,
-            applied_speed_bits,
-            destination_nonnull,
-        }
     }
 
     #[test]
@@ -1357,112 +1235,6 @@ mod mission_authority_hash_tests {
             base_hash,
             hash_entity(base),
             "ObjectClass falling byte must contribute to the state hash"
-        );
-    }
-
-    #[test]
-    fn locomotor_mission_ready_presence_changes_state_hash() {
-        assert_ne!(
-            hash_locomotor_ready(None),
-            hash_locomotor_ready(Some(LocomotorReadyState::Drive {
-                turning_active: false,
-                slot_moving: false,
-                head_to_nonnull: false,
-                owner_speed: 0,
-            })),
-            "locomotor Mission-ready presence must contribute to the state hash"
-        );
-    }
-
-    #[test]
-    fn every_drive_mission_ready_field_changes_state_hash() {
-        let base = drive_ready(false, false, false, 0);
-        let base_hash = hash_locomotor_ready(Some(base));
-        for (field, variant) in [
-            ("turning active", drive_ready(true, false, false, 0)),
-            ("slot moving", drive_ready(false, true, false, 0)),
-            ("head-to presence", drive_ready(false, false, true, 0)),
-            ("owner speed", drive_ready(false, false, false, 1)),
-        ] {
-            assert_ne!(
-                base_hash,
-                hash_locomotor_ready(Some(variant)),
-                "Drive {field} must contribute to the state hash"
-            );
-        }
-    }
-
-    #[test]
-    fn every_ship_mission_ready_field_changes_state_hash() {
-        let base = ship_ready(false, false, false, 0);
-        let base_hash = hash_locomotor_ready(Some(base));
-        for (field, variant) in [
-            ("turning active", ship_ready(true, false, false, 0)),
-            ("slot moving", ship_ready(false, true, false, 0)),
-            ("head-to presence", ship_ready(false, false, true, 0)),
-            ("owner speed", ship_ready(false, false, false, 1)),
-        ] {
-            assert_ne!(
-                base_hash,
-                hash_locomotor_ready(Some(variant)),
-                "Ship {field} must contribute to the state hash"
-            );
-        }
-
-        assert_ne!(
-            hash_locomotor_ready(Some(drive_ready(false, false, false, 0))),
-            base_hash,
-            "Drive and Ship variant tags must contribute to the state hash"
-        );
-    }
-
-    #[test]
-    fn every_hover_mission_ready_field_changes_state_hash() {
-        let base = hover_ready(false, 0);
-        let base_hash = hash_locomotor_ready(Some(base));
-        for (field, variant) in [
-            ("slot moving", hover_ready(true, 0)),
-            ("raw speed bits", hover_ready(false, 0x8000_0000_0000_0000)),
-        ] {
-            assert_ne!(
-                base_hash,
-                hash_locomotor_ready(Some(variant)),
-                "Hover {field} must contribute to the state hash"
-            );
-        }
-    }
-
-    #[test]
-    fn every_walk_mission_ready_field_changes_state_hash() {
-        let base = walk_ready(0, 0, false);
-        let base_hash = hash_locomotor_ready(Some(base));
-        for (field, variant) in [
-            ("moving byte", walk_ready(0xa5, 0, false)),
-            (
-                "raw applied-speed bits",
-                walk_ready(0, 0x8000_0000_0000_0000, false),
-            ),
-            ("destination presence", walk_ready(0, 0, true)),
-        ] {
-            assert_ne!(
-                base_hash,
-                hash_locomotor_ready(Some(variant)),
-                "Walk {field} must contribute to the state hash"
-            );
-        }
-    }
-
-    #[test]
-    fn teleport_and_jumpjet_mission_ready_fields_change_state_hash() {
-        assert_ne!(
-            hash_locomotor_ready(Some(LocomotorReadyState::Teleport { state: 0 })),
-            hash_locomotor_ready(Some(LocomotorReadyState::Teleport { state: 0xa5 })),
-            "Teleport raw state must contribute to the state hash"
-        );
-        assert_ne!(
-            hash_locomotor_ready(Some(LocomotorReadyState::Jumpjet { state: 0 })),
-            hash_locomotor_ready(Some(LocomotorReadyState::Jumpjet { state: i32::MIN })),
-            "Jumpjet raw state must contribute to the state hash"
         );
     }
 }

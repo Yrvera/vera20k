@@ -11,10 +11,13 @@
 //!
 //! Readiness inputs: the Unit world lookups (Radio contact slot 0, the
 //! building-under stored-order lookup, `WeaponsFactory=`) are live through
-//! [`LiveReadyInputProvider`]. The exact locomotor family states and the
-//! signed object height have no live producers yet; the host promotion maps
-//! that unavailability to a permissive moving-defer gate (recorded residual)
-//! rather than stalling queued missions forever.
+//! [`LiveReadyInputProvider`]. The locomotor moving state is live for all six
+//! families that can reach this gate, derived per gate evaluation by
+//! [`crate::sim::movement::ready_producer`] — native makes a fresh locomotor
+//! call at each of its own gate sites rather than caching one per frame. The
+//! signed object height still has no live producer; the host promotion maps that
+//! unavailability to a permissive moving-defer gate (recorded residual) rather
+//! than stalling queued missions forever.
 
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
@@ -192,20 +195,25 @@ impl UnitReadyWorld for UnavailableUnitWorld {
     }
 }
 
-/// Degraded moving-gate input for the families that still have no exact
-/// producer.
+/// Fallback moving-gate input for entities whose locomotor has no producer.
 ///
-/// Drive, Ship, Teleport and Jumpjet are now produced live each tick by
-/// `sim::movement::ready_producer`, so this no longer applies to them. It
-/// remains the substitute for **Walk and Hover**, whose native inputs need
-/// state Rust does not yet persist: Walk's readiness slot reads its head-to
-/// coord rather than its destination, and Hover's reads a speed *request* that
-/// our tick consumes inline and drops. Both keep answering "not moving", which
-/// is the safe direction — a wrong "moving" would defer missions and stall the
-/// unit.
+/// All six families that can actually reach this gate — Drive, Ship, Walk, Hover,
+/// Teleport and Jumpjet — are produced live each tick by
+/// `sim::movement::ready_producer`, so none of them land here any more. What
+/// still lands here is the set that producer returns `None` for: Fly, Rocket,
+/// Parachute, Tunnel, DropPod and Mech.
 ///
-/// Retire this constant, and the `degraded_moving_gate` parameter, once those
-/// two families produce their own state.
+/// Those do not need a producer. `is_moving_now` has exactly two consumers here,
+/// the Unit and Infantry branches in `sim::mission::readiness`; aircraft
+/// readiness decides from its mission plus two flags and never reads the
+/// locomotor, and Rocket-locomotor objects are aircraft as well. So this is a
+/// floor for state the gate cannot reach, not a stand-in for missing work — and
+/// answering "not moving" is also the safe direction if that ever changes.
+/// See `ready_producer`'s fallthrough arm for what the native slot does for each
+/// of those kinds; they do not agree with each other.
+///
+/// This constant and the `degraded_moving_gate` parameter can retire together
+/// once `evaluate_ready` no longer needs a `None` fallback at all.
 const DEGRADED_NOT_MOVING: crate::sim::movement::locomotor_ready::LocomotorReadyState =
     crate::sim::movement::locomotor_ready::LocomotorReadyState::Drive {
         turning_active: false,
@@ -227,15 +235,18 @@ fn evaluate_ready(
             .entities
             .get(receiver)
             .ok_or(ReadyUnavailable::WorldLookup)?;
-        let locomotor = entity
-            .locomotor
-            .as_ref()
-            .and_then(|locomotor| locomotor.mission_ready_state)
-            .or(if degraded_moving_gate {
-                Some(DEGRADED_NOT_MOVING)
-            } else {
-                None
-            });
+        // Derived here, at the gate, rather than read from a per-tick cache:
+        // native's readiness virtual performs a fresh locomotor call every time
+        // it runs, and it runs twice per object per tick — once either side of
+        // that object's movement step — so a single stored value would answer
+        // the second call with the first call's state.
+        let locomotor =
+            crate::sim::movement::ready_producer::ready_state_for(entity, sim.session.binary_frame)
+                .or(if degraded_moving_gate {
+                    Some(DEGRADED_NOT_MOVING)
+                } else {
+                    None
+                });
         let attack_target_present = entity.attack_target.is_some();
 
         match entity.category {

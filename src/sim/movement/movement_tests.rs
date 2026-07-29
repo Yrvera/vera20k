@@ -1988,7 +1988,6 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
     use crate::util::fixed_math::SIM_ONE;
     LocomotorState {
         kind: LocomotorKind::Drive,
-        mission_ready_state: None,
         primary_kind: Some(LocomotorKind::Drive),
         piggyback: None,
         layer: MovementLayer::Ground,
@@ -2483,7 +2482,6 @@ use std::collections::BTreeMap;
 fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
     LocomotorState {
         kind: LocomotorKind::Drive,
-        mission_ready_state: None,
         primary_kind: Some(LocomotorKind::Drive),
         piggyback: None,
         layer,

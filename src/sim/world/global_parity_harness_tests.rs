@@ -182,7 +182,26 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 2401965642562130820;
 /// yielded exactly this value, so the deferral change contributes nothing in
 /// this fixture. The delta is `mission_ready_state` moving `None → Some` for
 /// Drive/Ship/Teleport/Jumpjet. Record/replay tick equality still holds.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x48FE_AB57_727E_081E;
+///
+/// Re-baselined 2026-07-30 when the readiness inputs stopped being stored on the
+/// locomotor and became derived at the Mission gate. gamemd's readiness virtual
+/// makes a fresh locomotor call at every one of its ~two dozen call sites with no
+/// cached per-frame flag on that path, so a per-tick cache served nearly all of
+/// them stale state.
+///
+/// **Composition-only, proved four ways this time.** (1) `FINAL_STREAM_STATES` is
+/// UNCHANGED — RNG routing and draw counts identical, so no unit commenced on a
+/// different tick. (2) `GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH` unchanged.
+/// (3) `GLOBAL_HARNESS_PRE_MISSION_V29_HASH` unchanged — and that probe still
+/// hashes every position, facing and movement field, so a timing change would
+/// have moved it. (4) Record/replay tick equality still holds. Only the
+/// current-schema hash moved, and its delta is exactly the removed readiness
+/// bytes leaving the hash.
+///
+/// This fixture does not cover the paths the change exists for — a same-tick stop
+/// followed by a mid-tick queue-and-commence — so "behaviour-neutral here" is a
+/// statement about this scenario, not about the engine.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x4E6E_9AFE_2620_505B;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

@@ -82,7 +82,7 @@ use crate::sim::world::Simulation;
 // Bumped 29 -> 30: the miner FSM cursor (`Miner.state`) retired from the
 // serialized Miner component — `MissionCom.handler_state` is the cursor of
 // record (Harvest handler absorption / substate-authority flip).
-const SNAPSHOT_VERSION: u32 = 30;
+const SNAPSHOT_VERSION: u32 = 31;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -487,7 +487,7 @@ mod tests {
     /// accidental bump is caught.
     #[test]
     fn snapshot_version_is_30() {
-        assert_eq!(super::SNAPSHOT_VERSION, 30);
+        assert_eq!(super::SNAPSHOT_VERSION, 31);
     }
 
     #[test]
@@ -508,31 +508,6 @@ mod tests {
             MissionLeafState::unit_raw_for_test(9, 10, 11, 12),
             MissionLeafState::infantry_raw_for_test(13, -1),
         ];
-        let locomotor_inputs = [
-            LocomotorReadyState::Drive {
-                turning_active: true,
-                slot_moving: false,
-                head_to_nonnull: true,
-                owner_speed: -1,
-            },
-            LocomotorReadyState::Ship {
-                turning_active: false,
-                slot_moving: true,
-                head_to_nonnull: true,
-                owner_speed: 1,
-            },
-            LocomotorReadyState::Hover {
-                slot_moving: true,
-                speed_bits: 0x7ff8_0000_0000_0001,
-            },
-            LocomotorReadyState::Walk {
-                moving_byte: 255,
-                applied_speed_bits: 1,
-                destination_nonnull: true,
-            },
-            LocomotorReadyState::Teleport { state: 255 },
-            LocomotorReadyState::Jumpjet { state: -1 },
-        ];
 
         let mut sim = Simulation::new();
         for index in 0..6 {
@@ -545,9 +520,7 @@ mod tests {
                 TargetKind::Cell(index as u16, (index + 1) as u16)
             });
             entity.set_object_is_falling_down_for_test(index as u8 + 1);
-            let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Drive);
-            locomotor.set_mission_ready_state_for_test(Some(locomotor_inputs[index]));
-            entity.locomotor = Some(locomotor);
+            entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
             if index == 0 {
                 entity.mission.apply_test_fixture(MissionTestFixture {
                     current: MissionId::from_raw(i32::MIN),
@@ -583,13 +556,6 @@ mod tests {
             assert_eq!(
                 entity.suspended_attack_target, expected_suspended_target,
                 "suspended TargetKind variant and payload must round-trip"
-            );
-            assert_eq!(
-                entity
-                    .locomotor
-                    .as_ref()
-                    .and_then(|locomotor| locomotor.mission_ready_state),
-                Some(locomotor_inputs[index])
             );
             assert_eq!(entity.object_is_falling_down, index as u8 + 1);
         }
