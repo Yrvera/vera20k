@@ -1314,6 +1314,8 @@ pub(crate) fn tick_movement_with_grids(
                 );
                 if let Some(ref mut loco) = entity.locomotor {
                     loco.hover_throttle = new_throttle;
+                    // The readiness producer reads the request, not the ramp.
+                    loco.hover_speed_request = request;
                 }
                 target.current_speed = target.speed * new_throttle;
             } else if target.accel_factor > SIM_ZERO || target.decel_factor > SIM_ZERO {

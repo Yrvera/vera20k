@@ -172,7 +172,8 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 2401965642562130820;
 /// scenario-stream consumption changed in this fixture, shifting positions
 /// and timers from the first return leg on. Record/replay tick equality
 /// still holds.
-/// Re-baselined 2026-07-29 for the locomotion S2 readiness producers —
+/// Re-baselined 2026-07-29 for the locomotion S2 readiness producers (twice:
+/// Drive/Ship/Teleport/Jumpjet, then Walk and Hover) —
 /// **composition-only, proved three ways.** (1) `FINAL_STREAM_STATES` is
 /// UNCHANGED, so RNG routing and draw counts are identical. (2) Both
 /// legacy-schema probes above are unchanged, so only the current-schema hash
@@ -181,7 +182,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 2401965642562130820;
 /// yielded exactly this value, so the deferral change contributes nothing in
 /// this fixture. The delta is `mission_ready_state` moving `None → Some` for
 /// Drive/Ship/Teleport/Jumpjet. Record/replay tick equality still holds.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xB3B9_98EF_023E_F3F8;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x48FE_AB57_727E_081E;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

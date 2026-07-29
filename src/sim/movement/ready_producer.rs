@@ -19,6 +19,11 @@
 //! its state is absent, and families without a faithful mapping return `None`
 //! rather than a guess.
 //!
+//! Two mappings carry a deliberate conservative floor, each labelled
+//! VERA-internal at its definition: Drive/Ship's owner speed, and Walk's
+//! blocked-phase exclusion. Both compensate for a state-lifetime mismatch
+//! against native, and both err toward "not moving".
+//!
 //! ## Parity status
 //! The predicate is VERIFIED (exhaustive over its input space). Every mapping
 //! here is **UNCHECKED**: each was traced to its native field, but no
@@ -32,8 +37,9 @@
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
-use super::locomotor::{AirMovePhase, LocomotorState};
+use super::locomotor::{AirMovePhase, GroundMovePhase, LocomotorState};
 use super::locomotor_ready::LocomotorReadyState;
 use super::teleport_movement::TeleportPhase;
 
@@ -62,14 +68,24 @@ fn ready_state_for(entity: &GameEntity, binary_frame: u32) -> Option<LocomotorRe
         LocomotorKind::Ship => Some(drive_family(entity, binary_frame, DriveFamily::Ship)),
         LocomotorKind::Teleport => Some(teleport(entity)),
         LocomotorKind::Jumpjet => Some(jumpjet(entity, locomotor)),
-        // Walk and Hover are deliberately absent — see the module-level note in
-        // the S2 mapping section of the locomotion substrate design. Walk needs
-        // its head-to field (the native slot reads head-to, not destination),
-        // and Hover needs the speed request persisted rather than consumed
-        // inline. Returning `None` keeps their previous, safe answer.
+        LocomotorKind::Walk => Some(walk(entity, locomotor)),
+        LocomotorKind::Hover => Some(hover(entity, locomotor)),
+        // Fly, Rocket, Mech, DropPod, Parachute have no readiness slot of their
+        // own that this gate consults. `None` keeps the conservative answer.
         _ => None,
     }
 }
+
+/// IEEE-754 binary64 bit patterns for the only two speed-fraction values the
+/// Walk family's native field ever holds.
+///
+/// Fed to the predicate directly rather than converting a `SimFixed` to float
+/// bits: a general fixed→IEEE754 conversion would introduce rounding decisions
+/// that must then be reproduced bit-for-bit across every machine in a lockstep
+/// match, for no gameplay benefit.
+const F64_BITS_ONE: u64 = 0x3FF0_0000_0000_0000;
+/// The hover throttle request's third reachable value.
+const F64_BITS_HALF: u64 = 0x3FE0_0000_0000_0000;
 
 #[derive(Clone, Copy)]
 enum DriveFamily {
@@ -162,6 +178,71 @@ fn jumpjet(entity: &GameEntity, locomotor: &LocomotorState) -> LocomotorReadySta
         AirMovePhase::Descending => 4,
     };
     LocomotorReadyState::Jumpjet { state }
+}
+
+/// Walk's readiness inputs.
+///
+/// Native predicate: `moving_byte != 0 && applied_speed > 0 && head_to_nonnull`.
+///
+/// Note the third input reads the locomotor's **head-to** coord — the cell
+/// currently being stepped toward — not its final destination, despite the
+/// field's name in the predicate. `path[next_index]` is the structural match.
+///
+/// The blocked-phase exclusion is **VERA-internal**, gamemd equivalent
+/// UNCHECKED. It compensates for a lifetime mismatch: we keep a movement target
+/// while a walker waits for a repath, whereas the native flag is governed by
+/// its own head-to/stop calls. Without it a permanently blocked walker would
+/// report moving forever and defer its mission forever — the stall direction,
+/// on the largest unit family in the game.
+fn walk(entity: &GameEntity, locomotor: &LocomotorState) -> LocomotorReadyState {
+    let live_move = entity.movement_target.is_some() && locomotor.phase != GroundMovePhase::Blocked;
+
+    LocomotorReadyState::Walk {
+        moving_byte: u8::from(live_move),
+        // Native's speed fraction for a walker is only ever 1.0 (move start) or
+        // 0.0 (arrival / construction); the Walk locomotor never writes it.
+        applied_speed_bits: if live_move { F64_BITS_ONE } else { 0 },
+        destination_nonnull: entity
+            .movement_target
+            .as_ref()
+            .is_some_and(|target| target.path.get(target.next_index).is_some()),
+    }
+}
+
+/// Hover's readiness inputs.
+///
+/// Native predicate: `slot_moving && speed != 0`. The speed term is the strict
+/// one, which makes the conjunction forgiving of an over-inclusive
+/// `slot_moving` — so that side errs safely.
+///
+/// The speed input is the **unramped request**, not `hover_throttle`. The ramp
+/// lags the request by up to roughly 27 ticks on the brake side, so reading it
+/// would keep reporting "moving" well after a hover unit stopped — the stall
+/// direction.
+fn hover(entity: &GameEntity, locomotor: &LocomotorState) -> LocomotorReadyState {
+    LocomotorReadyState::Hover {
+        slot_moving: entity.movement_target.is_some() || entity.navigation.nav_com.is_some(),
+        // Forced to zero without a live movement target: the request is only
+        // written inside the hover movement branch, so a stopped unit would
+        // otherwise keep its last non-zero value indefinitely.
+        speed_bits: if entity.movement_target.is_some() {
+            hover_request_bits(locomotor.hover_speed_request)
+        } else {
+            0
+        },
+    }
+}
+
+/// The hover throttle request has exactly three reachable values, so it maps to
+/// the native double's bits by table — no float arithmetic in `sim/`.
+fn hover_request_bits(request: SimFixed) -> u64 {
+    if request == SIM_ZERO {
+        0
+    } else if request == SimFixed::lit("0.5") {
+        F64_BITS_HALF
+    } else {
+        F64_BITS_ONE
+    }
 }
 
 #[cfg(test)]

@@ -211,6 +211,17 @@ pub struct LocomotorState {
     /// Unused by non-Hover locomotors.
     #[serde(default)]
     pub hover_throttle: SimFixed,
+
+    /// Hover speed *request* — the unramped throttle target, distinct from
+    /// `hover_throttle` (the ramped value that lags it).
+    ///
+    /// Persisted solely so the Mission readiness producer can read it: the
+    /// native readiness slot reads the request, not the ramp, and the ramp lags
+    /// by up to ~27 ticks on the brake side, which is the direction that would
+    /// wrongly report "moving". Takes only three values (0, 0.5, 1).
+    /// Unused by non-Hover locomotors.
+    #[serde(default)]
+    pub hover_speed_request: SimFixed,
     /// Hover vertical-spring state — the velocity-like bob offset of the
     /// damped-spring altitude controller (see `hover::hover_vertical_tick`).
     /// Pairs with `altitude`, which for hover units holds the visible float
@@ -296,6 +307,7 @@ impl LocomotorState {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: SIM_ZERO,
+            hover_speed_request: SIM_ZERO,
             hover_bob_offset: SIM_ZERO,
         }
     }
@@ -366,6 +378,7 @@ impl LocomotorState {
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: SIM_ZERO,
+            hover_speed_request: SIM_ZERO,
             hover_bob_offset: SIM_ZERO,
         }
     }
