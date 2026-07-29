@@ -407,7 +407,6 @@ mod tests {
             target_altitude: SimFixed::from_num(altitude_lep as i32),
             climb_rate: SIM_ZERO,
             jumpjet_speed: SIM_ZERO,
-            jumpjet_wobbles: 0.0,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: 0,

@@ -296,7 +296,6 @@ mod tests {
             target_altitude: SimFixed::from_num(500),
             climb_rate: sim_from_f32(75.0),
             jumpjet_speed: SimFixed::from_num(14),
-            jumpjet_wobbles: 0.15,
             jumpjet_accel: SimFixed::from_num(2),
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: 40,

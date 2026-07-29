@@ -160,10 +160,6 @@ pub struct LocomotorState {
     pub climb_rate: SimFixed,
     /// Cached jumpjet flight speed (only for Jumpjet locomotor).
     pub jumpjet_speed: SimFixed,
-    /// Jumpjet wobble amplitude (0.0 if no wobble or non-jumpjet).
-    /// KEPT as f32 — render-only visual wobble.
-    #[serde(skip, default)]
-    pub jumpjet_wobbles: f32,
     /// Jumpjet acceleration rate (JumpjetAccel). Deceleration = accel * 1.5.
     pub jumpjet_accel: SimFixed,
     /// Current speed during jumpjet flight (ramps via accel/decel).
@@ -259,7 +255,7 @@ impl LocomotorState {
         };
 
         // Extract jumpjet params for altitude and wobble.
-        let (target_alt, climb, jj_speed, jj_wobbles) =
+        let (target_alt, climb, jj_speed) =
             Self::air_params_from_object(kind, &obj.jumpjet_params, flight_level);
 
         // Extract extended jumpjet fields (accel, deviation, crash, turn rate).
@@ -285,7 +281,6 @@ impl LocomotorState {
             target_altitude: target_alt,
             climb_rate: climb,
             jumpjet_speed: jj_speed,
-            jumpjet_wobbles: jj_wobbles,
             jumpjet_accel: jj_accel,
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: jj_deviation,
@@ -306,17 +301,16 @@ impl LocomotorState {
     }
 
     /// Compute altitude parameters from locomotor kind and optional jumpjet params.
-    /// Returns (target_altitude, climb_rate, jumpjet_speed, jumpjet_wobbles).
-    /// wobbles is f32 since it's render-only.
+    /// Returns (target_altitude, climb_rate, jumpjet_speed).
     fn air_params_from_object(
         kind: LocomotorKind,
         jumpjet_params: &Option<JumpjetParams>,
         flight_level: i32,
-    ) -> (SimFixed, SimFixed, SimFixed, f32) {
+    ) -> (SimFixed, SimFixed, SimFixed) {
         match kind {
             LocomotorKind::Fly | LocomotorKind::Rocket => {
                 let alt = SimFixed::from_num(flight_level);
-                (alt, FLY_CLIMB_RATE, SIM_ZERO, 0.0)
+                (alt, FLY_CLIMB_RATE, SIM_ZERO)
             }
             LocomotorKind::Jumpjet => {
                 let jj = jumpjet_params.as_ref();
@@ -324,11 +318,10 @@ impl LocomotorState {
                     jj.map_or(SimFixed::from_num(500), |p| SimFixed::from_num(p.height));
                 let climb: SimFixed = jj.map_or(sim_from_f32(5.0), |p| p.climb);
                 let speed: SimFixed = jj.map_or(sim_from_f32(14.0), |p| p.speed);
-                let wobbles: f32 = jj.filter(|p| !p.no_wobbles).map_or(0.0, |p| p.wobbles);
                 // Jumpjet climb rate scaled to leptons/second (original is per-tick at 15Hz).
-                (height, climb * SimFixed::from_num(15), speed, wobbles)
+                (height, climb * SimFixed::from_num(15), speed)
             }
-            _ => (SIM_ZERO, SIM_ZERO, SIM_ZERO, 0.0),
+            _ => (SIM_ZERO, SIM_ZERO, SIM_ZERO),
         }
     }
 
@@ -358,7 +351,6 @@ impl LocomotorState {
             target_altitude: SIM_ZERO,
             climb_rate: SIM_ZERO,
             jumpjet_speed: SIM_ZERO,
-            jumpjet_wobbles: 0.0,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: 0,
@@ -524,7 +516,6 @@ impl LocomotorState {
         self.target_altitude = saved.target_altitude;
         self.climb_rate = saved.climb_rate;
         self.jumpjet_speed = saved.jumpjet_speed;
-        self.jumpjet_wobbles = saved.jumpjet_wobbles;
         self.jumpjet_accel = saved.jumpjet_accel;
         self.jumpjet_current_speed = saved.jumpjet_current_speed;
         self.jumpjet_deviation = saved.jumpjet_deviation;

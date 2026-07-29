@@ -527,7 +527,6 @@ mod tests {
             target_altitude: SIM_ZERO,
             climb_rate: SIM_ZERO,
             jumpjet_speed: SIM_ZERO,
-            jumpjet_wobbles: 0.0,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: 0,

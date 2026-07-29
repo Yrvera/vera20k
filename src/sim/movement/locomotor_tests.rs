@@ -298,26 +298,7 @@ fn test_jumpjet_with_custom_params() {
     let state = LocomotorState::from_object_type(&obj, 1500);
     assert_eq!(state.target_altitude, SimFixed::from_num(750));
     assert_eq!(state.jumpjet_speed, sim_from_f32(20.0));
-    assert!((state.jumpjet_wobbles - 0.2).abs() < f32::EPSILON);
     assert_eq!(state.climb_rate, sim_from_f32(8.0) * SimFixed::from_num(15));
-}
-
-#[test]
-fn test_jumpjet_no_wobbles() {
-    let mut obj = make_obj(LocomotorKind::Jumpjet, ObjectCategory::Infantry);
-    obj.jumpjet_params = Some(JumpjetParams {
-        turn_rate: 4,
-        speed: sim_from_f32(14.0),
-        climb: sim_from_f32(5.0),
-        crash: sim_from_f32(5.0),
-        height: 500,
-        accel: sim_from_f32(2.0),
-        wobbles: 0.15,
-        deviation: 40,
-        no_wobbles: true,
-    });
-    let state = LocomotorState::from_object_type(&obj, 1500);
-    assert!((state.jumpjet_wobbles).abs() < f32::EPSILON);
 }
 
 #[test]
