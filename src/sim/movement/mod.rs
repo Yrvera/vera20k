@@ -55,6 +55,7 @@ mod movement_step;
 mod movement_tick;
 mod navcom;
 mod path_markers;
+pub(crate) mod ready_producer;
 
 // --- Movement-related modules (public API) ---
 pub mod air_movement;

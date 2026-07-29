@@ -1,0 +1,174 @@
+//! Producer tests for `mission_ready_state`.
+//!
+//! These assert the mapping direction, not native parity. The predicate they
+//! feed is separately proven exhaustively in `locomotor_ready.rs`.
+
+use super::*;
+use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, MovementTarget};
+use crate::sim::movement::teleport_movement::TeleportState;
+use crate::util::fixed_math::SimFixed;
+
+fn entity_with(kind: LocomotorKind) -> GameEntity {
+    let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+    entity.locomotor = Some(LocomotorState::for_test_kind(kind));
+    entity
+}
+
+fn moving_target(speed: i32) -> MovementTarget {
+    MovementTarget {
+        path: vec![(5, 5), (6, 5)],
+        next_index: 1,
+        current_speed: SimFixed::from_num(speed),
+        ..MovementTarget::default()
+    }
+}
+
+/// A parked vehicle must report "not moving". This is the direction that
+/// matters: a false "moving" makes the mission gate defer every tick, which
+/// stalls the unit outright.
+#[test]
+fn parked_drive_unit_reports_not_moving() {
+    let entity = entity_with(LocomotorKind::Drive);
+    let state = ready_state_for(&entity, 100).expect("Drive has a producer");
+    assert!(
+        !state.is_moving_now(),
+        "a parked tank must not report moving"
+    );
+}
+
+/// A vehicle with a live movement target, a head-to away from its own cell and
+/// ramped speed reports moving.
+#[test]
+fn driving_unit_reports_moving() {
+    let mut entity = entity_with(LocomotorKind::Drive);
+    entity.drive_locomotion = Some(DriveLocomotionRuntime {
+        head_to: Some(DriveCoord {
+            x: 6 * 256 + 128,
+            y: 5 * 256 + 128,
+            z: 0,
+        }),
+        ..DriveLocomotionRuntime::default()
+    });
+    entity.movement_target = Some(moving_target(40));
+
+    let state = ready_state_for(&entity, 100).expect("Drive has a producer");
+    assert!(state.is_moving_now(), "a driving tank must report moving");
+}
+
+/// Standing exactly on the stale head-to point reads not-moving. This is native
+/// behaviour, not a workaround: the native slot compares head-to against the
+/// owner's coordinate and ignores Z.
+#[test]
+fn unit_parked_on_its_head_to_reports_not_moving() {
+    let mut entity = entity_with(LocomotorKind::Drive);
+    entity.drive_locomotion = Some(DriveLocomotionRuntime {
+        head_to: Some(DriveCoord {
+            x: 5 * 256 + i32::from(entity.position.sub_x.to_num::<i32>() as i16),
+            y: 5 * 256 + i32::from(entity.position.sub_y.to_num::<i32>() as i16),
+            z: 0,
+        }),
+        ..DriveLocomotionRuntime::default()
+    });
+
+    let state = ready_state_for(&entity, 100).expect("Drive has a producer");
+    assert!(!state.is_moving_now());
+}
+
+/// Ship uses the same four inputs through its own native slot, so it must
+/// behave identically to Drive on identical state — but keep its own variant.
+#[test]
+fn ship_mirrors_drive_but_keeps_its_own_variant() {
+    let entity = entity_with(LocomotorKind::Ship);
+    let state = ready_state_for(&entity, 100).expect("Ship has a producer");
+    assert!(matches!(state, LocomotorReadyState::Ship { .. }));
+    assert!(!state.is_moving_now());
+}
+
+/// The trap this producer exists to avoid: a warped unit sitting out its chrono
+/// delay is NOT moving. Treating the whole teleport state as "moving" would
+/// defer its missions for the entire delay.
+#[test]
+fn teleport_chrono_delay_reports_not_moving() {
+    let mut entity = entity_with(LocomotorKind::Teleport);
+    entity.teleport_state = Some(TeleportState {
+        phase: TeleportPhase::ChronoDelay,
+        target_rx: 20,
+        target_ry: 20,
+        being_warped_ticks: 10,
+    });
+
+    let state = ready_state_for(&entity, 100).expect("Teleport has a producer");
+    assert!(
+        !state.is_moving_now(),
+        "chrono delay must not defer the unit's missions"
+    );
+}
+
+/// The relocation tick itself is the one moment the native flag is set.
+#[test]
+fn teleport_relocate_reports_moving() {
+    let mut entity = entity_with(LocomotorKind::Teleport);
+    entity.teleport_state = Some(TeleportState {
+        phase: TeleportPhase::Relocate,
+        target_rx: 20,
+        target_ry: 20,
+        being_warped_ticks: 16,
+    });
+
+    let state = ready_state_for(&entity, 100).expect("Teleport has a producer");
+    assert!(state.is_moving_now());
+}
+
+/// Native separates hovering-in-place from hovering-while-translating; our
+/// single `Hovering` phase is split by the presence of a movement target.
+#[test]
+fn jumpjet_hovering_split_by_movement_target() {
+    let mut entity = entity_with(LocomotorKind::Jumpjet);
+    if let Some(locomotor) = entity.locomotor.as_mut() {
+        locomotor.air_phase = AirMovePhase::Hovering;
+    }
+
+    let holding = ready_state_for(&entity, 100).expect("Jumpjet has a producer");
+    assert!(
+        !holding.is_moving_now(),
+        "holding station is native state 2 — not moving"
+    );
+
+    entity.movement_target = Some(moving_target(20));
+    let translating = ready_state_for(&entity, 100).expect("Jumpjet has a producer");
+    assert!(
+        translating.is_moving_now(),
+        "translating is native state 3 — moving"
+    );
+}
+
+/// A grounded jumpjet is native state 0.
+#[test]
+fn jumpjet_landed_reports_not_moving() {
+    let mut entity = entity_with(LocomotorKind::Jumpjet);
+    if let Some(locomotor) = entity.locomotor.as_mut() {
+        locomotor.air_phase = AirMovePhase::Landed;
+    }
+    let state = ready_state_for(&entity, 100).expect("Jumpjet has a producer");
+    assert!(!state.is_moving_now());
+}
+
+/// Families without a faithful mapping must yield `None`, which leaves the
+/// mission gate on its previous conservative answer rather than a guess.
+#[test]
+fn unmapped_families_yield_no_producer() {
+    for kind in [LocomotorKind::Walk, LocomotorKind::Hover] {
+        let entity = entity_with(kind);
+        assert!(
+            ready_state_for(&entity, 100).is_none(),
+            "{kind:?} has no faithful producer yet and must not be guessed"
+        );
+    }
+}
+
+/// An entity with no locomotor at all yields nothing.
+#[test]
+fn entity_without_locomotor_yields_no_producer() {
+    let entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+    assert!(ready_state_for(&entity, 100).is_none());
+}

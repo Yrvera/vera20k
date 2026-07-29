@@ -2220,6 +2220,14 @@ impl Simulation {
                 );
             }
             movement::tick_locomotor_piggyback_restore(&mut self.substrate.entities);
+            // Readiness inputs for the Mission gate. Written at the end of
+            // movement so next tick's per-object dispatch -- which runs before
+            // that object moves again -- reads the state as of the last
+            // completed movement, matching what the native live call observes.
+            movement::ready_producer::refresh_mission_ready_states(
+                &mut self.substrate.entities,
+                self.session.binary_frame,
+            );
         }
 
         // --- Phase 2.5: Body rocking + slope-transition advance ---

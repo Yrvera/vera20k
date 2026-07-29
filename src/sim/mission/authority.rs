@@ -192,12 +192,20 @@ impl UnitReadyWorld for UnavailableUnitWorld {
     }
 }
 
-/// Degraded moving-gate input: no locomotor family has a live exact producer
-/// for its readiness state yet, so the host promotion substitutes a
-/// "not moving now" input — the moving-defer branch never defers, and every
-/// later exact gate (tracker bytes, Radio slot-0 hold, building-under hold,
-/// Infantry Doing table) still evaluates. Recorded residual; superseded the
-/// moment real producers write `mission_ready_state`.
+/// Degraded moving-gate input for the families that still have no exact
+/// producer.
+///
+/// Drive, Ship, Teleport and Jumpjet are now produced live each tick by
+/// `sim::movement::ready_producer`, so this no longer applies to them. It
+/// remains the substitute for **Walk and Hover**, whose native inputs need
+/// state Rust does not yet persist: Walk's readiness slot reads its head-to
+/// coord rather than its destination, and Hover's reads a speed *request* that
+/// our tick consumes inline and drops. Both keep answering "not moving", which
+/// is the safe direction — a wrong "moving" would defer missions and stall the
+/// unit.
+///
+/// Retire this constant, and the `degraded_moving_gate` parameter, once those
+/// two families produce their own state.
 const DEGRADED_NOT_MOVING: crate::sim::movement::locomotor_ready::LocomotorReadyState =
     crate::sim::movement::locomotor_ready::LocomotorReadyState::Drive {
         turning_active: false,
