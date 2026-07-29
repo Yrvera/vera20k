@@ -565,16 +565,17 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
     let mut clipped: u32 = 0;
 
     for cell in &map.cells {
-        // Skip true "no tile" entries: -1 (0xFFFFFFFF).
-        // Some maps use 0x0000FFFF as "clear ground" (legacy 16-bit sentinel).
-        // Treat that as tile 0 so we don't render black holes in otherwise valid cells.
-        if cell.tile_index < 0 {
-            continue;
-        }
-        let tile_id: u16 = if cell.tile_index == 0xFFFF {
+        // This legacy direct path has no theater context, so retain its tile-0
+        // fallback while still presenting no-tile cells instead of dropping them.
+        let tile_id: u16 = if cell.tile_index == 0xFFFF || cell.tile_index < 0 {
             0
         } else {
             cell.tile_index as u16
+        };
+        let sub_tile = if cell.tile_index == 0xFFFF || cell.tile_index < 0 {
+            0
+        } else {
+            cell.sub_tile
         };
 
         let (sx, sy): (f32, f32) = iso_to_screen(cell.rx, cell.ry, cell.z);
@@ -592,7 +593,7 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
             screen_x: sx,
             screen_y: sy,
             tile_id,
-            sub_tile: cell.sub_tile,
+            sub_tile,
             z: cell.z,
             rx: cell.rx,
             ry: cell.ry,
@@ -654,14 +655,7 @@ pub fn build_terrain_grid_from_resolved(
     let mut clipped: u32 = 0;
 
     for cell in resolved.iter() {
-        if cell.final_tile_index < 0 {
-            continue;
-        }
-        let tile_id = if cell.final_tile_index == 0xFFFF {
-            0
-        } else {
-            cell.final_tile_index as u16
-        };
+        let (tile_id, sub_tile) = resolved.presentation_tile(cell);
         let (sx, sy) = iso_to_screen(cell.rx, cell.ry, cell.level);
         if let Some(ref bounds) = local_bounds {
             if !bounds.contains(sx, sy) {
@@ -673,11 +667,11 @@ pub fn build_terrain_grid_from_resolved(
             screen_x: sx,
             screen_y: sy,
             tile_id,
-            sub_tile: cell.final_sub_tile,
+            sub_tile,
             z: cell.level,
             rx: cell.rx,
             ry: cell.ry,
-            is_water: cell.is_water,
+            is_water: cell.final_tile_index >= 0 && cell.is_water,
             is_cliff_redraw: cell.is_cliff_redraw,
             variant: cell.variant,
             tint: [1.0, 1.0, 1.0],
@@ -870,6 +864,8 @@ pub fn build_visible_instances(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
 
     #[test]
     fn test_iso_to_screen_origin() {
@@ -1052,6 +1048,93 @@ mod tests {
         assert!(!bounds.contains(-1950.0, 1214.0)); // just above
         assert!(!bounds.contains(1950.0, 1215.0)); // at right edge (exclusive)
         assert!(!bounds.contains(-1950.0, 3225.0)); // at bottom edge (exclusive)
+    }
+
+    #[test]
+    #[ignore = "requires RA2_DIR with retail RA2/YR assets"]
+    fn xmp29u2_no_tile_cells_use_clear_tile_across_presentation_grid() {
+        let ra2_dir = PathBuf::from(
+            std::env::var("RA2_DIR").expect("set RA2_DIR to the retail RA2/YR directory"),
+        );
+        let mut assets =
+            crate::assets::asset_manager::AssetManager::new(&ra2_dir).expect("retail assets");
+        let map_bytes = assets.get("XMP29U2.MAP").expect("XMP29U2.MAP asset");
+        let map = crate::map::map_file::MapFile::from_bytes(&map_bytes).expect("retail map");
+        let theater = crate::map::theater::load_theater(&mut assets, &map.header.theater)
+            .expect("urban theater");
+        let clear_tile_id = theater.rmg_tiles.clear_tile.expect("Urban ClearTile");
+        let bounds = LocalBounds::from_header(&map.header);
+        let resolved = crate::map::resolved_terrain::ResolvedTerrainGrid::build(
+            &map,
+            Some(&theater),
+            Some(&assets),
+            None,
+            None,
+            true,
+            0,
+        );
+        let grid = build_terrain_grid_from_resolved(&resolved, Some(bounds), None);
+
+        let in_bounds_sentinels: Vec<_> = map
+            .cells
+            .iter()
+            .filter(|cell| cell.tile_index < 0)
+            .filter(|cell| {
+                let (sx, sy) = iso_to_screen(cell.rx, cell.ry, cell.z);
+                bounds.contains(sx, sy)
+            })
+            .collect();
+        assert_eq!(
+            map.cells.iter().filter(|cell| cell.tile_index < 0).count(),
+            164
+        );
+        assert_eq!(in_bounds_sentinels.len(), 125);
+        assert_eq!(grid.cells.len(), 6_160);
+
+        let clear_reference = resolved
+            .iter()
+            .find(|cell| cell.final_tile_index == clear_tile_id as i32 && cell.final_sub_tile == 0)
+            .expect("ordinary ClearTile reference cell");
+        let needed = HashSet::from([crate::map::theater::TileKey {
+            tile_id: clear_tile_id,
+            sub_tile: 0,
+            variant: 0,
+        }]);
+        let clear_images = crate::map::theater::load_tile_images(
+            &assets,
+            &theater.lookup,
+            &theater.iso_palette,
+            &needed,
+        );
+        assert!(
+            clear_images.contains_key(&crate::map::theater::TileKey {
+                tile_id: clear_tile_id,
+                sub_tile: 0,
+                variant: 0,
+            }),
+            "ClearTile must be available to the tactical atlas"
+        );
+
+        let presented: HashMap<_, _> = grid
+            .cells
+            .iter()
+            .map(|cell| ((cell.rx, cell.ry), cell))
+            .collect();
+        for source in in_bounds_sentinels {
+            let resolved_cell = resolved
+                .cell(source.rx, source.ry)
+                .expect("sentinel remains in resolved terrain");
+            assert_eq!(resolved_cell.final_tile_index, crate::map::theater::NO_TILE);
+
+            let rendered = presented
+                .get(&(source.rx, source.ry))
+                .expect("sentinel reaches presentation grid");
+            assert_eq!(rendered.tile_id, clear_tile_id);
+            assert_eq!(rendered.sub_tile, 0);
+            assert_eq!(rendered.z, source.z);
+            assert_eq!(rendered.radar_left, clear_reference.radar_left);
+            assert_eq!(rendered.radar_right, clear_reference.radar_right);
+        }
     }
 
     #[test]

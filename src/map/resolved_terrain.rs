@@ -300,6 +300,11 @@ pub struct ResolvedTerrainGrid {
     height: u16,
     pub cells: Vec<ResolvedTerrainCell>,
     tube_facts: Vec<TubeFact>,
+    /// Theater `[General] ClearTile` resolved to a flat tile id.
+    ///
+    /// Presentation consumers use this for `NO_TILE` cells while
+    /// `ResolvedTerrainCell::final_tile_index` retains the sentinel for sim.
+    clear_tile_id: u16,
     /// `[Tiberium]` `SpeedCostProfile` cached at map load, looked up via
     /// `TerrainRules::semantics_by_name("Tiberium")`. Used by
     /// `recalc_overlay_passability` to apply Tiberium-mode speed costs when
@@ -324,6 +329,7 @@ impl ResolvedTerrainGrid {
             height,
             cells,
             tube_facts,
+            clear_tile_id: 0,
             tiberium_speed_costs: None,
         }
     }
@@ -350,6 +356,18 @@ impl ResolvedTerrainGrid {
 
     pub fn height(&self) -> u16 {
         self.height
+    }
+
+    /// Resolve a cell's presentation tile without rewriting its semantic tile.
+    ///
+    /// Active YR substitutes the theater ClearTile and sub-tile zero when the
+    /// stored IsoTileTypeIndex is the no-tile sentinel.
+    pub fn presentation_tile(&self, cell: &ResolvedTerrainCell) -> (u16, u8) {
+        presentation_tile_parts(
+            cell.final_tile_index,
+            cell.final_sub_tile,
+            self.clear_tile_id,
+        )
     }
 
     pub fn index(&self, rx: u16, ry: u16) -> Option<usize> {
@@ -438,6 +456,9 @@ impl ResolvedTerrainGrid {
         lat_enabled: bool,
         cliff_back_impassability: u8,
     ) -> Self {
+        let clear_tile_id = theater_data
+            .and_then(|td| td.rmg_tiles.clear_tile)
+            .unwrap_or(0);
         let (width, height) = grid_dimensions(&map.cells);
         if width == 0 || height == 0 {
             return Self {
@@ -445,6 +466,7 @@ impl ResolvedTerrainGrid {
                 height: 0,
                 cells: Vec::new(),
                 tube_facts: Vec::new(),
+                clear_tile_id,
                 tiberium_speed_costs: None,
             };
         }
@@ -503,6 +525,13 @@ impl ResolvedTerrainGrid {
                     sub_tile: final_sub_tile,
                     variant: 0,
                 };
+                let (presentation_tile_id, presentation_sub_tile) =
+                    presentation_tile_parts(final_tile_index, final_sub_tile, clear_tile_id);
+                let presentation_key = TileKey {
+                    tile_id: presentation_tile_id,
+                    sub_tile: presentation_sub_tile,
+                    variant: 0,
+                };
                 let mut metadata = if let Some(metadata) = metadata_cache.get(&tile_key) {
                     metadata.clone()
                 } else {
@@ -514,6 +543,21 @@ impl ResolvedTerrainGrid {
                         &mut warned_unknown_land_types,
                     );
                     metadata_cache.insert(tile_key, metadata.clone());
+                    metadata
+                };
+                let presentation_metadata = if presentation_key == tile_key {
+                    metadata.clone()
+                } else if let Some(metadata) = metadata_cache.get(&presentation_key) {
+                    metadata.clone()
+                } else {
+                    let metadata = load_tile_metadata(
+                        theater_data,
+                        asset_manager,
+                        terrain_rules,
+                        presentation_key,
+                        &mut warned_unknown_land_types,
+                    );
+                    metadata_cache.insert(presentation_key, metadata.clone());
                     metadata
                 };
                 let terrain_object_blocks = terrain_objects.contains(&(rx, ry));
@@ -680,8 +724,8 @@ impl ResolvedTerrainGrid {
                     bridge_layer: overlay_effects.bridge_layer,
                     bridge_facts: BridgeCellFacts::default(),
                     tube_index: None,
-                    radar_left: metadata.radar_left,
-                    radar_right: metadata.radar_right,
+                    radar_left: presentation_metadata.radar_left,
+                    radar_right: presentation_metadata.radar_right,
                     has_damaged_data: metadata.has_damaged_data,
                     bridgehead_anchor_class_at_load: None,
                 });
@@ -948,7 +992,11 @@ impl ResolvedTerrainGrid {
             use std::hash::{Hash, Hasher};
             let mut variant_total: usize = 0;
             for cell in &mut cells {
-                let tile_id = normalize_tile_id(cell.final_tile_index);
+                let (tile_id, _) = presentation_tile_parts(
+                    cell.final_tile_index,
+                    cell.final_sub_tile,
+                    clear_tile_id,
+                );
                 let vc = td.lookup.variant_count(tile_id);
                 if vc == 0 {
                     continue;
@@ -1015,6 +1063,7 @@ impl ResolvedTerrainGrid {
             height,
             cells,
             tube_facts,
+            clear_tile_id,
             tiberium_speed_costs,
         }
     }
@@ -1182,6 +1231,14 @@ fn normalize_tile_id(tile_index: i32) -> u16 {
         0
     } else {
         tile_index as u16
+    }
+}
+
+fn presentation_tile_parts(tile_index: i32, sub_tile: u8, clear_tile_id: u16) -> (u16, u8) {
+    if tile_index == 0xFFFF || tile_index < 0 {
+        (clear_tile_id, 0)
+    } else {
+        (tile_index as u16, sub_tile)
     }
 }
 
@@ -1876,6 +1933,64 @@ mod tests {
         assert!(clear.filled_clear);
         assert_eq!(clear.final_tile_index, 0);
         assert_eq!(clear.level, 0);
+    }
+
+    #[test]
+    fn no_tile_presentation_uses_theater_clear_tile_without_rewriting_semantics() {
+        let ini = b"[TileSet0000]\n\
+                    TilesInSet=37\n\
+                    FileName=plain\n\
+                    SetName=Plain\n\
+                    \n\
+                    [TileSet0001]\n\
+                    TilesInSet=1\n\
+                    FileName=clear\n\
+                    SetName=Clear\n";
+        let mut theater_data = synthetic_theater_from_ini(ini);
+        theater_data.rmg_tiles.clear_tile = Some(37);
+        let map = make_map(
+            vec![MapCell {
+                rx: 1,
+                ry: 0,
+                tile_index: theater::NO_TILE,
+                sub_tile: 7,
+                z: 3,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let grid =
+            ResolvedTerrainGrid::build(&map, Some(&theater_data), None, None, None, false, 0);
+        let sentinel = grid.cell(1, 0).expect("sentinel cell");
+
+        assert_eq!(sentinel.final_tile_index, theater::NO_TILE);
+        assert_eq!(sentinel.final_sub_tile, 7);
+        assert_eq!(sentinel.level, 3);
+        assert_eq!(grid.presentation_tile(sentinel), (37, 0));
+
+        let presentation = crate::map::terrain::build_terrain_grid_from_resolved(&grid, None, None);
+        let rendered = presentation
+            .cells
+            .iter()
+            .find(|cell| (cell.rx, cell.ry) == (1, 0))
+            .expect("sentinel reaches presentation grid");
+        assert_eq!(rendered.tile_id, 37);
+        assert_eq!(rendered.sub_tile, 0);
+        assert_eq!(rendered.z, 3);
+
+        let used = crate::map::theater::collect_used_tiles(
+            &presentation
+                .cells
+                .iter()
+                .map(|cell| (cell.tile_id as i32, cell.sub_tile))
+                .collect::<Vec<_>>(),
+        );
+        assert!(used.contains(&TileKey {
+            tile_id: 37,
+            sub_tile: 0,
+            variant: 0,
+        }));
     }
 
     #[test]
