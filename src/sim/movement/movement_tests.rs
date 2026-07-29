@@ -3242,3 +3242,69 @@ fn hover_units_float_and_bob_vertically() {
         "spring settles near cruise, no runaway (mover {mover_alt}, parked {parked_alt})"
     );
 }
+
+// --- Sharp-turn substitute: path-node accounting ---
+
+/// A turn too sharp for any precomputed curve substitutes a straight-ahead
+/// drive track. That substitute must consume exactly ONE path node — the same
+/// single node any straight step consumes — never two.
+///
+/// Native track selection substitutes the straight `cur_dir * 9` entry and then
+/// converges with the ordinary path into the shared no-cell-crossing tail, which
+/// shifts the path queue by one exactly as every other non-crossing step does.
+/// The substitute is not special in its node accounting. Consuming a second node
+/// left the vehicle one waypoint further off-route on every sharp turn, and it
+/// was the producer of the non-adjacent step that the since-removed tube abort
+/// used to cancel move orders over.
+///
+/// Evidence: `docs/research/DRIVE_SHARP_TURN_FALLBACK_RE.md` §3.2, plus the
+/// branch-convergence check recorded in
+/// `docs/plans/2026-07-29-locomotion-substrate-design.md`.
+///
+/// Parity status: UNCHECKED. The node count is derived from the native contract,
+/// not from a gamemd-derived executable check.
+#[test]
+fn sharp_turn_preserves_path_node_count() {
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::movement::locomotor::LocomotorState;
+
+    // Precondition: N -> SE is a 135° turn with no precomputed curve. If this
+    // ever yields Some, this test has stopped exercising the substitute branch
+    // and the assertion below would pass for the wrong reason.
+    assert!(
+        super::drive_track::select_drive_track(0, 96, false).is_none(),
+        "N->SE (135°) must have no precomputed curve for this test to exercise the substitute"
+    );
+
+    let mut target = MovementTarget {
+        path: vec![(10, 10), (11, 11), (12, 12)],
+        path_layers: vec![MovementLayer::Ground; 3],
+        next_index: 0,
+        ..MovementTarget::default()
+    };
+    let locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    let mut drive_track_state = None;
+    let mut facing: u8 = 0; // north
+    let mut facing_target = None;
+
+    super::movement_step::configure_motion_after_transition(
+        &mut target,
+        &locomotor,
+        &mut drive_track_state,
+        &mut facing,
+        &mut facing_target,
+        EntityCategory::Unit,
+        0,
+        (10, 10),
+        (SIM_ZERO, SIM_ZERO),
+    );
+
+    assert!(
+        drive_track_state.is_some(),
+        "the sharp-turn substitute should have started a straight drive track"
+    );
+    assert_eq!(
+        target.next_index, 1,
+        "the substitute must consume exactly one path node, not two"
+    );
+}

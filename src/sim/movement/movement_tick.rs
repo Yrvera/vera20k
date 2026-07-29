@@ -1141,10 +1141,6 @@ pub(crate) fn tick_movement_with_grids(
                 TubePathStepResult::Began => {
                     continue;
                 }
-                TubePathStepResult::Blocked => {
-                    finished_entities.push(entity_id);
-                    continue;
-                }
             }
 
             // Steering / rotation. Hover steers continuously toward the current

@@ -131,11 +131,22 @@ pub(super) fn configure_motion_after_transition(
                 );
                 drive_track.is_some()
             } else if let Some(fb) = drive_track::build_sharp_turn_fallback(*facing) {
-                // Sharp-turn fallback: no precomputed curve exists for this
-                // turn angle. Drive forward in current facing for one cell
-                // and consume the impossible path step. The path queue's
-                // "what to do next" is permanently dropped by one entry;
-                // recovery is handled by higher-level repath, not here.
+                // Sharp-turn substitute: no precomputed curve exists for this
+                // turn angle, so drive straight ahead in the current facing for
+                // one cell instead of curving.
+                //
+                // This consumes exactly ONE path node — the same single node any
+                // straight step consumes, already accounted for by the advance at
+                // the top of this function. The substitute is not a special case
+                // in the node-consumption sense: native selection substitutes the
+                // straight track and then falls into the shared no-cell-crossing
+                // tail, which shifts the path queue by one like every other
+                // non-crossing step. Dropping a second node here strands the unit
+                // one waypoint further off-route on every sharp turn.
+                // See docs/research/DRIVE_SHARP_TURN_FALLBACK_RE.md §3.2 — and note
+                // its Q2 wording describes that shared shift as though it were
+                // specific to the substitute, which is what this code read as a
+                // licence to drop an extra node.
                 let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(*facing);
                 *drive_track = drive_track::begin_drive_track(
                     fb.raw_track_index,
@@ -145,7 +156,8 @@ pub(super) fn configure_motion_after_transition(
                     fb.target_facing,
                 );
                 if drive_track.is_some() {
-                    target.next_index += 1; // drop the impossible path step
+                    // Movement direction follows the straight-ahead delta, not the
+                    // unreachable node's delta; node bookkeeping is unchanged.
                     substituted_delta = Some((cdx, cdy));
                     true
                 } else {
