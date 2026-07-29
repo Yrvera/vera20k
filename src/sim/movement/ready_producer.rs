@@ -128,12 +128,17 @@ enum DriveFamily {
 /// `> 0`. Ship's body is byte-identical to Drive's apart from its own null-coord
 /// constants.
 ///
-/// The first term is a countdown timer on the *owner*. **Which** timer is
-/// UNCHECKED — we read the facing-rotation timer, which fits, but the field was
-/// never identified. This is the only term whose misreading produces a false
-/// "moving", so it is the one worth pinning down: if that field is some other
-/// timer that runs longer, affected vehicles defer their missions for its whole
-/// duration.
+/// The first term is **the owner's body-facing turn timer** — now identified, so
+/// `turning_active` is the right name and `body_facing.is_rotating` the right
+/// input. The owner field it reads is a facing interpolator holding current and
+/// previous facing plus an embedded timer and a turn rate; its setter computes
+/// the timer's duration as `|new - previous| / rate` and stamps the start frame,
+/// and the predicate's helper answers "does this timer still have frames left".
+///
+/// What ties it to *turning* specifically rather than to some other countdown:
+/// the locomotor's own `Do_Turn` slot writes exactly that field, through exactly
+/// that setter. So the term means "the hull is still rotating", which is what we
+/// model.
 fn drive_family(
     entity: &GameEntity,
     binary_frame: u32,
@@ -195,42 +200,54 @@ fn teleport(entity: &GameEntity) -> LocomotorReadyState {
     }
 }
 
-/// Jumpjet's readiness input is a flight-phase enum; the predicate treats 0 and
-/// 2 as not moving, everything else as moving.
+/// Jumpjet's readiness input is its flight-state enum; the predicate is
+/// `state != 0 && state != 2`.
 ///
-/// The *predicate* is verified. The **values below are not**: the native field
-/// is a state enum on the locomotor that shares nothing with the family's other
-/// moving flag, so there is no cross-check to derive them from, and its state
-/// machine is UNDECODED. Only 0 and 2 have known meaning, and only by virtue of
-/// being the two the predicate excludes.
+/// The state machine is now decoded from the locomotor's per-frame `Process`
+/// switch, which dispatches one handler per state and is the only writer of the
+/// field. Native values, with the transitions that identify them:
 ///
-/// Every arm is therefore chosen to fail toward "not moving", the direction that
-/// cannot stall a unit — notably `Descending`, which maps to a not-moving value
-/// so that a landing jumpjet does not defer its mission for the whole descent.
-/// Native may well report moving there; until the enum is decoded, guessing
-/// "moving" would risk a permanent stall to buy an unverified detail.
+/// | value | meaning | leaves to |
+/// |-------|------------------------------------|-----------|
+/// | 0 | on the ground, idle | 1 |
+/// | 1 | ascending / taking off | 2 or 3 |
+/// | 2 | holding station at altitude | 3 or 4 |
+/// | 3 | translating at altitude | 2 or 4 |
+/// | 4 | descending: target altitude is 0 | 0 |
+/// | 5 | touchdown, resolving the target cell | 4 or 6 |
+/// | 6 | post-landing finalise | — |
 ///
-/// The route to closing this is known: the sibling Rocket family's phase
-/// semantics were recovered by decoding its per-frame `Process` switch, and the
-/// same switch exists here.
+/// Two independent confirmations that 4 is the descent and 0 the settled ground
+/// state: state 4's handler sets the target altitude to zero and returns to 0
+/// only once measured height reaches zero, and the shared altitude integrator
+/// takes its target from the ground for states 4 and 0 while applying the hover
+/// wobble only for 2 and 3.
+///
+/// So **a descending jumpjet reports moving** (4 is not excluded). An earlier
+/// revision of this function mapped `Descending` to a not-moving value on the
+/// reasoning that it was the safe direction; that was a deviation from native,
+/// introduced before the enum was decoded, and is reverted here.
+///
+/// Native 5 and 6 have no `AirMovePhase` equivalent. Both are brief and both are
+/// "moving", so the two states we would land in instead (4, then 0) differ only
+/// in the tick the unit becomes ready again. UNMODELLED, recorded.
 fn jumpjet(entity: &GameEntity, locomotor: &LocomotorState) -> LocomotorReadyState {
-    const NOT_MOVING: i32 = 2;
-    const MOVING: i32 = 3;
     let state = match locomotor.air_phase {
         AirMovePhase::Landed => 0,
-        AirMovePhase::Ascending => MOVING,
-        // Native separates "hovering in place" from "hovering while
-        // translating"; our `AirMovePhase` collapses both into `Hovering`, so
-        // the presence of a movement target discriminates them.
+        AirMovePhase::Ascending => 1,
+        // Native separates "holding station" (2) from "translating" (3); our
+        // `AirMovePhase` collapses both into `Hovering`, so the presence of a
+        // movement target discriminates them. This is the one arm the gate's
+        // answer actually turns on, since 2 is excluded and 3 is not.
         AirMovePhase::Hovering => {
             if entity.movement_target.is_some() {
-                MOVING
+                3
             } else {
-                NOT_MOVING
+                2
             }
         }
-        AirMovePhase::Cruising => MOVING,
-        AirMovePhase::Descending => NOT_MOVING,
+        AirMovePhase::Cruising => 3,
+        AirMovePhase::Descending => 4,
     };
     LocomotorReadyState::Jumpjet { state }
 }
