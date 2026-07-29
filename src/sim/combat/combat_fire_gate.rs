@@ -2,7 +2,7 @@
 //! or when a building is disabled by low power.
 //!
 //! RA2's `ILocomotion::Can_Fire()` prevents weapons from firing during certain
-//! movement phases (teleport warp, tunnel dig, droppod fall, rocket flight).
+//! movement phases (teleport warp, rocket flight).
 //! Additionally, `Powered=yes` defense buildings cannot fire when the owner
 //! is in low-power state.
 //!
@@ -19,14 +19,12 @@ use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::{InternedId, StringInterner};
-use crate::sim::movement::droppod_movement::DropPodPhase;
 use crate::sim::movement::teleport_movement::TeleportPhase;
-use crate::sim::movement::tunnel_movement::TunnelPhase;
 use crate::sim::power_system::{self, PowerState};
 
 /// Collect stable IDs of entities that are currently blocked from firing weapons.
 ///
-/// Checks locomotor state (teleport/tunnel/droppod/rocket) and power state
+/// Checks locomotor state (teleport/rocket) and power state
 /// (Powered=yes buildings disabled during low power).
 pub fn collect_fire_blocked_entities(
     entities: &EntityStore,
@@ -46,25 +44,6 @@ pub fn collect_fire_blocked_entities(
                     continue;
                 }
                 TeleportPhase::ChronoDelay => {}
-            }
-        }
-
-        // Tunneling units cannot fire during dig/underground phases.
-        if let Some(ref state) = entity.tunnel_state {
-            match state.phase {
-                TunnelPhase::DigIn | TunnelPhase::DigOut | TunnelPhase::UndergroundTravel => {
-                    blocked.insert(entity.stable_id);
-                    continue;
-                }
-                TunnelPhase::SurfaceMove => {} // Normal surface movement — can fire.
-            }
-        }
-
-        // Falling drop pod units cannot fire until landed.
-        if let Some(ref state) = entity.droppod_state {
-            if state.phase == DropPodPhase::Falling {
-                blocked.insert(entity.stable_id);
-                continue;
             }
         }
 
@@ -132,10 +111,7 @@ mod tests {
     use super::*;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::StringInterner;
-    use crate::sim::movement::droppod_movement::{DropPodPhase, DropPodState};
     use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
-    use crate::sim::movement::tunnel_movement::{TunnelPhase, TunnelState};
-    use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
     fn make_entity(id: u64) -> GameEntity {
         GameEntity::test_default(id, "MTNK", "Americans", 5, 5)
@@ -185,79 +161,6 @@ mod tests {
         let interner = test_interner();
         let blocked = collect_fire_blocked_entities(&store, &ps, r, &interner);
         assert!(!blocked.contains(&1), "ChronoDelay should allow firing");
-    }
-
-    #[test]
-    fn test_tunnel_dig_in_blocks_fire() {
-        let mut store = EntityStore::new();
-        let mut e = make_entity(1);
-        e.tunnel_state = Some(TunnelState {
-            phase: TunnelPhase::DigIn,
-            target_rx: 20,
-            target_ry: 5,
-            timer: SimFixed::lit("0.5"),
-            tunnel_speed: SimFixed::from_num(6),
-            progress: SIM_ZERO,
-        });
-        store.insert(e);
-        let (ps, r) = no_power();
-        let interner = test_interner();
-        let blocked = collect_fire_blocked_entities(&store, &ps, r, &interner);
-        assert!(blocked.contains(&1), "DigIn should block firing");
-    }
-
-    #[test]
-    fn test_tunnel_underground_blocks_fire() {
-        let mut store = EntityStore::new();
-        let mut e = make_entity(1);
-        e.tunnel_state = Some(TunnelState {
-            phase: TunnelPhase::UndergroundTravel,
-            target_rx: 20,
-            target_ry: 5,
-            timer: SIM_ZERO,
-            tunnel_speed: SimFixed::from_num(6),
-            progress: SimFixed::from_num(3),
-        });
-        store.insert(e);
-        let (ps, r) = no_power();
-        let interner = test_interner();
-        let blocked = collect_fire_blocked_entities(&store, &ps, r, &interner);
-        assert!(
-            blocked.contains(&1),
-            "Underground travel should block firing"
-        );
-    }
-
-    #[test]
-    fn test_droppod_falling_blocks_fire() {
-        let mut store = EntityStore::new();
-        let mut e = make_entity(1);
-        e.droppod_state = Some(DropPodState {
-            phase: DropPodPhase::Falling,
-            altitude: SimFixed::from_num(800),
-            timer: SIM_ZERO,
-        });
-        store.insert(e);
-        let (ps, r) = no_power();
-        let interner = test_interner();
-        let blocked = collect_fire_blocked_entities(&store, &ps, r, &interner);
-        assert!(blocked.contains(&1), "Falling should block firing");
-    }
-
-    #[test]
-    fn test_droppod_landing_allows_fire() {
-        let mut store = EntityStore::new();
-        let mut e = make_entity(1);
-        e.droppod_state = Some(DropPodState {
-            phase: DropPodPhase::Landing,
-            altitude: SIM_ZERO,
-            timer: SimFixed::lit("0.2"),
-        });
-        store.insert(e);
-        let (ps, r) = no_power();
-        let interner = test_interner();
-        let blocked = collect_fire_blocked_entities(&store, &ps, r, &interner);
-        assert!(!blocked.contains(&1), "Landing phase should allow firing");
     }
 
     #[test]

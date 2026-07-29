@@ -32,12 +32,10 @@ use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
 use crate::sim::mission::{MissionCom, MissionLeafState, MissionTimer, MissionType};
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
-use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
 use crate::sim::movement::rocket_movement::RocketState;
 use crate::sim::movement::teleport_movement::TeleportState;
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
-use crate::sim::movement::tunnel_movement::TunnelState;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::radio::Contacts;
 use crate::sim::slave_miner::SlaveHarvester;
@@ -350,9 +348,9 @@ pub struct GameEntity {
     pub order_intent: Option<OrderIntent>,
     /// Teleport movement state machine (warp out/in phases).
     pub teleport_state: Option<TeleportState>,
-    /// Tunnel movement state machine (dig in/underground/dig out phases).
-    pub tunnel_state: Option<TunnelState>,
-    /// Active low-bridge TubeClass movement. Separate from subterranean tunnels.
+    /// Active low-bridge TubeClass movement. Active YR behaviour — not to be
+    /// confused with the subterranean tunnel locomotor, which is Tiberian Sun
+    /// legacy and was removed as unreachable in stock YR.
     #[serde(default)]
     pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
     /// Rocket/missile flight state machine (launch/ascend/terminal/detonate).
@@ -363,8 +361,6 @@ pub struct GameEntity {
     /// projectiles attach a `HomingState`.
     #[serde(default)]
     pub homing_state: Option<crate::sim::movement::homing_movement::HomingState>,
-    /// Drop pod descent state machine (falling/landing).
-    pub droppod_state: Option<DropPodState>,
     /// Parachute descent state. `Some` while a paradropped unit is descending
     /// under a parachute, `None` otherwise. Set by
     /// `parachute_descent::begin_parachute_descent`, cleared on landing.
@@ -685,11 +681,9 @@ impl GameEntity {
             slave_harvester: None,
             order_intent: None,
             teleport_state: None,
-            tunnel_state: None,
             low_bridge_tube_state: None,
             rocket_state: None,
             homing_state: None,
-            droppod_state: None,
             parachute_state: None,
             invulnerability: None,
             mind_controlled: false,

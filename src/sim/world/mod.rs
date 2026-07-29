@@ -63,12 +63,10 @@ use crate::sim::intern::InternedId;
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
-use crate::sim::movement::droppod_movement;
 use crate::sim::movement::homing_movement;
 use crate::sim::movement::parachute_descent;
 use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
-use crate::sim::movement::tunnel_movement;
 use crate::sim::movement::turret;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
@@ -2198,13 +2196,6 @@ impl Simulation {
                     None,
                 );
             }
-            tunnel_movement::tick_tunnel_movement(
-                &mut self.substrate.entities,
-                &mut self.substrate.occupancy,
-                &special_movement_order,
-                tick_ms,
-                self.session.tick,
-            );
             let _rocket_detonations = rocket_movement::tick_rocket_movement(
                 &mut self.substrate.entities,
                 &special_movement_order,
@@ -2215,12 +2206,6 @@ impl Simulation {
             // phase as rocket_movement; detonation list is currently unused — the
             // production projectile-spawn dispatch lands in a separate follow-up.
             let _homing_detonations = homing_movement::tick_homing_movement(
-                &mut self.substrate.entities,
-                &special_movement_order,
-                tick_ms,
-                self.session.tick,
-            );
-            droppod_movement::tick_droppod_movement(
                 &mut self.substrate.entities,
                 &special_movement_order,
                 tick_ms,

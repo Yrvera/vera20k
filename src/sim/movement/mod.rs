@@ -60,7 +60,6 @@ mod path_markers;
 pub mod air_movement;
 pub mod bump_crush;
 pub mod drive_track;
-pub mod droppod_movement;
 pub mod facing_class;
 pub mod group_destination;
 pub mod homing_movement;
@@ -72,7 +71,6 @@ pub mod rocket_movement;
 pub mod scatter;
 pub mod teleport_movement;
 pub mod tube_movement;
-pub mod tunnel_movement;
 pub mod turret;
 
 pub use facing_class::FacingClass;

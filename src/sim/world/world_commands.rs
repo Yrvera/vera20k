@@ -23,7 +23,6 @@ use crate::sim::movement::bump_crush;
 use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::teleport_movement;
-use crate::sim::movement::tunnel_movement;
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
@@ -185,23 +184,6 @@ impl Simulation {
                         general_rules.unwrap_or(&default_general),
                         false,
                     )
-                } else if info.loco_kind == Some(LocomotorKind::Tunnel) {
-                    // Tunnel locomotor: short routes use surface, long routes burrow.
-                    let Some(grid) = path_grid else { return false };
-                    let tunnel_speed = rules
-                        .map(|r| r.general.tunnel_speed)
-                        .unwrap_or(SimFixed::from_num(6));
-                    let cost_grid = self.terrain_costs.get(&info.speed_type);
-                    tunnel_movement::issue_tunnel_move_command(
-                        grid,
-                        (*target_rx, *target_ry),
-                        info.speed,
-                        tunnel_speed,
-                        cost_grid,
-                        info.movement_zone,
-                        &mut self.substrate.entities,
-                        *entity_id,
-                    )
                 } else if info.loco_layer == MovementLayer::Air {
                     // Jumpjet infantry walk fallback: ≤3 cells + !HoverAttack → ground walk.
                     if info.loco_kind == Some(LocomotorKind::Jumpjet) && info.is_infantry {
@@ -304,8 +286,6 @@ impl Simulation {
                 // Cancel any special locomotor states in progress.
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.teleport_state = None;
-                    e.tunnel_state = None;
-                    e.droppod_state = None;
                     // Restore ground layer and base locomotor if overridden.
                     if let Some(ref mut loco) = e.locomotor {
                         if loco.layer == MovementLayer::Underground {
@@ -776,9 +756,8 @@ impl Simulation {
                     now,
                 );
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
-                    e.mission.set_handler_state(
-                        crate::sim::miner::MinerState::ForcedReturn.cursor(),
-                    );
+                    e.mission
+                        .set_handler_state(crate::sim::miner::MinerState::ForcedReturn.cursor());
                 }
                 true
             }

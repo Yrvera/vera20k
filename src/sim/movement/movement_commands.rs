@@ -33,7 +33,6 @@ use crate::sim::components::OrderIntent;
 use crate::sim::game_entity::GameEntity;
 
 use super::drive_track;
-use super::droppod_movement::DropPodPhase;
 use super::teleport_movement;
 
 fn drive_direction_from_step(from: (u16, u16), to: (u16, u16)) -> Option<u8> {
@@ -63,13 +62,6 @@ fn can_accept_destination(entity: &GameEntity) -> bool {
         return false;
     }
     if entity.building_up.is_some() || entity.building_down.is_some() {
-        return false;
-    }
-    if entity
-        .droppod_state
-        .as_ref()
-        .is_some_and(|s| s.phase == DropPodPhase::Falling)
-    {
         return false;
     }
     if matches!(entity.order_intent, Some(OrderIntent::Unloading)) {

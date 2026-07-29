@@ -1190,10 +1190,8 @@ mod tests {
             return Err(HostTraceError::LifecyclePath);
         }
         if entity.teleport_state.is_some()
-            || entity.tunnel_state.is_some()
             || entity.rocket_state.is_some()
             || entity.homing_state.is_some()
-            || entity.droppod_state.is_some()
             || entity.parachute_state.is_some()
         {
             return Err(HostTraceError::SpecialLocomotorPath);

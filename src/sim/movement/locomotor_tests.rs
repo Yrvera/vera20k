@@ -379,27 +379,6 @@ fn test_override_teleport_round_trip() {
 }
 
 #[test]
-fn test_override_droppod_round_trip() {
-    let obj = make_obj(LocomotorKind::Walk, ObjectCategory::Infantry);
-    let mut state = LocomotorState::from_object_type(&obj, 1500);
-    assert_eq!(state.kind, LocomotorKind::Walk);
-    assert_eq!(state.layer, MovementLayer::Ground);
-
-    // Begin DropPod override — layer switches to Air.
-    state.begin_override(OverrideKind::DropPod);
-    assert!(state.is_overridden());
-    assert_eq!(state.kind, LocomotorKind::DropPod);
-    assert_eq!(state.layer, MovementLayer::Air);
-
-    // End override — restores Walk on Ground.
-    let kind = state.end_override();
-    assert_eq!(kind, Some(OverrideKind::DropPod));
-    assert!(!state.is_overridden());
-    assert_eq!(state.kind, LocomotorKind::Walk);
-    assert_eq!(state.layer, MovementLayer::Ground);
-}
-
-#[test]
 fn test_end_override_without_active_returns_none() {
     let obj = make_obj(LocomotorKind::Drive, ObjectCategory::Vehicle);
     let mut state = LocomotorState::from_object_type(&obj, 1500);

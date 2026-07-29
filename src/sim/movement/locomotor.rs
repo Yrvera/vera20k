@@ -251,6 +251,8 @@ impl LocomotorState {
 
             // Special — stubbed as ground for now
             LocomotorKind::Teleport => (MovementLayer::Ground, sim_one),
+            // Inert TS variants — unconstructible, retained for discriminant
+            // stability only. See LocomotorKind::Tunnel.
             LocomotorKind::Tunnel => (MovementLayer::Ground, sim_one),
             LocomotorKind::DropPod => (MovementLayer::Air, sim_one),
             LocomotorKind::Parachute => (MovementLayer::Air, sim_one),
@@ -336,7 +338,6 @@ impl LocomotorState {
             LocomotorKind::Fly
             | LocomotorKind::Jumpjet
             | LocomotorKind::Rocket
-            | LocomotorKind::DropPod
             | LocomotorKind::Parachute => (MovementLayer::Air, SimFixed::from_num(1)),
             LocomotorKind::Hover => (MovementLayer::Ground, SimFixed::from_num(1)),
             _ => (MovementLayer::Ground, SimFixed::from_num(1)),
@@ -491,7 +492,6 @@ impl LocomotorState {
         let saved = Box::new(self.clone());
         let (new_kind, new_layer) = match override_kind {
             OverrideKind::Teleport => (LocomotorKind::Teleport, MovementLayer::Ground),
-            OverrideKind::DropPod => (LocomotorKind::DropPod, MovementLayer::Air),
             OverrideKind::Parachute => (LocomotorKind::Parachute, MovementLayer::Air),
         };
         self.override_state = Some(OverrideLocomotor {
@@ -540,14 +540,12 @@ impl LocomotorState {
 
 /// Which kind of temporary locomotor override is active.
 ///
-/// Used by the piggyback mechanism — some locomotors (Teleport, DropPod) act
+/// Used by the piggyback mechanism — some locomotors (e.g. Teleport) act
 /// as temporary overlays on a unit's base locomotor and restore it when done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OverrideKind {
     /// Chrono teleport override — restores base locomotor after warp-in.
     Teleport,
-    /// Drop pod entry — restores base locomotor after landing.
-    DropPod,
     /// Parachute descent — restores base locomotor on landing. Used by
     /// paradropped infantry; sets layer to Air so no ground occupancy is
     /// marked while descending.
