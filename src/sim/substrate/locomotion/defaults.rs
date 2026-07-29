@@ -123,40 +123,99 @@ pub const fn mark_all_occupation_bits() {}
 mod tests {
     use super::*;
 
+    /// Which classes inherit `slot`, in `LocomotorClass::ALL` order.
+    fn inheritors(slot: BaseDefaultSlot) -> Vec<LocomotorClass> {
+        LocomotorClass::ALL
+            .into_iter()
+            .filter(|class| inherits_base_default(*class, slot))
+            .collect()
+    }
+
+    /// The inherit/override matrix, asserted as per-slot inheritor sets.
+    ///
+    /// RATCHET, not a parity check. Every expectation below was decoded from
+    /// live vtable reads — all 8 classes × 9 slots, re-verified independently on
+    /// 2026-07-29 (see the S1 review note in
+    /// `docs/plans/2026-07-29-locomotion-substrate-design.md`) — but nothing here
+    /// re-reads the binary, so this pins a transcription rather than proving it.
+    /// Only a gamemd-derived executable check could raise that to VERIFIED.
+    ///
+    /// Deliberately NOT a copy of `INHERITS_BASE_DEFAULT`: the previous version of
+    /// this test duplicated that constant verbatim and compared it to itself, so
+    /// it could only catch someone editing one copy and not the other. Stating
+    /// the expectation in a different shape — per-slot sets rather than per-class
+    /// rows — means any single-cell change fails at least one assertion.
     #[test]
     fn base_default_map_matches_vtables() {
-        // PARITY: expected cells are byte-decoded from the base/live-class
-        // vtables via `read_memory 0x007EADF4 len 160` and the eleven class
-        // vtable reads recorded in design section 2.4. The source matrix was
-        // independently re-decoded across all 440 cells.
-        let expected = [
-            // slot:  6      7      19     20     28     30     31     32     39
-            [false, true, false, false, false, true, false, false, false], // Drive
-            [false, true, false, true, true, true, true, false, false],    // Hover
-            [false, true, false, true, true, false, true, false, false],   // Walk
-            [true, true, false, true, true, true, true, false, true],      // Fly
-            [true, true, false, true, true, true, true, true, false],      // Teleport
-            [false, true, false, false, false, true, false, false, false], // Ship
-            [false, true, false, true, true, true, true, false, false],    // Jumpjet
-            [true, true, true, true, true, true, true, false, true],       // Rocket
-        ];
+        use BaseDefaultSlot::*;
+        use LocomotorClass::*;
 
-        for (class_index, class) in LocomotorClass::ALL.into_iter().enumerate() {
-            for (slot_index, slot) in BASE_DEFAULT_SLOTS.into_iter().enumerate() {
-                assert_eq!(
+        // Slot 7 is an always-OK stub in the base and no live class replaces it.
+        assert_eq!(inheritors(CanEnterCell), LocomotorClass::ALL.to_vec());
+
+        // Rocket alone keeps the base turn body — it is a ballistic projectile
+        // with no steering of its own.
+        assert_eq!(inheritors(DoTurn), vec![Rocket]);
+
+        // Teleport alone keeps the base "am I moving right now" body, which
+        // forwards to its own Is_Moving answer.
+        assert_eq!(inheritors(IsMovingNow), vec![Teleport]);
+
+        // Walk alone replaces the immediate-destination snap, for sub-cell
+        // infantry placement.
+        assert_eq!(
+            inheritors(ForceImmediateDestination),
+            vec![Drive, Hover, Fly, Teleport, Ship, Jumpjet, Rocket]
+        );
+
+        // The three classes that never carry the host themselves.
+        assert_eq!(inheritors(HeadToCoord), vec![Fly, Teleport, Rocket]);
+        assert_eq!(inheritors(MarkAllOccupationBits), vec![Fly, Rocket]);
+
+        // Drive and Ship own their unlimbo, track and slope bodies; the rest
+        // inherit all three.
+        for slot in [Unlimbo, ForceTrack, ForceNewSlope] {
+            assert_eq!(
+                inheritors(slot),
+                vec![Hover, Walk, Fly, Teleport, Jumpjet, Rocket],
+                "slot {}",
+                slot.number()
+            );
+        }
+
+        // Ship is a near-copy of Drive, and their inherit rows are identical.
+        for slot in BASE_DEFAULT_SLOTS {
+            assert_eq!(
+                inherits_base_default(Drive, slot),
+                inherits_base_default(Ship, slot),
+                "Drive and Ship must agree on slot {}",
+                slot.number()
+            );
+        }
+
+        // overrides_base_default is the exact complement, on every cell.
+        for class in LocomotorClass::ALL {
+            for slot in BASE_DEFAULT_SLOTS {
+                assert_ne!(
                     inherits_base_default(class, slot),
-                    expected[class_index][slot_index],
-                    "class={class:?}, slot={}",
-                    slot.number()
-                );
-                assert_eq!(
                     overrides_base_default(class, slot),
-                    !expected[class_index][slot_index],
                     "class={class:?}, slot={}",
                     slot.number()
                 );
             }
         }
+
+        // Whole-matrix total, so a compensating pair of edits cannot pass.
+        let inherited: usize = LocomotorClass::ALL
+            .into_iter()
+            .map(|class| {
+                BASE_DEFAULT_SLOTS
+                    .into_iter()
+                    .filter(|slot| inherits_base_default(class, *slot))
+                    .count()
+            })
+            .sum();
+        assert_eq!(inherited, 40, "40 of the 72 cells inherit the base body");
     }
 
     #[test]
