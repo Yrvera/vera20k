@@ -1,7 +1,9 @@
-//! Game configuration loaded from config.toml.
+//! Game configuration and retail asset-root discovery.
 //!
 //! config.toml is machine-specific (contains the local RA2 install path)
 //! and is gitignored. A config.toml.example template is provided in the repo.
+//! When it is absent, the retail executable contract applies: assets are
+//! resolved relative to the directory containing the running executable.
 //!
 //! ## Dependency rules
 //! - config.rs is part of util/ â€” no dependencies on game modules.
@@ -11,7 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// Default config file name â€” looked up in the current working directory.
+/// Optional host override â€” looked up in the current working directory.
 const CONFIG_FILE_NAME: &str = "config.toml";
 
 /// Top-level game configuration, deserialized from config.toml.
@@ -164,11 +166,33 @@ fn default_input_delay_ticks() -> u32 {
 }
 
 impl GameConfig {
-    /// Load configuration from config.toml in the current working directory.
+    /// Load the optional host override, otherwise use the retail module directory.
     ///
-    /// Returns a descriptive error if the file is missing or malformed.
+    /// Active `gamemd.exe` `WinMain @ 0x006BB9A0` calls
+    /// `GetModuleFileNameA`, splits/rebuilds its drive and directory, and calls
+    /// `SetCurrentDirectoryA` before opening `RA2MD.INI` or any MIX archive.
+    /// Rust keeps the resolved directory explicit instead of mutating the
+    /// process-wide current directory.
     pub fn load() -> Result<Self> {
-        Self::load_from(Path::new(CONFIG_FILE_NAME))
+        let path = Path::new(CONFIG_FILE_NAME);
+        match std::fs::read_to_string(path) {
+            Ok(contents) => Self::parse_from(&contents, path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let executable = std::env::current_exe().context(
+                    "Failed to locate the running executable for retail asset discovery",
+                )?;
+                let root = retail_asset_root_from_executable(&executable)?;
+                log::info!(
+                    "No {}; using retail executable directory: {}",
+                    CONFIG_FILE_NAME,
+                    root.display()
+                );
+                Ok(Self::from_retail_asset_root(root))
+            }
+            Err(err) => {
+                Err(err).with_context(|| format!("Failed to read config file: {}", path.display()))
+            }
+        }
     }
 
     /// Load configuration from a specific file path.
@@ -177,7 +201,10 @@ impl GameConfig {
     pub fn load_from(path: &Path) -> Result<Self> {
         let contents: String = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+        Self::parse_from(&contents, path)
+    }
 
+    fn parse_from(contents: &str, path: &Path) -> Result<Self> {
         let config: GameConfig = toml::from_str(&contents)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
@@ -186,6 +213,29 @@ impl GameConfig {
 
         Ok(config)
     }
+
+    fn from_retail_asset_root(ra2_dir: PathBuf) -> Self {
+        Self {
+            paths: PathsConfig { ra2_dir },
+            graphics: GraphicsConfig::default(),
+            gameplay: GameplayConfig::default(),
+            profile: ProfileConfig::default(),
+        }
+    }
+}
+
+/// Return the directory that retail `WinMain` makes its file-search root.
+fn retail_asset_root_from_executable(executable: &Path) -> Result<PathBuf> {
+    executable
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .with_context(|| {
+            format!(
+                "Running executable has no containing directory: {}",
+                executable.display()
+            )
+        })
 }
 
 #[cfg(test)]
@@ -229,6 +279,34 @@ ra2_dir = "C:/Westwood/RA2"
 name = "   "
 "#;
         let config: GameConfig = toml::from_str(blank).expect("Failed to parse test config");
+        assert_eq!(config.profile.player_name(), None);
+    }
+
+    #[test]
+    fn retail_asset_root_is_the_executable_directory() {
+        let executable = Path::new(r"C:\Westwood\RA2\gamemd.exe");
+        assert_eq!(
+            retail_asset_root_from_executable(executable).expect("module directory"),
+            PathBuf::from(r"C:\Westwood\RA2")
+        );
+    }
+
+    #[test]
+    fn retail_asset_root_preserves_a_volume_root_boundary() {
+        let executable = Path::new(r"C:\gamemd.exe");
+        assert_eq!(
+            retail_asset_root_from_executable(executable).expect("volume root"),
+            PathBuf::from(r"C:\")
+        );
+    }
+
+    #[test]
+    fn discovered_config_keeps_host_defaults() {
+        let config = GameConfig::from_retail_asset_root(PathBuf::from(r"D:\Games\RA2"));
+        assert_eq!(config.paths.ra2_dir, PathBuf::from(r"D:\Games\RA2"));
+        assert_eq!(config.graphics.width, 1024);
+        assert_eq!(config.graphics.height, 768);
+        assert_eq!(config.gameplay.sim_tick_hz, 15);
         assert_eq!(config.profile.player_name(), None);
     }
 }
