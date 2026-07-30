@@ -77,6 +77,12 @@ pub struct HouseState {
     pub has_won: bool,
     /// Defeat flag. Note: Flag_To_Lose clears HasWon first.
     pub has_lost: bool,
+    /// HouseClass map-clear byte folded by the retail multiplayer checksum.
+    ///
+    /// Defeat/reveal paths set this independently of the win/loss flags, and
+    /// shroud restoration can clear it again.
+    #[serde(default)]
+    pub map_is_clear: bool,
     /// Running count of owned buildings. Updated on spawn/despawn.
     pub owned_building_count: u32,
     /// Running count of owned non-building units. Updated on spawn/despawn.
@@ -117,6 +123,7 @@ impl HouseState {
             is_defeated: false,
             has_won: false,
             has_lost: false,
+            map_is_clear: false,
             owned_building_count: 0,
             owned_unit_count: 0,
             base_center: None,

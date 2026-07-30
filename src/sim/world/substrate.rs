@@ -17,6 +17,7 @@ use super::LogicVector;
 use crate::sim::anim_class::AnimStore;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::particles::ParticleSystemStore;
 
 /// Monotonic source for rebuilt CellClass-style object-list (enter) order. Each
 /// entity stores the last value assigned when it entered a cell list; this counter
@@ -40,6 +41,12 @@ impl EnterOrderCounter {
         let order = self.0;
         self.0 = self.0.saturating_add(1);
         order
+    }
+
+    /// Next value that will be handed out. Snapshot restoration uses this to
+    /// reject a counter that could reuse an already-restored cell-entry order.
+    pub(crate) const fn current(self) -> u64 {
+        self.0
     }
 }
 
@@ -71,6 +78,10 @@ pub(crate) struct ObjectSubstrate {
     /// LogicVector with entities.
     #[serde(default)]
     pub(crate) anims: AnimStore,
+    /// ParticleSystemClass registry. Systems share the global object-ID
+    /// namespace and LogicVector; individual particles remain container-owned.
+    #[serde(default)]
+    pub(crate) particle_systems: ParticleSystemStore,
     /// Deferred-delete queue (the native `PendingDeleteList`). Ordered IDs may
     /// survive a Rust snapshot boundary: between enqueue and the ordinary late
     /// drain an entity remains resolvable in storage while its independent
@@ -91,6 +102,7 @@ impl ObjectSubstrate {
             occupancy: OccupancyGrid::new(),
             entities: EntityStore::new(),
             anims: AnimStore::default(),
+            particle_systems: ParticleSystemStore::default(),
             pending_delete: Vec::new(),
         }
     }

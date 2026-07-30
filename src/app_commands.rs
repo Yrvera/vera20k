@@ -69,10 +69,9 @@ pub(crate) fn queue_default_build(state: &mut AppState) {
         s.interner.resolve(default_type).to_string()
     });
     log::info!(
-        "Build command queued: owner={} type={} execute_tick>=current+{}",
+        "Build command queued: owner={} type={} issue_frame=current",
         owner,
-        type_name,
-        state.configured_input_delay_ticks
+        type_name
     );
 }
 
@@ -90,10 +89,9 @@ pub(crate) fn queue_build_by_type(state: &mut AppState, type_id: &str) {
         },
     );
     log::info!(
-        "Build command queued: owner={} type={} execute_tick>=current+{}",
+        "Build command queued: owner={} type={} issue_frame=current",
         owner,
-        type_id,
-        state.configured_input_delay_ticks
+        type_id
     );
 }
 
@@ -112,10 +110,9 @@ pub(crate) fn toggle_pause_build_queue(
         },
     );
     log::info!(
-        "Build pause/resume command queued: owner={} category={} execute_tick>=current+{}",
+        "Build pause/resume command queued: owner={} category={} issue_frame=current",
         owner,
-        category.label(),
-        state.configured_input_delay_ticks
+        category.label()
     );
 }
 
@@ -134,10 +131,9 @@ pub(crate) fn cycle_active_producer(
         },
     );
     log::info!(
-        "Producer focus cycle queued: owner={} category={} execute_tick>=current+{}",
+        "Producer focus cycle queued: owner={} category={} issue_frame=current",
         owner,
-        category.label(),
-        state.configured_input_delay_ticks
+        category.label()
     );
 }
 
@@ -149,11 +145,7 @@ pub(crate) fn cancel_last_build(state: &mut AppState) {
         &owner,
         Command::CancelLastProduction { owner: owner_id },
     );
-    log::info!(
-        "Build cancel command queued: owner={} execute_tick>=current+{}",
-        owner,
-        state.configured_input_delay_ticks
-    );
+    log::info!("Build cancel command queued: owner={owner} issue_frame=current");
 }
 
 pub(crate) fn cancel_build_by_type(state: &mut AppState, type_id: &str) {
@@ -169,10 +161,9 @@ pub(crate) fn cancel_build_by_type(state: &mut AppState, type_id: &str) {
         },
     );
     log::info!(
-        "Build cancel-by-type queued: owner={} type={} execute_tick>=current+{}",
+        "Build cancel-by-type queued: owner={} type={} issue_frame=current",
         owner,
-        type_id,
-        state.configured_input_delay_ticks
+        type_id
     );
 }
 
@@ -306,18 +297,15 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
         },
     );
     // Clear placement mode immediately so the foundation preview stops following
-    // the cursor. Without this, the preview keeps moving during the input_delay_ticks
-    // gap before the sim processes the command, making the placed building appear
-    // offset from where the user last saw the preview.
+    // the cursor after the order is issued.
     state.targeting_mode = None;
     state.building_placement_preview = None;
     log::info!(
-        "Ready building placement queued: owner={} type={} cell=({}, {}) execute_tick>=current+{}",
+        "Ready building placement queued: owner={} type={} cell=({}, {}) execute_tick=current",
         owner,
         type_id,
         rx,
-        ry,
-        state.configured_input_delay_ticks
+        ry
     );
 
     // Wall fill: if the placed type is a wall, flood-fill free overlay segments
@@ -368,12 +356,11 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
     );
     state.targeting_mode = None;
     log::info!(
-        "SuperWeapon launch queued: owner={} section={} cell=({}, {}) execute_tick>=current+{}",
+        "SuperWeapon launch queued: owner={} section={} cell=({}, {}) issue_frame=current",
         owner,
         section,
         rx,
-        ry,
-        state.configured_input_delay_ticks,
+        ry
     );
 }
 
@@ -510,10 +497,9 @@ pub(crate) fn place_starter_base_for_local_owner(state: &mut AppState) {
     }
     if queued > 0 {
         log::info!(
-            "Starter opening queued: owner={} count={} execute_tick>=current+{}",
+            "Starter opening queued: owner={} count={} issue_frame=current",
             owner,
-            queued,
-            state.configured_input_delay_ticks
+            queued
         );
     } else {
         log::warn!(
@@ -769,7 +755,7 @@ fn schedule_command_in_sim(
     owner: &str,
     payload: Command,
 ) -> u64 {
-    let execute_tick = sim.session.tick.saturating_add(sim.input_delay_ticks);
+    let execute_tick = sim.session.tick;
     let owner_id = sim.interner.intern(owner);
     sim.queue_command(CommandEnvelope::new(owner_id, execute_tick, payload));
     execute_tick
@@ -777,10 +763,9 @@ fn schedule_command_in_sim(
 
 /// Queue one ordinary deterministic command and return its actual execute tick.
 ///
-/// Tactical certification records this value rather than reconstructing it
-/// from app configuration: the live simulation owns the input-delay value used
-/// by the command queue. Absence of a simulation is a rejected schedule, not a
-/// synthetic future tick.
+/// Tactical certification records this raw issue ordinal. Offline input does
+/// not pre-delay the envelope; the next ordinary command drain admits it.
+/// Network transfer overwrites the stamp with its negotiated ahead frame.
 pub(crate) fn try_schedule_command(
     state: &mut AppState,
     owner: &str,
@@ -812,7 +797,7 @@ mod tests {
     use crate::sim::world::Simulation;
 
     #[test]
-    fn recorded_scheduler_uses_live_tick_and_live_input_delay() {
+    fn recorded_scheduler_stamps_the_current_raw_issue_ordinal() {
         let mut sim = Simulation::new();
         sim.session.tick = 41;
         sim.input_delay_ticks = 7;
@@ -820,7 +805,7 @@ mod tests {
         let execute_tick =
             schedule_command_in_sim(&mut sim, "Russians", Command::DeployMcv { entity_id: 99 });
 
-        assert_eq!(execute_tick, 48);
+        assert_eq!(execute_tick, 41);
         assert_eq!(sim.pending_commands.len(), 1);
         assert_eq!(sim.pending_commands[0].execute_tick, execute_tick);
         assert_eq!(
@@ -834,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn recorded_scheduler_saturates_at_tick_space_end() {
+    fn recorded_scheduler_does_not_apply_offline_input_delay() {
         let mut sim = Simulation::new();
         sim.session.tick = u64::MAX - 1;
         sim.input_delay_ticks = 8;
@@ -842,7 +827,7 @@ mod tests {
         let execute_tick =
             schedule_command_in_sim(&mut sim, "YuriCountry", Command::DeployMcv { entity_id: 7 });
 
-        assert_eq!(execute_tick, u64::MAX);
-        assert_eq!(sim.pending_commands[0].execute_tick, u64::MAX);
+        assert_eq!(execute_tick, u64::MAX - 1);
+        assert_eq!(sim.pending_commands[0].execute_tick, u64::MAX - 1);
     }
 }

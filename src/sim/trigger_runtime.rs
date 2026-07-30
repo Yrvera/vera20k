@@ -42,6 +42,7 @@ const EVENT_LOCAL_IS_CLEAR: i32 = 37;
 const EVENT_ELAPSED_SCENARIO_TIME: i32 = 47;
 const EVENT_TECHTYPE_EXISTS: i32 = 60;
 const EVENT_TECHTYPE_DOES_NOT_EXIST: i32 = 61;
+const LOGICAL_FRAMES_PER_SECOND: i32 = 15;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TriggerEffect {
@@ -58,7 +59,6 @@ enum MissionAnnouncementKind {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TriggerRuntime {
-    pub elapsed_scenario_ticks: u64,
     /// `BTreeSet` (not `HashSet`) so save files have a deterministic iteration
     /// order — required for replay/lockstep correctness.
     pub globals_set: BTreeSet<u32>,
@@ -84,18 +84,16 @@ impl TriggerRuntime {
         runtime
     }
 
-    pub fn advance(
+    /// Evaluate and apply trigger actions against one authoritative gameplay frame.
+    pub fn advance_at_frame(
         &mut self,
-        tick_count: u32,
+        current_frame: u32,
         graph: &TriggerGraph,
         triggers: &TriggerMap,
         events: &EventMap,
         actions: &ActionMap,
         simulation: Option<&Simulation>,
     ) -> Vec<TriggerEffect> {
-        self.elapsed_scenario_ticks = self
-            .elapsed_scenario_ticks
-            .saturating_add(u64::from(tick_count));
         let linked_by_id: BTreeMap<&str, &LinkedTrigger> = graph
             .triggers
             .iter()
@@ -105,7 +103,9 @@ impl TriggerRuntime {
         let mut queue: VecDeque<String> = graph
             .triggers
             .iter()
-            .filter(|linked| self.is_trigger_ready(linked, triggers, events, simulation))
+            .filter(|linked| {
+                self.is_trigger_ready(linked, triggers, events, current_frame, simulation)
+            })
             .map(|linked| linked.trigger_id.clone())
             .collect();
         let mut queued: BTreeSet<String> = queue.iter().cloned().collect();
@@ -119,7 +119,7 @@ impl TriggerRuntime {
             let Some(linked) = linked_by_id.get(trigger_id.as_str()).copied() else {
                 continue;
             };
-            if !self.is_trigger_ready(linked, triggers, events, simulation) {
+            if !self.is_trigger_ready(linked, triggers, events, current_frame, simulation) {
                 continue;
             }
 
@@ -148,6 +148,7 @@ impl TriggerRuntime {
         linked: &LinkedTrigger,
         triggers: &TriggerMap,
         events: &EventMap,
+        current_frame: u32,
         simulation: Option<&Simulation>,
     ) -> bool {
         if self.disabled_triggers.contains(&linked.trigger_id) {
@@ -171,13 +172,21 @@ impl TriggerRuntime {
             && event
                 .conditions
                 .iter()
-                .all(|condition| self.evaluate_event(condition, simulation))
+                .all(|condition| self.evaluate_event(condition, current_frame, simulation))
     }
 
-    fn evaluate_event(&self, condition: &EventCondition, simulation: Option<&Simulation>) -> bool {
+    fn evaluate_event(
+        &self,
+        condition: &EventCondition,
+        current_frame: u32,
+        simulation: Option<&Simulation>,
+    ) -> bool {
         match condition.kind {
-            EVENT_ELAPSED_SCENARIO_TIME => parse_u32_param(&condition.params, 0)
-                .is_some_and(|seconds| self.elapsed_scenario_ticks >= u64::from(seconds) * 30),
+            EVENT_ELAPSED_SCENARIO_TIME => {
+                parse_i32_param(&condition.params, 0).is_some_and(|seconds| {
+                    seconds <= (current_frame as i32) / LOGICAL_FRAMES_PER_SECOND
+                })
+            }
             EVENT_GLOBAL_IS_SET => parse_u32_param(&condition.params, 0)
                 .is_some_and(|index| self.globals_set.contains(&index)),
             EVENT_GLOBAL_IS_CLEAR => parse_u32_param(&condition.params, 0)
@@ -320,6 +329,10 @@ fn enqueue_trigger(
 
 fn parse_u32_param(fields: &[String], index: usize) -> Option<u32> {
     fields.get(index)?.trim().parse::<u32>().ok()
+}
+
+fn parse_i32_param(fields: &[String], index: usize) -> Option<i32> {
+    fields.get(index)?.trim().parse::<i32>().ok()
 }
 
 fn parse_trigger_id_param(fields: &[String], index: usize) -> Option<String> {

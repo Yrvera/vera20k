@@ -221,7 +221,6 @@ fn queue_view_uses_owner_power_modifier() {
         &mut sim.power_states,
         &mut sim.substrate.entities,
         &rules,
-        16,
         &sim.interner,
     );
 
@@ -349,7 +348,6 @@ fn low_power_and_factory_bonus_apply_per_owner_and_category() {
         &mut sim.power_states,
         &mut sim.substrate.entities,
         &rules,
-        16,
         &sim.interner,
     );
 
@@ -374,7 +372,7 @@ fn low_power_and_factory_bonus_apply_per_owner_and_category() {
         1,
     );
 
-    let _ = tick_production(&mut sim, &rules, &height_map, None, 1000);
+    let _ = tick_production(&mut sim, &rules, &height_map, None);
 
     // P5d: the per-item `remaining_base_frames` mirror is retired; mid-build state lives in
     // the registry as `progress`. The active build's remaining base frames are derived as
@@ -450,7 +448,7 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
             .test_arm_ready(americans_display, ProductionCategory::Vehicle)
     );
 
-    let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid), 33);
+    let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid));
     assert!(spawned, "completed naval production should spawn the unit");
 
     let ship = sim
@@ -572,7 +570,7 @@ fn tick_production_advances_each_owner_queue() {
             .test_arm_ready(soviet_id, ProductionCategory::Infantry)
     );
 
-    let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
+    let spawned = tick_production(&mut sim, &rules, &height_map, None);
     assert!(spawned, "At least one queue completion should spawn");
     assert!(
         sim.production.factory_shadow.is_empty(),
@@ -645,7 +643,7 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
             .test_arm_ready(americans_id, ProductionCategory::Vehicle)
     );
 
-    let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
+    let spawned = tick_production(&mut sim, &rules, &height_map, None);
     assert!(spawned);
     assert!(
         sim.production.factory_shadow.is_empty(),
@@ -722,7 +720,7 @@ fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
             .test_arm_ready(americans_id, ProductionCategory::Vehicle)
     );
 
-    let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid), 1);
+    let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid));
     assert!(
         !spawned,
         "blocked completed vehicle should not spawn or advance"
@@ -813,7 +811,7 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
             .test_arm_ready(americans_id, ProductionCategory::Vehicle)
     );
 
-    let blocked = tick_production(&mut sim, &rules, &height_map, Some(&blocked_grid), 1);
+    let blocked = tick_production(&mut sim, &rules, &height_map, Some(&blocked_grid));
     assert!(!blocked, "first delivery attempt should remain pending");
 
     for cell in &mut terrain.cells {
@@ -823,7 +821,7 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
     let clear_grid = PathGrid::from_resolved_terrain(&terrain);
     sim.resolved_terrain = Some(terrain);
 
-    let spawned = tick_production(&mut sim, &rules, &height_map, Some(&clear_grid), 1);
+    let spawned = tick_production(&mut sim, &rules, &height_map, Some(&clear_grid));
     assert!(
         spawned,
         "later successful delivery should consume the pending completed vehicle"
@@ -905,7 +903,7 @@ fn paused_queue_category_does_not_advance_while_other_category_does() {
         toggle_pause_for_owner_category(&mut sim, "Americans", ProductionCategory::Infantry);
     assert!(paused);
 
-    let _ = tick_production(&mut sim, &rules, &height_map, None, 100);
+    let _ = tick_production(&mut sim, &rules, &height_map, None);
 
     // Project the registry to the sidebar view for state assertions (the per-item
     // `state`/`remaining_base_frames` mirror is retired).

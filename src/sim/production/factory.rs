@@ -24,7 +24,7 @@
 //! dead-code is allowed module-wide.
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
@@ -518,6 +518,21 @@ pub(crate) struct RevalAction {
 }
 
 impl FactoryRegistry {
+    /// Apply the save/load swizzle result to the optional produced-object
+    /// pointer. An unmatched saved identity becomes null; the Factory and its
+    /// type/progress state remain intact.
+    pub(crate) fn fixup_object_references(&mut self, object_ids: &BTreeSet<u64>) {
+        for factory in self.factories.values_mut() {
+            if let Some(object) = factory.object.as_mut()
+                && object
+                    .entity_id
+                    .is_some_and(|object_id| !object_ids.contains(&object_id))
+            {
+                object.entity_id = None;
+            }
+        }
+    }
+
     /// Read-only sidebar projection. Never mutates.
     pub fn view(&self, owner: InternedId, category: ProductionCategory) -> Option<FactoryView<'_>> {
         let f = self.factories.get(&(owner, category))?;

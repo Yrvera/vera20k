@@ -70,7 +70,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         state.render_height() as f32 / z,
     );
     for fx in &sim.world_effects {
-        if fx.delay_ms > 0 {
+        if fx.delay_frames > 0 {
             continue;
         }
         let (center_x, center_y) =

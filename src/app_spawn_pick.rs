@@ -8,7 +8,6 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-use std::time::Instant;
 
 use crate::app::AppState;
 use crate::app_init_helpers::build_entity_atlases;
@@ -138,8 +137,8 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     state.camera_y = sy - sh / (2.0 * zm);
 
     // Reset timing for clean InGame start.
-    state.last_update_time = Instant::now();
-    state.sim_accumulator_ms = 0;
+    let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
+    state.frame_pacer.reanchor(now_ms);
 
     state.screen = GameScreen::InGame;
     log::info!("SpawnPick complete — transitioned to InGame");

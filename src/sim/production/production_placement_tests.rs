@@ -404,7 +404,7 @@ fn completed_building_moves_into_ready_placement_pool() {
             .test_arm_ready(americans, ProductionCategory::Building)
     );
 
-    let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
+    let spawned = tick_production(&mut sim, &rules, &height_map, None);
     assert!(!spawned, "completed building should wait for placement");
     assert!(sim.production.factory_shadow.is_empty());
     assert_eq!(

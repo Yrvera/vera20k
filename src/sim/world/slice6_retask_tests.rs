@@ -103,8 +103,13 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// now join the lockstep hash. The current-tree legacy-schema probe below still
 /// reproduces the prior value exactly; this is a Rust regression ratchet, not
 /// gamemd parity evidence.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 13507616230588735457;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 8476219858417700072;
+// Re-baselined for the Phase-0 persistence contract: diagnostic
+// `total_sim_ms` left the hash while persisted house order, MapIsClear,
+// MoveSound, and passenger-size state joined the common composition outside
+// the v28/v29 provenance gates. This fixture's 16 admitted 67-ms visits still
+// commit exactly 16 native frames, so the retask timing under test is unchanged.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 14815155327438057945;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 7255032960278315211;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -160,7 +165,7 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 8476219858417700072;
 // wired in this slice (deploy-begin off, undeploy-complete on, destination-
 // accepted on) changed no other hashed state in these fixtures. The absolute
 // per-stream RNG pins held throughout.
-const SLICE6_BASELINE_HASH: u64 = 16250394170073383816;
+const SLICE6_BASELINE_HASH: u64 = 2220216571975211190;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -235,17 +240,17 @@ fn replay_hash_stable_through_slice6() {
         let _ = sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, 67);
     }
 
+    let pre_lifecycle_hash = sim.state_hash_before_lifecycle_v28_and_mission_v29();
+    let pre_mission_hash = sim.state_hash_without_mission_v29();
+    let hash = sim.state_hash();
     assert_eq!(
-        sim.state_hash_before_lifecycle_v28_and_mission_v29(),
-        SLICE6_PRE_LIFECYCLE_V28_HASH,
+        pre_lifecycle_hash, SLICE6_PRE_LIFECYCLE_V28_HASH,
         "pre-v28/pre-v29 schema probe must reproduce the historical baseline"
     );
     assert_eq!(
-        sim.state_hash_without_mission_v29(),
-        SLICE6_PRE_MISSION_V29_HASH,
+        pre_mission_hash, SLICE6_PRE_MISSION_V29_HASH,
         "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
     );
-    let hash = sim.state_hash();
     assert_eq!(
         hash, SLICE6_BASELINE_HASH,
         "Slice 6 scripted-retask state hash drifted. Treat this as behavior drift \

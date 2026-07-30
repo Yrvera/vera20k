@@ -432,6 +432,14 @@ pub struct GameEntity {
     /// endlessly repathing to the same blocked destination.
     /// Original engine: 30-frame scatter queue interval.
     pub blocked_scatter_timer: u8,
+    /// FootClass movement-sound handle state. Native starts the configured
+    /// MoveSound on the object's own post-locomotor AI tail and keeps it alive
+    /// through brief moving-now dropouts with a three-visit grace countdown.
+    #[serde(default)]
+    pub move_sound_active: bool,
+    /// Remaining stopped AI visits before an active MoveSound is released.
+    #[serde(default)]
+    pub move_sound_countdown: u8,
 
     // --- Passenger/transport system ---
     /// Original owner of a CanBeOccupied building, saved when the first garrison
@@ -470,7 +478,7 @@ pub struct GameEntity {
     /// Active C4 detonation timer on this building. Set by `tick_c4_plants`
     /// when a C4-capable attacker arrives on this building's cell. Once set,
     /// `tick_c4_plants` Phase 2 fires C4Warhead damage every tick after
-    /// `plant_start_tick + rules.c4_delay_ticks` until the building dies.
+    /// the wrapping native-frame delay elapses until the building dies.
     /// Never cleared in the C4 path — matches gamemd marker semantics.
     /// `None` for non-buildings or buildings not currently being C4'd.
     #[serde(default)]
@@ -707,6 +715,8 @@ impl GameEntity {
             too_big_to_fit_under_bridge: false,
             dying: false,
             blocked_scatter_timer: 0,
+            move_sound_active: false,
+            move_sound_countdown: 0,
             garrison_original_owner: None,
             passenger_role: PassengerRole::None,
             weapon_override: None,

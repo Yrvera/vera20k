@@ -33,7 +33,9 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::facing_from_delta;
 use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::{AirMovePhase, LocomotorState, MovementLayer};
-use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{
+    SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, native_movement_frame_fraction,
+};
 use crate::util::lepton::CELL_CENTER_LEPTON as CELL_CENTER;
 
 /// Checked SimFixed multiply — logs a warning and saturates on overflow
@@ -188,14 +190,10 @@ pub struct AirMovementTickStats {
 pub fn tick_air_movement(
     entities: &mut EntityStore,
     live_order: &[u64],
-    tick_ms: u32,
     sim_tick: u64,
 ) -> AirMovementTickStats {
     let mut stats = AirMovementTickStats::default();
-    if tick_ms == 0 {
-        return stats;
-    }
-    let dt: SimFixed = crate::util::fixed_math::dt_from_tick_ms(tick_ms);
+    let dt = native_movement_frame_fraction();
 
     // Collect air entity IDs that need processing.
     let air_entity_ids: Vec<u64> = {
@@ -657,8 +655,8 @@ mod tests {
         let mut live_entities = build_entities();
         let mut stable_entities = build_entities();
 
-        let live_stats = tick_air_movement(&mut live_entities, &[2], 1000, 0);
-        let stable_stats = tick_air_movement(&mut stable_entities, &[], 1000, 0);
+        let live_stats = tick_air_movement(&mut live_entities, &[2], 0);
+        let stable_stats = tick_air_movement(&mut stable_entities, &[], 0);
 
         assert_eq!(
             live_stats.air_movers, 1,

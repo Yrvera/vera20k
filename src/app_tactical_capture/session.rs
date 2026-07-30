@@ -236,8 +236,8 @@ impl TacticalCaptureSession {
         });
         state.cursor_x = capture.post_load_cursor.x as f32;
         state.cursor_y = capture.post_load_cursor.y as f32;
-        state.sim_accumulator_ms = 0;
-        state.last_update_time = Instant::now();
+        let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
+        state.frame_pacer.reanchor(now_ms);
         self.begin_accepted_loading(state)?;
         self.failure_stage = "loading".to_owned();
         Ok(())

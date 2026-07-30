@@ -81,18 +81,22 @@ pub fn begin_parachute_descent(
 /// - clear `parachute_state`
 pub fn tick_parachute_descent(
     entities: &mut EntityStore,
-    tick_ms: u32,
     parachute_max_fall_rate: i32,
     sim_tick: u64,
 ) {
-    if tick_ms == 0 {
-        return;
-    }
+    let keys = entities.keys_sorted();
+    tick_parachute_descent_in_order(entities, &keys, parachute_max_fall_rate, sim_tick);
+}
 
+pub(crate) fn tick_parachute_descent_in_order(
+    entities: &mut EntityStore,
+    entity_order: &[u64],
+    parachute_max_fall_rate: i32,
+    sim_tick: u64,
+) {
     let mut finished: Vec<u64> = Vec::new();
 
-    let keys = entities.keys_sorted();
-    for &id in &keys {
+    for &id in entity_order {
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
@@ -279,10 +283,6 @@ mod tests {
 
     /// Default INI value per `[General] ParachuteMaxFallRate=-3`.
     const RULES_PARACHUTE_MAX_FALL_RATE: i32 = -3;
-    /// Standard sim tick at 15 fps (~64ms). Specific value isn't sensitive —
-    /// `tick_parachute_descent` only checks `tick_ms != 0` (pause guard).
-    const TICK_MS_64: u32 = 64;
-
     /// Set up an entity at id=1, attach a parachute descent at the given altitude.
     /// Returns the id.
     fn setup_parachuting_entity(entities: &mut EntityStore, drop_altitude: SimFixed) -> u64 {
@@ -303,7 +303,7 @@ mod tests {
             let entity = entities.get(id).expect("alive");
             let state = entity.parachute_state.as_ref().expect("descending");
             observed.push(state.rate);
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
 
         assert_eq!(
@@ -333,7 +333,7 @@ mod tests {
 
         let expected_deltas: [i32; 4] = [0, 1, 3, 6];
         for (i, expected_delta) in expected_deltas.iter().enumerate() {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
             let altitude = entities
                 .get(id)
                 .unwrap()
@@ -361,7 +361,7 @@ mod tests {
         let id = setup_parachuting_entity(&mut entities, drop_altitude_1200());
 
         for _ in 0..10 {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
         let rate = entities
             .get(id)
@@ -384,7 +384,7 @@ mod tests {
         let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(6));
 
         for _ in 0..4 {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
 
         let entity = entities.get(id).expect("alive");
@@ -404,7 +404,7 @@ mod tests {
         let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(5));
 
         for _ in 0..3 {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
         let state = entities
             .get(id)
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(state.altitude, SimFixed::from_num(2));
         assert_eq!(state.rate, -3, "the next tick would integrate to -1");
 
-        tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+        tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         assert!(
             entities.get(id).expect("alive").parachute_state.is_none(),
             "the overshooting tick must clamp and land, not leave the unit falling"
@@ -429,7 +429,7 @@ mod tests {
         let id = setup_parachuting_entity(&mut entities, drop_altitude_1200());
 
         for _ in 0..50 {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
             if let Some(state) = entities.get(id).and_then(|e| e.parachute_state.as_ref()) {
                 assert!(
                     state.rate >= RULES_PARACHUTE_MAX_FALL_RATE,
@@ -459,7 +459,7 @@ mod tests {
                 .unwrap()
                 .rate;
             observed.push(rate);
-            tick_parachute_descent(&mut entities, TICK_MS_64, custom_max, 0);
+            tick_parachute_descent(&mut entities, custom_max, 0);
         }
         assert_eq!(
             observed,
@@ -487,7 +487,7 @@ mod tests {
         );
 
         for _ in 0..4 {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
 
         let anim = entities.get(id).unwrap().animation.as_ref().unwrap();
@@ -507,7 +507,7 @@ mod tests {
 
         // Mid-descent, externally change to Die1 (simulating shot down in air).
         for _ in 0..2 {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
         entities
             .get_mut(id)
@@ -519,7 +519,7 @@ mod tests {
 
         // Continue ticking through landing.
         for _ in 0..4 {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
 
         let anim = entities.get(id).unwrap().animation.as_ref().unwrap();
@@ -542,7 +542,7 @@ mod tests {
         }
 
         for _ in 0..4 {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
 
         let loco = entities.get(id).unwrap().locomotor.as_ref().unwrap();
@@ -572,7 +572,7 @@ mod tests {
             SimFixed::from_num(6)
         ));
         for _ in 0..10 {
-            tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+            tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
         let entity = entities.get(1).unwrap();
         assert!(
@@ -582,8 +582,9 @@ mod tests {
     }
 
     #[test]
-    fn test_paused_tick_does_not_advance() {
-        // tick_ms == 0 (paused) must not advance state.
+    fn test_zero_event_stamp_still_advances_one_native_frame() {
+        // The final argument only stamps debug events. Admission and pausing
+        // belong to the global frame pacer, so every call advances one frame.
         let mut entities = EntityStore::new();
         let id = setup_parachuting_entity(&mut entities, drop_altitude_1200());
         let initial_alt = entities
@@ -601,13 +602,17 @@ mod tests {
             .unwrap()
             .rate;
 
-        tick_parachute_descent(&mut entities, 0, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+        tick_parachute_descent(&mut entities, RULES_PARACHUTE_MAX_FALL_RATE, 0);
 
         let after = entities.get(id).unwrap().parachute_state.as_ref().unwrap();
         assert_eq!(
             after.altitude, initial_alt,
-            "paused tick must not move altitude"
+            "the first frame integrates the initial zero fall rate"
         );
-        assert_eq!(after.rate, initial_rate, "paused tick must not update rate");
+        assert_eq!(
+            after.rate,
+            initial_rate - 1,
+            "a zero event stamp must not suppress the native-frame update"
+        );
     }
 }

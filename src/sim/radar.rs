@@ -17,6 +17,7 @@ use crate::rules::radar_event_config::RadarEventConfig;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::world::Simulation;
 use crate::util::fixed_math::{SimFixed, int_distance_to_sim};
+use crate::util::native_x87::{NativeF32Bits, X87Chop53, X87Ordering};
 use std::collections::VecDeque;
 
 /// Check if the given owner has at least one operational radar-providing building.
@@ -39,45 +40,105 @@ pub fn has_radar_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> bo
 
 /// Classification of radar events — determines ping color and EVA announcement.
 ///
-/// RA2 defines 6 event types per ModEnc's Action 55 documentation.
+/// Native runtime event type. The discriminant indexes the compiled type table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
 pub enum RadarEventType {
-    /// Generic combat event (unit took or dealt damage).
-    Combat,
-    /// Non-combat event (construction complete, unit ready, etc.).
-    Noncombat,
-    /// Airborne unit drop zone.
-    Dropzone,
-    /// Player's own base structure under attack.
-    BaseUnderAttack,
-    /// Player's harvester under attack.
-    MinerUnderAttack,
-    /// Enemy unit/building detected (first sighting).
-    EnemyObjectSensed,
-    /// Bridge repair event. In YR this enters the event/ring queue and gates
-    /// `EVA_BridgeRepaired`, but does not draw a minimap diamond.
-    BridgeRepaired,
+    Combat = 0,
+    Noncombat = 1,
+    Dropzone = 2,
+    BaseUnderAttack = 3,
+    HarvesterUnderAttack = 4,
+    EnemyObjectSensed = 5,
+    UnitReady = 6,
+    UnitLost = 7,
+    UnitRepaired = 8,
+    SpyInfiltration = 9,
+    BuildingCaptured = 10,
+    BeaconPlaced = 11,
+    ConstructionComplete = 12,
+    ImpactSilent = 13,
+    BridgeRepaired = 14,
+    StructureAbandoned = 15,
+    AllyUnderAttack = 16,
 }
 
 impl RadarEventType {
     /// Base RGB color for the radar ping by event type.
     pub fn color(self) -> [u8; 3] {
         match self {
-            Self::Combat => [255, 255, 255],          // white
-            Self::Noncombat => [255, 255, 0],         // yellow
-            Self::Dropzone => [0, 255, 255],          // cyan
-            Self::BaseUnderAttack => [255, 255, 255], // white
-            Self::MinerUnderAttack => [255, 255, 0],  // yellow
-            Self::EnemyObjectSensed => [255, 255, 0], // yellow
-            Self::BridgeRepaired => [0, 0, 0],
+            Self::Combat | Self::BaseUnderAttack | Self::HarvesterUnderAttack => [255, 255, 255],
+            Self::Noncombat | Self::Dropzone | Self::BeaconPlaced | Self::ConstructionComplete => {
+                [255, 255, 0]
+            }
+            Self::EnemyObjectSensed => [0, 255, 255],
+            _ => [0, 0, 0],
         }
     }
 
     /// Whether this event type draws an animated minimap diamond.
     pub fn draws_on_minimap(self) -> bool {
-        !matches!(self, Self::BridgeRepaired)
+        matches!(
+            self,
+            Self::Combat
+                | Self::Noncombat
+                | Self::Dropzone
+                | Self::BaseUnderAttack
+                | Self::HarvesterUnderAttack
+                | Self::EnemyObjectSensed
+                | Self::BeaconPlaced
+                | Self::ConstructionComplete
+        )
+    }
+
+    fn config(self) -> RadarEventTypeConfig {
+        RADAR_EVENT_TYPE_CONFIGS[self as usize]
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RadarEventTypeConfig {
+    dedup_distance_cells: u8,
+    visibility_duration_frames: u16,
+    blink_duration_frames: u16,
+    unique: bool,
+}
+
+const fn radar_type_config(
+    dedup_distance_cells: u8,
+    visibility_duration_frames: u16,
+    blink_duration_frames: u16,
+    unique: bool,
+) -> RadarEventTypeConfig {
+    RadarEventTypeConfig {
+        dedup_distance_cells,
+        visibility_duration_frames,
+        blink_duration_frames,
+        unique,
+    }
+}
+
+// gamemd's compiled 17-row RadarEventType table. The parsed six-value
+// duration/dedup arrays do not write this live table.
+const RADAR_EVENT_TYPE_CONFIGS: [RadarEventTypeConfig; 17] = [
+    radar_type_config(8, 200, 400, true),
+    radar_type_config(8, 200, 400, false),
+    radar_type_config(8, 200, 400, false),
+    radar_type_config(8, 200, 600, true),
+    radar_type_config(8, 200, 400, true),
+    radar_type_config(6, 200, 400, true),
+    radar_type_config(2, 0, 200, true),
+    radar_type_config(8, 0, 200, true),
+    radar_type_config(2, 0, 400, true),
+    radar_type_config(5, 0, 400, false),
+    radar_type_config(8, 0, 100, false),
+    radar_type_config(8, 200, 200, true),
+    radar_type_config(8, 200, 400, false),
+    radar_type_config(8, 0, 5, false),
+    radar_type_config(8, 0, 200, true),
+    radar_type_config(8, 0, 400, true),
+    radar_type_config(8, 200, 600, true),
+];
 
 /// A single radar event with position and age tracking.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -87,16 +148,17 @@ pub struct RadarEvent {
     pub rx: u16,
     /// Isometric cell Y coordinate where the event occurred.
     pub ry: u16,
-    /// Age of this event in milliseconds (increases each tick).
-    pub age_ms: u32,
-    /// Total lifetime in milliseconds before the event is removed.
-    pub duration_ms: u32,
+    /// Age of this event in reached native gameplay frames.
+    pub age_frames: u32,
+    /// Visibility and blink phase durations in native gameplay frames.
+    pub visibility_duration_frames: u16,
+    pub blink_duration_frames: u16,
     /// Current rotation angle in radians (starts at π/4 = diamond orientation).
-    pub rotation: f32,
-    /// Rotation speed in radians per tick.
-    pub rotation_speed: f32,
+    pub rotation: NativeF32Bits,
+    /// Rotation speed in radians per native gameplay frame.
+    pub rotation_speed: NativeF32Bits,
     /// Owning house for player-scoped events (BaseUnderAttack /
-    /// MinerUnderAttack): only that player's view renders them. `None` =
+    /// HarvesterUnderAttack): only that player's view renders them. `None` =
     /// global event (Combat, BridgeRepaired, …), visible to everyone.
     #[serde(default)]
     pub owner: Option<crate::sim::intern::InternedId>,
@@ -105,15 +167,20 @@ pub struct RadarEvent {
 impl RadarEvent {
     /// Normalized age (0.0 = just spawned, 1.0 = about to expire).
     pub fn progress(&self) -> f32 {
-        if self.duration_ms == 0 {
+        if self.blink_duration_frames == 0 {
             return 1.0;
         }
-        (self.age_ms as f32 / self.duration_ms as f32).clamp(0.0, 1.0)
+        (self.age_frames as f32 / f32::from(self.blink_duration_frames)).clamp(0.0, 1.0)
+    }
+
+    /// Presentation conversion of the committed deterministic bit pattern.
+    pub fn rotation_radians(&self) -> f32 {
+        f32::from_bits(self.rotation.bits())
     }
 
     /// Whether the event has exceeded its lifetime.
     pub fn expired(&self) -> bool {
-        self.age_ms >= self.duration_ms
+        self.age_frames >= u32::from(self.blink_duration_frames)
     }
 }
 
@@ -127,8 +194,7 @@ pub struct RadarEventQueue {
     max_events: usize,
     /// Index for Spacebar cycling (wraps around).
     cycle_index: usize,
-    /// Minimum Euclidean distance (in cells) between two events before suppression.
-    suppression_distance: SimFixed,
+    rotation_speed: NativeF32Bits,
 }
 
 impl Default for RadarEventQueue {
@@ -137,7 +203,7 @@ impl Default for RadarEventQueue {
             events: VecDeque::new(),
             max_events: 8,
             cycle_index: 0,
-            suppression_distance: SimFixed::from_num(8),
+            rotation_speed: NativeF32Bits::from_bits(0.05_f32.to_bits()),
         }
     }
 }
@@ -149,7 +215,7 @@ impl RadarEventQueue {
             events: VecDeque::new(),
             max_events: config.max_events,
             cycle_index: 0,
-            suppression_distance: SimFixed::from_num(8),
+            rotation_speed: config.native_scalars.rotation_speed,
         }
     }
 
@@ -157,27 +223,28 @@ impl RadarEventQueue {
     ///
     /// Returns `true` when the event was actually enqueued. YR uses this return
     /// value to gate some EVA calls, including `BridgeRepaired`.
-    pub fn push(&mut self, event_type: RadarEventType, rx: u16, ry: u16, duration_ms: u32) -> bool {
-        self.push_owned(event_type, rx, ry, duration_ms, None)
+    pub fn push(&mut self, event_type: RadarEventType, rx: u16, ry: u16) -> bool {
+        self.push_owned(event_type, rx, ry, None)
     }
 
     /// `push` with an owning house for player-scoped events (BaseUnderAttack /
-    /// MinerUnderAttack). Suppression stays type+distance based regardless of
+    /// HarvesterUnderAttack). Suppression stays type+distance based regardless of
     /// owner, matching the single shared queue.
     pub fn push_owned(
         &mut self,
         event_type: RadarEventType,
         rx: u16,
         ry: u16,
-        duration_ms: u32,
         owner: Option<crate::sim::intern::InternedId>,
     ) -> bool {
-        // Suppress if a recent event of same type is within suppression distance.
-        let dominated: bool = self.events.iter().any(|e| {
-            e.event_type == event_type
-                && !e.expired()
-                && cell_distance(e.rx, e.ry, rx, ry) < self.suppression_distance
-        });
+        let type_config = event_type.config();
+        let suppression_distance = SimFixed::from_num(type_config.dedup_distance_cells);
+        let dominated = type_config.unique
+            && self.events.iter().any(|event| {
+                event.event_type == event_type
+                    && !event.expired()
+                    && cell_distance(event.rx, event.ry, rx, ry) < suppression_distance
+            });
         if dominated {
             return false;
         }
@@ -186,10 +253,11 @@ impl RadarEventQueue {
             event_type,
             rx,
             ry,
-            age_ms: 0,
-            duration_ms,
-            rotation: std::f32::consts::FRAC_PI_4,
-            rotation_speed: 0.05,
+            age_frames: 0,
+            visibility_duration_frames: type_config.visibility_duration_frames,
+            blink_duration_frames: type_config.blink_duration_frames,
+            rotation: NativeF32Bits::from_bits(0x3f49_0fdb),
+            rotation_speed: self.rotation_speed,
             owner,
         };
         if self.events.len() >= self.max_events {
@@ -199,14 +267,24 @@ impl RadarEventQueue {
         true
     }
 
-    /// Advance all events by `delta_ms` and remove expired ones.
-    pub fn tick(&mut self, delta_ms: u32) {
+    /// Advance all events by one reached native gameplay frame.
+    pub fn tick(&mut self) {
         for event in self.events.iter_mut() {
-            event.age_ms = event.age_ms.saturating_add(delta_ms);
-            event.rotation += event.rotation_speed;
-            if event.rotation > std::f32::consts::TAU {
-                event.rotation -= std::f32::consts::TAU;
-            }
+            event.age_frames = event.age_frames.saturating_add(1);
+            let rotation = X87Chop53::add(
+                X87Chop53::load_f32(event.rotation).expect("stored radar rotation is finite"),
+                X87Chop53::load_f32(event.rotation_speed)
+                    .expect("stored radar rotation speed is finite"),
+            );
+            let tau =
+                X87Chop53::load_f32(NativeF32Bits::from_bits(0x40c9_0fdb)).expect("tau is finite");
+            let wrapped = if X87Chop53::compare(rotation, tau) == X87Ordering::Greater {
+                X87Chop53::sub(rotation, tau)
+            } else {
+                rotation
+            };
+            event.rotation =
+                X87Chop53::store_f32(wrapped).expect("radar rotation remains finite f32");
         }
         self.events.retain(|e| !e.expired());
         if self.cycle_index >= self.events.len() && !self.events.is_empty() {
@@ -311,7 +389,6 @@ mod tests {
             &mut sim.power_states,
             &mut sim.substrate.entities,
             &rules,
-            16,
             &sim.interner,
         );
         assert!(has_radar_for_owner(&sim, &rules, "Americans"));
@@ -328,7 +405,6 @@ mod tests {
             &mut sim.power_states,
             &mut sim.substrate.entities,
             &rules,
-            16,
             &sim.interner,
         );
         assert!(!has_radar_for_owner(&sim, &rules, "Americans"));
@@ -348,7 +424,6 @@ mod tests {
             &mut sim.power_states,
             &mut sim.substrate.entities,
             &rules,
-            16,
             &sim.interner,
         );
 
@@ -359,41 +434,152 @@ mod tests {
     }
 
     #[test]
+    fn native_event_discriminants_index_the_compiled_rows() {
+        let variants = [
+            RadarEventType::Combat,
+            RadarEventType::Noncombat,
+            RadarEventType::Dropzone,
+            RadarEventType::BaseUnderAttack,
+            RadarEventType::HarvesterUnderAttack,
+            RadarEventType::EnemyObjectSensed,
+            RadarEventType::UnitReady,
+            RadarEventType::UnitLost,
+            RadarEventType::UnitRepaired,
+            RadarEventType::SpyInfiltration,
+            RadarEventType::BuildingCaptured,
+            RadarEventType::BeaconPlaced,
+            RadarEventType::ConstructionComplete,
+            RadarEventType::ImpactSilent,
+            RadarEventType::BridgeRepaired,
+            RadarEventType::StructureAbandoned,
+            RadarEventType::AllyUnderAttack,
+        ];
+        for (index, event_type) in variants.into_iter().enumerate() {
+            assert_eq!(event_type as usize, index);
+            assert_eq!(event_type.config(), RADAR_EVENT_TYPE_CONFIGS[index]);
+        }
+    }
+
+    #[test]
+    fn compiled_event_rows_match_gamemd() {
+        let expected = [
+            (8, 200, 400, true),
+            (8, 200, 400, false),
+            (8, 200, 400, false),
+            (8, 200, 600, true),
+            (8, 200, 400, true),
+            (6, 200, 400, true),
+            (2, 0, 200, true),
+            (8, 0, 200, true),
+            (2, 0, 400, true),
+            (5, 0, 400, false),
+            (8, 0, 100, false),
+            (8, 200, 200, true),
+            (8, 200, 400, false),
+            (8, 0, 5, false),
+            (8, 0, 200, true),
+            (8, 0, 400, true),
+            (8, 200, 600, true),
+        ];
+        for (row, (dedup, visibility, blink, unique)) in
+            RADAR_EVENT_TYPE_CONFIGS.iter().zip(expected)
+        {
+            assert_eq!(row.dedup_distance_cells, dedup);
+            assert_eq!(row.visibility_duration_frames, visibility);
+            assert_eq!(row.blink_duration_frames, blink);
+            assert_eq!(row.unique, unique);
+        }
+    }
+
+    #[test]
+    fn only_native_drawing_types_have_visible_colors() {
+        let visible = [
+            (RadarEventType::Combat, [255, 255, 255]),
+            (RadarEventType::Noncombat, [255, 255, 0]),
+            (RadarEventType::Dropzone, [255, 255, 0]),
+            (RadarEventType::BaseUnderAttack, [255, 255, 255]),
+            (RadarEventType::HarvesterUnderAttack, [255, 255, 255]),
+            (RadarEventType::EnemyObjectSensed, [0, 255, 255]),
+            (RadarEventType::BeaconPlaced, [255, 255, 0]),
+            (RadarEventType::ConstructionComplete, [255, 255, 0]),
+        ];
+        for (event_type, color) in visible {
+            assert!(event_type.draws_on_minimap());
+            assert_eq!(event_type.color(), color);
+        }
+        for event_type in [
+            RadarEventType::UnitReady,
+            RadarEventType::UnitLost,
+            RadarEventType::UnitRepaired,
+            RadarEventType::SpyInfiltration,
+            RadarEventType::BuildingCaptured,
+            RadarEventType::ImpactSilent,
+            RadarEventType::BridgeRepaired,
+            RadarEventType::StructureAbandoned,
+            RadarEventType::AllyUnderAttack,
+        ] {
+            assert!(!event_type.draws_on_minimap());
+            assert_eq!(event_type.color(), [0, 0, 0]);
+        }
+    }
+
+    #[test]
     fn radar_event_push_and_tick() {
         let mut queue = RadarEventQueue::default();
-        assert!(queue.push(RadarEventType::Combat, 10, 20, 4000));
+        assert!(queue.push(RadarEventType::Combat, 10, 20));
         assert_eq!(queue.len(), 1);
 
-        // Tick 2 seconds — event still alive.
-        queue.tick(2000);
+        // Native blink duration is 400 reached gameplay frames.
+        for _ in 0..200 {
+            queue.tick();
+        }
         assert_eq!(queue.len(), 1);
         let event = queue.iter().next().expect("event");
-        assert_eq!(event.age_ms, 2000);
+        assert_eq!(event.age_frames, 200);
         assert!(!event.expired());
 
-        // Tick 2 more seconds — event expires.
-        queue.tick(2000);
+        // The event expires exactly at its 400-frame boundary.
+        for _ in 0..200 {
+            queue.tick();
+        }
         assert!(queue.is_empty());
     }
 
     #[test]
     fn radar_event_suppression() {
         let mut queue = RadarEventQueue::default();
-        assert!(queue.push(RadarEventType::Combat, 10, 20, 4000));
+        assert!(queue.push(RadarEventType::Combat, 10, 20));
         // Same type, close by — suppressed.
-        assert!(!queue.push(RadarEventType::Combat, 11, 20, 4000));
+        assert!(!queue.push(RadarEventType::Combat, 11, 20));
         assert_eq!(queue.len(), 1);
         // Different type at same location — NOT suppressed.
-        assert!(queue.push(RadarEventType::BaseUnderAttack, 10, 20, 4000));
+        assert!(queue.push(RadarEventType::BaseUnderAttack, 10, 20));
         assert_eq!(queue.len(), 2);
+
+        // Native non-unique rows never deduplicate, even at the same cell.
+        assert!(queue.push(RadarEventType::Noncombat, 10, 20));
+        assert!(queue.push(RadarEventType::Noncombat, 10, 20));
+    }
+
+    #[test]
+    fn native_blink_duration_is_a_frame_boundary() {
+        let mut queue = RadarEventQueue::default();
+        assert!(queue.push(RadarEventType::ImpactSilent, 10, 20));
+        for _ in 0..4 {
+            queue.tick();
+        }
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.iter().next().unwrap().age_frames, 4);
+        queue.tick();
+        assert!(queue.is_empty());
     }
 
     #[test]
     fn push_owned_tags_owner_and_push_stays_global() {
         let mut queue = RadarEventQueue::default();
         let owner = crate::sim::intern::test_intern("PlayerA");
-        assert!(queue.push_owned(RadarEventType::BaseUnderAttack, 10, 20, 4000, Some(owner)));
-        assert!(queue.push(RadarEventType::Combat, 40, 40, 4000));
+        assert!(queue.push_owned(RadarEventType::BaseUnderAttack, 10, 20, Some(owner)));
+        assert!(queue.push(RadarEventType::Combat, 40, 40));
         let owners: Vec<_> = queue.iter().map(|e| (e.event_type, e.owner)).collect();
         assert!(owners.contains(&(RadarEventType::BaseUnderAttack, Some(owner))));
         assert!(owners.contains(&(RadarEventType::Combat, None)));
@@ -402,8 +588,8 @@ mod tests {
     #[test]
     fn radar_event_cycle() {
         let mut queue = RadarEventQueue::default();
-        queue.push(RadarEventType::Combat, 10, 20, 4000);
-        queue.push(RadarEventType::Noncombat, 50, 60, 4000);
+        queue.push(RadarEventType::Combat, 10, 20);
+        queue.push(RadarEventType::Noncombat, 50, 60);
 
         let first = queue.cycle_event();
         assert_eq!(first, Some((10, 20)));
@@ -418,7 +604,7 @@ mod tests {
     fn radar_event_max_capacity() {
         let mut queue = RadarEventQueue::default();
         for i in 0..12u16 {
-            queue.push(RadarEventType::Combat, i * 10, 0, 4000);
+            queue.push(RadarEventType::Combat, i * 10, 0);
         }
         // Max 8 events — oldest evicted.
         assert_eq!(queue.len(), 8);
@@ -429,8 +615,10 @@ mod tests {
     #[test]
     fn radar_event_progress() {
         let mut queue = RadarEventQueue::default();
-        queue.push(RadarEventType::Combat, 10, 20, 4000);
-        queue.tick(2000);
+        queue.push(RadarEventType::Combat, 10, 20);
+        for _ in 0..200 {
+            queue.tick();
+        }
         let event = queue.iter().next().expect("event");
         assert!((event.progress() - 0.5).abs() < 0.01);
     }
@@ -438,8 +626,8 @@ mod tests {
     #[test]
     fn bridge_repaired_event_suppresses_and_does_not_draw() {
         let mut queue = RadarEventQueue::default();
-        assert!(queue.push(RadarEventType::BridgeRepaired, 10, 20, 4000));
-        assert!(!queue.push(RadarEventType::BridgeRepaired, 11, 20, 4000));
+        assert!(queue.push(RadarEventType::BridgeRepaired, 10, 20));
+        assert!(!queue.push(RadarEventType::BridgeRepaired, 11, 20));
         assert_eq!(queue.len(), 1);
         let event = queue.iter().next().unwrap();
         assert_eq!(event.event_type, RadarEventType::BridgeRepaired);

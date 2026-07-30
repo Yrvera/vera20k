@@ -244,18 +244,18 @@ pub(super) fn commit_miner_snapshot(sim: &mut Simulation, snap: &MinerSnapshot, 
         va.playing = is_harvesting;
         if !is_harvesting {
             va.frame = 0;
-            va.elapsed_ms = 0;
+            va.elapsed_frames = 0;
         }
     }
     if let Some(ref mut ho) = entity.harvest_overlay {
         if is_harvesting && !ho.visible {
             ho.visible = true;
             ho.frame = 0;
-            ho.elapsed_ms = 0;
+            ho.elapsed_frames = 0;
         } else if !is_harvesting && ho.visible {
             ho.visible = false;
             ho.frame = 0;
-            ho.elapsed_ms = 0;
+            ho.elapsed_frames = 0;
         }
     }
 }
@@ -1364,7 +1364,7 @@ fn chrono_return_staging_cell_for_sid(
             grid,
             None,
             super::miner_dock_sequence::EXIT_SEARCH_MAX_RADIUS,
-            sim.session.tick,
+            u64::from(sim.session.binary_frame),
         );
     }
 

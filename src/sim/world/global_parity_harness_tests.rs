@@ -66,8 +66,12 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// fixture's harvester consumes scenario draws on every non-productive
 /// dispatch. Streams 1 and 2 are unchanged and the total hash moved with
 /// stream 0 — a behavior-bearing shift, not a misroute.
+/// Re-baselined for the Phase-0 native-frame authority: 600 admitted visits now
+/// commit exactly 600 frames. The former 67-ms-derived clock skipped three
+/// frame values, changing frame-anchored Harvest dispatch jitter draws.
+/// Main and MapGen remain unchanged, localizing the intended shift to Scenario.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
-    4301199653360695687,
+    2051724246393896192,
     4175722561206807420,
     2082941527059030371,
 );
@@ -156,8 +160,13 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// Re-baselined with the native Mission_Harvest per-path dispatch delays:
 /// a behavior-bearing shift (dispatch cadence + scenario-stream draws), so
 /// the legacy-schema probes move together with the live hash.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 964269818034410860;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 17535941526574457430;
+/// Re-baselined for the Phase-0 native-frame and persistence authority changes
+/// documented at `FINAL_STREAM_STATES`: the admitted-frame cadence changes the
+/// harness harvester's behavior, while the common hash composition also drops
+/// `total_sim_ms` and adds the newly persisted deterministic fields. Therefore
+/// both legacy-schema probes and the live hash move together.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 13754665093711200317;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 13270953773415986628;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -219,7 +228,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 17535941526574457430;
 /// wired in this slice (deploy-begin off, undeploy-complete on, destination-
 /// accepted on) changed no other hashed state in these fixtures. The absolute
 /// per-stream RNG pins held throughout.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2C71_5978_7F06_59ED;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xB2C6_81A1_AFDC_0627;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -489,14 +498,14 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
         );
     }
 
+    let pre_lifecycle_hash = rep.state_hash_before_lifecycle_v28_and_mission_v29();
+    let pre_mission_hash = rep.state_hash_without_mission_v29();
     assert_eq!(
-        rep.state_hash_before_lifecycle_v28_and_mission_v29(),
-        GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
+        pre_lifecycle_hash, GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
         "pre-v28/pre-v29 schema probe must reproduce the historical baseline"
     );
     assert_eq!(
-        rep.state_hash_without_mission_v29(),
-        GLOBAL_HARNESS_PRE_MISSION_V29_HASH,
+        pre_mission_hash, GLOBAL_HARNESS_PRE_MISSION_V29_HASH,
         "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
     );
     assert_eq!(

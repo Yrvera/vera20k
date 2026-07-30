@@ -29,7 +29,7 @@ use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::rng::SimRng;
 use crate::sim::world::EnterOrderCounter;
 use crate::util::fixed_math::{
-    SIM_HALF, SIM_ONE, SIM_TICK_HZ, SIM_ZERO, SimFixed, facing_from_delta_int as facing_from_delta,
+    SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, facing_from_delta_int as facing_from_delta,
     fixed_distance,
 };
 use crate::util::lepton::CELL_CENTER_LEPTON;
@@ -39,34 +39,8 @@ use super::{
     PathfindingContext,
 };
 
-const DRIVE_TRACK_NATIVE_FRAME_HZ: u32 = 15;
-const DRIVE_TRACK_NATIVE_FRAME_MS: u32 = 1000 / DRIVE_TRACK_NATIVE_FRAME_HZ;
-const DRIVE_TRACK_SUBTICKS_PER_NATIVE_FRAME: u16 =
-    (SIM_TICK_HZ / DRIVE_TRACK_NATIVE_FRAME_HZ) as u16;
-
-fn drive_track_native_frame_count(drive: &mut DriveLocomotionRuntime, tick_ms: u32) -> u32 {
-    if tick_ms >= DRIVE_TRACK_NATIVE_FRAME_MS {
-        drive.drive_delay = 0;
-        return (tick_ms / DRIVE_TRACK_NATIVE_FRAME_MS).max(1);
-    }
-    if drive.drive_delay > 0 {
-        drive.drive_delay -= 1;
-        return 0;
-    }
-    drive.drive_delay = DRIVE_TRACK_SUBTICKS_PER_NATIVE_FRAME.saturating_sub(1);
-    1
-}
-
-fn drive_track_fresh_budget_from_current_speed(
-    current_speed_per_second: SimFixed,
-    native_frames: u32,
-) -> i32 {
-    if native_frames == 0 {
-        return 0;
-    }
-    (current_speed_per_second / SimFixed::from_num(DRIVE_TRACK_NATIVE_FRAME_HZ)
-        * SimFixed::from_num(native_frames))
-    .to_num::<i32>()
+fn drive_track_fresh_budget_from_current_speed(current_speed_per_second: SimFixed) -> i32 {
+    (current_speed_per_second / SimFixed::from_num(15u8)).to_num::<i32>()
 }
 
 pub(super) fn apply_cell_transition_remainder(
@@ -214,7 +188,7 @@ pub(super) fn configure_motion_after_transition(
 }
 
 /// Per-tick hover steering: turn the body facing toward the current one-cell
-/// waypoint through the binary-frame `FacingClass` at the unit's rules ROT, and
+/// waypoint through the native-frame `FacingClass` at the unit's rules ROT, and
 /// point `move_dir` along the resulting hull heading (unit vector, len = 1) so
 /// the shared lepton advancement produces facing-lagged curved motion.
 ///
@@ -234,7 +208,7 @@ pub(super) fn hover_steer(
     position: &Position,
     target: &mut MovementTarget,
     rot: i32,
-    binary_frame: u32,
+    native_frame: u32,
 ) -> bool {
     use crate::util::lepton::CELL_CENTER_LEPTON;
 
@@ -259,8 +233,8 @@ pub(super) fn hover_steer(
     let bf = body_facing.get_or_insert_with(|| {
         super::facing_class::FacingClass::new((*facing as u16) << 8, rot_byte)
     });
-    bf.set(desired16, binary_frame);
-    let current16: u16 = bf.current(binary_frame);
+    bf.set(desired16, native_frame);
+    let current16: u16 = bf.current(native_frame);
     *facing = (current16 >> 8) as u8;
 
     let (mx, my) = super::hover::hover_move_dir(current16);
@@ -284,9 +258,9 @@ pub(super) enum RotationResult {
 /// Handle vehicle in-place rotation before movement begins.
 ///
 /// Vehicles rotate toward `facing_target` before advancing. When `ROT > 0` the
-/// hull turns through a binary-frame `FacingClass` at the unit's rules ROT —
+/// hull turns through a native-frame `FacingClass` at the unit's rules ROT —
 /// gamemd's `DriveLocomotionClass::Do_Turn` on the body PrimaryFacing, whose
-/// turn duration is `abs(delta_8bit) / ROT` binary frames (frame-count based,
+/// turn duration is `abs(delta_8bit) / ROT` native frames (frame-count based,
 /// NOT millisecond based). `ROT = 0` means instant snap. Infantry are excluded
 /// by the caller (they always turn instantly without this function).
 ///
@@ -303,7 +277,7 @@ pub(super) fn handle_vehicle_rotation(
     position: &mut Position,
     locomotor: &mut Option<LocomotorState>,
     rot: i32,
-    binary_frame: u32,
+    native_frame: u32,
     sim_tick: u64,
 ) -> RotationResult {
     let Some(target_facing) = *facing_target else {
@@ -327,10 +301,10 @@ pub(super) fn handle_vehicle_rotation(
     let bf = body_facing.get_or_insert_with(|| {
         super::facing_class::FacingClass::new((*facing as u16) << 8, rot_byte)
     });
-    bf.set((target_facing as u16) << 8, binary_frame);
-    *facing = (bf.current(binary_frame) >> 8) as u8;
+    bf.set((target_facing as u16) << 8, native_frame);
+    *facing = (bf.current(native_frame) >> 8) as u8;
 
-    if bf.is_rotating(binary_frame) {
+    if bf.is_rotating(native_frame) {
         // Still rotating in place — advance facing but don't move.
         let mut debug_events = Vec::new();
         if let Some(loco) = locomotor {
@@ -380,7 +354,7 @@ mod tests {
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::movement::locomotor::LocomotorState;
 
-    /// Body/hull in-place turn duration = abs(delta_8bit) / ROT binary frames
+    /// Body/hull in-place turn duration = abs(delta_8bit) / ROT native frames
     /// (gamemd DriveLocomotionClass::Do_Turn on the hull FacingClass at the
     /// unit's rules ROT). Verified in
     /// docs/research/BODY_FACING_DRIVE_LOCOMOTOR_ROT_GHIDRA_REPORT.md: for ROT=5
@@ -389,7 +363,7 @@ mod tests {
     /// (the old ms-integrated path was tick-rate-dependent and ~2× too fast).
     #[test]
     fn test_body_rotation_matches_native_frame_duration() {
-        // Drive the in-place rotation frame by frame, returning the binary-frame
+        // Drive the in-place rotation frame by frame, returning the native-frame
         // count at which it completes (ReadyToMove with the exact target reached).
         fn frames_to_turn(from: u8, to: u8, rot: i32) -> u32 {
             let mut facing = from;
@@ -486,8 +460,7 @@ mod tests {
             &mut locomotor,
             EntityCategory::Unit,
             SimFixed::from_num(300),
-            SimFixed::from_num(66) / SimFixed::from_num(1000),
-            66,
+            SimFixed::from_num(1) / SimFixed::from_num(15),
             1,
         );
 
@@ -500,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn drive_track_first_subtick_uses_native_frame_budget() {
+    fn drive_track_first_native_frame_uses_native_frame_budget() {
         let mut target = MovementTarget {
             path: vec![(0, 0), (1, 0)],
             path_layers: vec![MovementLayer::Ground; 2],
@@ -539,8 +512,7 @@ mod tests {
             &mut locomotor,
             EntityCategory::Unit,
             current_speed,
-            SimFixed::from_num(22) / SimFixed::from_num(1000),
-            22,
+            SimFixed::from_num(1) / SimFixed::from_num(15),
             1,
         );
 
@@ -550,11 +522,10 @@ mod tests {
         assert_eq!(track.point_index, start_index + 1);
         assert_eq!(drive.residual_budget, 4);
         assert_eq!(track.residual, 4);
-        assert_eq!(drive.drive_delay, 2);
     }
 
     #[test]
-    fn drive_track_subticks_wait_until_next_native_frame() {
+    fn drive_track_each_call_consumes_fresh_native_frame_budget() {
         let mut target = MovementTarget {
             path: vec![(0, 0), (1, 0)],
             path_layers: vec![MovementLayer::Ground; 2],
@@ -580,7 +551,7 @@ mod tests {
             Some(drive_track::begin_drive_track_with_head_offset(1, 0, 0, 0, 0).unwrap());
         let mut drive_locomotion = Some(DriveLocomotionRuntime::default());
         let mut locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
-        let dt = SimFixed::from_num(22) / SimFixed::from_num(1000);
+        let dt = SimFixed::from_num(1) / SimFixed::from_num(15);
         let current_speed = target.current_speed;
 
         let _ = advance_lepton_position(
@@ -594,11 +565,9 @@ mod tests {
             EntityCategory::Unit,
             current_speed,
             dt,
-            22,
             1,
         );
         let index_after_native_frame = drive_track_state.as_ref().unwrap().point_index;
-        let residual_after_native_frame = drive_locomotion.as_ref().unwrap().residual_budget;
 
         let _ = advance_lepton_position(
             &mut target,
@@ -611,58 +580,13 @@ mod tests {
             EntityCategory::Unit,
             current_speed,
             dt,
-            22,
             1,
         );
         assert_eq!(
             drive_track_state.as_ref().unwrap().point_index,
-            index_after_native_frame
+            index_after_native_frame + 2,
+            "every explicit call must consume a fresh reached-frame budget"
         );
-        assert_eq!(
-            drive_locomotion.as_ref().unwrap().residual_budget,
-            residual_after_native_frame
-        );
-
-        let _ = advance_lepton_position(
-            &mut target,
-            &mut position,
-            &mut facing,
-            &mut facing_target,
-            &mut drive_track_state,
-            &mut drive_locomotion,
-            &mut locomotor,
-            EntityCategory::Unit,
-            current_speed,
-            dt,
-            22,
-            1,
-        );
-        assert_eq!(
-            drive_track_state.as_ref().unwrap().point_index,
-            index_after_native_frame
-        );
-        assert_eq!(drive_locomotion.as_ref().unwrap().drive_delay, 0);
-
-        let _ = advance_lepton_position(
-            &mut target,
-            &mut position,
-            &mut facing,
-            &mut facing_target,
-            &mut drive_track_state,
-            &mut drive_locomotion,
-            &mut locomotor,
-            EntityCategory::Unit,
-            current_speed,
-            dt,
-            22,
-            1,
-        );
-        assert_eq!(
-            drive_track_state.as_ref().unwrap().point_index,
-            index_after_native_frame + 2
-        );
-        assert_eq!(drive_locomotion.as_ref().unwrap().residual_budget, 1);
-        assert_eq!(drive_locomotion.as_ref().unwrap().drive_delay, 2);
     }
 }
 
@@ -745,21 +669,13 @@ pub(super) fn advance_lepton_position(
     category: EntityCategory,
     effective_speed: SimFixed,
     dt: SimFixed,
-    tick_ms: u32,
     entity_id: u64,
 ) -> AdvanceResult {
     if let Some(track_state) = drive_track_state {
         // Drive track advancement: step through pre-computed curve points.
         // The track handles position AND facing, producing smooth turns.
         let advance = if let Some(drive) = drive_locomotion.as_mut() {
-            let native_frames = drive_track_native_frame_count(drive, tick_ms);
-            if native_frames == 0 {
-                drive.point_index = track_state.point_index;
-                drive.track_valid = true;
-                return AdvanceResult::DriveTrackActive;
-            }
-            let fresh_budget: i32 =
-                drive_track_fresh_budget_from_current_speed(effective_speed, native_frames);
+            let fresh_budget = drive_track_fresh_budget_from_current_speed(effective_speed);
             let advance = drive_track::advance_drive_track_with_budget(
                 track_state,
                 fresh_budget,

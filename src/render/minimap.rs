@@ -289,6 +289,9 @@ impl MinimapRenderer {
             .map(|r| &r.house_color_ramps)
             .unwrap_or(&default_ramps);
         for entity in entities.values() {
+            if entity.lifecycle.in_limbo {
+                continue;
+            }
             let pos = &entity.position;
             let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
             let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
@@ -355,7 +358,7 @@ impl MinimapRenderer {
                 if !event.event_type.draws_on_minimap() {
                     continue;
                 }
-                // Player-scoped events (BaseUnderAttack/MinerUnderAttack) draw
+                // Player-scoped events (BaseUnderAttack/HarvesterUnderAttack) draw
                 // only on their owner's minimap. Owner-less events are global.
                 // With no visibility owner (sandbox full-vis), draw everything.
                 if let Some(ev_owner) = event.owner {
@@ -377,20 +380,21 @@ impl MinimapRenderer {
                     self.map_pixel_h,
                 );
                 let progress: f32 = event.progress();
-                let min_radius: f32 = config.map_or(4.0, |c| c.min_radius);
+                let min_radius: f32 = config.map_or(8.0, |c| c.min_radius);
                 let start_radius: f32 = min_radius * 4.0;
                 let radius: f32 = start_radius + (min_radius - start_radius) * progress;
                 // Brightness pulses via sin wave.
-                let color_speed: f32 = config.map_or(0.05, |c| c.color_speed);
-                let pulse: f32 = 0.6 + 0.4 * (event.age_ms as f32 * color_speed * 0.01).sin().abs();
+                let color_speed: f32 = config.map_or(0.1, |c| c.color_speed);
+                let pulse: f32 = 0.6 + 0.4 * (event.age_frames as f32 * color_speed).sin().abs();
                 let base_color = event.event_type.color();
                 let r: u8 = (base_color[0] as f32 * pulse).min(255.0) as u8;
                 let g: u8 = (base_color[1] as f32 * pulse).min(255.0) as u8;
                 let b: u8 = (base_color[2] as f32 * pulse).min(255.0) as u8;
                 let color: [u8; 4] = [r, g, b, 255];
                 // Compute 4 diamond corners from rotation angle + radius.
-                let cos_a = event.rotation.cos();
-                let sin_a = event.rotation.sin();
+                let rotation = event.rotation_radians();
+                let cos_a = rotation.cos();
+                let sin_a = rotation.sin();
                 // Outer bright diamond.
                 let cxi = cx as i32;
                 let cyi = cy as i32;

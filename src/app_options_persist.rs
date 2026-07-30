@@ -33,8 +33,12 @@ fn apply_target_lines(target_lines: &mut TargetLineState, opts: &InGameOptionsSt
 /// effects when the dialog closes, so the battlefield behind the non-opaque overlay
 /// must not visibly change until Back.
 pub(crate) fn apply_in_game_options(state: &mut AppState) {
-    // GameSpeed -> sim cadence (KD-2): game_speed is the single source of truth.
+    // Keep the UI readout in sync. Frame admission itself uses the stored
+    // speed byte directly, and deterministic consumers read the session copy.
     state.sim_speed_tps = crate::app_types::tps_for_game_speed(state.in_game_options.game_speed);
+    if let Some(sim) = state.simulation.as_mut() {
+        sim.session.game_options.game_speed = state.in_game_options.game_speed as i32;
+    }
     // UnitActionLines -> the target-line render gate (the one confirmed live consumer).
     apply_target_lines(&mut state.target_lines, &state.in_game_options);
     // The remaining four are persist-only — no existing Rust consumer reads them, and
@@ -87,8 +91,8 @@ pub(crate) fn in_game_options_close(state: &mut AppState) {
     apply_in_game_options(state);
     persist_in_game_options(state, IN_GAME_OPTIONS_RESULT_BACK);
     state.paused = false;
-    state.last_update_time = std::time::Instant::now();
-    state.sim_accumulator_ms = 0;
+    let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
+    state.frame_pacer.reanchor(now_ms);
     if state.software_cursor.is_some() {
         state.window.set_cursor_visible(false);
     }

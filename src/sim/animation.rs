@@ -2,7 +2,7 @@
 //!
 //! Manages animation sequences (stand, walk, attack, die) for SHP sprite entities.
 //! Each entity with an `Animation` component has a current sequence, frame index,
-//! and timing accumulator. The `tick_animations()` function advances frames and
+//! and reached-frame counter. The `tick_animations()` function advances frames and
 //! handles auto-transitions (e.g., stand ↔ walk based on MovementTarget).
 //!
 //! ## SHP frame layout
@@ -32,17 +32,17 @@ use std::collections::BTreeMap;
 /// Standard number of facing directions for infantry animations.
 const INFANTRY_FACINGS: u8 = 8;
 
-/// Default milliseconds per frame for standing pose.
-const DEFAULT_STAND_TICK_MS: u32 = 200;
+/// Default reached native frames per standing image.
+const DEFAULT_STAND_FRAME_DELAY: u16 = 1;
 
-/// Default milliseconds per frame for walk cycles.
-const DEFAULT_WALK_TICK_MS: u32 = 100;
+/// Default reached native frames per walk-cycle image.
+const DEFAULT_WALK_FRAME_DELAY: u16 = 3;
 
-/// Default milliseconds per frame for idle fidget animations.
-const DEFAULT_IDLE_TICK_MS: u32 = 120;
+/// Default reached native frames per idle-fidget image.
+const DEFAULT_IDLE_FRAME_DELAY: u16 = 3;
 
-/// Default milliseconds per frame for death animations.
-const DEFAULT_DIE_TICK_MS: u32 = 80;
+/// Default reached native frames per death image.
+const DEFAULT_DIE_FRAME_DELAY: u16 = 1;
 
 /// Named animation sequence types.
 ///
@@ -161,8 +161,10 @@ pub struct SequenceDef {
     /// From art.ini's 3rd sequence field. Typically equals `frame_count` for
     /// contiguous packing. If 0, the animation is facing-independent.
     pub facing_multiplier: u16,
-    /// Duration of each frame in milliseconds. Lower = faster animation.
-    pub tick_ms: u32,
+    /// Reached native frames per image. Lower = faster animation.
+    pub frame_delay: u16,
+    /// Whether native game-speed normalization applies to this action delay.
+    pub normalized: bool,
     /// Behavior when the sequence reaches its final frame.
     pub loop_mode: LoopMode,
     /// If true, SHP facings are laid out clockwise (0=N, 1=NE, 2=E...) as used
@@ -182,8 +184,8 @@ pub struct Animation {
     pub sequence: SequenceKind,
     /// Current frame within the sequence (0 to frame_count - 1).
     pub frame_index: u16,
-    /// Milliseconds accumulated since the last frame advance.
-    pub elapsed_ms: u32,
+    /// Reached native frames accumulated since the last image advance.
+    pub elapsed_frames: u16,
     /// True if a HoldLast sequence has reached its final frame.
     pub finished: bool,
 }
@@ -194,7 +196,7 @@ impl Animation {
         Self {
             sequence,
             frame_index: 0,
-            elapsed_ms: 0,
+            elapsed_frames: 0,
             finished: false,
         }
     }
@@ -205,7 +207,7 @@ impl Animation {
         if self.sequence != sequence {
             self.sequence = sequence;
             self.frame_index = 0;
-            self.elapsed_ms = 0;
+            self.elapsed_frames = 0;
             self.finished = false;
         }
     }
@@ -331,24 +333,28 @@ pub fn resolve_shp_frame(def: &SequenceDef, facing: u8, frame_index: u16) -> u16
     def.start_frame + facing_index * def.facing_multiplier + clamped
 }
 
-/// Advance a single Animation by `dt_ms` milliseconds using its SequenceDef.
+/// Advance a single animation by one reached native gameplay frame.
 ///
 /// Returns `Some(SequenceKind)` if the sequence completed with a `TransitionTo`
 /// loop mode, indicating the caller should switch to that sequence. Otherwise None.
 pub fn advance_animation(
     anim: &mut Animation,
     def: &SequenceDef,
-    dt_ms: u32,
+    game_options: &crate::sim::game_options::GameOptions,
 ) -> Option<SequenceKind> {
-    if anim.finished || def.tick_ms == 0 || def.frame_count == 0 {
+    let frame_delay = if def.normalized {
+        game_options.normalized_anim_delay(def.frame_delay)
+    } else {
+        def.frame_delay
+    };
+    if anim.finished || frame_delay == 0 || def.frame_count == 0 {
         return None;
     }
 
-    anim.elapsed_ms += dt_ms;
+    anim.elapsed_frames = anim.elapsed_frames.saturating_add(1);
 
-    // Advance frame(s) while enough time has accumulated.
-    while anim.elapsed_ms >= def.tick_ms {
-        anim.elapsed_ms -= def.tick_ms;
+    while anim.elapsed_frames >= frame_delay {
+        anim.elapsed_frames -= frame_delay;
         anim.frame_index += 1;
 
         if anim.frame_index >= def.frame_count {
@@ -359,12 +365,12 @@ pub fn advance_animation(
                 LoopMode::HoldLast => {
                     anim.frame_index = def.frame_count.saturating_sub(1);
                     anim.finished = true;
-                    anim.elapsed_ms = 0;
+                    anim.elapsed_frames = 0;
                     return None;
                 }
                 LoopMode::TransitionTo(next) => {
                     anim.frame_index = 0;
-                    anim.elapsed_ms = 0;
+                    anim.elapsed_frames = 0;
                     return Some(next);
                 }
             }
@@ -374,7 +380,7 @@ pub fn advance_animation(
     None
 }
 
-/// Advance all animated entities in the ECS world by `dt_ms` milliseconds.
+/// Advance all animated entities by one reached native gameplay frame.
 ///
 /// 1. Dying entities: skip auto-transitions, only advance death animation.
 ///    Returns IDs of dying entities whose death animation has finished.
@@ -386,11 +392,12 @@ pub fn advance_animation(
 ///
 /// `sequences` maps type_id → SequenceSet for frame timing lookup.
 /// Entities whose type_id isn't in the map are skipped (no animation advance).
-pub fn tick_animations(
+fn tick_animations_impl(
     entities: &mut crate::sim::entity_store::EntityStore,
     sequences: &BTreeMap<String, SequenceSet>,
-    dt_ms: u32,
+    game_options: &crate::sim::game_options::GameOptions,
     interner: &crate::sim::intern::StringInterner,
+    tick_dying: bool,
 ) -> Vec<u64> {
     let mut dying_finished: Vec<u64> = Vec::new();
     let keys: Vec<u64> = entities.keys_sorted();
@@ -399,6 +406,9 @@ pub fn tick_animations(
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
+        if entity.dying && !tick_dying {
+            continue;
+        }
         let Some(anim) = entity.animation.as_mut() else {
             // Dying entity with no animation → ready for despawn.
             if entity.dying {
@@ -421,7 +431,10 @@ pub fn tick_animations(
                 dying_finished.push(id);
                 continue;
             };
-            advance_animation(anim, def, dt_ms);
+            advance_animation(anim, def, game_options);
+            if anim.finished {
+                dying_finished.push(id);
+            }
             continue;
         }
 
@@ -507,7 +520,7 @@ pub fn tick_animations(
             continue;
         };
 
-        if let Some(next) = advance_animation(anim, def, dt_ms) {
+        if let Some(next) = advance_animation(anim, def, game_options) {
             anim.switch_to(next);
         }
     }
@@ -515,22 +528,61 @@ pub fn tick_animations(
     dying_finished
 }
 
+pub fn tick_animations(
+    entities: &mut crate::sim::entity_store::EntityStore,
+    sequences: &BTreeMap<String, SequenceSet>,
+    game_options: &crate::sim::game_options::GameOptions,
+    interner: &crate::sim::intern::StringInterner,
+) -> Vec<u64> {
+    tick_animations_impl(entities, sequences, game_options, interner, true)
+}
+
+/// Advance only living entity animations. Dying animation completion is owned
+/// by that object's live scheduler turn so UnInit can compact the LogicVector
+/// before the scheduler cursor advances.
+pub(crate) fn tick_non_dying_animations(
+    entities: &mut crate::sim::entity_store::EntityStore,
+    sequences: &BTreeMap<String, SequenceSet>,
+    game_options: &crate::sim::game_options::GameOptions,
+    interner: &crate::sim::intern::StringInterner,
+) {
+    let _ = tick_animations_impl(entities, sequences, game_options, interner, false);
+}
+
+/// Advance one dying object's death sequence during its own scheduler turn.
+/// Missing animation/type/sequence data takes the immediate-finish path used
+/// by the prior app-owned completion fallback.
+pub(crate) fn tick_dying_animation(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    sequences: &BTreeMap<String, SequenceSet>,
+    game_options: &crate::sim::game_options::GameOptions,
+    type_name: &str,
+) -> bool {
+    debug_assert!(entity.dying);
+    let Some(anim) = entity.animation.as_mut() else {
+        return true;
+    };
+    if anim.finished {
+        return true;
+    }
+    let Some(seq_set) = sequences.get(type_name) else {
+        return true;
+    };
+    let Some(def) = seq_set.get(&anim.sequence) else {
+        return true;
+    };
+    advance_animation(anim, def, game_options);
+    anim.finished
+}
+
 /// Number of animation frames in oregath.shp per facing direction.
 const HARVEST_OVERLAY_FRAMES: u16 = 15;
 
-/// Milliseconds per harvest overlay frame — one frame per sim tick (15 Hz = 67ms).
-/// oregath.shp is a hardcoded engine asset with no INI-configurable Rate, so the
-/// animation advances once per game logic tick like other engine-driven overlays.
-const HARVEST_OVERLAY_FRAME_MS: u32 = 67;
-
-/// Advance all HarvestOverlay components by `dt_ms` milliseconds.
+/// Advance all HarvestOverlay components by one reached native frame.
 ///
 /// Cycles through the 15-frame oregath.shp animation for harvesters that are
 /// actively gathering ore. When not visible, the overlay is skipped.
-pub fn tick_harvest_overlays(entities: &mut crate::sim::entity_store::EntityStore, dt_ms: u32) {
-    if dt_ms == 0 {
-        return;
-    }
+pub fn tick_harvest_overlays(entities: &mut crate::sim::entity_store::EntityStore) {
     let keys: Vec<u64> = entities.keys_sorted();
     for &id in &keys {
         let Some(entity) = entities.get_mut(id) else {
@@ -542,22 +594,16 @@ pub fn tick_harvest_overlays(entities: &mut crate::sim::entity_store::EntityStor
         if !overlay.visible {
             continue;
         }
-        overlay.elapsed_ms += dt_ms;
-        while overlay.elapsed_ms >= HARVEST_OVERLAY_FRAME_MS {
-            overlay.elapsed_ms -= HARVEST_OVERLAY_FRAME_MS;
-            overlay.frame = (overlay.frame + 1) % HARVEST_OVERLAY_FRAMES;
-        }
+        overlay.elapsed_frames = 0;
+        overlay.frame = (overlay.frame + 1) % HARVEST_OVERLAY_FRAMES;
     }
 }
 
-/// Advance all VoxelAnimation components by `dt_ms` milliseconds.
+/// Advance all VoxelAnimation components by one reached native frame.
 ///
 /// Cycles through HVA frames for voxel entities that have `playing == true`.
 /// Frame wraps around to 0 when reaching frame_count (looping animation).
-pub fn tick_voxel_animations(entities: &mut crate::sim::entity_store::EntityStore, dt_ms: u32) {
-    if dt_ms == 0 {
-        return;
-    }
+pub fn tick_voxel_animations(entities: &mut crate::sim::entity_store::EntityStore) {
     let keys: Vec<u64> = entities.keys_sorted();
     for &id in &keys {
         let Some(entity) = entities.get_mut(id) else {
@@ -566,12 +612,12 @@ pub fn tick_voxel_animations(entities: &mut crate::sim::entity_store::EntityStor
         let Some(anim) = entity.voxel_animation.as_mut() else {
             continue;
         };
-        if !anim.playing || anim.frame_count <= 1 || anim.tick_ms == 0 {
+        if !anim.playing || anim.frame_count <= 1 || anim.frame_delay == 0 {
             continue;
         }
-        anim.elapsed_ms += dt_ms;
-        while anim.elapsed_ms >= anim.tick_ms {
-            anim.elapsed_ms -= anim.tick_ms;
+        anim.elapsed_frames = anim.elapsed_frames.saturating_add(1);
+        while anim.elapsed_frames >= anim.frame_delay {
+            anim.elapsed_frames -= anim.frame_delay;
             anim.frame = (anim.frame + 1) % anim.frame_count;
         }
     }
@@ -581,11 +627,11 @@ pub fn tick_voxel_animations(entities: &mut crate::sim::entity_store::EntityStor
 ///
 /// Based on RA2's standard infantry sequence defaults:
 /// - Stand: frames 0–7 (1 frame × 8 facings)
-/// - Walk: frames 8–55 (6 frames × 8 facings, 100ms/frame)
-/// - Idle1: frames 56–70 (15 frames, non-directional, 120ms/frame)
-/// - Idle2: frames 71–85 (15 frames, non-directional, 120ms/frame)
-/// - Die1: frames 86–100 (15 frames, non-directional, 80ms/frame)
-/// - Die2: frames 101–115 (15 frames, non-directional, 80ms/frame)
+/// - Walk: frames 8–55 (6 frames × 8 facings)
+/// - Idle1: frames 56–70 (15 frames, non-directional)
+/// - Idle2: frames 71–85 (15 frames, non-directional)
+/// - Die1: frames 86–100 (15 frames, non-directional)
+/// - Die2: frames 101–115 (15 frames, non-directional)
 pub fn default_infantry_sequences() -> SequenceSet {
     let mut set: SequenceSet = SequenceSet::new();
 
@@ -596,7 +642,8 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_count: 1,
             facings: INFANTRY_FACINGS,
             facing_multiplier: 1,
-            tick_ms: DEFAULT_STAND_TICK_MS,
+            frame_delay: DEFAULT_STAND_FRAME_DELAY,
+            normalized: false,
             loop_mode: LoopMode::Loop,
             clockwise_facings: false,
         },
@@ -608,7 +655,8 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_count: 6,
             facings: INFANTRY_FACINGS,
             facing_multiplier: 6,
-            tick_ms: DEFAULT_WALK_TICK_MS,
+            frame_delay: DEFAULT_WALK_FRAME_DELAY,
+            normalized: false,
             loop_mode: LoopMode::Loop,
             clockwise_facings: false,
         },
@@ -620,7 +668,8 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_count: 15,
             facings: 1,
             facing_multiplier: 0,
-            tick_ms: DEFAULT_IDLE_TICK_MS,
+            frame_delay: DEFAULT_IDLE_FRAME_DELAY,
+            normalized: true,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
             clockwise_facings: false,
         },
@@ -632,7 +681,8 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_count: 15,
             facings: 1,
             facing_multiplier: 0,
-            tick_ms: DEFAULT_IDLE_TICK_MS,
+            frame_delay: DEFAULT_IDLE_FRAME_DELAY,
+            normalized: true,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
             clockwise_facings: false,
         },
@@ -644,7 +694,8 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_count: 15,
             facings: 1,
             facing_multiplier: 0,
-            tick_ms: DEFAULT_DIE_TICK_MS,
+            frame_delay: DEFAULT_DIE_FRAME_DELAY,
+            normalized: false,
             loop_mode: LoopMode::HoldLast,
             clockwise_facings: false,
         },
@@ -656,7 +707,8 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_count: 15,
             facings: 1,
             facing_multiplier: 0,
-            tick_ms: DEFAULT_DIE_TICK_MS,
+            frame_delay: DEFAULT_DIE_FRAME_DELAY,
+            normalized: false,
             loop_mode: LoopMode::HoldLast,
             clockwise_facings: false,
         },
@@ -679,7 +731,8 @@ pub fn default_building_sequences() -> SequenceSet {
             frame_count: 1,
             facings: 1,
             facing_multiplier: 0,
-            tick_ms: DEFAULT_STAND_TICK_MS,
+            frame_delay: DEFAULT_STAND_FRAME_DELAY,
+            normalized: false,
             loop_mode: LoopMode::Loop,
             clockwise_facings: false,
         },

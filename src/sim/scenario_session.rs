@@ -44,14 +44,14 @@ pub struct ScenarioDescriptor {
 }
 
 impl ScenarioDescriptor {
-    /// Reconstruct the descriptor a recorded match was created from, so
-    /// playback seeds the sim exactly as the original run did. Identity and
-    /// bounds come from the same map-load path the original run used; only
-    /// the seed and map name travel in the header.
-    pub fn from_replay_header(header: &crate::sim::replay::ReplayHeader) -> Self {
+    /// Seed normal scenario initialization from a native recording header.
+    ///
+    /// Map bounds, theater, objects, and active registration order are rebuilt
+    /// by the ordinary map loader; a recording is never a snapshot restore.
+    pub fn from_native_replay_header(header: &crate::sim::replay::NativeReplayHeader) -> Self {
         Self {
-            seed: header.seed as u32,
-            map_name: header.map_name.clone(),
+            seed: header.seed,
+            map_name: header.scenario_name(),
             ..Self::default()
         }
     }
@@ -89,20 +89,25 @@ pub struct ScenarioSession {
     /// Start waypoint index -> owning house, filled during launch application
     /// (after the random-assignment draws), before tick 0.
     pub start_slot_houses: BTreeMap<u32, InternedId>,
+    /// HouseClass array registration order. Native house ids are indices into
+    /// this vector; map ordering by name/id is not an equivalent substitute.
+    pub house_order: Vec<InternedId>,
     /// Per-match game settings (the lobby options card). Set once at game
     /// start, read-only during gameplay.
     pub game_options: GameOptions,
-    /// Current simulation tick (starts at 0, increments after each
-    /// advance_tick).
+    /// Monotonic Rust-side simulation ordinal. This is kept separately from
+    /// the wrapping native frame so long-running diagnostics and command
+    /// bookkeeping do not lose their ordering at the 32-bit wrap.
     pub tick: u64,
-    /// Total accumulated sim-tick milliseconds since world creation.
-    /// Authoritative time source; `binary_frame` is derived from this.
+    /// Diagnostic accumulation of the nominal milliseconds supplied by the
+    /// host for each admitted frame. Gameplay must not derive timer state,
+    /// cadence, or the native frame from this value.
     pub total_sim_ms: u64,
-    /// Synthetic 15 Hz frame counter, **committed late** at the end of
-    /// advance_tick beside `tick` — during a tick it holds the previous
-    /// tick's committed value (the pre-increment frame this tick executes
-    /// under). Read it as the *current* frame for stored-start timer
-    /// consumers; never as the next frame.
+    /// Wrapping native gameplay-frame counter. One admitted `advance_tick`
+    /// executes entirely under frame N, then commits N+1 at the late tail.
+    ///
+    /// The field keeps its historical name until all persistence and app
+    /// surfaces can be renamed together; it is not a synthetic 15 Hz clock.
     pub binary_frame: u32,
 }
 
@@ -120,6 +125,7 @@ impl ScenarioSession {
             local_height: desc.local_height,
             mp_start_waypoints: desc.mp_start_waypoints.clone(),
             start_slot_houses: BTreeMap::new(),
+            house_order: Vec::new(),
             game_options: GameOptions::default(),
             tick: 0,
             total_sim_ms: 0,
@@ -297,17 +303,12 @@ mod tests {
     }
 
     #[test]
-    fn from_replay_header_roundtrips_u32_seed() {
-        let header = crate::sim::replay::ReplayHeader {
-            version: 1,
-            tick_hz: 15,
-            seed: 0x1234_5678,
-            map_name: String::new(),
-            rules_hash: 0,
-        };
-        assert_eq!(
-            ScenarioDescriptor::from_replay_header(&header).seed,
-            0x1234_5678
-        );
+    fn native_replay_header_starts_normal_scenario_descriptor() {
+        let header = crate::sim::replay::NativeReplayHeader::new(0x1234_5678, "arena.map");
+        let descriptor = ScenarioDescriptor::from_native_replay_header(&header);
+        assert_eq!(descriptor.seed, 0x1234_5678);
+        assert_eq!(descriptor.map_name, "arena.map");
+        assert_eq!(descriptor.map_width, 0);
+        assert_eq!(descriptor.map_height, 0);
     }
 }

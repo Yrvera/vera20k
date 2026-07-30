@@ -3,7 +3,6 @@
 //! Extracted from app.rs for file-size limits.
 
 use std::collections::{BTreeMap, HashMap};
-use std::time::Instant;
 
 use crate::app_init;
 use crate::app_render;
@@ -36,6 +35,7 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         map_source: crate::app_list_maps::LoadedMapSource::LegacyFallback {
             label: "fallback".to_string(),
         },
+        map_hash: None,
         basic: BasicSection::default(),
         tile_atlas: None,
         terrain_grid: None,
@@ -94,6 +94,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     crate::app_loading::clear_loading_state(state);
     state.map_basic = result.basic;
     state.loaded_map_source = Some(result.map_source);
+    state.loaded_map_hash = result.map_hash;
     state.terrain_grid = result.terrain_grid;
     state.resolved_terrain = result.resolved_terrain;
     state.simulation = result.simulation;
@@ -270,8 +271,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
         &state.infantry_sequences,
     );
 
-    state.last_update_time = Instant::now();
-    state.sim_accumulator_ms = 0;
+    let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
+    state.frame_pacer.reanchor(now_ms);
     state.queued_order_mode = app_render::OrderMode::Move;
     for group in &mut state.control_groups {
         group.clear();

@@ -566,6 +566,8 @@ pub(crate) fn spawn_entities(
                 rules.general.wheeled_uphill,
                 rules.general.wheeled_downhill,
             );
+        sim.radar_events =
+            crate::sim::radar::RadarEventQueue::from_config(&rules.radar_event_config);
     }
     // The playfield diamond: [Map] Size width + the raw LocalSize rect, stored
     // verbatim — the isometric transform lives in the validator's diamond test.
@@ -1092,10 +1094,10 @@ mod tests {
         assert_eq!(rules.c4_delay_ticks, 27, "C4Delay .03 min -> 27 ticks");
     }
 
-    /// The rules hash (RuleSet::source_ini_hash, stamped into replay/snapshot
+    /// The rules hash (RuleSet::source_ini_hash, stamped into diagnostic/snapshot
     /// headers) is sensitive to a map's *value* overrides — closing the gap
     /// where a registry-only hash let a map override [General]/[CombatDamage]
-    /// values without changing the hash, so a replay/snapshot recorded under
+    /// values without changing the hash, so a diagnostic/snapshot recorded under
     /// the map could play back against base rules undetected.
     #[test]
     fn rules_hash_reflects_map_value_overrides() {

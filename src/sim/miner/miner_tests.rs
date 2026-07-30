@@ -264,12 +264,11 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
     let grid = PathGrid::new(64, 64);
     for _ in 0..n {
         sim.session.total_sim_ms = sim.session.total_sim_ms.saturating_add(67);
-        sim.session.binary_frame = ((sim.session.total_sim_ms * 15) / 1000) as u32;
+        sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
         crate::sim::movement::teleport_movement::tick_teleport_movement(
             &mut sim.substrate.entities,
             &mut OccupancyGrid::new(),
             &[],
-            67,
             sim.session.tick,
             None,
         );
@@ -278,7 +277,6 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
         // (Linked/Departing wait for movement_target to be None).
         crate::sim::movement::tick_movement(
             &mut sim.substrate.entities,
-            67,
             &mut sim.interner,
             &mut sim.pending_lifecycle_requests,
         );
@@ -530,7 +528,6 @@ fn chrono_miner_teleports_to_refinery_on_return() {
         &mut sim.substrate.entities,
         &mut OccupancyGrid::new(),
         &[],
-        67,
         sim.session.tick,
         None,
     );
@@ -3366,7 +3363,6 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             &alliances,
             &mut occupancy,
             &mut rng,
-            67,
             sim.session.tick,
             &mut sim.interner,
             &mut sim.pending_lifecycle_requests,
@@ -3414,7 +3410,6 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             &alliances,
             &mut occupancy,
             &mut rng,
-            67,
             sim.session.tick,
             &mut sim.interner,
             &mut sim.pending_lifecycle_requests,
@@ -3542,7 +3537,6 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
             &alliances,
             &mut occupancy,
             &mut rng,
-            67,
             sim.session.tick,
             &mut sim.interner,
             &mut sim.pending_lifecycle_requests,
@@ -3660,7 +3654,7 @@ fn hello_before_mission_enter_then_can_dock_move() {
 
     // G5: the accepted HELLO arms the Enter cadence; advance the frame clock
     // past the ~14-16f window so the next pass's CAN_DOCK dispatch is due.
-    sim.session.total_sim_ms += 1200;
+    sim.session.binary_frame = sim.session.binary_frame.wrapping_add(18);
     tick_miners_n(&mut sim, &rules, 1);
 
     let m = get_miner(&sim, miner_id);
@@ -5491,15 +5485,15 @@ fn filling_extraction_waits_for_full_gate_before_war_return() {
             .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((30, 30));
         miner.harvest_timer.clear();
-        let mut voxel = VoxelAnimation::new(15, 67);
+        let mut voxel = VoxelAnimation::new(15, 1);
         voxel.frame = 7;
-        voxel.elapsed_ms = 31;
+        voxel.elapsed_frames = 1;
         voxel.playing = true;
         entity.voxel_animation = Some(voxel);
         entity.harvest_overlay = Some(HarvestOverlay {
             frame: 6,
             visible: true,
-            elapsed_ms: 29,
+            elapsed_frames: 0,
         });
     }
 
@@ -5521,10 +5515,10 @@ fn filling_extraction_waits_for_full_gate_before_war_return() {
         assert!(entity.teleport_state.is_none());
         let voxel = entity.voxel_animation.expect("voxel anim");
         assert!(voxel.playing);
-        assert_eq!((voxel.frame, voxel.elapsed_ms), (7, 31));
+        assert_eq!((voxel.frame, voxel.elapsed_frames), (7, 1));
         let overlay = entity.harvest_overlay.expect("harvest overlay");
         assert!(overlay.visible);
-        assert_eq!((overlay.frame, overlay.elapsed_ms), (6, 29));
+        assert_eq!((overlay.frame, overlay.elapsed_frames), (6, 0));
     }
 
     tick_miners_n(&mut sim, &rules, config.harvest_tick_interval as usize);
@@ -5546,15 +5540,15 @@ fn filling_extraction_waits_for_full_gate_before_war_return() {
         let voxel = entity.voxel_animation.expect("voxel anim");
         assert!(voxel.playing);
         assert_eq!(
-            (voxel.frame, voxel.elapsed_ms),
-            (7, 31),
+            (voxel.frame, voxel.elapsed_frames),
+            (7, 1),
             "nonzero visual state remains live through F+18"
         );
         let overlay = entity.harvest_overlay.expect("harvest overlay");
         assert!(overlay.visible);
         assert_eq!(
-            (overlay.frame, overlay.elapsed_ms),
-            (6, 29),
+            (overlay.frame, overlay.elapsed_frames),
+            (6, 0),
             "nonzero overlay state remains live through F+18"
         );
     }
@@ -5578,10 +5572,10 @@ fn filling_extraction_waits_for_full_gate_before_war_return() {
         assert!(entity.teleport_state.is_none());
         let voxel = entity.voxel_animation.expect("voxel anim");
         assert!(!voxel.playing);
-        assert_eq!((voxel.frame, voxel.elapsed_ms), (0, 0));
+        assert_eq!((voxel.frame, voxel.elapsed_frames), (0, 0));
         let overlay = entity.harvest_overlay.expect("harvest overlay");
         assert!(!overlay.visible);
-        assert_eq!((overlay.frame, overlay.elapsed_ms), (0, 0));
+        assert_eq!((overlay.frame, overlay.elapsed_frames), (0, 0));
     }
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -7397,7 +7391,7 @@ fn dock_handshake_hello_enter_over_seam() {
     // Next pass: miner 1 advances to the accepted-cell wait, still not entered.
     // G5: the accepted HELLO arms the Enter cadence; advance the frame clock past
     // the ~14-16f window so this pass's CAN_DOCK dispatch is due.
-    sim.session.total_sim_ms += 1200;
+    sim.session.binary_frame = sim.session.binary_frame.wrapping_add(18);
     tick_miners_n(&mut sim, &rules, 1);
     assert_eq!(
         get_miner(&sim, miner_id).dock_phase,

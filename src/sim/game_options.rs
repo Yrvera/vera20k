@@ -6,6 +6,13 @@
 
 use crate::rules::ini_parser::IniFile;
 
+const NORMALIZED_DELAY_SHORT: [[u16; 8]; 4] = [
+    [2, 2, 1, 1, 1, 1, 1, 1],
+    [3, 3, 3, 2, 2, 2, 1, 1],
+    [5, 4, 4, 3, 3, 2, 2, 1],
+    [7, 6, 5, 4, 4, 4, 3, 2],
+];
+
 /// Per-match game settings from the lobby / `[MultiplayerDialogSettings]`.
 ///
 /// Set once at game start, read-only during gameplay.
@@ -46,7 +53,7 @@ pub struct GameOptions {
     pub unit_count: i32,
     /// Maximum tech level for this match. Rules+0x149C.
     pub tech_level: i32,
-    /// Game speed (0=fastest, 6=slowest). Rules+0x14A0.
+    /// Stored game-speed index. Retail gameplay uses 0 through 7.
     pub game_speed: i32,
     /// Rules-owned default AI difficulty in the native HouseClass convention:
     /// 0=Hard, 1=Normal, 2=Easy. Offline lobby rows copy their own selected
@@ -84,6 +91,21 @@ impl Default for GameOptions {
 }
 
 impl GameOptions {
+    /// Scale a normalized animation delay through the currently stored speed.
+    pub fn normalized_anim_delay(&self, delay: u16) -> u16 {
+        if delay == 0 {
+            return 0;
+        }
+        let speed = usize::try_from(self.game_speed)
+            .ok()
+            .filter(|speed| *speed < 8)
+            .expect("stored game speed must be in 0..=7");
+        if delay < 5 {
+            return NORMALIZED_DELAY_SHORT[usize::from(delay - 1)][speed];
+        }
+        ((u32::from(delay) << 3) / (speed as u32 + 1)) as u16
+    }
+
     /// Override the per-match defaults from a merged rules INI's
     /// `[MultiplayerDialogSettings]` section.
     ///
@@ -273,5 +295,43 @@ mod tests {
     fn build_off_ally_key_overrides_default() {
         let ini = IniFile::from_str("[MultiplayerDialogSettings]\nBuildOffAlly=no\n");
         assert!(!GameOptions::from_multiplayer_dialog_settings(&ini).build_off_ally);
+    }
+
+    #[test]
+    fn normalized_animation_short_delay_table_is_exact() {
+        let expected = [
+            [2, 2, 1, 1, 1, 1, 1, 1],
+            [3, 3, 3, 2, 2, 2, 1, 1],
+            [5, 4, 4, 3, 3, 2, 2, 1],
+            [7, 6, 5, 4, 4, 4, 3, 2],
+        ];
+        for (delay, row) in expected.into_iter().enumerate() {
+            for (speed, value) in row.into_iter().enumerate() {
+                let options = GameOptions {
+                    game_speed: speed as i32,
+                    ..GameOptions::default()
+                };
+                assert_eq!(options.normalized_anim_delay((delay + 1) as u16), value);
+            }
+        }
+    }
+
+    #[test]
+    fn normalized_animation_formula_and_zero_boundary_are_exact() {
+        for speed in 0..=7 {
+            let options = GameOptions {
+                game_speed: speed,
+                ..GameOptions::default()
+            };
+            assert_eq!(options.normalized_anim_delay(0), 0);
+            assert_eq!(
+                options.normalized_anim_delay(5),
+                ((5_u32 << 3) / (speed as u32 + 1)) as u16
+            );
+            assert_eq!(
+                options.normalized_anim_delay(900),
+                ((900_u32 << 3) / (speed as u32 + 1)) as u16
+            );
+        }
     }
 }

@@ -24,7 +24,6 @@ use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::production::{ProductionCategory, foundation_dimensions};
 use crate::sim::vision::MAX_SIGHT_RANGE;
-use crate::util::fixed_math::SimFixed;
 
 impl Simulation {
     /// Spawn entities from parsed map placements into EntityStore.
@@ -144,7 +143,7 @@ impl Simulation {
             }
             // VoxelAnimation default for voxel entities.
             if uses_voxel {
-                ge.voxel_animation = Some(VoxelAnimation::new(1, 100));
+                ge.voxel_animation = Some(VoxelAnimation::new(1, 1));
             }
             // Infantry animation and sub-cell position.
             if map_ent.category == EntityCategory::Infantry {
@@ -190,13 +189,6 @@ impl Simulation {
                     if bridge_spawn.is_some() {
                         loco.layer = MovementLayer::Bridge;
                     }
-                    // TEMP: GI and Conscript move 6× faster for testing.
-                    if matches!(
-                        map_ent.type_id.to_uppercase().as_str(),
-                        "GI" | "CONS" | "E1" | "E2"
-                    ) {
-                        loco.speed_multiplier = SimFixed::from_num(6);
-                    }
                     ge.locomotor = Some(loco);
                 }
             }
@@ -215,7 +207,7 @@ impl Simulation {
                 ge.harvest_overlay = Some(HarvestOverlay {
                     frame: 0,
                     visible: false,
-                    elapsed_ms: 0,
+                    elapsed_frames: 0,
                 });
             }
             // Passenger cargo for transports and garrisonable buildings.
@@ -347,7 +339,7 @@ impl Simulation {
             ge.barrel_facing = Some(crate::sim::movement::FacingClass::new(initial, rot_byte));
         }
         if uses_voxel {
-            ge.voxel_animation = Some(VoxelAnimation::new(1, 100));
+            ge.voxel_animation = Some(VoxelAnimation::new(1, 1));
         }
         if category == EntityCategory::Infantry {
             ge.animation = Some(Animation::new(SequenceKind::Stand));
@@ -377,15 +369,10 @@ impl Simulation {
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
         if obj.speed > 0 {
-            let mut loco = LocomotorState::from_object_type(obj, rules.general.flight_level);
-            // TEMP: GI and Conscript move 6× faster for testing.
-            if matches!(
-                self.interner.resolve(ge.type_ref).to_uppercase().as_str(),
-                "GI" | "CONS" | "E1" | "E2"
-            ) {
-                loco.speed_multiplier = SimFixed::from_num(6);
-            }
-            ge.locomotor = Some(loco);
+            ge.locomotor = Some(LocomotorState::from_object_type(
+                obj,
+                rules.general.flight_level,
+            ));
         }
         // Aircraft ammo: set up ammo tracking for aircraft with finite Ammo=.
         if obj.ammo >= 0 && category == EntityCategory::Aircraft {
@@ -409,7 +396,7 @@ impl Simulation {
             ge.harvest_overlay = Some(HarvestOverlay {
                 frame: 0,
                 visible: false,
-                elapsed_ms: 0,
+                elapsed_frames: 0,
             });
         }
         // Passenger cargo for transports and garrisonable buildings.
@@ -489,7 +476,7 @@ impl Simulation {
             ge.barrel_facing = Some(crate::sim::movement::FacingClass::new(initial, rot_byte));
         }
         if uses_voxel {
-            ge.voxel_animation = Some(VoxelAnimation::new(1, 100));
+            ge.voxel_animation = Some(VoxelAnimation::new(1, 1));
         }
         if category == EntityCategory::Infantry {
             ge.animation = Some(Animation::new(SequenceKind::Stand));
@@ -518,14 +505,10 @@ impl Simulation {
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
         if obj.speed > 0 {
-            let mut loco = LocomotorState::from_object_type(obj, rules.general.flight_level);
-            if matches!(
-                self.interner.resolve(ge.type_ref).to_uppercase().as_str(),
-                "GI" | "CONS" | "E1" | "E2"
-            ) {
-                loco.speed_multiplier = SimFixed::from_num(6);
-            }
-            ge.locomotor = Some(loco);
+            ge.locomotor = Some(LocomotorState::from_object_type(
+                obj,
+                rules.general.flight_level,
+            ));
         }
         if obj.ammo >= 0 && category == EntityCategory::Aircraft {
             ge.aircraft_ammo = Some(crate::sim::docking::aircraft_dock::AircraftAmmo::new(
@@ -546,7 +529,7 @@ impl Simulation {
             ge.harvest_overlay = Some(HarvestOverlay {
                 frame: 0,
                 visible: false,
-                elapsed_ms: 0,
+                elapsed_frames: 0,
             });
         }
         if obj.passengers > 0 {

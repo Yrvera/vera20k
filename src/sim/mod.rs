@@ -29,8 +29,10 @@ pub mod entity_store;
 pub mod game_entity;
 pub mod intern;
 pub(crate) mod lifecycle_request;
+pub mod multiplayer_checksum;
 pub mod rng;
 pub mod scenario_session; // app->sim launch descriptor (per-match seed pipeline)
+pub mod timer; // signed frame-anchored countdown primitive
 pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution
 
 // --- Pure read-only deterministic engine-data services (gamemd-exact lookup tables) ---

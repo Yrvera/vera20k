@@ -35,6 +35,8 @@ pub(crate) struct ObjectAiCtx<'a> {
     pub(crate) path_grid: Option<&'a PathGrid>,
     pub(crate) overlay_registry: Option<&'a OverlayTypeRegistry>,
     pub(crate) miner_config: Option<&'a MinerConfig>,
+    pub(crate) animation_sequences:
+        Option<&'a std::collections::BTreeMap<String, crate::sim::animation::SequenceSet>>,
 }
 
 // P3 oracle probe import — used only by the `#[cfg(test)]` factory_oracle_step_trace.
@@ -45,9 +47,10 @@ impl Simulation {
     /// Object-AI stage: the authoritative per-object Mission host.
     ///
     /// Walks the live LogicVector order via `for_each_live_object` — the same
-    /// re-read contract the native scheduler uses — and runs each live,
-    /// present, non-dying object through `techno_ai_shell`: `+0xC4` AI-counter
-    /// increment plus the owner-local queued-mission promotion at the verified
+    /// re-read contract the native scheduler uses. Every present slot receives
+    /// its owner-local visit: anims and dying objects run lifecycle work, while
+    /// ordinary Techno objects enter `techno_ai_shell` for the `+0xC4`
+    /// AI-counter increment and queued-mission promotion at the verified
     /// per-category AI position (see `Simulation::mission_host_promote`).
     pub(crate) fn object_ai_stage(&mut self, rules: Option<&RuleSet>) {
         self.object_ai_stage_with(rules, ObjectAiCtx::default());
@@ -100,6 +103,72 @@ impl Simulation {
             }
             sim.mission_host_promote(id, now, rules);
         });
+    }
+
+    /// The second Unit/Infantry Ready-to-Commence checkpoint for one object,
+    /// called immediately after that object's own locomotion.
+    pub(crate) fn object_ai_post_movement_promote_one(&mut self, id: u64, rules: Option<&RuleSet>) {
+        let Some(rules) = rules else {
+            return;
+        };
+        let Some(entity) = self.substrate.entities.get(id) else {
+            return;
+        };
+        if entity.dying
+            || !matches!(
+                entity.category,
+                EntityCategory::Unit | EntityCategory::Infantry
+            )
+        {
+            return;
+        }
+        self.mission_host_promote(id, self.session.binary_frame, rules);
+    }
+
+    /// Dispatch one current LogicVector slot. A finishing death sequence calls
+    /// UnInit synchronously here, so compacting removal is visible before the
+    /// scheduler increments its cursor.
+    pub(crate) fn object_ai_visit_one(
+        &mut self,
+        id: u64,
+        rules: Option<&RuleSet>,
+        ctx: ObjectAiCtx<'_>,
+    ) -> bool {
+        if self.substrate.anims.contains_key(id) {
+            if let Some(rules) = rules {
+                self.visit_anim(id, rules);
+            }
+            return true;
+        }
+
+        let Some(entity) = self.substrate.entities.get(id) else {
+            return false;
+        };
+        if entity.dying {
+            let Some(sequences) = ctx.animation_sequences else {
+                return true;
+            };
+            let type_ref = entity.type_ref;
+            let type_name = self.interner.resolve(type_ref);
+            let finished = crate::sim::animation::tick_dying_animation(
+                self.substrate
+                    .entities
+                    .get_mut(id)
+                    .expect("dying object remained present"),
+                sequences,
+                &self.session.game_options,
+                type_name,
+            );
+            if finished {
+                self.release_move_sound(id);
+                self.uninit(id);
+            }
+            return true;
+        }
+
+        let category = entity.category;
+        techno_ai_shell(self, id, category, rules, ctx);
+        true
     }
 
     /// [`Simulation::object_ai_stage`] with the world context the dispatched
@@ -175,10 +244,11 @@ impl Simulation {
         eligible
     }
 
-    /// The walk: dispatch every live, present, non-dying object once, in live
-    /// order, through the per-category shell. When `record`, return the
-    /// dispatched ids in order (debug/test observation); otherwise the
-    /// returned `Vec` is empty and unallocated.
+    /// The walk: visit every live, present object slot once in live order.
+    /// Dying objects retain their slot while their death sequence runs but do
+    /// not enter the ordinary per-category shell. When `record`, return the
+    /// visited ids in order (debug/test observation); otherwise the returned
+    /// `Vec` is empty and unallocated.
     fn object_ai_walk(
         &mut self,
         record: bool,
@@ -187,31 +257,9 @@ impl Simulation {
     ) -> Vec<u64> {
         let mut visited: Vec<u64> = Vec::new();
         self.for_each_live_object(|sim, id| {
-            // Tolerate an absent id (the loop's documented contract). The stage
-            // runs AFTER the end-of-tick flush_pending_delete drain, so the order
-            // should not reference a freed slot — but inherit the guard.
-            if sim.substrate.anims.contains_key(id) {
-                if record {
-                    visited.push(id);
-                }
-                if let Some(rules) = rules {
-                    sim.visit_anim(id, rules);
-                }
-                return;
-            }
-            let Some(entity) = sim.substrate.entities.get(id) else {
-                return;
-            };
-            // A dying object is mid death-teardown and is not dispatched (the
-            // closest live `IsActive` analogue today).
-            if entity.dying {
-                return;
-            }
-            let category = entity.category;
-            if record {
+            if sim.object_ai_visit_one(id, rules, ctx) && record {
                 visited.push(id);
             }
-            techno_ai_shell(sim, id, category, rules, ctx);
         });
         visited
     }
@@ -797,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn object_ai_stage_skips_dying_object() {
+    fn object_ai_stage_visits_dying_object_in_its_live_slot() {
         let mut sim = Simulation::new();
         sim.substrate
             .entities
@@ -814,12 +862,13 @@ mod tests {
         let visited = sim.object_ai_walk(true, None, ObjectAiCtx::default());
         assert_eq!(
             visited,
-            vec![1],
-            "dying object skipped; the live object is still visited"
+            vec![1, 2],
+            "a dying object keeps receiving its live scheduler slot until UnInit"
         );
-        // The internal order-proof assert filters dying members, so the stage
-        // must not panic even with a dying member in the live order.
+        // With no sequence table this fixture cannot finish the death action,
+        // so the second visit must leave the object registered for a later pass.
         sim.object_ai_stage(None);
+        assert_eq!(sim.live_object_order_snapshot(), vec![1, 2]);
     }
 
     #[test]
@@ -2881,9 +2930,9 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         assert_eq!(e.mission.ai_counter(), 2, "the host counter still ticks");
     }
 
-    /// Post-flip corpse freeze: a dying Unit is skipped by the host walk, so
-    /// its mission state (counter included) freezes at death — the gamemd
-    /// corpse behavior the old per-tick tail projection could not express.
+    /// Post-flip corpse freeze: a dying Unit still owns its live scheduler slot,
+    /// but only its death action runs there. Its ordinary mission state (counter
+    /// included) therefore freezes at death.
     #[test]
     fn dying_unit_mission_state_freezes() {
         let mut sim = Simulation::new();
@@ -2899,7 +2948,7 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         assert_eq!(
             sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
             1,
-            "a dying Unit's mission state freezes (no host visit)"
+            "a dying Unit's mission state freezes while its death slot runs"
         );
     }
 

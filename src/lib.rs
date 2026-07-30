@@ -122,6 +122,7 @@ pub mod app_commands;
 // Simulation tick loop, triggers, atlas refresh, path grid rebuild.
 // Extracted from app_render.rs.
 pub mod app_sim_tick;
+pub mod app_frame_pacer;
 
 // Camera positioning — keyboard scroll, edge scroll, clamping.
 // Extracted from app_sim_tick.rs.

@@ -128,8 +128,9 @@ impl PcxFile {
 
 /// PCX header size; pixel data starts immediately after it.
 const PCX_HEADER_LEN: usize = 128;
-/// The longest run a single RLE pair can express.
-const PCX_MAX_RUN: usize = 0x3F;
+/// Active retail's writer flushes at 47 (`0x2F`), even though the PCX marker
+/// could represent a run of 63.
+const PCX_MAX_RUN: usize = 0x2F;
 /// Top two bits set marks a run-length byte.
 const PCX_RUN_MARKER: u8 = 0xC0;
 
@@ -160,6 +161,8 @@ pub fn encode_direct_rgb(width: u16, height: u16, rgb: &[u8]) -> Result<Vec<u8>,
     out[65] = 3; // planes
     out[66..68].copy_from_slice(&width.to_le_bytes()); // bytes per line, per plane
     out[68..70].copy_from_slice(&1u16.to_le_bytes()); // colour palette type
+    out[70..72].copy_from_slice(&width.to_le_bytes()); // horizontal screen size
+    out[72..74].copy_from_slice(&height.to_le_bytes()); // vertical screen size
 
     let width_usize = width as usize;
     let mut plane = vec![0u8; width_usize];
@@ -406,6 +409,8 @@ mod direct_rgb_roundtrip_tests {
         let (w, h) = (37u16, 19u16);
         let rgb = gradient(w, h);
         let encoded = encode_direct_rgb(w, h, &rgb).expect("encode");
+        assert_eq!(&encoded[70..72], &w.to_le_bytes());
+        assert_eq!(&encoded[72..74], &h.to_le_bytes());
         let decoded = PcxFile::from_bytes(&encoded).expect("decode");
         assert_eq!((decoded.width, decoded.height), (w, h));
         assert_eq!(decoded.pixels, rgb, "round trip is lossless");
@@ -413,7 +418,7 @@ mod direct_rgb_roundtrip_tests {
 
     #[test]
     fn a_flat_image_round_trips_through_long_runs() {
-        // Runs cap at 63, so a row wider than that exercises run splitting.
+        // Active retail flushes runs at 47, so a wider row exercises splitting.
         let (w, h) = (200u16, 3u16);
         let rgb = vec![0x80; w as usize * h as usize * 3];
         let encoded = encode_direct_rgb(w, h, &rgb).expect("encode");

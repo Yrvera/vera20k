@@ -3,12 +3,18 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::anim_class::{AnimObject, AnimRuntime, AnimWorldCoord};
-use crate::sim::components::Health;
+use crate::sim::combat::{AttackTarget, TargetKind};
+use crate::sim::components::{C4PlantState, Health, NavTargetRef};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::house_state::HouseState;
+use crate::sim::movement::homing_movement::{HomingTarget, attach_homing_state};
+use crate::sim::movement::locomotor::LocomotorState;
+use crate::sim::particles::ParticleSystem;
 use crate::sim::passenger::{PassengerCargo, PassengerRole};
 use crate::util::fixed_math::SimFixed;
+use glam::IVec3;
 
 use super::{
     LifecycleOutput, LifecycleTestEvent, PlacementEvidence, RevealFailure, RevealOutcome,
@@ -68,7 +74,7 @@ fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
             frame_step: 1,
             delay_remaining: 0,
             rate_reload: 1,
-            rate_elapsed: 0,
+            frame_timer: crate::sim::timer::CdTimer::started(0, 1),
             loop_remaining: 0,
             first_ai_guard: false,
             constructor_reverse: false,
@@ -79,6 +85,28 @@ fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
         stop_sound_id: None,
     };
     assert!(sim.substrate.anims.insert(anim).is_none());
+}
+
+fn insert_particle_system(sim: &mut Simulation, stable_id: u64) {
+    sim.substrate.particle_systems.insert(ParticleSystem {
+        stable_id,
+        in_logic_vector: false,
+        type_id: crate::rules::particle_system_type::ParticleSystemTypeId(0),
+        coords: IVec3::ZERO,
+        offset: IVec3::ZERO,
+        particles: Vec::new(),
+        spawn_timer: SimFixed::from_num(0),
+        lifetime: -1,
+        spark_spawn_frames: 0,
+        facing: 0,
+        marked_for_deletion: false,
+        directionless: true,
+        attached_entity: None,
+        owner_entity: None,
+        target_coords: IVec3::ZERO,
+        owner_house: None,
+        done_spawning: false,
+    });
 }
 
 #[test]
@@ -165,6 +193,56 @@ fn lifecycle_authority_reveal_early_reject_commits_nothing() {
 }
 
 #[test]
+fn lifecycle_authority_reveal_rejects_an_already_marked_limbo_object() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    let before = sim.substrate.entities.get(1).unwrap().position.clone();
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .lifecycle
+        .cell_marked = true;
+
+    assert_eq!(
+        sim.try_reveal_entity(1, request(10, 20, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Failed(RevealFailure::RejectedEarly)
+    );
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        (entity.position.rx, entity.position.ry),
+        (before.rx, before.ry)
+    );
+    assert!(entity.lifecycle.in_limbo);
+    assert!(entity.lifecycle.cell_marked);
+    assert!(sim.lifecycle_test_events.is_empty());
+}
+
+#[test]
+fn lifecycle_authority_reveal_does_not_invent_an_alive_precheck() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .lifecycle
+        .object_alive = false;
+
+    assert_eq!(
+        sim.try_reveal_entity(1, request(10, 20, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed {
+            logic_registered: true
+        }
+    );
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert!(!entity.lifecycle.object_alive);
+    assert!(!entity.lifecycle.in_limbo);
+    assert!(entity.lifecycle.cell_marked);
+    assert!(entity.in_logic_vector);
+}
+
+#[test]
 fn lifecycle_authority_reveal_logic_failure_keeps_successful_mark() {
     let mut sim = Simulation::new();
     insert_entity(&mut sim, 1, EntityCategory::Unit);
@@ -242,49 +320,71 @@ fn lifecycle_authority_flagged_missing_remove_still_clears_flag() {
 }
 
 #[test]
-fn lifecycle_authority_legacy_app_death_handoff_changes_only_logic_membership() {
+fn particle_logic_membership_uses_the_object_local_guard_and_rebuilds_it() {
     let mut sim = Simulation::new();
-    insert_entity(&mut sim, 1, EntityCategory::Unit);
-    let _ = sim.reveal(1);
-    sim.substrate.entities.get_mut(1).unwrap().selected = true;
-    let before = sim.substrate.entities.get(1).unwrap();
-    let lifecycle = before.lifecycle;
-    let position = before.position.clone();
-    let health = before.health;
-    let selected = before.selected;
-    let dying = before.dying;
-    let owned_count_released = before.owned_count_released;
+    insert_particle_system(&mut sim, 7);
 
-    sim.legacy_unregister_logic_only_for_app_death(1);
-    let after = sim.substrate.entities.get(1).unwrap();
-    assert!(!after.in_logic_vector);
-    assert_eq!(sim.live_object_order_snapshot(), Vec::<u64>::new());
-    assert_eq!(after.lifecycle, lifecycle);
-    assert_eq!(
-        (
-            after.position.rx,
-            after.position.ry,
-            after.position.z,
-            after.position.sub_x,
-            after.position.sub_y,
-        ),
-        (
-            position.rx,
-            position.ry,
-            position.z,
-            position.sub_x,
-            position.sub_y,
-        )
+    assert!(sim.reveal_particle_system(7));
+    assert!(
+        sim.substrate
+            .particle_systems
+            .get(7)
+            .unwrap()
+            .in_logic_vector
     );
-    assert_eq!(
-        (after.health.current, after.health.max),
-        (health.current, health.max)
+    assert_eq!(sim.live_object_order_snapshot(), vec![7]);
+
+    assert!(sim.reveal_particle_system(7));
+    assert_eq!(sim.live_object_order_snapshot(), vec![7]);
+
+    sim.substrate
+        .particle_systems
+        .get_mut(7)
+        .unwrap()
+        .in_logic_vector = false;
+    sim.rebuild_logic_membership();
+    assert!(
+        sim.substrate
+            .particle_systems
+            .get(7)
+            .unwrap()
+            .in_logic_vector
     );
-    assert_eq!(after.selected, selected);
-    assert_eq!(after.dying, dying);
-    assert_eq!(after.owned_count_released, owned_count_released);
-    assert!(sim.substrate.occupancy.contains_entity(2, 3, 1));
-    assert!(sim.substrate.pending_delete.is_empty());
+    sim.debug_assert_logic_membership_consistent();
+
+    assert!(sim.conceal_particle_system(7));
+    assert!(
+        !sim.substrate
+            .particle_systems
+            .get(7)
+            .unwrap()
+            .in_logic_vector
+    );
+    assert!(sim.live_object_order_snapshot().is_empty());
+}
+
+#[test]
+fn open_topped_direct_registration_keeps_hidden_passenger_live() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    let _ = sim.reveal(1);
+    let _ = sim.reveal(2);
+
+    assert_eq!(sim.techno_limbo(1), super::ConcealOutcome::Concealed);
+    sim.substrate.entities.get_mut(1).unwrap().passenger_role =
+        PassengerRole::Inside { transport_id: 99 };
+
+    assert!(sim.register_open_topped_passenger(1));
+    let passenger = sim.substrate.entities.get(1).unwrap();
+    assert!(passenger.lifecycle.object_alive);
+    assert!(passenger.lifecycle.in_limbo);
+    assert!(!passenger.lifecycle.cell_marked);
+    assert!(passenger.in_logic_vector);
+    assert_eq!(sim.live_object_order_snapshot(), vec![2, 1]);
+
+    assert!(sim.register_open_topped_passenger(1));
+    assert_eq!(sim.live_object_order_snapshot(), vec![2, 1]);
 }
 
 #[test]
@@ -659,8 +759,261 @@ fn lifecycle_authority_transport_uninits_passengers_in_cargo_order_before_carrie
         .cargo()
         .unwrap();
     assert!(cargo.passengers.is_empty());
+    assert!(cargo.passenger_sizes.is_empty());
     assert_eq!(cargo.total_size, 0);
     assert_eq!(cargo.garrison_fire_index, 0);
+}
+
+#[test]
+fn uninit_pointer_expiry_walks_global_object_order_before_break_and_conceal() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    insert_anim(&mut sim, 2, false);
+    insert_particle_system(&mut sim, 3);
+    insert_entity(&mut sim, 4, EntityCategory::Unit);
+    let _ = sim.reveal(1);
+    let _ = sim.reveal(4);
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .radio_contacts
+        .insert(4);
+    sim.substrate
+        .entities
+        .get_mut(4)
+        .unwrap()
+        .radio_contacts
+        .insert(1);
+    sim.lifecycle_test_events.clear();
+
+    sim.uninit(4);
+
+    let visited = sim
+        .lifecycle_test_events
+        .iter()
+        .filter_map(|event| match event {
+            LifecycleTestEvent::UninitRemovalListenerVisited {
+                expired_id: 4,
+                listener_id,
+                target_alive,
+                target_in_limbo,
+            } => Some((*listener_id, *target_alive, *target_in_limbo)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        visited,
+        vec![
+            (1, true, false),
+            (2, true, false),
+            (3, true, false),
+            (4, true, false),
+        ]
+    );
+
+    let last_listener = sim
+        .lifecycle_test_events
+        .iter()
+        .rposition(|event| {
+            matches!(
+                event,
+                LifecycleTestEvent::UninitRemovalListenerVisited { expired_id: 4, .. }
+            )
+        })
+        .unwrap();
+    let break_slot = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                LifecycleTestEvent::BreakSlot {
+                    slot: 0,
+                    target: Some(1)
+                }
+            )
+        })
+        .unwrap();
+    let conceal = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::ConcealDeselected)
+        .unwrap();
+    assert!(last_listener < break_slot && break_slot < conceal);
+}
+
+#[test]
+fn pointer_expiry_clears_live_refs_and_preserves_retaliation_attacker() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    let _ = sim.try_reveal_entity(2, request(9, 11, PlacementEvidence::MarkSucceeded));
+
+    let listener = sim.substrate.entities.get_mut(1).unwrap();
+    listener.attack_target = Some(AttackTarget {
+        target: TargetKind::Entity(2),
+        cooldown_ticks: 0,
+        burst_remaining: 0,
+        burst_delay_ticks: 0,
+        pending_infantry_fire: None,
+    });
+    listener.suspended_attack_target = Some(TargetKind::Entity(2));
+    listener.navigation.suspended_nav_com = Some(NavTargetRef::Entity { id: 2 });
+    listener.navigation.nav_com_aux = Some(NavTargetRef::Object { id: 2 });
+    listener.navigation.nav_com = Some(NavTargetRef::Building { id: 2 });
+    listener.navigation.nav_queue = vec![
+        NavTargetRef::Entity { id: 2 },
+        NavTargetRef::Cell { rx: 7, ry: 8 },
+        NavTargetRef::Object { id: 2 },
+    ];
+    listener.capture_target = Some(2);
+    listener.c4_plant = Some(C4PlantState {
+        target_building_id: 2,
+    });
+    listener.last_attacker_id = Some(2);
+
+    sim.uninit(2);
+
+    let listener = sim.substrate.entities.get(1).unwrap();
+    assert!(listener.attack_target.is_none());
+    assert_eq!(
+        listener.suspended_attack_target,
+        Some(TargetKind::Cell(9, 11))
+    );
+    assert!(listener.navigation.suspended_nav_com.is_none());
+    assert!(listener.navigation.nav_com_aux.is_none());
+    assert!(listener.navigation.nav_com.is_none());
+    assert_eq!(
+        listener.navigation.nav_queue,
+        vec![NavTargetRef::Cell { rx: 7, ry: 8 }]
+    );
+    assert!(listener.capture_target.is_none());
+    assert!(listener.c4_plant.is_none());
+    assert_eq!(listener.last_attacker_id, Some(2));
+}
+
+#[test]
+fn pointer_expiry_clears_particle_owner_and_deletes_attached_system() {
+    let mut sim = Simulation::new();
+    insert_particle_system(&mut sim, 1);
+    insert_particle_system(&mut sim, 2);
+    insert_entity(&mut sim, 3, EntityCategory::Unit);
+    let _ = sim.reveal(3);
+    sim.substrate
+        .particle_systems
+        .get_mut(1)
+        .unwrap()
+        .owner_entity = Some(3);
+    let attached = sim.substrate.particle_systems.get_mut(2).unwrap();
+    attached.owner_entity = Some(3);
+    attached.attached_entity = Some(3);
+
+    sim.uninit(3);
+
+    let owned = sim.substrate.particle_systems.get(1).unwrap();
+    assert!(owned.owner_entity.is_none());
+    assert!(!owned.marked_for_deletion);
+    let attached = sim.substrate.particle_systems.get(2).unwrap();
+    assert!(attached.owner_entity.is_none());
+    assert!(attached.attached_entity.is_none());
+    assert!(attached.marked_for_deletion);
+}
+
+#[test]
+fn homing_target_expiry_uses_ground_cell_but_nulls_high_flying_target() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    insert_entity(&mut sim, 3, EntityCategory::Unit);
+    insert_entity(&mut sim, 4, EntityCategory::Aircraft);
+    let _ = sim.try_reveal_entity(2, request(9, 11, PlacementEvidence::MarkSucceeded));
+    let _ = sim.try_reveal_entity(4, request(13, 15, PlacementEvidence::MarkSucceeded));
+    let mut high_locomotor = LocomotorState::for_test_kind(LocomotorKind::Fly);
+    high_locomotor.altitude = SimFixed::from_num(208);
+    sim.substrate.entities.get_mut(4).unwrap().locomotor = Some(high_locomotor);
+    assert!(attach_homing_state(
+        &mut sim.substrate.entities,
+        1,
+        (2, 3),
+        2,
+        (9, 11),
+        SimFixed::from_num(10),
+        5,
+        0,
+        false,
+        false,
+        SimFixed::from_num(1),
+    ));
+    assert!(attach_homing_state(
+        &mut sim.substrate.entities,
+        3,
+        (2, 3),
+        4,
+        (13, 15),
+        SimFixed::from_num(10),
+        5,
+        0,
+        false,
+        false,
+        SimFixed::from_num(1),
+    ));
+
+    sim.uninit(2);
+    sim.uninit(4);
+
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .homing_state
+            .as_ref()
+            .unwrap()
+            .target,
+        Some(HomingTarget::Cell { rx: 9, ry: 11 })
+    );
+    assert!(
+        sim.substrate
+            .entities
+            .get(3)
+            .unwrap()
+            .homing_state
+            .as_ref()
+            .unwrap()
+            .target
+            .is_none()
+    );
+}
+
+#[test]
+fn expiring_mixed_size_passenger_updates_transport_total_exactly() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    insert_entity(&mut sim, 2, EntityCategory::Infantry);
+    insert_entity(&mut sim, 3, EntityCategory::Infantry);
+    let mut cargo = PassengerCargo::new(5, 0);
+    cargo.board_forced(2, 3);
+    cargo.board_forced(3, 1);
+    sim.substrate.entities.get_mut(1).unwrap().passenger_role = PassengerRole::Transport { cargo };
+    sim.substrate.entities.get_mut(2).unwrap().passenger_role =
+        PassengerRole::Inside { transport_id: 1 };
+    sim.substrate.entities.get_mut(3).unwrap().passenger_role =
+        PassengerRole::Inside { transport_id: 1 };
+
+    sim.uninit(2);
+
+    let cargo = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .passenger_role
+        .cargo()
+        .unwrap();
+    assert_eq!(cargo.passengers, vec![3]);
+    assert_eq!(cargo.passenger_sizes, vec![1]);
+    assert_eq!(cargo.total_size, 1);
 }
 
 #[test]
@@ -706,7 +1059,7 @@ fn lifecycle_authority_immediate_uninit_releases_owned_count_once() {
 }
 
 #[test]
-fn lifecycle_authority_deferred_animation_then_uninit_releases_owned_count_once() {
+fn lifecycle_authority_animated_death_stays_represented_until_uninit() {
     let mut sim = Simulation::new();
     let owner = sim.interner.intern("Americans");
     sim.houses
@@ -718,15 +1071,13 @@ fn lifecycle_authority_deferred_animation_then_uninit_releases_owned_count_once(
     let entity = sim.substrate.entities.get_mut(1).unwrap();
     entity.health.current = 0;
     entity.dying = true;
-    sim.release_owned_count_once(1);
-    sim.legacy_unregister_logic_only_for_app_death(1);
-    assert_eq!(sim.houses.get(&owner).unwrap().owned_unit_count, 1);
+    assert_eq!(sim.houses.get(&owner).unwrap().owned_unit_count, 2);
     let entity = sim.substrate.entities.get(1).unwrap();
-    assert!(entity.owned_count_released);
+    assert!(!entity.owned_count_released);
     assert!(entity.lifecycle.object_alive);
     assert!(!entity.lifecycle.in_limbo);
     assert!(entity.lifecycle.cell_marked);
-    assert!(!entity.in_logic_vector);
+    assert!(entity.in_logic_vector);
 
     sim.uninit(1);
     assert_eq!(sim.houses.get(&owner).unwrap().owned_unit_count, 1);
@@ -738,6 +1089,7 @@ fn lifecycle_authority_deferred_animation_then_uninit_releases_owned_count_once(
             .lifecycle
             .object_alive
     );
+    assert!(!sim.substrate.entities.get(1).unwrap().in_logic_vector);
 }
 
 #[test]
@@ -812,10 +1164,18 @@ fn lifecycle_authority_set_logic_order_for_test_synchronizes_all_membership_flag
     insert_entity(&mut sim, 1, EntityCategory::Unit);
     insert_entity(&mut sim, 2, EntityCategory::Unit);
     insert_anim(&mut sim, 3, false);
+    insert_particle_system(&mut sim, 4);
 
-    sim.set_logic_order_for_test(vec![3, 1]);
-    assert_eq!(sim.live_object_order_snapshot(), vec![3, 1]);
+    sim.set_logic_order_for_test(vec![3, 4, 1]);
+    assert_eq!(sim.live_object_order_snapshot(), vec![3, 4, 1]);
     assert!(sim.substrate.anims.get(3).unwrap().in_logic_vector);
+    assert!(
+        sim.substrate
+            .particle_systems
+            .get(4)
+            .unwrap()
+            .in_logic_vector
+    );
     assert!(sim.substrate.entities.get(1).unwrap().in_logic_vector);
     assert!(!sim.substrate.entities.get(2).unwrap().in_logic_vector);
     sim.debug_assert_logic_membership_consistent();
@@ -823,6 +1183,13 @@ fn lifecycle_authority_set_logic_order_for_test_synchronizes_all_membership_flag
     sim.set_logic_order_for_test(vec![2]);
     assert_eq!(sim.live_object_order_snapshot(), vec![2]);
     assert!(!sim.substrate.anims.get(3).unwrap().in_logic_vector);
+    assert!(
+        !sim.substrate
+            .particle_systems
+            .get(4)
+            .unwrap()
+            .in_logic_vector
+    );
     assert!(!sim.substrate.entities.get(1).unwrap().in_logic_vector);
     assert!(sim.substrate.entities.get(2).unwrap().in_logic_vector);
     sim.debug_assert_logic_membership_consistent();

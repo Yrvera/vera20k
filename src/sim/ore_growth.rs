@@ -31,7 +31,7 @@ use crate::sim::miner::{ResourceNode, ResourceType};
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_TICK_HZ, SimFixed};
+use crate::util::fixed_math::SimFixed;
 
 /// Base ore stock per richness level — matches seed_resource_nodes_from_overlays().
 const ORE_BASE_PER_LEVEL: u16 = 120;
@@ -343,7 +343,7 @@ impl OreGrowthState {
         tiberium_types: &TiberiumTypeRegistry,
         rx: u16,
         ry: u16,
-        binary_frame: u32,
+        native_frame: u32,
         rng: &mut SimRng,
     ) -> Option<NativeTiberiumQueueEntry> {
         let cell = overlay_grid.cell(rx, ry);
@@ -357,7 +357,7 @@ impl OreGrowthState {
         let entry = NativeTiberiumQueueEntry {
             rx,
             ry,
-            priority_bits: growth_queue_priority(binary_frame, rng.next_u32()).to_bits(),
+            priority_bits: growth_queue_priority(native_frame, rng.next_u32()).to_bits(),
         };
         class.growth_heap.push(entry);
         class.growth_bitmap.insert((rx, ry));
@@ -374,7 +374,7 @@ impl OreGrowthState {
         source_object_cells: &BTreeSet<(u16, u16)>,
         rx: u16,
         ry: u16,
-        binary_frame: u32,
+        native_frame: u32,
         spread_enabled: bool,
         rng: &mut SimRng,
     ) -> Option<NativeTiberiumQueueEntry> {
@@ -389,7 +389,7 @@ impl OreGrowthState {
             source_object_cells,
             rx,
             ry,
-            binary_frame,
+            native_frame,
             spread_enabled,
             rng,
         )
@@ -405,7 +405,7 @@ impl OreGrowthState {
         source_object_cells: &BTreeSet<(u16, u16)>,
         rx: u16,
         ry: u16,
-        binary_frame: u32,
+        native_frame: u32,
         spread_enabled: bool,
         rng: &mut SimRng,
     ) -> Option<NativeTiberiumQueueEntry> {
@@ -429,7 +429,7 @@ impl OreGrowthState {
         let entry = NativeTiberiumQueueEntry {
             rx,
             ry,
-            priority_bits: growth_queue_priority(binary_frame, rng.next_u32()).to_bits(),
+            priority_bits: growth_queue_priority(native_frame, rng.next_u32()).to_bits(),
         };
         class.spread_heap.push(entry);
         class.spread_bitmap.insert((rx, ry));
@@ -850,10 +850,10 @@ impl OreGrowthState {
         &mut self,
         rx: u16,
         ry: u16,
-        binary_frame: u32,
+        native_frame: u32,
         rng: &mut SimRng,
     ) -> OreGrowthQueueEntry {
-        let priority = growth_queue_priority(binary_frame, rng.next_u32());
+        let priority = growth_queue_priority(native_frame, rng.next_u32());
         let entry = OreGrowthQueueEntry { rx, ry, priority };
         self.growth_queue.push(entry);
         entry
@@ -935,7 +935,7 @@ impl OreGrowthState {
         resolved_terrain: Option<&ResolvedTerrainGrid>,
         source_object_cells: &BTreeSet<(u16, u16)>,
         removed_cell: (u16, u16),
-        binary_frame: u32,
+        native_frame: u32,
         spread_enabled: bool,
         rng: &mut SimRng,
     ) -> usize {
@@ -962,7 +962,7 @@ impl OreGrowthState {
                     source_object_cells,
                     nx as u16,
                     ny as u16,
-                    binary_frame,
+                    native_frame,
                     spread_enabled,
                     rng,
                 )
@@ -1337,10 +1337,13 @@ pub fn tick_ore_growth(
         return;
     }
 
-    // How many cells to scan this tick: total_cells / (rate_seconds * tick_hz).
-    // This ensures one full scan completes every `growth_rate_seconds` seconds.
+    // `GrowthRate` is authored against the engine's legacy 15-frame timebase.
+    // Game speed changes frame admission, not the number of simulation visits.
     let rate_seconds: u32 = config.growth_rate_seconds.max(1);
-    let ticks_per_cycle: u32 = rate_seconds.saturating_mul(SIM_TICK_HZ).max(1);
+    const LEGACY_ORE_GROWTH_FRAMES_PER_RATE_SECOND: u32 = 15;
+    let ticks_per_cycle: u32 = rate_seconds
+        .saturating_mul(LEGACY_ORE_GROWTH_FRAMES_PER_RATE_SECOND)
+        .max(1);
     let cells_per_tick: usize =
         (state.total_cells as u32).div_ceil(ticks_per_cycle).max(1) as usize;
 
@@ -1459,8 +1462,8 @@ fn reservoir_sample(
 }
 
 /// Native-shaped AddToGrowthQueue priority from one raw RNG word.
-fn growth_queue_priority(binary_frame: u32, raw: u32) -> f32 {
-    binary_frame.wrapping_add(growth_queue_priority_delay(raw)) as f32
+fn growth_queue_priority(native_frame: u32, raw: u32) -> f32 {
+    native_frame.wrapping_add(growth_queue_priority_delay(raw)) as f32
 }
 
 fn growth_queue_priority_delay(raw: u32) -> u32 {
@@ -2573,6 +2576,22 @@ SpreadPercentage=.06
         }
 
         assert!(wrapped, "Scan cursor should wrap to 0 after full cycle");
+    }
+
+    #[test]
+    fn growth_rate_uses_the_legacy_fifteen_frame_scale() {
+        let config = OreGrowthConfig {
+            grows: true,
+            spreads: false,
+            growth_rate_seconds: 1,
+        };
+        let mut state = make_state(10, 10);
+        let mut nodes = BTreeMap::new();
+        let mut rng = SimRng::new(42);
+
+        tick_ore_growth(&config, &mut state, &mut nodes, None, None, &mut rng);
+
+        assert_eq!(state.scan_cursor, 7, "ceil(100 cells / 15 frames)");
     }
 
     #[test]

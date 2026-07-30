@@ -15,6 +15,7 @@ use crate::rules::art_data::AnimTypeRuntimeConfig;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::AnimClassSpawnDescriptor;
 use crate::sim::intern::InternedId;
+use crate::sim::timer::CdTimer;
 use crate::sim::world::{SimSoundEvent, Simulation};
 
 pub type AnimId = u64;
@@ -38,7 +39,7 @@ pub struct AnimRuntime {
     pub frame_step: i32,
     pub delay_remaining: u16,
     pub rate_reload: u16,
-    pub rate_elapsed: u16,
+    pub frame_timer: CdTimer,
     pub loop_remaining: u8,
     pub first_ai_guard: bool,
     pub constructor_reverse: bool,
@@ -57,6 +58,9 @@ pub struct AnimObject {
     pub effective_end: i32,
     pub effective_loop_end: i32,
     pub runtime: AnimRuntime,
+    /// LogicClass membership is reconstructed from the serialized vector.
+    /// ObjectClass::Save does not persist its local membership byte.
+    #[serde(skip)]
     pub in_logic_vector: bool,
     pub start_sound_active: bool,
     pub stop_sound_id: Option<InternedId>,
@@ -155,6 +159,8 @@ impl Simulation {
         let (effective_end, effective_loop_end) = effective_bounds(&type_name, &config)?;
         let reverse = descriptor.reverse || config.reverse;
         let rate_reload = self.choose_anim_rate(&config);
+        let frame_timer =
+            CdTimer::started(self.session.binary_frame as i32, i32::from(rate_reload));
         let stop_sound_id = config
             .stop_sound
             .as_deref()
@@ -182,7 +188,7 @@ impl Simulation {
                 frame_step: if reverse { -1 } else { 1 },
                 delay_remaining: descriptor.delay,
                 rate_reload,
-                rate_elapsed: 0,
+                frame_timer,
                 loop_remaining: native_loop_remaining(config.loop_count, descriptor.loop_count),
                 first_ai_guard: true,
                 constructor_reverse: descriptor.reverse,
@@ -258,6 +264,7 @@ impl Simulation {
 
         let mut action = VisitAction::None;
         let mut random_loop_delay = None;
+        let current_frame = self.session.binary_frame as i32;
         {
             let Some(anim) = self.substrate.anims.get_mut(id) else {
                 return;
@@ -269,11 +276,12 @@ impl Simulation {
             if anim.runtime.rate_reload == 0 {
                 return;
             }
-            anim.runtime.rate_elapsed = anim.runtime.rate_elapsed.saturating_add(1);
-            if anim.runtime.rate_elapsed < anim.runtime.rate_reload {
+            if !anim.runtime.frame_timer.expired(current_frame) {
                 return;
             }
-            anim.runtime.rate_elapsed = 0;
+            anim.runtime
+                .frame_timer
+                .start(current_frame, i32::from(anim.runtime.rate_reload));
             anim.runtime.current_frame = anim
                 .runtime
                 .current_frame
@@ -499,12 +507,17 @@ impl Simulation {
     }
 
     fn choose_anim_rate(&mut self, config: &AnimTypeRuntimeConfig) -> u16 {
-        config
+        let delay = config
             .random_rate_logic_frames
             .map_or(config.rate_logic_frames, |(a, b)| {
                 self.scenario_rng
                     .next_range_u32_inclusive(u32::from(a), u32::from(b)) as u16
-            })
+            });
+        if config.normalized {
+            self.session.game_options.normalized_anim_delay(delay)
+        } else {
+            delay
+        }
     }
 
     fn anim_middle(&mut self, id: AnimId, config: &AnimTypeRuntimeConfig) {
@@ -544,6 +557,8 @@ impl Simulation {
             return;
         };
         let rate_reload = self.choose_anim_rate(&config);
+        let frame_timer =
+            CdTimer::started(self.session.binary_frame as i32, i32::from(rate_reload));
         let stop_sound_id = config
             .stop_sound
             .as_deref()
@@ -567,7 +582,7 @@ impl Simulation {
             anim.runtime.frame_step = if reverse { -1 } else { 1 };
             anim.runtime.delay_remaining = 0;
             anim.runtime.rate_reload = rate_reload;
-            anim.runtime.rate_elapsed = 0;
+            anim.runtime.frame_timer = frame_timer;
             anim.runtime.loop_remaining = native_loop_remaining(config.loop_count, 1);
             anim.runtime.first_ai_guard = false;
             anim.runtime.inactive = false;
@@ -739,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn delay_rate_and_first_guard_use_logic_visits_only() {
+    fn delay_guard_and_rate_use_passive_frame_anchor() {
         let rules = runtime_rules("[TEST]\nRate=450\nEnd=3\nLoopCount=1\n", &[("TEST", 3)]);
         let mut sim = Simulation::new();
         let type_id = sim.interner.intern("TEST");
@@ -748,14 +763,67 @@ mod tests {
             .spawn_anim_object(&rules, runtime_descriptor(type_id, 1))
             .unwrap();
 
-        sim.visit_anim(id, &rules); // constructor first-AI guard
+        sim.visit_anim(id, &rules); // constructor first-AI guard at frame 0
+        sim.session.binary_frame = 1;
         sim.visit_anim(id, &rules); // delay 1 -> 0
-        sim.visit_anim(id, &rules); // rate elapsed 1/2
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
-        sim.visit_anim(id, &rules); // rate elapsed 2/2 -> frame 1
+        sim.session.binary_frame = 2;
+        sim.visit_anim(id, &rules); // constructor-anchored timer is already due
 
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
+        sim.visit_anim(id, &rules); // a second visit in the same frame cannot advance again
+        assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
         assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+    }
+
+    #[test]
+    fn normalized_rate_uses_live_speed_after_random_rate_selection() {
+        let rules = runtime_rules(
+            "[TEST]\nRate=900\nRandomRate=180,225\nNormalized=yes\nEnd=3\nLoopCount=1\n",
+            &[("TEST", 3)],
+        );
+        let mut sim = Simulation::new();
+        sim.session.game_options.game_speed = 1;
+        let type_id = sim.interner.intern("TEST");
+        let mut expected_rng = sim.scenario_rng.clone();
+        let raw_rate = expected_rng.next_range_u32_inclusive(5, 4) as u16;
+        let expected_rate = sim.session.game_options.normalized_anim_delay(raw_rate);
+
+        let id = sim
+            .spawn_anim_object(&rules, runtime_descriptor(type_id, 0))
+            .unwrap();
+        let runtime = &sim.anim(id).unwrap().runtime;
+
+        assert_eq!(runtime.rate_reload, expected_rate);
+        assert_eq!(runtime.frame_timer.start_frame(), 0);
+        assert_eq!(runtime.frame_timer.duration(), i32::from(expected_rate));
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+    }
+
+    #[test]
+    fn stock_naweap_a_rate_normalizes_to_six_frames_at_speed_one() {
+        let rules = runtime_rules(
+            "[NAWEAP_A]\nRate=200\nNormalized=yes\nEnd=12\nLoopCount=-1\n",
+            &[("NAWEAP_A", 12)],
+        );
+        let mut sim = Simulation::new();
+        sim.session.game_options.game_speed = 1;
+        let type_id = sim.interner.intern("NAWEAP_A");
+        let id = sim
+            .spawn_anim_object(&rules, runtime_descriptor(type_id, 0))
+            .unwrap();
+
+        assert_eq!(sim.anim(id).unwrap().runtime.rate_reload, 6);
+        sim.visit_anim(id, &rules);
+        sim.session.binary_frame = 5;
+        sim.visit_anim(id, &rules);
+        assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
+        sim.session.binary_frame = 6;
+        sim.visit_anim(id, &rules);
+        assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
     }
 
     #[test]
@@ -777,7 +845,9 @@ mod tests {
         ));
 
         sim.visit_anim(id, &rules); // guard
+        sim.session.binary_frame = 1;
         sim.visit_anim(id, &rules); // frame 1
+        sim.session.binary_frame = 2;
         sim.visit_anim(id, &rules); // frame 2 -> SECOND in place + Middle
         let anim = sim.anim(id).unwrap();
         assert_eq!(sim.interner.resolve(anim.type_id), "SECOND");
@@ -790,7 +860,9 @@ mod tests {
             2,
         );
 
+        sim.session.binary_frame = 3;
         sim.visit_anim(id, &rules); // SECOND frame 1 (Next does not restore guard)
+        sim.session.binary_frame = 4;
         sim.visit_anim(id, &rules); // SECOND frame 2 -> destroy
         sim.destroy_anim(id);
         assert!(sim.anim(id).unwrap().runtime.inactive);

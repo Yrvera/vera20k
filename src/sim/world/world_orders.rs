@@ -369,12 +369,9 @@ impl Simulation {
 
             // Step A0: create the non-drawing BridgeRepaired radar event before
             // bridge mutation. Its dedup result gates EVA in the app layer.
-            let eva_allowed = self.radar_events.push(
-                crate::sim::radar::RadarEventType::BridgeRepaired,
-                brx,
-                bry,
-                rules.radar_event_config.event_duration_ms,
-            );
+            let eva_allowed =
+                self.radar_events
+                    .push(crate::sim::radar::RadarEventType::BridgeRepaired, brx, bry);
 
             // Step A: emit BridgeRepaired sound event at the BUILDING's cell.
             self.sound_events
@@ -441,10 +438,11 @@ impl Simulation {
     /// marker check.
     ///
     /// Phase 2 (detonation): for each building with `pending_c4_detonation`,
-    /// if the elapsed tick count >= `rules.c4_delay_ticks`, apply C4Warhead
+    /// if the wrapping native-frame elapsed count reaches
+    /// `rules.c4_delay_ticks`, apply C4Warhead
     /// damage equal to the building's current HP. For normal buildings the
     /// pending state is not cleared if damage is nullified by IronCurtain, so
-    /// it fires again next tick. When the building dies, the entity despawns
+    /// it fires again next frame. When the building dies, the entity despawns
     /// and the pending state goes with it. BridgeRepairHut dispatch clears
     /// the pending marker after the bridge path runs because the hut survives.
     ///
@@ -526,7 +524,7 @@ impl Simulation {
             // Claim the plant.
             if let Some(b) = self.substrate.entities.get_mut(target_id) {
                 b.pending_c4_detonation = Some(PendingC4Detonation {
-                    plant_start_tick: self.session.tick,
+                    plant_start_tick: u64::from(self.session.binary_frame),
                     attacker_id,
                 });
             }
@@ -570,7 +568,7 @@ impl Simulation {
         }
 
         let c4_warhead_id = rules.c4_warhead_id();
-        let delay = rules.c4_delay_ticks as u64;
+        let delay = rules.c4_delay_ticks;
 
         for building_id in det_keys {
             let pending = self
@@ -580,7 +578,12 @@ impl Simulation {
                 .and_then(|e| e.pending_c4_detonation);
             let Some(pending) = pending else { continue };
 
-            if self.session.tick.saturating_sub(pending.plant_start_tick) < delay {
+            if self
+                .session
+                .binary_frame
+                .wrapping_sub(pending.plant_start_tick as u32)
+                < delay
+            {
                 continue;
             }
 
@@ -731,10 +734,10 @@ impl Simulation {
             (-1, 0),  // W
             (-1, -1), // NW
         ];
-        // Mirror gamemd's bit-twiddle: `(tick >> 12 + 1) >> 1 & 7`.
+        // Mirror the native-frame bit-twiddle: `(frame >> 12 + 1) >> 1 & 7`.
         // C operator precedence: `>>` is left-to-right at same level, so
-        // this evaluates as `(((tick >> 12) + 1) >> 1) & 7`.
-        let dir: usize = ((((self.session.tick >> 12) + 1) >> 1) & 7) as usize;
+        // this evaluates as `(((frame >> 12) + 1) >> 1) & 7`.
+        let dir: usize = ((((self.session.binary_frame >> 12) + 1) >> 1) & 7) as usize;
         let (dx, dy) = DIR_DELTAS[dir];
 
         let bld_cell = self
@@ -844,7 +847,7 @@ impl Simulation {
             .and_then(|e| e.invulnerability.clone());
         if crate::sim::superweapon::invulnerability::is_invulnerable(
             invuln.as_ref(),
-            self.session.tick as u32,
+            self.session.binary_frame,
         ) {
             return C4DamageOutcome::default();
         }

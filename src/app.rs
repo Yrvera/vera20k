@@ -175,6 +175,9 @@ pub(crate) struct AppState {
     pub(crate) map_basic: BasicSection,
     /// Exact source whose bytes produced the active parsed map.
     pub(crate) loaded_map_source: Option<crate::app_list_maps::LoadedMapSource>,
+    /// Deterministic digest of the parsed source map INI. `None` only for
+    /// generated/fallback worlds without an authoritative source-map payload.
+    pub(crate) loaded_map_hash: Option<u64>,
     pub(crate) terrain_grid: Option<TerrainGrid>,
     pub(crate) resolved_terrain: Option<ResolvedTerrainGrid>,
     pub(crate) simulation: Option<Simulation>,
@@ -234,6 +237,9 @@ pub(crate) struct AppState {
     pub(crate) cursor_x: f32,
     pub(crate) cursor_y: f32,
     pub(crate) keys_held: HashSet<KeyCode>,
+    /// One-shot Shift+S request, consumed only after the complete client frame
+    /// has been encoded into the current swapchain texture.
+    pub(crate) retail_screenshot_requested: bool,
     /// egui integration — input handling + GPU rendering.
     egui: EguiIntegration,
     /// Which screen is currently active (MainMenu, Loading, InGame).
@@ -293,9 +299,8 @@ pub(crate) struct AppState {
         Option<crate::app_main_menu_shell_render::Ra2tsMovieSessionIdentity>,
     pub(crate) main_menu_movie_last_step: Instant,
     pub(crate) main_menu_shell_failed: bool,
-    /// Contents of `VERSION.TXT` from the retail install, used by the
-    /// bottom-right version line on the main menu. Falls back to the
-    /// numeric `"1.001TUC"` format when the file is missing.
+    /// Numeric internal-version string used by the bottom-right main-menu line.
+    /// Resolution follows the retail 16-byte/CR-only cached contract.
     pub(crate) version_txt: String,
     pub(crate) main_menu_show_single_player_shell: bool,
     pub(crate) main_menu_show_skirmish_setup: bool,
@@ -419,10 +424,10 @@ pub(crate) struct AppState {
     pub(crate) theater_name: String,
     /// Active map theater extension (e.g., des).
     pub(crate) theater_ext: String,
-    /// Timestamp of the last in-game update for delta time calculation.
-    pub(crate) last_update_time: Instant,
-    /// Accumulated real time waiting to be consumed by fixed simulation ticks.
-    pub(crate) sim_accumulator_ms: u64,
+    /// Monotonic epoch used only by the app-local gameplay-frame pacer.
+    pub(crate) frame_pacer_epoch: Instant,
+    /// Local wall-clock admission state. Never serialized or read by the sim.
+    pub(crate) frame_pacer: crate::app_frame_pacer::LocalFramePacer,
     /// Target/action lines — colored lines from selected units to command destinations.
     pub(crate) target_lines: crate::app_target_lines::TargetLineState,
     /// Config-sourced input delay — copied to each new Simulation instance at game start.
@@ -1057,22 +1062,8 @@ impl App {
         })
     }
 
-    fn load_version_txt(config: Option<&GameConfig>) -> String {
-        const FALLBACK: &str = "1.001TUC";
-        let Some(cfg) = config else {
-            return FALLBACK.to_string();
-        };
-        let path = cfg.paths.ra2_dir.join("VERSION.TXT");
-        match std::fs::read_to_string(&path) {
-            Ok(s) => s.trim_end_matches(['\r', '\n']).to_string(),
-            Err(err) => {
-                log::info!(
-                    "VERSION.TXT not readable at {}: {err}; using fallback",
-                    path.display()
-                );
-                FALLBACK.to_string()
-            }
-        }
+    fn load_version_txt() -> String {
+        crate::util::version::retail_internal_version().to_owned()
     }
 
     fn draw_skirmish_shell_dev_toggle(ctx: &egui::Context, enabled: &mut bool) -> bool {
@@ -3931,7 +3922,7 @@ impl App {
         });
         let main_menu_shell_failed =
             startup_asset_manager.is_none() || main_menu_shell_chrome.is_none();
-        let version_txt = Self::load_version_txt(game_config.as_ref());
+        let version_txt = Self::load_version_txt();
         let available_maps = app_list_maps::list_available_maps().unwrap_or_else(|err| {
             log::warn!("Could not list maps for menu: {:#}", err);
             Vec::new()
@@ -4083,6 +4074,7 @@ impl App {
             cursor_x: 0.0,
             cursor_y: 0.0,
             keys_held: HashSet::new(),
+            retail_screenshot_requested: false,
             egui,
             screen: GameScreen::default(),
             available_maps,
@@ -4150,6 +4142,7 @@ impl App {
             software_cursor: startup_software_cursor,
             selection_state: SelectionState::new(),
             loaded_map_source: None,
+            loaded_map_hash: None,
             path_grid: None,
             animation_sequences: BTreeMap::new(),
             parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
@@ -4178,8 +4171,8 @@ impl App {
             map_lighting_config: LightingConfig::default(),
             theater_name: "TEMPERATE".to_string(),
             theater_ext: "tem".to_string(),
-            last_update_time: Instant::now(),
-            sim_accumulator_ms: 0,
+            frame_pacer_epoch: Instant::now(),
+            frame_pacer: crate::app_frame_pacer::LocalFramePacer::new(),
             target_lines: crate::app_target_lines::TargetLineState::default(),
             configured_input_delay_ticks: input_delay_ticks,
             queued_order_mode: app_render::OrderMode::Move,
@@ -4354,8 +4347,8 @@ impl App {
 
         if tactical_capture.is_none() && matches!(state.screen, GameScreen::InGame) {
             let now = Instant::now();
-            let elapsed_ms = app_sim_tick::update_elapsed_ms(state, now);
-            app_sim_tick::advance_in_game_runtime(state, elapsed_ms);
+            let now_ms = app_sim_tick::monotonic_frame_pacer_ms(state, now);
+            app_sim_tick::advance_in_game_runtime(state, now_ms);
         }
 
         // Native queues/maintains [INTRO] before arming the 0xE2 first-paint
@@ -4647,9 +4640,8 @@ impl App {
                     title,
                     detail,
                 ) {
-                    // Persist the replay before the sim is torn down (symmetric
-                    // with return_to_main_menu) so a match that ended in
-                    // victory/defeat still leaves a replayable log on disk.
+                    // Persist the deterministic diagnostic log before the sim
+                    // is torn down, symmetric with return_to_main_menu.
                     crate::app_sim_tick::flush_replay_log(state);
                     Self::capture_returned_skirmish_rng(state);
                     crate::app_loading::clear_match_startup_state(state);
@@ -4721,6 +4713,20 @@ impl App {
         } else {
             None
         };
+        let retail_screenshot_current_frame =
+            std::mem::take(&mut state.retail_screenshot_requested);
+        let pending_retail_screenshot = if retail_screenshot_current_frame {
+            Some(crate::render::frame_readback::PendingBgra8Readback::encode(
+                &state.gpu.device,
+                &mut encoder,
+                &output.texture,
+                state.gpu.config.format,
+                state.gpu.config.width,
+                state.gpu.config.height,
+            )?)
+        } else {
+            None
+        };
         let capture_timeout = if capture_current_frame {
             Some(if shell_capture_current_frame {
                 shell_capture
@@ -4760,7 +4766,7 @@ impl App {
         if let Some(pending_capture) = pending_capture {
             let pixels = pending_capture.finish(
                 &state.gpu.device,
-                submission,
+                submission.clone(),
                 capture_timeout.expect("capture timeout exists with pending readback"),
             )?;
             let surface_format = state.gpu.config.format;
@@ -4776,6 +4782,24 @@ impl App {
                     .complete_after_readback(state, surface_format, &pixels)?;
             }
             event_loop.exit();
+        }
+        if let Some(pending_screenshot) = pending_retail_screenshot {
+            match pending_screenshot.finish(
+                &state.gpu.device,
+                submission,
+                crate::render::screenshot::READBACK_TIMEOUT,
+            ) {
+                Ok(pixels) => match crate::render::screenshot::write_retail_screenshot(
+                    state.gpu.config.width,
+                    state.gpu.config.height,
+                    state.gpu.config.format,
+                    &pixels,
+                ) {
+                    Ok(path) => log::info!("Saved screenshot {}", path.display()),
+                    Err(error) => log::error!("Screenshot write failed: {error:#}"),
+                },
+                Err(error) => log::error!("Screenshot readback failed: {error}"),
+            }
         }
 
         // Deferred loading: after presenting the Loading screen frame,
@@ -4831,8 +4855,8 @@ impl App {
 
     fn return_to_main_menu(state: &mut AppState) {
         state.paused = false;
-        // Persist the recorded replay before the sim (which owns the log) is
-        // torn down — every finished match leaves a replayable log on disk.
+        // Persist the deterministic diagnostic log before its owning sim is
+        // torn down.
         crate::app_sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         crate::app_loading::clear_match_startup_state(state);
@@ -4867,9 +4891,8 @@ impl App {
         match action {
             PauseMenuAction::Resume => {
                 state.paused = false;
-                // Reset timing to prevent sim accumulator spike from pause duration.
-                state.last_update_time = Instant::now();
-                state.sim_accumulator_ms = 0;
+                let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
+                state.frame_pacer.reanchor(now_ms);
                 // Re-hide OS cursor so the software cursor takes over.
                 if state.software_cursor.is_some() {
                     state.window.set_cursor_visible(false);

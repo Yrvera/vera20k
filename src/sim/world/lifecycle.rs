@@ -5,6 +5,8 @@
 //! this module never depends on render, UI, sidebar, audio, or net.
 
 use crate::map::entities::EntityCategory;
+use crate::sim::combat::TargetKind;
+use crate::sim::components::NavTargetRef;
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::occupancy::{CellListInsertion, entity_occupancy_cells};
 use crate::sim::passenger::PassengerRole;
@@ -44,7 +46,6 @@ pub(crate) struct RevealRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RevealFailure {
     MissingObject,
-    NotAlive,
     RejectedEarly,
     MarkFailed,
 }
@@ -117,6 +118,12 @@ pub(crate) enum LifecycleTestEvent {
         object_alive: bool,
         cell_marked: bool,
     },
+    UninitRemovalListenerVisited {
+        expired_id: u64,
+        listener_id: u64,
+        target_alive: bool,
+        target_in_limbo: bool,
+    },
     UninitAliveCleared {
         stable_id: u64,
     },
@@ -158,6 +165,12 @@ impl Simulation {
                 logic_registered: registered,
             };
         }
+        if self.substrate.particle_systems.contains_key(stable_id) {
+            let registered = self.reveal_particle_system(stable_id);
+            return RevealOutcome::Revealed {
+                logic_registered: registered,
+            };
+        }
         let Some(position) = self.current_reveal_position(stable_id) else {
             return RevealOutcome::Failed(RevealFailure::MissingObject);
         };
@@ -181,13 +194,10 @@ impl Simulation {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return RevealOutcome::Failed(RevealFailure::MissingObject);
         };
-        if !entity.lifecycle.object_alive {
-            return RevealOutcome::Failed(RevealFailure::NotAlive);
-        }
         if !entity.lifecycle.in_limbo {
             return RevealOutcome::AlreadyRevealed;
         }
-        if request.placement == PlacementEvidence::RejectedEarly {
+        if entity.lifecycle.cell_marked || request.placement == PlacementEvidence::RejectedEarly {
             return RevealOutcome::Failed(RevealFailure::RejectedEarly);
         }
 
@@ -296,11 +306,17 @@ impl Simulation {
 
     fn register_logic_object(&mut self, stable_id: u64) -> bool {
         let is_anim = self.substrate.anims.contains_key(stable_id);
+        let is_particle_system = self.substrate.particle_systems.contains_key(stable_id);
         let already_member = if is_anim {
             self.substrate
                 .anims
                 .get(stable_id)
                 .is_some_and(|anim| anim.in_logic_vector)
+        } else if is_particle_system {
+            self.substrate
+                .particle_systems
+                .get(stable_id)
+                .is_some_and(|system| system.in_logic_vector)
         } else {
             self.substrate
                 .entities
@@ -310,7 +326,7 @@ impl Simulation {
         if already_member {
             return true;
         }
-        if (!is_anim && !self.substrate.entities.contains(stable_id))
+        if (!is_anim && !is_particle_system && !self.substrate.entities.contains(stable_id))
             || self.substrate.logic.try_push(stable_id).is_err()
         {
             return false;
@@ -320,6 +336,10 @@ impl Simulation {
         if is_anim {
             if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
                 anim.in_logic_vector = true;
+            }
+        } else if is_particle_system {
+            if let Some(system) = self.substrate.particle_systems.get_mut(stable_id) {
+                system.in_logic_vector = true;
             }
         } else if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.in_logic_vector = true;
@@ -331,11 +351,17 @@ impl Simulation {
 
     fn unregister_logic_object(&mut self, stable_id: u64) -> bool {
         let is_anim = self.substrate.anims.contains_key(stable_id);
+        let is_particle_system = self.substrate.particle_systems.contains_key(stable_id);
         let flagged = if is_anim {
             self.substrate
                 .anims
                 .get(stable_id)
                 .is_some_and(|anim| anim.in_logic_vector)
+        } else if is_particle_system {
+            self.substrate
+                .particle_systems
+                .get(stable_id)
+                .is_some_and(|system| system.in_logic_vector)
         } else {
             self.substrate
                 .entities
@@ -349,6 +375,10 @@ impl Simulation {
         if is_anim {
             if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
                 anim.in_logic_vector = false;
+            }
+        } else if is_particle_system {
+            if let Some(system) = self.substrate.particle_systems.get_mut(stable_id) {
+                system.in_logic_vector = false;
             }
         } else if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.in_logic_vector = false;
@@ -384,11 +414,39 @@ impl Simulation {
         self.unregister_logic_object(stable_id)
     }
 
+    pub(crate) fn reveal_particle_system(&mut self, stable_id: u64) -> bool {
+        if !self.substrate.particle_systems.contains_key(stable_id) {
+            return false;
+        }
+        self.register_logic_object(stable_id)
+    }
+
+    pub(crate) fn conceal_particle_system(&mut self, stable_id: u64) -> bool {
+        self.unregister_logic_object(stable_id)
+    }
+
+    /// Open-topped cargo entry hides the passenger but then directly restores
+    /// its active membership. This is deliberately not Reveal: the passenger
+    /// remains limbo/unmarked while its AI stays in the live object order.
+    pub(crate) fn register_open_topped_passenger(&mut self, stable_id: u64) -> bool {
+        if !self.substrate.entities.contains(stable_id) {
+            return false;
+        }
+        self.register_logic_object(stable_id)
+    }
+
     /// Compatibility dispatch which keeps AnimClass logic-only and routes every
     /// GameEntity through the complete common Object Conceal transaction.
     pub(crate) fn conceal(&mut self, stable_id: u64) -> ConcealOutcome {
         if self.substrate.anims.contains_key(stable_id) {
             return if self.conceal_anim(stable_id) {
+                ConcealOutcome::Concealed
+            } else {
+                ConcealOutcome::AlreadyConcealed
+            };
+        }
+        if self.substrate.particle_systems.contains_key(stable_id) {
+            return if self.conceal_particle_system(stable_id) {
                 ConcealOutcome::Concealed
             } else {
                 ConcealOutcome::AlreadyConcealed
@@ -482,12 +540,6 @@ impl Simulation {
         self.object_conceal(stable_id)
     }
 
-    /// Transitional app-owned animated-death bridge.  This deliberately changes
-    /// only LogicVector membership and must disappear with Mission/Foot authority.
-    pub(crate) fn legacy_unregister_logic_only_for_app_death(&mut self, stable_id: u64) {
-        let _ = self.unregister_logic_object(stable_id);
-    }
-
     /// Existing Rust owner-count mutation with an explicit exactly-once guard.
     pub(crate) fn release_owned_count_once(&mut self, stable_id: u64) {
         let Some((owner, category, already_released)) = self
@@ -554,6 +606,230 @@ impl Simulation {
         }
     }
 
+    fn nav_ref_targets_expired(target: &NavTargetRef, expired_id: u64) -> bool {
+        matches!(
+            target,
+            NavTargetRef::Entity { id }
+                | NavTargetRef::Object { id }
+                | NavTargetRef::Building { id }
+                if *id == expired_id
+        )
+    }
+
+    /// Represented entries in global ObjectClass construction order. Stable
+    /// IDs are monotonic and never reused, so merging the separate Rust stores
+    /// by ID reproduces the native registration order without walking holes
+    /// left by already-finalized objects.
+    fn removal_listener_order(&self) -> Vec<u64> {
+        let mut listeners = self.substrate.entities.keys_sorted();
+        listeners.extend(self.substrate.anims.iter().map(|(&stable_id, _)| stable_id));
+        listeners.extend(
+            self.substrate
+                .particle_systems
+                .iter()
+                .map(|(&stable_id, _)| stable_id),
+        );
+        listeners.sort_unstable();
+        debug_assert!(
+            listeners.windows(2).all(|pair| pair[0] != pair[1]),
+            "object stable ID exists in more than one represented store"
+        );
+        listeners
+    }
+
+    fn notify_entity_pointer_expired(
+        &mut self,
+        listener_id: u64,
+        expired_id: u64,
+        expired_cell: (u16, u16),
+        expired_is_high_flying: bool,
+    ) {
+        let Some(listener) = self.substrate.entities.get_mut(listener_id) else {
+            return;
+        };
+
+        // RadioClass::PointerExpired nulls matching sparse slots in place.
+        listener.clear_live_contact_with(expired_id);
+
+        // TechnoClass removes an expiring passenger from its CargoClass before
+        // clearing its target/archive/manager reference family.
+        if let PassengerRole::Transport { cargo } = &mut listener.passenger_role {
+            let _ = cargo.disembark(expired_id);
+        }
+
+        // Techno's live combat target is cleared, while Foot's separate
+        // object-target cache becomes the target's final CellClass.
+        if listener.attack_target.as_ref().is_some_and(
+            |target| matches!(target.target, TargetKind::Entity(id) if id == expired_id),
+        ) {
+            listener.attack_target = None;
+        }
+        if matches!(
+            listener.suspended_attack_target,
+            Some(TargetKind::Entity(id)) if id == expired_id
+        ) {
+            listener.suspended_attack_target =
+                Some(TargetKind::Cell(expired_cell.0, expired_cell.1));
+        }
+
+        // FootClass clears SuspendedNavCom first, then its current/aux target,
+        // and removes every matching queue entry. Cell targets are unaffected.
+        if listener
+            .navigation
+            .suspended_nav_com
+            .as_ref()
+            .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id))
+        {
+            listener.navigation.suspended_nav_com = None;
+        }
+        if listener
+            .navigation
+            .nav_com_aux
+            .as_ref()
+            .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id))
+        {
+            listener.navigation.nav_com_aux = None;
+        }
+        if listener
+            .navigation
+            .nav_com
+            .as_ref()
+            .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id))
+        {
+            listener.navigation.nav_com = None;
+        }
+        listener
+            .navigation
+            .nav_queue
+            .retain(|target| !Self::nav_ref_targets_expired(target, expired_id));
+
+        if listener.capture_target == Some(expired_id) {
+            listener.capture_target = None;
+        }
+        if listener
+            .c4_plant
+            .as_ref()
+            .is_some_and(|plant| plant.target_building_id == expired_id)
+        {
+            listener.c4_plant = None;
+        }
+
+        if listener
+            .dock_state
+            .as_ref()
+            .is_some_and(|dock| dock.dock_building_id == expired_id)
+        {
+            listener.dock_state = None;
+        }
+        if let Some(ammo) = listener.aircraft_ammo.as_mut() {
+            if ammo.target_airfield == Some(expired_id) {
+                ammo.target_airfield = None;
+                ammo.target_pad = None;
+            }
+        }
+        if let Some(miner) = listener.miner.as_mut() {
+            if miner.home_refinery == Some(expired_id) {
+                miner.home_refinery = None;
+            }
+            if miner.reserved_refinery == Some(expired_id) {
+                miner.reserved_refinery = None;
+                miner.dock_queued = false;
+            }
+        }
+
+        let clear_passenger_role = match &listener.passenger_role {
+            PassengerRole::Transport { .. } => false,
+            PassengerRole::Boarding {
+                target_transport_id,
+                ..
+            } => *target_transport_id == expired_id,
+            PassengerRole::Inside { transport_id } => *transport_id == expired_id,
+            PassengerRole::None => false,
+        };
+        if clear_passenger_role {
+            listener.passenger_role = PassengerRole::None;
+        }
+
+        if let Some(homing) = listener.homing_state.as_mut() {
+            homing.expire_object_target(expired_id, expired_cell, expired_is_high_flying);
+        }
+
+        // Deliberately retain last_attacker_id. Native retaliation reads the
+        // dying object through the deferred-delete window; it is not one of
+        // the proactively-cleared target roles above.
+    }
+
+    /// ObjectClass::Detach_From_All_Lists represented listener broadcast.
+    ///
+    /// The callback pass runs while the target remains alive, unconcealed,
+    /// cell-marked, and resolvable. The represented callbacks below do not add
+    /// or erase listener objects, so the native live-vector cursor and this
+    /// monotonic construction-order walk have the same observable result.
+    fn notify_pointer_expired(&mut self, expired_id: u64) {
+        let Some((expired_cell, expired_is_high_flying)) =
+            self.substrate.entities.get(expired_id).map(|expired| {
+                let high_flying = expired.locomotor.as_ref().is_some_and(|locomotor| {
+                    // High-flying objects expire to null; lower objects preserve
+                    // GetHeight() >= 2 * LevelHeight (2 * 104 leptons).
+                    locomotor.is_airborne() && locomotor.altitude >= SimFixed::from_num(2 * 104)
+                });
+                ((expired.position.rx, expired.position.ry), high_flying)
+            })
+        else {
+            return;
+        };
+
+        for listener_id in self.removal_listener_order() {
+            let is_entity = self.substrate.entities.contains(listener_id);
+            let is_anim = self.substrate.anims.contains_key(listener_id);
+            let is_particle = self.substrate.particle_systems.contains_key(listener_id);
+            if !is_entity && !is_anim && !is_particle {
+                continue;
+            }
+
+            #[cfg(test)]
+            {
+                let (target_alive, target_in_limbo) = self
+                    .substrate
+                    .entities
+                    .get(expired_id)
+                    .map(|target| (target.lifecycle.object_alive, target.lifecycle.in_limbo))
+                    .unwrap_or((false, true));
+                self.trace_lifecycle_for_test(LifecycleTestEvent::UninitRemovalListenerVisited {
+                    expired_id,
+                    listener_id,
+                    target_alive,
+                    target_in_limbo,
+                });
+            }
+
+            if is_entity {
+                self.notify_entity_pointer_expired(
+                    listener_id,
+                    expired_id,
+                    expired_cell,
+                    expired_is_high_flying,
+                );
+            } else if is_particle {
+                let system = self
+                    .substrate
+                    .particle_systems
+                    .get_mut(listener_id)
+                    .expect("particle listener disappeared during expiry callback");
+                if system.owner_entity == Some(expired_id) {
+                    system.owner_entity = None;
+                }
+                if system.attached_entity == Some(expired_id) {
+                    system.attached_entity = None;
+                    system.marked_for_deletion = true;
+                }
+            }
+            // AnimObject currently has no authoritative attached-object field.
+            // It still occupies its native position in the observer walk; the
+            // existing DetachAttachedAnims lifecycle output owns presentation.
+        }
+    }
+
     /// ObjectClass::UnInit represented ordering.  Physical removal is deferred.
     pub(crate) fn uninit(&mut self, stable_id: u64) {
         let Some(object_alive) = self
@@ -583,6 +859,7 @@ impl Simulation {
                     cell_marked,
                 });
             }
+            self.notify_pointer_expired(stable_id);
 
             let _ = self.techno_limbo(stable_id);
             if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
@@ -604,6 +881,24 @@ impl Simulation {
         self.uninit(stable_id);
     }
 
+    /// Particle systems stay resolvable until the ordinary common late drain.
+    /// Their owned particles have already emptied before this transition.
+    pub(crate) fn retire_particle_system(&mut self, stable_id: u64) {
+        let ready = self
+            .substrate
+            .particle_systems
+            .get(stable_id)
+            .is_some_and(|system| system.marked_for_deletion && system.particles.is_empty());
+        if !ready {
+            return;
+        }
+
+        self.conceal_particle_system(stable_id);
+        self.substrate.pending_delete.push(stable_id);
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::PendingDeleteQueued { stable_id });
+    }
+
     fn pending_object_is_ready(&self, stable_id: u64) -> bool {
         if let Some(entity) = self.substrate.entities.get(stable_id) {
             return !entity.lifecycle.object_alive;
@@ -611,15 +906,22 @@ impl Simulation {
         if let Some(anim) = self.substrate.anims.get(stable_id) {
             return anim.runtime.inactive;
         }
+        if let Some(system) = self.substrate.particle_systems.get(stable_id) {
+            return system.marked_for_deletion && system.particles.is_empty();
+        }
         true
     }
 
     fn finalize_and_remove_common(&mut self, stable_id: u64) {
         let entity = self.substrate.entities.remove(stable_id);
         let anim = self.substrate.anims.remove(stable_id);
+        let particle_system = self.substrate.particle_systems.finalize_remove(stable_id);
         debug_assert!(
-            !(entity.is_some() && anim.is_some()),
-            "object id {stable_id} was removed from both stores"
+            usize::from(entity.is_some())
+                + usize::from(anim.is_some())
+                + usize::from(particle_system.is_some())
+                <= 1,
+            "object id {stable_id} was removed from multiple stores"
         );
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::FinalizedCommon { stable_id });

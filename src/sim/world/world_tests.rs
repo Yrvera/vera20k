@@ -529,13 +529,10 @@ fn gate_test_rules() -> RuleSet {
 }
 
 #[test]
-fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
-    // Native frame / tick contract: binary_frame is committed LATE (end of
-    // advance_tick), so a Phase-1 consumer sees the pre-increment frame N
-    // during the tick. One 67ms tick crosses the 0->1 binary-frame boundary:
-    // the gate's start_opening must capture frame 0 (pre-increment) while the
-    // committed counter ends at 1. If the counter were advanced at the TOP of
-    // advance_tick, the gate would capture 1 — this test guards that regression.
+fn native_frame_committed_late_gate_captures_pre_increment_frame() {
+    // The native frame is committed LATE, so a Phase-1 consumer sees frame N
+    // during the whole advance. The host duration is deliberately one
+    // millisecond: admission, not elapsed time, advances the frame.
     use crate::sim::game_entity::{BuildingGateMissionState, BuildingGatePhase};
 
     let mut sim = Simulation::new();
@@ -557,12 +554,12 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
     }
     assert_eq!(sim.session.binary_frame, 0, "fresh sim starts at frame 0");
 
-    let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+    let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 1);
 
     // Committed late: post-tick frame advanced to 1.
     assert_eq!(
         sim.session.binary_frame, 1,
-        "binary_frame committed late to 1"
+        "native frame committed late to 1"
     );
     // The consumer captured the PRE-increment frame 0 during the tick.
     let rt = sim
@@ -1948,17 +1945,28 @@ fn test_too_big_ship_can_move_under_bridge_route() {
         ..Default::default()
     });
 
-    // Use tick_ms=1000 so the ship crosses the cell boundary in 1 tick
-    // (speed=256 * dt=1.0 = 256 leptons = 1 cell).
+    // TooBigToFitUnderBridge is rendering-only in retail. Advance admitted
+    // native frames until the one-cell route completes; host milliseconds do
+    // not scale locomotor movement.
     let path_grid = PathGrid::new(2, 1);
-    let _ = sim.advance_tick(
-        &[],
-        Some(&rules),
-        &BTreeMap::new(),
-        Some(&path_grid),
-        None,
-        1000,
-    );
+    for _ in 0..16 {
+        let _ = sim.advance_tick(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&path_grid),
+            None,
+            1,
+        );
+        if sim
+            .substrate
+            .entities
+            .get(ship_id)
+            .is_some_and(|ship| ship.movement_target.is_none())
+        {
+            break;
+        }
+    }
 
     let ship = sim
         .substrate
@@ -1967,7 +1975,7 @@ fn test_too_big_ship_can_move_under_bridge_route() {
         .expect("ship still exists");
     assert!(
         ship.movement_target.is_none(),
-        "Naval ships should finish a direct move under bridge structural cells in the experimental behavior"
+        "TooBigToFitUnderBridge must not gate the ship's direct retail route"
     );
     assert_eq!((ship.position.rx, ship.position.ry), (1, 0));
 }

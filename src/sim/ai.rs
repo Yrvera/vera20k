@@ -27,14 +27,14 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::world::Simulation;
 
-/// How often (in ticks) the AI evaluates its build/production decisions (~0.5s).
-const AI_THINK_INTERVAL_TICKS: u64 = 8;
+/// How often (in native frames) the AI evaluates its build/production decisions.
+const AI_THINK_INTERVAL_FRAMES: u32 = 8;
 
-/// How often (in ticks) the AI sends an attack wave (~15s).
-const AI_ATTACK_INTERVAL_TICKS: u64 = 225;
+/// How often (in native frames) the AI sends an attack wave.
+const AI_ATTACK_INTERVAL_FRAMES: u32 = 225;
 
-/// Minimum ticks before the AI sends its first attack (~10s).
-const AI_FIRST_ATTACK_TICK: u64 = 150;
+/// Minimum native frame before the AI sends its first attack.
+const AI_FIRST_ATTACK_FRAME: u32 = 150;
 
 /// Maximum units to send per attack wave.
 const AI_ATTACK_WAVE_SIZE: usize = 8;
@@ -44,8 +44,8 @@ const AI_ATTACK_WAVE_SIZE: usize = 8;
 pub struct AiPlayerState {
     /// House/owner name this AI controls.
     pub owner: InternedId,
-    /// Tick when the last attack wave was sent.
-    pub last_attack_tick: u64,
+    /// Native frame when the last attack wave was sent.
+    pub last_attack_frame: u32,
     /// Whether MCV deploy has been attempted.
     pub mcv_deployed: bool,
 }
@@ -54,7 +54,7 @@ impl AiPlayerState {
     pub fn new(owner: InternedId) -> Self {
         Self {
             owner,
-            last_attack_tick: 0,
+            last_attack_frame: 0,
             mcv_deployed: false,
         }
     }
@@ -70,6 +70,7 @@ pub fn tick_ai(
 ) -> Vec<CommandEnvelope> {
     let mut commands: Vec<CommandEnvelope> = Vec::new();
     let execute_tick = sim.session.tick.saturating_add(1);
+    let current_frame = sim.session.binary_frame;
 
     for ai in ai_players.iter_mut() {
         // A house defeated this tick issues no commands at all (not even ready-
@@ -83,9 +84,9 @@ pub fn tick_ai(
         }
 
         let owner_str = sim.interner.resolve(ai.owner);
-        // Only think every N ticks to avoid spamming.
-        if !sim.session.tick.is_multiple_of(AI_THINK_INTERVAL_TICKS) {
-            // Still check for building placement every tick.
+        // Only think every N native frames to avoid spamming.
+        if !current_frame.is_multiple_of(AI_THINK_INTERVAL_FRAMES) {
+            // Still check for building placement every frame.
             place_ready_buildings(
                 sim,
                 ai,
@@ -136,12 +137,12 @@ pub fn tick_ai(
         );
 
         // 5. Send attack waves.
-        if sim.session.tick >= AI_FIRST_ATTACK_TICK
-            && sim.session.tick.saturating_sub(ai.last_attack_tick) >= AI_ATTACK_INTERVAL_TICKS
+        if current_frame >= AI_FIRST_ATTACK_FRAME
+            && current_frame.wrapping_sub(ai.last_attack_frame) >= AI_ATTACK_INTERVAL_FRAMES
         {
             let attack_cmds = send_attack_wave(sim, owner_str, rules, execute_tick);
             if !attack_cmds.is_empty() {
-                ai.last_attack_tick = sim.session.tick;
+                ai.last_attack_frame = current_frame;
                 commands.extend(attack_cmds);
             }
         }
@@ -781,7 +782,7 @@ mod tests {
         let owner_id = interner.intern("Russians");
         let state = AiPlayerState::new(owner_id);
         assert_eq!(state.owner, owner_id);
-        assert_eq!(state.last_attack_tick, 0);
+        assert_eq!(state.last_attack_frame, 0);
         assert!(!state.mcv_deployed);
     }
 

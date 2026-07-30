@@ -44,6 +44,16 @@ pub const SIM_1_5: SimFixed = SimFixed::lit("1.5");
 /// Smallest representable positive value (1/65536 ≈ 0.000015).
 pub const SIM_EPSILON: SimFixed = SimFixed::DELTA;
 
+/// Duration of one native movement frame, in seconds.
+///
+/// Retail locomotors integrate their per-second values once for each 15 Hz
+/// game frame. Keeping this fraction here gives every locomotor the same
+/// deterministic fixed-point rounding.
+#[inline]
+pub fn native_movement_frame_fraction() -> SimFixed {
+    SIM_ONE / SimFixed::from_num(15u8)
+}
+
 /// Canonical simulation tick rate in Hz — matches RA2's native 15 fps game
 /// logic rate. At 15 Hz every sim tick equals one RA2 game frame, so INI
 /// timing values (ROF, Speed, Rate, etc.) can be used directly without
@@ -141,13 +151,21 @@ pub fn fixed_lerp(a: SimFixed, b: SimFixed, t: SimFixed) -> SimFixed {
 /// Fixed-point `max(a, b)`.
 #[inline]
 pub fn fixed_max(a: SimFixed, b: SimFixed) -> SimFixed {
-    if a >= b { a } else { b }
+    if a >= b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Fixed-point `min(a, b)`.
 #[inline]
 pub fn fixed_min(a: SimFixed, b: SimFixed) -> SimFixed {
-    if a <= b { a } else { b }
+    if a <= b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Deterministic fixed-point square root via Newton's method.

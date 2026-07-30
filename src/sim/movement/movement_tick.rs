@@ -33,8 +33,8 @@ use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::rng::SimRng;
 use crate::sim::world::EnterOrderCounter;
 use crate::util::fixed_math::{
-    SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, dt_from_tick_ms, fixed_distance, isqrt_i64,
-    ra2_speed_to_leptons_per_second,
+    SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, fixed_distance, isqrt_i64,
+    native_movement_frame_fraction, ra2_speed_to_leptons_per_second,
 };
 
 use super::bump_crush;
@@ -431,6 +431,7 @@ fn apply_subcell_redirect(
 #[allow(clippy::too_many_arguments)]
 fn process_pending_drive_arrivals(
     entities: &mut EntityStore,
+    entity_order: &[u64],
     path_grid: Option<&PathGrid>,
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
@@ -445,11 +446,10 @@ fn process_pending_drive_arrivals(
     rules: Option<&crate::rules::ruleset::RuleSet>,
 ) {
     let Some(grid) = path_grid else {
-        super::navcom::process_pending_empty_drive_arrivals(entities);
+        super::navcom::process_pending_empty_drive_arrivals_in_order(entities, entity_order);
         return;
     };
-    let ids = entities.keys_sorted();
-    for &entity_id in &ids {
+    for &entity_id in entity_order {
         let Some(entity) = entities.get_mut(entity_id) else {
             continue;
         };
@@ -861,6 +861,7 @@ fn handle_deferred_drive_track_chain(
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn tick_movement_with_grids(
     entities: &mut EntityStore,
     live_order: Option<&[u64]>,
@@ -870,9 +871,8 @@ pub(crate) fn tick_movement_with_grids(
     occupancy: &mut OccupancyGrid,
     next_occupancy_enter_order: &mut EnterOrderCounter,
     rng: &mut SimRng,
-    tick_ms: u32,
     sim_tick: u64,
-    binary_frame: u32,
+    native_frame: u32,
     zone_grid: Option<&ZoneGrid>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     terrain_speed_config: &TerrainSpeedConfig,
@@ -884,10 +884,104 @@ pub(crate) fn tick_movement_with_grids(
     sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
     lifecycle_requests: &mut Vec<LifecycleRequest>,
 ) -> MovementTickStats {
+    tick_movement_with_grids_scoped(
+        entities,
+        live_order,
+        path_grid,
+        terrain_costs,
+        alliances,
+        occupancy,
+        next_occupancy_enter_order,
+        rng,
+        sim_tick,
+        native_frame,
+        zone_grid,
+        resolved_terrain,
+        terrain_speed_config,
+        close_enough,
+        path_delay_ticks,
+        blockage_path_delay_ticks,
+        interner,
+        rules,
+        sound_events,
+        lifecycle_requests,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tick_movement_object_with_grids(
+    entities: &mut EntityStore,
+    entity_id: u64,
+    path_grid: Option<&PathGrid>,
+    terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+    alliances: &HouseAllianceMap,
+    occupancy: &mut OccupancyGrid,
+    next_occupancy_enter_order: &mut EnterOrderCounter,
+    rng: &mut SimRng,
+    sim_tick: u64,
+    native_frame: u32,
+    zone_grid: Option<&ZoneGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    terrain_speed_config: &TerrainSpeedConfig,
+    close_enough: SimFixed,
+    path_delay_ticks: u16,
+    blockage_path_delay_ticks: u16,
+    interner: &mut crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
+) -> MovementTickStats {
+    tick_movement_with_grids_scoped(
+        entities,
+        Some(std::slice::from_ref(&entity_id)),
+        path_grid,
+        terrain_costs,
+        alliances,
+        occupancy,
+        next_occupancy_enter_order,
+        rng,
+        sim_tick,
+        native_frame,
+        zone_grid,
+        resolved_terrain,
+        terrain_speed_config,
+        close_enough,
+        path_delay_ticks,
+        blockage_path_delay_ticks,
+        interner,
+        rules,
+        sound_events,
+        lifecycle_requests,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tick_movement_with_grids_scoped(
+    entities: &mut EntityStore,
+    live_order: Option<&[u64]>,
+    path_grid: Option<&PathGrid>,
+    terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+    alliances: &HouseAllianceMap,
+    occupancy: &mut OccupancyGrid,
+    next_occupancy_enter_order: &mut EnterOrderCounter,
+    rng: &mut SimRng,
+    sim_tick: u64,
+    native_frame: u32,
+    zone_grid: Option<&ZoneGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    terrain_speed_config: &TerrainSpeedConfig,
+    close_enough: SimFixed,
+    path_delay_ticks: u16,
+    blockage_path_delay_ticks: u16,
+    interner: &mut crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
+    lifecycle_requests: &mut Vec<LifecycleRequest>,
+    single_object: bool,
+) -> MovementTickStats {
     let mut stats = MovementTickStats::default();
-    if tick_ms == 0 {
-        return stats;
-    }
     if live_order.is_some_and(|order| order.is_empty()) {
         // An explicitly supplied empty LogicVector is authoritative. It is not
         // the test-wrapper signal for deriving stable-id order from storage.
@@ -914,7 +1008,7 @@ pub(crate) fn tick_movement_with_grids(
         path_delay_ticks,
         blockage_path_delay_ticks,
     };
-    let dt: SimFixed = dt_from_tick_ms(tick_ms);
+    let dt = native_movement_frame_fraction();
     let fallback_order;
     let entity_order: &[u64] = match live_order {
         Some(order) => order,
@@ -934,6 +1028,7 @@ pub(crate) fn tick_movement_with_grids(
     let drive_reaims: Vec<(u64, crate::sim::components::DriveCoord)> =
         drive_locomotion::drive_entity_nav_targets(entities)
             .into_iter()
+            .filter(|(mover_id, _)| entity_order.contains(mover_id))
             .filter_map(|(mover_id, target)| {
                 super::navcom::resolve_entity_nav_target_drive_coord(target, entities)
                     .map(|coord| (mover_id, coord))
@@ -946,7 +1041,12 @@ pub(crate) fn tick_movement_with_grids(
     }
 
     if let Some(terrain) = resolved_terrain {
-        tube_movement::tick_low_bridge_tube_movement(entities, occupancy, terrain);
+        tube_movement::tick_low_bridge_tube_movement_in_order(
+            entities,
+            occupancy,
+            terrain,
+            entity_order,
+        );
     }
     let forced_drive_processed = tick_forced_drive_tracks(entities, entity_order, dt, &mut stats);
 
@@ -1004,6 +1104,7 @@ pub(crate) fn tick_movement_with_grids(
 
     process_pending_drive_arrivals(
         entities,
+        entity_order,
         path_grid,
         terrain_costs,
         resolved_terrain,
@@ -1161,7 +1262,7 @@ pub(crate) fn tick_movement_with_grids(
                         &entity.position,
                         target,
                         snap.rot,
-                        binary_frame,
+                        native_frame,
                     );
                 } else {
                     match movement_step::handle_vehicle_rotation(
@@ -1171,7 +1272,7 @@ pub(crate) fn tick_movement_with_grids(
                         &mut entity.position,
                         &mut entity.locomotor,
                         snap.rot,
-                        binary_frame,
+                        native_frame,
                         sim_tick,
                     ) {
                         movement_step::RotationResult::StillRotating { debug_events: evts } => {
@@ -1392,7 +1493,6 @@ pub(crate) fn tick_movement_with_grids(
                 entity.category,
                 effective_speed,
                 dt,
-                tick_ms,
                 entity_id,
             ) {
                 movement_step::AdvanceResult::DriveTrackActive => continue,
@@ -1772,7 +1872,9 @@ pub(crate) fn tick_movement_with_grids(
         }
     }
 
-    sync_formation_speeds(entities);
+    if !single_object {
+        sync_formation_speeds_after_live_pass(entities);
+    }
 
     // Apply the immediate crush effects, then hand teardown to the lifecycle
     // authority. Occupancy entries were already removed in
@@ -1814,7 +1916,7 @@ pub(crate) fn tick_movement_with_grids(
         sim_tick,
         resolved_terrain,
     );
-    update_locomotor_phases(entities, &crush_kills, sim_tick);
+    update_locomotor_phases(entities, entity_order, &crush_kills, sim_tick);
 
     // Hover vertical controller — every hover unit, moving OR parked (idle
     // units still float at cruise height and bob). Runs after the XY stage so
@@ -1872,7 +1974,7 @@ pub(crate) fn tick_movement_with_grids(
             let (new_height, new_offset) = super::hover::hover_vertical_tick(
                 loco.altitude,
                 loco.hover_bob_offset,
-                binary_frame,
+                native_frame,
                 moving,
                 climbing,
                 powered,
@@ -1896,7 +1998,7 @@ pub(crate) fn tick_movement_with_grids(
 /// Formation speed sync (deep_113 lines 451-456).
 /// Cap grouped units to the slowest member's max speed so formations stay
 /// together instead of faster units pulling ahead.
-fn sync_formation_speeds(entities: &mut EntityStore) {
+pub(crate) fn sync_formation_speeds_after_live_pass(entities: &mut EntityStore) {
     let mut group_min_speed: BTreeMap<u32, SimFixed> = BTreeMap::new();
     for entity in entities.values() {
         // A Dying corpse keeps its movement_target but won't move; it must not
@@ -1995,11 +2097,11 @@ fn finalize_finished_entities(
 /// Maps the current movement state to the appropriate WalkLocomotionClass state.
 fn update_locomotor_phases(
     entities: &mut EntityStore,
+    entity_order: &[u64],
     crush_kills: &[PendingCrushKill],
     sim_tick: u64,
 ) {
-    let all_keys = entities.keys_sorted();
-    for &id in &all_keys {
+    for &id in entity_order {
         if contains_crush_victim(crush_kills, id) {
             continue;
         }

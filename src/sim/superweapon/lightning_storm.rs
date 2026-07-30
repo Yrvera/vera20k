@@ -231,10 +231,10 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
         z: 0,
         frame: 0,
         total_frames: frames,
-        rate_ms: 67, // ~15 fps
-        elapsed_ms: 0,
+        frame_delay: 1,
+        elapsed_frames: 0,
         translucent: true,
-        delay_ms: 0,
+        delay_frames: 0,
         start_sound_id: None,
         start_sound_emitted: false,
     });
@@ -300,10 +300,10 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
                 z: fx.z,
                 frame: 0,
                 total_frames: frames,
-                rate_ms: 67,
-                elapsed_ms: 0,
+                frame_delay: 1,
+                elapsed_frames: 0,
                 translucent: true,
-                delay_ms: 0,
+                delay_frames: 0,
                 start_sound_id: None,
                 start_sound_emitted: false,
             });

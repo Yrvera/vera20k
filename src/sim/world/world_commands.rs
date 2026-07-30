@@ -1067,7 +1067,7 @@ impl Simulation {
                         }
                         if crate::sim::superweapon::invulnerability::is_invulnerable(
                             b.invulnerability.as_ref(),
-                            self.session.tick as u32,
+                            self.session.binary_frame,
                         ) {
                             return None;
                         }
@@ -1343,7 +1343,7 @@ impl Simulation {
                     // Reset the instance — restart charging.
                     if let Some(weapons) = self.super_weapons.get_mut(&owner_iid) {
                         if let Some(inst) = weapons.get_mut(sw_type_id) {
-                            inst.reset_after_fire(recharge, self.session.tick);
+                            inst.reset_after_fire(recharge, self.session.binary_frame);
                         }
                     }
                 }

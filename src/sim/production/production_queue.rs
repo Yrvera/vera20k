@@ -393,9 +393,8 @@ pub fn tick_production(
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
-    tick_ms: u32,
 ) -> bool {
-    tick_production_with_overlay_registry(sim, rules, height_map, path_grid, None, tick_ms)
+    tick_production_with_overlay_registry(sim, rules, height_map, path_grid, None)
 }
 
 /// Advance production timers and spawn completed items with optional native
@@ -406,11 +405,7 @@ pub fn tick_production_with_overlay_registry(
     height_map: &BTreeMap<(u16, u16), u8>,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    tick_ms: u32,
 ) -> bool {
-    if tick_ms == 0 {
-        return false;
-    }
     let miner_config = crate::sim::miner::MinerConfig::from_rules(rules);
     tick_resource_economy(sim, rules, &miner_config, path_grid, overlay_registry);
     // P5d: the registry is the queue-of-record + completion authority. Collect the

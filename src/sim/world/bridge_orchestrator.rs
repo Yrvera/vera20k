@@ -404,7 +404,7 @@ const BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE: u32 = 2_040_109_464;
 const BRIDGE_METALLIC_GATE_EXCLUSIVE: u32 = 0x3FFF_FFFF;
 const BRIDGE_JITTER_SPAN_LEPTONS: u64 = 50;
 const BRIDGE_JITTER_HALF_LEPTONS: i32 = 25;
-const BRIDGE_EFFECT_FRAME_MS: u32 = 67;
+const BRIDGE_EFFECT_FRAME_DELAY: u16 = 1;
 // Safety cap on the extent-measurement walk (Phase 1 of the bounded
 // walker). gamemd has no explicit cap — the off-bridge band check
 // terminates the walk — but a runaway count would only happen if the
@@ -1251,10 +1251,10 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
                 z: deck_level,
                 frame: 0,
                 total_frames: frames,
-                rate_ms: BRIDGE_EFFECT_FRAME_MS,
-                elapsed_ms: 0,
+                frame_delay: BRIDGE_EFFECT_FRAME_DELAY,
+                elapsed_frames: 0,
                 translucent: true,
-                delay_ms: 0,
+                delay_frames: 0,
                 start_sound_id: None,
                 start_sound_emitted: false,
             });
@@ -1276,10 +1276,10 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
                 z: deck_level,
                 frame: 0,
                 total_frames: frames,
-                rate_ms: BRIDGE_EFFECT_FRAME_MS,
-                elapsed_ms: 0,
+                frame_delay: BRIDGE_EFFECT_FRAME_DELAY,
+                elapsed_frames: 0,
                 translucent: true,
-                delay_ms: delay_frames * BRIDGE_EFFECT_FRAME_MS,
+                delay_frames: delay_frames as u16,
                 start_sound_id: sim.bridge_anim_sounds.get(&anim_id).copied(),
                 start_sound_emitted: false,
             });
@@ -1319,10 +1319,10 @@ fn spawn_bridge_explosion_effect(
             z,
             frame: 0,
             total_frames: frames,
-            rate_ms: BRIDGE_EFFECT_FRAME_MS,
-            elapsed_ms: 0,
+            frame_delay: BRIDGE_EFFECT_FRAME_DELAY,
+            elapsed_frames: 0,
             translucent: true,
-            delay_ms: delay_frames * BRIDGE_EFFECT_FRAME_MS,
+            delay_frames: delay_frames as u16,
             start_sound_id: presentation.bridge_anim_sounds.get(&anim_id).copied(),
             start_sound_emitted: false,
         });

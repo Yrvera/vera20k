@@ -67,6 +67,8 @@ use crate::sim::world::Simulation;
 pub struct MapLoadResult {
     pub(crate) startup: LoadingStartup,
     pub(crate) map_source: LoadedMapSource,
+    /// Digest of the parsed source map INI used for strict save compatibility.
+    pub(crate) map_hash: Option<u64>,
     pub basic: BasicSection,
     pub tile_atlas: Option<TileAtlas>,
     pub terrain_grid: Option<TerrainGrid>,
@@ -524,6 +526,12 @@ pub(crate) fn load_map_from_initial(
         map_data,
         map_source,
     } = initial;
+    let map_hash = match &map_source {
+        LoadedMapSource::Loose { .. }
+        | LoadedMapSource::Mix { .. }
+        | LoadedMapSource::Generated { .. } => Some(map_data.ini.content_hash()),
+        LoadedMapSource::LegacyFallback { .. } => None,
+    };
     let skirmish_launch_session = startup.launch_session();
 
     // Load theater INI for tileset lookup, palette, and LAT configuration.
@@ -816,6 +824,7 @@ pub(crate) fn load_map_from_initial(
     if let Some(sim) = &mut simulation {
         if skirmish_launch_session.is_none() {
             sim.house_alliances = house_roster.alliance_map();
+            sim.session.house_order.clear();
             // Populate per-player HouseState from the map's house roster.
             for house in &house_roster.houses {
                 let side_idx = crate::sim::house_state::side_index_from_name(house.side.as_deref());
@@ -833,6 +842,7 @@ pub(crate) fn load_map_from_initial(
                         sim.session.game_options.tech_level,
                     ),
                 );
+                sim.session.house_order.push(name_id);
             }
         }
     }
@@ -1279,6 +1289,7 @@ pub(crate) fn load_map_from_initial(
     Ok(MapLoadResult {
         startup,
         map_source,
+        map_hash,
         basic: map_data.basic,
         tile_atlas,
         terrain_grid: Some(grid),

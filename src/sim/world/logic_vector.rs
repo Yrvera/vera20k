@@ -74,6 +74,10 @@ impl LogicVector {
         self.order.is_empty()
     }
 
+    pub(crate) fn contains(&self, id: u64) -> bool {
+        self.order.contains(&id)
+    }
+
     pub fn clear(&mut self) {
         self.order.clear();
     }

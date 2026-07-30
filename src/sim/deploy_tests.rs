@@ -1226,7 +1226,8 @@ fn combat_fires_during_deployed_attack() {
             frame_count: 1,
             facings: 8,
             facing_multiplier: 1,
-            tick_ms: 200,
+            frame_delay: 1,
+            normalized: false,
             loop_mode: LoopMode::Loop,
             clockwise_facings: false,
         },
@@ -1238,14 +1239,20 @@ fn combat_fires_during_deployed_attack() {
             frame_count: 6,
             facings: 8,
             facing_multiplier: 6,
-            tick_ms: 80,
+            frame_delay: 1,
+            normalized: false,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Deployed),
             clockwise_facings: false,
         },
     );
     sequences.insert("E1".to_string(), set);
 
-    let _ = tick_animations(&mut sim.substrate.entities, &sequences, 22, &sim.interner);
+    let _ = tick_animations(
+        &mut sim.substrate.entities,
+        &sequences,
+        &crate::sim::game_options::GameOptions::default(),
+        &sim.interner,
+    );
     assert_eq!(
         sim.substrate
             .entities
@@ -1322,9 +1329,8 @@ CellSpread=0
 #[test]
 fn ggi_deploy_uses_art_frame_count() {
     // GGI's GuardianGISequence has Deploy=300,15,0 -> 15 frames.
-    // 15 * 80 / 22 = 54 ticks (vs. the 55-tick fallback for sequence-less
-    // infantry like E1). Uses apply() so we observe the raw command effect
-    // without any deploy-tick decrement.
+    // Uses apply() so we observe the raw command effect without any
+    // native-frame decrement.
     let rules = make_rules_with_ggi_art();
     let mut sim = Simulation::new();
     let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
@@ -1340,19 +1346,16 @@ fn ggi_deploy_uses_art_frame_count() {
     let entity = sim.substrate.entities.get(ggi).unwrap();
     match entity.deploy_state {
         Some(DeployPhase::Deploying { ticks_remaining }) => {
-            assert_eq!(
-                ticks_remaining, 54,
-                "GGI deploy = 15 frames * 80 / 22 = 54 ticks"
-            );
+            assert_eq!(ticks_remaining, 15, "GGI deploy uses 15 native frames");
         }
         other => panic!("expected Deploying, got {:?}", other),
     }
 }
 
 #[test]
-fn ggi_deploy_decrements_on_command_tick() {
-    // Full advance_tick path: ToggleInfantryDeploy writes the art-derived
-    // 15-frame countdown, then tick_deploy_state runs later in the same tick.
+fn ggi_deploy_decrements_on_command_frame() {
+    // Full frame path: ToggleInfantryDeploy writes the art-derived 15-frame
+    // countdown, then tick_deploy_state runs later in the same frame.
     let rules = make_rules_with_ggi_art();
     let mut sim = Simulation::new();
     let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
@@ -1385,7 +1388,7 @@ fn ggi_deploy_decrements_on_command_tick() {
 
 #[test]
 fn ggi_undeploy_uses_art_frame_count() {
-    // GuardianGISequence Undeploy=180,2,2 -> 2 frames -> 7 ticks.
+    // GuardianGISequence Undeploy=180,2,2 -> 2 native frames.
     let rules = make_rules_with_ggi_art();
     let mut sim = Simulation::new();
     let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
@@ -1402,19 +1405,16 @@ fn ggi_undeploy_uses_art_frame_count() {
     let entity = sim.substrate.entities.get(ggi).unwrap();
     match entity.deploy_state {
         Some(DeployPhase::Undeploying { ticks_remaining }) => {
-            assert_eq!(
-                ticks_remaining, 7,
-                "GGI undeploy = 2 frames * 80 / 22 = 7 ticks"
-            );
+            assert_eq!(ticks_remaining, 2, "GGI undeploy uses 2 native frames");
         }
         other => panic!("expected Undeploying, got {:?}", other),
     }
 }
 
 #[test]
-fn ggi_undeploy_decrements_on_command_tick() {
-    // GuardianGISequence Undeploy=180,2,2 -> 2 frames. The current sim-local
-    // countdown decrements once in the same tick that accepts the command.
+fn ggi_undeploy_decrements_on_command_frame() {
+    // GuardianGISequence Undeploy=180,2,2 -> 2 frames. The countdown
+    // decrements once in the same reached frame that accepts the command.
     let rules = make_rules_with_ggi_art();
     let mut sim = Simulation::new();
     let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
@@ -1446,8 +1446,7 @@ fn ggi_undeploy_decrements_on_command_tick() {
 #[test]
 fn sequence_less_infantry_falls_back_to_default_ticks() {
     // E1 has no art Sequence= -> compute_anim_ticks falls back to
-    // DEPLOY_DEFAULT_TICKS=55. Distinguishes the GGI 54-tick path from the
-    // baseline.
+    // the stock 15-frame default.
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);

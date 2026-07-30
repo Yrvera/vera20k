@@ -20,5 +20,6 @@ pub mod logging;
 pub mod lzo;
 pub mod native_x87;
 pub mod read_helpers;
+pub mod version;
 // pub mod rect;
 // pub mod color;

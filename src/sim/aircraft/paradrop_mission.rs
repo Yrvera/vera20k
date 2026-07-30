@@ -23,8 +23,7 @@ use crate::sim::world::Simulation;
 use crate::sim::world::edge_cell::{Edge, find_passable_at_edge};
 
 /// Mission_Open returns 3 game frames before Mission_Rescue executes.
-/// Current sim convention is 3 sim ticks per gamemd frame.
-pub const PARADROP_OPEN_TO_RESCUE_DELAY_TICKS: u16 = 9;
+pub const PARADROP_OPEN_TO_RESCUE_DELAY_FRAMES: u16 = 3;
 
 /// Per-tick outcome for the Open-equivalent state. Caller (the aircraft tick)
 /// applies these mutations in the apply phase.
@@ -85,7 +84,7 @@ pub fn tick_approach(
             new_mission: AircraftMission::ParaDropOverfly {
                 exit_rx: exit.0,
                 exit_ry: exit.1,
-                drop_cooldown: PARADROP_OPEN_TO_RESCUE_DELAY_TICKS,
+                drop_cooldown: PARADROP_OPEN_TO_RESCUE_DELAY_FRAMES,
                 landing_state: 0,
                 payload_count: cargo_count as u8,
             },
@@ -272,9 +271,8 @@ mod tests {
         aircraft.type_ref = sim.interner.intern("PDPLANE");
         let mut cargo = PassengerCargo::new(cargo_count, 0);
         for id in 2..(2 + u64::from(cargo_count)) {
-            cargo.passengers.push(id);
+            cargo.board_forced(id, 1);
         }
-        cargo.total_size = cargo_count;
         aircraft.passenger_role = PassengerRole::Transport { cargo };
         sim.substrate.entities.insert(aircraft);
         (sim, 1)
@@ -311,7 +309,7 @@ mod tests {
                 payload_count,
                 ..
             } => {
-                assert_eq!(drop_cooldown, PARADROP_OPEN_TO_RESCUE_DELAY_TICKS);
+                assert_eq!(drop_cooldown, PARADROP_OPEN_TO_RESCUE_DELAY_FRAMES);
                 assert_eq!(landing_state, 0);
                 assert_eq!(payload_count, 4);
             }
@@ -357,6 +355,25 @@ mod tests {
                 assert_eq!(drop_cooldown, 1);
             }
             other => panic!("expected Rescue-equivalent state, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rescue_equivalent_drops_on_fifth_native_frame() {
+        let (sim, aircraft_id) = sim_with_loaded_pdplane(10, 10, 1);
+        let mut cooldown = 5;
+
+        for frame in 1..=5 {
+            let outcome = tick_overfly(&sim, aircraft_id, 99, 99, cooldown, 0, 1);
+            assert_eq!(
+                outcome.try_drop,
+                frame == 5,
+                "Rescue must run again exactly five native frames after a drop"
+            );
+            cooldown = match outcome.new_mission {
+                AircraftMission::ParaDropOverfly { drop_cooldown, .. } => drop_cooldown,
+                other => panic!("expected Rescue-equivalent state, got {:?}", other),
+            };
         }
     }
 }

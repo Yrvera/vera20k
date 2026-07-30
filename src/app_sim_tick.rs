@@ -30,24 +30,20 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
-use crate::sim::world::{LifecycleOutput, SimFireEvent, SimSoundEvent};
+use crate::sim::world::{LifecycleOutput, SimFireEvent, SimSoundEvent, TickLane};
 use crate::ui::game_screen::GameScreen;
 
-/// Prevent runaway catch-up loops after pauses/debugger stops.
-const MAX_SIM_STEPS_PER_FRAME: u32 = 8;
-/// Cap catch-up after lag spikes/breakpoints.
-const MAX_UPDATE_DELTA_MS: u64 = 250;
-
-/// Directory for flushed replay logs (mirrors the `saves/` convention).
+/// Directory for Rust-only deterministic diagnostic logs.
 const REPLAYS_DIR: &str = "replays";
 
-/// Persist the in-memory replay log to disk if one was recorded this match.
+/// Persist the in-memory deterministic diagnostic log.
 ///
 /// The log lives on the sim (`sim.replay_log`) and is appended every tick but
 /// is otherwise dropped when the sim is torn down. Call this on match teardown
-/// (return-to-menu) so every finished match leaves a replayable, deterministic
-/// command+hash log — the prerequisite for diagnosing any future desync. No-op
-/// when there is no active sim or no recorded ticks. Writes
+/// so every finished match leaves a rich command+hash trace for desync
+/// diagnosis. This JSON artifact is separate from the fixed native recording
+/// stream in `sim::replay`. No-op when there is no active sim or no recorded
+/// ticks. Writes
 /// `replays/replay_tick{tick}_{unix_secs}.json`.
 pub(crate) fn flush_replay_log(state: &AppState) {
     let Some(sim) = state.simulation.as_ref() else {
@@ -64,7 +60,7 @@ pub(crate) fn flush_replay_log(state: &AppState) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     if let Err(e) = std::fs::create_dir_all(REPLAYS_DIR) {
-        log::error!("Replay flush: failed to create replays dir: {e}");
+        log::error!("Diagnostic-log flush: failed to create replays dir: {e}");
         return;
     }
     let path = std::path::PathBuf::from(format!(
@@ -73,11 +69,11 @@ pub(crate) fn flush_replay_log(state: &AppState) {
     ));
     match log.save(&path) {
         Ok(()) => log::info!(
-            "Replay flushed: {} ticks -> {}",
+            "Deterministic diagnostic log flushed: {} ticks -> {}",
             log.ticks.len(),
             path.display()
         ),
-        Err(e) => log::error!("Replay flush failed: {e}"),
+        Err(e) => log::error!("Diagnostic-log flush failed: {e}"),
     }
 }
 
@@ -254,40 +250,19 @@ fn anim_world_sound_screen(world: crate::sim::anim_class::AnimWorldCoord) -> (f3
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FixedStepSchedule {
-    steps: u32,
-    remaining_accumulator_ms: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FixedAdvanceMode {
-    WallClock {
-        elapsed_ms: u64,
-        configured_tps: u32,
-    },
-    /// One deterministic production step. `configured_tps` is carried
-    /// deliberately so tests prove every game-speed bucket is ignored.
-    ExactOneStep { configured_tps: u32 },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeAdvanceMode {
-    WallClock { elapsed_ms: u64 },
+    WallClock { now_ms: u64 },
     ExactOneStep,
 }
 
 /// App-local evidence that one tactical diagnostic pump advanced exactly one
-/// production simulation step.
+/// gameplay frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExactStepReceipt {
     pub tick_before: u64,
     pub tick_after: u64,
-    pub total_sim_ms_before: u64,
-    pub total_sim_ms_after: u64,
     pub binary_frame_before: u32,
     pub binary_frame_after: u32,
-    pub accumulator_before_clear_ms: u64,
-    pub accumulator_after_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -300,20 +275,8 @@ pub(crate) enum ExactStepError {
     SimulationMissing,
     #[error("exact tactical step advanced {actual} ticks instead of exactly one")]
     TickDelta { actual: u64 },
-    #[error(
-        "exact tactical step advanced total simulation time from {before} to {after}, expected +{expected_delta} ms"
-    )]
-    TotalSimTimeDelta {
-        before: u64,
-        after: u64,
-        expected_delta: u64,
-    },
-    #[error(
-        "exact tactical step committed binary frame {actual}, expected {expected} from total simulation time"
-    )]
-    BinaryFrameMismatch { expected: u32, actual: u32 },
-    #[error("exact tactical step left {remaining_ms} ms in the wall-clock accumulator")]
-    AccumulatorNotCleared { remaining_ms: u64 },
+    #[error("exact tactical step advanced gameplay frame by {actual} instead of exactly one")]
+    FrameDelta { actual: u32 },
 }
 
 /// Build animation sequences for entity types in the ECS world.
@@ -417,10 +380,8 @@ pub(crate) fn build_animation_sequences(
     sequences
 }
 
-pub(crate) fn update_elapsed_ms(state: &mut AppState, now: Instant) -> u64 {
-    let elapsed_ms: u64 = now.duration_since(state.last_update_time).as_millis() as u64;
-    state.last_update_time = now;
-    elapsed_ms
+pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
+    now.duration_since(state.frame_pacer_epoch).as_millis() as u64
 }
 
 /// Front-end session mode, as the modal pump reads it to decide whether the
@@ -464,14 +425,14 @@ impl SessionMode {
     }
 }
 
-/// Pure modal-pump decision: should the fixed simulation advance one step while a
+/// Pure modal-pump decision: should the simulation advance one frame while a
 /// modal dialog is open? Mirrors gamemd's pump body — advance only on the network
 /// branch (LAN/WOL), and only when no fixed tick is already in progress (the native
 /// reentrancy guard). Offline campaign/skirmish freeze the world; message, input,
 /// and repaint still run in the surrounding loop. Pure and total, so it is
 /// unit-tested without an `AppState`. The live app-layer consumer is
 /// `service_tick_should_advance_sim`, which reads the running session mode and
-/// gates `advance_fixed_simulation` inside `advance_in_game_runtime`.
+/// gates the one-frame admission inside `advance_in_game_runtime`.
 pub fn modal_pump_should_advance_sim(mode: SessionMode, reentrancy_in_progress: bool) -> bool {
     mode.is_network() && !reentrancy_in_progress
 }
@@ -484,12 +445,12 @@ fn current_session_mode(_state: &AppState) -> SessionMode {
     SessionMode::Skirmish
 }
 
-/// App-layer modal-pump service decision: should the fixed simulation advance
+/// App-layer modal-pump service decision: should the simulation advance
 /// this frame? While the in-game Options modal is open (`state.paused` is the
 /// 0xBBB modal in this port), the verified pump contract decides — offline
 /// campaign/skirmish freeze, network LAN/WOL advance. With no modal open the
 /// world always runs. Re-entrancy is always clear here: the single-threaded
-/// frame loop never re-enters a fixed tick mid-advance.
+/// frame loop never re-enters a simulation frame mid-advance.
 fn service_tick_should_advance_sim(state: &AppState) -> bool {
     if state.paused {
         modal_pump_should_advance_sim(current_session_mode(state), false)
@@ -498,7 +459,7 @@ fn service_tick_should_advance_sim(state: &AppState) -> bool {
     }
 }
 
-pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
+pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) {
     if !crate::match_bootstrap::accepted_tick_is_admitted(
         state.loaded_startup.as_ref(),
         state.rust_l0_receipt.as_ref(),
@@ -507,7 +468,7 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
         return;
     }
 
-    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::WallClock { elapsed_ms });
+    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::WallClock { now_ms });
 }
 
 /// Advance exactly one production simulation step for the hidden tactical
@@ -515,8 +476,8 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
 ///
 /// This is stricter than the ordinary app pump: sandbox admission is not
 /// sufficient, the screen must be `InGame`, and the live simulation clock must
-/// move by exactly one fixed step. The wall-clock accumulator is discarded
-/// before and after the step so a prior render remainder cannot leak in.
+/// move by exactly one gameplay frame. The local pacer is re-anchored after
+/// the step so a prior wall-clock interval cannot leak into normal admission.
 pub(crate) fn advance_in_game_runtime_exact_step(
     state: &mut AppState,
 ) -> Result<ExactStepReceipt, ExactStepError> {
@@ -532,45 +493,26 @@ pub(crate) fn advance_in_game_runtime_exact_step(
     if state.screen != GameScreen::InGame {
         return Err(ExactStepError::ScreenNotInGame);
     }
-    let (tick_before, total_sim_ms_before, binary_frame_before) = state
+    let (tick_before, binary_frame_before) = state
         .simulation
         .as_ref()
-        .map(|sim| {
-            (
-                sim.session.tick,
-                sim.session.total_sim_ms,
-                sim.session.binary_frame,
-            )
-        })
+        .map(|sim| (sim.session.tick, sim.session.binary_frame))
         .ok_or(ExactStepError::SimulationMissing)?;
 
-    let accumulator_before_clear_ms = state.sim_accumulator_ms;
-    state.sim_accumulator_ms = 0;
     advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep);
-    // Receipt failure must not leave a remainder that can alter a retry or
-    // ordinary scheduler resume.
-    state.sim_accumulator_ms = 0;
+    let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
+    state.frame_pacer.reanchor(now_ms);
 
-    let (tick_after, total_sim_ms_after, binary_frame_after) = state
+    let (tick_after, binary_frame_after) = state
         .simulation
         .as_ref()
-        .map(|sim| {
-            (
-                sim.session.tick,
-                sim.session.total_sim_ms,
-                sim.session.binary_frame,
-            )
-        })
+        .map(|sim| (sim.session.tick, sim.session.binary_frame))
         .ok_or(ExactStepError::SimulationMissing)?;
     let receipt = ExactStepReceipt {
         tick_before,
         tick_after,
-        total_sim_ms_before,
-        total_sim_ms_after,
         binary_frame_before,
         binary_frame_after,
-        accumulator_before_clear_ms,
-        accumulator_after_ms: state.sim_accumulator_ms,
     };
     validate_exact_step_receipt(receipt)?;
     Ok(receipt)
@@ -581,79 +523,62 @@ fn validate_exact_step_receipt(receipt: ExactStepReceipt) -> Result<(), ExactSte
     if tick_delta != 1 {
         return Err(ExactStepError::TickDelta { actual: tick_delta });
     }
-    let Some(expected_total_sim_ms) = receipt
-        .total_sim_ms_before
-        .checked_add(u64::from(SIM_TICK_MS))
-    else {
-        return Err(ExactStepError::TotalSimTimeDelta {
-            before: receipt.total_sim_ms_before,
-            after: receipt.total_sim_ms_after,
-            expected_delta: u64::from(SIM_TICK_MS),
-        });
-    };
-    if receipt.total_sim_ms_after != expected_total_sim_ms {
-        return Err(ExactStepError::TotalSimTimeDelta {
-            before: receipt.total_sim_ms_before,
-            after: receipt.total_sim_ms_after,
-            expected_delta: u64::from(SIM_TICK_MS),
-        });
-    }
-    let expected_binary_frame = ((receipt.total_sim_ms_after * 15) / 1000) as u32;
-    if receipt.binary_frame_after != expected_binary_frame {
-        return Err(ExactStepError::BinaryFrameMismatch {
-            expected: expected_binary_frame,
-            actual: receipt.binary_frame_after,
-        });
-    }
-    if receipt.accumulator_after_ms != 0 {
-        return Err(ExactStepError::AccumulatorNotCleared {
-            remaining_ms: receipt.accumulator_after_ms,
+    let frame_delta = receipt
+        .binary_frame_after
+        .wrapping_sub(receipt.binary_frame_before);
+    if frame_delta != 1 {
+        return Err(ExactStepError::FrameDelta {
+            actual: frame_delta,
         });
     }
     Ok(())
 }
 
 fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) {
-    // Frame-step: when paused, advance exactly one tick on request.
-    let (run_sim, sim_elapsed) = match mode {
-        RuntimeAdvanceMode::WallClock { elapsed_ms } => {
+    let mut admitted_by_pacer = false;
+    let run_sim = match mode {
+        RuntimeAdvanceMode::WallClock { now_ms } => {
             let frame_stepping = state.debug_frame_step_requested;
-            let run_sim = if frame_stepping {
+            if frame_stepping {
                 state.debug_frame_step_requested = false;
+                state.frame_pacer.reanchor(now_ms);
                 true
             } else {
-                // Modal-pump contract: while the in-game Options modal is open
-                // (`state.paused`), offline freezes and network advances;
-                // otherwise run. Offline-identical to the prior `!state.paused`.
-                service_tick_should_advance_sim(state)
-            };
-            let sim_elapsed = if frame_stepping {
-                u64::from(SIM_TICK_MS)
-            } else {
-                elapsed_ms
-            };
-            (run_sim, sim_elapsed)
+                let paused = !service_tick_should_advance_sim(state);
+                let game_speed = state.simulation.as_ref().map_or_else(
+                    || state.in_game_options.game_speed.min(6) as u8,
+                    |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
+                );
+                let admit = state.frame_pacer.should_admit(now_ms, game_speed, paused);
+                admitted_by_pacer = admit;
+                admit
+            }
         }
-        RuntimeAdvanceMode::ExactOneStep => (true, u64::from(SIM_TICK_MS)),
+        RuntimeAdvanceMode::ExactOneStep => true,
     };
 
     if run_sim {
+        let tick_lane = match mode {
+            RuntimeAdvanceMode::WallClock { .. }
+                if state.paused && current_session_mode(state).is_network() =>
+            {
+                TickLane::NetworkModal
+            }
+            RuntimeAdvanceMode::WallClock { .. } | RuntimeAdvanceMode::ExactOneStep => {
+                TickLane::Ordinary
+            }
+        };
         let garrison_flash_start_tick = state
             .simulation
             .as_ref()
             .map(|sim| sim.session.tick)
             .unwrap_or(0);
-        match mode {
-            RuntimeAdvanceMode::WallClock { .. } => {
-                advance_fixed_simulation(state, sim_elapsed);
-            }
-            RuntimeAdvanceMode::ExactOneStep => {
-                let configured_tps = state.sim_speed_tps;
-                advance_fixed_simulation_mode(
-                    state,
-                    FixedAdvanceMode::ExactOneStep { configured_tps },
-                );
-            }
+        let frame_committed = advance_one_simulation_frame(state, tick_lane);
+        if frame_committed && admitted_by_pacer {
+            let RuntimeAdvanceMode::WallClock { now_ms } = mode else {
+                unreachable!("only wall-clock admission records the frame pacer");
+            };
+            state.frame_pacer.record_admitted_frame(now_ms);
         }
         // After the sim advances, surface a win/loss result screen for the
         // local player — the sim computes the per-house outcome flags but
@@ -677,23 +602,14 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
         // Use real wall-clock delta (capped to prevent jumps after pauses/debugger).
         // Previously this passed SIM_TICK_MS (66ms) per render frame, causing building
         // idle animations to play ~3-4× too fast (60fps × 66ms = 3960ms/sec).
-        crate::app_building_anim::tick_crane_animations(
-            state,
-            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
-        );
+        crate::app_building_anim::tick_crane_animations(state, 16);
         crate::app_building_anim::tick_garrison_muzzle_flashes(
             state,
             garrison_flash_elapsed_ticks.saturating_mul(u64::from(SIM_TICK_MS)) as u32,
         );
         finish_fire_effect_batch(&mut state.pending_fire_effects);
-        crate::app_fire_effects::tick_weapon_muzzle_flashes(
-            state,
-            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
-        );
-        crate::app_chute_anim::tick_parachute_anims(
-            state,
-            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
-        );
+        crate::app_fire_effects::tick_weapon_muzzle_flashes(state, 16);
+        crate::app_chute_anim::tick_parachute_anims(state);
     }
 
     // Refresh the radiation green glow after the sim steps (stepwise; a no-op
@@ -723,33 +639,16 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
 }
 
 /// Tick simulation: advance movement and animation systems.
-pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
-    let configured_tps = state.sim_speed_tps;
-    advance_fixed_simulation_mode(
-        state,
-        FixedAdvanceMode::WallClock {
-            elapsed_ms,
-            configured_tps,
-        },
-    );
-}
-
-fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
-    // Wall-clock mode keeps the speed-scaled schedule; exact mode supplies one
-    // fixed step independently of speed and any accumulated remainder.
-    // Per-tick dt stays constant — speed change comes from more/fewer ticks per wall-clock second.
-    let schedule = fixed_step_schedule_for_mode(state.sim_accumulator_ms, mode);
-    // The chosen schedule is the only input to the common production body.
-    state.sim_accumulator_ms = schedule.remaining_accumulator_ms;
-
+fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bool {
     let mut refresh_after_tick = false;
     let mut crane_owners: Vec<String> = Vec::new();
     // (rx, ry, type_id) for wall buildings placed this frame — injected into state.overlays.
     let mut placed_walls: Vec<(u16, u16, String)> = Vec::new();
     let runtime_active = state.simulation.is_some() || !state.trigger_graph.triggers.is_empty();
     if !runtime_active {
-        return;
+        return false;
     }
+    let mut frame_committed = state.simulation.is_none();
 
     if let Some(sim) = &mut state.simulation {
         if sim.replay_log.is_none() {
@@ -767,13 +666,14 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
 
     begin_fire_effect_batch(&mut state.pending_fire_effects);
 
-    for _ in 0..schedule.steps {
+    for _ in 0..1 {
         // Compute local owner before mutable borrow of simulation.
         let local_owner_for_fog = preferred_local_owner_name(state);
 
         // Cache local owner name before mutable sim borrow (avoids borrow conflict).
         let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
+        let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
         if let Some(sim) = &mut state.simulation {
@@ -783,54 +683,47 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
                 sim.ai_players.clear();
             }
             sim.sound_events.clear();
-            let due_commands = sim.take_due_commands();
-            let tick_result = sim.advance_tick(
+            let due_commands = if tick_lane == TickLane::Ordinary {
+                sim.take_due_commands()
+            } else {
+                Vec::new()
+            };
+            let tick_result = sim.advance_tick_in_lane(
                 &due_commands,
                 state.rules.as_ref(),
                 &state.height_map,
                 state.path_grid.as_ref(),
                 state.overlay_registry.as_ref(),
                 SIM_TICK_MS,
+                tick_lane,
+                Some(&state.animation_sequences),
             );
+            frame_committed = tick_result.frame_committed;
             // Parity capture, if requested. Placed directly after the committed tick so
             // it observes the same state the tick hash covers, and before any app-layer
             // animation work that the original engine accounts for elsewhere.
-            if let Some(sink) = state.parity_digest_sink.as_mut() {
-                let digest = sim.parity_digest();
-                if let Err(error) = sink.write(&digest) {
-                    // A failing diagnostic must never take the game down with it.
-                    log::error!("parity digest write failed, disabling capture: {error}");
-                    state.parity_digest_sink = None;
+            if tick_result.frame_committed {
+                if let Some(sink) = state.parity_digest_sink.as_mut() {
+                    let digest = sim.parity_digest();
+                    if let Err(error) = sink.write(&digest) {
+                        // A failing diagnostic must never take the game down with it.
+                        log::error!("parity digest write failed, disabling capture: {error}");
+                        state.parity_digest_sink = None;
+                    }
                 }
             }
-            census_tick = Some(tick_result.tick);
+            census_tick = tick_result.frame_committed.then_some(tick_result.tick);
+            let game_options = sim.session.game_options.clone();
             let (ents, interner) = sim.entities_mut_and_interner();
-            let death_finished =
-                animation::tick_animations(ents, &state.animation_sequences, SIM_TICK_MS, interner);
-            // Despawn entities whose death animation has completed.
-            for dead_id in &death_finished {
-                // Transitional app-owned completion request. Central UnInit owns
-                // occupancy, radio, logic, alive, and pending-delete ordering.
-                sim.uninit(*dead_id);
-            }
-            if !death_finished.is_empty() {
-                refresh_after_tick = true;
-            }
-            // Preserve the release-visible lifecycle order even while the
-            // display/Anim/Voc/redraw consumers remain separately blocked.
-            for output in sim.lifecycle_outputs.drain(..) {
-                match output {
-                    LifecycleOutput::RevealDisplay { .. }
-                    | LifecycleOutput::DisplayRemove { .. }
-                    | LifecycleOutput::DetachAttachedAnims { .. }
-                    | LifecycleOutput::StopVoc { .. }
-                    | LifecycleOutput::DirtyTacticalRect { .. }
-                    | LifecycleOutput::ClearDrawnState { .. }
-                    | LifecycleOutput::ClearRedraw { .. } => {}
-                }
-            }
-            animation::tick_voxel_animations(sim.entities_mut(), SIM_TICK_MS);
-            animation::tick_harvest_overlays(sim.entities_mut(), SIM_TICK_MS);
+            animation::tick_non_dying_animations(
+                ents,
+                &state.animation_sequences,
+                &game_options,
+                interner,
+            );
+            drained_lifecycle_outputs.extend(sim.lifecycle_outputs.drain(..));
+            animation::tick_voxel_animations(sim.entities_mut());
+            animation::tick_harvest_overlays(sim.entities_mut());
             // Pre-merge fog visibility for local owner so render queries are O(1).
             if let Some(owner) = &local_owner_for_fog {
                 if sim.session.tick == 1 {
@@ -1286,8 +1179,37 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
                     }
                 }
             }
-            if let Some(log) = &mut sim.replay_log {
-                log.record_tick(tick_result.tick, due_commands, tick_result.state_hash);
+            if tick_result.frame_committed {
+                if let Some(log) = &mut sim.replay_log {
+                    log.record_tick(tick_result.tick, due_commands, tick_result.state_hash);
+                }
+            }
+        }
+        // Rendering is rebuilt from lifecycle facts every frame. Replay the
+        // app-owned transactions in native emission order for state that has a
+        // direct attachment or retained audio handle.
+        for output in drained_lifecycle_outputs {
+            match output {
+                LifecycleOutput::DetachAttachedAnims { stable_id } => {
+                    state
+                        .garrison_muzzle_flashes
+                        .retain(|flash| flash.building_id != stable_id);
+                    state
+                        .parachute_anims
+                        .retain(|anim| anim.target_id != stable_id);
+                }
+                LifecycleOutput::StopVoc { stable_id } => {
+                    if let Some(sfx) = state.sfx_player.as_mut() {
+                        sfx.stop_animation_sound(stable_id);
+                    }
+                }
+                LifecycleOutput::DisplayRemove { .. } => {
+                    refresh_after_tick = true;
+                }
+                LifecycleOutput::RevealDisplay { .. }
+                | LifecycleOutput::DirtyTacticalRect { .. }
+                | LifecycleOutput::ClearDrawnState { .. }
+                | LifecycleOutput::ClearRedraw { .. } => {}
             }
         }
         crate::app_fire_effects::spawn_non_garrison_fire_effects(state, &drained_fire_events);
@@ -1388,6 +1310,7 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
         rebuild_dynamic_path_grid(state);
         refresh_entity_atlases(state);
     }
+    frame_committed
 }
 
 /// Per-frame radiation-glow refresh. Rebuilds the lighting grid only when the
@@ -1425,54 +1348,6 @@ fn refresh_radiation_glow(state: &mut AppState) {
     };
     state.last_radiation_light_epoch = epoch;
     state.lighting_grid = new_grid;
-}
-
-fn fixed_step_schedule_for_mode(accumulator_ms: u64, mode: FixedAdvanceMode) -> FixedStepSchedule {
-    match mode {
-        FixedAdvanceMode::WallClock {
-            elapsed_ms,
-            configured_tps,
-        } => {
-            // Per-tick dt stays constant; speed changes the number of ticks
-            // scheduled per wall-clock second.
-            let scaled_elapsed = elapsed_ms * u64::from(configured_tps) / u64::from(SIM_TICK_HZ);
-            // Allow more steps per frame at high speeds so the sim can keep up.
-            let max_steps = ((u64::from(configured_tps) * u64::from(MAX_SIM_STEPS_PER_FRAME)
-                / u64::from(SIM_TICK_HZ)) as u32)
-                .max(MAX_SIM_STEPS_PER_FRAME)
-                .min(64);
-            schedule_fixed_steps(accumulator_ms, scaled_elapsed, max_steps)
-        }
-        FixedAdvanceMode::ExactOneStep {
-            configured_tps: _configured_tps,
-        } => FixedStepSchedule {
-            steps: 1,
-            remaining_accumulator_ms: 0,
-        },
-    }
-}
-
-fn schedule_fixed_steps(accumulator_ms: u64, elapsed_ms: u64, max_steps: u32) -> FixedStepSchedule {
-    // Scale the delta cap proportionally to the max steps allowed, so high-speed
-    // modes don't get clamped to the base 250ms cap.
-    let scaled_delta_cap = MAX_UPDATE_DELTA_MS * max_steps as u64 / MAX_SIM_STEPS_PER_FRAME as u64;
-    let mut remaining_accumulator_ms =
-        accumulator_ms.saturating_add(elapsed_ms.min(scaled_delta_cap));
-    let mut steps = 0;
-
-    while remaining_accumulator_ms >= SIM_TICK_MS as u64 && steps < max_steps {
-        remaining_accumulator_ms -= SIM_TICK_MS as u64;
-        steps += 1;
-    }
-
-    if steps == max_steps && remaining_accumulator_ms >= SIM_TICK_MS as u64 {
-        remaining_accumulator_ms = SIM_TICK_MS as u64;
-    }
-
-    FixedStepSchedule {
-        steps,
-        remaining_accumulator_ms,
-    }
 }
 
 fn begin_fire_effect_batch(pending: &mut Vec<SimFireEvent>) {
@@ -2017,12 +1892,10 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExactStepError, ExactStepReceipt, FixedAdvanceMode, FixedStepSchedule,
-        MAX_SIM_STEPS_PER_FRAME, append_fire_effect_batch, begin_fire_effect_batch,
-        filter_new_overlay_entries, finish_fire_effect_batch, fixed_step_schedule_for_mode,
-        schedule_fixed_steps, validate_exact_step_receipt, world_point_to_cell,
+        ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
+        filter_new_overlay_entries, finish_fire_effect_batch, validate_exact_step_receipt,
+        world_point_to_cell,
     };
-    use crate::app_types::{SIM_TICK_MS, tps_for_game_speed};
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
     use crate::sim::combat::TargetKind;
@@ -2127,247 +2000,36 @@ mod tests {
     }
 
     #[test]
-    fn fixed_step_schedule_is_invariant_across_frame_profiles() {
-        let profile_a = [16_u64, 16, 16, 16];
-        let profile_b = [32_u64, 32];
-
-        let mut state_a = FixedStepSchedule {
-            steps: 0,
-            remaining_accumulator_ms: 0,
+    fn exact_receipt_accepts_one_wrapping_gameplay_frame() {
+        let receipt = ExactStepReceipt {
+            tick_before: 9,
+            tick_after: 10,
+            binary_frame_before: u32::MAX,
+            binary_frame_after: 0,
         };
-        let mut total_steps_a = 0;
-        for frame_ms in profile_a {
-            state_a = schedule_fixed_steps(
-                state_a.remaining_accumulator_ms,
-                frame_ms,
-                MAX_SIM_STEPS_PER_FRAME,
-            );
-            total_steps_a += state_a.steps;
-        }
-
-        let mut state_b = FixedStepSchedule {
-            steps: 0,
-            remaining_accumulator_ms: 0,
-        };
-        let mut total_steps_b = 0;
-        for frame_ms in profile_b {
-            state_b = schedule_fixed_steps(
-                state_b.remaining_accumulator_ms,
-                frame_ms,
-                MAX_SIM_STEPS_PER_FRAME,
-            );
-            total_steps_b += state_b.steps;
-        }
-
-        assert_eq!(total_steps_a, total_steps_b);
-        assert_eq!(
-            state_a.remaining_accumulator_ms,
-            state_b.remaining_accumulator_ms
-        );
+        assert_eq!(validate_exact_step_receipt(receipt), Ok(()));
     }
 
     #[test]
-    fn fixed_step_schedule_caps_large_catch_up_bursts() {
-        // MAX_UPDATE_DELTA_MS=250 clamps the elapsed time. At SIM_TICK_MS per tick,
-        // 250ms / SIM_TICK_MS gives the number of steps (capped to MAX_SIM_STEPS_PER_FRAME).
-        // If max_steps is hit and remaining >= SIM_TICK_MS, remaining is clamped to
-        // SIM_TICK_MS to prevent accumulator runaway.
-        let state = schedule_fixed_steps(0, 1_000, MAX_SIM_STEPS_PER_FRAME);
-        let expected_steps = (250 / SIM_TICK_MS).min(MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(state.steps, expected_steps);
-        let raw_remaining = 250 - expected_steps as u64 * SIM_TICK_MS as u64;
-        let expected_remaining =
-            if expected_steps == MAX_SIM_STEPS_PER_FRAME && raw_remaining >= SIM_TICK_MS as u64 {
-                SIM_TICK_MS as u64
-            } else {
-                raw_remaining
-            };
-        assert_eq!(state.remaining_accumulator_ms, expected_remaining);
-    }
-
-    #[test]
-    fn fixed_step_schedule_preserves_partial_tick_progress() {
-        // Elapsed less than one tick → accumulates without stepping.
-        let partial = (SIM_TICK_MS as u64) - 1; // 1ms short of a full tick
-        let state = schedule_fixed_steps(0, partial, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(state.steps, 0);
-        assert_eq!(state.remaining_accumulator_ms, partial);
-
-        // Adding 1ms more crosses the threshold → 1 step.
-        let next = schedule_fixed_steps(state.remaining_accumulator_ms, 1, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(next.steps, 1);
-        assert_eq!(next.remaining_accumulator_ms, 0);
-    }
-
-    #[test]
-    fn fixed_step_schedule_reset_prevents_pause_burst_on_resume() {
-        let expected_steps = (250 / SIM_TICK_MS).min(MAX_SIM_STEPS_PER_FRAME);
-        let burst = schedule_fixed_steps(0, 1_000, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(burst.steps, expected_steps);
-
-        let resumed = schedule_fixed_steps(0, 0, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(resumed.steps, 0);
-        assert_eq!(resumed.remaining_accumulator_ms, 0);
-    }
-
-    #[test]
-    fn fixed_step_schedule_reset_prevents_stale_transition_delta() {
-        let expected_steps = (250 / SIM_TICK_MS).min(MAX_SIM_STEPS_PER_FRAME);
-        let stale_menu_time = schedule_fixed_steps(0, 500, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(stale_menu_time.steps, expected_steps);
-
-        let first_ingame_update = schedule_fixed_steps(0, 0, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(first_ingame_update.steps, 0);
-        assert_eq!(first_ingame_update.remaining_accumulator_ms, 0);
-    }
-
-    #[test]
-    fn exact_schedule_is_one_step_with_no_remainder_for_every_speed_bucket() {
-        for stored_speed in 0..=6 {
-            let configured_tps = tps_for_game_speed(stored_speed);
-            for accumulator_ms in [0, 1, u64::from(SIM_TICK_MS) - 1, 97, 10_000] {
-                let schedule = fixed_step_schedule_for_mode(
-                    accumulator_ms,
-                    FixedAdvanceMode::ExactOneStep { configured_tps },
-                );
-                assert_eq!(
-                    schedule,
-                    FixedStepSchedule {
-                        steps: 1,
-                        remaining_accumulator_ms: 0,
-                    },
-                    "stored_speed={stored_speed} configured_tps={configured_tps} accumulator={accumulator_ms}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn repeated_exact_schedules_drive_the_real_headless_sim_clock() {
-        let height_map = BTreeMap::new();
-        for stored_speed in 0..=6 {
-            let configured_tps = tps_for_game_speed(stored_speed);
-            let mut sim = crate::sim::world::Simulation::new();
-            for accumulator_before_clear_ms in [9, 17, 21] {
-                let tick_before = sim.session.tick;
-                let total_sim_ms_before = sim.session.total_sim_ms;
-                let binary_frame_before = sim.session.binary_frame;
-                let schedule = fixed_step_schedule_for_mode(
-                    accumulator_before_clear_ms,
-                    FixedAdvanceMode::ExactOneStep { configured_tps },
-                );
-                for _ in 0..schedule.steps {
-                    sim.advance_tick(&[], None, &height_map, None, None, SIM_TICK_MS);
-                }
-                let receipt = ExactStepReceipt {
-                    tick_before,
-                    tick_after: sim.session.tick,
-                    total_sim_ms_before,
-                    total_sim_ms_after: sim.session.total_sim_ms,
-                    binary_frame_before,
-                    binary_frame_after: sim.session.binary_frame,
-                    accumulator_before_clear_ms,
-                    accumulator_after_ms: schedule.remaining_accumulator_ms,
-                };
-                assert_eq!(
-                    validate_exact_step_receipt(receipt),
-                    Ok(()),
-                    "stored_speed={stored_speed} configured_tps={configured_tps}"
-                );
-            }
-            assert_eq!(sim.session.tick, 3);
-            assert_eq!(sim.session.total_sim_ms, 3 * u64::from(SIM_TICK_MS));
-            assert_eq!(
-                sim.session.binary_frame,
-                ((sim.session.total_sim_ms * 15) / 1000) as u32
-            );
-        }
-    }
-
-    #[test]
-    fn three_exact_receipts_advance_tick_time_and_binary_frame_formula() {
-        let mut tick = 0;
-        let mut total_sim_ms = 0;
-        let mut binary_frame = 0;
-        for accumulator_before_clear_ms in [9, 17, 21] {
-            let next_total = total_sim_ms + u64::from(SIM_TICK_MS);
-            let next_binary = ((next_total * 15) / 1000) as u32;
-            let receipt = ExactStepReceipt {
-                tick_before: tick,
-                tick_after: tick + 1,
-                total_sim_ms_before: total_sim_ms,
-                total_sim_ms_after: next_total,
-                binary_frame_before: binary_frame,
-                binary_frame_after: next_binary,
-                accumulator_before_clear_ms,
-                accumulator_after_ms: 0,
-            };
-            assert_eq!(validate_exact_step_receipt(receipt), Ok(()));
-            tick = receipt.tick_after;
-            total_sim_ms = receipt.total_sim_ms_after;
-            binary_frame = receipt.binary_frame_after;
-        }
-
-        assert_eq!(tick, 3);
-        assert_eq!(total_sim_ms, 3 * u64::from(SIM_TICK_MS));
-        assert_eq!(binary_frame, ((total_sim_ms * 15) / 1000) as u32);
-    }
-
-    #[test]
-    fn exact_receipt_rejects_zero_or_multiple_steps() {
-        let receipt = |tick_after| ExactStepReceipt {
+    fn exact_receipt_rejects_zero_or_multiple_frame_advances() {
+        let receipt = |tick_after, binary_frame_after| ExactStepReceipt {
             tick_before: 10,
             tick_after,
-            total_sim_ms_before: 220,
-            total_sim_ms_after: 242,
-            binary_frame_before: 3,
-            binary_frame_after: 3,
-            accumulator_before_clear_ms: 12,
-            accumulator_after_ms: 0,
+            binary_frame_before: 20,
+            binary_frame_after,
         };
 
         assert_eq!(
-            validate_exact_step_receipt(receipt(10)),
+            validate_exact_step_receipt(receipt(10, 21)),
             Err(ExactStepError::TickDelta { actual: 0 })
         );
         assert_eq!(
-            validate_exact_step_receipt(receipt(12)),
-            Err(ExactStepError::TickDelta { actual: 2 })
+            validate_exact_step_receipt(receipt(11, 20)),
+            Err(ExactStepError::FrameDelta { actual: 0 })
         );
-    }
-
-    #[test]
-    fn exact_receipt_rejects_time_frame_and_accumulator_drift() {
-        let valid = ExactStepReceipt {
-            tick_before: 10,
-            tick_after: 11,
-            total_sim_ms_before: 220,
-            total_sim_ms_after: 242,
-            binary_frame_before: 3,
-            binary_frame_after: 3,
-            accumulator_before_clear_ms: 19,
-            accumulator_after_ms: 0,
-        };
-
-        let mut bad_time = valid;
-        bad_time.total_sim_ms_after = 243;
-        assert!(matches!(
-            validate_exact_step_receipt(bad_time),
-            Err(ExactStepError::TotalSimTimeDelta { .. })
-        ));
-
-        let mut bad_frame = valid;
-        bad_frame.binary_frame_after = 4;
-        assert!(matches!(
-            validate_exact_step_receipt(bad_frame),
-            Err(ExactStepError::BinaryFrameMismatch { .. })
-        ));
-
-        let mut bad_accumulator = valid;
-        bad_accumulator.accumulator_after_ms = 1;
         assert_eq!(
-            validate_exact_step_receipt(bad_accumulator),
-            Err(ExactStepError::AccumulatorNotCleared { remaining_ms: 1 })
+            validate_exact_step_receipt(receipt(11, 22)),
+            Err(ExactStepError::FrameDelta { actual: 2 })
         );
     }
 

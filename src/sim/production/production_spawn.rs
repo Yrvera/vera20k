@@ -168,11 +168,9 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
                 overlay_grid,
                 zone_grid,
                 require_water,
-                // Frame-counter input for the authoritative FNPC fallback. binary_frame
-                // is the synthetic 15 Hz per-tick counter (the engine's per-game-frame
-                // counter analog), committed late at end-of-tick, so DURING this tick it
-                // holds the current frame N the FNPC pick must alias on. It is derived
-                // from the hashed total_sim_ms, so it is lockstep-shared by construction.
+                // Frame-counter input for the authoritative FNPC fallback. The
+                // counter is committed late, so during this advance it holds
+                // current frame N, which is the value the fallback must alias.
                 sim.session.binary_frame,
                 sim.playfield_bounds,
             ),

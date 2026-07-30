@@ -2,9 +2,9 @@
 //!
 //! RA2 maps store entity placements in four INI sections:
 //! - `[Units]`: vehicles (14 comma-separated fields per line)
+//! - `[Aircraft]`: air units (12 fields)
 //! - `[Infantry]`: soldiers (14 fields, includes sub-cell position)
 //! - `[Structures]`: buildings (17 fields, includes upgrades)
-//! - [Aircraft]: air units (12 fields)
 //!
 //! Each line: `INDEX=OWNER,TYPE_ID,HEALTH,X,Y,...` with category-specific trailing fields.
 //!
@@ -58,7 +58,8 @@ pub struct MapEntity {
 
 /// Parse all entity placements from a map's INI data.
 ///
-/// Reads [Units], [Infantry], [Structures], and [Aircraft] sections.
+/// Reads [Units], [Aircraft], [Infantry], and [Structures] in the scenario
+/// loader's fixed order, independent of their order in the file.
 /// Malformed lines are skipped with a warning log. Returns an empty Vec
 /// if none of these sections exist (e.g., empty skirmish maps).
 pub fn parse_map_entities(ini: &IniFile) -> Vec<MapEntity> {
@@ -67,22 +68,26 @@ pub fn parse_map_entities(ini: &IniFile) -> Vec<MapEntity> {
     if let Some(section) = ini.section("Units") {
         parse_units_section(section, &mut entities);
     }
+    if let Some(section) = ini.section("Aircraft") {
+        parse_aircraft_section(section, &mut entities);
+    }
     if let Some(section) = ini.section("Infantry") {
         parse_infantry_section(section, &mut entities);
     }
     if let Some(section) = ini.section("Structures") {
         parse_structures_section(section, &mut entities);
     }
-    if let Some(section) = ini.section("Aircraft") {
-        parse_aircraft_section(section, &mut entities);
-    }
 
     log::info!(
-        "Parsed {} map entities ({} units, {} infantry, {} structures, {} aircraft)",
+        "Parsed {} map entities ({} units, {} aircraft, {} infantry, {} structures)",
         entities.len(),
         entities
             .iter()
             .filter(|e| e.category == EntityCategory::Unit)
+            .count(),
+        entities
+            .iter()
+            .filter(|e| e.category == EntityCategory::Aircraft)
             .count(),
         entities
             .iter()
@@ -91,10 +96,6 @@ pub fn parse_map_entities(ini: &IniFile) -> Vec<MapEntity> {
         entities
             .iter()
             .filter(|e| e.category == EntityCategory::Structure)
-            .count(),
-        entities
-            .iter()
-            .filter(|e| e.category == EntityCategory::Aircraft)
             .count(),
     );
 
@@ -440,39 +441,30 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_sections() {
+    fn map_entities_follow_native_loader_order_not_file_section_order() {
         let ini: IniFile = IniFile::from_str(
-            "[Units]\n\
-             0=Americans,MTNK,256,30,40,64,Guard,None,0,-1,false,-1,true,false\n\
+            "[Structures]\n\
+             0=Americans,GAPOWR,256,15,25,0,None,true,false,true,0,0,None,None,None,false,true\n\
              [Infantry]\n\
              0=Soviet,E1,256,10,20,0,Guard,0,None,0,-1,false,true,false\n\
-             [Structures]\n\
-             0=Americans,GAPOWR,256,15,25,0,None,true,false,true,0,0,None,None,None,false,true\n\
              [Aircraft]\n\
-             0=Soviet,DRON,256,50,50,0,Guard,None,0,-1,false,false\n",
+             0=Soviet,DRON,256,50,50,0,Guard,None,0,-1,false,false\n\
+             [Units]\n\
+             0=Americans,MTNK,256,30,40,64,Guard,None,0,-1,false,-1,true,false\n",
         );
         let entities: Vec<MapEntity> = parse_map_entities(&ini);
         assert_eq!(entities.len(), 4);
-
-        let units: usize = entities
-            .iter()
-            .filter(|e| e.category == EntityCategory::Unit)
-            .count();
-        let infantry: usize = entities
-            .iter()
-            .filter(|e| e.category == EntityCategory::Infantry)
-            .count();
-        let structures: usize = entities
-            .iter()
-            .filter(|e| e.category == EntityCategory::Structure)
-            .count();
-        let aircraft: usize = entities
-            .iter()
-            .filter(|e| e.category == EntityCategory::Aircraft)
-            .count();
-        assert_eq!(units, 1);
-        assert_eq!(infantry, 1);
-        assert_eq!(structures, 1);
-        assert_eq!(aircraft, 1);
+        assert_eq!(
+            entities
+                .iter()
+                .map(|entity| (entity.category, entity.type_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (EntityCategory::Unit, "MTNK"),
+                (EntityCategory::Aircraft, "DRON"),
+                (EntityCategory::Infantry, "E1"),
+                (EntityCategory::Structure, "GAPOWR"),
+            ]
+        );
     }
 }

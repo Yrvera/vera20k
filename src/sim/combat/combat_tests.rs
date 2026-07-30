@@ -12,6 +12,7 @@ use crate::sim::animation::{Animation, SequenceKind};
 use crate::sim::components::Health;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
+use crate::sim::house_state::HouseState;
 use crate::sim::intern::{InternedId, test_intern, test_interner};
 use crate::sim::miner::{ResourceNode, ResourceType};
 use crate::sim::occupancy::OccupancyGrid;
@@ -35,6 +36,14 @@ fn test_rules() -> RuleSet {
 [AP]\nVerses=100%,100%,90%,75%,75%,75%,60%,30%,20%,0%,0%\n";
     let ini: IniFile = IniFile::from_str(ini_str);
     RuleSet::from_ini(&ini).expect("test rules should parse")
+}
+
+#[test]
+fn weapon_rof_is_already_a_native_frame_count() {
+    assert_eq!(rof_to_cooldown_frames(-1), 1);
+    assert_eq!(rof_to_cooldown_frames(0), 1);
+    assert_eq!(rof_to_cooldown_frames(20), 20);
+    assert_eq!(rof_to_cooldown_frames(i32::from(u16::MAX) + 1), u16::MAX);
 }
 
 fn building_damage_state_aoe_rules() -> RuleSet {
@@ -155,11 +164,15 @@ fn run_combat_death_handoff(
 ) -> DeathEffects {
     let mut occupancy = OccupancyGrid::new();
     let mut resource_nodes = BTreeMap::new();
+    let houses = BTreeMap::new();
+    let mut main_rng = SimRng::new(0);
     handle_entity_deaths(
         entities,
         &mut occupancy,
         rules,
         interner,
+        &houses,
+        &mut main_rng,
         dead_entities,
         &[],
         &mut resource_nodes,
@@ -877,6 +890,160 @@ fn test_tick_combat_respects_cooldown() {
     }
     let h3: u16 = store.get(2).unwrap().health.current;
     assert!(h3 < h2, "Should fire after cooldown expires");
+}
+
+fn selected_death_sounds_for(
+    rules: &RuleSet,
+    owner_is_human: bool,
+    main_rng: &mut SimRng,
+) -> Vec<String> {
+    let mut entities = EntityStore::new();
+    entities.insert(make_entity_owned(2, "E1", 8, 5, 1, "Americans"));
+    let mut interner = test_interner();
+    let owner = test_intern("Americans");
+    let houses = BTreeMap::from([(
+        owner,
+        HouseState::new(owner, 0, Some(owner), owner_is_human, 5_000, 10),
+    )]);
+    let effects = handle_entity_deaths(
+        &mut entities,
+        &mut OccupancyGrid::new(),
+        rules,
+        &mut interner,
+        &houses,
+        main_rng,
+        &[2],
+        &[],
+        &mut BTreeMap::new(),
+        None,
+        None,
+        None,
+        0,
+    );
+
+    effects
+        .death_sounds
+        .into_iter()
+        .map(|(sound, _, _)| interner.resolve(sound).to_string())
+        .collect()
+}
+
+#[test]
+fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[InfantryTypes]\n0=E1\n\n\
+[VehicleTypes]\n0=MTNK\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[E1]\nStrength=1\nArmor=none\nVoiceDie=VoiceA,VoiceB,VoiceC\nDieSound=DieA,DieB\n\n\
+[MTNK]\nStrength=100\nArmor=heavy\nPrimary=Gun\n\n\
+[Gun]\nDamage=10\nROF=1\nRange=5\nWarhead=WH\n\n\
+[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("death-sound rules parse");
+
+    let mut entities = EntityStore::new();
+    entities.insert(make_entity_owned(1, "MTNK", 5, 5, 100, "Soviet"));
+    entities.insert(make_entity_owned(2, "E1", 8, 5, 1, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut entities, 1, 2, None, &interner);
+    let owner = test_intern("Americans");
+    let houses = BTreeMap::from([(
+        owner,
+        HouseState::new(owner, 0, Some(owner), true, 5_000, 10),
+    )]);
+    let mut sounds = Vec::new();
+    let mut scenario_rng = SimRng::new(73);
+    let scenario_before = scenario_rng.state();
+    let mut human_rng = SimRng::new(1);
+    tick_combat_with_fog_and_main_rng(
+        &mut entities,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        None,
+        &BTreeMap::new(),
+        &houses,
+        Some(&mut sounds),
+        &mut BTreeMap::new(),
+        None,
+        None,
+        None,
+        0,
+        100,
+        0,
+        &[1, 2],
+        None,
+        &mut scenario_rng,
+        &mut human_rng,
+    );
+    assert_eq!(
+        sounds
+            .iter()
+            .filter_map(|event| match event {
+                SimSoundEvent::EntityDied { die_sound_id, .. } => {
+                    Some(interner.resolve(*die_sound_id))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        ["VoiceC", "DieA"]
+    );
+    assert_eq!(
+        scenario_rng.state(),
+        scenario_before,
+        "death-sound choices must not consume Scenario RNG"
+    );
+    let mut two_draw_reference = SimRng::new(1);
+    two_draw_reference.next_u32();
+    two_draw_reference.next_u32();
+    assert_eq!(human_rng.state(), two_draw_reference.state());
+
+    let mut ai_rng = SimRng::new(1);
+    assert_eq!(
+        selected_death_sounds_for(&rules, false, &mut ai_rng),
+        ["DieB"]
+    );
+    let mut one_draw_reference = SimRng::new(1);
+    one_draw_reference.next_u32();
+    assert_eq!(ai_rng.state(), one_draw_reference.state());
+}
+
+#[test]
+fn fatal_sound_empty_lists_skip_draws_but_single_choices_still_draw() {
+    let empty_rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[InfantryTypes]\n0=E1\n\n\
+[VehicleTypes]\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[E1]\nStrength=1\nArmor=none\nVoiceDie= , \nDieSound=\n",
+    ))
+    .expect("empty death-sound rules parse");
+    let mut empty_rng = SimRng::new(1);
+    let empty_before = empty_rng.state();
+    assert!(selected_death_sounds_for(&empty_rules, true, &mut empty_rng).is_empty());
+    assert_eq!(empty_rng.state(), empty_before);
+
+    let single_rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[InfantryTypes]\n0=E1\n\n\
+[VehicleTypes]\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[E1]\nStrength=1\nArmor=none\nVoiceDie=OnlyVoice\nDieSound=OnlyDie\n",
+    ))
+    .expect("single death-sound rules parse");
+    let mut single_rng = SimRng::new(1);
+    assert_eq!(
+        selected_death_sounds_for(&single_rules, true, &mut single_rng),
+        ["OnlyVoice", "OnlyDie"]
+    );
+    let mut two_draw_reference = SimRng::new(1);
+    two_draw_reference.next_u32();
+    two_draw_reference.next_u32();
+    assert_eq!(single_rng.state(), two_draw_reference.state());
 }
 
 #[test]

@@ -1,10 +1,11 @@
 //! Frame-anchored timer primitives used by Mission-related systems.
 //!
-//! `MissionTimer` retains the existing unsigned timing model shared by docking,
-//! gates, and miners. `MissionDispatchTimer` separately models native Mission
-//! dispatch's signed dwords and wrapping comparisons. Both snapshot the global
-//! frame counter rather than decrementing per tick. sim/ only.
+//! `MissionTimer` keeps the public raw-bit fields used by docking, gates, and
+//! miners while delegating countdown semantics to the shared signed timer.
+//! `MissionDispatchTimer` remains a distinct Mission-dispatch comparison.
 use serde::{Deserialize, Serialize};
+
+use crate::sim::timer::CdTimer;
 
 /// "Unarmed / always due" (the -1 start). `u32::MAX`: the live counter starts at
 /// 0 and would take ~3.3 years at 15fps to reach it, so it is never a live value.
@@ -90,6 +91,11 @@ impl Default for MissionTimer {
 }
 
 impl MissionTimer {
+    #[inline]
+    fn countdown(self) -> CdTimer {
+        CdTimer::from_raw(self.start_frame as i32, self.duration as i32)
+    }
+
     /// Construct armed at `start_frame` for `duration` frames.
     #[inline]
     pub fn armed(start_frame: u32, duration: u32) -> Self {
@@ -103,7 +109,7 @@ impl MissionTimer {
     /// or always when unarmed.
     #[inline]
     pub fn due(self, now: u32) -> bool {
-        self.start_frame == SENTINEL || now.wrapping_sub(self.start_frame) >= self.duration
+        self.countdown().expired(now as i32)
     }
 
     /// Re-anchor at `now` for `n` frames.
@@ -151,12 +157,25 @@ impl MissionTimer {
     /// Frames left before due (0 when unarmed or already due; saturating).
     #[inline]
     pub fn remaining(self, now: u32) -> u32 {
-        if self.start_frame == SENTINEL {
-            0
-        } else {
-            self.duration
-                .saturating_sub(now.wrapping_sub(self.start_frame))
-        }
+        self.countdown().remaining(now as i32).max(0) as u32
+    }
+
+    /// Freeze the live remainder until [`MissionTimer::resume`] is called.
+    #[inline]
+    pub fn pause(&mut self, now: u32) {
+        let mut timer = self.countdown();
+        timer.pause(now as i32);
+        self.start_frame = timer.start_frame() as u32;
+        self.duration = timer.duration() as u32;
+    }
+
+    /// Resume a paused timer from the supplied frame.
+    #[inline]
+    pub fn resume(&mut self, now: u32) {
+        let mut timer = self.countdown();
+        timer.resume(now as i32);
+        self.start_frame = timer.start_frame() as u32;
+        self.duration = timer.duration() as u32;
     }
 }
 
@@ -302,5 +321,20 @@ mod tests {
         let t = MissionTimer::armed(u32::MAX - 2, 5);
         assert!(t.due(2)); // 2 - (MAX-2) wraps to 5 -> due (5 >= 5)
         assert!(!t.due(1)); // wraps to 4 -> not due
+    }
+
+    #[test]
+    fn pause_and_resume_use_signed_countdown_semantics() {
+        let mut timer = MissionTimer::armed(100, 10);
+
+        timer.pause(103);
+        assert_eq!((timer.start_frame, timer.duration), (SENTINEL, 7));
+        assert!(!timer.due(500));
+        assert_eq!(timer.remaining(500), 7);
+
+        timer.resume(500);
+        assert_eq!((timer.start_frame, timer.duration), (500, 7));
+        assert!(!timer.due(506));
+        assert!(timer.due(507));
     }
 }

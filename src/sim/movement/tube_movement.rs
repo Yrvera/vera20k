@@ -250,6 +250,15 @@ pub fn tick_low_bridge_tube_movement(
     terrain: &ResolvedTerrainGrid,
 ) {
     let keys = entities.keys_sorted();
+    tick_low_bridge_tube_movement_in_order(entities, occupancy, terrain, &keys);
+}
+
+pub(crate) fn tick_low_bridge_tube_movement_in_order(
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    terrain: &ResolvedTerrainGrid,
+    keys: &[u64],
+) {
     if !keys.iter().any(|&id| {
         entities
             .get(id)
@@ -258,7 +267,7 @@ pub fn tick_low_bridge_tube_movement(
         return;
     }
     let path_grid = PathGrid::from_resolved_terrain(terrain);
-    for &id in &keys {
+    for &id in keys {
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };

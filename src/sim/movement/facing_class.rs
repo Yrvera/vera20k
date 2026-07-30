@@ -89,11 +89,11 @@ impl FacingClass {
         let Some(start) = self.start_frame else {
             return self.current;
         };
-        let elapsed: u32 = binary_frame.saturating_sub(start);
-        if elapsed >= self.duration_frames as u32 {
+        let elapsed = (binary_frame as i32).wrapping_sub(start as i32);
+        let remaining = i32::from(self.duration_frames).wrapping_sub(elapsed).max(0);
+        if remaining == 0 {
             return self.current;
         }
-        let remaining: u16 = self.duration_frames - elapsed as u16;
 
         // Signed short subtraction gives shortest signed delta.
         // 0xFFE0 → 0x0010 wraps to +0x30, not -0xFFD0.
@@ -111,8 +111,8 @@ impl FacingClass {
         // rot_per_frame, this absorbs the remainder into the rate so elapsed=0
         // lands exactly on `prev` instead of `prev + (diff % rot_per_frame)`.
         let per_step: i32 = (diff as i32) / (step_size as i32);
-        let delta: i32 = per_step * (remaining as i32);
-        ((self.current as i32) - delta).rem_euclid(65536) as u16
+        let delta = per_step.wrapping_mul(remaining);
+        i32::from(self.current).wrapping_sub(delta) as u16
     }
 
     /// Smooth setter — initiates a new rotation toward `new_target`.
@@ -167,8 +167,8 @@ impl FacingClass {
         let Some(start) = self.start_frame else {
             return false;
         };
-        let elapsed: u32 = binary_frame.saturating_sub(start);
-        (elapsed as u32) < (self.duration_frames as u32)
+        let elapsed = (binary_frame as i32).wrapping_sub(start as i32);
+        i32::from(self.duration_frames).wrapping_sub(elapsed).max(0) != 0
     }
 }
 
@@ -322,6 +322,28 @@ mod tests {
         assert_eq!(fc.current(1), 0x0000);
         // At elapsed=2: complete.
         assert_eq!(fc.current(2), 0xFF00);
+    }
+
+    #[test]
+    fn current_uses_signed_wrapping_frame_elapsed() {
+        let fc = mid_rotation(0, 12_800, u32::MAX - 1, 10, 5);
+
+        assert_eq!(fc.current(1), 3_840);
+        assert!(fc.is_rotating(1));
+        assert_eq!(fc.current(8), 12_800);
+        assert!(!fc.is_rotating(8));
+    }
+
+    #[test]
+    fn non_multiple_arc_preserves_start_remainder() {
+        let mut fc = FacingClass::new(0, 5);
+        fc.set(0x4000, 100);
+
+        assert_eq!(fc.duration_frames, 12);
+        assert_eq!(fc.current(100), 4);
+        assert_eq!(fc.current(101), 1_369);
+        assert_eq!(fc.current(111), 15_019);
+        assert_eq!(fc.current(112), 0x4000);
     }
 
     #[test]

@@ -95,7 +95,10 @@ pub(crate) use movement_path::{
     path_search_used_zone_grid_marker, reset_path_search_used_zone_grid_marker,
 };
 // Re-export the tick function so callers can use `movement::tick_movement_with_grids`.
-pub(crate) use movement_tick::tick_movement_with_grids;
+pub(crate) use movement_tick::{
+    sync_formation_speeds_after_live_pass, tick_movement_object_with_grids,
+    tick_movement_with_grids,
+};
 
 // ---------------------------------------------------------------------------
 // Constants — shared across movement submodules via `super::`
@@ -187,6 +190,25 @@ pub struct MovementTickStats {
     pub elapsed_us: u64,
 }
 
+impl MovementTickStats {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.movers_total = self.movers_total.saturating_add(other.movers_total);
+        self.moved_steps = self.moved_steps.saturating_add(other.moved_steps);
+        self.blocked_attempts = self.blocked_attempts.saturating_add(other.blocked_attempts);
+        self.repath_attempts = self.repath_attempts.saturating_add(other.repath_attempts);
+        self.repath_successes = self.repath_successes.saturating_add(other.repath_successes);
+        self.scatter_successes = self
+            .scatter_successes
+            .saturating_add(other.scatter_successes);
+        self.crush_kills = self.crush_kills.saturating_add(other.crush_kills);
+        self.stuck_aborts = self.stuck_aborts.saturating_add(other.stuck_aborts);
+        self.scatter_attempts = self.scatter_attempts.saturating_add(other.scatter_attempts);
+        self.track_selections = self.track_selections.saturating_add(other.track_selections);
+        self.stuck_recoveries = self.stuck_recoveries.saturating_add(other.stuck_recoveries);
+        self.elapsed_us = self.elapsed_us.saturating_add(other.elapsed_us);
+    }
+}
+
 /// Command to move an entity to a target cell (queued for next tick).
 #[derive(Debug, Clone)]
 pub struct MoveCommand {
@@ -217,38 +239,38 @@ pub fn tick_locomotor_piggyback_restore(entities: &mut EntityStore) -> usize {
     let mut restored = 0usize;
     let keys = entities.keys_sorted();
     for id in keys {
-        let Some(entity) = entities.get_mut(id) else {
-            continue;
-        };
-        let owner_moving = entity.movement_target.is_some() || entity.forced_drive_track.is_some();
-        let owner_teleporting = entity.teleport_state.is_some();
-        let owner_deploying = entity.building_up.is_some()
-            || entity.building_down.is_some()
-            || entity.deploy_state.is_some();
-        let mut retired_drive = false;
-        let restored_now = if let Some(ref mut loco) = entity.locomotor {
-            retired_drive =
-                loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive;
-            loco.can_restore_primary_from_piggyback(
-                owner_moving,
-                owner_teleporting,
-                owner_deploying,
-            ) && loco.restore_primary_from_piggyback()
-        } else {
-            false
-        };
-        if restored_now {
-            if retired_drive {
-                // Native FootClass::AI releases the old active locomotor before
-                // installing the stored primary. Do not retain hashed Drive
-                // state after primary Teleport is active again.
-                entity.drive_locomotion = None;
-                entity.drive_track = None;
-            }
-            restored = restored.saturating_add(1);
-        }
+        restored = restored.saturating_add(usize::from(tick_locomotor_piggyback_restore_one(
+            entities, id,
+        )));
     }
     restored
+}
+
+pub(crate) fn tick_locomotor_piggyback_restore_one(entities: &mut EntityStore, id: u64) -> bool {
+    let Some(entity) = entities.get_mut(id) else {
+        return false;
+    };
+    let owner_moving = entity.movement_target.is_some() || entity.forced_drive_track.is_some();
+    let owner_teleporting = entity.teleport_state.is_some();
+    let owner_deploying = entity.building_up.is_some()
+        || entity.building_down.is_some()
+        || entity.deploy_state.is_some();
+    let mut retired_drive = false;
+    let restored_now = if let Some(ref mut loco) = entity.locomotor {
+        retired_drive = loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive;
+        loco.can_restore_primary_from_piggyback(owner_moving, owner_teleporting, owner_deploying)
+            && loco.restore_primary_from_piggyback()
+    } else {
+        false
+    };
+    if restored_now && retired_drive {
+        // Native FootClass::AI releases the old active locomotor before
+        // installing the stored primary. Do not retain hashed Drive
+        // state after primary Teleport is active again.
+        entity.drive_locomotion = None;
+        entity.drive_track = None;
+    }
+    restored_now
 }
 
 // ---------------------------------------------------------------------------
@@ -257,11 +279,10 @@ pub fn tick_locomotor_piggyback_restore(entities: &mut EntityStore) -> usize {
 
 /// Advance all entities with MovementTarget along their paths.
 ///
-/// Called once per simulation tick with `tick_ms` milliseconds elapsed.
+/// Called once per admitted native gameplay frame.
 /// Entities that reach their destination have MovementTarget removed automatically.
 pub(crate) fn tick_movement(
     entities: &mut EntityStore,
-    tick_ms: u32,
     interner: &mut crate::sim::intern::StringInterner,
     lifecycle_requests: &mut Vec<LifecycleRequest>,
 ) {
@@ -276,7 +297,6 @@ pub(crate) fn tick_movement(
         &empty_alliances,
         &mut empty_occupancy,
         &mut rng,
-        tick_ms,
         0, // sim_tick not available in test-only wrapper
         interner,
         lifecycle_requests,
@@ -295,7 +315,6 @@ pub(crate) fn tick_movement_with_grid(
     alliances: &HouseAllianceMap,
     occupancy: &mut crate::sim::occupancy::OccupancyGrid,
     rng: &mut SimRng,
-    tick_ms: u32,
     sim_tick: u64,
     interner: &mut crate::sim::intern::StringInterner,
     lifecycle_requests: &mut Vec<LifecycleRequest>,
@@ -311,9 +330,8 @@ pub(crate) fn tick_movement_with_grid(
         occupancy,
         &mut next_occupancy_enter_order,
         rng,
-        tick_ms,
         sim_tick,
-        sim_tick as u32, // binary_frame proxy (test-only wrapper: 1 frame/tick)
+        sim_tick as u32, // native-frame proxy (test-only wrapper: 1 frame/tick)
         None,            // No zone grid in legacy wrapper
         None,            // No resolved terrain in legacy wrapper
         &TerrainSpeedConfig::default(),

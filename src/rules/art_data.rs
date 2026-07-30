@@ -84,6 +84,10 @@ pub struct ArtEntry {
     pub primary_fire_dual_offset: bool,
     /// SHP vehicle: walk animation frame count per facing (from `WalkFrames=`).
     pub walk_frames: Option<u16>,
+    /// SHP vehicle: native game frames between walk-animation advances.
+    pub walk_rate: u16,
+    /// SHP vehicle: native game frames between idle-animation advances.
+    pub idle_rate: u16,
     /// SHP vehicle: firing animation frame count per facing (from `FiringFrames=`).
     pub firing_frames: Option<u16>,
     /// SHP vehicle: standing animation frame count per facing (from `StandingFrames=`).
@@ -205,6 +209,7 @@ pub struct AnimTypeRuntimeConfig {
     pub raw_shp_frame_count: Option<i32>,
     pub loop_count: i32,
     pub rate_logic_frames: u16,
+    pub normalized: bool,
     pub next: Option<String>,
     pub bounce_anim: Option<String>,
     pub expire_anim: Option<String>,
@@ -333,6 +338,7 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
             .get_i32("Rate")
             .map(art_rate_to_logic_frames)
             .unwrap_or(DEFAULT_ART_RATE_LOGIC_FRAMES),
+        normalized: section.get_bool("Normalized").unwrap_or(false),
         next: section.get("Next").map(|s| s.trim().to_ascii_uppercase()),
         bounce_anim: parse_anim_ref(section, "BounceAnim"),
         expire_anim: parse_anim_ref(section, "ExpireAnim"),
@@ -583,6 +589,14 @@ impl ArtRegistry {
 
             // SHP vehicle frame tags (only meaningful when Voxel=no for vehicles).
             let walk_frames: Option<u16> = section.get_i32("WalkFrames").map(|v| v.max(0) as u16);
+            let walk_rate: u16 = section
+                .get_i32("WalkRate")
+                .map(|v| v.max(1) as u16)
+                .unwrap_or(1);
+            let idle_rate: u16 = section
+                .get_i32("IdleRate")
+                .map(|v| v.max(1) as u16)
+                .unwrap_or(1);
             let firing_frames: Option<u16> =
                 section.get_i32("FiringFrames").map(|v| v.max(0) as u16);
             let standing_frames: Option<u16> =
@@ -746,6 +760,8 @@ impl ArtRegistry {
                     secondary_fire_pixel_offset,
                     primary_fire_dual_offset,
                     walk_frames,
+                    walk_rate,
+                    idle_rate,
                     firing_frames,
                     standing_frames,
                     shp_facings,
@@ -1543,6 +1559,7 @@ mod anim_runtime_metadata_tests {
         let ini = IniFile::from_str(
             "[METSTRAL]\n\
              Rate=300\n\
+             Normalized=yes\n\
              Next=smokey\n\
              RandomLoopDelay=2,5\n\
              RandomRate=300,900\n",
@@ -1553,6 +1570,7 @@ mod anim_runtime_metadata_tests {
             .anim_runtime_config("METSTRAL")
             .expect("METSTRAL runtime metadata");
         assert_eq!(config.rate_logic_frames, 3);
+        assert!(config.normalized);
         assert_eq!(config.next.as_deref(), Some("SMOKEY"));
         assert_eq!(config.random_loop_delay, Some((2, 5)));
         assert_eq!(config.random_rate_logic_frames, Some((3, 1)));
@@ -1560,6 +1578,20 @@ mod anim_runtime_metadata_tests {
         assert_eq!(config.trailer_seperation, 0);
         assert_eq!(config.bounce_anim, None);
         assert_eq!(config.expire_anim, None);
+    }
+
+    #[test]
+    fn normalized_defaults_false_and_parses_explicit_values() {
+        let ini = IniFile::from_str(
+            "[DEFAULT]\nRate=900\n\
+             [YES]\nNormalized=yes\n\
+             [NO]\nNormalized=no\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        assert!(!reg.anim_runtime_config("DEFAULT").unwrap().normalized);
+        assert!(reg.anim_runtime_config("YES").unwrap().normalized);
+        assert!(!reg.anim_runtime_config("NO").unwrap().normalized);
     }
 
     #[test]

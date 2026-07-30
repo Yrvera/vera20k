@@ -160,8 +160,8 @@ impl Default for ProductionRules {
 pub struct AnimRef {
     /// SHP animation name (uppercase), e.g., "WARPIN".
     pub name: String,
-    /// Milliseconds per frame from art.ini `[ANIM_NAME]` Rate= key.
-    pub rate_ms: u32,
+    /// Native gameplay-frame delay derived from art.ini `[ANIM_NAME]` Rate=.
+    pub frame_delay: u16,
 }
 
 /// Static art.ini metadata for the `[General] Parachute=` SHP.
@@ -172,9 +172,8 @@ pub struct AnimRef {
 pub struct ParachuteRenderConfig {
     /// SHP section name from `[General] Parachute=` (e.g., "PARACH"). Uppercased.
     pub shp_name: String,
-    /// ms per anim frame. Computed via `art_rate_to_delay_ms(Rate=)`.
-    /// For Rate=400 this is 133.
-    pub rate_ms: u32,
+    /// Native gameplay-frame delay derived from art.ini `Rate=`.
+    pub frame_delay: u16,
     /// Frame to wrap to after `frame >= end_frame`. From art.ini `LoopStart=`.
     pub loop_start: u16,
     /// Wraparound bound (exclusive). Set to `LoopEnd + 1` from art.ini.
@@ -678,7 +677,7 @@ pub(crate) fn damage_spark_spawn_threshold(band: f64) -> u32 {
 
 /// Default animation rate when art.ini section is missing.
 /// Matches gamemd constructor default: 1 game frame at 60fps ≈ 17ms.
-const DEFAULT_ANIM_RATE_MS: u32 = 17;
+const DEFAULT_ANIM_FRAME_DELAY: u16 = 1;
 
 /// Zip a parallel pair of paradrop INI keys (`Inf` + `Num`) into `(type, count)` pairs.
 /// `skip_count_assert` mirrors gamemd's Soviet branch which lacks the equality check.
@@ -749,23 +748,23 @@ impl Default for GeneralRules {
             growth_rate_minutes: 2.0,
             warp_in: AnimRef {
                 name: "WARPIN".to_string(),
-                rate_ms: 120,
+                frame_delay: 1,
             },
             warp_out: AnimRef {
                 name: "WARPOUT".to_string(),
-                rate_ms: 120,
+                frame_delay: 1,
             },
             warp_away: AnimRef {
                 name: "WARPAWAY".to_string(),
-                rate_ms: 300,
+                frame_delay: 1,
             },
             chrono_sparkle1: AnimRef {
                 name: "CHRONOSK".to_string(),
-                rate_ms: 120,
+                frame_delay: 1,
             },
             wake: AnimRef {
                 name: "WAKE1".to_string(),
-                rate_ms: 120,
+                frame_delay: 1,
             },
             attack_cursor_on_disguise: false,
             tree_targeting: false,
@@ -1354,23 +1353,23 @@ impl GeneralRules {
                 .filter(|s| !s.is_empty()),
             warp_in: AnimRef {
                 name: parse_anim_name("WarpIn", "WARPIN"),
-                rate_ms: defaults.warp_in.rate_ms,
+                frame_delay: defaults.warp_in.frame_delay,
             },
             warp_out: AnimRef {
                 name: parse_anim_name("WarpOut", "WARPOUT"),
-                rate_ms: defaults.warp_out.rate_ms,
+                frame_delay: defaults.warp_out.frame_delay,
             },
             warp_away: AnimRef {
                 name: parse_anim_name("WarpAway", "WARPAWAY"),
-                rate_ms: defaults.warp_away.rate_ms,
+                frame_delay: defaults.warp_away.frame_delay,
             },
             chrono_sparkle1: AnimRef {
                 name: parse_anim_name("ChronoSparkle1", "CHRONOSK"),
-                rate_ms: defaults.chrono_sparkle1.rate_ms,
+                frame_delay: defaults.chrono_sparkle1.frame_delay,
             },
             wake: AnimRef {
                 name: parse_anim_name("Wake", "WAKE1"),
-                rate_ms: defaults.wake.rate_ms,
+                frame_delay: defaults.wake.frame_delay,
             },
             damage_delay_minutes: general.get_f32("DamageDelay").unwrap_or(1.0),
             spy_power_blackout_frames: general.get_i32("SpyPowerBlackout").unwrap_or(1000).max(0)
@@ -1382,7 +1381,7 @@ impl GeneralRules {
                         .filter(|s| !s.is_empty())
                         .map(|s| AnimRef {
                             name: s.to_uppercase(),
-                            rate_ms: DEFAULT_ANIM_RATE_MS,
+                            frame_delay: DEFAULT_ANIM_FRAME_DELAY,
                         })
                         .collect()
                 })
@@ -1565,35 +1564,40 @@ impl GeneralRules {
     /// Resolve animation playback rates from art.ini sections.
     ///
     /// Called after both rules.ini and art.ini are loaded. Looks up each
-    /// anim's own `[ANIM_NAME]` section for `Rate=` (ms per frame).
+    /// anim's own `[ANIM_NAME]` section for its native `Rate=` frame delay.
     pub fn resolve_art_rates(&mut self, art_ini: &IniFile) {
-        fn rate_from_section(ini: &IniFile, name: &str, fallback: u32) -> u32 {
+        fn rate_from_section(ini: &IniFile, name: &str, fallback: u16) -> u16 {
             ini.section(name)
                 .and_then(|s| s.get_i32("Rate"))
-                .map(|r| crate::rules::art_data::art_rate_to_delay_ms(r))
+                .map(crate::rules::art_data::art_rate_to_logic_frames)
                 .unwrap_or(fallback)
         }
-        self.warp_in.rate_ms = rate_from_section(art_ini, &self.warp_in.name, DEFAULT_ANIM_RATE_MS);
-        self.warp_out.rate_ms =
-            rate_from_section(art_ini, &self.warp_out.name, DEFAULT_ANIM_RATE_MS);
-        self.warp_away.rate_ms =
-            rate_from_section(art_ini, &self.warp_away.name, DEFAULT_ANIM_RATE_MS);
-        self.chrono_sparkle1.rate_ms =
-            rate_from_section(art_ini, &self.chrono_sparkle1.name, DEFAULT_ANIM_RATE_MS);
-        self.wake.rate_ms = rate_from_section(art_ini, &self.wake.name, DEFAULT_ANIM_RATE_MS);
+        self.warp_in.frame_delay =
+            rate_from_section(art_ini, &self.warp_in.name, DEFAULT_ANIM_FRAME_DELAY);
+        self.warp_out.frame_delay =
+            rate_from_section(art_ini, &self.warp_out.name, DEFAULT_ANIM_FRAME_DELAY);
+        self.warp_away.frame_delay =
+            rate_from_section(art_ini, &self.warp_away.name, DEFAULT_ANIM_FRAME_DELAY);
+        self.chrono_sparkle1.frame_delay = rate_from_section(
+            art_ini,
+            &self.chrono_sparkle1.name,
+            DEFAULT_ANIM_FRAME_DELAY,
+        );
+        self.wake.frame_delay =
+            rate_from_section(art_ini, &self.wake.name, DEFAULT_ANIM_FRAME_DELAY);
         log::info!(
-            "Warp anim rates: {}={}ms, {}={}ms, {}={}ms, wake: {}={}ms",
+            "Warp anim frame delays: {}={}, {}={}, {}={}, wake: {}={}",
             self.warp_in.name,
-            self.warp_in.rate_ms,
+            self.warp_in.frame_delay,
             self.warp_out.name,
-            self.warp_out.rate_ms,
+            self.warp_out.frame_delay,
             self.warp_away.name,
-            self.warp_away.rate_ms,
+            self.warp_away.frame_delay,
             self.wake.name,
-            self.wake.rate_ms,
+            self.wake.frame_delay,
         );
         for fire in &mut self.damage_fire_types {
-            fire.rate_ms = rate_from_section(art_ini, &fire.name, DEFAULT_ANIM_RATE_MS);
+            fire.frame_delay = rate_from_section(art_ini, &fire.name, DEFAULT_ANIM_FRAME_DELAY);
         }
         if !self.damage_fire_types.is_empty() {
             log::info!(
@@ -1601,7 +1605,7 @@ impl GeneralRules {
                 self.damage_fire_types.len(),
                 self.damage_fire_types
                     .iter()
-                    .map(|f| format!("{}={}ms", f.name, f.rate_ms))
+                    .map(|f| format!("{}={}", f.name, f.frame_delay))
                     .collect::<Vec<_>>()
                     .join(", "),
             );
@@ -1612,7 +1616,7 @@ impl GeneralRules {
         self.parachute_render = self.parachute_shp.as_deref().and_then(|shp_name| {
             let section = art_ini.section(shp_name)?;
             let rate = section.get_i32("Rate").unwrap_or(1);
-            let rate_ms = crate::rules::art_data::art_rate_to_delay_ms(rate);
+            let frame_delay = crate::rules::art_data::art_rate_to_logic_frames(rate);
             let loop_start = section.get_i32("LoopStart").unwrap_or(0).max(0) as u16;
             let loop_end = section.get_i32("LoopEnd").unwrap_or(0).max(0) as u16;
             let end_frame = loop_end.saturating_add(1);
@@ -1620,7 +1624,7 @@ impl GeneralRules {
             let alt_palette = section.get_bool("AltPalette").unwrap_or(false);
             Some(ParachuteRenderConfig {
                 shp_name: shp_name.to_string(),
-                rate_ms,
+                frame_delay,
                 loop_start,
                 end_frame,
                 z_adjust,
@@ -1629,9 +1633,9 @@ impl GeneralRules {
         });
         if let Some(ref pc) = self.parachute_render {
             log::info!(
-                "Parachute render config loaded: shp={} rate_ms={} loop_start={} end_frame={} z_adjust={} alt_palette={}",
+                "Parachute render config loaded: shp={} frame_delay={} loop_start={} end_frame={} z_adjust={} alt_palette={}",
                 pc.shp_name,
-                pc.rate_ms,
+                pc.frame_delay,
                 pc.loop_start,
                 pc.end_frame,
                 pc.z_adjust,
@@ -1721,6 +1725,9 @@ pub struct RuleSet {
     pub production: ProductionRules,
     /// Global gameplay constants (vision, gap generator, etc.).
     pub general: GeneralRules,
+    /// Reset value of `[SpecialFlags] InitialVeteran=`. The similarly named
+    /// stock `[General]` key is not read by the native SpecialFlags parser.
+    pub initial_veteran: bool,
     /// Infantry IDs in registry order.
     pub infantry_ids: Vec<String>,
     /// Vehicle IDs in registry order.
@@ -1793,7 +1800,7 @@ pub struct RuleSet {
     /// Deterministic hash of the merged source INI (rules + rulesmd + the map's
     /// rules-shaped value overrides) this RuleSet was built from. Unlike a
     /// registry-only hash it is sensitive to scalar value overrides, so it can
-    /// gate replay/snapshot playback against a mismatched rules set. Lives on
+    /// gate diagnostic-log/snapshot playback against a mismatched rules set. Lives on
     /// `RuleSet` (in `rules/`) so `sim/` can read it without an app-layer dep.
     source_ini_hash: u64,
 }
@@ -1814,6 +1821,10 @@ impl RuleSet {
         let mut building_ids: Vec<String> = Vec::new();
         let production: ProductionRules = ProductionRules::from_ini(ini);
         let general: GeneralRules = GeneralRules::from_ini(ini);
+        let initial_veteran = ini
+            .section("SpecialFlags")
+            .and_then(|section| section.get_bool("InitialVeteran"))
+            .unwrap_or(false);
         if general.condition_yellow_native != 0.5 {
             return Err(RulesError::InvalidValue {
                 section: "AudioVisual".to_string(),
@@ -2100,6 +2111,7 @@ impl RuleSet {
             house_color_ramps,
             production,
             general,
+            initial_veteran,
             infantry_ids,
             vehicle_ids,
             aircraft_ids,
@@ -2127,7 +2139,7 @@ impl RuleSet {
             c4_warhead_id: None,
             mission_control,
             // Captures the whole merged INI (incl. any map value overrides),
-            // so replay/snapshot headers detect a rules mismatch on playback.
+            // so diagnostic-log/snapshot headers detect a rules mismatch.
             source_ini_hash: ini.content_hash(),
         })
     }
@@ -2242,7 +2254,7 @@ impl RuleSet {
 
     /// Deterministic hash of the merged source INI this RuleSet was built from
     /// (rules + rulesmd + the map's rules-shaped value overrides). Stamped into
-    /// replay/snapshot headers so playback can detect a mismatched rules set —
+    /// diagnostic-log/snapshot headers so playback can detect a mismatched rules set —
     /// sensitive to scalar value overrides, not just the type-registry lists.
     pub fn source_ini_hash(&self) -> u64 {
         self.source_ini_hash
@@ -3286,6 +3298,22 @@ MutateWarhead=MyMutate\n\
     }
 
     #[test]
+    fn starting_force_initial_veteran_reads_only_specialflags() {
+        let general_only = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [General]\nInitialVeteran=yes\n",
+        );
+        assert!(!RuleSet::from_ini(&general_only).unwrap().initial_veteran);
+
+        let special_flags = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [General]\nInitialVeteran=no\n\
+             [SpecialFlags]\nInitialVeteran=yes\n",
+        );
+        assert!(RuleSet::from_ini(&special_flags).unwrap().initial_veteran);
+    }
+
+    #[test]
     fn test_building_garrisoned_sound_parsed() {
         let ini_str = "\
 [General]
@@ -3942,8 +3970,8 @@ ZAdjust=-10
             .as_ref()
             .expect("parachute_render must be loaded");
         assert_eq!(pc.shp_name, "PARACH");
-        // Rate=400 → (900/400) * 1000/15 = 2 * 1000/15 = 133.
-        assert_eq!(pc.rate_ms, 133);
+        // Rate=400 → floor(900/400) = 2 native frames.
+        assert_eq!(pc.frame_delay, 2);
         assert_eq!(pc.loop_start, 20);
         assert_eq!(pc.end_frame, 40); // LoopEnd + 1
         assert_eq!(pc.z_adjust, -10);

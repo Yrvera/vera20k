@@ -155,7 +155,6 @@ impl Simulation {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
         self.session.tick.hash(&mut hasher);
-        self.session.total_sim_ms.hash(&mut hasher);
         self.session.binary_frame.hash(&mut hasher);
         // Hash ALL THREE RNG streams in a fixed order. Order is part of the hash
         // contract and must never change. Hashing only some streams would let a
@@ -226,13 +225,14 @@ impl Simulation {
             idx.hash(hasher);
             owner.hash(hasher);
         }
+        s.house_order.hash(hasher);
     }
 
     /// Hash all particle systems in stable-id order (BTreeMap iteration).
     /// Each system contributes its type, position, lifetime, and ordered particle list.
     fn hash_particle_systems(&self, hasher: &mut impl Hasher) {
-        self.particle_systems.len().hash(hasher);
-        for (id, sys) in self.particle_systems.iter() {
+        self.particle_systems().len().hash(hasher);
+        for (id, sys) in self.particle_systems().iter() {
             id.hash(hasher);
             sys.type_id.0.hash(hasher);
             sys.coords.x.hash(hasher);
@@ -309,6 +309,7 @@ impl Simulation {
             house.is_defeated.hash(hasher);
             house.has_won.hash(hasher);
             house.has_lost.hash(hasher);
+            house.map_is_clear.hash(hasher);
             house.owned_building_count.hash(hasher);
             house.owned_unit_count.hash(hasher);
             house.tech_level.hash(hasher);
@@ -641,6 +642,8 @@ impl Simulation {
                 entity.dirty_rect_eligible.hash(hasher);
                 entity.owned_count_released.hash(hasher);
             }
+            entity.move_sound_active.hash(hasher);
+            entity.move_sound_countdown.hash(hasher);
             entity.position.rx.hash(hasher);
             entity.position.ry.hash(hasher);
             entity.position.z.hash(hasher);
@@ -861,6 +864,10 @@ impl Simulation {
                     (cargo.passengers.len() as u32).hash(hasher);
                     for &pid in &cargo.passengers {
                         pid.hash(hasher);
+                    }
+                    debug_assert_eq!(cargo.passenger_sizes.len(), cargo.passengers.len());
+                    for &passenger_size in &cargo.passenger_sizes {
+                        passenger_size.hash(hasher);
                     }
                     cargo.total_size.hash(hasher);
                 }
@@ -1350,6 +1357,7 @@ mod particle_hash_tests {
     fn fake_system(coords: IVec3) -> ParticleSystem {
         ParticleSystem {
             stable_id: 0,
+            in_logic_vector: false,
             type_id: ParticleSystemTypeId(0),
             coords,
             offset: IVec3::ZERO,
@@ -1368,6 +1376,14 @@ mod particle_hash_tests {
         }
     }
 
+    fn insert_system(sim: &mut Simulation, mut system: ParticleSystem) -> u64 {
+        let id = sim.allocate_stable_id();
+        system.stable_id = id;
+        sim.particle_systems_mut().insert(system);
+        sim.reveal_particle_system(id);
+        id
+    }
+
     #[test]
     fn empty_particle_store_hashes_consistently() {
         let a = Simulation::new();
@@ -1379,8 +1395,7 @@ mod particle_hash_tests {
     fn particle_state_changes_hash() {
         let mut sim = Simulation::new();
         let h1 = sim.state_hash();
-        sim.particle_systems
-            .insert(fake_system(IVec3::new(100, 0, 0)));
+        insert_system(&mut sim, fake_system(IVec3::new(100, 0, 0)));
         let h2 = sim.state_hash();
         assert_ne!(h1, h2);
     }
@@ -1417,8 +1432,8 @@ mod particle_hash_tests {
         };
         sys_a.particles.push(make_p(0));
         sys_b.particles.push(make_p(3));
-        sim_a.particle_systems.insert(sys_a);
-        sim_b.particle_systems.insert(sys_b);
+        insert_system(&mut sim_a, sys_a);
+        insert_system(&mut sim_b, sys_b);
         assert_ne!(
             sim_a.state_hash(),
             sim_b.state_hash(),
@@ -1457,7 +1472,7 @@ mod particle_hash_tests {
         let mut sim = Simulation::new();
         let mut system = fake_system(IVec3::ZERO);
         system.particles.push(particle);
-        sim.particle_systems.insert(system);
+        insert_system(&mut sim, system);
         sim.state_hash()
     }
 
@@ -1947,44 +1962,48 @@ mod bridge_overlay_hash_tests {
 }
 
 #[cfg(test)]
-mod binary_frame_tests {
+mod native_frame_tests {
     use super::Simulation;
     use std::collections::BTreeMap;
 
     #[test]
-    fn binary_frame_drift_free_at_22ms_ticks() {
+    fn one_advance_is_one_native_frame_for_any_host_duration() {
         let mut sim = Simulation::new();
         let height_map = BTreeMap::new();
-        // 45 ticks at 22ms = 990ms ≈ 14.85 binary frames; floor = 14.
-        for _ in 0..45 {
-            sim.advance_tick(&[], None, &height_map, None, None, 22);
+        let host_durations = [0, 1, 22, 67, 1_000, u32::MAX];
+        for (index, tick_ms) in host_durations.into_iter().enumerate() {
+            sim.advance_tick(&[], None, &height_map, None, None, tick_ms);
+            assert_eq!(sim.session.binary_frame, index as u32 + 1);
         }
-        assert_eq!(sim.session.total_sim_ms, 990);
-        assert_eq!(sim.session.binary_frame, 14);
     }
 
     #[test]
-    fn binary_frame_advances_each_66ms_block() {
+    fn native_frame_wraps_after_u32_max() {
         let mut sim = Simulation::new();
         let height_map = BTreeMap::new();
-        // Three 67ms ticks should each advance binary_frame by 1
-        // (67ms * 15 / 1000 = 1.005, floor = 1 per tick).
-        sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.session.binary_frame, 1);
-        sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.session.binary_frame, 2);
-        sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.session.binary_frame, 3);
+        sim.session.binary_frame = u32::MAX;
+
+        sim.advance_tick(&[], None, &height_map, None, None, 22);
+
+        assert_eq!(sim.session.binary_frame, 0);
     }
 
     #[test]
-    fn binary_frame_changes_state_hash() {
+    fn native_frame_changes_state_hash() {
         let mut sim_a = Simulation::new();
         let sim_b = Simulation::new();
         let height_map = BTreeMap::new();
-        sim_a.advance_tick(&[], None, &height_map, None, None, 100);
-        // sim_b stays at frame 0; sim_a is at (100*15/1000)=1.
+        sim_a.advance_tick(&[], None, &height_map, None, None, 22);
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn diagnostic_total_sim_ms_does_not_change_state_hash() {
+        let mut sim_a = Simulation::new();
+        let sim_b = Simulation::new();
+        sim_a.session.total_sim_ms = 123_456;
+
+        assert_eq!(sim_a.state_hash(), sim_b.state_hash());
     }
 }
 
@@ -2129,13 +2148,13 @@ mod c4_hash_tests {
 mod homing_state_hash_tests {
     use super::Simulation;
     use crate::sim::game_entity::GameEntity;
-    use crate::sim::movement::homing_movement::{HomingPhase, HomingState};
+    use crate::sim::movement::homing_movement::{HomingPhase, HomingState, HomingTarget};
     use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 
     fn make_homing(yaw_bam: u16) -> HomingState {
         HomingState {
             phase: HomingPhase::Cruise,
-            target_id: Some(42),
+            target: Some(HomingTarget::Object(42)),
             last_known_rx: 25,
             last_known_ry: 5,
             yaw_bam,
@@ -2205,6 +2224,24 @@ mod homing_state_hash_tests {
     }
 
     #[test]
+    fn homing_object_and_cell_targets_hash_differently() {
+        let mut a = Simulation::new();
+        let mut b = Simulation::new();
+        a.substrate
+            .entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        b.substrate
+            .entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        a.substrate.entities.get_mut(1).unwrap().homing_state = Some(make_homing(0));
+        let mut cell_target = make_homing(0);
+        cell_target.target = Some(HomingTarget::Cell { rx: 42, ry: 0 });
+        b.substrate.entities.get_mut(1).unwrap().homing_state = Some(cell_target);
+
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
     fn homing_state_pitch_excluded_from_hash() {
         // The manual Hash impl on HomingState skips the render-only `pitch`
         // field; mutating it must not change the state hash.
@@ -2233,5 +2270,31 @@ mod homing_state_hash_tests {
             b.state_hash(),
             "render-only pitch must not affect state hash"
         );
+    }
+}
+
+#[cfg(test)]
+mod passenger_cargo_hash_tests {
+    use super::Simulation;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::passenger::{PassengerCargo, PassengerRole};
+
+    fn sim_with_sizes(first_size: u32, second_size: u32) -> Simulation {
+        let mut sim = Simulation::new();
+        let mut carrier = GameEntity::test_default(1, "BFRT", "Allied", 5, 5);
+        let mut cargo = PassengerCargo::new(5, 0);
+        cargo.board_forced(10, first_size);
+        cargo.board_forced(11, second_size);
+        carrier.passenger_role = PassengerRole::Transport { cargo };
+        sim.substrate.entities.insert(carrier);
+        sim
+    }
+
+    #[test]
+    fn per_entry_size_mapping_changes_hash_even_when_total_matches() {
+        let a = sim_with_sizes(1, 3);
+        let b = sim_with_sizes(3, 1);
+
+        assert_ne!(a.state_hash(), b.state_hash());
     }
 }

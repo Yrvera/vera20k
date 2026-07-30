@@ -17,7 +17,7 @@ use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed, native_movement_frame_fraction};
 
 fn infantry_rules(crawls: bool) -> RuleSet {
     let rules_ini = IniFile::from_str(
@@ -93,7 +93,6 @@ fn advance_prone_mover(crawls: bool) -> SimFixed {
         &mut occupancy,
         &mut next_occupancy_enter_order,
         &mut rng,
-        1000,
         0,
         0, // binary_frame (test)
         None,
@@ -113,12 +112,26 @@ fn advance_prone_mover(crawls: bool) -> SimFixed {
     entities.get(1).expect("entity exists").position.sub_x
 }
 
+fn expected_sub_x_after_one_native_frame(effective_speed: i32) -> SimFixed {
+    let cell_delta = SimFixed::from_num(256);
+    let lepton_step = SimFixed::from_num(effective_speed) * native_movement_frame_fraction();
+    SimFixed::from_num(128) + cell_delta * (lepton_step / cell_delta)
+}
+
 #[test]
 fn crawls_yes_prone_movement_uses_ceiling_two_thirds_speed() {
-    assert_eq!(advance_prone_mover(true), SimFixed::from_num(136));
+    // ceil(11 * 2/3) = 8 leptons/sec, integrated for one native frame.
+    assert_eq!(
+        advance_prone_mover(true),
+        expected_sub_x_after_one_native_frame(8)
+    );
 }
 
 #[test]
 fn crawls_no_prone_movement_uses_speed_plus_half() {
-    assert_eq!(advance_prone_mover(false), SimFixed::from_num(144));
+    // 11 + floor(11/2) = 16 leptons/sec, integrated for one native frame.
+    assert_eq!(
+        advance_prone_mover(false),
+        expected_sub_x_after_one_native_frame(16)
+    );
 }

@@ -104,6 +104,12 @@ pub(crate) fn ready_state_for(
     }
 }
 
+/// Fresh post-Process moving-now answer for FootClass side effects such as
+/// MoveSound. Native dispatches this locomotor slot at each consumer.
+pub(crate) fn is_moving_now_for(entity: &GameEntity, binary_frame: u32) -> bool {
+    ready_state_for(entity, binary_frame).is_some_and(LocomotorReadyState::is_moving_now)
+}
+
 /// IEEE-754 binary64 bit patterns for the only two speed-fraction values the
 /// Walk family's native field ever holds.
 ///

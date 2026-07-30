@@ -27,7 +27,8 @@ use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::facing_from_delta;
 use crate::util::fixed_math::{
-    SIM_ONE, SIM_TWO, SIM_ZERO, SimFixed, dt_from_tick_ms, int_distance_to_sim, sim_to_f32,
+    SIM_ONE, SIM_TWO, SIM_ZERO, SimFixed, int_distance_to_sim, native_movement_frame_fraction,
+    sim_to_f32,
 };
 
 /// Duration of the initial launch phase in seconds (vertical boost).
@@ -130,14 +131,10 @@ pub fn attach_rocket_state(
 pub fn tick_rocket_movement(
     entities: &mut EntityStore,
     live_order: &[u64],
-    tick_ms: u32,
     sim_tick: u64,
 ) -> Vec<u64> {
     let mut detonated: Vec<u64> = Vec::new();
-    if tick_ms == 0 {
-        return detonated;
-    }
-    let dt: SimFixed = dt_from_tick_ms(tick_ms);
+    let dt = native_movement_frame_fraction();
 
     let fallback_order;
     let entity_order: &[u64] = if live_order.is_empty() {
@@ -317,7 +314,7 @@ mod tests {
         // Tick through entire flight (~15 cells at 30 cells/s = ~0.5s = ~15 ticks at 33ms).
         let mut detonated = false;
         for _ in 0..60 {
-            let det = tick_rocket_movement(&mut entities, &[], 33, 0);
+            let det = tick_rocket_movement(&mut entities, &[], 0);
             if det.contains(&1) {
                 detonated = true;
                 break;
@@ -340,7 +337,7 @@ mod tests {
 
         // Tick past launch into ascending.
         for _ in 0..15 {
-            tick_rocket_movement(&mut entities, &[], 33, 0);
+            tick_rocket_movement(&mut entities, &[], 0);
         }
 
         let entity = entities.get(1).expect("should exist");
@@ -363,10 +360,13 @@ mod tests {
         let e = GameEntity::test_default(1, "V3RKT", "Soviet", 5, 5);
         entities.insert(e);
 
-        // Target is south (+ry direction) → facing should be ~128.
+        // Target is computed south (+ry): retail's 65,534-scale high byte is 127.
         attach_rocket_state(&mut entities, 1, (5, 5), (5, 20), SimFixed::from_num(10));
         let entity = entities.get(1).expect("should exist");
-        assert_eq!(entity.facing, 128, "Should face south toward target");
+        assert_eq!(
+            entity.facing, 127,
+            "Should use the computed retail south facing"
+        );
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
         // Should detonate quickly even with zero distance.
         let mut detonated = false;
         for _ in 0..30 {
-            let det = tick_rocket_movement(&mut entities, &[], 33, 0);
+            let det = tick_rocket_movement(&mut entities, &[], 0);
             if det.contains(&1) {
                 detonated = true;
                 break;
@@ -411,8 +411,8 @@ mod tests {
             stable_entities.insert(entity);
         }
 
-        let live = tick_rocket_movement(&mut live_entities, &[2, 1], 33, 0);
-        let stable = tick_rocket_movement(&mut stable_entities, &[], 33, 0);
+        let live = tick_rocket_movement(&mut live_entities, &[2, 1], 0);
+        let stable = tick_rocket_movement(&mut stable_entities, &[], 0);
 
         assert_eq!(
             live,
