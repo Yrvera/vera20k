@@ -143,7 +143,7 @@ pub fn set_destination_for_teleporter_entity(
         return false;
     }
     let has_teleport_locomotor = entity.locomotor.as_ref().is_some_and(|loco| {
-        loco.primary_kind() == LocomotorKind::Teleport
+        loco.effective_kind() == LocomotorKind::Teleport
             || loco.active_kind() == LocomotorKind::Teleport
     });
     if !is_teleporter || !has_teleport_locomotor {
@@ -193,7 +193,7 @@ pub fn set_destination_for_teleporter_entity(
 
     if let Some(entity) = entities.get_mut(entity_id) {
         let should_restore = entity.locomotor.as_ref().is_some_and(|loco| {
-            loco.primary_kind() == LocomotorKind::Teleport
+            loco.effective_kind() == LocomotorKind::Teleport
                 && loco.active_kind() != LocomotorKind::Teleport
         });
         if should_restore && let Some(ref mut loco) = entity.locomotor {

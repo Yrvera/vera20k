@@ -10,7 +10,9 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 pub mod install;
+pub mod piggyback;
 pub mod slot;
 
 pub use install::{resolve_installed_class, resolve_installed_kind};
+pub use piggyback::{BeginOutcome, StashedLocomotor};
 pub use slot::LocomotorSlot;

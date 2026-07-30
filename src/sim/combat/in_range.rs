@@ -418,7 +418,6 @@ mod tests {
             speed_type: SpeedType::Winged,
             movement_zone: MovementZone::Fly,
             rot: 0,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,

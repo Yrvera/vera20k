@@ -1,6 +1,7 @@
 //! Hermetic stock-contract production oracles for miner outbound Drive commands.
 
 use crate::sim::movement::locomotion::LocomotorSlot;
+use crate::sim::movement::locomotion::piggyback::StashedLocomotor;
 
 use std::collections::BTreeMap;
 
@@ -16,7 +17,7 @@ use crate::sim::components::{DriveCoord, NavTargetRef};
 use crate::sim::miner::{
     CargoBale, MinerConfig, MinerKind, MinerState, ResourceNode, ResourceType,
 };
-use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer, PiggybackLocomotor};
+use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::passability::LandType;
@@ -433,7 +434,7 @@ fn locomotor_tuple(
 ) -> (
     LocomotorKind,
     LocomotorSlot,
-    Option<PiggybackLocomotor>,
+    Option<StashedLocomotor>,
     MovementLayer,
     GroundMovePhase,
 ) {

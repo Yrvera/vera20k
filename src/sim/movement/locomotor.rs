@@ -26,6 +26,7 @@ use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::ObjectType;
 use crate::sim::movement::locomotion::LocomotorSlot;
+use crate::sim::movement::locomotion::piggyback::{self, StashedLocomotor};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
 
 /// Which spatial layer the unit currently occupies.
@@ -125,7 +126,7 @@ pub struct LocomotorState {
     /// For CMIN drive phases, `kind` becomes Drive and this stores the primary
     /// Teleport locomotor until the active Drive locomotor is ok to end.
     #[serde(default)]
-    pub piggyback: Option<PiggybackLocomotor>,
+    pub piggyback: Option<StashedLocomotor>,
     /// Which spatial layer the unit currently occupies.
     pub layer: MovementLayer,
     /// Current movement phase (for ground movers).
@@ -178,10 +179,6 @@ pub struct LocomotorState {
     /// Used for gradual hull turning before movement. 0 = instant turn.
     /// Infantry always turn instantly regardless of this value (RA2 behavior).
     pub rot: i32,
-    /// Temporary locomotor override — saves the base locomotor while a
-    /// temporary controller (Teleport, DropPod) is active. `None` means
-    /// the unit is using its normal base locomotor.
-    pub override_state: Option<OverrideLocomotor>,
     /// Air movement progress in cells (0.0 → 1.0 per cell step).
     /// Air movement uses cell-based progress separately from the lepton
     /// advancement used by ground movement. This field is only meaningful
@@ -295,7 +292,6 @@ impl LocomotorState {
             speed_type: obj.speed_type,
             movement_zone: obj.movement_zone,
             rot: obj.turret_rot,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
@@ -365,7 +361,6 @@ impl LocomotorState {
             speed_type: SpeedType::Track,
             movement_zone: MovementZone::Normal,
             rot: 5,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
@@ -400,9 +395,9 @@ impl LocomotorState {
         self.altitude > SIM_ZERO
     }
 
-    /// Whether this locomotor currently has a temporary override active.
+    /// Whether a piggybacked locomotor is currently displacing the installed one.
     pub fn is_overridden(&self) -> bool {
-        self.override_state.is_some()
+        self.piggyback.is_some()
     }
 
     /// Current active locomotor class.
@@ -410,62 +405,54 @@ impl LocomotorState {
         self.kind
     }
 
-    /// The installed locomotor class, as the runtime discriminant.
-    pub fn primary_kind(&self) -> LocomotorKind {
+    /// The unit's identity for mission-level decisions: the installed class,
+    /// seen through any piggyback that is currently driving it.
+    ///
+    /// A Chrono Miner driving out of a war factory on a piggybacked Drive still
+    /// *is* a Teleport unit; `kind` answers "what is driving right now" and this
+    /// answers "what is this unit". Both are needed and must stay distinct.
+    pub fn effective_kind(&self) -> LocomotorKind {
         self.slot.into()
     }
 
     /// Whether the primary locomotor is currently active and no piggyback is stored.
     pub fn is_primary_active(&self) -> bool {
-        self.kind == self.primary_kind() && self.piggyback.is_none()
+        self.kind == self.effective_kind() && self.piggyback.is_none()
     }
 
-    /// Activate Drive while storing a primary Teleport locomotor underneath it.
-    ///
-    /// This mirrors the CMIN bridge model: Teleport remains the primary owner,
-    /// Drive temporarily becomes active for destinations that require ground
-    /// movement.
+    /// Activate Drive over a stashed Teleport locomotor — the Chrono Miner
+    /// bridge model: the unit stays a Teleport unit, Drive temporarily drives it
+    /// for destinations that need ground movement.
     pub fn begin_drive_piggyback_for_teleporter(&mut self) -> bool {
-        if self.primary_kind() != LocomotorKind::Teleport {
+        if self.effective_kind() != LocomotorKind::Teleport {
             return false;
         }
         if self.kind == LocomotorKind::Drive {
+            // Already driving. If the stash is missing the state is inconsistent
+            // — Drive is driving with nothing recorded underneath it — so put
+            // the Teleport locomotor back where it belongs rather than capturing
+            // Drive on top of itself. Repair, not a BEGIN: the native protocol
+            // has no path that reaches this shape.
             if self.piggyback.is_none() {
-                self.piggyback = Some(PiggybackLocomotor {
+                self.piggyback = Some(StashedLocomotor {
                     kind: LocomotorKind::Teleport,
                     layer: MovementLayer::Ground,
+                    ..StashedLocomotor::capture(self)
                 });
             }
             return true;
         }
-        if self.piggyback.is_none() {
-            self.piggyback = Some(PiggybackLocomotor {
-                kind: LocomotorKind::Teleport,
-                layer: MovementLayer::Ground,
-            });
-        }
-        self.kind = LocomotorKind::Drive;
-        self.layer = MovementLayer::Ground;
-        self.phase = GroundMovePhase::Idle;
-        true
+        self.begin_piggyback(LocomotorKind::Drive, MovementLayer::Ground)
     }
 
-    /// Return from an active piggyback locomotor to the stored primary locomotor.
+    /// Return from an active piggyback to the stashed locomotor.
+    ///
+    /// The installed slot is deliberately NOT written here. Natively the
+    /// installed interface pointer never changes — a piggyback stashes and
+    /// restores around it — and the previous write was retained only until this
+    /// mechanism existed to retire it.
     pub fn restore_primary_from_piggyback(&mut self) -> bool {
-        let Some(stored) = self.piggyback.take() else {
-            return false;
-        };
-        self.kind = stored.kind;
-        // Natively the installed interface pointer never changes — a piggyback
-        // stashes and restores around it. This write is retained because it is
-        // what the current code does, and in stock play it is a no-op: the only
-        // live piggyback stores Teleport under a Teleporter-primary unit, so the
-        // restored class already equals the installed one. Retiring it belongs
-        // with the piggyback mechanism itself.
-        self.slot = LocomotorSlot::from_kind(stored.kind);
-        self.layer = stored.layer;
-        self.phase = GroundMovePhase::Idle;
-        true
+        self.end_piggyback()
     }
 
     /// Whether the active piggyback can safely restore to the primary locomotor.
@@ -478,90 +465,26 @@ impl LocomotorState {
         self.piggyback.is_some() && !owner_moving && !owner_teleporting && !owner_deploying
     }
 
-    /// Begin a temporary locomotor override (e.g., Teleport or DropPod).
+    /// Begin a piggyback: stash the driving locomotor and install this one.
     ///
-    /// Saves the current state so it can be restored when the override ends.
-    /// Sets `kind` to the override's locomotor kind and adjusts the layer.
-    pub fn begin_override(&mut self, override_kind: OverrideKind) {
-        if self.override_state.is_some() {
-            log::warn!("begin_override called while already overridden — replacing saved state");
-        }
-        let saved = Box::new(self.clone());
-        let (new_kind, new_layer) = match override_kind {
-            OverrideKind::Teleport => (LocomotorKind::Teleport, MovementLayer::Ground),
-            OverrideKind::Parachute => (LocomotorKind::Parachute, MovementLayer::Air),
-        };
-        self.override_state = Some(OverrideLocomotor {
-            saved,
-            override_kind,
-        });
-        self.kind = new_kind;
-        self.layer = new_layer;
-        self.phase = GroundMovePhase::Idle;
-        self.air_phase = AirMovePhase::Landed;
+    /// Refuses, changing nothing, if a stash is already present — the native
+    /// BEGIN returns `E_FAIL` in exactly that case.
+    pub fn begin_piggyback(&mut self, kind: LocomotorKind, layer: MovementLayer) -> bool {
+        piggyback::begin(self, kind, layer) == piggyback::BeginOutcome::Installed
     }
 
-    /// End a temporary override — restore the saved locomotor state.
+    /// End the active piggyback, restoring the stashed locomotor.
     ///
-    /// Returns the `OverrideKind` that was active, or `None` if no override was set.
-    pub fn end_override(&mut self) -> Option<OverrideKind> {
-        let Some(overridden) = self.override_state.take() else {
-            log::warn!("end_override called but no override is active");
-            return None;
-        };
-        let kind = overridden.override_kind;
-        let saved = *overridden.saved;
-        // Restore the entire base locomotor state.
-        self.kind = saved.kind;
-        self.layer = saved.layer;
-        self.phase = GroundMovePhase::Idle;
-        self.air_phase = saved.air_phase;
-        self.speed_multiplier = saved.speed_multiplier;
-        self.altitude = saved.altitude;
-        self.target_altitude = saved.target_altitude;
-        self.climb_rate = saved.climb_rate;
-        self.jumpjet_speed = saved.jumpjet_speed;
-        self.jumpjet_accel = saved.jumpjet_accel;
-        self.jumpjet_current_speed = saved.jumpjet_current_speed;
-        self.jumpjet_deviation = saved.jumpjet_deviation;
-        self.jumpjet_crash_speed = saved.jumpjet_crash_speed;
-        self.jumpjet_turn_rate = saved.jumpjet_turn_rate;
-        self.balloon_hover = saved.balloon_hover;
-        self.hover_attack = saved.hover_attack;
-        self.speed_type = saved.speed_type;
-        // override_state is already None from take().
-        Some(kind)
+    /// Returns whether anything was stashed.
+    pub fn end_piggyback(&mut self) -> bool {
+        piggyback::end(self).is_some()
     }
-}
 
-/// Which kind of temporary locomotor override is active.
-///
-/// Used by the piggyback mechanism — some locomotors (e.g. Teleport) act
-/// as temporary overlays on a unit's base locomotor and restore it when done.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum OverrideKind {
-    /// Chrono teleport override — restores base locomotor after warp-in.
-    Teleport,
-    /// Parachute descent — restores base locomotor on landing. Used by
-    /// paradropped infantry; sets layer to Air so no ground occupancy is
-    /// marked while descending.
-    Parachute,
-}
-
-/// Saved base locomotor state for temporary override restoration.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct OverrideLocomotor {
-    /// The saved base locomotor state to restore when the override ends.
-    pub saved: Box<LocomotorState>,
-    /// What kind of override is active.
-    pub override_kind: OverrideKind,
-}
-
-/// Stored primary locomotor while another locomotor is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PiggybackLocomotor {
-    pub kind: LocomotorKind,
-    pub layer: MovementLayer,
+    /// Whether the active piggyback may be unwound now. The movement clause
+    /// dominates: a moving unit never unwinds.
+    pub fn is_ok_to_end_piggyback(&self, is_moving: bool) -> bool {
+        piggyback::is_ok_to_end(self, is_moving)
+    }
 }
 
 #[cfg(test)]

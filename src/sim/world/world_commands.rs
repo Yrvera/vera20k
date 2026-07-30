@@ -292,7 +292,7 @@ impl Simulation {
                             loco.layer = MovementLayer::Ground;
                         }
                         if loco.is_overridden() {
-                            loco.end_override();
+                            loco.end_piggyback();
                         }
                     }
                 }

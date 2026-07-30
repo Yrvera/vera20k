@@ -307,7 +307,6 @@ mod tests {
             speed_type: SpeedType::Track,
             movement_zone: crate::rules::locomotor_type::MovementZone::Normal,
             rot: 0,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,

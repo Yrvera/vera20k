@@ -663,9 +663,7 @@ mod tests {
         MissionCom, MissionControl, MissionDispatchTimer, MissionId, MissionType,
     };
     use crate::sim::movement::drive_track::begin_forced_turn_track;
-    use crate::sim::movement::locomotor::{
-        LocomotorState, MovementLayer, OverrideKind, OverrideLocomotor, PiggybackLocomotor,
-    };
+    use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
     use crate::sim::movement::tube_movement::{LowBridgeTubeMovementState, LowBridgeTubePhase};
     use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
     use crate::sim::rng::SimRngLogicalState;
@@ -1253,7 +1251,7 @@ mod tests {
             .as_ref()
             .ok_or(HostTraceError::SpecialLocomotorPath)?;
         if locomotor.active_kind() != LocomotorKind::Drive
-            || locomotor.primary_kind() != LocomotorKind::Drive
+            || locomotor.effective_kind() != LocomotorKind::Drive
             || locomotor.piggyback.is_some()
             || locomotor.is_overridden()
         {
@@ -2366,10 +2364,7 @@ mod tests {
             .locomotor
             .as_mut()
             .unwrap()
-            .piggyback = Some(PiggybackLocomotor {
-            kind: LocomotorKind::Teleport,
-            layer: MovementLayer::Ground,
-        });
+            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground);
         assert_ordinary_drive_host_error(
             &piggyback,
             &control,
@@ -2377,27 +2372,9 @@ mod tests {
             ordinary,
             HostTraceError::SpecialLocomotorPath,
         );
-
-        let mut overridden = ordinary_drive_host_sim(13);
-        overridden
-            .substrate
-            .entities
-            .get_mut(ORDINARY_DRIVE_HOST_ID)
-            .unwrap()
-            .locomotor
-            .as_mut()
-            .unwrap()
-            .override_state = Some(OverrideLocomotor {
-            saved: Box::new(LocomotorState::for_test_kind(LocomotorKind::Drive)),
-            override_kind: OverrideKind::Teleport,
-        });
-        assert_ordinary_drive_host_error(
-            &overridden,
-            &control,
-            120,
-            ordinary,
-            HostTraceError::SpecialLocomotorPath,
-        );
+        // There used to be a second scenario here for the separate "override"
+        // mechanism. The two collapsed into one when the piggyback slot became
+        // single, so the case it covered is the one directly above.
 
         let mut class_special = HostTraceGates::ordinary();
         class_special.class_special_pre_foot_path = true;

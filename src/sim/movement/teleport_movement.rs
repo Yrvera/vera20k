@@ -26,7 +26,6 @@ use crate::sim::components::{AnimClassSpawnDescriptor, WorldEffect};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::InternedId;
-use crate::sim::movement::locomotor::OverrideKind;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::util::fixed_math::isqrt_i64;
 use crate::util::lepton::CELL_CENTER_LEPTON;
@@ -169,7 +168,10 @@ pub fn issue_teleport_command(
         // primary active locomotor in gamemd.
         if let Some(ref mut loco) = entity.locomotor {
             if loco.kind != LocomotorKind::Teleport {
-                loco.begin_override(OverrideKind::Teleport);
+                loco.begin_piggyback(
+                    crate::rules::locomotor_type::LocomotorKind::Teleport,
+                    crate::sim::movement::locomotor::MovementLayer::Ground,
+                );
             }
         }
     }
@@ -362,7 +364,7 @@ pub fn tick_teleport_movement(
             entity.teleport_state = None;
             if let Some(ref mut loco) = entity.locomotor {
                 if loco.is_overridden() {
-                    loco.end_override();
+                    loco.end_piggyback();
                 }
             }
             entity.push_debug_event(sim_tick as u32, DebugEventKind::SpecialMovementEnd);
@@ -908,7 +910,7 @@ mod tests {
         assert!(entity.teleport_state.is_some());
         let loco = entity.locomotor.as_ref().expect("loco");
         assert_eq!(loco.active_kind(), LocomotorKind::Teleport);
-        assert_eq!(loco.primary_kind(), LocomotorKind::Teleport);
+        assert_eq!(loco.effective_kind(), LocomotorKind::Teleport);
         assert!(loco.piggyback.is_none());
         assert!(!loco.is_overridden());
     }
@@ -948,7 +950,7 @@ mod tests {
         assert!(entity.movement_target.is_some());
         let loco = entity.locomotor.as_ref().expect("loco");
         assert_eq!(loco.active_kind(), LocomotorKind::Drive);
-        assert_eq!(loco.primary_kind(), LocomotorKind::Teleport);
+        assert_eq!(loco.effective_kind(), LocomotorKind::Teleport);
         assert!(loco.piggyback.is_some());
 
         entities.get_mut(1).expect("entity").movement_target = None;

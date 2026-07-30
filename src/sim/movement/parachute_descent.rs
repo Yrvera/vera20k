@@ -128,9 +128,9 @@ pub fn tick_parachute_descent(
         entity.position.screen_y = sy - sim_to_f32(state.altitude) * ALTITUDE_VISUAL_SCALE;
     }
 
-    // Cleanup landed entities: clear state BEFORE end_override (order matters
-    // — anything that watches the override transition must see a coherent
-    // (no descent state, restored locomotor) snapshot).
+    // Cleanup landed entities: clear descent state first, so anything watching
+    // the landing transition sees a coherent snapshot. Descent does not displace
+    // the locomotor, so there is no piggyback to unwind here.
     for id in finished {
         if let Some(entity) = entities.get_mut(id) {
             entity.parachute_state = None;
@@ -177,7 +177,6 @@ mod tests {
             speed_type: SpeedType::Foot,
             movement_zone: MovementZone::Normal,
             rot: 0,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,

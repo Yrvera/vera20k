@@ -1641,7 +1641,7 @@ impl Simulation {
             // Wall crush requires the Drive locomotor (gamemd LocomotorType ==
             // Drive); check the primary kind so a transient piggyback (e.g. the
             // chrono-miner's temporary Drive) does not change the gate.
-            if e.locomotor.as_ref().map(|l| l.primary_kind()) != Some(LocomotorKind::Drive) {
+            if e.locomotor.as_ref().map(|l| l.effective_kind()) != Some(LocomotorKind::Drive) {
                 continue;
             }
             let (rx, ry) = (e.position.rx, e.position.ry);
