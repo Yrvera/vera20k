@@ -2222,6 +2222,16 @@ impl Simulation {
             movement::tick_locomotor_piggyback_restore(&mut self.substrate.entities);
         }
 
+        // --- Phase 2.4: second Ready→Commence checkpoint ---
+        // DEPENDS ON: all movement above — this is the whole point. A unit that
+        //   came to rest during its own movement step is gated again here.
+        // PRODUCES: mission promotions (Commence) for Units and Infantry.
+        // gamemd's InfantryClass::AI and UnitClass::AI each gate twice per tick,
+        // once either side of the object's own locomotion. The object-AI stage
+        // before Phase 1 is the first checkpoint; this is the second. Without it
+        // every commencement that depends on having stopped was a tick late.
+        self.object_ai_post_movement_promote(rules);
+
         // --- Phase 2.5: Body rocking + slope-transition advance ---
         // DEPENDS ON: all movement above (slope_type lookups must see the
         //   latest entity positions); rules.general.fallback_coefficient for

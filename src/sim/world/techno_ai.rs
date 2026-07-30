@@ -51,6 +51,55 @@ impl Simulation {
         self.object_ai_stage_with(rules, ObjectAiCtx::default());
     }
 
+    /// The **second** Ready→Commence checkpoint, run after the movement phases.
+    ///
+    /// `InfantryClass::AI` and `UnitClass::AI` each gate twice per tick, once on
+    /// either side of the object's own locomotion, and both checkpoints are the
+    /// same pair of virtuals — the readiness predicate at self-vtable `+0x200`
+    /// followed by `Commence` at `+0x1ec` when it returns true. Our object-AI
+    /// stage is the first checkpoint (it runs immediately before Phase-1 ground
+    /// movement); this is the second.
+    ///
+    /// Without it a unit that came to rest during its own movement step could
+    /// not commence until the next tick, so every mission commencement that
+    /// depends on having stopped was one tick late. That compounds through
+    /// chained handoffs — harvest dock/unload/exit, guard→attack — at one extra
+    /// tick per stage.
+    ///
+    /// Scope, deliberately: **Unit and Infantry only.** Those are the two
+    /// categories verified to gate twice. Aircraft gate exactly once and do it
+    /// *after* their locomotion, so their single checkpoint sits at the wrong
+    /// end in our tick today — recorded, not fixed here, to keep this change's
+    /// hash delta attributable to one mechanism. Buildings gate twice inside
+    /// their own update, which is not a movement bracket; unchanged.
+    ///
+    /// The AI counter is NOT ticked here. Native increments it once per AI pass,
+    /// and the first checkpoint already did.
+    pub(crate) fn object_ai_post_movement_promote(&mut self, rules: Option<&RuleSet>) {
+        let Some(rules) = rules else {
+            return;
+        };
+        let now = self.session.binary_frame;
+        self.for_each_live_object(|sim, id| {
+            if sim.substrate.anims.contains_key(id) {
+                return;
+            }
+            let Some(entity) = sim.substrate.entities.get(id) else {
+                return;
+            };
+            if entity.dying {
+                return;
+            }
+            if !matches!(
+                entity.category,
+                EntityCategory::Unit | EntityCategory::Infantry
+            ) {
+                return;
+            }
+            sim.mission_host_promote(id, now, rules);
+        });
+    }
+
     /// [`Simulation::object_ai_stage`] with the world context the dispatched
     /// mission handler bodies need (the production spine entry).
     pub(crate) fn object_ai_stage_with(&mut self, rules: Option<&RuleSet>, ctx: ObjectAiCtx<'_>) {
@@ -2489,6 +2538,62 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         sim.substrate.entities.insert(e);
     }
 
+    /// An interned Infantry carrying a Walk locomotor, so the readiness producer
+    /// has a real family to map and the moving gate is live.
+    fn insert_interned_walker(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("TEST");
+        let mut e = GameEntity::new_at_frame_zero_for_test(
+            id,
+            rx,
+            ry,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Infantry,
+            0,
+            5,
+            true,
+        );
+        e.locomotor = Some(
+            crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+                crate::rules::locomotor_type::LocomotorKind::Walk,
+            ),
+        );
+        e.mission_leaf = crate::sim::mission::leaf::MissionLeafState::infantry_raw_for_test(0, -1);
+        sim.substrate.entities.insert(e);
+        register_in_logic(sim, id);
+    }
+
+    /// The post-movement checkpoint walks the logic scheduler, not the entity
+    /// store, so a fixture entity has to be a scheduler member or the walk skips
+    /// it and every assertion passes vacuously.
+    fn register_in_logic(sim: &mut Simulation, id: u64) {
+        sim.substrate.logic.try_push(id).expect("logic slot");
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .expect("fixture entity")
+            .in_logic_vector = true;
+    }
+
+    /// Drive the Walk readiness producer's inputs: a live movement target with a
+    /// remaining path step reads as moving, its absence as stopped.
+    fn set_walking(sim: &mut Simulation, id: u64, walking: bool) {
+        let entity = sim.substrate.entities.get_mut(id).expect("fixture entity");
+        entity.movement_target = walking.then(|| crate::sim::components::MovementTarget {
+            path: vec![(5, 5), (6, 5)],
+            next_index: 1,
+            current_speed: crate::util::fixed_math::SimFixed::from_num(4),
+            ..Default::default()
+        });
+    }
+
     #[test]
     fn host_promotes_queued_mission() {
         // Queue(Move, 0) at command time, then the host's Ready→Commence
@@ -2514,6 +2619,119 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         assert_eq!(e.mission.current().known(), Some(MissionType::Move));
         assert_eq!(e.mission.queued(), MissionId::NONE);
         assert_eq!(e.mission.mission_start_frame(), 7);
+    }
+
+    /// An infantry that is still walking when the pre-movement checkpoint runs,
+    /// and has come to rest by the post-movement one, must commence in the SAME
+    /// tick — not the next.
+    ///
+    /// This is the whole point of the second checkpoint. gamemd's
+    /// `InfantryClass::AI` gates either side of the object's own locomotion, so
+    /// stopping mid-tick makes the unit eligible before the tick ends. With only
+    /// the pre-movement gate the promotion slipped a tick, and that lag compounds
+    /// through every chained handoff.
+    ///
+    /// Infantry rather than Unit deliberately: the Unit moving-defer branch is
+    /// inert in production today because `signed_height` has no producer and the
+    /// resulting error maps to permissive-ready, so a Unit fixture would pass for
+    /// the wrong reason. Infantry readiness reads no height.
+    #[test]
+    fn post_movement_checkpoint_commences_a_walker_that_stopped_this_tick() {
+        let rules = promotion_rules();
+        let mut sim = Simulation::new();
+        insert_interned_walker(&mut sim, 1, 5, 5);
+
+        sim.mission_queue_exact(
+            1,
+            MissionId::from_known(MissionType::Move),
+            0,
+            0,
+            &crate::sim::mission::authority::EntityReadyInputProvider,
+        )
+        .unwrap();
+
+        // Still walking: the pre-movement checkpoint must NOT commence it.
+        set_walking(&mut sim, 1, true);
+        sim.object_ai_post_movement_promote(Some(&rules));
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(
+            e.mission.queued().known(),
+            Some(MissionType::Move),
+            "a walking infantry must still be deferred: the moving gate is what \
+             this checkpoint exists to re-evaluate, so if it commences here the \
+             test proves nothing"
+        );
+        assert_eq!(e.mission.current(), MissionId::NONE);
+
+        // Movement ended during the tick's movement phases.
+        set_walking(&mut sim, 1, false);
+        sim.object_ai_post_movement_promote(Some(&rules));
+
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(
+            e.mission.current().known(),
+            Some(MissionType::Move),
+            "coming to rest during the movement phases must let the second \
+             checkpoint commence the queued mission in the same tick"
+        );
+        assert_eq!(e.mission.queued(), MissionId::NONE);
+    }
+
+    /// The second checkpoint must not touch categories gamemd gates only once.
+    /// Aircraft gate a single time, after their locomotion; buildings gate twice
+    /// inside their own update, which is not a movement bracket.
+    #[test]
+    fn post_movement_checkpoint_skips_aircraft_and_structures() {
+        let rules = promotion_rules();
+        let mut sim = Simulation::new();
+        for (id, category) in [
+            (1u64, EntityCategory::Aircraft),
+            (2, EntityCategory::Structure),
+        ] {
+            let owner = sim.interner.intern("Americans");
+            let type_ref = sim.interner.intern("TEST");
+            let e = GameEntity::new_at_frame_zero_for_test(
+                id,
+                5,
+                5,
+                0,
+                0,
+                owner,
+                crate::sim::components::Health {
+                    current: 100,
+                    max: 100,
+                },
+                type_ref,
+                category,
+                0,
+                5,
+                true,
+            );
+            sim.substrate.entities.insert(e);
+            register_in_logic(&mut sim, id);
+            sim.mission_queue_exact(
+                id,
+                MissionId::from_known(MissionType::Move),
+                0,
+                0,
+                &crate::sim::mission::authority::EntityReadyInputProvider,
+            )
+            .ok();
+        }
+        let before: Vec<_> = [1u64, 2]
+            .iter()
+            .map(|id| sim.substrate.entities.get(*id).unwrap().mission)
+            .collect();
+
+        sim.object_ai_post_movement_promote(Some(&rules));
+
+        for (index, id) in [1u64, 2].iter().enumerate() {
+            assert_eq!(
+                sim.substrate.entities.get(*id).unwrap().mission,
+                before[index],
+                "entity {id} is not a twice-gated category and must be untouched"
+            );
+        }
     }
 
     #[test]
