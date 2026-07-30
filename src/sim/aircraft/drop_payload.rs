@@ -510,7 +510,6 @@ mod tests {
             blocker.sub_cell = Some(sub_cell);
             (blocker.position.sub_x, blocker.position.sub_y) =
                 lepton::subcell_lepton_offset(Some(sub_cell));
-            blocker.position.refresh_screen_coords();
             sim.substrate.entities.insert(blocker);
             assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
         }

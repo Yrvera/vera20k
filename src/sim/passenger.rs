@@ -2343,7 +2343,6 @@ ConditionYellow=50%
             blocker.sub_cell = Some(2);
             (blocker.position.sub_x, blocker.position.sub_y) =
                 lepton::subcell_lepton_offset(Some(2));
-            blocker.position.refresh_screen_coords();
             sim.substrate.entities.insert(blocker);
             assert!(matches!(
                 sim.reveal(blocker_id),

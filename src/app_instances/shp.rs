@@ -85,15 +85,8 @@ pub(crate) fn build_shp_instances(
         ) {
             continue;
         }
-        // Screen position is computed by the sim layer (lepton_to_screen) every
-        // tick with the correct z. No renderer-side interpolation needed.
-        // Aircraft/jumpjet altitude: offset screen Y upward for flying entities.
-        let altitude_y_offset: f32 = entity
-            .locomotor
-            .as_ref()
-            .map(|l| crate::util::fixed_math::sim_to_f32(l.altitude) * 0.06)
-            .unwrap_or(0.0);
-        let (sx, sy, interp_z) = (pos.screen_x, pos.screen_y - altitude_y_offset, pos.z);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
+        let interp_z = pos.z;
         if !in_view(sx, sy, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
             continue;
         }

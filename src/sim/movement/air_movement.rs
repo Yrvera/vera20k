@@ -33,7 +33,7 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::facing_from_delta;
 use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::{AirMovePhase, LocomotorState, MovementLayer};
-use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, sim_to_f32};
+use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
 use crate::util::lepton::CELL_CENTER_LEPTON as CELL_CENTER;
 
 /// Checked SimFixed multiply — logs a warning and saturates on overflow
@@ -58,11 +58,6 @@ fn checked_mul_log(a: SimFixed, b: SimFixed, label: &str, entity_id: u64) -> Sim
         }
     }
 }
-
-/// Visual height offset per lepton of altitude.
-/// Calibrated so that cruise altitude (1500 leptons) produces ~90px vertical
-/// offset. KEPT as f32 — render-only visual scale.
-const ALTITUDE_VISUAL_SCALE: f32 = 0.06;
 
 /// Per-tick speed ramp step for Fly aircraft (0.1 per tick).
 /// Original: _DAT_007e3860 = 0.1 (verified from binary).
@@ -407,23 +402,6 @@ pub fn tick_air_movement(
                 ramp_fly_speed(loco);
             }
         }
-
-        // Update screen position including altitude visual offset.
-        let alt_f32: f32 = entity
-            .locomotor
-            .as_ref()
-            .map(|l| sim_to_f32(l.altitude))
-            .unwrap_or(0.0);
-        let (sx, sy) = crate::util::lepton::lepton_to_screen(
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.sub_x,
-            entity.position.sub_y,
-            entity.position.z,
-        );
-        entity.position.screen_x = sx;
-        // Altitude lifts the unit visually upward (negative Y in screen space).
-        entity.position.screen_y = sy - alt_f32 * ALTITUDE_VISUAL_SCALE;
     }
 
     // Remove MovementTarget from arrived air units and update air phase.
@@ -507,21 +485,6 @@ pub fn tick_air_movement(
                 );
             }
         }
-        // Update screen position for idle air entities too (altitude may be changing).
-        let alt_f32: f32 = entity
-            .locomotor
-            .as_ref()
-            .map(|l| sim_to_f32(l.altitude))
-            .unwrap_or(0.0);
-        let (sx, sy) = crate::util::lepton::lepton_to_screen(
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.sub_x,
-            entity.position.sub_y,
-            entity.position.z,
-        );
-        entity.position.screen_x = sx;
-        entity.position.screen_y = sy - alt_f32 * ALTITUDE_VISUAL_SCALE;
     }
 
     stats

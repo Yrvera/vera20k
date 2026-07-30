@@ -374,8 +374,6 @@ mod tests {
             sub_y: SimFixed::ZERO,
             // screen_x/screen_y are #[serde(skip, default)] but Position has no
             // Default impl, so we must initialize them explicitly in struct literals.
-            screen_x: 0.0,
-            screen_y: 0.0,
         }
     }
 

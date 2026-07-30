@@ -5,8 +5,9 @@
 //! determine what to draw and where.
 //!
 //! ## Design notes
-//! - Position stores both isometric cell coords AND pre-computed screen coords.
-//!   Screen coords are updated whenever position changes (avoids per-frame math).
+//! - Position stores isometric cell coords only. Where an entity is *drawn* is
+//!   `render::locomotor_visual`'s business, derived on read — sim/ writes no
+//!   screen coordinates.
 //! - Some types here (Facing, VoxelModel, etc.) are legacy wrappers
 //!   kept for any remaining call sites. The canonical data lives in GameEntity fields.
 //!
@@ -24,9 +25,6 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 /// RA2 uses leptons as its spatial unit (256 leptons = 1 cell). We store the
 /// cell coordinate (rx, ry) plus a sub-cell lepton offset (sub_x, sub_y) to
 /// get sub-cell precision without overflowing SimFixed on large maps.
-///
-/// Screen coords are computed via `iso_to_screen(rx, ry, z)` and cached here
-/// so the render loop doesn't need to recompute every frame.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     /// Isometric cell X coordinate.
@@ -40,23 +38,6 @@ pub struct Position {
     pub sub_x: SimFixed,
     /// Sub-cell lepton offset Y (0..256). 128 = cell center.
     pub sub_y: SimFixed,
-    /// Pre-computed screen X position (pixels, world space).
-    #[serde(skip, default)]
-    pub screen_x: f32,
-    /// Pre-computed screen Y position (pixels, world space).
-    #[serde(skip, default)]
-    pub screen_y: f32,
-}
-
-impl Position {
-    /// Shared owner for keeping cached screen coordinates in sync after any
-    /// direct mutation of world position, sub-cell offset, or Z.
-    pub fn refresh_screen_coords(&mut self) {
-        let (sx, sy) =
-            crate::util::lepton::lepton_to_screen(self.rx, self.ry, self.sub_x, self.sub_y, self.z);
-        self.screen_x = sx;
-        self.screen_y = sy;
-    }
 }
 
 /// Facing direction (0â€“255, RA2 convention).
@@ -1035,8 +1016,6 @@ mod tests {
             z: 0,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-            screen_x: -300.0,
-            screen_y: 1050.0,
         };
         assert_eq!(pos.rx, 30);
         assert_eq!(pos.ry, 40);

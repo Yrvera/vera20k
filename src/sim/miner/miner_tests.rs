@@ -1946,7 +1946,6 @@ fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_
             .expect("waiter entity");
         entity.position.rx = 14;
         entity.position.ry = 11;
-        entity.position.refresh_screen_coords();
         entity.movement_target = None;
     }
 
@@ -3798,7 +3797,6 @@ fn waiter_moves_from_queueingcell_to_accepted_cell_before_entered() {
             .expect("waiter entity");
         entity.position.rx = 13;
         entity.position.ry = 11;
-        entity.position.refresh_screen_coords();
         entity.movement_target = None;
     }
 
@@ -7709,8 +7707,8 @@ fn coordinate_runtime_trace_miner_arrival_and_extraction_four_directions() {
                     sim.session.tick,
                     entity.position.rx,
                     entity.position.ry,
-                    entity.position.screen_x,
-                    entity.position.screen_y,
+                    crate::render::locomotor_visual::screen_position(entity).0,
+                    crate::render::locomotor_visual::screen_position(entity).1,
                     entity.movement_target.is_some(),
                 );
                 assert_eq!(

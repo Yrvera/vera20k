@@ -203,7 +203,6 @@ impl Simulation {
             entity.position.z = request.position.z;
             entity.position.sub_x = request.position.sub_x;
             entity.position.sub_y = request.position.sub_y;
-            entity.position.refresh_screen_coords();
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::RevealCoordinatesCommitted);

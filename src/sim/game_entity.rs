@@ -626,8 +626,6 @@ impl GameEntity {
                 crate::util::lepton::CELL_CENTER_LEPTON,
             )
         };
-        let (screen_x, screen_y) =
-            crate::util::lepton::lepton_to_screen(rx, ry, init_sub_x, init_sub_y, z);
         Self {
             stable_id,
             position: Position {
@@ -636,8 +634,6 @@ impl GameEntity {
                 z,
                 sub_x: init_sub_x,
                 sub_y: init_sub_y,
-                screen_x,
-                screen_y,
             },
             facing,
             facing_target: None,
@@ -1122,8 +1118,9 @@ mod tests {
         );
         // lepton_to_screen = CoordsToClient(cell_center) = iso_to_screen + (30, 15)
         let (corner_sx, corner_sy) = terrain::iso_to_screen(30, 40, 2);
-        assert!((e.position.screen_x - (corner_sx + 30.0)).abs() < 0.01);
-        assert!((e.position.screen_y - corner_sy).abs() < 0.01);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(&e);
+        assert!((sx - (corner_sx + 30.0)).abs() < 0.01);
+        assert!((sy - corner_sy).abs() < 0.01);
     }
 }
 

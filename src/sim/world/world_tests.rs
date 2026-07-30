@@ -766,8 +766,9 @@ fn test_spawn_sets_position_and_facing() {
         assert_eq!(e.facing, 64);
         assert_eq!(sim.interner.resolve(e.type_ref), "HTNK");
         // lepton_to_screen = CoordsToClient(cell_center) = (30*(30-40), 15*(30+40)+15) = (-300, 1065)
-        assert!((e.position.screen_x - (-300.0)).abs() < 0.1);
-        assert!((e.position.screen_y - 1065.0).abs() < 0.1);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
+        assert!((sx - (-300.0)).abs() < 0.1);
+        assert!((sy - 1065.0).abs() < 0.1);
     }
 }
 
@@ -3035,9 +3036,6 @@ fn test_guard_returns_to_anchor_when_displaced() {
     if let Some(e) = sim.substrate.entities.get_mut(1) {
         e.position.rx = 5;
         e.position.ry = 2;
-        let (sx, sy) = terrain::iso_to_screen(5, 2, e.position.z);
-        e.position.screen_x = sx;
-        e.position.screen_y = sy;
         e.movement_target = None;
         e.attack_target = None;
     }
@@ -3092,9 +3090,6 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
     if let Some(e) = sim.substrate.entities.get_mut(1) {
         e.position.rx = 2;
         e.position.ry = 1;
-        let (nx, ny) = terrain::iso_to_screen(2, 1, 0);
-        e.position.screen_x = nx;
-        e.position.screen_y = ny;
     }
     let _ = sim.advance_tick(&[], None, &empty_heights(), Some(&grid), None, 33);
     assert!(!sim.fog.is_cell_visible(americans, 1, 1));

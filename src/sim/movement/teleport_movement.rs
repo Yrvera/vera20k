@@ -304,7 +304,6 @@ pub fn tick_teleport_movement(
                 entity.position.ry = teleport.target_ry;
                 entity.position.sub_x = CELL_CENTER_LEPTON;
                 entity.position.sub_y = CELL_CENTER_LEPTON;
-                entity.position.refresh_screen_coords();
                 if let Some(visuals) = visuals.as_deref_mut() {
                     visuals.spawn_warp_out(
                         entity.position.rx,

@@ -1378,7 +1378,6 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
             entity.bridge_occupancy = None;
             entity.on_bridge = false;
             entity.position.z = ground_level;
-            entity.position.refresh_screen_coords();
             entity.movement_target = None;
             if let Some(ref mut loco) = entity.locomotor {
                 loco.layer = MovementLayer::Ground;

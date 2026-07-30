@@ -311,9 +311,10 @@ impl MinimapRenderer {
                 }
             }
 
+            let (entity_sx, entity_sy) = super::locomotor_visual::screen_position(entity);
             let (px, py): (u32, u32) = world_to_minimap_pixel(
-                pos.screen_x,
-                pos.screen_y,
+                entity_sx,
+                entity_sy,
                 self.world_origin_x,
                 self.world_origin_y,
                 self.world_width,

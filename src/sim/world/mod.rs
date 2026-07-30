@@ -1393,7 +1393,6 @@ impl Simulation {
 
         // 2. Rebuild cached screen coords for all entities
         for entity in self.substrate.entities.values_mut() {
-            entity.position.refresh_screen_coords();
         }
 
         // 2b. Rebuild LogicClass membership from the restored order.

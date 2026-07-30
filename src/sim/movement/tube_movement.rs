@@ -166,7 +166,6 @@ pub fn finish_unit_tube_movement(
     entity.position.sub_x = CELL_CENTER_LEPTON;
     entity.position.sub_y = CELL_CENTER_LEPTON;
     entity.position.z = z;
-    entity.position.refresh_screen_coords();
     drive.active_tube = None;
     UnitTubeAdvance::ReachedFinal
 }
@@ -178,7 +177,6 @@ fn set_position_from_drive_coord(position: &mut Position, x: i32, y: i32) {
     position.ry = ry;
     position.sub_x = crate::util::fixed_math::SimFixed::from_num(x.rem_euclid(256));
     position.sub_y = crate::util::fixed_math::SimFixed::from_num(y.rem_euclid(256));
-    position.refresh_screen_coords();
 }
 
 pub fn try_begin_path_tube_step(
@@ -371,7 +369,6 @@ fn move_entity_to_cell(
         bridge_update,
         id,
     );
-    entity.position.refresh_screen_coords();
 }
 
 fn infer_tube_landing_layer(on_bridge: bool, dst_cell: Option<&PathCell>) -> MovementLayer {
@@ -672,8 +669,6 @@ mod tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
         let mut target = MovementTarget {
             path: vec![(0, 0), (0, 0)],
@@ -709,8 +704,6 @@ mod tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
         let mut target = MovementTarget {
             path: vec![(0, 0), (2, 0)],
@@ -757,8 +750,6 @@ mod tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
         // Pending node (4,0) is non-adjacent and is NOT this tube's exit (2,0).
         let mut target = MovementTarget {
@@ -796,8 +787,6 @@ mod tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
 
         let result = tick_unit_tube_payload(&mut payload, &mut position, 4, &tube);
@@ -816,8 +805,6 @@ mod tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
 
         let result = tick_unit_tube_payload(&mut payload, &mut position, 512, &tube);

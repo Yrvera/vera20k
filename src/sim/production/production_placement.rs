@@ -210,11 +210,20 @@ pub fn place_ready_building(
     // Log screen position for debugging placement alignment.
     if let Some(ge) = sim.substrate.entities.get(new_sid) {
         let (fw, fh) = foundation_dimensions(&foundation_str);
+        // Buildings carry no visual height lift, so the bare projection is
+        // the drawn position. sim/ cannot call render/ for the general case.
+        let screen = crate::util::lepton::lepton_to_screen(
+            ge.position.rx,
+            ge.position.ry,
+            ge.position.sub_x,
+            ge.position.sub_y,
+            ge.position.z,
+        );
         log::info!(
             "  → spawned sid={} screen=({:.0},{:.0}) foundation_cells: ({},{})..({},{})",
             new_sid,
-            ge.position.screen_x,
-            ge.position.screen_y,
+            screen.0,
+            screen.1,
             rx,
             ry,
             rx + fw - 1,

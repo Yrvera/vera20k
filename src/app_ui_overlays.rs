@@ -119,7 +119,7 @@ pub(crate) fn build_building_status_instances(
         ) {
             continue;
         }
-        let (sx, sy) = (e.position.screen_x, e.position.screen_y);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
         // Foundation= is merged from art.ini into ObjectType by merge_art_data().
         // Height= is an art.ini property, looked up via Image= redirect.
         let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
@@ -324,7 +324,7 @@ pub(crate) fn build_occupant_pip_instances(
             Some(c) => c,
             None => continue,
         };
-        let (sx, sy) = (e.position.screen_x, e.position.screen_y);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
         // Occupant pips start at (screen_x + 6, screen_y - 1).
         let start_x: f32 = sx + 6.0 + adj_x;
         let start_y: f32 = sy - 1.0 + adj_y;
@@ -423,15 +423,9 @@ pub(crate) fn build_unit_status_bg_instances(
         ) {
             continue;
         }
-        // Sub-cell offsets are already baked into screen_x/screen_y by the sim tick.
-        let (sx, raw_sy) = crate::app_instances::interpolated_screen_position_entity(e);
-        // Aircraft altitude: lift health bar to match the unit sprite position.
-        let altitude_y_offset: f32 = e
-            .locomotor
-            .as_ref()
-            .map(|l| crate::util::fixed_math::sim_to_f32(l.altitude) * 0.06)
-            .unwrap_or(0.0);
-        let sy = raw_sy - altitude_y_offset;
+        // Already the drawn position, height lift included, so the bar tracks
+        // the sprite for airborne units without repeating the lift here.
+        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(e);
         let is_infantry: bool = e.category == EntityCategory::Infantry;
         let (bar_size, uv_origin, uv_size) = if is_infantry {
             (
@@ -517,15 +511,9 @@ pub(crate) fn build_unit_status_fill_instances(
         ) {
             continue;
         }
-        // Sub-cell offsets are already baked into screen_x/screen_y by the sim tick.
-        let (sx, raw_sy) = crate::app_instances::interpolated_screen_position_entity(e);
-        // Aircraft altitude: lift health bar to match the unit sprite position.
-        let altitude_y_offset: f32 = e
-            .locomotor
-            .as_ref()
-            .map(|l| crate::util::fixed_math::sim_to_f32(l.altitude) * 0.06)
-            .unwrap_or(0.0);
-        let sy = raw_sy - altitude_y_offset;
+        // Already the drawn position, height lift included, so the bar tracks
+        // the sprite for airborne units without repeating the lift here.
+        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(e);
         let ratio: f32 = if health.max == 0 {
             0.0
         } else {
@@ -839,8 +827,9 @@ pub(crate) fn build_building_radius_ring_instances(
         }
 
         let (fw, fh) = crate::rules::foundation::foundation_dimensions(&obj.foundation);
-        let center_x = e.position.screen_x + (fw as f32 - fh as f32) * 15.0;
-        let center_y = e.position.screen_y + (fw as f32 + fh as f32) * 7.5 - 15.0;
+        let (base_x, base_y) = crate::render::locomotor_visual::screen_position(e);
+        let center_x = base_x + (fw as f32 - fh as f32) * 15.0;
+        let center_y = base_y + (fw as f32 + fh as f32) * 7.5 - 15.0;
         let radius_x = radius_cells as f32 * 30.0;
         let radius_y = radius_cells as f32 * 15.0;
         if !in_view(

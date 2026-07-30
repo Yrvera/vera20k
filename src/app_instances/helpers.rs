@@ -115,13 +115,16 @@ pub(crate) fn apply_bridge_depth_bias(state: &AppState, entity: &GameEntity, dep
     (depth + entity.zfudge_bridge.max(0) as f32 * 0.00002).clamp(0.001, 0.999)
 }
 
-/// Convenience wrapper that takes a `GameEntity` directly.
-/// Sub-cell offsets are already baked into `screen_x`/`screen_y` via
-/// `lepton_to_screen()` in the sim tick, so no extra offset is needed.
+/// Where this entity is drawn, sub-cell offsets and height lift included.
+///
+/// Thin wrapper over [`crate::render::locomotor_visual::screen_position`],
+/// which is the single owner of the answer. Callers must NOT apply a height
+/// offset of their own on top — doing that in two places is what used to lift
+/// aircraft twice.
 pub(crate) fn interpolated_screen_position_entity(
     entity: &crate::sim::game_entity::GameEntity,
 ) -> (f32, f32) {
-    (entity.position.screen_x, entity.position.screen_y)
+    crate::render::locomotor_visual::screen_position(entity)
 }
 
 /// Check whether an entity is visible to the local player based on shroud.

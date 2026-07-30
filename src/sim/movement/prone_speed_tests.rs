@@ -57,7 +57,6 @@ fn prone_mover() -> GameEntity {
     );
     entity.position.sub_x = SimFixed::from_num(128);
     entity.position.sub_y = SimFixed::from_num(128);
-    entity.position.refresh_screen_coords();
     entity.infantry.as_mut().expect("infantry runtime").is_prone = true;
     entity.movement_target = Some(MovementTarget {
         path: vec![(0, 0), (1, 0)],

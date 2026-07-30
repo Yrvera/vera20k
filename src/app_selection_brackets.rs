@@ -284,7 +284,7 @@ pub(crate) fn build_selection_bracket_instances(
             continue;
         }
 
-        let (sx, sy) = (e.position.screen_x, e.position.screen_y);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
 
         // Look up foundation and Height from rules/art.
         let obj = state.rules.as_ref().and_then(|r| r.object(type_str));

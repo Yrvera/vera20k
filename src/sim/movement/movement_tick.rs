@@ -52,9 +52,8 @@ use super::movement_path::{find_move_path, supports_layered_bridge_pathing};
 use super::movement_step;
 use super::tube_movement::{self, TubePathStepResult};
 use super::{
-    INFANTRY_WOBBLE_AMPLITUDE, MIN_BRAKE_FRACTION, MovementConfig, MovementTickStats,
-    MoverSnapshot, PATH_STUCK_INIT, PathfindingContext, PendingCrushKill, facing_from_delta,
-    walking_to_subcell_dest,
+    MIN_BRAKE_FRACTION, MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT,
+    PathfindingContext, PendingCrushKill, facing_from_delta, walking_to_subcell_dest,
 };
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 
@@ -105,7 +104,6 @@ fn tick_forced_drive_tracks(
             entity.position.sub_x = interp.sub_x;
             entity.position.sub_y = interp.sub_y;
         }
-        entity.position.refresh_screen_coords();
         processed.insert(entity_id);
         stats.movers_total = stats.movers_total.saturating_add(1);
         stats.moved_steps = stats.moved_steps.saturating_add(1);
@@ -1525,7 +1523,6 @@ pub(crate) fn tick_movement_with_grids(
                         pending_bridge_update,
                         entity_id,
                     );
-                    entity.position.refresh_screen_coords();
                     continue;
                 }
                 movement_step::AdvanceResult::DriveTrackChainReady => {
@@ -1674,7 +1671,6 @@ pub(crate) fn tick_movement_with_grids(
                 }
 
                 // Update screen position from lepton coordinates every tick.
-                entity.position.refresh_screen_coords();
 
                 // Z handling: Z snaps discretely at cell boundaries via
                 // entity.position.z (set earlier in this tick). The original engine
@@ -1684,20 +1680,6 @@ pub(crate) fn tick_movement_with_grids(
                 // not from Z interpolation. Removing the Z lerp that was here fixes a bug
                 // where units on bridges visually fell to water level every cell transition
                 // (the lookahead read ground_level instead of bridge_deck_level).
-
-                // Infantry walking bob: vertical sinusoidal bounce while moving.
-                // Original engine: cos(wobble) applied to Z interpolation in
-                // producing an up/down bob during walking states.
-                // Applied to screen_y only — doesn't affect sim determinism.
-                if entity.category == EntityCategory::Infantry {
-                    if let Some(ref loco) = entity.locomotor {
-                        if loco.infantry_wobble_phase != 0.0 {
-                            let bob = loco.infantry_wobble_phase.cos() * INFANTRY_WOBBLE_AMPLITUDE;
-                            // Negative = up in screen space (lower Y = higher on screen)
-                            entity.position.screen_y -= bob;
-                        }
-                    }
-                }
 
                 // Post-loop finalization (still inside mutable borrow scope).
                 if !aborted_for_stuck
@@ -1984,7 +1966,6 @@ fn finalize_finished_entities(
                 .unwrap_or_else(|| crate::util::lepton::subcell_lepton_offset(entity.sub_cell));
             entity.position.sub_x = snap_x;
             entity.position.sub_y = snap_y;
-            entity.position.refresh_screen_coords();
             let old_phase = entity.locomotor.as_ref().map(|l| l.phase);
             if let Some(ref mut loco) = entity.locomotor {
                 loco.phase = GroundMovePhase::Idle;
@@ -2080,8 +2061,6 @@ mod distance_tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         }
     }
 

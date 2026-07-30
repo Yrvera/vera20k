@@ -519,8 +519,9 @@ fn test_tick_movement_updates_screen_position() {
     let entity = entities.get(1).expect("entity exists");
     // lepton_to_screen = CoordsToClient(cell_center) = iso_to_screen + (30, 15).
     let (corner_sx, corner_sy): (f32, f32) = terrain::iso_to_screen(6, 5, 0);
-    assert!((entity.position.screen_x - (corner_sx + 30.0)).abs() < 1.0);
-    assert!((entity.position.screen_y - corner_sy).abs() < 1.0);
+    let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
+    assert!((sx - (corner_sx + 30.0)).abs() < 1.0);
+    assert!((sy - corner_sy).abs() < 1.0);
 }
 
 #[test]
@@ -3017,7 +3018,6 @@ fn make_hover_mover(path: Vec<(u16, u16)>, sub_x: i32) -> GameEntity {
     );
     entity.position.sub_x = SimFixed::from_num(sub_x);
     entity.position.sub_y = SimFixed::from_num(128);
-    entity.position.refresh_screen_coords();
     entity.locomotor = Some(
         crate::sim::movement::locomotor::LocomotorState::for_test_kind(
             crate::rules::locomotor_type::LocomotorKind::Hover,

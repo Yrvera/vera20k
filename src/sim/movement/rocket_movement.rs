@@ -36,9 +36,6 @@ const LAUNCH_DURATION_S: SimFixed = SimFixed::lit("0.3");
 const ASCEND_FRACTION: SimFixed = SimFixed::lit("0.4");
 /// Peak altitude in leptons during the ascending phase.
 const PEAK_ALTITUDE: SimFixed = SimFixed::lit("400");
-/// Visual height offset per lepton of altitude (matches air_movement).
-/// Render-only — kept as f32.
-const ALTITUDE_VISUAL_SCALE: f32 = 0.06;
 
 /// Phase within the rocket state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -246,20 +243,8 @@ pub fn tick_rocket_movement(
             }
         }
 
-        // Capture altitude and phase change before dropping the rocket borrow.
+        // Capture the phase change before dropping the rocket borrow.
         let phase_after = rocket.phase;
-        let alt_for_screen = rocket.altitude;
-
-        // Update screen coordinates with altitude offset.
-        let (sx, sy) = crate::util::lepton::lepton_to_screen(
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.sub_x,
-            entity.position.sub_y,
-            entity.position.z,
-        );
-        entity.position.screen_x = sx;
-        entity.position.screen_y = sy - sim_to_f32(alt_for_screen) * ALTITUDE_VISUAL_SCALE;
 
         // Log phase transition if it changed.
         if phase_after != phase_before {

@@ -812,15 +812,9 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
             None => continue,
         };
         let pos = &entity.position;
-        // Match the GI's altitude-lifted draw position so the chute follows
-        // the airborne body, not the ground beneath it. The GI is rendered
-        // at `screen_y - altitude_y_offset` (see app_instances/shp.rs).
-        let altitude_y_offset: f32 = entity
-            .locomotor
-            .as_ref()
-            .map(|l| crate::util::fixed_math::sim_to_f32(l.altitude) * 0.06)
-            .unwrap_or(0.0);
-        let (gx, gy) = (pos.screen_x, pos.screen_y - altitude_y_offset);
+        // Draw the chute exactly where the body is drawn, so it follows the
+        // airborne GI rather than the ground beneath it.
+        let (gx, gy) = crate::render::locomotor_visual::screen_position(entity);
         if !in_view(gx, gy, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
             continue;
         }

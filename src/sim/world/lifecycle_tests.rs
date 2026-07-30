@@ -267,8 +267,6 @@ fn lifecycle_authority_legacy_app_death_handoff_changes_only_logic_membership() 
             after.position.z,
             after.position.sub_x,
             after.position.sub_y,
-            after.position.screen_x,
-            after.position.screen_y,
         ),
         (
             position.rx,
@@ -276,8 +274,6 @@ fn lifecycle_authority_legacy_app_death_handoff_changes_only_logic_membership() 
             position.z,
             position.sub_x,
             position.sub_y,
-            position.screen_x,
-            position.screen_y,
         )
     );
     assert_eq!(
@@ -318,8 +314,6 @@ fn lifecycle_authority_second_reveal_is_idempotent() {
             entity.position.z,
             entity.position.sub_x,
             entity.position.sub_y,
-            entity.position.screen_x,
-            entity.position.screen_y,
         ),
         (
             first_position.rx,
@@ -327,8 +321,6 @@ fn lifecycle_authority_second_reveal_is_idempotent() {
             first_position.z,
             first_position.sub_x,
             first_position.sub_y,
-            first_position.screen_x,
-            first_position.screen_y,
         )
     );
     assert_eq!(entity.occupancy_enter_order, first_enter_order);

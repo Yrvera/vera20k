@@ -332,7 +332,6 @@ pub(super) fn handle_vehicle_rotation(
 
     if bf.is_rotating(binary_frame) {
         // Still rotating in place — advance facing but don't move.
-        position.refresh_screen_coords();
         let mut debug_events = Vec::new();
         if let Some(loco) = locomotor {
             let old_phase = loco.phase;
@@ -402,8 +401,6 @@ mod tests {
                 z: 0,
                 sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
                 sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-                screen_x: 0.0,
-                screen_y: 0.0,
             };
             let mut locomotor = None;
             for frame in 0..1000u32 {
@@ -469,10 +466,7 @@ mod tests {
             z: 0,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
-        position.refresh_screen_coords();
         let mut facing = 0;
         let mut facing_target = None;
         let mut drive_track_state =
@@ -525,8 +519,6 @@ mod tests {
             z: 0,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
         let mut facing = 0;
         let mut facing_target = None;
@@ -581,8 +573,6 @@ mod tests {
             z: 0,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
         let mut facing = 0;
         let mut facing_target = None;
@@ -705,14 +695,12 @@ fn advance_drive_track_retry_after_selection(
     if advance.cell_jump && target.next_index < target.path.len() {
         position.sub_x = advance.sub_x;
         position.sub_y = advance.sub_y;
-        position.refresh_screen_coords();
         return AdvanceResult::DriveTrackCellJump;
     }
 
     if advance.chain_ready && target.next_index < target.path.len() {
         position.sub_x = advance.sub_x;
         position.sub_y = advance.sub_y;
-        position.refresh_screen_coords();
         return AdvanceResult::DriveTrackChainReady;
     }
 
@@ -720,7 +708,6 @@ fn advance_drive_track_retry_after_selection(
         *drive_track_state = None;
         position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
         position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
-        position.refresh_screen_coords();
         return AdvanceResult::ReadyForCrossings;
     }
 
@@ -739,7 +726,6 @@ fn advance_drive_track_retry_after_selection(
             position.sub_y = interp.sub_y;
         }
     }
-    position.refresh_screen_coords();
     AdvanceResult::DriveTrackActive
 }
 
@@ -794,7 +780,6 @@ pub(super) fn advance_lepton_position(
             // already adjusted inside advance_drive_track. Update visual position.
             position.sub_x = advance.sub_x;
             position.sub_y = advance.sub_y;
-            position.refresh_screen_coords();
             // Signal the caller to handle the actual cell transition
             // (update rx/ry, reserve destination, bridge state, etc.).
             return AdvanceResult::DriveTrackCellJump;
@@ -806,7 +791,6 @@ pub(super) fn advance_lepton_position(
             // either replace the track state or let the current track continue.
             position.sub_x = advance.sub_x;
             position.sub_y = advance.sub_y;
-            position.refresh_screen_coords();
             return AdvanceResult::DriveTrackChainReady;
         }
 
@@ -859,7 +843,6 @@ pub(super) fn advance_lepton_position(
                     target.move_dir_len = d_len;
                     *drive_track_state = Some(new_track);
                     *facing_target = None;
-                    position.refresh_screen_coords();
                     return advance_drive_track_retry_after_selection(
                         target,
                         position,
@@ -892,7 +875,6 @@ pub(super) fn advance_lepton_position(
                 position.sub_x = interp.sub_x;
                 position.sub_y = interp.sub_y;
             }
-            position.refresh_screen_coords();
             return AdvanceResult::DriveTrackActive;
         }
     } else {

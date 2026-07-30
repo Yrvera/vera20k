@@ -472,7 +472,6 @@ pub fn tick_homing_movement(
         let new_ry = h.pos_y_cells.to_num::<i32>().clamp(0, u16::MAX as i32) as u16;
         bullet.position.rx = new_rx;
         bullet.position.ry = new_ry;
-        bullet.position.refresh_screen_coords();
 
         // 9. vz damper: non-Floater missiles decay vertical velocity each
         //    tick toward 0 (`(vz + 3*sgn(vz)) / 4` rounds toward 0 by 1/4).

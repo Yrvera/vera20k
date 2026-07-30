@@ -20,10 +20,7 @@ use crate::sim::movement::locomotion::LocomotorSlot;
 
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_f32};
-
-/// Visual height offset per lepton of altitude (matches DropPod). Render-only f32.
-const ALTITUDE_VISUAL_SCALE: f32 = 0.06;
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 /// Per-entity parachute descent state. Set by [`begin_parachute_descent`],
 /// cleared on landing. This mirrors gamemd's object-level falling state:
@@ -76,7 +73,9 @@ pub fn begin_parachute_descent(
 /// 1. Integrate Z FIRST: `altitude += rate` (rate is negative; first tick rate=0 → no move)
 /// 2. Landing check: `altitude <= 0` → mark for cleanup (altitude clamped to exactly 0)
 /// 3. Rate update: `rate -= 1`, clamp to `parachute_max_fall_rate`
-/// 4. Update `screen_y` for renderer (altitude offset, render-only f32)
+///
+/// Where the falling body is *drawn* is not this pass's business — the altitude
+/// here is the only input `render::locomotor_visual` needs.
 ///
 /// Cleanup (per landed entity):
 /// - clear `parachute_state`
@@ -114,18 +113,6 @@ pub fn tick_parachute_descent(
             // Integer DEC, then clamp toward the more-negative bound.
             state.rate = (state.rate - 1).max(parachute_max_fall_rate);
         }
-
-        // Render-side: update screen_y with altitude offset. Render-only f32
-        // — does NOT feed back into sim state.
-        let (sx, sy) = crate::util::lepton::lepton_to_screen(
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.sub_x,
-            entity.position.sub_y,
-            entity.position.z,
-        );
-        entity.position.screen_x = sx;
-        entity.position.screen_y = sy - sim_to_f32(state.altitude) * ALTITUDE_VISUAL_SCALE;
     }
 
     // Cleanup landed entities: clear descent state first, so anything watching
@@ -409,31 +396,29 @@ mod tests {
 
     #[test]
     fn test_landing_clamps_to_zero_no_overshoot() {
-        // Drop altitude = 5 leptons → tick 4 integrates altitude = -1 (would
-        // overshoot below ground), must clamp to exactly SIM_ZERO before cleanup.
-        // We can't observe altitude after cleanup; verify via screen_y offset.
+        // Drop altitude = 5 leptons. The ramp is 0,-1,-2,-3, so three ticks
+        // leave altitude at 2 and the fourth integrates to -1 — below ground.
+        // That tick must clamp to SIM_ZERO and land rather than leave the unit
+        // underground.
         let mut entities = EntityStore::new();
         let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(5));
 
-        for _ in 0..4 {
+        for _ in 0..3 {
             tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         }
+        let state = entities
+            .get(id)
+            .expect("alive")
+            .parachute_state
+            .as_ref()
+            .expect("still descending after three ticks");
+        assert_eq!(state.altitude, SimFixed::from_num(2));
+        assert_eq!(state.rate, -3, "the next tick would integrate to -1");
 
-        let entity = entities.get(id).expect("alive");
-        assert!(entity.parachute_state.is_none(), "must have landed");
-        // Compute the no-altitude baseline screen_y the way the tick does.
-        let (_sx, sy_baseline) = crate::util::lepton::lepton_to_screen(
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.sub_x,
-            entity.position.sub_y,
-            entity.position.z,
-        );
-        // The last tick's screen_y was computed with altitude = SIM_ZERO →
-        // screen_y == sy - 0 == sy.
+        tick_parachute_descent(&mut entities, TICK_MS_64, RULES_PARACHUTE_MAX_FALL_RATE, 0);
         assert!(
-            (entity.position.screen_y - sy_baseline).abs() < 0.01,
-            "screen_y must equal baseline (no altitude offset) after landing"
+            entities.get(id).expect("alive").parachute_state.is_none(),
+            "the overshooting tick must clamp and land, not leave the unit falling"
         );
     }
 

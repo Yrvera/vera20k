@@ -107,10 +107,6 @@ const PATH_STUCK_INIT: u8 = 10;
 /// Minimum height level difference to trigger Rust's defensive cliff detection.
 /// Original engine: abs(current_z / HeightStep - cell.height) >= 3 levels.
 const CLIFF_HEIGHT_THRESHOLD: u16 = 3;
-/// Infantry wobble vertical bob amplitude in screen pixels.
-/// Original engine: cos(wobble) compared against heightDiff to produce Z bob.
-/// ~1 px is barely perceptible — just enough to feel alive.
-const INFANTRY_WOBBLE_AMPLITUDE: f32 = 1.0;
 /// Infantry wobble phase increment per second (radians/sec).
 /// One full cycle (2π) per ~2.5 seconds ≈ 2.5 rad/s. Matches slow
 /// infantry walk cadence in the original game.
