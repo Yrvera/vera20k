@@ -13,45 +13,51 @@
 //! the invalidation it replaces and immune to the stale-cache class of bug
 //! (position mutated by a pass that forgot to refresh).
 //!
-//! ## The height lift, and a recorded DRIFT
+//! ## The height lift
 //!
 //! gamemd applies the height lift **once**, inlined in `CoordsToClient`, as
-//! part of the projection itself: every drawn thing goes through it and picks
-//! up `screen_y -= Z_leptons * k + …`. The multiplier `k` is not a literal in
-//! the image — it is computed at startup from the camera model as
+//! part of the projection itself — every drawn thing goes through it:
+//!
+//! ```text
+//! screen_y -= ftol(Z_leptons * k + (Z_leptons >= 728 ? 1 : 0) + 0.5)
+//! ```
+//!
+//! The multiplier `k` is not a literal in the image. It is computed once at
+//! startup from the camera model, and the global holding it reads as all
+//! zeroes in the file (BSS) — which is why it took chasing three globals to
+//! their single writers to recover:
 //!
 //! ```text
 //! k = sin(60°) * 60.0 / (256 * sqrt(2))  ≈  0.14352
 //! ```
 //!
-//! that is, the tile width in pixels spread over the cell diagonal in leptons,
-//! scaled by the sine of the camera angle. (Verified via
-//! `decompile_function 0x006d1bdd` for the product,
+//! — the tile width in pixels spread over the cell diagonal in leptons, scaled
+//! by the sine of the camera elevation angle.
+//!
+//! Verified via `decompile_function 0x006d1bdd` for the product,
 //! `disassemble_bytes 0x006d1830` and `0x006d18c0` for the two operands, and
 //! `read_memory` on `0x007e1708` / `0x007e1710` / `0x007e1728` / `0x007f4180` /
-//! `0x007f4188` for the literals: 2.0, 256.0, 60.0, 60.0 and π/180. Each of the
-//! three globals involved has exactly one writer, confirmed by `get_xrefs_to`.)
+//! `0x007f4188` for the literals (2.0, 256.0, 60.0, 60.0, π/180). Each of the
+//! three globals has exactly one writer, confirmed by `get_xrefs_to`. The sine
+//! helper at `0x004cacb0` takes **radians**: it scales its argument by
+//! `[0x008223b0]` = 2607.7 ≈ 16384/2π before indexing an 8192-entry table whose
+//! `[0]` is 0.0 — a cosine table would start at 1.0, so the identification is
+//! not ambiguous. That scaling step was missing from the helper's own plate
+//! comment, which made the argument look like table units; corrected there.
 //!
-//! VERA does not match that, and the mismatch is **not uniform** — it differs
-//! by which state carries the height:
+//! ### What this replaced
 //!
-//! | height carried by | effective px/lepton | vs gamemd's ~0.1435 |
-//! |---|---|---|
-//! | an air locomotor (Fly, Jumpjet) | 0.12 | ~16% low |
-//! | parachute descent, scripted missiles | 0.06 | ~58% low |
+//! Until this landed the lift was applied in two layers — the air movement pass
+//! wrote `screen_y` with it, and then every app draw path subtracted it again —
+//! so airborne units were lifted **twice**, at an effective 0.12 px/lepton,
+//! while parachutes and scripted missiles got a single 0.06. Two different
+//! scales for one quantity, and neither was gamemd's. At YR's stock
+//! `FlightLevel=1500` an aircraft now sits ~215px up instead of ~180px, and a
+//! paradrop or missile roughly 2.4× higher than before.
 //!
-//! The 0.12 is not a tuned value: it is 0.06 applied twice, once by the air
-//! movement pass and once again by each app draw path, which is precisely the
-//! accident that smearing this concern across two layers produced. Collapsing
-//! it to one owner is what this module is for; the two constants below
-//! reproduce today's output exactly so that the move is pixel-for-pixel
-//! neutral. **Correcting the value is a separate, deliberate change** — it
-//! shifts every aircraft, paradrop and missile on screen and wants a live look
-//! before it lands.
-//!
-//! Frequency, since severity needs one: every airborne unit in every match, for
-//! as long as it is airborne. Kirovs, Harriers, Rocketeers, Nighthawks, every
-//! jumpjet, every paradrop and every missile in flight.
+//! Frequency: every airborne unit in every match, for as long as it is
+//! airborne. Kirovs, Harriers, Rocketeers, Nighthawks, every jumpjet, every
+//! paradrop and every missile in flight.
 //!
 //! ## Dependency rules
 //! - Part of render/ — reads sim/ state read-only and writes none of it.
@@ -63,20 +69,24 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::util::fixed_math::sim_to_f32;
 
-/// Upward screen lift per lepton of height, for height carried by an **air
-/// locomotor** (Fly, Jumpjet).
+/// Upward screen lift per lepton of height. One value for every kind of
+/// height — an air locomotor's altitude, a parachute's, a missile's — because
+/// gamemd runs them all through the same projection.
 ///
-/// See the module header: this is 0.06 applied twice, preserved verbatim so the
-/// move off `Position` changes no pixels. gamemd's single-application value is
-/// ~0.14352.
-pub const AIR_LIFT_PX_PER_LEPTON: f32 = 0.12;
+/// `sin(60°) * 60.0 / (256 * sqrt(2))`. The algebraically exact product is
+/// 0.1435237; the value here is 0.1435032, which is what the binary actually
+/// computes once the sine comes off its 8192-entry table (index 1365 →
+/// sin(1.046947) = 0.865898 rather than sin(π/3) = 0.866025). The 0.014% gap
+/// is 0.03px at cruise altitude — the table value is used because it is the
+/// one gamemd uses, not because the difference could matter.
+pub const HEIGHT_LIFT_PX_PER_LEPTON: f32 = 0.143_503_2;
 
-/// Upward screen lift per lepton of height, for height carried by
-/// **object-level state** — parachute descent and scripted missiles.
+/// Height at or above which gamemd's `AdjustForZ` adds one extra pixel of lift
+/// (`CMP ECX, 0x2D8` + `JL`, verified via `disassemble_function 0x006D20E0`).
 ///
-/// Half the air value, for no better reason than that these two passes wrote
-/// `screen_y` themselves and the app draw paths did not add a second helping.
-pub const OBJECT_LIFT_PX_PER_LEPTON: f32 = 0.06;
+/// Stock `FlightLevel=1500` clears this comfortably, so every cruising aircraft
+/// gets the extra pixel; a parachute only picks it up early in its descent.
+const EXTRA_PIXEL_HEIGHT_LEPTONS: f32 = 728.0;
 
 /// Infantry walking bob amplitude, in screen pixels.
 ///
@@ -140,36 +150,54 @@ fn infantry_bob_px(entity: &GameEntity) -> f32 {
     loco.infantry_wobble_phase.cos() * INFANTRY_WOBBLE_AMPLITUDE
 }
 
+/// This entity's height above the ground, in leptons.
+///
+/// Whichever state is carrying it — see [`HeightSource`] for why the order is
+/// what it is.
+fn height_leptons(entity: &GameEntity) -> f32 {
+    match height_source(entity) {
+        HeightSource::Parachute => entity
+            .parachute_state
+            .as_ref()
+            .map(|state| sim_to_f32(state.altitude))
+            .unwrap_or(0.0),
+        HeightSource::Rocket => entity
+            .rocket_state
+            .as_ref()
+            .map(|state| sim_to_f32(state.altitude))
+            .unwrap_or(0.0),
+        HeightSource::AirLocomotor => entity
+            .locomotor
+            .as_ref()
+            .map(|loco| sim_to_f32(loco.altitude))
+            .unwrap_or(0.0),
+        HeightSource::Ground => 0.0,
+    }
+}
+
 /// Total upward screen lift for an entity, in pixels.
 ///
 /// Positive lifts the entity toward the top of the screen (screen Y decreases).
+///
+/// The height term reproduces gamemd's `AdjustForZ` exactly, quantisation
+/// included: the scale, the extra pixel above [`EXTRA_PIXEL_HEIGHT_LEPTONS`],
+/// and the `+ 0.5` truncate that rounds it to a whole pixel. The engine's own
+/// blitter is integer-pixel, so a climbing aircraft steps a pixel at a time
+/// there too. The infantry bob is *not* quantised — it is a VERA-internal
+/// flourish with no gamemd equivalent, and rounding a ±1px sine to whole pixels
+/// would turn it into a square wave.
 pub fn height_lift_px(entity: &GameEntity) -> f32 {
-    let locomotor_altitude: f32 = entity
-        .locomotor
-        .as_ref()
-        .map(|loco| sim_to_f32(loco.altitude))
-        .unwrap_or(0.0);
-
-    match height_source(entity) {
-        HeightSource::Parachute => {
-            let altitude = entity
-                .parachute_state
-                .as_ref()
-                .map(|state| sim_to_f32(state.altitude))
-                .unwrap_or(0.0);
-            altitude * OBJECT_LIFT_PX_PER_LEPTON
-        }
-        HeightSource::Rocket => {
-            let altitude = entity
-                .rocket_state
-                .as_ref()
-                .map(|state| sim_to_f32(state.altitude))
-                .unwrap_or(0.0);
-            altitude * OBJECT_LIFT_PX_PER_LEPTON
-        }
-        HeightSource::AirLocomotor => locomotor_altitude * AIR_LIFT_PX_PER_LEPTON,
-        HeightSource::Ground => infantry_bob_px(entity),
+    if height_source(entity) == HeightSource::Ground {
+        return infantry_bob_px(entity);
     }
+    let leptons = height_leptons(entity);
+    let extra = if leptons >= EXTRA_PIXEL_HEIGHT_LEPTONS {
+        1.0
+    } else {
+        0.0
+    };
+    // `ftol` truncates toward zero, so `+ 0.5` is gamemd's rounding.
+    (leptons * HEIGHT_LIFT_PX_PER_LEPTON + extra + 0.5).trunc()
 }
 
 /// Where this entity is drawn, in world-space screen pixels.
@@ -224,17 +252,51 @@ mod tests {
     }
 
     /// The whole point of the module: one owner, so the lift cannot be applied
-    /// twice. At YR's stock `FlightLevel=1500` the air lift is 180px.
+    /// twice. At YR's stock `FlightLevel=1500` a cruising aircraft sits
+    /// `trunc(1500 * 0.1435032 + 1 + 0.5)` = 216px up — the `+1` because 1500
+    /// clears the extra-pixel threshold.
     #[test]
-    fn air_altitude_lifts_once_at_the_air_rate() {
+    fn a_cruising_aircraft_sits_at_gamemds_height() {
         let entity = air_unit(LocomotorKind::Fly, 1500);
         let (_, ground_sy) = ground_screen_position(&entity.position);
         let (_, sy) = screen_position(&entity);
-        assert!(
-            (ground_sy - sy - 1500.0 * AIR_LIFT_PX_PER_LEPTON).abs() < 0.01,
-            "expected exactly one application of the air lift, got {}px",
-            ground_sy - sy
+        assert_eq!(ground_sy - sy, 216.0);
+    }
+
+    /// Every kind of height goes through one scale. A parachute and an aircraft
+    /// at the same altitude must be drawn at the same place — before this they
+    /// differed by a factor of two.
+    #[test]
+    fn every_height_source_uses_the_same_scale() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::movement::parachute_descent::begin_parachute_descent;
+
+        let aircraft = air_unit(LocomotorKind::Fly, 400);
+
+        let mut entities = EntityStore::default();
+        let mut infantry = GameEntity::test_default(1, "E1", "Americans", 5, 5);
+        infantry.category = EntityCategory::Infantry;
+        entities.insert(infantry);
+        assert!(begin_parachute_descent(
+            &mut entities,
+            1,
+            SimFixed::from_num(400)
+        ));
+
+        assert_eq!(
+            height_lift_px(&aircraft),
+            height_lift_px(entities.get(1).expect("entity")),
         );
+    }
+
+    /// The extra pixel above the threshold is gamemd's, not ours: one lepton
+    /// either side of 728 must differ by more than the scale alone accounts for.
+    #[test]
+    fn the_extra_pixel_switches_on_at_the_threshold() {
+        let below = height_lift_px(&air_unit(LocomotorKind::Fly, 727));
+        let at = height_lift_px(&air_unit(LocomotorKind::Fly, 728));
+        assert_eq!(below, 104.0, "trunc(727 * k + 0.5)");
+        assert_eq!(at, 105.0, "trunc(728 * k + 1 + 0.5) — the threshold fires");
     }
 
     #[test]
@@ -282,10 +344,12 @@ mod tests {
 
         let (_, ground_sy) = ground_screen_position(&entity.position);
         let (_, sy) = screen_position(&entity);
-        assert!(
-            (ground_sy - sy - 400.0 * OBJECT_LIFT_PX_PER_LEPTON).abs() < 0.01,
-            "the parachute altitude must be the only height source, got {}px",
-            ground_sy - sy
+        // trunc(400 * 0.1435032 + 0.5) — the parachute's 400, not the
+        // locomotor's 1500, and below the extra-pixel threshold.
+        assert_eq!(
+            ground_sy - sy,
+            57.0,
+            "the parachute altitude must be the only height source"
         );
     }
 
