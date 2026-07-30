@@ -273,8 +273,45 @@ fn evaluate_ready(
                         leaf,
                         unload_active,
                         locomotor,
-                        // The current u8 terrain level is not the verified
-                        // signed ObjectClass height dword.
+                        // Deliberately absent, and NOT for want of a producer.
+                        //
+                        // Native's input is `Get_Height`: the object's Z minus
+                        // the ground height at its cell, minus the bridge deck
+                        // when on a bridge — so ground and bridge both read 0,
+                        // airborne reads positive, only below-ground reads
+                        // negative. `LocomotorState::altitude` is exactly that
+                        // quantity, so the producer is a one-liner.
+                        //
+                        // It is not wired up because turning it on stalls
+                        // vehicles. Supplying it makes this branch's
+                        // `signed_height >= 0` true, which arms the moving-defer
+                        // — and measured over the global harness that took gate
+                        // evaluations from 28 (all ready) to 8045, of which 8021
+                        // were deferrals. The count explodes precisely because a
+                        // deferral leaves the mission queued, so the same unit
+                        // re-defers every tick and the queue never drains.
+                        //
+                        // Root cause is upstream of here: the dominant deferral
+                        // reads `effective=Move, current=NONE, queued=Move,
+                        // bypass_latch=0, moving=true` — a unit already moving
+                        // with no commenced mission at all. Our command path
+                        // sets `movement_target` directly AND queues the
+                        // mission, so movement precedes commencement and the
+                        // gate then refuses to commence because the unit is
+                        // moving. Native runs it the other way: the order
+                        // queues, the unit is not yet moving, the gate
+                        // commences, and the mission handler starts the move.
+                        // `set_movement_bypass_after_verified_queue` — native's
+                        // escape hatch for exactly this — is called only by the
+                        // refinery and jumpjet completion paths here, never by
+                        // the general queue an ordinary Move uses.
+                        //
+                        // So this stays `None` until the command path stops
+                        // starting movement ahead of commencement. Until then
+                        // the host maps the resulting error to permissive-ready
+                        // and the Unit moving-defer branch is inert — which is
+                        // why none of the Drive/Ship readiness mapping can
+                        // affect vehicle behaviour yet.
                         signed_height: None,
                         attack_target_present,
                         position,
