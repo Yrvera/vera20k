@@ -286,6 +286,7 @@ mod tests {
         LocomotorState {
             kind: LocomotorKind::Jumpjet,
             slot: LocomotorSlot::from_kind(LocomotorKind::Jumpjet),
+            powered: true,
             piggyback: None,
             layer: MovementLayer::Air,
             phase: GroundMovePhase::Idle,

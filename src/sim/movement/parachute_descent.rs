@@ -156,6 +156,7 @@ mod tests {
         LocomotorState {
             kind: LocomotorKind::Walk,
             slot: LocomotorSlot::from_kind(LocomotorKind::Walk),
+            powered: true,
             piggyback: None,
             layer: MovementLayer::Ground,
             phase: GroundMovePhase::Idle,

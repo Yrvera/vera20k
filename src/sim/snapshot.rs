@@ -82,7 +82,7 @@ use crate::sim::world::Simulation;
 // Bumped 29 -> 30: the miner FSM cursor (`Miner.state`) retired from the
 // serialized Miner component — `MissionCom.handler_state` is the cursor of
 // record (Harvest handler absorption / substate-authority flip).
-const SNAPSHOT_VERSION: u32 = 32;
+const SNAPSHOT_VERSION: u32 = 33;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -487,7 +487,7 @@ mod tests {
     /// accidental bump is caught.
     #[test]
     fn snapshot_version_is_30() {
-        assert_eq!(super::SNAPSHOT_VERSION, 32);
+        assert_eq!(super::SNAPSHOT_VERSION, 33);
     }
 
     #[test]

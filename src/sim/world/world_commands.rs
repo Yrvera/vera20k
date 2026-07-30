@@ -576,6 +576,11 @@ impl Simulation {
                             ticks_remaining: deploying_ticks,
                         });
                         emit_deploy_sound = true;
+                        // Deploy begins: the locomotor powers down for the
+                        // duration. Undeploy completing powers it back on.
+                        if let Some(loco) = entity.locomotor.as_mut() {
+                            loco.power_off();
+                        }
                     }
                     Some(crate::sim::deploy::DeployPhase::Deployed) => {
                         new_phase = Some(crate::sim::deploy::DeployPhase::Undeploying {

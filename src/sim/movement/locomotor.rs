@@ -121,6 +121,14 @@ pub struct LocomotorState {
     /// second slot and no re-selection. `kind` is the class *currently driving*
     /// the unit, which differs from this only while a piggyback stash is active.
     pub slot: LocomotorSlot,
+    /// Whether this locomotor is powered.
+    ///
+    /// Natively a plain flag on the locomotor instance, set by `Power_On` /
+    /// `Power_Off` and read by `Is_Powered`; both setters also re-dispatch to
+    /// another slot, which has no verified effect and is not modelled. Defaults
+    /// to on — an unpowered locomotor is a state something must actively put a
+    /// unit into.
+    pub powered: bool,
     /// Active piggybacked locomotor storage.
     ///
     /// For CMIN drive phases, `kind` becomes Drive and this stores the primary
@@ -271,6 +279,7 @@ impl LocomotorState {
         Self {
             kind,
             slot: LocomotorSlot::from_kind(kind),
+            powered: true,
             piggyback: None,
             layer,
             phase: GroundMovePhase::Idle,
@@ -340,6 +349,7 @@ impl LocomotorState {
         Self {
             kind,
             slot: LocomotorSlot::from_kind(kind),
+            powered: true,
             piggyback: None,
             layer,
             phase: GroundMovePhase::Idle,
@@ -478,6 +488,22 @@ impl LocomotorState {
     /// Returns whether anything was stashed.
     pub fn end_piggyback(&mut self) -> bool {
         piggyback::end(self).is_some()
+    }
+
+    /// Power this locomotor back on.
+    pub fn power_on(&mut self) {
+        self.powered = true;
+    }
+
+    /// Power this locomotor off. Only the Hover family has an observable
+    /// response today: it stops producing lift and sinks.
+    pub fn power_off(&mut self) {
+        self.powered = false;
+    }
+
+    /// Whether this locomotor is powered.
+    pub fn is_powered(&self) -> bool {
+        self.powered
     }
 
     /// Whether the active piggyback may be unwound now. The movement clause

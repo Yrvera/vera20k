@@ -11,6 +11,7 @@
 
 pub mod install;
 pub mod piggyback;
+pub mod power;
 pub mod slot;
 
 pub use install::{resolve_installed_class, resolve_installed_kind};

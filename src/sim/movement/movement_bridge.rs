@@ -517,6 +517,7 @@ mod tests {
         Some(LocomotorState {
             kind: LocomotorKind::Drive,
             slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
+            powered: true,
             piggyback: None,
             layer,
             phase: GroundMovePhase::Idle,

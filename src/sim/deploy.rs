@@ -100,6 +100,10 @@ pub fn tick_deploy_state(entities: &mut EntityStore) {
                     });
                 } else {
                     entity.deploy_state = None;
+                    // Undeploy complete: the locomotor is powered back on.
+                    if let Some(loco) = entity.locomotor.as_mut() {
+                        loco.power_on();
+                    }
                 }
             }
             Some(DeployPhase::Deployed) | None => {}

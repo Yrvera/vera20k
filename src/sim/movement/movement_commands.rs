@@ -311,6 +311,20 @@ pub fn issue_move_command_with_layered(
         .locomotor
         .as_ref()
         .is_some_and(|loco| supports_layered_bridge_pathing(loco, grid, entity.on_bridge));
+    // Accepting a destination re-powers the locomotor — the player-facing
+    // recovery edge. Native's Set_Destination powers it on before installing the
+    // destination, so a unit that was powered down can always be ordered to move
+    // again. Placed after the immutable reads above so the borrow is free.
+    if let Some(loco) = entities
+        .get_mut(entity_id)
+        .and_then(|entity| entity.locomotor.as_mut())
+    {
+        loco.power_on();
+    }
+    let Some(entity) = entities.get(entity_id) else {
+        return false;
+    };
+
     let marker_request_start = if queue && !uses_drive_locomotor {
         entity
             .movement_target

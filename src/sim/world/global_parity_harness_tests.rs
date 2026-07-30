@@ -156,8 +156,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// Re-baselined with the native Mission_Harvest per-path dispatch delays:
 /// a behavior-bearing shift (dispatch cadence + scenario-stream draws), so
 /// the legacy-schema probes move together with the live hash.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 1443066111213021467;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 5680012827897705755;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 964269818034410860;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 17535941526574457430;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -211,7 +211,15 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 5680012827897705755;
 /// primary_kind -> slot retype changed no behaviour and no other hashed state,
 /// and the entire delta is the one new byte. The absolute per-stream RNG pins
 /// and the dense-scenario position fingerprint were unchanged throughout.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x4C90_6E17_0C39_65B5;
+/// Re-baselined 2026-07-30 for S5: the locomotor `powered` flag joins the hash.
+/// Composition-only, proved by neutralisation (the probe ceremony cannot decide
+/// it — the locomotor block is hashed unconditionally, so both probes move with
+/// the live value). With the new hash line commented out, all three constants
+/// returned to their S3b values exactly, which also proves the three power edges
+/// wired in this slice (deploy-begin off, undeploy-complete on, destination-
+/// accepted on) changed no other hashed state in these fixtures. The absolute
+/// per-stream RNG pins held throughout.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2C71_5978_7F06_59ED;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

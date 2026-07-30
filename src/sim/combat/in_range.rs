@@ -397,6 +397,7 @@ mod tests {
         e.locomotor = Some(LocomotorState {
             kind: LocomotorKind::Fly,
             slot: LocomotorSlot::from_kind(LocomotorKind::Fly),
+            powered: true,
             piggyback: None,
             layer: MovementLayer::Air,
             phase: GroundMovePhase::Idle,

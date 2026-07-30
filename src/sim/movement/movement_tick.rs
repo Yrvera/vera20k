@@ -1884,16 +1884,16 @@ pub(crate) fn tick_movement_with_grids(
                 })
             });
         if let Some(ref mut loco) = entity.locomotor {
-            // Powered: locomotor EMP/power shutdown is not modeled yet, so
-            // hover units are always lifted; the unpowered-sink branch is
-            // exercised by unit tests until an EMP system exists.
+            // Hover is the one family with an observable response to power:
+            // unpowered, it stops producing lift and sinks.
+            let powered = loco.powered;
             let (new_height, new_offset) = super::hover::hover_vertical_tick(
                 loco.altitude,
                 loco.hover_bob_offset,
                 binary_frame,
                 moving,
                 climbing,
-                true,
+                powered,
                 vh_height,
                 vh_bob,
                 vh_dampen,

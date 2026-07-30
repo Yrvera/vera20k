@@ -1617,6 +1617,7 @@ mod tests {
         LocomotorState {
             kind: LocomotorKind::Drive,
             slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
+            powered: true,
             piggyback: None,
             layer: MovementLayer::Bridge,
             phase: GroundMovePhase::Cruising,

@@ -710,6 +710,10 @@ impl Simulation {
                 // active class would let a desync in which locomotor a unit was
                 // built with hide behind a matching current one.
                 loco.slot.installed().hash(hasher);
+                // Locomotor power: deterministic state with an observable Hover
+                // effect, and deploy/undeploy flips it, so it must be in the
+                // lockstep hash.
+                loco.powered.hash(hasher);
                 (loco.layer as u8).hash(hasher);
                 (loco.phase as u8).hash(hasher);
                 // Hover throttle is authoritative movement state (persists across
