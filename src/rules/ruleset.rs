@@ -304,6 +304,8 @@ pub struct GeneralRules {
     pub chrono_sparkle1: AnimRef,
     /// Wake animation spawned behind ships moving on water (Wake= in [General]).
     pub wake: AnimRef,
+    /// Multiplayer move-command feedback animation (MoveFlash= in [General]).
+    pub move_flash: AnimRef,
     /// Whether the attack cursor appears on a disguised Spy (AttackCursorOnDisguise= in [General]).
     /// Default false (vanilla RA2). When false, a disguised Spy does not show the attack cursor.
     pub attack_cursor_on_disguise: bool,
@@ -764,6 +766,10 @@ impl Default for GeneralRules {
             },
             wake: AnimRef {
                 name: "WAKE1".to_string(),
+                frame_delay: 1,
+            },
+            move_flash: AnimRef {
+                name: "RING".to_string(),
                 frame_delay: 1,
             },
             attack_cursor_on_disguise: false,
@@ -1371,6 +1377,10 @@ impl GeneralRules {
                 name: parse_anim_name("Wake", "WAKE1"),
                 frame_delay: defaults.wake.frame_delay,
             },
+            move_flash: AnimRef {
+                name: parse_anim_name("MoveFlash", "RING"),
+                frame_delay: defaults.move_flash.frame_delay,
+            },
             damage_delay_minutes: general.get_f32("DamageDelay").unwrap_or(1.0),
             spy_power_blackout_frames: general.get_i32("SpyPowerBlackout").unwrap_or(1000).max(0)
                 as u32,
@@ -1585,6 +1595,8 @@ impl GeneralRules {
         );
         self.wake.frame_delay =
             rate_from_section(art_ini, &self.wake.name, DEFAULT_ANIM_FRAME_DELAY);
+        self.move_flash.frame_delay =
+            rate_from_section(art_ini, &self.move_flash.name, DEFAULT_ANIM_FRAME_DELAY);
         log::info!(
             "Warp anim frame delays: {}={}, {}={}, {}={}, wake: {}={}",
             self.warp_in.name,

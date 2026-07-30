@@ -1353,9 +1353,10 @@ fn ggi_deploy_uses_art_frame_count() {
 }
 
 #[test]
-fn ggi_deploy_decrements_on_command_frame() {
-    // Full frame path: ToggleInfantryDeploy writes the art-derived 15-frame
-    // countdown, then tick_deploy_state runs later in the same frame.
+fn ggi_deploy_begins_decrementing_after_the_command_frame() {
+    // Full frame path: the object walk runs first, then the EventClass tail
+    // writes the art-derived 15-frame countdown. The first decrement is on the
+    // following gameplay frame.
     let rules = make_rules_with_ggi_art();
     let mut sim = Simulation::new();
     let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
@@ -1371,10 +1372,10 @@ fn ggi_deploy_decrements_on_command_frame() {
     assert_eq!(
         sim.substrate.entities.get(ggi).unwrap().deploy_state,
         Some(DeployPhase::Deploying {
-            ticks_remaining: deploy_ticks - 1
+            ticks_remaining: deploy_ticks
         })
     );
-    tick_n(&mut sim, &rules, (deploy_ticks - 2) as u32);
+    tick_n(&mut sim, &rules, (deploy_ticks - 1) as u32);
     assert_eq!(
         sim.substrate.entities.get(ggi).unwrap().deploy_state,
         Some(DeployPhase::Deploying { ticks_remaining: 1 })
@@ -1412,9 +1413,9 @@ fn ggi_undeploy_uses_art_frame_count() {
 }
 
 #[test]
-fn ggi_undeploy_decrements_on_command_frame() {
-    // GuardianGISequence Undeploy=180,2,2 -> 2 frames. The countdown
-    // decrements once in the same reached frame that accepts the command.
+fn ggi_undeploy_begins_decrementing_after_the_command_frame() {
+    // GuardianGISequence Undeploy=180,2,2 -> 2 frames. The EventClass tail
+    // starts the countdown after the object walk, so it decrements next frame.
     let rules = make_rules_with_ggi_art();
     let mut sim = Simulation::new();
     let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
@@ -1431,10 +1432,10 @@ fn ggi_undeploy_decrements_on_command_frame() {
     assert_eq!(
         sim.substrate.entities.get(ggi).unwrap().deploy_state,
         Some(DeployPhase::Undeploying {
-            ticks_remaining: undeploy_ticks - 1
+            ticks_remaining: undeploy_ticks
         })
     );
-    tick_n(&mut sim, &rules, (undeploy_ticks - 2) as u32);
+    tick_n(&mut sim, &rules, (undeploy_ticks - 1) as u32);
     assert_eq!(
         sim.substrate.entities.get(ggi).unwrap().deploy_state,
         Some(DeployPhase::Undeploying { ticks_remaining: 1 })

@@ -381,7 +381,7 @@ pub(crate) fn build_animation_sequences(
 }
 
 pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
-    now.duration_since(state.frame_pacer_epoch).as_millis() as u64
+    crate::app_frame_pacer::wall_clock_ms(state.frame_pacer_epoch, now)
 }
 
 /// Front-end session mode, as the modal pump reads it to decide whether the
@@ -426,15 +426,20 @@ impl SessionMode {
 }
 
 /// Pure modal-pump decision: should the simulation advance one frame while a
-/// modal dialog is open? Mirrors gamemd's pump body — advance only on the network
-/// branch (LAN/WOL), and only when no fixed tick is already in progress (the native
-/// reentrancy guard). Offline campaign/skirmish freeze the world; message, input,
-/// and repaint still run in the surrounding loop. Pure and total, so it is
-/// unit-tested without an `AppState`. The live app-layer consumer is
-/// `service_tick_should_advance_sim`, which reads the running session mode and
-/// gates the one-frame admission inside `advance_in_game_runtime`.
-pub fn modal_pump_should_advance_sim(mode: SessionMode, reentrancy_in_progress: bool) -> bool {
-    mode.is_network() && !reentrancy_in_progress
+/// modal dialog is open? Mirrors the pump body: advance only on the network
+/// branch (LAN/WOL), only when neither service-only blocker is set, and only
+/// when no fixed tick is already in progress. Offline campaign/skirmish freeze
+/// the world; message, input, and repaint still run in the surrounding loop.
+/// Pure and total, so it is unit-tested without an `AppState`. The live
+/// app-layer consumer is `service_tick_should_advance_sim`, which reads the
+/// running session mode and gates the one-frame admission inside
+/// `advance_in_game_runtime`.
+pub fn modal_pump_should_advance_sim(
+    mode: SessionMode,
+    service_only_blocked: bool,
+    reentrancy_in_progress: bool,
+) -> bool {
+    mode.is_network() && !service_only_blocked && !reentrancy_in_progress
 }
 
 /// Live front-end session mode for the running client. This build is offline
@@ -453,7 +458,10 @@ fn current_session_mode(_state: &AppState) -> SessionMode {
 /// frame loop never re-enters a simulation frame mid-advance.
 fn service_tick_should_advance_sim(state: &AppState) -> bool {
     if state.paused {
-        modal_pump_should_advance_sim(current_session_mode(state), false)
+        // The current build has no network-session owner, so neither native
+        // service-only blocker can be active here. Networking must supply their
+        // combined state when `current_session_mode` becomes live.
+        modal_pump_should_advance_sim(current_session_mode(state), false, false)
     } else {
         true
     }
@@ -500,7 +508,7 @@ pub(crate) fn advance_in_game_runtime_exact_step(
         .ok_or(ExactStepError::SimulationMissing)?;
 
     advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep);
-    let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
+    let now_ms = monotonic_frame_pacer_ms(state, Instant::now());
     state.frame_pacer.reanchor(now_ms);
 
     let (tick_after, binary_frame_after) = state
@@ -2117,19 +2125,61 @@ mod modal_pump_tests {
     #[test]
     fn only_network_modes_advance_behind_a_modal() {
         // {3 LAN, 4 WOL} advance; {0 campaign, 5 skirmish} + Other freeze.
-        assert!(modal_pump_should_advance_sim(SessionMode::Lan, false));
-        assert!(modal_pump_should_advance_sim(SessionMode::Wol, false));
-        assert!(!modal_pump_should_advance_sim(SessionMode::Campaign, false));
-        assert!(!modal_pump_should_advance_sim(SessionMode::Skirmish, false));
-        assert!(!modal_pump_should_advance_sim(SessionMode::Other, false));
+        assert!(modal_pump_should_advance_sim(
+            SessionMode::Lan,
+            false,
+            false
+        ));
+        assert!(modal_pump_should_advance_sim(
+            SessionMode::Wol,
+            false,
+            false
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Campaign,
+            false,
+            false
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Skirmish,
+            false,
+            false
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Other,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn reentrancy_guard_blocks_advance_even_on_network() {
         // The native reentrancy guard: a fixed tick already in progress means the
         // pump skips advancing, even on the network branch.
-        assert!(!modal_pump_should_advance_sim(SessionMode::Lan, true));
-        assert!(!modal_pump_should_advance_sim(SessionMode::Wol, true));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Lan,
+            false,
+            true
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Wol,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn service_only_blockers_prevent_network_modal_advance() {
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Lan,
+            true,
+            false
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Wol,
+            true,
+            false
+        ));
     }
 
     #[test]
@@ -2142,7 +2192,7 @@ mod modal_pump_tests {
         let pumped = |mode: SessionMode| -> u64 {
             let mut tick = 0u64;
             for _ in 0..FRAMES {
-                if modal_pump_should_advance_sim(mode, false) {
+                if modal_pump_should_advance_sim(mode, false, false) {
                     tick += 1; // one fixed step advanced this pumped frame
                 }
             }
@@ -2170,7 +2220,7 @@ mod modal_pump_tests {
             let start = sim.session.tick;
             let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
             for _ in 0..FRAMES {
-                if modal_pump_should_advance_sim(mode, false) {
+                if modal_pump_should_advance_sim(mode, false, false) {
                     // `tick_ms` does not affect the asserted tick delta; a literal
                     // matches the sim-test style and avoids the const dependency.
                     sim.advance_tick(&[], None, &height_map, None, None, 33);

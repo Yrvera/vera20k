@@ -874,8 +874,9 @@ fn test_tick_combat_respects_cooldown() {
     let h2: u16 = store.get(2).unwrap().health.current;
     assert_eq!(h1, h2, "Should not fire during cooldown");
 
-    // After enough ticks, should fire again.
-    for _ in 0..40 {
+    // ROF is a native frame count. After 49 post-shot combat updates the
+    // countdown is still 1, so no second shot has fired yet.
+    for _ in 0..48 {
         tick_combat(
             &mut store,
             &mut OccupancyGrid::new(),
@@ -888,8 +889,36 @@ fn test_tick_combat_respects_cooldown() {
             &mut main_rng,
         );
     }
+    assert_eq!(
+        store.get(2).unwrap().health.current,
+        h2,
+        "ROF=50 must not re-fire on post-shot frame 49"
+    );
+    assert_eq!(
+        store
+            .get(1)
+            .unwrap()
+            .attack_target
+            .as_ref()
+            .unwrap()
+            .cooldown_ticks,
+        1
+    );
+
+    // The 50th update decrements 1 -> 0 before the fire decision.
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0u64,
+        100,
+        0u32,
+        &mut main_rng,
+    );
     let h3: u16 = store.get(2).unwrap().health.current;
-    assert!(h3 < h2, "Should fire after cooldown expires");
+    assert!(h3 < h2, "ROF=50 should re-fire on post-shot frame 50");
 }
 
 fn selected_death_sounds_for(

@@ -271,8 +271,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
         &state.infantry_sequences,
     );
 
-    let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
-    state.frame_pacer.reanchor(now_ms);
+    state.frame_pacer.reset_for_immediate_frame();
     state.queued_order_mode = app_render::OrderMode::Move;
     for group in &mut state.control_groups {
         group.clear();

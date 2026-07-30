@@ -5,10 +5,13 @@ use std::collections::BTreeMap;
 use crate::map::entities::EntityCategory;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::anim_class::{AnimObject, AnimRuntime, AnimWorldCoord};
-use crate::sim::combat::{AttackTarget, TargetKind};
+use crate::sim::animation::{Animation, SequenceKind};
+use crate::sim::combat::{AttackTarget, PendingInfantryFire, TargetKind};
 use crate::sim::components::{C4PlantState, Health, NavTargetRef};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::house_state::HouseState;
+use crate::sim::mission::state::MissionTestFixture;
+use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionType};
 use crate::sim::movement::homing_movement::{HomingTarget, attach_homing_state};
 use crate::sim::movement::locomotor::LocomotorState;
 use crate::sim::particles::ParticleSystem;
@@ -63,6 +66,7 @@ fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
     let type_id = sim.interner.intern("TESTANIM");
     let anim = AnimObject {
         stable_id,
+        native_unique_id: stable_id as i32,
         type_id,
         world_coord: AnimWorldCoord { x: 0, y: 0, z: 0 },
         draw_flags: 0,
@@ -81,6 +85,7 @@ fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
             inactive,
         },
         in_logic_vector: false,
+        owner_entity: None,
         start_sound_active: false,
         stop_sound_id: None,
     };
@@ -143,6 +148,30 @@ fn lifecycle_authority_reveal_commits_coords_then_marks_then_registers() {
         LifecycleTestEvent::LogicMembershipSet,
     ];
     assert_eq!(sim.lifecycle_test_events.as_slice(), expected.as_slice());
+}
+
+#[test]
+fn reveal_stops_after_mark_when_object_is_not_alive() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .lifecycle
+        .object_alive = false;
+
+    assert_eq!(
+        sim.try_reveal_entity(1, request(10, 20, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed {
+            logic_registered: false
+        }
+    );
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert!(!entity.lifecycle.in_limbo);
+    assert!(entity.lifecycle.cell_marked);
+    assert!(!entity.in_logic_vector);
+    assert!(sim.lifecycle_outputs.is_empty());
 }
 
 #[test]
@@ -216,30 +245,6 @@ fn lifecycle_authority_reveal_rejects_an_already_marked_limbo_object() {
     assert!(entity.lifecycle.in_limbo);
     assert!(entity.lifecycle.cell_marked);
     assert!(sim.lifecycle_test_events.is_empty());
-}
-
-#[test]
-fn lifecycle_authority_reveal_does_not_invent_an_alive_precheck() {
-    let mut sim = Simulation::new();
-    insert_entity(&mut sim, 1, EntityCategory::Unit);
-    sim.substrate
-        .entities
-        .get_mut(1)
-        .unwrap()
-        .lifecycle
-        .object_alive = false;
-
-    assert_eq!(
-        sim.try_reveal_entity(1, request(10, 20, PlacementEvidence::MarkSucceeded)),
-        RevealOutcome::Revealed {
-            logic_registered: true
-        }
-    );
-    let entity = sim.substrate.entities.get(1).unwrap();
-    assert!(!entity.lifecycle.object_alive);
-    assert!(!entity.lifecycle.in_limbo);
-    assert!(entity.lifecycle.cell_marked);
-    assert!(entity.in_logic_vector);
 }
 
 #[test]
@@ -877,10 +882,7 @@ fn pointer_expiry_clears_live_refs_and_preserves_retaliation_attacker() {
 
     let listener = sim.substrate.entities.get(1).unwrap();
     assert!(listener.attack_target.is_none());
-    assert_eq!(
-        listener.suspended_attack_target,
-        Some(TargetKind::Cell(9, 11))
-    );
+    assert!(listener.suspended_attack_target.is_none());
     assert!(listener.navigation.suspended_nav_com.is_none());
     assert!(listener.navigation.nav_com_aux.is_none());
     assert!(listener.navigation.nav_com.is_none());
@@ -891,6 +893,157 @@ fn pointer_expiry_clears_live_refs_and_preserves_retaliation_attacker() {
     assert!(listener.capture_target.is_none());
     assert!(listener.c4_plant.is_none());
     assert_eq!(listener.last_attacker_id, Some(2));
+}
+
+#[test]
+fn occupier_capture_retains_live_non_selling_nav_target() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Structure);
+    let _ = sim.try_reveal_entity(2, request(9, 11, PlacementEvidence::MarkSucceeded));
+    sim.mission_assign_exact(
+        1,
+        MissionId::from_known(MissionType::Capture),
+        sim.session.binary_frame,
+    )
+    .unwrap();
+
+    let listener = sim.substrate.entities.get_mut(1).unwrap();
+    listener.occupier = true;
+    listener.navigation.suspended_nav_com = Some(NavTargetRef::Building { id: 2 });
+    listener.navigation.nav_com_aux = Some(NavTargetRef::Building { id: 2 });
+    listener.navigation.nav_com = Some(NavTargetRef::Building { id: 2 });
+    listener.navigation.nav_queue = vec![NavTargetRef::Building { id: 2 }];
+
+    sim.uninit(2);
+
+    let listener = sim.substrate.entities.get(1).unwrap();
+    assert!(listener.navigation.suspended_nav_com.is_none());
+    assert_eq!(
+        listener.navigation.nav_com_aux,
+        Some(NavTargetRef::Building { id: 2 })
+    );
+    assert_eq!(
+        listener.navigation.nav_com,
+        Some(NavTargetRef::Building { id: 2 })
+    );
+    assert!(listener.navigation.nav_queue.is_empty());
+}
+
+#[test]
+fn selling_target_disables_occupier_capture_nav_retention() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Structure);
+    let _ = sim.try_reveal_entity(2, request(9, 11, PlacementEvidence::MarkSucceeded));
+    sim.mission_assign_exact(
+        1,
+        MissionId::from_known(MissionType::Capture),
+        sim.session.binary_frame,
+    )
+    .unwrap();
+    sim.mission_assign_exact(
+        2,
+        MissionId::from_known(MissionType::Selling),
+        sim.session.binary_frame,
+    )
+    .unwrap();
+
+    let listener = sim.substrate.entities.get_mut(1).unwrap();
+    listener.occupier = true;
+    listener.navigation.nav_com_aux = Some(NavTargetRef::Building { id: 2 });
+    listener.navigation.nav_com = Some(NavTargetRef::Building { id: 2 });
+
+    sim.uninit(2);
+
+    let listener = sim.substrate.entities.get(1).unwrap();
+    assert!(listener.navigation.nav_com_aux.is_none());
+    assert!(listener.navigation.nav_com.is_none());
+}
+
+#[test]
+fn target_expiry_rearms_passive_scan_and_restores_suspended_mission() {
+    let mut sim = Simulation::with_seed(0x1234);
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    insert_entity(&mut sim, 3, EntityCategory::Unit);
+    let _ = sim.try_reveal_entity(2, request(9, 11, PlacementEvidence::MarkSucceeded));
+    sim.session.binary_frame = 105;
+
+    let listener = sim.substrate.entities.get_mut(1).unwrap();
+    listener.attack_target = Some(AttackTarget::new(2));
+    listener.suspended_attack_target = Some(TargetKind::Entity(3));
+    listener.navigation.suspended_nav_com = Some(NavTargetRef::Cell { rx: 7, ry: 8 });
+    listener.passive_scan_timer.arm(100, 20);
+    listener.mission.apply_test_fixture(MissionTestFixture {
+        current: MissionId::from_known(MissionType::Attack),
+        suspended: MissionId::from_known(MissionType::Guard),
+        queued: MissionId::NONE,
+        movement_bypass_latch: 0,
+        handler_state: 0,
+        mission_start_frame: 100,
+        ai_counter: 0,
+        dispatch_timer: MissionDispatchTimer::at_frame(100),
+    });
+
+    let mut expected_rng = sim.scenario_rng.clone();
+    let delay = expected_rng.next_range_u32_inclusive(4, 8);
+    sim.uninit(2);
+
+    let listener = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(listener.passive_scan_timer.start_frame, 105);
+    assert_eq!(listener.passive_scan_timer.duration, delay);
+    assert_eq!(
+        listener.mission.current(),
+        MissionId::from_known(MissionType::Guard)
+    );
+    assert_eq!(listener.mission.suspended(), MissionId::NONE);
+    assert_eq!(
+        listener.attack_target.as_ref().map(|target| target.target),
+        Some(TargetKind::Entity(3))
+    );
+    assert_eq!(
+        listener.navigation.nav_com,
+        Some(NavTargetRef::Cell { rx: 7, ry: 8 })
+    );
+    assert_eq!(
+        sim.scenario_rng.logical_state(),
+        expected_rng.logical_state()
+    );
+}
+
+#[test]
+fn infantry_target_expiry_clears_firing_action_before_target() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    let _ = sim.try_reveal_entity(2, request(9, 11, PlacementEvidence::MarkSucceeded));
+
+    let listener = sim.substrate.entities.get_mut(1).unwrap();
+    listener.attack_target = Some(AttackTarget {
+        target: TargetKind::Entity(2),
+        cooldown_ticks: 9,
+        burst_remaining: 3,
+        burst_delay_ticks: 2,
+        pending_infantry_fire: Some(PendingInfantryFire {
+            sequence: SequenceKind::Attack,
+            fire_frame: 4,
+        }),
+    });
+    listener.animation = Some(Animation::new(SequenceKind::Attack));
+    listener.mission_leaf = crate::sim::mission::MissionLeafState::infantry_raw_for_test(7, 12);
+
+    sim.uninit(2);
+
+    let listener = sim.substrate.entities.get(1).unwrap();
+    assert!(listener.attack_target.is_none());
+    assert_eq!(
+        listener.animation.as_ref().unwrap().sequence,
+        SequenceKind::Stand
+    );
+    let leaf = listener.mission_leaf.as_infantry().unwrap();
+    assert_eq!(leaf.firing_sequence_latch(), 0);
+    assert_eq!(leaf.doing(), -1);
 }
 
 #[test]
@@ -1030,6 +1183,16 @@ fn lifecycle_authority_duplicate_uninit_does_not_double_release_owned_count() {
     assert_eq!(sim.houses.get(&owner).unwrap().owned_unit_count, 1);
     assert!(sim.substrate.entities.get(1).unwrap().owned_count_released);
     assert_eq!(sim.substrate.pending_delete, vec![1, 1]);
+    assert_eq!(
+        sim.lifecycle_test_events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                LifecycleTestEvent::UninitRemovalNotifyBoundary { stable_id: 1, .. }
+            ))
+            .count(),
+        2
+    );
 
     sim.lifecycle_test_events.clear();
     sim.process_pending_delete();

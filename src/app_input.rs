@@ -520,8 +520,7 @@ pub(crate) fn toggle_pathgrid_overlay(state: &mut AppState) {
 pub(crate) fn toggle_debug_pause(state: &mut AppState) {
     state.paused = !state.paused;
     if !state.paused {
-        let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
-        state.frame_pacer.reanchor(now_ms);
+        state.frame_pacer.reset_for_immediate_frame();
     }
     log::info!("Debug pause: {}", if state.paused { "ON" } else { "OFF" });
 }
@@ -552,8 +551,7 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             if state.paused {
                 // Unpause — reset timing to prevent sim accumulator spike.
                 state.paused = false;
-                let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
-                state.frame_pacer.reanchor(now_ms);
+                state.frame_pacer.reset_for_immediate_frame();
                 // Re-hide OS cursor so the software cursor takes over.
                 if state.software_cursor.is_some() {
                     state.window.set_cursor_visible(false);
@@ -958,6 +956,9 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     // Resolve every saved stable-ID slot before rebuilding derived runtime
     // indexes. A malformed object graph never replaces the active simulation.
     let mut sim = snapshot.sim;
+    // Native Main/MapGen RNG objects are process globals, not ScenarioClass
+    // save fields. Loading replaces Scenario state but retains these cursors.
+    sim.retain_process_rngs_from(current_sim);
     if let Err(error) = sim.restore_after_snapshot_load() {
         log::error!("Load: restoration validation failed: {error}");
         return;
@@ -997,8 +998,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     }
 
     // Reset timing to prevent a burst of ticks after the load.
-    let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
-    state.frame_pacer.reanchor(now_ms);
+    state.frame_pacer.reset_for_immediate_frame();
 
     // Close the save/load panel after loading.
     state.show_save_load_panel = false;

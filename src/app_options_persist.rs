@@ -91,8 +91,7 @@ pub(crate) fn in_game_options_close(state: &mut AppState) {
     apply_in_game_options(state);
     persist_in_game_options(state, IN_GAME_OPTIONS_RESULT_BACK);
     state.paused = false;
-    let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
-    state.frame_pacer.reanchor(now_ms);
+    state.frame_pacer.reset_for_immediate_frame();
     if state.software_cursor.is_some() {
         state.window.set_cursor_visible(false);
     }

@@ -94,7 +94,10 @@ use crate::sim::world::Simulation;
 // discriminator; PassengerCargo persists one Size value per entry; animation
 // membership is rebuilt rather than serialized. Production loading now also
 // enforces exact map/rules/session metadata before stable-ID fixup.
-const SNAPSHOT_VERSION: u32 = 35;
+// Bumped 35 -> 36: lifecycle target and animation identity state is persisted.
+// Bumped 36 -> 37: process-global Main/MapGen RNG cursors are no longer
+// serialized; production load retains their live pre-load process state.
+const SNAPSHOT_VERSION: u32 = 37;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -187,6 +190,16 @@ pub enum SnapshotRestoreError {
     DuplicateLogicIdentity { object_id: u64 },
     #[error("LogicVector object id {object_id} has no restored registry identity")]
     MissingLogicIdentity { object_id: u64 },
+    #[error(
+        "{source_registry} object {source_id} field {field} references missing {target_registry} object {target_id}"
+    )]
+    UnresolvedObjectReference {
+        source_registry: &'static str,
+        source_id: u64,
+        field: &'static str,
+        target_registry: &'static str,
+        target_id: u64,
+    },
     #[error(
         "carrier {carrier_id} has {passenger_count} passengers but {size_count} saved Size entries"
     )]
@@ -295,6 +308,8 @@ impl GameSnapshot {
     /// Version and compatibility metadata are rejected before the simulation
     /// body is admitted. The duplicated preview metadata must also agree with
     /// `ScenarioSession`; no warning/continue or zero-hash sentinel exists.
+    /// The returned Main/MapGen fields are deserialize placeholders; the app's
+    /// production load seam replaces them with the live process cursors.
     pub fn load_validated(
         bytes: &[u8],
         expected_map_hash: u64,
@@ -416,16 +431,53 @@ impl RestoredObjectIndex {
     }
 }
 
-fn nav_reference_resolves(
+fn require_resolved_reference(
+    resolves: bool,
+    source_registry: &'static str,
+    source_id: u64,
+    field: &'static str,
+    target_registry: &'static str,
+    target_id: u64,
+) -> Result<(), SnapshotRestoreError> {
+    if resolves {
+        Ok(())
+    } else {
+        Err(SnapshotRestoreError::UnresolvedObjectReference {
+            source_registry,
+            source_id,
+            field,
+            target_registry,
+            target_id,
+        })
+    }
+}
+
+fn validate_nav_reference(
     target: &crate::sim::components::NavTargetRef,
     identities: &BTreeMap<u64, &'static str>,
     entity_ids: &BTreeSet<u64>,
-) -> bool {
+    source_id: u64,
+    field: &'static str,
+) -> Result<(), SnapshotRestoreError> {
     match target {
-        crate::sim::components::NavTargetRef::Cell { .. } => true,
+        crate::sim::components::NavTargetRef::Cell { .. } => Ok(()),
         crate::sim::components::NavTargetRef::Entity { id }
-        | crate::sim::components::NavTargetRef::Building { id } => entity_ids.contains(id),
-        crate::sim::components::NavTargetRef::Object { id } => identities.contains_key(id),
+        | crate::sim::components::NavTargetRef::Building { id } => require_resolved_reference(
+            entity_ids.contains(id),
+            "EntityStore",
+            source_id,
+            field,
+            "EntityStore",
+            *id,
+        ),
+        crate::sim::components::NavTargetRef::Object { id } => require_resolved_reference(
+            identities.contains_key(id),
+            "EntityStore",
+            source_id,
+            field,
+            "object namespace",
+            *id,
+        ),
     }
 }
 
@@ -458,7 +510,10 @@ fn validate_passenger_size_tables(sim: &Simulation) -> Result<(), SnapshotRestor
     Ok(())
 }
 
-fn fixup_object_references(sim: &mut Simulation, identities: &BTreeMap<u64, &'static str>) {
+fn restore_object_references(
+    sim: &mut Simulation,
+    identities: &BTreeMap<u64, &'static str>,
+) -> Result<(), SnapshotRestoreError> {
     use crate::sim::combat::TargetKind;
     use crate::sim::game_entity::BunkerLink;
     use crate::sim::movement::homing_movement::HomingTarget;
@@ -467,202 +522,339 @@ fn fixup_object_references(sim: &mut Simulation, identities: &BTreeMap<u64, &'st
     let entity_ids: BTreeSet<u64> = sim.substrate.entities.keys_sorted().into_iter().collect();
     let anim_ids: BTreeSet<u64> = sim.substrate.anims.iter().map(|(&id, _)| id).collect();
 
-    for entity in sim.substrate.entities.values_mut() {
-        let missing_contacts: Vec<u64> = entity
-            .radio_contacts
-            .iter_live()
-            .filter(|id| !entity_ids.contains(id))
-            .collect();
-        for missing in missing_contacts {
-            let _ = entity.radio_contacts.break_with(missing);
+    // Swizzle::Apply has no unmatched-reference recovery path. Validate the
+    // complete modeled pointer graph before mutating even weak references or
+    // derived caches, so a failed restore remains an atomic rejection.
+    for (entity_id, entity) in sim.substrate.entities.iter_sorted() {
+        for contact_id in entity.radio_contacts.iter_live() {
+            require_resolved_reference(
+                entity_ids.contains(&contact_id),
+                "EntityStore",
+                entity_id,
+                "radio_contacts",
+                "EntityStore",
+                contact_id,
+            )?;
         }
 
-        if let PassengerRole::Transport { cargo } = &mut entity.passenger_role {
-            let missing_passengers: Vec<u64> = cargo
-                .passengers
-                .iter()
-                .copied()
-                .filter(|id| !entity_ids.contains(id))
-                .collect();
-            for missing in missing_passengers {
-                let _ = cargo.disembark(missing);
+        if let PassengerRole::Transport { cargo } = &entity.passenger_role {
+            for &passenger_id in &cargo.passengers {
+                require_resolved_reference(
+                    entity_ids.contains(&passenger_id),
+                    "EntityStore",
+                    entity_id,
+                    "passenger_role.cargo.passengers",
+                    "EntityStore",
+                    passenger_id,
+                )?;
             }
         }
 
-        if entity.attack_target.as_ref().is_some_and(
-            |target| matches!(target.target, TargetKind::Entity(id) if !entity_ids.contains(&id)),
-        ) {
-            entity.attack_target = None;
+        if let Some(TargetKind::Entity(target_id)) =
+            entity.attack_target.as_ref().map(|target| target.target)
+        {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "attack_target",
+                "EntityStore",
+                target_id,
+            )?;
         }
-        if matches!(
-            entity.suspended_attack_target,
-            Some(TargetKind::Entity(id)) if !entity_ids.contains(&id)
-        ) {
-            entity.suspended_attack_target = None;
+        if let Some(TargetKind::Entity(target_id)) = entity.suspended_attack_target {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "suspended_attack_target",
+                "EntityStore",
+                target_id,
+            )?;
         }
 
-        if entity
-            .navigation
-            .suspended_nav_com
-            .as_ref()
-            .is_some_and(|target| !nav_reference_resolves(target, identities, &entity_ids))
-        {
-            entity.navigation.suspended_nav_com = None;
+        if let Some(target) = entity.navigation.suspended_nav_com.as_ref() {
+            validate_nav_reference(
+                target,
+                identities,
+                &entity_ids,
+                entity_id,
+                "navigation.suspended_nav_com",
+            )?;
         }
-        if entity
-            .navigation
-            .nav_com_aux
-            .as_ref()
-            .is_some_and(|target| !nav_reference_resolves(target, identities, &entity_ids))
-        {
-            entity.navigation.nav_com_aux = None;
+        if let Some(target) = entity.navigation.nav_com_aux.as_ref() {
+            validate_nav_reference(
+                target,
+                identities,
+                &entity_ids,
+                entity_id,
+                "navigation.nav_com_aux",
+            )?;
         }
-        if entity
-            .navigation
-            .nav_com
-            .as_ref()
-            .is_some_and(|target| !nav_reference_resolves(target, identities, &entity_ids))
-        {
-            entity.navigation.nav_com = None;
+        if let Some(target) = entity.navigation.nav_com.as_ref() {
+            validate_nav_reference(
+                target,
+                identities,
+                &entity_ids,
+                entity_id,
+                "navigation.nav_com",
+            )?;
         }
-        entity
-            .navigation
-            .nav_queue
-            .retain(|target| nav_reference_resolves(target, identities, &entity_ids));
+        for target in &entity.navigation.nav_queue {
+            validate_nav_reference(
+                target,
+                identities,
+                &entity_ids,
+                entity_id,
+                "navigation.nav_queue",
+            )?;
+        }
 
-        if entity
-            .dock_entered_with
-            .is_some_and(|id| !entity_ids.contains(&id))
-        {
-            entity.dock_entered_with = None;
+        if let Some(target_id) = entity.dock_entered_with {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "dock_entered_with",
+                "EntityStore",
+                target_id,
+            )?;
         }
+        if let Some(target_id) = entity.capture_target {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "capture_target",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let Some(plant) = entity.c4_plant.as_ref() {
+            require_resolved_reference(
+                entity_ids.contains(&plant.target_building_id),
+                "EntityStore",
+                entity_id,
+                "c4_plant.target_building_id",
+                "EntityStore",
+                plant.target_building_id,
+            )?;
+        }
+
+        if let Some(dock) = entity.dock_state.as_ref() {
+            require_resolved_reference(
+                entity_ids.contains(&dock.dock_building_id),
+                "EntityStore",
+                entity_id,
+                "dock_state.dock_building_id",
+                "EntityStore",
+                dock.dock_building_id,
+            )?;
+        }
+        if let Some(ammo) = entity.aircraft_ammo.as_ref()
+            && let Some(target_id) = ammo.target_airfield
+        {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "aircraft_ammo.target_airfield",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let Some(miner) = entity.miner.as_ref() {
+            if let Some(target_id) = miner.home_refinery {
+                require_resolved_reference(
+                    entity_ids.contains(&target_id),
+                    "EntityStore",
+                    entity_id,
+                    "miner.home_refinery",
+                    "EntityStore",
+                    target_id,
+                )?;
+            }
+            if let Some(target_id) = miner.reserved_refinery {
+                require_resolved_reference(
+                    entity_ids.contains(&target_id),
+                    "EntityStore",
+                    entity_id,
+                    "miner.reserved_refinery",
+                    "EntityStore",
+                    target_id,
+                )?;
+            }
+        }
+        if let Some(slave) = entity.slave_harvester.as_ref() {
+            require_resolved_reference(
+                entity_ids.contains(&slave.master_id),
+                "EntityStore",
+                entity_id,
+                "slave_harvester.master_id",
+                "EntityStore",
+                slave.master_id,
+            )?;
+        }
+
+        let passenger_partner = match &entity.passenger_role {
+            PassengerRole::Boarding {
+                target_transport_id,
+                ..
+            } => Some((*target_transport_id, "passenger_role.boarding")),
+            PassengerRole::Inside { transport_id } => {
+                Some((*transport_id, "passenger_role.inside"))
+            }
+            PassengerRole::None | PassengerRole::Transport { .. } => None,
+        };
+        if let Some((target_id, field)) = passenger_partner {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                field,
+                "EntityStore",
+                target_id,
+            )?;
+        }
+
+        if let Some(homing) = entity.homing_state.as_ref()
+            && let Some(HomingTarget::Object(target_id)) = homing.target
+        {
+            require_resolved_reference(
+                identities.contains_key(&target_id),
+                "EntityStore",
+                entity_id,
+                "homing_state.target",
+                "object namespace",
+                target_id,
+            )?;
+        }
+
+        for &anim_id in entity.damage_fire_anim_ids.iter().flatten() {
+            require_resolved_reference(
+                anim_ids.contains(&anim_id),
+                "EntityStore",
+                entity_id,
+                "damage_fire_anim_ids",
+                "AnimStore",
+                anim_id,
+            )?;
+        }
+        if let Some(target_id) = entity.bunker_occupant {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "bunker_occupant",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let BunkerLink::Approaching(target_id) | BunkerLink::Installed(target_id) =
+            entity.bunker_link
+        {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "bunker_link",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let Some(runtime) = entity.bunker_runtime.as_ref()
+            && let Some(target_id) = runtime.installing_unit
+        {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "bunker_runtime.installing_unit",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+    }
+
+    for (&anim_id, anim) in sim.substrate.anims.iter() {
+        if let Some(owner_id) = anim.owner_entity {
+            require_resolved_reference(
+                entity_ids.contains(&owner_id),
+                "AnimStore",
+                anim_id,
+                "owner_entity",
+                "EntityStore",
+                owner_id,
+            )?;
+        }
+    }
+
+    for (&system_id, system) in sim.substrate.particle_systems.iter() {
+        if let Some(owner_id) = system.owner_entity {
+            require_resolved_reference(
+                entity_ids.contains(&owner_id),
+                "ParticleSystemStore",
+                system_id,
+                "owner_entity",
+                "EntityStore",
+                owner_id,
+            )?;
+        }
+        if let Some(attached_id) = system.attached_entity {
+            require_resolved_reference(
+                entity_ids.contains(&attached_id),
+                "ParticleSystemStore",
+                system_id,
+                "attached_entity",
+                "EntityStore",
+                attached_id,
+            )?;
+        }
+    }
+
+    for &object_id in &sim.substrate.pending_delete {
+        require_resolved_reference(
+            identities.contains_key(&object_id),
+            "PendingDeleteList",
+            object_id,
+            "entry",
+            "object namespace",
+            object_id,
+        )?;
+    }
+
+    for factory in sim.production.factory_shadow.iter_insertion_ordered() {
+        if let Some(object_id) = factory.object.as_ref().and_then(|object| object.entity_id) {
+            require_resolved_reference(
+                entity_ids.contains(&object_id),
+                "FactoryRegistry",
+                u64::from(factory.owner.index()),
+                "object.entity_id",
+                "EntityStore",
+                object_id,
+            )?;
+        }
+    }
+
+    // These are deliberate weak identities. Native expiry can leave the last
+    // attacker dangling, and C4 kill credit may outlive its attacker.
+    for entity in sim.substrate.entities.values_mut() {
         if entity
             .last_attacker_id
             .is_some_and(|id| !entity_ids.contains(&id))
         {
             entity.last_attacker_id = None;
         }
-        if entity
-            .capture_target
-            .is_some_and(|id| !entity_ids.contains(&id))
+        if let Some(pending) = entity.pending_c4_detonation.as_mut()
+            && !entity_ids.contains(&pending.attacker_id)
         {
-            entity.capture_target = None;
-        }
-        if entity
-            .c4_plant
-            .as_ref()
-            .is_some_and(|plant| !entity_ids.contains(&plant.target_building_id))
-        {
-            entity.c4_plant = None;
-        }
-        if let Some(pending) = entity.pending_c4_detonation.as_mut() {
-            if !entity_ids.contains(&pending.attacker_id) {
-                pending.attacker_id = 0;
-            }
-        }
-
-        if entity
-            .dock_state
-            .as_ref()
-            .is_some_and(|dock| !entity_ids.contains(&dock.dock_building_id))
-        {
-            entity.dock_state = None;
-        }
-        if let Some(ammo) = entity.aircraft_ammo.as_mut() {
-            if ammo
-                .target_airfield
-                .is_some_and(|id| !entity_ids.contains(&id))
-            {
-                ammo.target_airfield = None;
-                ammo.target_pad = None;
-            }
-        }
-        if let Some(miner) = entity.miner.as_mut() {
-            if miner
-                .home_refinery
-                .is_some_and(|id| !entity_ids.contains(&id))
-            {
-                miner.home_refinery = None;
-            }
-            if miner
-                .reserved_refinery
-                .is_some_and(|id| !entity_ids.contains(&id))
-            {
-                miner.reserved_refinery = None;
-                miner.dock_queued = false;
-            }
-        }
-        if let Some(slave) = entity.slave_harvester.as_mut() {
-            if !entity_ids.contains(&slave.master_id) {
-                slave.master_id = 0;
-            }
-        }
-
-        let clear_passenger_role = match &entity.passenger_role {
-            PassengerRole::Boarding {
-                target_transport_id,
-                ..
-            } => !entity_ids.contains(target_transport_id),
-            PassengerRole::Inside { transport_id } => !entity_ids.contains(transport_id),
-            PassengerRole::None | PassengerRole::Transport { .. } => false,
-        };
-        if clear_passenger_role {
-            entity.passenger_role = PassengerRole::None;
-        }
-
-        if let Some(homing) = entity.homing_state.as_mut() {
-            if matches!(
-                homing.target,
-                Some(HomingTarget::Object(id)) if !entity_ids.contains(&id)
-            ) {
-                homing.target = None;
-            }
-        }
-
-        for anim_id in &mut entity.damage_fire_anim_ids {
-            if anim_id.is_some_and(|id| !anim_ids.contains(&id)) {
-                *anim_id = None;
-            }
-        }
-        if entity
-            .bunker_occupant
-            .is_some_and(|id| !entity_ids.contains(&id))
-        {
-            entity.bunker_occupant = None;
-        }
-        entity.bunker_link = match entity.bunker_link {
-            BunkerLink::Approaching(id) | BunkerLink::Installed(id)
-                if !entity_ids.contains(&id) =>
-            {
-                BunkerLink::None
-            }
-            link => link,
-        };
-        if let Some(runtime) = entity.bunker_runtime.as_mut() {
-            if runtime
-                .installing_unit
-                .is_some_and(|id| !entity_ids.contains(&id))
-            {
-                runtime.installing_unit = None;
-            }
+            pending.attacker_id = 0;
         }
     }
 
-    for (_, system) in sim.substrate.particle_systems.iter_mut() {
-        if system
-            .owner_entity
-            .is_some_and(|id| !entity_ids.contains(&id))
-        {
-            system.owner_entity = None;
-        }
-        if system
-            .attached_entity
-            .is_some_and(|id| !entity_ids.contains(&id))
-        {
-            system.attached_entity = None;
-        }
-    }
-
+    // These manager maps are derived/transitional mirrors rather than modeled
+    // native pointer slots. Restore prunes them only after the authoritative
+    // object graph has passed validation.
     for producers in sim.production.active_producer_by_owner.values_mut() {
         producers.retain(|_, id| entity_ids.contains(id));
     }
@@ -677,9 +869,14 @@ fn fixup_object_references(sim: &mut Simulation, identities: &BTreeMap<u64, &'st
         .depot_dock_reservations
         .cleanup_dead(&entity_ids);
     sim.production.airfield_docks.cleanup_dead(&entity_ids);
+
+    // The produced-object link was validated above, so this legacy helper is
+    // intentionally a no-op for every admitted snapshot.
     sim.production
         .factory_shadow
         .fixup_object_references(&entity_ids);
+
+    Ok(())
 }
 
 impl Simulation {
@@ -688,8 +885,9 @@ impl Simulation {
     /// Native load registers old identities and pointer slots, resolves them,
     /// then restores global active/cell membership. Rust stores stable IDs
     /// directly, so the equivalent transaction builds one global namespace,
-    /// nulls unmatched modeled references, and reconstructs skipped indexes in
-    /// dependency order.
+    /// rejects any unmatched modeled native pointer, cleans only deliberate
+    /// weak/derived identities, and reconstructs skipped indexes in dependency
+    /// order.
     pub(crate) fn restore_after_snapshot_load(&mut self) -> Result<(), SnapshotRestoreError> {
         let (index, identities) = RestoredObjectIndex::build(self)?;
         if self.substrate.next_stable_object_id <= index.highest_id {
@@ -726,8 +924,7 @@ impl Simulation {
         }
 
         validate_passenger_size_tables(self)?;
-        fixup_object_references(self, &identities);
-        validate_passenger_size_tables(self)?;
+        restore_object_references(self, &identities)?;
 
         // Rust's native-shaped re-registration order:
         // 1. class registry indexes, 2. Logic slots (including ParticleSystem),
@@ -741,10 +938,10 @@ impl Simulation {
 
     /// Recreate app-owned loop handles for serialized active MoveSound state.
     ///
-    /// Starting the original loop consumed Main RNG. Restoration must not draw
-    /// again: the already-selected configured identity is re-emitted as a
-    /// transient sound event while the authoritative active/countdown bytes
-    /// remain untouched.
+    /// The configured identity is re-emitted as a transient sound event while
+    /// the authoritative active/countdown bytes remain untouched. The local
+    /// audio owner performs any process-global selection after its acceptance
+    /// gates; snapshot restoration never advances an RNG itself.
     pub(crate) fn restore_move_sound_handles_after_load(
         &mut self,
         rules: &crate::rules::ruleset::RuleSet,
@@ -1077,11 +1274,13 @@ mod tests {
     /// state/readiness schema took 28 -> 29, and the Harvest handler
     /// absorption (the miner FSM cursor retired into
     /// `MissionCom.handler_state`) took 29 -> 30. Particle systems reached 34;
-    /// the consolidated Phase-0 persistence schema took 34 -> 35. This pins it
-    /// so a later accidental bump is caught.
+    /// the consolidated Phase-0 persistence schema took 34 -> 35, and
+    /// lifecycle target/animation identity state took 35 -> 36, and omission
+    /// of process-global Main/MapGen RNG state took 36 -> 37. This pins it so
+    /// a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_35() {
-        assert_eq!(super::SNAPSHOT_VERSION, 35);
+    fn snapshot_version_is_37() {
+        assert_eq!(super::SNAPSHOT_VERSION, 37);
     }
 
     #[test]
@@ -1100,7 +1299,11 @@ mod tests {
             sim.session.tick + 3,
             Command::Stop { entity_id: 71 },
         ));
+        sim.scatter_rng().next_u32();
+        sim.weapon_spread_rng().next_u32();
+        sim.mapgen_rng.next_u32();
         let rng_before = sim.rng_state();
+        let process_default = crate::sim::rng::SimRng::new(0).logical_state();
 
         let bytes = GameSnapshot::save_validated(&sim, 0x11, 0x22, 0x33);
         let restored =
@@ -1111,7 +1314,12 @@ mod tests {
         assert_eq!(restored.sim.session.total_sim_ms, 12_345);
         assert_eq!(restored.sim.session.house_order, vec![owner]);
         assert_eq!(restored.sim.pending_commands, sim.pending_commands);
-        assert_eq!(restored.sim.rng_state(), rng_before);
+        assert_eq!(
+            restored.sim.scenario_rng.logical_state(),
+            rng_before.scenario
+        );
+        assert_eq!(restored.sim.main_rng.logical_state(), process_default);
+        assert_eq!(restored.sim.mapgen_rng.logical_state(), process_default);
 
         assert!(matches!(
             GameSnapshot::load_validated(&bytes, 0x12, 0x22, "MAP01.MAP"),
@@ -1144,7 +1352,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_resolves_references_then_rebuilds_logic_particles_and_cells() {
+    fn restore_validates_references_then_rebuilds_logic_particles_and_cells() {
         use crate::rules::particle_system_type::ParticleSystemTypeId;
         use crate::sim::game_entity::GameEntity;
         use crate::sim::particles::ParticleSystem;
@@ -1178,7 +1386,7 @@ mod tests {
             facing: 0x1d,
             marked_for_deletion: false,
             directionless: false,
-            attached_entity: Some(999),
+            attached_entity: Some(entity_id),
             owner_entity: Some(entity_id),
             target_coords: IVec3::ZERO,
             owner_house: None,
@@ -1235,7 +1443,72 @@ mod tests {
             .get(particle_id)
             .expect("particle system");
         assert_eq!(system.owner_entity, Some(entity_id));
-        assert_eq!(system.attached_entity, None);
+        assert_eq!(system.attached_entity, Some(entity_id));
+    }
+
+    #[test]
+    fn restore_rejects_unresolved_native_pointer_before_weak_cleanup() {
+        use crate::rules::particle_system_type::ParticleSystemTypeId;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::particles::ParticleSystem;
+        use crate::util::fixed_math::SimFixed;
+        use glam::IVec3;
+
+        let mut sim = Simulation::new();
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::test_default(entity_id, "MTNK", "AMERICANS", 5, 6);
+        entity.last_attacker_id = Some(999);
+        sim.substrate.entities.insert(entity);
+
+        let particle_id = sim.allocate_stable_id();
+        sim.substrate.particle_systems.insert(ParticleSystem {
+            stable_id: particle_id,
+            in_logic_vector: false,
+            type_id: ParticleSystemTypeId(0),
+            coords: IVec3::ZERO,
+            offset: IVec3::ZERO,
+            particles: Vec::new(),
+            spawn_timer: SimFixed::from_num(0),
+            lifetime: -1,
+            spark_spawn_frames: 0,
+            facing: 0x1d,
+            marked_for_deletion: false,
+            directionless: false,
+            attached_entity: Some(999),
+            owner_entity: Some(entity_id),
+            target_coords: IVec3::ZERO,
+            owner_house: None,
+            done_spawning: false,
+        });
+
+        assert_eq!(
+            sim.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::UnresolvedObjectReference {
+                source_registry: "ParticleSystemStore",
+                source_id: particle_id,
+                field: "attached_entity",
+                target_registry: "EntityStore",
+                target_id: 999,
+            })
+        );
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(entity_id)
+                .expect("entity")
+                .last_attacker_id,
+            Some(999),
+            "failed restoration must not clean a later weak reference"
+        );
+        assert_eq!(
+            sim.substrate
+                .particle_systems
+                .get(particle_id)
+                .expect("particle system")
+                .attached_entity,
+            Some(999),
+            "failed restoration must not sanitize the unresolved strong reference"
+        );
     }
 
     #[test]

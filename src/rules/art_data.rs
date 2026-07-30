@@ -378,11 +378,13 @@ fn parse_u16_pair(value: &str) -> Option<(u16, u16)> {
 }
 
 fn parse_random_rate_pair(value: &str) -> Option<(u16, u16)> {
-    let (a, b) = parse_u16_pair(value)?;
-    Some((
-        art_rate_to_logic_frames(i32::from(a)),
-        art_rate_to_logic_frames(i32::from(b)),
-    ))
+    let mut parts = value.split(',').map(str::trim);
+    let mut low = art_rate_to_logic_frames(parts.next()?.parse::<i32>().ok()?);
+    let high = art_rate_to_logic_frames(parts.next()?.parse::<i32>().ok()?);
+    if high < low {
+        low = high;
+    }
+    Some((low, high))
 }
 
 /// Default native frame delay when art.ini section has no `Rate=` key.
@@ -1573,11 +1575,24 @@ mod anim_runtime_metadata_tests {
         assert!(config.normalized);
         assert_eq!(config.next.as_deref(), Some("SMOKEY"));
         assert_eq!(config.random_loop_delay, Some((2, 5)));
-        assert_eq!(config.random_rate_logic_frames, Some((3, 1)));
+        assert_eq!(config.random_rate_logic_frames, Some((1, 1)));
         assert_eq!(config.trailer_anim, None);
         assert_eq!(config.trailer_seperation, 0);
         assert_eq!(config.bounce_anim, None);
         assert_eq!(config.expire_anim, None);
+    }
+
+    #[test]
+    fn reversed_random_rate_conversion_collapses_to_the_second_endpoint() {
+        let ini = IniFile::from_str("[DBRIS1LG]\nRandomRate=220,600\n");
+        let reg = ArtRegistry::from_ini(&ini);
+
+        assert_eq!(
+            reg.anim_runtime_config("DBRIS1LG")
+                .unwrap()
+                .random_rate_logic_frames,
+            Some((1, 1))
+        );
     }
 
     #[test]

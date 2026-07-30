@@ -328,6 +328,37 @@ impl X87Chop53 {
     }
 }
 
+/// Active `gamemd.exe` `Sqrt_Approx` (`0x004CAC40`).
+///
+/// The helper first stores its finite positive input as an x87-chopped `f32`,
+/// then indexes the retail 16,384-entry mantissa table.  The table is a pure
+/// arithmetic sequence, so computing its entry keeps the executable's bytes
+/// out of the repository while preserving the exact result bits.
+pub fn sqrt_approx_f32(value: X87Value) -> Result<NativeF32Bits, NativeX87Error> {
+    let magnitude = X87Chop53::store_f32(value)?.bits() & 0x7fff_ffff;
+    if magnitude == 0 {
+        return Ok(NativeF32Bits::POSITIVE_ZERO);
+    }
+
+    let mut mantissa = magnitude & 0x007f_ffff;
+    let unbiased = ((magnitude >> 23) & 0xff) as i32 - 127;
+    if unbiased & 1 != 0 {
+        mantissa |= 0x0080_0000;
+    }
+
+    let index = mantissa >> 10;
+    let significand = if index < 8192 {
+        1.0 + f64::from(index) / 8192.0
+    } else {
+        2.0 * (1.0 + f64::from(index - 8192) / 8192.0)
+    };
+    let table_entry = ((significand.sqrt() - 1.0) * 8_388_608.0) as u32;
+    let half_exponent = unbiased >> 1;
+    Ok(NativeF32Bits::from_bits(
+        table_entry.wrapping_add(((half_exponent + 127) as u32) << 23),
+    ))
+}
+
 fn chop_extended(sign: bool, exponent: i32, extended: u64) -> X87Value {
     let significand = extended >> 3;
     debug_assert!(significand == 0 || significand & SIGNIFICAND_TOP != 0);
@@ -475,5 +506,26 @@ mod tests {
             X87Chop53::load_f64(NativeF64Bits::from_bits(0x0000_0000_0000_0001)),
             Err(NativeX87Error::SubnormalInput { format: "f64" }),
         );
+    }
+
+    #[test]
+    fn retail_sqrt_approx_uses_the_quantized_mantissa_table() {
+        let two = X87Chop53::load_i32(2);
+        assert_eq!(sqrt_approx_f32(two).unwrap().bits(), 0x3fb5_04f3);
+
+        let lower_half_last = X87Chop53::load_f32(NativeF32Bits::from_bits(0x3fff_fc00)).unwrap();
+        assert_eq!(
+            sqrt_approx_f32(lower_half_last).unwrap().bits(),
+            0x3fb5_0389
+        );
+        let upper_half_last = X87Chop53::load_f32(NativeF32Bits::from_bits(0x407f_fc00)).unwrap();
+        assert_eq!(
+            sqrt_approx_f32(upper_half_last).unwrap().bits(),
+            0x3fff_fdff
+        );
+
+        let value = X87Chop53::load_i32(1_234_567);
+        let approximate = sqrt_approx_f32(value).unwrap().bits();
+        assert_ne!(approximate, (1_234_567.0f32.sqrt()).to_bits());
     }
 }

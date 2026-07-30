@@ -61,7 +61,11 @@ pub struct HouseState {
     pub side_index: u8,
     /// Country interned ID from map INI `Country=` key (e.g., "Americans", "Russians").
     pub country: Option<InternedId>,
-    /// True if this house is human-controlled.
+    /// Collapsed player-control fact for the current Rust model.
+    ///
+    /// Native keeps `IsHuman` and `PlayerControl` as separate bytes and admits
+    /// EventClass records when either is set. Current scenario/skirmish
+    /// initialization folds both sources into this one boolean.
     pub is_human: bool,
     /// Per-house native difficulty. Human houses retain Normal unless a map or
     /// game-mode initializer explicitly assigns another native value.
@@ -104,6 +108,11 @@ pub struct HouseState {
 }
 
 impl HouseState {
+    /// Active offline EventClass house-scan eligibility.
+    pub const fn event_dispatch_eligible(&self) -> bool {
+        self.is_human
+    }
+
     pub fn new(
         name: InternedId,
         side_index: u8,

@@ -39,8 +39,61 @@ use super::{
     PathfindingContext,
 };
 
-fn drive_track_fresh_budget_from_current_speed(current_speed_per_second: SimFixed) -> i32 {
+pub(super) fn movement_frame_budget_from_current_speed(current_speed_per_second: SimFixed) -> i32 {
     (current_speed_per_second / SimFixed::from_num(15u8)).to_num::<i32>()
+}
+
+fn scaled_frame_delta(
+    direction_component: SimFixed,
+    direction_length: SimFixed,
+    frame_budget: i32,
+) -> SimFixed {
+    if direction_component == SIM_ZERO || direction_length <= SIM_ZERO || frame_budget == 0 {
+        return SIM_ZERO;
+    }
+
+    const FRACTION_SCALE: i64 = 1 << 16;
+    let numerator =
+        i64::from(direction_component.to_bits()) * i64::from(frame_budget) * FRACTION_SCALE;
+    let delta_bits = numerator / i64::from(direction_length.to_bits());
+    SimFixed::from_bits(
+        i32::try_from(delta_bits).expect("movement component exceeds SimFixed range"),
+    )
+}
+
+fn whole_lepton_subcell_after_delta(cell: u16, subcell: SimFixed, delta: SimFixed) -> SimFixed {
+    const FRACTION_SCALE: i64 = 1 << 16;
+    const LEPTONS_PER_CELL: i64 = 256;
+    let cell_origin = i64::from(cell) * LEPTONS_PER_CELL;
+    let absolute_bits =
+        cell_origin * FRACTION_SCALE + i64::from(subcell.to_bits()) + i64::from(delta.to_bits());
+    let absolute_leptons = absolute_bits / FRACTION_SCALE;
+    let subcell_leptons = absolute_leptons - cell_origin;
+    SimFixed::from_num(
+        i32::try_from(subcell_leptons).expect("sub-cell movement exceeds SimFixed range"),
+    )
+}
+
+fn advance_by_frame_budget(target: &MovementTarget, position: &mut Position, frame_budget: i32) {
+    let delta_x = scaled_frame_delta(target.move_dir_x, target.move_dir_len, frame_budget);
+    let delta_y = scaled_frame_delta(target.move_dir_y, target.move_dir_len, frame_budget);
+    position.sub_x = whole_lepton_subcell_after_delta(position.rx, position.sub_x, delta_x);
+    position.sub_y = whole_lepton_subcell_after_delta(position.ry, position.sub_y, delta_y);
+}
+
+fn advance_straight_position(
+    target: &MovementTarget,
+    position: &mut Position,
+    frame_budget: i32,
+    fraction: SimFixed,
+    whole_lepton_result: bool,
+) {
+    if whole_lepton_result {
+        advance_by_frame_budget(target, position, frame_budget);
+    } else {
+        position.sub_x += target.move_dir_x * fraction;
+        position.sub_y += target.move_dir_y * fraction;
+    }
 }
 
 pub(super) fn apply_cell_transition_remainder(
@@ -460,6 +513,7 @@ mod tests {
             &mut locomotor,
             EntityCategory::Unit,
             SimFixed::from_num(300),
+            movement_frame_budget_from_current_speed(SimFixed::from_num(300)),
             SimFixed::from_num(1) / SimFixed::from_num(15),
             1,
         );
@@ -512,6 +566,7 @@ mod tests {
             &mut locomotor,
             EntityCategory::Unit,
             current_speed,
+            movement_frame_budget_from_current_speed(current_speed),
             SimFixed::from_num(1) / SimFixed::from_num(15),
             1,
         );
@@ -564,6 +619,7 @@ mod tests {
             &mut locomotor,
             EntityCategory::Unit,
             current_speed,
+            movement_frame_budget_from_current_speed(current_speed),
             dt,
             1,
         );
@@ -579,6 +635,7 @@ mod tests {
             &mut locomotor,
             EntityCategory::Unit,
             current_speed,
+            movement_frame_budget_from_current_speed(current_speed),
             dt,
             1,
         );
@@ -587,6 +644,70 @@ mod tests {
             index_after_native_frame + 2,
             "every explicit call must consume a fresh reached-frame budget"
         );
+    }
+
+    fn advance_straight_walk(effective_speed: SimFixed, frame_budget: i32) -> Position {
+        let mut target = MovementTarget {
+            path: vec![(0, 0), (1, 0)],
+            path_layers: vec![MovementLayer::Ground; 2],
+            next_index: 1,
+            speed: effective_speed,
+            current_speed: effective_speed,
+            move_dir_x: SimFixed::from_num(256),
+            move_dir_y: SIM_ZERO,
+            move_dir_len: SimFixed::from_num(256),
+            final_goal: Some((1, 0)),
+            ..Default::default()
+        };
+        let mut position = Position {
+            rx: 0,
+            ry: 0,
+            z: 0,
+            sub_x: SimFixed::from_num(128),
+            sub_y: SimFixed::from_num(128),
+        };
+        let mut facing = 0;
+        let mut facing_target = None;
+        let mut drive_track_state = None;
+        let mut drive_locomotion = None;
+        let mut locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
+
+        let result = advance_lepton_position(
+            &mut target,
+            &mut position,
+            &mut facing,
+            &mut facing_target,
+            &mut drive_track_state,
+            &mut drive_locomotion,
+            &mut locomotor,
+            EntityCategory::Infantry,
+            effective_speed,
+            frame_budget,
+            SimFixed::from_num(1) / SimFixed::from_num(15),
+            1,
+        );
+        assert!(matches!(result, AdvanceResult::ReadyForCrossings));
+        position
+    }
+
+    #[test]
+    fn straight_walk_commits_the_whole_frame_budget() {
+        let effective_speed = SimFixed::from_num(150);
+        let position = advance_straight_walk(
+            effective_speed,
+            movement_frame_budget_from_current_speed(effective_speed),
+        );
+
+        assert_eq!(position.sub_x, SimFixed::from_num(138));
+        assert_eq!(position.sub_y, SimFixed::from_num(128));
+    }
+
+    #[test]
+    fn straight_walk_zero_budget_leaves_position_unchanged() {
+        let position = advance_straight_walk(SIM_ZERO, 0);
+
+        assert_eq!(position.sub_x, SimFixed::from_num(128));
+        assert_eq!(position.sub_y, SimFixed::from_num(128));
     }
 }
 
@@ -668,6 +789,7 @@ pub(super) fn advance_lepton_position(
     locomotor: &mut Option<LocomotorState>,
     category: EntityCategory,
     effective_speed: SimFixed,
+    frame_budget: i32,
     dt: SimFixed,
     entity_id: u64,
 ) -> AdvanceResult {
@@ -675,7 +797,7 @@ pub(super) fn advance_lepton_position(
         // Drive track advancement: step through pre-computed curve points.
         // The track handles position AND facing, producing smooth turns.
         let advance = if let Some(drive) = drive_locomotion.as_mut() {
-            let fresh_budget = drive_track_fresh_budget_from_current_speed(effective_speed);
+            let fresh_budget = movement_frame_budget_from_current_speed(effective_speed);
             let advance = drive_track::advance_drive_track_with_budget(
                 track_state,
                 fresh_budget,
@@ -863,7 +985,14 @@ pub(super) fn advance_lepton_position(
             }
             return AdvanceResult::DriveTrackActive;
         }
-        let lepton_step: SimFixed = effective_speed * dt;
+        let whole_lepton_result = locomotor
+            .as_ref()
+            .is_some_and(|locomotor| locomotor.kind == LocomotorKind::Walk);
+        let lepton_step = if whole_lepton_result {
+            SimFixed::from_num(frame_budget)
+        } else {
+            effective_speed * dt
+        };
         if target.move_dir_len > SIM_ZERO {
             let frac: SimFixed = lepton_step / target.move_dir_len;
             // When walking to subcell_dest (path exhausted), clamp so we
@@ -886,12 +1015,22 @@ pub(super) fn advance_lepton_position(
                 if target.next_index < target.path.len()
                     || locomotor.as_ref().and_then(|l| l.subcell_dest).is_none()
                 {
-                    position.sub_x += target.move_dir_x * frac;
-                    position.sub_y += target.move_dir_y * frac;
+                    advance_straight_position(
+                        target,
+                        position,
+                        frame_budget,
+                        frac,
+                        whole_lepton_result,
+                    );
                 }
             } else {
-                position.sub_x += target.move_dir_x * frac;
-                position.sub_y += target.move_dir_y * frac;
+                advance_straight_position(
+                    target,
+                    position,
+                    frame_budget,
+                    frac,
+                    whole_lepton_result,
+                );
             }
         }
 

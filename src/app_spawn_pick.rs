@@ -8,7 +8,6 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-
 use crate::app::AppState;
 use crate::app_init_helpers::build_entity_atlases;
 use crate::app_render;
@@ -137,8 +136,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     state.camera_y = sy - sh / (2.0 * zm);
 
     // Reset timing for clean InGame start.
-    let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
-    state.frame_pacer.reanchor(now_ms);
+    state.frame_pacer.reset_for_immediate_frame();
 
     state.screen = GameScreen::InGame;
     log::info!("SpawnPick complete — transitioned to InGame");

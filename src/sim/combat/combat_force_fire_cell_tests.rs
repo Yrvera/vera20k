@@ -147,21 +147,32 @@ fn force_fire_cell_pursuit_then_fire_integration() {
         },
     ));
 
-    // Tick 1: command applies, attack_target set, pursuit issues movement.
+    // Tick 1: EventClass applies the command at the native Main_Tick tail,
+    // after this frame's pursuit/object walk has already completed.
     let pending: Vec<CommandEnvelope> = std::mem::take(&mut sim.pending_commands);
     sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
 
     let entity = sim.substrate.entities.get(1).unwrap();
     assert!(
         entity.attack_target.is_some(),
-        "attack_target set after ForceAttackCell apply"
+        "the command tail sets attack_target"
     );
     assert!(
-        entity.movement_target.is_some(),
-        "pursuit issued movement (out of range)"
+        entity.movement_target.is_none(),
+        "the completed object walk cannot observe a tail-dispatched command"
     );
 
-    // Tick many times until unit walks into range and fires.
+    // Tick 2: the next object walk observes the target and starts pursuit.
+    sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 100);
+    assert!(
+        sim.substrate
+            .entities
+            .get(1)
+            .is_some_and(|e| e.movement_target.is_some()),
+        "the following frame starts out-of-range pursuit"
+    );
+
+    // Tick many times until the unit walks into range and fires.
     let mut fired = false;
     for _ in 0..400 {
         let pending: Vec<CommandEnvelope> = std::mem::take(&mut sim.pending_commands);

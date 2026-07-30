@@ -163,10 +163,11 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// Re-baselined for the Phase-0 native-frame and persistence authority changes
 /// documented at `FINAL_STREAM_STATES`: the admitted-frame cadence changes the
 /// harness harvester's behavior, while the common hash composition also drops
-/// `total_sim_ms` and adds the newly persisted deterministic fields. Therefore
-/// both legacy-schema probes and the live hash move together.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 13754665093711200317;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 13270953773415986628;
+/// `total_sim_ms`, hashes only the retail-persisted Scenario RNG, and adds the
+/// newly persisted deterministic fields. Therefore both legacy-schema probes
+/// and the live hash move together.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xC022_5D76_A106_57A5;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x6037_0D59_C2A4_488B;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -228,7 +229,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 13270953773415986628;
 /// wired in this slice (deploy-begin off, undeploy-complete on, destination-
 /// accepted on) changed no other hashed state in these fixtures. The absolute
 /// per-stream RNG pins held throughout.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xB2C6_81A1_AFDC_0627;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x6099_0C84_56F8_555E;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -500,6 +501,9 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
 
     let pre_lifecycle_hash = rep.state_hash_before_lifecycle_v28_and_mission_v29();
     let pre_mission_hash = rep.state_hash_without_mission_v29();
+    println!(
+        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X}"
+    );
     assert_eq!(
         pre_lifecycle_hash, GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
         "pre-v28/pre-v29 schema probe must reproduce the historical baseline"
@@ -600,7 +604,10 @@ fn dense_converging_setup() -> (
 /// off-tube non-adjacent path steps (sharp-turn fallback bumps) are no longer
 /// killed on their issue tick, so movers that previously froze now drive —
 /// an intended movement-behavior change, not dispatch-order drift.
-const POSITION_FINGERPRINT: u64 = 18354164349101625193;
+/// Re-baselined for the Phase-0 native Main_Tick order: EventClass commands
+/// now dispatch at the tail, after the live object/movement walk, so a move
+/// accepted on frame N first advances its object on frame N+1.
+const POSITION_FINGERPRINT: u64 = 0x9274_026B_3B2A_6277;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

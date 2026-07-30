@@ -27,7 +27,7 @@ use crate::sim::world::Simulation;
 
 use super::concrete_effects::{
     AuthorityUnavailable, ConcreteMissionEffects, ConcreteSetterRequest,
-    UnavailableConcreteMissionEffects,
+    RepresentedConcreteMissionEffects, UnavailableConcreteMissionEffects,
 };
 use super::readiness::{
     AircraftReadyView, BuildingReadyView, InfantryReadyView, ReadyLeptonPoint, ReadyResult,
@@ -556,6 +556,29 @@ impl Simulation {
         receiver: u64,
     ) -> Result<bool, MissionAuthorityError> {
         let mut effects = UnavailableConcreteMissionEffects;
+        self.mission_restore_exact_with_effects(receiver, &mut effects)
+    }
+
+    pub(crate) fn set_archive_target_represented(
+        &mut self,
+        receiver: u64,
+        requested: Option<TargetKind>,
+    ) -> Result<(), MissionAuthorityError> {
+        if !self.substrate.entities.contains(receiver) {
+            return Err(MissionAuthorityError::MissingReceiver(receiver));
+        }
+        let mut effects = RepresentedConcreteMissionEffects;
+        let prepared =
+            effects.preflight(self, receiver, ConcreteSetterRequest::Target { requested })?;
+        effects.apply_target(self, &prepared, requested);
+        Ok(())
+    }
+
+    pub(crate) fn mission_restore_after_target_expiry(
+        &mut self,
+        receiver: u64,
+    ) -> Result<bool, MissionAuthorityError> {
+        let mut effects = RepresentedConcreteMissionEffects;
         self.mission_restore_exact_with_effects(receiver, &mut effects)
     }
 

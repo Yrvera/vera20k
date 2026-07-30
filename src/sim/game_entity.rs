@@ -263,6 +263,9 @@ pub struct GameEntity {
     /// category or render representation.
     #[serde(default)]
     pub dirty_rect_eligible: bool,
+    /// Parsed InfantryType occupation capability used by capture-target expiry.
+    #[serde(default)]
+    pub occupier: bool,
     /// Rust bookkeeping that makes the represented owner-count decrement
     /// exactly-once. This does not stand in for native-alive or `dying`.
     #[serde(default)]
@@ -522,6 +525,9 @@ pub struct GameEntity {
     /// Exact native-width Mission state. All writes pass through a named legacy
     /// compatibility adapter or the dormant exact-authority surface.
     pub mission: MissionCom,
+    /// Techno passive-acquisition delay rearmed when a live target expires.
+    #[serde(default)]
+    pub passive_scan_timer: MissionTimer,
     /// Category-specific bytes read by Mission readiness and Aircraft policy.
     pub(crate) mission_leaf: MissionLeafState,
     /// Target identity archived by the Techno Override wrapper.
@@ -659,6 +665,7 @@ impl GameEntity {
             in_logic_vector: false,
             lifecycle: ObjectLifecycle::default(),
             dirty_rect_eligible: false,
+            occupier: false,
             owned_count_released: false,
             occupancy_enter_order: stable_id,
             locomotor: None,
@@ -736,6 +743,7 @@ impl GameEntity {
             },
             rocking: None,
             mission: MissionCom::at_frame(construction_frame),
+            passive_scan_timer: MissionTimer::default(),
             mission_leaf: MissionLeafState::for_entity_category(category),
             suspended_attack_target: None,
             object_is_falling_down: 0,

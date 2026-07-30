@@ -3,6 +3,12 @@
 //! Local commands retain their issue frame until transfer. Single-player
 //! transfer admits that frame unchanged; network transfer overwrites every
 //! staged record with the send frame plus the negotiated ahead window.
+//!
+//! Network rescheduling and physical packetization/compression are later
+//! transport-owner boundaries. Opcode `0x13` local-vs-remote EXIT routing and
+//! player removal are session-owner boundaries: due `0x13` records reach the
+//! generic execute callback, but this module does not claim that callback alone
+//! reproduces the native EXIT path.
 
 use std::collections::VecDeque;
 use std::mem::size_of;
@@ -10,16 +16,30 @@ use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
-use crate::sim::command::{Command, CommandEnvelope, CommandRecord, CommandRecordError};
+use crate::sim::command::{CommandRecord, CommandRecordError};
 use crate::sim::intern::InternedId;
 
-const MEGAMISSION_EVENT_OPCODE: u8 = 0x04;
+pub const MEGAMISSION_EVENT_OPCODE: u8 = 0x04;
 pub const FRAMEINFO_EVENT_OPCODE: u8 = 0x1c;
 pub const CHECKSUM_HISTORY_LEN: usize = 0x100;
+pub const OUT_LIST_CAPACITY: usize = 0x80;
+pub const DO_LIST_CAPACITY: usize = 0x4000;
+pub const NETWORK_LOCAL_MIRROR_LIMIT: usize = 0x2000;
+pub const MEGAMISSION_STAGE_CAPACITY: usize = 0x100;
 
 const FRAMEINFO_CHECKSUM_PAYLOAD_OFFSET: usize = 0;
 const FRAMEINFO_TIMING_WORD_PAYLOAD_OFFSET: usize = 4;
 const FRAMEINFO_DELAY_PAYLOAD_OFFSET: usize = 6;
+const QUEUE_ONLY_EVENT_OPCODE_0C: u8 = 0x0c;
+const QUEUE_ONLY_EVENT_OPCODE_22: u8 = 0x22;
+
+#[inline]
+const fn queue_consumes_without_execute(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        QUEUE_ONLY_EVENT_OPCODE_0C | QUEUE_ONLY_EVENT_OPCODE_22
+    )
+}
 
 /// The two verified network send-frame policies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +162,42 @@ impl FrameInfo {
     }
 }
 
+/// The two live fields read from the network timing gate before retail compares
+/// a due FRAMEINFO checksum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameInfoCompareGate {
+    /// Native timing-window start frame. `-1` means no elapsed-frame subtraction.
+    pub base_frame: i32,
+    /// Native `param_2[2]`, tested against elapsed frames.
+    pub remaining_frames: i32,
+}
+
+impl FrameInfoCompareGate {
+    /// An already-open gate.
+    pub const OPEN: Self = Self {
+        base_frame: -1,
+        remaining_frames: 0,
+    };
+
+    pub const fn new(base_frame: i32, remaining_frames: i32) -> Self {
+        Self {
+            base_frame,
+            remaining_frames,
+        }
+    }
+
+    /// Retail compares when the no-base remainder is zero, or when elapsed
+    /// frames have reached the stored remainder.
+    #[inline]
+    pub fn allows_compare(self, current_frame: i32) -> bool {
+        if self.base_frame == -1 {
+            self.remaining_frames == 0
+        } else {
+            self.remaining_frames <= current_frame.wrapping_sub(self.base_frame)
+        }
+    }
+}
+
 /// The active 256-frame checksum ring.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiplayerChecksumHistory {
@@ -205,31 +261,20 @@ pub struct ChecksumMismatch {
     pub remote_checksum: u32,
 }
 
-/// One fixed command record plus its optional decoded Rust command.
+/// One byte-exact native synchronized command.
 ///
-/// The record is authoritative for lockstep house/frame ordering. Known
-/// commands retain the existing `CommandEnvelope` so dispatch can feed the
-/// current simulation without losing unknown record bytes.
+/// Decoded Rust commands deliberately cannot be attached here. A native queue
+/// may be serialized to replay or copied to the wire, so accepting a semantic
+/// sidecar whose bytes do not decode to that same command would make the record
+/// non-authoritative.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SynchronizedCommand {
     record: CommandRecord,
-    high_level: Option<CommandEnvelope>,
 }
 
 impl SynchronizedCommand {
     pub fn opaque(record: CommandRecord) -> Self {
-        Self {
-            record,
-            high_level: None,
-        }
-    }
-
-    pub fn known(record: CommandRecord, mut high_level: CommandEnvelope) -> Self {
-        high_level.execute_tick = u64::from(record.frame_stamp() as u32);
-        Self {
-            record,
-            high_level: Some(high_level),
-        }
+        Self { record }
     }
 
     #[inline]
@@ -237,22 +282,26 @@ impl SynchronizedCommand {
         &self.record
     }
 
+    /// Mutate only opcode-specific bytes during the required MegaMission batch
+    /// adjustment; the synchronized header and acknowledgement flag stay owned
+    /// by the queue.
     #[inline]
-    pub fn high_level(&self) -> Option<&CommandEnvelope> {
-        self.high_level.as_ref()
+    pub fn payload_mut(&mut self) -> &mut [u8] {
+        self.record.payload_mut()
     }
 
-    pub fn into_parts(self) -> (CommandRecord, Option<CommandEnvelope>) {
-        (self.record, self.high_level)
+    pub fn into_record(self) -> CommandRecord {
+        self.record
+    }
+
+    fn stages_as_megamission(&self) -> bool {
+        self.record.opcode() == MEGAMISSION_EVENT_OPCODE
     }
 
     fn stamp_for_network(&mut self, house_id: i8, execute_frame: u32) {
         self.record.set_house_id(house_id);
         self.record.set_frame_stamp(execute_frame as i32);
         self.record.clear_processed();
-        if let Some(high_level) = &mut self.high_level {
-            high_level.execute_tick = u64::from(execute_frame);
-        }
     }
 }
 
@@ -267,15 +316,50 @@ pub struct DispatchSummary {
     pub frame_info_compared: usize,
     /// Executed non-timing records whose frame was already past.
     pub late_executed: usize,
+    /// Late non-FRAMEINFO records skipped by network-mode dispatch.
+    pub late_skipped: usize,
+    /// Due MegaMission records dropped because the native staging ring was full.
+    pub megamission_dropped: usize,
     /// Contiguous processed/expired records retired from the DoList head.
     pub retired: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DispatchMode<'a> {
+    Offline,
+    Network {
+        checksum_history: &'a MultiplayerChecksumHistory,
+        frame_info_gate: FrameInfoCompareGate,
+    },
+}
+
+/// One registered HouseClass slot presented to command dispatch.
+///
+/// `house_id` remains the native signed byte carried by command records.
+/// `dispatch_eligible` is the caller-owned `IsHuman || PlayerControl` result;
+/// keeping it explicit prevents skipped AI-only houses from compressing later
+/// house ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandDispatchHouse {
+    pub owner: InternedId,
+    pub house_id: i8,
+    pub dispatch_eligible: bool,
+}
+
+impl CommandDispatchHouse {
+    pub const fn new(owner: InternedId, house_id: i8, dispatch_eligible: bool) -> Self {
+        Self {
+            owner,
+            house_id,
+            dispatch_eligible,
+        }
+    }
+}
+
 /// Local issue queue and synchronized received-command list.
 ///
-/// `VecDeque` preserves the two native FIFO scans without retaining the
-/// original fixed storage caps, which are resource limits rather than
-/// lockstep rules.
+/// `VecDeque` preserves the two native FIFO scans while admission methods
+/// enforce the retail OutList and DoList capacities.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SynchronizedCommandQueue {
     local: VecDeque<SynchronizedCommand>,
@@ -305,40 +389,54 @@ impl SynchronizedCommandQueue {
         self.do_list.iter()
     }
 
-    /// Append one locally issued command in issue order.
-    pub fn issue(&mut self, command: SynchronizedCommand) {
+    /// Append one locally issued command in issue order. Retail silently drops
+    /// the 129th record while the 128-slot OutList is full.
+    pub fn issue(&mut self, command: SynchronizedCommand) -> bool {
+        if self.local.len() >= OUT_LIST_CAPACITY {
+            return false;
+        }
         self.local.push_back(command);
+        true
     }
 
-    /// Admit one received/replay command in arrival order.
-    pub fn admit(&mut self, mut command: SynchronizedCommand) {
+    /// Admit one received/replay command in arrival order. A record received
+    /// while the native DoList's 0x4000-entry admission cap is full is consumed
+    /// but not retained.
+    pub fn admit(&mut self, mut command: SynchronizedCommand) -> bool {
+        if self.do_list.len() >= DO_LIST_CAPACITY {
+            return false;
+        }
         command.record.clear_processed();
         self.do_list.push_back(command);
+        true
     }
 
     /// Admit an unknown fixed-width record without interpreting its payload.
-    pub fn admit_bytes(&mut self, bytes: &[u8]) -> Result<(), CommandRecordError> {
+    pub fn admit_bytes(&mut self, bytes: &[u8]) -> Result<bool, CommandRecordError> {
         let record = CommandRecord::admit_exact(bytes)?;
-        self.admit(SynchronizedCommand::opaque(record));
-        Ok(())
+        Ok(self.admit(SynchronizedCommand::opaque(record)))
     }
 
     /// Single-player transfer: preserve the issue-frame and house bytes.
     pub fn transfer_single_player(&mut self) -> usize {
-        let moved = self.local.len();
+        let drained = self.local.len();
         while let Some(mut command) = self.local.pop_front() {
             command.record.clear_processed();
-            self.do_list.push_back(command);
+            if self.do_list.len() < DO_LIST_CAPACITY {
+                self.do_list.push_back(command);
+            }
         }
-        moved
+        drained
     }
 
-    /// Network transfer: emit the packet-leading FRAMEINFO record, overwrite
-    /// command house/frame fields at send time, mirror each command into the
-    /// local DoList, and return the records for transport.
+    /// Build one logical network-transfer batch.
     ///
-    /// Packet byte limits and command compression belong to the transport
-    /// layer; this method drains the commands selected for the current send.
+    /// The transport owner supplies how many FIFO command records it selected
+    /// for this send. This queue layer prepends FRAMEINFO, stamps and mirrors at
+    /// most that many records, and enforces the native
+    /// `0x2000 - DoListCount` local-mirror allowance. Physical packet sizing,
+    /// packet splitting, compression, and extended payload ownership remain
+    /// transport-layer work.
     pub fn transfer_network(
         &mut self,
         current_frame: u32,
@@ -347,14 +445,20 @@ impl SynchronizedCommandQueue {
         policy: NetworkSendPolicy,
         current_checksum: u32,
         timing_word: u16,
+        selected_command_limit: usize,
     ) -> Vec<CommandRecord> {
         if !policy.should_send(current_frame) {
             return Vec::new();
         }
 
         let execute_frame = policy.execute_frame(current_frame, max_ahead);
-        let mut outgoing = Vec::with_capacity(self.local.len() + 1);
-        outgoing.push(
+        let transfer_count = self
+            .local
+            .len()
+            .min(NETWORK_LOCAL_MIRROR_LIMIT.saturating_sub(self.do_list.len()))
+            .min(selected_command_limit);
+        let mut transfer = Vec::with_capacity(transfer_count + 1);
+        transfer.push(
             FrameInfo {
                 house_id: local_house_id,
                 event_frame: execute_frame as i32,
@@ -364,67 +468,106 @@ impl SynchronizedCommandQueue {
             }
             .encode(),
         );
-        while let Some(mut command) = self.local.pop_front() {
+
+        for _ in 0..transfer_count {
+            let mut command = self
+                .local
+                .pop_front()
+                .expect("transfer count was bounded by the local queue");
             command.stamp_for_network(local_house_id, execute_frame);
-            outgoing.push(command.record.clone());
+            transfer.push(command.record.clone());
             self.do_list.push_back(command);
         }
-        outgoing
+        transfer
     }
 
-    /// Dispatch all due records in session house-registration order.
+    /// Dispatch all due offline records in session house-registration order.
     ///
     /// Each house scans the DoList from its current head in arrival order.
-    /// The callback runs before bit 0 is marked, matching the command-execute
-    /// then acknowledge order. `house_order` is the serialized session order;
-    /// its indices are the signed-byte house ids carried by records.
-    pub fn dispatch_due<F>(
+    /// `adjust_megamissions` receives the complete staged run once before any
+    /// member executes. The execute callback runs before bit 0 is marked.
+    /// House ids and native dispatch eligibility are supplied explicitly by
+    /// the session owner.
+    pub fn dispatch_due_offline<A, F>(
         &mut self,
         current_frame: i32,
-        house_order: &[InternedId],
+        houses: &[CommandDispatchHouse],
+        adjust_megamissions: A,
         execute: F,
     ) -> DispatchSummary
     where
+        A: FnMut(InternedId, &mut [SynchronizedCommand]),
         F: FnMut(InternedId, &SynchronizedCommand, bool),
     {
-        self.dispatch_due_inner(current_frame, house_order, None, execute)
-            .expect("checksum comparison is disabled")
+        self.dispatch_due_inner(
+            current_frame,
+            houses,
+            DispatchMode::Offline,
+            |_, _| {},
+            adjust_megamissions,
+            execute,
+        )
+        .expect("checksum comparison is disabled")
     }
 
-    /// Multiplayer variant of [`Self::dispatch_due`]. A FRAMEINFO record is
-    /// compared only when its event frame equals the current frame; late
-    /// FRAMEINFO records are acknowledged without comparison.
-    pub fn dispatch_due_with_checksums<F>(
+    /// Multiplayer dispatch. Late non-FRAMEINFO records are diagnosed and
+    /// passed to `handle_late_record` in dispatch order before being skipped
+    /// without acknowledgement. Expired records are still retired when the
+    /// contiguous DoList head reaches them. Current-frame FRAMEINFO is compared
+    /// only when the supplied native timing gate is open.
+    pub fn dispatch_due_network<L, A, F>(
         &mut self,
         current_frame: i32,
-        house_order: &[InternedId],
+        houses: &[CommandDispatchHouse],
         checksum_history: &MultiplayerChecksumHistory,
+        frame_info_gate: FrameInfoCompareGate,
+        handle_late_record: L,
+        adjust_megamissions: A,
         execute: F,
     ) -> Result<DispatchSummary, ChecksumMismatch>
     where
+        L: FnMut(InternedId, &SynchronizedCommand),
+        A: FnMut(InternedId, &mut [SynchronizedCommand]),
         F: FnMut(InternedId, &SynchronizedCommand, bool),
     {
-        self.dispatch_due_inner(current_frame, house_order, Some(checksum_history), execute)
+        self.dispatch_due_inner(
+            current_frame,
+            houses,
+            DispatchMode::Network {
+                checksum_history,
+                frame_info_gate,
+            },
+            handle_late_record,
+            adjust_megamissions,
+            execute,
+        )
     }
 
-    fn dispatch_due_inner<F>(
+    fn dispatch_due_inner<L, A, F>(
         &mut self,
         current_frame: i32,
-        house_order: &[InternedId],
-        checksum_history: Option<&MultiplayerChecksumHistory>,
+        houses: &[CommandDispatchHouse],
+        mode: DispatchMode<'_>,
+        mut handle_late_record: L,
+        mut adjust_megamissions: A,
         mut execute: F,
     ) -> Result<DispatchSummary, ChecksumMismatch>
     where
+        L: FnMut(InternedId, &SynchronizedCommand),
+        A: FnMut(InternedId, &mut [SynchronizedCommand]),
         F: FnMut(InternedId, &SynchronizedCommand, bool),
     {
         let mut summary = DispatchSummary::default();
         let scan_len = self.do_list.len();
 
-        for (house_index, owner) in house_order.iter().copied().enumerate() {
-            let Ok(house_id) = i8::try_from(house_index) else {
-                break;
-            };
+        for house in houses.iter().copied() {
+            if !house.dispatch_eligible {
+                continue;
+            }
+            let owner = house.owner;
+            let house_id = house.house_id;
             let mut staged_megamissions = Vec::new();
+            let mut staged_late = Vec::new();
             for record_index in 0..scan_len {
                 let Some(command) = self.do_list.get_mut(record_index) else {
                     break;
@@ -437,20 +580,43 @@ impl SynchronizedCommandQueue {
                 }
 
                 let is_late = command.record.frame_stamp() < current_frame;
+                if is_late
+                    && command.record.opcode() != FRAMEINFO_EVENT_OPCODE
+                    && matches!(mode, DispatchMode::Network { .. })
+                {
+                    handle_late_record(owner, command);
+                    summary.late_skipped += 1;
+                    continue;
+                }
                 match command.record.opcode() {
                     FRAMEINFO_EVENT_OPCODE => {
                         if command.record.frame_stamp() == current_frame {
-                            if let Some(history) = checksum_history {
+                            if let DispatchMode::Network {
+                                checksum_history,
+                                frame_info_gate,
+                            } = mode
+                            {
+                                if !frame_info_gate.allows_compare(current_frame) {
+                                    summary.timing_consumed += 1;
+                                    command.record.mark_processed();
+                                    continue;
+                                }
                                 let frame_info = FrameInfo::decode(&command.record)
                                     .expect("opcode was checked above");
-                                history.compare(frame_info)?;
+                                checksum_history.compare(frame_info)?;
                                 summary.frame_info_compared += 1;
                             }
                         }
                         summary.timing_consumed += 1;
                     }
-                    MEGAMISSION_EVENT_OPCODE => {
-                        staged_megamissions.push((command.clone(), is_late));
+                    opcode if queue_consumes_without_execute(opcode) => {}
+                    _ if command.stages_as_megamission() => {
+                        if staged_megamissions.len() < MEGAMISSION_STAGE_CAPACITY {
+                            staged_megamissions.push(command.clone());
+                            staged_late.push(is_late);
+                        } else {
+                            summary.megamission_dropped += 1;
+                        }
                     }
                     _ => {
                         execute(owner, command, is_late);
@@ -460,7 +626,10 @@ impl SynchronizedCommandQueue {
                 }
                 command.record.mark_processed();
             }
-            for (command, is_late) in staged_megamissions {
+            if !staged_megamissions.is_empty() {
+                adjust_megamissions(owner, &mut staged_megamissions);
+            }
+            for (command, is_late) in staged_megamissions.into_iter().zip(staged_late) {
                 execute(owner, &command, is_late);
                 summary.executed += 1;
                 summary.late_executed += usize::from(is_late);
@@ -477,8 +646,8 @@ impl SynchronizedCommandQueue {
     }
 }
 
-/// Builds the local issue record and keeps the existing decoded command beside
-/// it. Network delay is deliberately not applied here; transfer owns stamping.
+/// Builds one byte-exact local issue record. Network delay is deliberately not
+/// applied here; transfer owns stamping.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LockstepScheduler;
 
@@ -487,29 +656,15 @@ impl LockstepScheduler {
         Self
     }
 
-    pub fn schedule(
-        &self,
-        issue_frame: u32,
-        owner: InternedId,
-        payload: Command,
-    ) -> CommandEnvelope {
-        CommandEnvelope::new(owner, u64::from(issue_frame), payload)
-    }
-
     pub fn issue(
         &self,
         issue_frame: u32,
         house_id: i32,
         opcode: u8,
         encoded_payload: &[u8],
-        owner: InternedId,
-        payload: Command,
     ) -> Result<SynchronizedCommand, CommandRecordError> {
         let record = CommandRecord::encode(opcode, house_id, issue_frame as i32, encoded_payload)?;
-        Ok(SynchronizedCommand::known(
-            record,
-            self.schedule(issue_frame, owner, payload),
-        ))
+        Ok(SynchronizedCommand::opaque(record))
     }
 }
 
@@ -518,14 +673,19 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::{
-        FrameInfo, LockstepScheduler, MultiplayerChecksumHistory, NetworkSendPolicy,
-        SynchronizedCommand, SynchronizedCommandQueue,
+        CommandDispatchHouse, DO_LIST_CAPACITY, FrameInfo, FrameInfoCompareGate, LockstepScheduler,
+        MEGAMISSION_STAGE_CAPACITY, MultiplayerChecksumHistory, NETWORK_LOCAL_MIRROR_LIMIT,
+        NetworkSendPolicy, OUT_LIST_CAPACITY, SynchronizedCommand, SynchronizedCommandQueue,
     };
-    use crate::sim::command::{COMMAND_RECORD_LEN, Command, CommandEnvelope, CommandRecord};
+    use crate::sim::command::{COMMAND_RECORD_LEN, CommandRecord};
     use crate::sim::intern::InternedId;
 
     fn opaque(opcode: u8, house: i32, frame: i32, payload: &[u8]) -> SynchronizedCommand {
         SynchronizedCommand::opaque(CommandRecord::encode(opcode, house, frame, payload).unwrap())
+    }
+
+    fn eligible(owner: InternedId, house_id: i8) -> CommandDispatchHouse {
+        CommandDispatchHouse::new(owner, house_id, true)
     }
 
     #[test]
@@ -541,14 +701,13 @@ mod tests {
         queue.issue(SynchronizedCommand::opaque(
             CommandRecord::decode_exact(&opaque_bytes).unwrap(),
         ));
-        queue.issue(SynchronizedCommand::known(
+        queue.issue(SynchronizedCommand::opaque(
             CommandRecord::encode(0x15, 0, 18, &[7, 8]).unwrap(),
-            CommandEnvelope::new(owner, 99, Command::Stop { entity_id: 42 }),
         ));
 
         queue.admit(opaque(0x15, 0, 12, &[1]));
         queue.admit(opaque(0x15, 0, 10, &[2]));
-        queue.dispatch_due(10, &[owner], |_, _, _| {});
+        queue.dispatch_due_offline(10, &[eligible(owner, 0)], |_, _| {}, |_, _, _| {});
 
         let encoded = bincode::serialize(&queue).unwrap();
         let restored: SynchronizedCommandQueue = bincode::deserialize(&encoded).unwrap();
@@ -559,12 +718,8 @@ mod tests {
             restored.local_records().next().unwrap().record().as_bytes(),
             &opaque_bytes
         );
-        let known = restored.local_records().nth(1).unwrap();
-        assert_eq!(&known.record().payload()[..2], &[7, 8]);
-        assert_eq!(
-            known.high_level().unwrap().payload,
-            Command::Stop { entity_id: 42 }
-        );
+        let encoded = restored.local_records().nth(1).unwrap();
+        assert_eq!(&encoded.record().payload()[..2], &[7, 8]);
         assert_eq!(
             restored
                 .synchronized_records()
@@ -581,59 +736,32 @@ mod tests {
         let scheduler = LockstepScheduler::new();
         let mut queue = SynchronizedCommandQueue::new();
 
-        queue.issue(
-            scheduler
-                .issue(
-                    10,
-                    1,
-                    0x15,
-                    &[0xb1],
-                    owner_b,
-                    Command::Stop { entity_id: 11 },
-                )
-                .unwrap(),
-        );
-        queue.issue(
-            scheduler
-                .issue(
-                    10,
-                    0,
-                    0x15,
-                    &[0xa1],
-                    owner_a,
-                    Command::Stop { entity_id: 21 },
-                )
-                .unwrap(),
-        );
-        queue.issue(
-            scheduler
-                .issue(
-                    10,
-                    1,
-                    0x15,
-                    &[0xb2],
-                    owner_b,
-                    Command::Stop { entity_id: 12 },
-                )
-                .unwrap(),
-        );
+        queue.issue(scheduler.issue(10, 1, 0x15, &[0xb1]).unwrap());
+        queue.issue(scheduler.issue(10, 0, 0x15, &[0xa1]).unwrap());
+        queue.issue(scheduler.issue(10, 1, 0x15, &[0xb2]).unwrap());
 
         assert_eq!(queue.transfer_single_player(), 3);
         let mut executed = Vec::new();
-        let summary = queue.dispatch_due(10, &[owner_a, owner_b], |owner, command, late| {
-            let entity_id = match &command.high_level().unwrap().payload {
-                Command::Stop { entity_id } => *entity_id,
-                other => panic!("unexpected command: {other:?}"),
-            };
-            executed.push((owner, entity_id, command.record().frame_stamp(), late));
-        });
+        let summary = queue.dispatch_due_offline(
+            10,
+            &[eligible(owner_a, 0), eligible(owner_b, 1)],
+            |_, _| {},
+            |owner, command, late| {
+                executed.push((
+                    owner,
+                    command.record().payload()[0],
+                    command.record().frame_stamp(),
+                    late,
+                ));
+            },
+        );
 
         assert_eq!(
             executed,
             vec![
-                (owner_a, 21, 10, false),
-                (owner_b, 11, 10, false),
-                (owner_b, 12, 10, false),
+                (owner_a, 0xa1, 10, false),
+                (owner_b, 0xb1, 10, false),
+                (owner_b, 0xb2, 10, false),
             ]
         );
         assert_eq!(summary.executed, 3);
@@ -643,22 +771,12 @@ mod tests {
 
     #[test]
     fn network_stamps_all_staged_commands_from_the_send_frame() {
-        let owner = InternedId::from_index(4);
         let scheduler = LockstepScheduler::new();
         let mut queue = SynchronizedCommandQueue::new();
         for issue_frame in [100, 101] {
             queue.issue(
                 scheduler
-                    .issue(
-                        issue_frame,
-                        0,
-                        0x15,
-                        &[issue_frame as u8],
-                        owner,
-                        Command::Stop {
-                            entity_id: u64::from(issue_frame),
-                        },
-                    )
+                    .issue(issue_frame, 0, 0x15, &[issue_frame as u8])
                     .unwrap(),
             );
         }
@@ -670,6 +788,7 @@ mod tests {
             NetworkSendPolicy::EveryFrame,
             0x1122_3344,
             0xabcd,
+            2,
         );
         assert_eq!(outgoing.len(), 3);
         assert_eq!(
@@ -691,7 +810,7 @@ mod tests {
         assert_eq!(
             queue
                 .synchronized_records()
-                .map(|command| command.high_level().unwrap().execute_tick)
+                .map(|command| command.record().frame_stamp())
                 .collect::<Vec<_>>(),
             vec![125, 125]
         );
@@ -702,7 +821,7 @@ mod tests {
         let mut queue = SynchronizedCommandQueue::new();
 
         let outgoing =
-            queue.transfer_network(20, 7, 1, NetworkSendPolicy::EveryFrame, 0xaabb_ccdd, 9);
+            queue.transfer_network(20, 7, 1, NetworkSendPolicy::EveryFrame, 0xaabb_ccdd, 9, 0);
 
         assert_eq!(outgoing.len(), 1);
         assert_eq!(
@@ -718,6 +837,48 @@ mod tests {
     }
 
     #[test]
+    fn logical_transfer_limit_zero_emits_frame_info_without_selecting_commands() {
+        let mut queue = SynchronizedCommandQueue::new();
+        assert!(queue.issue(opaque(0x15, 0, 20, &[1])));
+
+        let frame_only = queue.transfer_network(20, 7, 0, NetworkSendPolicy::EveryFrame, 0, 0, 0);
+        assert_eq!(frame_only.len(), 1);
+        assert_eq!(frame_only[0].opcode(), super::FRAMEINFO_EVENT_OPCODE);
+        assert_eq!(queue.local_len(), 1);
+        assert_eq!(queue.do_list_len(), 0);
+
+        let selected = queue.transfer_network(20, 7, 0, NetworkSendPolicy::EveryFrame, 0, 0, 1);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[1].payload()[0], 1);
+        assert_eq!(queue.local_len(), 0);
+        assert_eq!(queue.do_list_len(), 1);
+    }
+
+    #[test]
+    fn logical_transfer_limit_selects_fifo_records_only() {
+        let mut queue = SynchronizedCommandQueue::new();
+        assert!(queue.issue(opaque(0x15, 0, 100, &[1])));
+        assert!(queue.issue(opaque(0x15, 0, 101, &[2])));
+
+        let first = queue.transfer_network(110, 15, 3, NetworkSendPolicy::EveryFrame, 0x1234, 9, 1);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[1].payload()[0], 1);
+        assert_eq!(first[1].frame_stamp(), 125);
+        assert_eq!(first[1].house_id(), 3);
+        assert_eq!(queue.local_len(), 1);
+        assert_eq!(queue.do_list_len(), 1);
+
+        let second =
+            queue.transfer_network(111, 15, 3, NetworkSendPolicy::EveryFrame, 0x1234, 9, 1);
+        assert_eq!(second.len(), 2);
+        assert_eq!(second[1].payload()[0], 2);
+        assert_eq!(second[1].frame_stamp(), 126);
+        assert_eq!(second[1].house_id(), 3);
+        assert_eq!(queue.local_len(), 0);
+        assert_eq!(queue.do_list_len(), 2);
+    }
+
+    #[test]
     fn frame_send_rate_two_waits_and_uses_unsigned_boundary_rounding() {
         let policy = NetworkSendPolicy::FrameSendRate2 {
             frame_send_rate: NonZeroU32::new(5).unwrap(),
@@ -728,13 +889,13 @@ mod tests {
         assert!(!policy.should_send(11));
         assert!(
             queue
-                .transfer_network(11, 7, 0, policy, 0x55aa, 3)
+                .transfer_network(11, 7, 0, policy, 0x55aa, 3, 1)
                 .is_empty()
         );
         assert_eq!(queue.local_len(), 1);
 
         assert!(policy.should_send(15));
-        let outgoing = queue.transfer_network(15, 7, 0, policy, 0x55aa, 3);
+        let outgoing = queue.transfer_network(15, 7, 0, policy, 0x55aa, 3, 1);
         assert_eq!(outgoing[0].opcode(), super::FRAMEINFO_EVENT_OPCODE);
         assert_eq!(outgoing[0].frame_stamp(), 25);
         assert_eq!(outgoing[1].frame_stamp(), 25);
@@ -742,6 +903,122 @@ mod tests {
         assert_eq!(
             NetworkSendPolicy::EveryFrame.execute_frame(u32::MAX - 2, 5),
             2
+        );
+    }
+
+    #[test]
+    fn network_dispatch_skips_late_non_timing_records_and_retires_reachable_head() {
+        let owner = InternedId::from_index(7);
+        let history = MultiplayerChecksumHistory::new();
+        let mut queue = SynchronizedCommandQueue::new();
+        assert!(queue.admit(opaque(0x15, 0, 10, &[1])));
+        assert!(queue.admit(opaque(0x15, 0, 9, &[2])));
+
+        let mut observed = Vec::new();
+        let mut late_records = Vec::new();
+        let summary = queue
+            .dispatch_due_network(
+                10,
+                &[eligible(owner, 0)],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |late_owner, command| {
+                    assert!(!command.record().is_processed());
+                    late_records.push((late_owner, command.record().payload()[0]));
+                },
+                |_, _| {},
+                |_, command, late| observed.push((command.record().payload()[0], late)),
+            )
+            .unwrap();
+
+        assert_eq!(observed, vec![(1, false)]);
+        assert_eq!(late_records, vec![(owner, 2)]);
+        assert_eq!(summary.executed, 1);
+        assert_eq!(summary.late_executed, 0);
+        assert_eq!(summary.late_skipped, 1);
+        assert_eq!(summary.retired, 2);
+        assert_eq!(queue.do_list_len(), 0);
+    }
+
+    #[test]
+    fn skipped_late_network_record_stays_unmarked_behind_a_future_head() {
+        let owner = InternedId::from_index(7);
+        let history = MultiplayerChecksumHistory::new();
+        let mut queue = SynchronizedCommandQueue::new();
+        assert!(queue.admit(opaque(0x15, 0, 11, &[1])));
+        assert!(queue.admit(opaque(0x15, 0, 9, &[2])));
+
+        let summary = queue
+            .dispatch_due_network(
+                10,
+                &[eligible(owner, 0)],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |_, command| assert!(!command.record().is_processed()),
+                |_, _| {},
+                |_, _, _| panic!("late network record must not execute"),
+            )
+            .unwrap();
+
+        assert_eq!(summary.executed, 0);
+        assert_eq!(summary.late_executed, 0);
+        assert_eq!(summary.late_skipped, 1);
+        assert_eq!(summary.retired, 0);
+        assert_eq!(queue.do_list_len(), 2);
+        assert!(
+            !queue
+                .synchronized_records()
+                .nth(1)
+                .unwrap()
+                .record()
+                .is_processed()
+        );
+    }
+
+    #[test]
+    fn late_network_transport_hook_follows_house_then_fifo_order() {
+        let owner_a = InternedId::from_index(7);
+        let owner_b = InternedId::from_index(8);
+        let history = MultiplayerChecksumHistory::new();
+        let mut queue = SynchronizedCommandQueue::new();
+        assert!(queue.admit(opaque(0x15, 0, 11, &[0])));
+        assert!(queue.admit(opaque(0x15, 1, 9, &[0xb1])));
+        assert!(queue.admit(opaque(0x15, 0, 9, &[0xa1])));
+        assert!(queue.admit(opaque(0x15, 1, 9, &[0xb2])));
+        assert!(queue.admit(opaque(0x15, 0, 9, &[0xa2])));
+
+        let mut late_order = Vec::new();
+        let summary = queue
+            .dispatch_due_network(
+                10,
+                &[eligible(owner_a, 0), eligible(owner_b, 1)],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |owner, command| {
+                    assert!(!command.record().is_processed());
+                    late_order.push((owner, command.record().payload()[0]));
+                },
+                |_, _| {},
+                |_, _, _| panic!("late network record must not execute"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            late_order,
+            vec![
+                (owner_a, 0xa1),
+                (owner_a, 0xa2),
+                (owner_b, 0xb1),
+                (owner_b, 0xb2),
+            ]
+        );
+        assert_eq!(summary.late_skipped, 4);
+        assert_eq!(summary.retired, 0);
+        assert!(
+            queue
+                .synchronized_records()
+                .skip(1)
+                .all(|command| !command.record().is_processed())
         );
     }
 
@@ -760,14 +1037,19 @@ mod tests {
         queue.admit(opaque(0x15, 0, 11, &[3, 4]));
 
         let mut observed = Vec::new();
-        let summary = queue.dispatch_due(10, &[owner], |registered_owner, command, late| {
-            observed.push((
-                registered_owner,
-                command.record().clone().into_bytes(),
-                late,
-                command.record().is_processed(),
-            ));
-        });
+        let summary = queue.dispatch_due_offline(
+            10,
+            &[eligible(owner, 0)],
+            |_, _| {},
+            |registered_owner, command, late| {
+                observed.push((
+                    registered_owner,
+                    command.record().clone().into_bytes(),
+                    late,
+                    command.record().is_processed(),
+                ));
+            },
+        );
 
         assert_eq!(observed.len(), 1);
         assert_eq!(observed[0].0, owner);
@@ -799,7 +1081,184 @@ mod tests {
         queue.admit(opaque(0x15, 0, 12, &[]));
         queue.admit(opaque(0x15, 0, 10, &[]));
 
-        let summary = queue.dispatch_due(10, &[owner], |_, _, _| {});
+        let summary =
+            queue.dispatch_due_offline(10, &[eligible(owner, 0)], |_, _| {}, |_, _, _| {});
+        assert_eq!(summary.executed, 1);
+        assert_eq!(summary.retired, 0);
+        assert!(
+            !queue
+                .synchronized_records()
+                .next()
+                .unwrap()
+                .record()
+                .is_processed()
+        );
+        assert!(
+            queue
+                .synchronized_records()
+                .nth(1)
+                .unwrap()
+                .record()
+                .is_processed()
+        );
+    }
+
+    fn assert_queue_only_opcode_is_marked_without_execute(opcode: u8) {
+        let owner = InternedId::from_index(1);
+        let mut queue = SynchronizedCommandQueue::new();
+        queue.admit(opaque(0x15, 0, 11, &[]));
+        queue.admit(opaque(opcode, 0, 10, &[1]));
+
+        let summary = queue.dispatch_due_offline(
+            10,
+            &[eligible(owner, 0)],
+            |_, _| panic!("queue-only records are not MegaMissions"),
+            |_, _, _| panic!("queue-only records must not reach EventClass execute"),
+        );
+
+        assert_eq!(summary.executed, 0);
+        assert_eq!(summary.retired, 0);
+        assert!(
+            queue
+                .synchronized_records()
+                .nth(1)
+                .unwrap()
+                .record()
+                .is_processed()
+        );
+    }
+
+    #[test]
+    fn opcode_0c_is_marked_without_event_execute() {
+        assert_queue_only_opcode_is_marked_without_execute(0x0c);
+    }
+
+    #[test]
+    fn opcode_22_is_marked_without_event_execute() {
+        assert_queue_only_opcode_is_marked_without_execute(0x22);
+    }
+
+    #[test]
+    fn megamission_batch_hook_sees_ordered_run_and_mutations_reach_execute() {
+        let owner = InternedId::from_index(5);
+        let mut queue = SynchronizedCommandQueue::new();
+        queue.admit(opaque(0x04, 0, 10, &[1]));
+        queue.admit(opaque(0x15, 0, 10, &[2]));
+        queue.admit(opaque(0x04, 0, 10, &[3]));
+
+        let mut order = Vec::new();
+        let mut batches = Vec::new();
+        let summary = queue.dispatch_due_offline(
+            10,
+            &[eligible(owner, 0)],
+            |batch_owner, batch| {
+                batches.push((
+                    batch_owner,
+                    batch
+                        .iter()
+                        .map(|command| command.record().payload()[0])
+                        .collect::<Vec<_>>(),
+                ));
+                batch[0].payload_mut()[0] = 10;
+                batch[1].payload_mut()[0] = 30;
+            },
+            |_, command, _| {
+                order.push((command.record().opcode(), command.record().payload()[0]));
+                assert!(
+                    !command.record().is_processed(),
+                    "the staged copy retains its pre-acknowledgement flags"
+                );
+            },
+        );
+
+        assert_eq!(batches, vec![(owner, vec![1, 3])]);
+        assert_eq!(order, vec![(0x15, 2), (0x04, 10), (0x04, 30)]);
+        assert_eq!(summary.executed, 3);
+        assert_eq!(summary.retired, 3);
+    }
+
+    #[test]
+    fn megamission_staging_drops_the_257th_due_record() {
+        let owner = InternedId::from_index(5);
+        let mut queue = SynchronizedCommandQueue::new();
+        for payload in 0..=MEGAMISSION_STAGE_CAPACITY {
+            assert!(queue.admit(opaque(0x04, 0, 10, &[payload as u8])));
+        }
+
+        let mut executed = 0;
+        let summary = queue.dispatch_due_offline(
+            10,
+            &[eligible(owner, 0)],
+            |_, batch| assert_eq!(batch.len(), MEGAMISSION_STAGE_CAPACITY),
+            |_, _, _| executed += 1,
+        );
+
+        assert_eq!(executed, MEGAMISSION_STAGE_CAPACITY);
+        assert_eq!(summary.executed, MEGAMISSION_STAGE_CAPACITY);
+        assert_eq!(summary.megamission_dropped, 1);
+        assert_eq!(summary.retired, MEGAMISSION_STAGE_CAPACITY + 1);
+    }
+
+    #[test]
+    fn native_queue_capacities_drop_overflow_and_offline_transfer_drains_it() {
+        let mut queue = SynchronizedCommandQueue::new();
+        for payload in 0..OUT_LIST_CAPACITY {
+            assert!(queue.issue(opaque(0x15, 0, 10, &[payload as u8])));
+        }
+        assert!(!queue.issue(opaque(0x15, 0, 10, &[0xff])));
+        assert_eq!(queue.local_len(), OUT_LIST_CAPACITY);
+
+        for payload in 0..DO_LIST_CAPACITY {
+            assert!(queue.admit(opaque(0x15, 0, 11, &[payload as u8])));
+        }
+        assert!(!queue.admit(opaque(0x15, 0, 11, &[0xff])));
+        assert_eq!(queue.do_list_len(), DO_LIST_CAPACITY);
+
+        assert_eq!(queue.transfer_single_player(), OUT_LIST_CAPACITY);
+        assert_eq!(queue.local_len(), 0);
+        assert_eq!(queue.do_list_len(), DO_LIST_CAPACITY);
+    }
+
+    #[test]
+    fn network_transfer_stops_at_the_initial_local_mirror_allowance() {
+        let mut queue = SynchronizedCommandQueue::new();
+        for payload in 0..NETWORK_LOCAL_MIRROR_LIMIT - 1 {
+            assert!(queue.admit(opaque(0x15, 0, 11, &[payload as u8])));
+        }
+        assert!(queue.issue(opaque(0x15, 0, 10, &[1])));
+        assert!(queue.issue(opaque(0x15, 0, 10, &[2])));
+
+        let transfer = queue.transfer_network(10, 5, 0, NetworkSendPolicy::EveryFrame, 0, 0, 2);
+
+        assert_eq!(transfer.len(), 2);
+        assert_eq!(transfer[1].payload()[0], 1);
+        assert_eq!(queue.local_len(), 1);
+        assert_eq!(queue.do_list_len(), NETWORK_LOCAL_MIRROR_LIMIT);
+    }
+
+    #[test]
+    fn ineligible_ai_house_is_skipped_without_reindexing_later_house_ids() {
+        let owner_0 = InternedId::from_index(10);
+        let owner_1 = InternedId::from_index(11);
+        let owner_2 = InternedId::from_index(12);
+        let mut queue = SynchronizedCommandQueue::new();
+        assert!(queue.admit(opaque(0x15, 1, 10, &[1])));
+        assert!(queue.admit(opaque(0x15, 2, 10, &[2])));
+
+        let houses = [
+            CommandDispatchHouse::new(owner_0, 0, true),
+            CommandDispatchHouse::new(owner_1, 1, false),
+            CommandDispatchHouse::new(owner_2, 2, true),
+        ];
+        let mut observed = Vec::new();
+        let summary = queue.dispatch_due_offline(
+            10,
+            &houses,
+            |_, _| {},
+            |owner, command, _| observed.push((owner, command.record().house_id())),
+        );
+
+        assert_eq!(observed, vec![(owner_2, 2)]);
         assert_eq!(summary.executed, 1);
         assert_eq!(summary.retired, 0);
         assert!(
@@ -821,40 +1280,15 @@ mod tests {
     }
 
     #[test]
-    fn megamissions_stage_until_after_same_house_non_megamission_commands() {
-        let owner = InternedId::from_index(5);
-        let mut queue = SynchronizedCommandQueue::new();
-        queue.admit(opaque(0x04, 0, 10, &[1]));
-        queue.admit(opaque(0x15, 0, 10, &[2]));
-        queue.admit(opaque(0x04, 0, 10, &[3]));
+    fn scheduler_issues_only_the_supplied_native_record() {
+        let scheduler = LockstepScheduler::new();
+        let command = scheduler.issue(8, 2, 0x15, &[0x11, 0x22]).unwrap();
 
-        let mut order = Vec::new();
-        let summary = queue.dispatch_due(10, &[owner], |_, command, _| {
-            order.push((command.record().opcode(), command.record().payload()[0]));
-            assert!(
-                !command.record().is_processed(),
-                "the staged copy retains its pre-acknowledgement flags"
-            );
-        });
-
-        assert_eq!(order, vec![(0x15, 2), (0x04, 1), (0x04, 3)]);
-        assert_eq!(summary.executed, 3);
-        assert_eq!(summary.retired, 3);
-    }
-
-    #[test]
-    fn known_command_wrapper_keeps_existing_high_level_payload() {
-        let owner = InternedId::from_index(3);
-        let envelope = CommandEnvelope::new(owner, 999, Command::Stop { entity_id: 42 });
-        let command =
-            SynchronizedCommand::known(CommandRecord::encode(0x15, 0, 8, &[]).unwrap(), envelope);
-
-        assert_eq!(command.high_level().unwrap().owner, owner);
-        assert_eq!(command.high_level().unwrap().execute_tick, 8);
-        assert_eq!(
-            command.high_level().unwrap().payload,
-            Command::Stop { entity_id: 42 }
-        );
+        assert_eq!(command.record().opcode(), 0x15);
+        assert_eq!(command.record().house_id(), 2);
+        assert_eq!(command.record().frame_stamp(), 8);
+        assert_eq!(&command.record().payload()[..2], &[0x11, 0x22]);
+        assert_eq!(command.into_record().payload()[2], 0);
     }
 
     #[test]
@@ -899,13 +1333,55 @@ mod tests {
         ));
 
         let summary = queue
-            .dispatch_due_with_checksums(1, &[owner], &history, |_, _, _| {
-                panic!("FRAMEINFO must not reach command execution")
-            })
+            .dispatch_due_network(
+                1,
+                &[eligible(owner, 0)],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |_, _| {},
+                |_, _| {},
+                |_, _, _| panic!("FRAMEINFO must not reach command execution"),
+            )
             .unwrap();
 
         assert_eq!(summary.timing_consumed, 1);
         assert_eq!(summary.frame_info_compared, 1);
+        assert_eq!(summary.retired, 1);
+    }
+
+    #[test]
+    fn closed_frame_info_gate_acknowledges_without_comparing() {
+        let owner = InternedId::from_index(1);
+        let mut history = MultiplayerChecksumHistory::new();
+        history.record(8, 0x1111_1111);
+        let mut queue = SynchronizedCommandQueue::new();
+        assert!(
+            queue.admit(SynchronizedCommand::opaque(
+                FrameInfo {
+                    house_id: 0,
+                    event_frame: 10,
+                    checksum: 0x2222_2222,
+                    timing_word: 0,
+                    delay: 2,
+                }
+                .encode(),
+            ))
+        );
+
+        let summary = queue
+            .dispatch_due_network(
+                10,
+                &[eligible(owner, 0)],
+                &history,
+                FrameInfoCompareGate::new(9, 2),
+                |_, _| {},
+                |_, _| {},
+                |_, _, _| panic!("FRAMEINFO must not reach command execution"),
+            )
+            .unwrap();
+
+        assert_eq!(summary.timing_consumed, 1);
+        assert_eq!(summary.frame_info_compared, 0);
         assert_eq!(summary.retired, 1);
     }
 
@@ -927,7 +1403,15 @@ mod tests {
         ));
 
         let mismatch = queue
-            .dispatch_due_with_checksums(45, &[owner], &history, |_, _, _| {})
+            .dispatch_due_network(
+                45,
+                &[eligible(owner, 0)],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |_, _| {},
+                |_, _| {},
+                |_, _, _| {},
+            )
             .unwrap_err();
 
         assert_eq!(mismatch.history_index, 40);
@@ -961,7 +1445,15 @@ mod tests {
         ));
 
         let summary = queue
-            .dispatch_due_with_checksums(10, &[owner], &history, |_, _, _| {})
+            .dispatch_due_network(
+                10,
+                &[eligible(owner, 0)],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |_, _| {},
+                |_, _| {},
+                |_, _, _| {},
+            )
             .unwrap();
         assert_eq!(summary.timing_consumed, 1);
         assert_eq!(summary.frame_info_compared, 0);

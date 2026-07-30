@@ -463,6 +463,25 @@ fn rect_in_playfield(
         .all(|(x, y)| x >= 0 && y >= 0 && x < i32::from(width) && y < i32::from(height))
 }
 
+/// Exact single-cell `MapClass::Is_Cell_In_Playfield(cell, 1)` seam.
+///
+/// Production maps supply `bounds`, selecting the retail isometric-diamond
+/// predicate.  The rectangular fallback is retained only for headless callers
+/// that do not yet carry map-header bounds.
+pub(crate) fn cell_is_in_playfield(
+    cell: (i32, i32),
+    bounds: Option<PlayfieldBounds>,
+    terrain: Option<&ResolvedTerrainGrid>,
+    map_size: Option<(u16, u16)>,
+) -> bool {
+    if let Some(bounds) = bounds {
+        return cell_in_playfield_diamond(cell.0, cell.1, &bounds, terrain);
+    }
+    map_size.is_none_or(|(width, height)| {
+        cell.0 >= 0 && cell.1 >= 0 && cell.0 < i32::from(width) && cell.1 < i32::from(height)
+    })
+}
+
 /// Engine `Is_Cell_In_Playfield` with `height_flag = 1` (the value the sole rect
 /// caller passes): the isometric-diamond containment test for a single cell.
 ///

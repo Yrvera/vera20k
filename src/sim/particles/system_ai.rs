@@ -97,25 +97,36 @@ pub(super) fn advance_state(
     }
 }
 
+/// Dispatch one particle-system object at its current LogicVector slot.
+///
+/// The caller owns live-vector traversal. Keeping the per-object body here
+/// preserves same-pass append and compacting-removal behavior instead of
+/// snapshotting particle systems into a later global phase.
+pub(crate) fn tick_particle_system(sim: &mut Simulation, rules: &RuleSet, id: u64) -> bool {
+    let Some(mut sys) = sim.particle_systems_mut().take_for_tick(id) else {
+        return false;
+    };
+
+    tick_one_system(&mut sys, sim, rules);
+
+    sys.lifetime -= 1;
+    if sys.lifetime == 0 {
+        sys.marked_for_deletion = true;
+    }
+
+    let retires = sys.marked_for_deletion && sys.particles.is_empty();
+    sim.particle_systems_mut().reinsert_after_tick(sys);
+    if retires {
+        sim.retire_particle_system(id);
+    }
+    true
+}
+
+/// Compatibility batch entry for focused particle tests and tools. Production
+/// dispatch uses `tick_particle_system` from the shared live-object walk.
 pub fn tick_particle_systems(sim: &mut Simulation, rules: &RuleSet) {
-    let ids = sim.live_object_order_snapshot();
-    for id in ids {
-        let Some(mut sys) = sim.particle_systems_mut().take_for_tick(id) else {
-            continue;
-        };
-
-        tick_one_system(&mut sys, sim, rules);
-
-        sys.lifetime -= 1;
-        if sys.lifetime == 0 {
-            sys.marked_for_deletion = true;
-        }
-
-        let retires = sys.marked_for_deletion && sys.particles.is_empty();
-        sim.particle_systems_mut().reinsert_after_tick(sys);
-        if retires {
-            sim.retire_particle_system(id);
-        }
+    for id in sim.live_object_order_snapshot() {
+        tick_particle_system(sim, rules, id);
     }
 }
 
@@ -334,6 +345,30 @@ mod tests {
         sim.process_pending_delete();
         assert!(sim.particle_systems().get(id).is_none());
         assert!(sim.substrate.pending_delete.is_empty());
+    }
+
+    #[test]
+    fn live_object_dispatch_ticks_particle_system_at_slot_and_preserves_compaction_skip() {
+        let rules = build_rules("Smoke", 100);
+        let mut sim = Simulation::new();
+        let retiring = insert_live_system(&mut sim, fake_system(ParticleSystemTypeId(0), 1));
+        let successor = insert_live_system(&mut sim, fake_system(ParticleSystemTypeId(0), 3));
+
+        sim.object_ai_stage(Some(&rules));
+
+        assert!(!sim.live_object_order_snapshot().contains(&retiring));
+        assert_eq!(
+            sim.particle_systems().get(successor).unwrap().lifetime,
+            3,
+            "removing the current live-vector slot shifts and skips its successor"
+        );
+
+        sim.object_ai_stage(Some(&rules));
+        assert_eq!(
+            sim.particle_systems().get(successor).unwrap().lifetime,
+            2,
+            "the surviving system runs on the next live-vector pass"
+        );
     }
 
     #[test]

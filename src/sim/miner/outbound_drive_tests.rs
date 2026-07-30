@@ -14,6 +14,7 @@ use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::components::{DriveCoord, NavTargetRef};
+use crate::sim::house_state::HouseState;
 use crate::sim::miner::{
     CargoBale, MinerConfig, MinerKind, MinerState, ResourceNode, ResourceType,
 };
@@ -96,6 +97,22 @@ fn production_sim(seed: u64, oracle: &OutboundContractOracle) -> Simulation {
     oracle.rules.intern_all_ids(&mut sim.interner);
     sim.resolve_type_handles(&oracle.rules);
     sim
+}
+
+fn seed_human_house(sim: &mut Simulation, owner: &str) {
+    let owner_id = sim.interner.intern(owner);
+    sim.houses.insert(
+        owner_id,
+        HouseState::new(
+            owner_id,
+            0,
+            Some(owner_id),
+            true,
+            crate::sim::production::STARTING_CREDITS,
+            10,
+        ),
+    );
+    sim.session.house_order.push(owner_id);
 }
 
 fn resolved_cell(
@@ -1183,6 +1200,7 @@ fn cmin_full_close_return_docks_and_deposits() {
     let config = MinerConfig::from_rules(&oracle.rules);
     let refinery_anchor = (10, 10);
     let mut sim = production_sim(0xDEB6, &oracle);
+    seed_human_house(&mut sim, "Americans");
     let mut grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
     let refinery_type = oracle.rules.object("GAREFN").expect("GAREFN");
     grid.block_building_movement_cells(
@@ -1254,6 +1272,7 @@ fn cmin_second_cycle_leaves_the_pad_and_reharvests() {
     let refinery_anchor = (10, 10);
     let ore: &[(u16, u16)] = &[(22, 18), (23, 18), (22, 19), (23, 19)];
     let mut sim = production_sim(0xDEB7, &oracle);
+    seed_human_house(&mut sim, "Americans");
     let mut grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
     let refinery_type = oracle.rules.object("GAREFN").expect("GAREFN");
     grid.block_building_movement_cells(

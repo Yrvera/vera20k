@@ -227,6 +227,16 @@ impl Simulation {
         }
 
         self.mark_entity_put(stable_id);
+        if !self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.lifecycle.object_alive)
+        {
+            return RevealOutcome::Revealed {
+                logic_registered: false,
+            };
+        }
         self.lifecycle_outputs
             .push(LifecycleOutput::RevealDisplay { stable_id });
         #[cfg(test)]
@@ -643,33 +653,58 @@ impl Simulation {
         expired_id: u64,
         expired_cell: (u16, u16),
         expired_is_high_flying: bool,
+        expired_object_alive: bool,
+        expired_health: u16,
+        expired_is_selling: bool,
     ) {
+        let Some(listener) = self.substrate.entities.get(listener_id) else {
+            return;
+        };
+        let current_target_matches = listener.attack_target.as_ref().is_some_and(
+            |target| matches!(target.target, TargetKind::Entity(id) if id == expired_id),
+        );
+        let passive_scan_remaining = listener
+            .passive_scan_timer
+            .remaining(self.session.binary_frame);
+        let mission_is_suspended =
+            listener.mission.suspended() != crate::sim::mission::MissionId::NONE;
+
+        let passive_scan_delay = (current_target_matches && passive_scan_remaining > 10)
+            .then(|| self.scenario_rng.next_range_u32_inclusive(4, 8));
+        if let Some(listener) = self.substrate.entities.get_mut(listener_id) {
+            if let Some(delay) = passive_scan_delay {
+                listener
+                    .passive_scan_timer
+                    .arm(self.session.binary_frame, delay);
+            }
+
+            // RadioClass::PointerExpired nulls matching sparse slots in place.
+            listener.clear_live_contact_with(expired_id);
+
+            // TechnoClass removes an expiring passenger from its CargoClass before
+            // clearing its target/archive/manager reference family.
+            if let PassengerRole::Transport { cargo } = &mut listener.passenger_role {
+                let _ = cargo.disembark(expired_id);
+            }
+        }
+
+        if current_target_matches {
+            self.set_archive_target_represented(listener_id, None)
+                .expect("expiry listener remains present");
+            if mission_is_suspended {
+                self.mission_restore_after_target_expiry(listener_id)
+                    .expect("represented expiry restore remains available");
+            }
+        }
+
         let Some(listener) = self.substrate.entities.get_mut(listener_id) else {
             return;
         };
-
-        // RadioClass::PointerExpired nulls matching sparse slots in place.
-        listener.clear_live_contact_with(expired_id);
-
-        // TechnoClass removes an expiring passenger from its CargoClass before
-        // clearing its target/archive/manager reference family.
-        if let PassengerRole::Transport { cargo } = &mut listener.passenger_role {
-            let _ = cargo.disembark(expired_id);
-        }
-
-        // Techno's live combat target is cleared, while Foot's separate
-        // object-target cache becomes the target's final CellClass.
-        if listener.attack_target.as_ref().is_some_and(
-            |target| matches!(target.target, TargetKind::Entity(id) if id == expired_id),
-        ) {
-            listener.attack_target = None;
-        }
         if matches!(
             listener.suspended_attack_target,
             Some(TargetKind::Entity(id)) if id == expired_id
         ) {
-            listener.suspended_attack_target =
-                Some(TargetKind::Cell(expired_cell.0, expired_cell.1));
+            listener.suspended_attack_target = None;
         }
 
         // FootClass clears SuspendedNavCom first, then its current/aux target,
@@ -682,21 +717,31 @@ impl Simulation {
         {
             listener.navigation.suspended_nav_com = None;
         }
-        if listener
-            .navigation
-            .nav_com_aux
-            .as_ref()
-            .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id))
-        {
-            listener.navigation.nav_com_aux = None;
-        }
-        if listener
+        let current_nav_matches = listener
             .navigation
             .nav_com
             .as_ref()
-            .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id))
-        {
-            listener.navigation.nav_com = None;
+            .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id));
+        let retain_capture_nav = current_nav_matches
+            && listener.category == EntityCategory::Infantry
+            && listener.occupier
+            && listener.mission.current().known()
+                == Some(crate::sim::mission::MissionType::Capture)
+            && expired_object_alive
+            && expired_health > 0
+            && !expired_is_selling;
+        if !retain_capture_nav {
+            if listener
+                .navigation
+                .nav_com_aux
+                .as_ref()
+                .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id))
+            {
+                listener.navigation.nav_com_aux = None;
+            }
+            if current_nav_matches {
+                listener.navigation.nav_com = None;
+            }
         }
         listener
             .navigation
@@ -766,15 +811,27 @@ impl Simulation {
     /// or erase listener objects, so the native live-vector cursor and this
     /// monotonic construction-order walk have the same observable result.
     fn notify_pointer_expired(&mut self, expired_id: u64) {
-        let Some((expired_cell, expired_is_high_flying)) =
-            self.substrate.entities.get(expired_id).map(|expired| {
-                let high_flying = expired.locomotor.as_ref().is_some_and(|locomotor| {
-                    // High-flying objects expire to null; lower objects preserve
-                    // GetHeight() >= 2 * LevelHeight (2 * 104 leptons).
-                    locomotor.is_airborne() && locomotor.altitude >= SimFixed::from_num(2 * 104)
-                });
-                ((expired.position.rx, expired.position.ry), high_flying)
-            })
+        let Some((
+            expired_cell,
+            expired_is_high_flying,
+            expired_object_alive,
+            expired_health,
+            expired_is_selling,
+        )) = self.substrate.entities.get(expired_id).map(|expired| {
+            let high_flying = expired.locomotor.as_ref().is_some_and(|locomotor| {
+                // High-flying objects expire to null; lower objects preserve
+                // GetHeight() >= 2 * LevelHeight (2 * 104 leptons).
+                locomotor.is_airborne() && locomotor.altitude >= SimFixed::from_num(2 * 104)
+            });
+            (
+                (expired.position.rx, expired.position.ry),
+                high_flying,
+                expired.lifecycle.object_alive,
+                expired.health.current,
+                expired.mission.current().known()
+                    == Some(crate::sim::mission::MissionType::Selling),
+            )
+        })
         else {
             return;
         };
@@ -809,7 +866,12 @@ impl Simulation {
                     expired_id,
                     expired_cell,
                     expired_is_high_flying,
+                    expired_object_alive,
+                    expired_health,
+                    expired_is_selling,
                 );
+            } else if is_anim {
+                self.expire_anim_owner_reference(listener_id, expired_id);
             } else if is_particle {
                 let system = self
                     .substrate
@@ -824,51 +886,41 @@ impl Simulation {
                     system.marked_for_deletion = true;
                 }
             }
-            // AnimObject currently has no authoritative attached-object field.
-            // It still occupies its native position in the observer walk; the
-            // existing DetachAttachedAnims lifecycle output owns presentation.
         }
     }
 
     /// ObjectClass::UnInit represented ordering.  Physical removal is deferred.
     pub(crate) fn uninit(&mut self, stable_id: u64) {
-        let Some(object_alive) = self
-            .substrate
-            .entities
-            .get(stable_id)
-            .map(|entity| entity.lifecycle.object_alive)
-        else {
+        if !self.substrate.entities.contains(stable_id) {
             return;
-        };
-
-        if object_alive {
-            self.run_represented_uninit_pre_hook(stable_id);
-            self.uninit_carried_passengers(stable_id);
-
-            #[cfg(test)]
-            {
-                let (object_alive, cell_marked) = self
-                    .substrate
-                    .entities
-                    .get(stable_id)
-                    .map(|entity| (entity.lifecycle.object_alive, entity.lifecycle.cell_marked))
-                    .unwrap_or((false, false));
-                self.trace_lifecycle_for_test(LifecycleTestEvent::UninitRemovalNotifyBoundary {
-                    stable_id,
-                    object_alive,
-                    cell_marked,
-                });
-            }
-            self.notify_pointer_expired(stable_id);
-
-            let _ = self.techno_limbo(stable_id);
-            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-                entity.lifecycle.object_alive = false;
-                entity.dying = true;
-            }
-            #[cfg(test)]
-            self.trace_lifecycle_for_test(LifecycleTestEvent::UninitAliveCleared { stable_id });
         }
+
+        self.run_represented_uninit_pre_hook(stable_id);
+        self.uninit_carried_passengers(stable_id);
+
+        #[cfg(test)]
+        {
+            let (object_alive, cell_marked) = self
+                .substrate
+                .entities
+                .get(stable_id)
+                .map(|entity| (entity.lifecycle.object_alive, entity.lifecycle.cell_marked))
+                .unwrap_or((false, false));
+            self.trace_lifecycle_for_test(LifecycleTestEvent::UninitRemovalNotifyBoundary {
+                stable_id,
+                object_alive,
+                cell_marked,
+            });
+        }
+        self.notify_pointer_expired(stable_id);
+
+        let _ = self.techno_limbo(stable_id);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.lifecycle.object_alive = false;
+            entity.dying = true;
+        }
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::UninitAliveCleared { stable_id });
 
         // Native append has no duplicate suppression.  The drain collapses all
         // occurrences when this dead object becomes the selected ready entry.
@@ -913,6 +965,10 @@ impl Simulation {
     }
 
     fn finalize_and_remove_common(&mut self, stable_id: u64) {
+        if self.substrate.anims.contains_key(stable_id) {
+            self.conceal_anim(stable_id);
+            self.detach_anim_from_owner(stable_id);
+        }
         let entity = self.substrate.entities.remove(stable_id);
         let anim = self.substrate.anims.remove(stable_id);
         let particle_system = self.substrate.particle_systems.finalize_remove(stable_id);
@@ -923,6 +979,13 @@ impl Simulation {
                 <= 1,
             "object id {stable_id} was removed from multiple stores"
         );
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::FinalizedCommon { stable_id });
+    }
+
+    fn finalize_multiplayer_feedback_anim(&mut self, stable_id: u64) {
+        self.detach_anim_from_owner(stable_id);
+        self.substrate.multiplayer_feedback_anims.remove(stable_id);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::FinalizedCommon { stable_id });
     }
@@ -943,6 +1006,13 @@ impl Simulation {
                 .pending_delete
                 .retain(|&queued| queued != stable_id);
             self.finalize_and_remove_common(stable_id);
+        }
+
+        while let Some(&stable_id) = self.substrate.multiplayer_feedback_pending_delete.first() {
+            self.substrate
+                .multiplayer_feedback_pending_delete
+                .retain(|&queued| queued != stable_id);
+            self.finalize_multiplayer_feedback_anim(stable_id);
         }
     }
 

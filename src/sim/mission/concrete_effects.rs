@@ -105,6 +105,92 @@ impl ConcreteMissionEffects for UnavailableConcreteMissionEffects {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RepresentedPrepared {
+    receiver: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RepresentedConcreteMissionEffects;
+
+impl private::Sealed for RepresentedConcreteMissionEffects {}
+
+impl ConcreteMissionEffects for RepresentedConcreteMissionEffects {
+    type Prepared = RepresentedPrepared;
+
+    fn preflight(
+        &mut self,
+        sim: &Simulation,
+        receiver: u64,
+        request: ConcreteSetterRequest,
+    ) -> Result<Self::Prepared, AuthorityUnavailable> {
+        if !sim.substrate.entities.contains(receiver) {
+            return Err(AuthorityUnavailable::TargetSetter(receiver));
+        }
+        let _ = request;
+        Ok(RepresentedPrepared { receiver })
+    }
+
+    fn apply_target(
+        &mut self,
+        sim: &mut Simulation,
+        prepared: &Self::Prepared,
+        requested: Option<TargetKind>,
+    ) {
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(prepared.receiver)
+            .expect("preflight guaranteed receiver");
+        if entity.attack_target.as_ref().map(|target| target.target) == requested {
+            return;
+        }
+
+        if entity.category == crate::map::entities::EntityCategory::Infantry {
+            entity.mission_leaf.set_infantry_firing_sequence(0);
+            entity
+                .mission_leaf
+                .set_infantry_doing_verified(-1)
+                .expect("idle Infantry action is always valid");
+            if let Some(animation) = entity.animation.as_mut() {
+                use crate::sim::animation::SequenceKind;
+
+                let idle = match animation.sequence {
+                    SequenceKind::FireProne | SequenceKind::SecondaryProne => SequenceKind::Prone,
+                    SequenceKind::DeployedFire => SequenceKind::Deployed,
+                    SequenceKind::FireFly => SequenceKind::Fly,
+                    SequenceKind::WetAttack => SequenceKind::Tread,
+                    _ => SequenceKind::Stand,
+                };
+                if crate::sim::animation::sequence_is_fire_action(animation.sequence) {
+                    animation.switch_to(idle);
+                }
+            }
+        }
+
+        entity.attack_target = requested.map(|target| match target {
+            TargetKind::Entity(id) => crate::sim::combat::AttackTarget::new(id),
+            TargetKind::Cell(rx, ry) => crate::sim::combat::AttackTarget::for_cell(rx, ry),
+        });
+    }
+
+    fn apply_destination_mode_one(
+        &mut self,
+        sim: &mut Simulation,
+        prepared: &Self::Prepared,
+        requested: Option<NavTargetRef>,
+    ) {
+        let entity = sim
+            .substrate
+            .entities
+            .get_mut(prepared.receiver)
+            .expect("preflight guaranteed receiver");
+        entity.navigation.nav_com_aux = None;
+        entity.navigation.nav_com = requested;
+        entity.navigation.pending_arrival_clear = false;
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RecordingPrepared {

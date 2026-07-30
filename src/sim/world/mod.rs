@@ -65,6 +65,7 @@ use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::group_destination;
 use crate::sim::movement::homing_movement;
+use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::parachute_descent;
 use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
@@ -117,7 +118,8 @@ pub struct TickResult {
 /// Front-end admission lane for one Main_Tick call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TickLane {
-    /// Normal gameplay: commands/input are admitted before PerTickUpdate.
+    /// Normal gameplay: commands/input dispatch in the Main_Tick tail after
+    /// the live object/global update walk.
     Ordinary,
     /// LAN/WOL modal pump: service PerTickUpdate and the late tail only.
     NetworkModal,
@@ -346,6 +348,10 @@ pub struct SimulationRngState {
     pub mapgen: SimRngLogicalState,
 }
 
+fn deserialized_process_rng_placeholder() -> SimRng {
+    SimRng::new(0)
+}
+
 /// The game simulation - owns all authoritative game state.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Simulation {
@@ -371,15 +377,16 @@ pub struct Simulation {
     /// anim scorch/50-50, miner-dock jitter. MUST be serialized + hashed (never
     /// #[serde(skip)]) or a divergence here hides from desync detection.
     pub(crate) scenario_rng: SimRng,
-    /// Main/global gameplay RNG. Foot MoveSound starts and fatal
-    /// VoiceDie/DieSound selection consume this stream; additional verified
-    /// presentation/weapon routes join it as their owning systems land.
-    /// MUST be serialized + hashed.
+    /// Main/global RNG — gamemd `g_MainRng` (0x00886B88). This is a
+    /// process-global cursor: it is neither part of ScenarioClass saves nor
+    /// multiplayer checksums, and the live cursor continues across a load.
+    #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) main_rng: SimRng,
     /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). Fresh construction
     /// uses the verified native `Random__Seed(0)` logical state. Bridge repair
-    /// consumes this stream; destruction remains Scenario-owned. Later
-    /// same-process native ownership remains unverified.
+    /// consumes this stream; destruction remains Scenario-owned. Like Main,
+    /// this process-global cursor is not saved or checksummed and survives load.
+    #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) mapgen_rng: SimRng,
     /// Deterministic fog/shroud visibility state.
     pub fog: FogState,
@@ -586,6 +593,13 @@ impl Simulation {
             main: self.main_rng.logical_state(),
             mapgen: self.mapgen_rng.logical_state(),
         }
+    }
+
+    /// Replace snapshot placeholders with the process-global cursors that are
+    /// live at load time. Scenario RNG deliberately remains snapshot-owned.
+    pub(crate) fn retain_process_rngs_from(&mut self, live: &Self) {
+        self.main_rng = live.main_rng.clone();
+        self.mapgen_rng = live.mapgen_rng.clone();
     }
 
     /// Create a new empty simulation with the default deterministic seed.
@@ -942,8 +956,8 @@ impl Simulation {
 
     /// FootClass's post-locomotor MoveSound tail. A fresh moving-now virtual
     /// answer or locomotor state change keeps the handle alive and reloads the
-    /// three-visit grace counter. A new start consumes the main RNG once even
-    /// when the configured list contains one sound.
+    /// three-visit grace counter. The process-local audio owner selects the
+    /// sample only after its device and spatial-acceptance gates.
     fn tick_move_sound_after_process(
         &mut self,
         stable_id: u64,
@@ -984,7 +998,6 @@ impl Simulation {
                     .filter(|sound| !sound.is_empty() && !sound.eq_ignore_ascii_case("none"))
                     .map(str::to_owned);
                 if let Some(configured) = configured {
-                    let _variation = self.main_rng.next_u32();
                     let sound_id = self.interner.intern(&configured);
                     self.sound_events.push(SimSoundEvent::AnimationStarted {
                         anim_id: stable_id,
@@ -2139,7 +2152,7 @@ impl Simulation {
         (spawned_entity, destroyed_structure)
     }
 
-    fn command_uses_megamission(command: &Command) -> bool {
+    pub(crate) fn command_uses_megamission(command: &Command) -> bool {
         matches!(
             command,
             Command::Move { .. }
@@ -2186,6 +2199,176 @@ impl Simulation {
         }
     }
 
+    fn group_destination_candidate_facts(
+        &self,
+        grid: &PathGrid,
+        zone_grid: &ZoneGrid,
+        clicked_target: (i16, i16),
+        member: &group_destination::GroupDestinationMember,
+        candidate: (i16, i16),
+    ) -> group_destination::CandidateFacts {
+        let signed_candidate = (i32::from(candidate.0), i32::from(candidate.1));
+        if !crate::sim::cell_rect::cell_is_in_playfield(
+            signed_candidate,
+            self.playfield_bounds,
+            self.resolved_terrain.as_ref(),
+            Some((grid.width(), grid.height())),
+        ) {
+            return group_destination::CandidateFacts::outside_playfield();
+        }
+        let (Ok(candidate_x), Ok(candidate_y)) =
+            (u16::try_from(candidate.0), u16::try_from(candidate.1))
+        else {
+            return group_destination::CandidateFacts::outside_playfield();
+        };
+        let target = (clicked_target.0 as u16, clicked_target.1 as u16);
+        let Some(entity) = self.substrate.entities.get(member.entity_id) else {
+            return group_destination::CandidateFacts {
+                in_playfield: true,
+                same_zone: false,
+                height_band_ok: false,
+                can_enter_code: 7,
+            };
+        };
+        let Some(target_cell) = grid.cell(target.0, target.1) else {
+            return group_destination::CandidateFacts {
+                in_playfield: true,
+                same_zone: false,
+                height_band_ok: false,
+                can_enter_code: 7,
+            };
+        };
+        let Some(candidate_cell) = grid.cell(candidate_x, candidate_y) else {
+            return group_destination::CandidateFacts {
+                in_playfield: true,
+                same_zone: false,
+                height_band_ok: false,
+                can_enter_code: 7,
+            };
+        };
+
+        let movement_zone = entity
+            .locomotor
+            .as_ref()
+            .map(|locomotor| locomotor.movement_zone)
+            .unwrap_or_default();
+        let speed_type = entity
+            .locomotor
+            .as_ref()
+            .map(|locomotor| locomotor.speed_type)
+            .unwrap_or_default();
+        let locomotor_kind = entity
+            .locomotor
+            .as_ref()
+            .map_or(LocomotorKind::Drive, |locomotor| locomotor.effective_kind());
+        let target_layer = if target_cell.has_structural_bridge() {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
+        let candidate_layer = if candidate_cell.has_structural_bridge() {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
+        let same_zone = zone_grid.map_for(movement_zone).is_some_and(|zones| {
+            zones.zone_at(target.0, target.1, target_layer)
+                == zones.zone_at(candidate_x, candidate_y, candidate_layer)
+        });
+
+        let target_height = target_cell.signed_level()
+            + if target_cell.has_structural_bridge() {
+                4
+            } else {
+                0
+            };
+        let candidate_height = candidate_cell.signed_level()
+            + if candidate_cell.has_structural_bridge() {
+                4
+            } else {
+                0
+            };
+        let height_band_ok = (candidate_height - target_height).abs() < 3;
+
+        // UnitClass::Can_Enter_Cell(candidate, -1, target_height, 0, 1)
+        // selects the bridge list when the candidate carries a structural deck
+        // separated from the requested path height.
+        let object_layer = if candidate_cell.has_structural_bridge()
+            && (target_height - candidate_cell.signed_level()).abs() >= 2
+        {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
+        let layers = crate::sim::pathfinding::can_enter_layer_context(
+            object_layer,
+            object_layer,
+            candidate_cell,
+            target_height,
+        );
+        let cost_grid = self.terrain_costs.get(&speed_type);
+        let terrain_passable = match layers.terrain_layer {
+            MovementLayer::Ground => {
+                crate::sim::pathfinding::is_cell_passable_for_mover_with_speed(
+                    grid,
+                    candidate_x,
+                    candidate_y,
+                    Some(movement_zone),
+                    Some(speed_type),
+                    self.resolved_terrain.as_ref(),
+                    cost_grid,
+                    false,
+                    crate::sim::pathfinding::cell_entry::TerrainEntryMode::Smoothing,
+                )
+            }
+            MovementLayer::Bridge => {
+                grid.is_walkable_on_layer(candidate_x, candidate_y, MovementLayer::Bridge)
+            }
+            MovementLayer::Air | MovementLayer::Underground => true,
+        };
+        let can_enter_code = if !terrain_passable {
+            7
+        } else {
+            match crate::sim::pathfinding::cell_entry::check_terrain_with_layers(
+                (candidate_x, candidate_y),
+                layers,
+                entity.category,
+                Some(grid),
+                cost_grid,
+                &self.substrate.occupancy,
+            ) {
+                crate::sim::pathfinding::cell_entry::TerrainCheckResult::Clear => 0,
+                crate::sim::pathfinding::cell_entry::TerrainCheckResult::Impassable => 7,
+                crate::sim::pathfinding::cell_entry::TerrainCheckResult::NeedsBlockerCheck => {
+                    crate::sim::pathfinding::cell_entry::classify_occupied_cell_with_layers(
+                        (candidate_x, candidate_y),
+                        layers,
+                        member.entity_id,
+                        movement::bump_crush::CrushCapability::new(
+                            entity.regular_crusher,
+                            entity.omni_crusher,
+                        ),
+                        self.interner.resolve(entity.owner),
+                        locomotor_kind,
+                        false,
+                        &self.substrate.occupancy,
+                        &self.substrate.entities,
+                        &self.house_alliances,
+                        &self.interner,
+                    )
+                    .yr_code()
+                }
+            }
+        };
+
+        group_destination::CandidateFacts {
+            in_playfield: true,
+            same_zone,
+            height_band_ok,
+            can_enter_code,
+        }
+    }
+
     /// Adjust consecutive same-target movement runs after their house's
     /// non-megamission scan, immediately before staged command execution.
     fn adjust_staged_megamission_destinations(
@@ -2193,7 +2376,7 @@ impl Simulation {
         commands: &mut [CommandEnvelope],
         path_grid: Option<&PathGrid>,
     ) {
-        let Some(grid) = path_grid else {
+        let (Some(grid), Some(zone_grid)) = (path_grid, self.zone_grid.as_ref()) else {
             return;
         };
         let mut run_start = 0;
@@ -2209,35 +2392,56 @@ impl Simulation {
                 run_end += 1;
             }
             if run_end - run_start > 1 {
-                let mut vehicle_ids = Vec::new();
-                let mut infantry_ids = Vec::new();
-                for command in &commands[run_start..run_end] {
+                let mut members = Vec::new();
+                for (command_index, command) in commands[run_start..run_end].iter().enumerate() {
                     let Some(entity_id) = Self::formation_entity_id(&command.payload) else {
                         continue;
                     };
                     let Some(entity) = self.substrate.entities.get(entity_id) else {
                         continue;
                     };
-                    if entity.category == EntityCategory::Infantry {
-                        infantry_ids.push(entity_id);
-                    } else {
-                        vehicle_ids.push(entity_id);
+                    if !matches!(
+                        entity.category,
+                        EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Aircraft
+                    ) || entity.low_bridge_tube_state.is_some()
+                        || entity
+                            .drive_locomotion
+                            .as_ref()
+                            .is_some_and(|drive| drive.active_tube.is_some())
+                    {
+                        continue;
                     }
+                    members.push(group_destination::GroupDestinationMember {
+                        command_index,
+                        entity_id,
+                        coord: [
+                            i32::from(entity.position.rx)
+                                .wrapping_mul(256)
+                                .wrapping_add(entity.position.sub_x.to_num::<i32>()),
+                            i32::from(entity.position.ry)
+                                .wrapping_mul(256)
+                                .wrapping_add(entity.position.sub_y.to_num::<i32>()),
+                            combat::in_range::effective_z_leptons(entity) as i32,
+                        ],
+                        source_cell: (entity.position.rx as i16, entity.position.ry as i16),
+                    });
                 }
                 let assignments = group_destination::distribute_group_destinations(
-                    grid,
-                    (key.1, key.2),
-                    &vehicle_ids,
-                    &infantry_ids,
-                )
-                .into_iter()
-                .map(|(entity_id, rx, ry)| (entity_id, (rx, ry)))
-                .collect::<BTreeMap<_, _>>();
-                for command in &mut commands[run_start..run_end] {
-                    let Some(entity_id) = Self::formation_entity_id(&command.payload) else {
-                        continue;
-                    };
-                    let Some(&(rx, ry)) = assignments.get(&entity_id) else {
+                    (key.1 as i16, key.2 as i16),
+                    &members,
+                    |member, candidate| {
+                        self.group_destination_candidate_facts(
+                            grid,
+                            zone_grid,
+                            (key.1 as i16, key.2 as i16),
+                            member,
+                            candidate,
+                        )
+                    },
+                );
+                for assignment in assignments {
+                    let Some(command) = commands.get_mut(run_start + assignment.command_index)
+                    else {
                         continue;
                     };
                     match &mut command.payload {
@@ -2251,8 +2455,8 @@ impl Simulation {
                             target_ry,
                             ..
                         } => {
-                            *target_rx = rx;
-                            *target_ry = ry;
+                            *target_rx = assignment.destination.0 as u16;
+                            *target_ry = assignment.destination.1 as u16;
                         }
                         _ => {}
                     }
@@ -2263,7 +2467,7 @@ impl Simulation {
     }
 
     /// Advance one deterministic simulation tick.
-    /// Spine region (EARLY): apply all due commands in HouseClass registration
+    /// Apply all due commands in HouseClass registration
     /// order. Each house preserves insertion order within the normal and
     /// staged-megamission streams. Returns
     /// `(executed_commands, spawned_entities, destroyed_structure)`.
@@ -2332,12 +2536,15 @@ impl Simulation {
     /// the terminating call skips frame commit and pending-delete processing.
     fn run_late_region(
         &mut self,
+        commands: &[CommandEnvelope],
         rules: Option<&RuleSet>,
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
         tick_ms: u32,
         execute_tick: u64,
+        executed_commands: &mut usize,
         spawned_entities: &mut bool,
+        destroyed_structure: &mut bool,
     ) -> bool {
         // --- Phase 8: Defeat detection (runs BEFORE AI) ---
         // gamemd evaluates each house's defeat before its AI manage/produce step,
@@ -2418,6 +2625,15 @@ impl Simulation {
         });
         self.sound_events.extend(started_effect_sounds);
 
+        // EventClass dispatch is a Main_Tick tail rung: the complete live
+        // Logic walk observes frame N's pre-command state, so an accepted
+        // command first changes that object's AI behavior on frame N+1.
+        let (executed, spawned, destroyed) =
+            self.apply_due_commands(commands, rules, path_grid, height_map, execute_tick);
+        *executed_commands += executed;
+        *spawned_entities |= spawned;
+        *destroyed_structure |= destroyed;
+
         // Main_Tick returns immediately on a terminal result. The wrapping
         // frame commit, pacing tail, and pending-delete drain are all skipped
         // on that same terminating call.
@@ -2491,16 +2707,9 @@ impl Simulation {
         // frame N. execute_tick stays here: command scheduling below filters on
         // the separate monotonic ordinal.
         let execute_tick = self.session.tick.saturating_add(1);
-        // ===== SPINE REGION: EARLY — command application =====
-        // gamemd applies player/network input before LogicClass::PerTickUpdate.
-        // Native-spine slot: pre-object. (Step 3a skeleton: extracted to a region
-        // method; call order unchanged — behavior-preserving.)
-        let (executed_commands, mut spawned_entities, mut destroyed_structure) =
-            if lane == TickLane::Ordinary {
-                self.apply_due_commands(commands, rules, path_grid, height_map, execute_tick)
-            } else {
-                (0, false, false)
-            };
+        let mut executed_commands = 0usize;
+        let mut spawned_entities = false;
+        let mut destroyed_structure = false;
         // No command-boundary drain: command-applied deaths (sell, MCV/slave
         // deploy-undeploy, engineer capture) now stay in the Dying window like
         // combat deaths, freed only by the single end-of-tick drain — matching
@@ -2516,9 +2725,9 @@ impl Simulation {
         // gets its `+0xC4` AI-counter tick, its owner-local queued-mission
         // promotion (Ready→Commence), and its absorbed mission-handler
         // dispatch (Harvest: the miner FSM, timer-gated with the post-handler
-        // epilogue write) here; player commands queued the mission in the
-        // command phase above (the event-execute shape). Movement stays
-        // before the Phase-3 vision recompute, so sight is unaffected.
+        // epilogue write) here. Player commands from frame N-1 are already
+        // represented; frame N's EventClass tail is dispatched below.
+        // Movement stays before the Phase-3 vision recompute.
         //
         // Dock-reservation corpse sweep first (was the global miner tick's
         // pre-pass): reservations held by/on dying objects release before the
@@ -2642,6 +2851,9 @@ impl Simulation {
             sim.tick_move_sound_after_process(stable_id, before_movement, rules);
             sim.object_ai_post_movement_promote_one(stable_id, rules);
         });
+        if let Some(rules) = rules {
+            self.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, rules));
+        }
         movement::sync_formation_speeds_after_live_pass(&mut self.substrate.entities);
         if let Some(rules) = rules {
             crate::sim::gate_runtime::tick_gate_runtimes(
@@ -2769,8 +2981,8 @@ impl Simulation {
             }
 
             // --- Phase 4.6: Deploy/Undeploy state machine ---
-            // DEPENDS ON: command dispatch (ToggleInfantryDeploy may have set
-            //   Deploying/Undeploying this tick).
+            // DEPENDS ON: the prior frame's command tail
+            //   (ToggleInfantryDeploy may have set Deploying/Undeploying).
             // PRODUCES: phase advances (Deploying→Deployed, Undeploying→None)
             //   that combat (Phase 5) and animation (post-tick) read this tick.
             crate::sim::deploy::tick_deploy_state(&mut self.substrate.entities);
@@ -2997,8 +3209,7 @@ impl Simulation {
             self.fire_events.extend(combat_result.fire_events);
             // Emit radar events for combat occurrences.
             for ev in &combat_result.reveal_events {
-                self.radar_events
-                    .push(RadarEventType::Combat, ev.rx, ev.ry);
+                self.radar_events.push(RadarEventType::Combat, ev.rx, ev.ry);
             }
             // Player-asset damage pings: owner-scoped radar diamond + EVA
             // dispatch (voice gated app-side to the local player; the queue's
@@ -3081,10 +3292,6 @@ impl Simulation {
             // repairs, retaliation, miner, aircraft) are dying-gated. Combat
             // post-processing above still reads the dead ids while resolvable
             // (count decrement, owner snapshot) — that runs before this point.
-            // --- Phase 5.5: ParticleSystems ---
-            // DEPENDS ON: combat (gas/fire damage spawned this tick).
-            // PRODUCES: damage applied via gas/fire particles, must be visible to phase 6 retaliation.
-            crate::sim::particles::system_ai::tick_particle_systems(self, rules);
             // --- Phase 6: Retaliation + Passengers ---
             // DEPENDS ON: combat (sets last_attacker_id read by retaliation).
             let logic_order = self.live_object_order_snapshot();
@@ -3177,12 +3384,19 @@ impl Simulation {
         // (incl. defeat) in the tail and commits the frame counter late; AI
         // placement is project-deferred and kept in its current slot.
         let frame_committed = self.run_late_region(
+            if lane == TickLane::Ordinary {
+                commands
+            } else {
+                &[]
+            },
             rules,
             path_grid,
             height_map,
             tick_ms,
             execute_tick,
+            &mut executed_commands,
             &mut spawned_entities,
+            &mut destroyed_structure,
         );
         #[cfg(debug_assertions)]
         self.debug_assert_logic_membership_consistent();

@@ -71,8 +71,9 @@ pub(crate) fn compute_anim_ticks(
 ///
 /// `Deploying { N }` → `Deploying { N-1 }` until N == 1, then promotes to
 /// `Deployed`. `Undeploying { N }` follows the same shape, ending at `None`.
-/// Because this runs after command dispatch, a freshly-entered phase decrements
-/// on the same reached gameplay frame that accepted the deploy command.
+/// Command dispatch is a Main_Tick tail stage, after this object update. A
+/// freshly-entered phase therefore begins decrementing on the next gameplay
+/// frame.
 pub fn tick_deploy_state(entities: &mut EntityStore) {
     let keys = entities.keys_sorted();
     for id in keys {

@@ -1469,14 +1469,19 @@ fn tick_movement_with_grids_scoped(
             } else {
                 target.current_speed * cell_speed_mod
             };
+            let mut frame_budget =
+                movement_step::movement_frame_budget_from_current_speed(effective_speed);
             if let Some(crawls) = prone_crawls {
-                effective_speed = infantry::apply_prone_speed(effective_speed, crawls);
+                frame_budget =
+                    infantry::apply_prone_speed(SimFixed::from_num(frame_budget), crawls)
+                        .to_num::<i32>();
             }
             // Hover turn-stall: hold position while the body swings through a
             // >45° turn (the throttle keeps braking above). See hover_steer's
             // doc for why translation is suppressed rather than decayed.
             if hover_stall {
                 effective_speed = SIM_ZERO;
+                frame_budget = 0;
             }
 
             // Advance sub_x/sub_y toward the next cell — either via drive track
@@ -1492,6 +1497,7 @@ fn tick_movement_with_grids_scoped(
                 &mut entity.locomotor,
                 entity.category,
                 effective_speed,
+                frame_budget,
                 dt,
                 entity_id,
             ) {

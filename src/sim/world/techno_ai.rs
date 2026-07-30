@@ -140,6 +140,12 @@ impl Simulation {
             }
             return true;
         }
+        if self.substrate.particle_systems.contains_key(id) {
+            if let Some(rules) = rules {
+                crate::sim::particles::system_ai::tick_particle_system(self, rules, id);
+            }
+            return true;
+        }
 
         let Some(entity) = self.substrate.entities.get(id) else {
             return false;

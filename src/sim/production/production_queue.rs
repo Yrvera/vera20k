@@ -830,9 +830,9 @@ pub fn cancel_by_type_for_owner(
         }
         CancelOutcome::AbandonedActive { .. } => {
             // C7: the active build was abandoned (object cleared, tail intact). Promote the
-            // next queued entry into the active slot, cost-seeded. This runs in the COMMAND
-            // phase (before this tick's `step_all`), so step_delay = 1 keeps the promoted
-            // build's first charge on the next tick (the pre-P5d reconcile-at-tail schedule).
+            // next queued entry into the active slot, cost-seeded. EventClass
+            // dispatch is after this tick's `step_all`, so step_delay = 0
+            // charges the promoted build on the next gameplay frame.
             if let Some(next_type) = sim
                 .production
                 .factory_shadow
@@ -844,7 +844,7 @@ pub fn cancel_by_type_for_owner(
                     .unwrap_or(0);
                 sim.production
                     .factory_shadow
-                    .clear_active_and_advance(owner_id, category, cost, 1);
+                    .clear_active_and_advance(owner_id, category, cost, 0);
             }
             sim.production.factory_shadow.prune_all_idle();
             true

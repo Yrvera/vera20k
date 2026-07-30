@@ -69,9 +69,12 @@ impl CdTimer {
         if self.start_frame == PAUSED_START_FRAME {
             self.duration
         } else {
-            self.duration
-                .wrapping_sub(current_frame.wrapping_sub(self.start_frame))
-                .max(0)
+            let elapsed = current_frame.wrapping_sub(self.start_frame);
+            if elapsed < self.duration {
+                self.duration.wrapping_sub(elapsed)
+            } else {
+                0
+            }
         }
     }
 
@@ -125,6 +128,14 @@ mod tests {
 
         assert_eq!(timer.remaining(i32::MIN + 1), 1);
         assert_eq!(timer.remaining(i32::MIN + 2), 0);
+    }
+
+    #[test]
+    fn signed_negative_elapsed_returns_the_wrapping_remainder() {
+        let timer = CdTimer::started(0, 6);
+
+        assert_eq!(timer.remaining(i32::MIN), i32::MIN.wrapping_add(6));
+        assert!(!timer.expired(i32::MIN));
     }
 
     #[test]

@@ -3,10 +3,36 @@
 //! The deterministic simulation never reads wall time. This pacer only decides
 //! whether one outer event-loop iteration may admit one gameplay frame.
 
+use std::time::Instant;
+
 const FRAME_BUCKET_SHIFT: u32 = 4;
 const FRAME_BUCKET_MS: u64 = 1 << FRAME_BUCKET_SHIFT;
 const MIN_TIMED_GAME_SPEED: u8 = 1;
 const MAX_TIMED_GAME_SPEED: u8 = 6;
+
+#[cfg(windows)]
+#[link(name = "winmm")]
+unsafe extern "system" {
+    fn timeGetTime() -> u32;
+}
+
+/// Return the app-local pacing clock.
+///
+/// On Windows this is the same wrapping millisecond authority used by the
+/// retail executable. Other targets retain a monotonic development fallback.
+pub(crate) fn wall_clock_ms(fallback_epoch: Instant, now: Instant) -> u64 {
+    #[cfg(windows)]
+    {
+        let _ = (fallback_epoch, now);
+        // SAFETY: timeGetTime takes no arguments and returns the process-wide
+        // Windows uptime counter as an unsigned 32-bit millisecond word.
+        u64::from(unsafe { timeGetTime() })
+    }
+    #[cfg(not(windows))]
+    {
+        now.duration_since(fallback_epoch).as_millis() as u64
+    }
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct LocalFramePacer {
@@ -32,13 +58,23 @@ impl LocalFramePacer {
         };
         let required_buckets =
             u32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED));
-        frame_bucket(now_ms).wrapping_sub(last_bucket) >= required_buckets
+        let elapsed = frame_bucket(now_ms).wrapping_sub(last_bucket) as i32;
+        elapsed >= required_buckets as i32
     }
 
     pub(crate) fn record_admitted_frame(&mut self, frame_start_ms: u64) {
         self.last_frame_start_bucket = Some(frame_bucket(frame_start_ms));
     }
 
+    /// Forget the prior pacing window so the next unpaused frame runs now.
+    pub(crate) fn reset_for_immediate_frame(&mut self) {
+        self.last_frame_start_bucket = None;
+    }
+
+    /// Suppress another automatic frame until one full pacing window passes.
+    ///
+    /// This is for explicit single-step/capture work. Normal match entry and
+    /// modal resume use `reset_for_immediate_frame`.
     pub(crate) fn reanchor(&mut self, now_ms: u64) {
         self.last_frame_start_bucket = Some(frame_bucket(now_ms));
     }
@@ -128,10 +164,10 @@ mod tests {
     }
 
     #[test]
-    fn tick_count_wrap_uses_wrapping_bucket_subtraction() {
+    fn native_signed_bucket_subtraction_stalls_at_uptime_rollover() {
         let mut pacer = LocalFramePacer::new();
         pacer.record_admitted_frame(u64::from(u32::MAX - 7));
 
-        assert!(pacer.should_admit(u64::from(u32::MAX) + 1, 1, false));
+        assert!(!pacer.should_admit(u64::from(u32::MAX) + 1, 1, false));
     }
 }

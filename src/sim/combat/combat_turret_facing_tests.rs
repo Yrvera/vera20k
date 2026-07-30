@@ -600,8 +600,9 @@ fn facing_apply_point_equivalence_no_kill() {
 fn co_attacker_facing_matches_killer() {
     // Two attackers on one target; the killer's shot lands this tick. The
     // co-attacker's barrel destination this tick must ALSO hold the dying
-    // target's facing (its facing read happens in the per-object window, and
-    // lethal damage does not run UnInit pointer-expiry listeners early).
+    // target's facing because its facing read happens before lethal damage.
+    // The later same-frame UnInit pointer-expiry stage clears its target
+    // reference without rewriting that already-computed barrel destination.
     let mut sim = Simulation::new();
     spawn_turreted(&mut sim, 1, 5, 5, 100); // killer
     spawn_turreted(&mut sim, 3, 8, 8, 100); // co-attacker (out of its own ROF this tick)
@@ -635,10 +636,8 @@ fn co_attacker_facing_matches_killer() {
     );
     let co = sim.substrate.entities.get(3).unwrap();
     assert!(
-        co.attack_target
-            .as_ref()
-            .is_some_and(|target| matches!(target.target, TargetKind::Entity(2))),
-        "co-attacker target remains until the UnInit listener stage"
+        co.attack_target.is_none(),
+        "same-frame UnInit clears the co-attacker's expired target"
     );
     assert_eq!(
         co.barrel_facing.as_ref().unwrap().destination(),

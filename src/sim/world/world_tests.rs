@@ -2898,6 +2898,9 @@ fn test_attack_move_auto_acquires_enemy() {
         None,
         100,
     );
+    // Native EventClass dispatch is in Main_Tick's tail, after the object-AI
+    // walk.  The command arms AttackMove here; acquisition begins next frame.
+    let _ = sim.advance_tick(&[], Some(&rules), &empty_heights(), Some(&grid), None, 100);
     let attack = sim
         .substrate
         .entities
@@ -2979,6 +2982,9 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
         None,
         100,
     );
+    // The tail-dispatched AttackMove cannot participate in the object-AI walk
+    // that preceded it.  Its first acquisition/fire opportunity is frame two.
+    let _ = sim.advance_tick(&[], Some(&rules), &empty_heights(), Some(&grid), None, 100);
     let victim = sim
         .substrate
         .entities
@@ -3660,8 +3666,16 @@ fn command_death_is_ignored_before_ordinary_tail_drain() {
     );
     assert_eq!(
         sim.power_states.get(&owner_id).map(|s| s.total_output),
+        Some(200),
+        "power ran before EventClass sold the plant at the native command tail",
+    );
+
+    // The next object/system frame observes the tail-committed deletion.
+    sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 100);
+    assert_eq!(
+        sim.power_states.get(&owner_id).map(|s| s.total_output),
         Some(100),
-        "sold dead-limbo plant must not contribute power before the tail drain",
+        "the surviving plant is the only contributor on the following frame",
     );
 }
 

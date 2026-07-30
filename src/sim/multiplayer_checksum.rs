@@ -199,16 +199,12 @@ impl Simulation {
     /// `display_layers` must be the five native display vectors in their stored
     /// order. Rust does not currently own those vectors in `sim`, so the
     /// presentation owner supplies the exact point-in-time views.
-    /// `sync_exempt_logic_anims` supplies the stable IDs of any LogicClass anims
-    /// whose native unique ID is `-2`; Rust's anim registry does not otherwise
-    /// retain that diagnostic-only byte. This method must be called only by the
-    /// admitted multiplayer-frame path: it consumes exactly two Scenario RNG
-    /// samples and therefore must never run for an offline frame or a
-    /// diagnostic-only `state_hash()` request.
+    /// This method must be called only by the admitted multiplayer-frame path:
+    /// it consumes exactly two Scenario RNG samples and therefore must never run
+    /// for an offline frame or a diagnostic-only `state_hash()` request.
     pub fn compute_retail_multiplayer_checksum(
         &mut self,
         display_layers: [&[ChecksumObject]; DISPLAY_LAYER_COUNT],
-        sync_exempt_logic_anims: &[u64],
     ) -> Result<MultiplayerChecksumFrame, MultiplayerChecksumError> {
         let frame = self.session.binary_frame;
         let mut checksum = RetailChecksumAccumulator::new();
@@ -268,16 +264,11 @@ impl Simulation {
                 let (world_x, world_y) = entity_world_xy(entity);
                 ChecksumObject::new(world_x, world_y, entity_rtti(entity.category), 0)
             } else if let Some(anim) = self.substrate.anims.get(stable_id) {
-                let native_unique_id = if sync_exempt_logic_anims.contains(&stable_id) {
-                    SYNC_EXEMPT_ANIM_ID
-                } else {
-                    0
-                };
                 ChecksumObject::new(
                     anim.world_coord.x,
                     anim.world_coord.y,
                     RTTI_ANIM,
-                    native_unique_id,
+                    anim.native_unique_id,
                 )
             } else if let Some(system) = self.substrate.particle_systems.get(stable_id) {
                 ChecksumObject::new(system.coords.x, system.coords.y, RTTI_PARTICLE_SYSTEM, 0)
@@ -356,7 +347,7 @@ mod tests {
         let diagnostic_sample = reference.next_u32();
 
         let frame = sim
-            .compute_retail_multiplayer_checksum([&[], &[], &[], &[], &[]], &[])
+            .compute_retail_multiplayer_checksum([&[], &[], &[], &[], &[]])
             .unwrap();
 
         assert_eq!(frame.value, checksum_sample);

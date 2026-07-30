@@ -1,9 +1,10 @@
 //! Native recording stream plus deterministic diagnostic-log helpers.
 //!
 //! Retail recordings are not save games. They contain a fixed startup header,
-//! then one presentation/sync record and one fixed-width command batch per
-//! frame. Playback rebuilds the scenario normally from the recorded header and
-//! consumes those two records at their original scheduler rungs.
+//! then presentation/sync records plus command batches at the command-transfer
+//! rungs selected by the running session. Playback rebuilds the scenario
+//! normally from the recorded header and consumes both record kinds at their
+//! original scheduler rungs.
 //!
 //! [`ReplayLog`] remains the richer Rust-only command/hash diagnostic used by
 //! parity tests. It is deliberately separate from [`NativeReplay`].
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::rules::ruleset::RuleSet;
-use crate::sim::command::{CommandEnvelope, CommandRecord, COMMAND_RECORD_LEN};
+use crate::sim::command::{COMMAND_RECORD_LEN, CommandEnvelope, CommandRecord};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 
@@ -41,8 +42,6 @@ pub enum NativeReplayError {
     HeaderLength { expected: usize, actual: usize },
     #[error("native replay ended at byte {offset} while reading {field}")]
     Truncated { offset: usize, field: &'static str },
-    #[error("native replay {field} count is negative: {count}")]
-    NegativeCount { field: &'static str, count: i32 },
     #[error("native replay {field} count does not fit in i32: {count}")]
     CountOverflow { field: &'static str, count: usize },
     #[error("native replay command record is malformed: {0}")]
@@ -201,8 +200,11 @@ impl NativeReplayPresentation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeReplayFrame {
     pub presentation: NativeReplayPresentation,
-    /// Unprocessed synchronized records for this frame, in queue order.
-    pub commands: Vec<CommandRecord>,
+    /// A command-transfer record when that scheduler rung wrote one.
+    ///
+    /// `Some(empty)` is distinct from `None`: the former writes a zero count;
+    /// the latter writes no command bytes before the next presentation record.
+    pub commands: Option<Vec<CommandRecord>>,
 }
 
 impl NativeReplayFrame {
@@ -212,13 +214,16 @@ impl NativeReplayFrame {
     pub fn record<'a>(
         presentation: NativeReplayPresentation,
         current_frame: i32,
+        write_command_batch: bool,
         do_list: impl IntoIterator<Item = &'a CommandRecord>,
     ) -> Self {
-        let commands = do_list
-            .into_iter()
-            .filter(|record| record.frame_stamp() == current_frame && !record.is_processed())
-            .cloned()
-            .collect();
+        let commands = write_command_batch.then(|| {
+            do_list
+                .into_iter()
+                .filter(|record| record.frame_stamp() == current_frame && !record.is_processed())
+                .cloned()
+                .collect()
+        });
         Self {
             presentation,
             commands,
@@ -250,7 +255,15 @@ impl NativeReplay {
         Ok(bytes)
     }
 
-    pub fn decode(bytes: &[u8]) -> std::result::Result<Self, NativeReplayError> {
+    /// Decode using the running session's command-transfer schedule.
+    ///
+    /// The native stream has no tag for an omitted command batch. Its presence
+    /// is known from session mode, frame, and network cadence, so the scheduler
+    /// supplies that decision after each presentation record is decoded.
+    pub fn decode_with_command_schedule(
+        bytes: &[u8],
+        mut has_command_batch: impl FnMut(usize, &NativeReplayPresentation) -> bool,
+    ) -> std::result::Result<Self, NativeReplayError> {
         if bytes.len() < NATIVE_REPLAY_HEADER_LEN {
             return Err(NativeReplayError::HeaderLength {
                 expected: NATIVE_REPLAY_HEADER_LEN,
@@ -261,7 +274,16 @@ impl NativeReplay {
         let mut cursor = NATIVE_REPLAY_HEADER_LEN;
         let mut frames = Vec::new();
         while cursor < bytes.len() {
-            frames.push(decode_frame(bytes, &mut cursor)?);
+            let presentation = decode_presentation(bytes, &mut cursor)?;
+            let commands = if has_command_batch(frames.len(), &presentation) {
+                Some(decode_command_batch(bytes, &mut cursor)?)
+            } else {
+                None
+            };
+            frames.push(NativeReplayFrame {
+                presentation,
+                commands,
+            });
         }
         Ok(Self { header, frames })
     }
@@ -272,10 +294,14 @@ impl NativeReplay {
             .with_context(|| format!("Failed to write native replay: {}", path.display()))
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load_with_command_schedule(
+        path: &Path,
+        has_command_batch: impl FnMut(usize, &NativeReplayPresentation) -> bool,
+    ) -> Result<Self> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read native replay: {}", path.display()))?;
-        Self::decode(&bytes).context("Failed to decode native replay")
+        Self::decode_with_command_schedule(&bytes, has_command_batch)
+            .context("Failed to decode native replay")
     }
 
     /// Initialize playback through the normal scenario-loading owner.
@@ -319,7 +345,9 @@ impl<'a, S> NativeReplayPlayback<'a, S> {
     pub fn finish_frame(&mut self) -> Option<&'a [CommandRecord]> {
         self.pending_tail
             .take()
-            .map(|frame| frame.commands.as_slice())
+            .expect("native replay frame must begin before its tail is consumed")
+            .commands
+            .as_deref()
     }
 }
 
@@ -364,29 +392,29 @@ fn encode_frame(
         bytes.extend_from_slice(&cursor_word.to_le_bytes());
     }
 
-    let command_count =
-        i32::try_from(frame.commands.len()).map_err(|_| NativeReplayError::CountOverflow {
-            field: "command",
-            count: frame.commands.len(),
-        })?;
-    bytes.extend_from_slice(&command_count.to_le_bytes());
-    for command in &frame.commands {
-        bytes.extend_from_slice(command.as_bytes());
+    if let Some(commands) = &frame.commands {
+        let command_count =
+            i32::try_from(commands.len()).map_err(|_| NativeReplayError::CountOverflow {
+                field: "command",
+                count: commands.len(),
+            })?;
+        bytes.extend_from_slice(&command_count.to_le_bytes());
+        for command in commands {
+            bytes.extend_from_slice(command.as_bytes());
+        }
     }
     Ok(())
 }
 
-fn decode_frame(
+fn decode_presentation(
     bytes: &[u8],
     cursor: &mut usize,
-) -> std::result::Result<NativeReplayFrame, NativeReplayError> {
+) -> std::result::Result<NativeReplayPresentation, NativeReplayError> {
     let scenario_hash = take::<8>(bytes, cursor, "scenario hash")?;
     let selection_count = i32::from_le_bytes(take::<4>(bytes, cursor, "selection count")?);
-    let selection_count =
-        usize::try_from(selection_count).map_err(|_| NativeReplayError::NegativeCount {
-            field: "selection",
-            count: selection_count,
-        })?;
+    // Retail enters the selection loop only when 0 < count. Corrupt negative
+    // values therefore consume no object records, exactly like zero.
+    let selection_count = usize::try_from(selection_count).unwrap_or(0);
     let selection_checksum = u32::from_le_bytes(take::<4>(bytes, cursor, "selection checksum")?);
     let mut selected_objects = Vec::with_capacity(selection_count);
     for _ in 0..selection_count {
@@ -401,27 +429,27 @@ fn decode_frame(
         u32::from_le_bytes(take::<4>(bytes, cursor, "cursor y")?),
     ];
 
+    Ok(NativeReplayPresentation {
+        scenario_hash,
+        selection_checksum,
+        selected_objects,
+        cursor: cursor_words,
+    })
+}
+
+fn decode_command_batch(
+    bytes: &[u8],
+    cursor: &mut usize,
+) -> std::result::Result<Vec<CommandRecord>, NativeReplayError> {
     let command_count = i32::from_le_bytes(take::<4>(bytes, cursor, "command count")?);
-    let command_count =
-        usize::try_from(command_count).map_err(|_| NativeReplayError::NegativeCount {
-            field: "command",
-            count: command_count,
-        })?;
+    // The native command loop has the same strictly-positive gate.
+    let command_count = usize::try_from(command_count).unwrap_or(0);
     let mut commands = Vec::with_capacity(command_count);
     for _ in 0..command_count {
         let record = take::<COMMAND_RECORD_LEN>(bytes, cursor, "command record")?;
         commands.push(CommandRecord::admit_exact(&record)?);
     }
-
-    Ok(NativeReplayFrame {
-        presentation: NativeReplayPresentation {
-            scenario_hash,
-            selection_checksum,
-            selected_objects,
-            cursor: cursor_words,
-        },
-        commands,
-    })
+    Ok(commands)
 }
 
 fn take<const N: usize>(
@@ -585,7 +613,7 @@ mod tests {
             vec![0x3400_0001, 0x3400_0002],
             [0x1122_3344, 0x5566_7788],
         );
-        let frame = NativeReplayFrame::record(presentation, 17, [&command]);
+        let frame = NativeReplayFrame::record(presentation, 17, true, [&command]);
         let replay = NativeReplay {
             header: NativeReplayHeader::new(9, "x.map"),
             frames: vec![frame],
@@ -601,7 +629,10 @@ mod tests {
         assert_eq!(&bytes[0x1ec..0x1f0], &0x5566_7788_u32.to_le_bytes());
         assert_eq!(&bytes[0x1f0..0x1f4], &1_i32.to_le_bytes());
         assert_eq!(&bytes[0x1f4..0x263], &unknown);
-        assert_eq!(NativeReplay::decode(&bytes).unwrap(), replay);
+        assert_eq!(
+            NativeReplay::decode_with_command_schedule(&bytes, |_, _| true).unwrap(),
+            replay
+        );
     }
 
     #[test]
@@ -615,10 +646,11 @@ mod tests {
         let frame = NativeReplayFrame::record(
             NativeReplayPresentation::new([0; 8], Vec::new(), [0; 2]),
             7,
+            true,
             [&due_a, &future, &processed, &due_b],
         );
 
-        assert_eq!(frame.commands, vec![due_a, due_b]);
+        assert_eq!(frame.commands, Some(vec![due_a, due_b]));
     }
 
     #[test]
@@ -638,11 +670,13 @@ mod tests {
                 NativeReplayFrame::record(
                     NativeReplayPresentation::new([0; 8], vec![1], [0; 2]),
                     0,
+                    true,
                     std::iter::empty::<&CommandRecord>(),
                 ),
                 NativeReplayFrame::record(
                     NativeReplayPresentation::new([0; 8], vec![2], [0; 2]),
                     1,
+                    true,
                     std::iter::empty::<&CommandRecord>(),
                 ),
             ],
@@ -668,18 +702,77 @@ mod tests {
             frames: vec![NativeReplayFrame::record(
                 NativeReplayPresentation::new([0; 8], Vec::new(), [0; 2]),
                 0,
+                true,
                 [&CommandRecord::encode(1, 0, 0, &[]).unwrap()],
             )],
         };
         let mut bytes = replay.encode().unwrap();
         bytes.pop();
         assert!(matches!(
-            NativeReplay::decode(&bytes),
+            NativeReplay::decode_with_command_schedule(&bytes, |_, _| true),
             Err(NativeReplayError::Truncated {
                 field: "command record",
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn native_decode_treats_negative_selection_and_command_counts_as_empty() {
+        let replay = NativeReplay {
+            header: NativeReplayHeader::new(1, "x.map"),
+            frames: vec![NativeReplayFrame::record(
+                NativeReplayPresentation::new([0; 8], Vec::new(), [0; 2]),
+                0,
+                true,
+                std::iter::empty::<&CommandRecord>(),
+            )],
+        };
+        let mut bytes = replay.encode().unwrap();
+        let selection_count_offset = NATIVE_REPLAY_HEADER_LEN + 8;
+        bytes[selection_count_offset..selection_count_offset + 4]
+            .copy_from_slice(&(-1_i32).to_le_bytes());
+        let command_count_offset = NATIVE_REPLAY_HEADER_LEN + 8 + 4 + 4 + 8;
+        bytes[command_count_offset..command_count_offset + 4]
+            .copy_from_slice(&(-2_i32).to_le_bytes());
+
+        assert_eq!(
+            NativeReplay::decode_with_command_schedule(&bytes, |_, _| true).unwrap(),
+            replay
+        );
+    }
+
+    #[test]
+    fn omitted_command_rung_writes_no_count_and_decodes_from_session_schedule() {
+        let replay = NativeReplay {
+            header: NativeReplayHeader::new(1, "x.map"),
+            frames: vec![
+                NativeReplayFrame::record(
+                    NativeReplayPresentation::new([0x11; 8], Vec::new(), [0; 2]),
+                    0,
+                    false,
+                    std::iter::empty::<&CommandRecord>(),
+                ),
+                NativeReplayFrame::record(
+                    NativeReplayPresentation::new([0x22; 8], Vec::new(), [0; 2]),
+                    1,
+                    true,
+                    std::iter::empty::<&CommandRecord>(),
+                ),
+            ],
+        };
+
+        let bytes = replay.encode().unwrap();
+        let first_presentation_len = 8 + 4 + 4 + 8;
+        assert_eq!(
+            &bytes[0x1d0 + first_presentation_len..][..8],
+            &[0x22; 8],
+            "an omitted command rung has no zero-count placeholder"
+        );
+        assert_eq!(
+            NativeReplay::decode_with_command_schedule(&bytes, |frame, _| frame != 0).unwrap(),
+            replay
+        );
     }
 
     #[test]

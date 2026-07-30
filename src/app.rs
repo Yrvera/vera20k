@@ -237,9 +237,10 @@ pub(crate) struct AppState {
     pub(crate) cursor_x: f32,
     pub(crate) cursor_y: f32,
     pub(crate) keys_held: HashSet<KeyCode>,
-    /// One-shot Shift+S request, consumed only after the complete client frame
-    /// has been encoded into the current swapchain texture.
+    /// One-shot Shift+S request, consumed at the next render submission.
     pub(crate) retail_screenshot_requested: bool,
+    /// Previous complete client surface, retained for input-time screenshot parity.
+    pub(crate) retail_screenshot_frame_cache: crate::render::screenshot::PresentedFrameCache,
     /// egui integration — input handling + GPU rendering.
     egui: EguiIntegration,
     /// Which screen is currently active (MainMenu, Loading, InGame).
@@ -4075,6 +4076,7 @@ impl App {
             cursor_y: 0.0,
             keys_held: HashSet::new(),
             retail_screenshot_requested: false,
+            retail_screenshot_frame_cache: Default::default(),
             egui,
             screen: GameScreen::default(),
             available_maps,
@@ -4715,18 +4717,17 @@ impl App {
         };
         let retail_screenshot_current_frame =
             std::mem::take(&mut state.retail_screenshot_requested);
-        let pending_retail_screenshot = if retail_screenshot_current_frame {
-            Some(crate::render::frame_readback::PendingBgra8Readback::encode(
+        let pending_retail_screenshot = state
+            .retail_screenshot_frame_cache
+            .capture_previous_and_remember_current(
+                retail_screenshot_current_frame,
                 &state.gpu.device,
                 &mut encoder,
                 &output.texture,
                 state.gpu.config.format,
                 state.gpu.config.width,
                 state.gpu.config.height,
-            )?)
-        } else {
-            None
-        };
+            )?;
         let capture_timeout = if capture_current_frame {
             Some(if shell_capture_current_frame {
                 shell_capture
@@ -4891,8 +4892,7 @@ impl App {
         match action {
             PauseMenuAction::Resume => {
                 state.paused = false;
-                let now_ms = state.frame_pacer_epoch.elapsed().as_millis() as u64;
-                state.frame_pacer.reanchor(now_ms);
+                state.frame_pacer.reset_for_immediate_frame();
                 // Re-hide OS cursor so the software cursor takes over.
                 if state.software_cursor.is_some() {
                     state.window.set_cursor_visible(false);

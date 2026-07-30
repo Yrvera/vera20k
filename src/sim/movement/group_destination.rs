@@ -1,332 +1,378 @@
-//! Group destination distribution — assigns unique cells to units in a group move.
+//! MegaMission group-destination adjustment.
 //!
-//! When multiple units are selected and given a move order, this module distributes
-//! destinations via radial ring expansion so each unit gets a unique nearby cell
-//! instead of all converging on the same point. This matches RA2's behavior where
-//! the clicked cell is the center of a destination area and each unit is assigned
-//! a unique cell near the click point.
-//!
-//! Vehicles get one cell each. Infantry pack up to 3 per cell (matching RA2's
-//! 3-functional-sub-cell model). Vehicles are assigned first so infantry can
-//! fill remaining cells without wasting vehicle-suitable positions.
-//!
-//! ## Dependency rules
-//! - Part of sim/ — depends only on sim/pathfinding (PathGrid), sim/bump_crush (constants).
-//! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
+//! Active `gamemd.exe` does not spread a selected group in radial rings.  For
+//! each consecutive equal-action/equal-target run, `0x0064CDA0` resolves the
+//! FootClass members, chooses the member nearest the group's 3D centroid as an
+//! anchor, sorts by 3D distance from that anchor, and probes six cells along
+//! each member's anchor-relative direction.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use crate::sim::movement::bump_crush::MAX_INFANTRY_PER_CELL;
-use crate::sim::pathfinding::PathGrid;
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits, X87Chop53, sqrt_approx_f32};
 
-/// Maximum radius (in cells) for spreading unit destinations around the click point.
-/// A radius of 12 covers a diamond of ~312 cells — enough for any realistic selection.
-const MAX_GROUP_SPREAD_RADIUS: u16 = 12;
+const MAX_CANDIDATE_PROBES: usize = 6;
 
-/// Distribute unique destination cells for a group of units moving to a common target.
+/// One resolved FootClass member in its original staged-command order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupDestinationMember {
+    /// Offset of this command within the staged run.
+    pub command_index: usize,
+    pub entity_id: u64,
+    /// Native object coordinates in leptons.
+    pub coord: [i32; 3],
+    /// Cell returned by the member's source-cell virtual.
+    pub source_cell: (i16, i16),
+}
+
+/// Read-only results of the native candidate gates.
 ///
-/// Vehicles get one-per-cell. Infantry pack up to 3 per cell (sub-cell sharing).
-/// The center cell is assigned to the first unit. Remaining units get cells from
-/// expanding rings outward from center.
+/// The caller computes these in native order: playfield, zone, then
+/// `Can_Enter_Cell`.  The distributor deliberately interprets the return code
+/// only after the temporary-reservation and height gates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidateFacts {
+    pub in_playfield: bool,
+    pub same_zone: bool,
+    pub height_band_ok: bool,
+    pub can_enter_code: u8,
+}
+
+impl CandidateFacts {
+    pub const fn outside_playfield() -> Self {
+        Self {
+            in_playfield: false,
+            same_zone: false,
+            height_band_ok: false,
+            can_enter_code: 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupDestinationAssignment {
+    pub command_index: usize,
+    pub destination: (i16, i16),
+}
+
+/// Reproduce active retail `0x0064CDA0` for one already-filtered MegaMission run.
 ///
-/// `vehicle_ids` and `infantry_ids` must be sorted for deterministic output.
-/// Returns `Vec<(entity_id, rx, ry)>` with one entry per input unit.
-pub fn distribute_group_destinations(
-    grid: &PathGrid,
-    center: (u16, u16),
-    vehicle_ids: &[u64],
-    infantry_ids: &[u64],
-) -> Vec<(u64, u16, u16)> {
-    let mut assignments: Vec<(u64, u16, u16)> =
-        Vec::with_capacity(vehicle_ids.len() + infantry_ids.len());
+/// `members` must preserve staged-event order.  The callback is invoked at most
+/// six times per independently assigned member and supplies the map/world gates
+/// that this pure mechanism cannot own.
+pub fn distribute_group_destinations<F>(
+    clicked_target: (i16, i16),
+    members: &[GroupDestinationMember],
+    mut candidate_facts: F,
+) -> Vec<GroupDestinationAssignment>
+where
+    F: FnMut(&GroupDestinationMember, (i16, i16)) -> CandidateFacts,
+{
+    if members.is_empty() {
+        return Vec::new();
+    }
 
-    // Cells fully claimed by a vehicle (no infantry or other vehicles allowed).
-    let mut claimed_vehicle: BTreeSet<(u16, u16)> = BTreeSet::new();
-    // Infantry count per cell (max MAX_INFANTRY_PER_CELL before moving to next cell).
-    let mut infantry_counts: BTreeMap<(u16, u16), usize> = BTreeMap::new();
+    let centroid = centroid_3d(members);
+    let mut anchor_index = members.len() - 1;
+    let mut anchor_distance = distance_3d(members[anchor_index].coord, centroid);
+    for index in (0..anchor_index).rev() {
+        let distance = distance_3d(members[index].coord, centroid);
+        if distance < anchor_distance {
+            anchor_index = index;
+            anchor_distance = distance;
+        }
+    }
+    let anchor_coord = members[anchor_index].coord;
+    let anchor_source_cell = members[anchor_index].source_cell;
 
-    // Pre-collect ring cells for reuse across both vehicle and infantry passes.
-    let ring_cells: Vec<(u16, u16)> =
-        collect_ring_cells(center, MAX_GROUP_SPREAD_RADIUS, grid.width(), grid.height());
+    let mut sorted_indices = (0..members.len()).collect::<Vec<_>>();
+    sorted_indices.sort_unstable_by_key(|&index| {
+        distance_3d(members[index].coord, anchor_coord)
+            .wrapping_mul(1000)
+            .wrapping_add(index as i32)
+    });
 
-    // --- Assign vehicles first (one per cell) ---
-    let mut ring_iter_idx: usize = 0;
-    for &vid in vehicle_ids {
-        let cell: (u16, u16) = find_next_vehicle_cell(
-            &ring_cells,
-            &mut ring_iter_idx,
-            grid,
-            &claimed_vehicle,
-            &infantry_counts,
+    let mut destinations = vec![clicked_target; members.len()];
+    let mut assigned = vec![false; members.len()];
+    let mut reserved_cells = BTreeSet::new();
+
+    let first_index = sorted_indices[0];
+    assigned[first_index] = true;
+    reserved_cells.insert(clicked_target);
+
+    for sorted_position in 1..sorted_indices.len() {
+        let member_index = sorted_indices[sorted_position];
+        if assigned[member_index] {
+            continue;
+        }
+        let member = &members[member_index];
+        let member_cell = (
+            lepton_to_cell(member.coord[0]),
+            lepton_to_cell(member.coord[1]),
+        );
+        let direction = (
+            member_cell.0.wrapping_sub(i32::from(anchor_source_cell.0)),
+            member_cell.1.wrapping_sub(i32::from(anchor_source_cell.1)),
+        );
+        let step = normalized_step(direction);
+        let mut candidate_x = cell_center_f32(clicked_target.0);
+        let mut candidate_y = cell_center_f32(clicked_target.1);
+        let mut chosen = clicked_target;
+        let mut saw_bad_candidate = false;
+
+        for _ in 0..MAX_CANDIDATE_PROBES {
+            candidate_x = add_stored_f32(candidate_x, step.0);
+            candidate_y = add_stored_f32(candidate_y, step.1);
+            let candidate = (
+                stored_f32_to_i16(candidate_x),
+                stored_f32_to_i16(candidate_y),
+            );
+            let facts = candidate_facts(member, candidate);
+
+            if !facts.in_playfield {
+                break;
+            }
+            if !facts.same_zone {
+                saw_bad_candidate = true;
+                continue;
+            }
+            if reserved_cells.contains(&candidate) {
+                // Native keeps the most recent reserved cell as its fallback.
+                chosen = candidate;
+                continue;
+            }
+            if !facts.height_band_ok {
+                break;
+            }
+            if facts.can_enter_code >= 4 && facts.can_enter_code != 6 {
+                saw_bad_candidate = true;
+                continue;
+            }
+            if saw_bad_candidate {
+                // gamemd calls EstimateZoneCost here, ignores its return value,
+                // and immediately takes the saved fallback. Rust path searches
+                // carry no equivalent mutable PathfinderClass scratch state.
+                break;
+            }
+
+            chosen = candidate;
+            break;
+        }
+
+        destinations[member_index] = chosen;
+        assigned[member_index] = true;
+        reserved_cells.insert(chosen);
+
+        // Members whose source-cell virtual returns the same cell receive the
+        // same destination. This is the native reason grouped infantry can
+        // share a cell; there is no category-based "three infantry" rule here.
+        for &later_index in &sorted_indices[(sorted_position + 1)..] {
+            if !assigned[later_index] && members[later_index].source_cell == member.source_cell {
+                destinations[later_index] = chosen;
+                assigned[later_index] = true;
+            }
+        }
+    }
+
+    members
+        .iter()
+        .enumerate()
+        .map(|(index, member)| GroupDestinationAssignment {
+            command_index: member.command_index,
+            destination: destinations[index],
+        })
+        .collect()
+}
+
+fn centroid_3d(members: &[GroupDestinationMember]) -> [i32; 3] {
+    let mut sum = [0i32; 3];
+    for member in members {
+        for (axis, coordinate) in member.coord.into_iter().enumerate() {
+            sum[axis] = sum[axis].wrapping_add(coordinate);
+        }
+    }
+    let count = members.len() as i32;
+    [sum[0] / count, sum[1] / count, sum[2] / count]
+}
+
+fn distance_3d(lhs: [i32; 3], rhs: [i32; 3]) -> i32 {
+    let mut squared = X87Chop53::load_i32(0);
+    for axis in 0..3 {
+        let delta = X87Chop53::load_i32(lhs[axis].wrapping_sub(rhs[axis]));
+        squared = X87Chop53::add(squared, X87Chop53::mul(delta, delta));
+    }
+    let root_bits =
+        sqrt_approx_f32(squared).expect("map-space squared distance stays in finite f32 range");
+    let root =
+        X87Chop53::load_f32(root_bits).expect("Sqrt_Approx always returns a finite normal or zero");
+    X87Chop53::ftol_i64(root).expect("map-space distance fits a signed integer") as i32
+}
+
+fn lepton_to_cell(value: i32) -> i32 {
+    value.wrapping_add((value >> 31) & 255) >> 8
+}
+
+fn normalized_step(direction: (i32, i32)) -> (NativeF32Bits, NativeF32Bits) {
+    let dx =
+        X87Chop53::store_f32(X87Chop53::load_i32(direction.0)).expect("cell delta fits finite f32");
+    let dy =
+        X87Chop53::store_f32(X87Chop53::load_i32(direction.1)).expect("cell delta fits finite f32");
+    if direction == (0, 0) {
+        return (dx, dy);
+    }
+
+    let dx_value = X87Chop53::load_f32(dx).expect("stored cell delta is finite");
+    let dy_value = X87Chop53::load_f32(dy).expect("stored cell delta is finite");
+    let squared = X87Chop53::add(
+        X87Chop53::mul(dx_value, dx_value),
+        X87Chop53::mul(dy_value, dy_value),
+    );
+    let magnitude_bits =
+        sqrt_approx_f32(squared).expect("map-space direction stays in finite f32 range");
+    let magnitude = X87Chop53::load_f32(magnitude_bits).expect("Sqrt_Approx direction is finite");
+
+    (
+        X87Chop53::store_f32(
+            X87Chop53::div(dx_value, magnitude).expect("nonzero direction has nonzero magnitude"),
         )
-        .unwrap_or(center);
-        claimed_vehicle.insert(cell);
-        assignments.push((vid, cell.0, cell.1));
-    }
-
-    // --- Assign infantry (up to 3 per cell) ---
-    let mut inf_ring_idx: usize = 0;
-    // Track the current cell being packed with infantry.
-    let mut current_inf_cell: Option<(u16, u16)> = None;
-
-    for &iid in infantry_ids {
-        // Check if the current cell still has room.
-        let has_room: bool = current_inf_cell.is_some_and(|cell| {
-            let count: usize = infantry_counts.get(&cell).copied().unwrap_or(0);
-            count < MAX_INFANTRY_PER_CELL && !claimed_vehicle.contains(&cell)
-        });
-
-        let cell: (u16, u16) = if has_room {
-            current_inf_cell.unwrap()
-        } else {
-            // Find the next cell that infantry can use.
-            let next: (u16, u16) = find_next_infantry_cell(
-                &ring_cells,
-                &mut inf_ring_idx,
-                grid,
-                &claimed_vehicle,
-                &infantry_counts,
-            )
-            .unwrap_or(center);
-            current_inf_cell = Some(next);
-            next
-        };
-
-        *infantry_counts.entry(cell).or_insert(0) += 1;
-        assignments.push((iid, cell.0, cell.1));
-    }
-
-    assignments
+        .expect("normalized X fits finite f32"),
+        X87Chop53::store_f32(
+            X87Chop53::div(dy_value, magnitude).expect("nonzero direction has nonzero magnitude"),
+        )
+        .expect("normalized Y fits finite f32"),
+    )
 }
 
-/// Find the next unclaimed walkable cell for a vehicle.
-/// Advances `start_idx` past checked cells so subsequent calls continue the scan.
-fn find_next_vehicle_cell(
-    ring_cells: &[(u16, u16)],
-    start_idx: &mut usize,
-    grid: &PathGrid,
-    claimed_vehicle: &BTreeSet<(u16, u16)>,
-    infantry_counts: &BTreeMap<(u16, u16), usize>,
-) -> Option<(u16, u16)> {
-    while *start_idx < ring_cells.len() {
-        let cell: (u16, u16) = ring_cells[*start_idx];
-        *start_idx += 1;
-        if grid.is_any_layer_walkable(cell.0, cell.1)
-            && !claimed_vehicle.contains(&cell)
-            && !infantry_counts.contains_key(&cell)
-        {
-            return Some(cell);
-        }
-    }
-    None
+fn cell_center_f32(cell: i16) -> NativeF32Bits {
+    let half = X87Chop53::load_f64(NativeF64Bits::HALF).expect("0.5 is finite");
+    X87Chop53::store_f32(X87Chop53::add(X87Chop53::load_i32(i32::from(cell)), half))
+        .expect("map cell center fits finite f32")
 }
 
-/// Find the next cell where infantry can be placed (walkable, not vehicle-claimed,
-/// has room for at least one more infantry).
-fn find_next_infantry_cell(
-    ring_cells: &[(u16, u16)],
-    start_idx: &mut usize,
-    grid: &PathGrid,
-    claimed_vehicle: &BTreeSet<(u16, u16)>,
-    infantry_counts: &BTreeMap<(u16, u16), usize>,
-) -> Option<(u16, u16)> {
-    while *start_idx < ring_cells.len() {
-        let cell: (u16, u16) = ring_cells[*start_idx];
-        *start_idx += 1;
-        if grid.is_any_layer_walkable(cell.0, cell.1) && !claimed_vehicle.contains(&cell) {
-            let count: usize = infantry_counts.get(&cell).copied().unwrap_or(0);
-            if count < MAX_INFANTRY_PER_CELL {
-                return Some(cell);
-            }
-        }
-    }
-    None
+fn add_stored_f32(lhs: NativeF32Bits, rhs: NativeF32Bits) -> NativeF32Bits {
+    let lhs = X87Chop53::load_f32(lhs).expect("stored candidate is finite");
+    let rhs = X87Chop53::load_f32(rhs).expect("stored normalized step is finite");
+    X87Chop53::store_f32(X87Chop53::add(lhs, rhs)).expect("candidate probe fits finite f32")
 }
 
-/// Collect cells in expanding rings from `center`, yielding (rx, ry) in deterministic order.
-///
-/// Ring 0 = center itself. Ring r = perimeter cells at Chebyshev distance r.
-/// Perimeter order: top edge L→R, right edge T→B, bottom edge R→L, left edge B→T.
-/// This matches the ring pattern used in `nearest_walkable_cell`.
-fn collect_ring_cells(
-    center: (u16, u16),
-    max_radius: u16,
-    grid_width: u16,
-    grid_height: u16,
-) -> Vec<(u16, u16)> {
-    let cx: i32 = center.0 as i32;
-    let cy: i32 = center.1 as i32;
-    let w: i32 = grid_width as i32;
-    let h: i32 = grid_height as i32;
-
-    // Estimate capacity: ring 0 = 1, ring r = 8*r, total ≈ 4*r^2.
-    let cap: usize = (4 * max_radius as usize * max_radius as usize).min(1024) + 1;
-    let mut cells: Vec<(u16, u16)> = Vec::with_capacity(cap);
-
-    // Ring 0: center cell.
-    if cx >= 0 && cx < w && cy >= 0 && cy < h {
-        cells.push(center);
-    }
-
-    for r in 1..=max_radius as i32 {
-        let min_x: i32 = (cx - r).max(0);
-        let max_x: i32 = (cx + r).min(w - 1);
-        let min_y: i32 = (cy - r).max(0);
-        let max_y: i32 = (cy + r).min(h - 1);
-
-        // Top edge: left to right (y = min_y, x = min_x..=max_x).
-        if cy - r >= 0 {
-            for x in min_x..=max_x {
-                cells.push((x as u16, min_y as u16));
-            }
-        }
-
-        // Right edge: top to bottom, excluding corners (x = max_x, y = min_y+1..max_y).
-        if cx + r < w {
-            for y in (min_y + 1)..max_y {
-                cells.push((max_x as u16, y as u16));
-            }
-        }
-
-        // Bottom edge: right to left (y = max_y, x = max_x..=min_x reversed).
-        if cy + r < h {
-            for x in (min_x..=max_x).rev() {
-                cells.push((x as u16, max_y as u16));
-            }
-        }
-
-        // Left edge: bottom to top, excluding corners (x = min_x, y = max_y-1..min_y+1 reversed).
-        if cx - r >= 0 {
-            for y in ((min_y + 1)..max_y).rev() {
-                cells.push((min_x as u16, y as u16));
-            }
-        }
-    }
-
-    cells
+fn stored_f32_to_i16(value: NativeF32Bits) -> i16 {
+    let value = X87Chop53::load_f32(value).expect("stored candidate is finite");
+    X87Chop53::ftol_i64(value).expect("candidate probe fits a signed integer") as i16
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_single_vehicle_gets_center() {
-        let grid: PathGrid = PathGrid::new(20, 20);
-        let result = distribute_group_destinations(&grid, (10, 10), &[1], &[]);
-        assert_eq!(result, vec![(1, 10, 10)]);
+    fn member(command_index: usize, entity_id: u64, cell: (i16, i16)) -> GroupDestinationMember {
+        GroupDestinationMember {
+            command_index,
+            entity_id,
+            coord: [
+                i32::from(cell.0) * 256 + 128,
+                i32::from(cell.1) * 256 + 128,
+                0,
+            ],
+            source_cell: cell,
+        }
     }
 
+    const CLEAR: CandidateFacts = CandidateFacts {
+        in_playfield: true,
+        same_zone: true,
+        height_band_ok: true,
+        can_enter_code: 0,
+    };
+
     #[test]
-    fn test_two_vehicles_get_unique_cells() {
-        let grid: PathGrid = PathGrid::new(20, 20);
-        let result = distribute_group_destinations(&grid, (10, 10), &[1, 2], &[]);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], (1, 10, 10), "First vehicle gets center");
-        assert_ne!(
-            (result[1].1, result[1].2),
-            (10, 10),
-            "Second vehicle gets a different cell"
+    fn normal_group_uses_centroid_anchor_distance_order_and_directional_probes() {
+        let members = [
+            member(0, 10, (10, 10)),
+            member(1, 11, (12, 10)),
+            member(2, 12, (10, 12)),
+        ];
+
+        let assignments = distribute_group_destinations((20, 20), &members, |_, _| CLEAR);
+
+        assert_eq!(
+            assignments,
+            vec![
+                GroupDestinationAssignment {
+                    command_index: 0,
+                    destination: (20, 20),
+                },
+                GroupDestinationAssignment {
+                    command_index: 1,
+                    destination: (21, 20),
+                },
+                GroupDestinationAssignment {
+                    command_index: 2,
+                    destination: (20, 21),
+                },
+            ]
         );
     }
 
     #[test]
-    fn test_three_infantry_share_center() {
-        let grid: PathGrid = PathGrid::new(20, 20);
-        let result = distribute_group_destinations(&grid, (10, 10), &[], &[1, 2, 3]);
-        assert_eq!(result.len(), 3);
-        // All three should get the center cell (sub-cell packing).
-        for &(_, rx, ry) in &result {
-            assert_eq!((rx, ry), (10, 10), "Infantry should share center cell");
-        }
-    }
+    fn congested_ray_keeps_fallback_after_an_earlier_bad_probe() {
+        let members = [member(0, 10, (10, 10)), member(1, 11, (12, 10))];
+        let mut probes = Vec::new();
 
-    #[test]
-    fn test_four_infantry_overflow_to_next_cell() {
-        let grid: PathGrid = PathGrid::new(20, 20);
-        let result = distribute_group_destinations(&grid, (10, 10), &[], &[1, 2, 3, 4]);
-        assert_eq!(result.len(), 4);
-        // First 3 at center.
-        for i in 0..3 {
-            assert_eq!(
-                (result[i].1, result[i].2),
-                (10, 10),
-                "Infantry {} should be at center",
-                i
-            );
-        }
-        // Fourth at a different cell.
-        assert_ne!(
-            (result[3].1, result[3].2),
-            (10, 10),
-            "Fourth infantry overflows to adjacent cell"
+        let assignments = distribute_group_destinations((20, 20), &members, |_, candidate| {
+            probes.push(candidate);
+            CandidateFacts {
+                can_enter_code: if candidate == (19, 20) { 5 } else { 0 },
+                ..CLEAR
+            }
+        });
+
+        assert_eq!(probes, vec![(19, 20), (18, 20)]);
+        assert_eq!(
+            assignments,
+            vec![
+                GroupDestinationAssignment {
+                    command_index: 0,
+                    destination: (20, 20),
+                },
+                GroupDestinationAssignment {
+                    command_index: 1,
+                    destination: (20, 20),
+                },
+            ]
         );
     }
 
     #[test]
-    fn test_mixed_vehicles_and_infantry() {
-        let grid: PathGrid = PathGrid::new(20, 20);
-        let result = distribute_group_destinations(&grid, (10, 10), &[1, 2], &[3, 4, 5]);
-        assert_eq!(result.len(), 5);
-        // Vehicles get unique cells.
-        let v1: (u16, u16) = (result[0].1, result[0].2);
-        let v2: (u16, u16) = (result[1].1, result[1].2);
-        assert_ne!(v1, v2, "Vehicles must have different cells");
-        // Infantry should not overlap with vehicle cells.
-        for &(_, rx, ry) in &result[2..] {
-            assert_ne!((rx, ry), v1, "Infantry must not overlap vehicle 1");
-            assert_ne!((rx, ry), v2, "Infantry must not overlap vehicle 2");
-        }
+    fn playfield_boundary_aborts_the_ray_on_its_first_outside_probe() {
+        let members = [member(0, 10, (10, 10)), member(1, 11, (12, 10))];
+        let mut probes = Vec::new();
+
+        let assignments = distribute_group_destinations((20, 20), &members, |_, candidate| {
+            probes.push(candidate);
+            CandidateFacts::outside_playfield()
+        });
+
+        assert_eq!(probes, vec![(19, 20)]);
+        assert_eq!(assignments[0].destination, (20, 20));
+        assert_eq!(assignments[1].destination, (20, 20));
     }
 
     #[test]
-    fn test_unwalkable_center_spreads_to_walkable() {
-        let mut grid: PathGrid = PathGrid::new(20, 20);
-        grid.set_blocked(10, 10, true);
-        let result = distribute_group_destinations(&grid, (10, 10), &[1, 2], &[]);
-        // Neither vehicle should be at the unwalkable center.
-        for &(_, rx, ry) in &result {
-            assert_ne!((rx, ry), (10, 10), "Should not assign to unwalkable cell");
-        }
-    }
+    fn later_members_from_the_same_source_cell_share_one_assignment() {
+        let members = [
+            member(0, 10, (10, 10)),
+            member(1, 11, (14, 10)),
+            member(2, 12, (14, 10)),
+            member(3, 13, (6, 10)),
+        ];
+        let mut evaluated_ids = Vec::new();
 
-    #[test]
-    fn test_large_group_all_assigned() {
-        let grid: PathGrid = PathGrid::new(30, 30);
-        let vehicles: Vec<u64> = (1..=10).collect();
-        let infantry: Vec<u64> = (11..=25).collect();
-        let result = distribute_group_destinations(&grid, (15, 15), &vehicles, &infantry);
-        assert_eq!(result.len(), 25, "All 25 units should get assignments");
-        // All vehicle cells should be unique.
-        let vehicle_cells: BTreeSet<(u16, u16)> =
-            result[..10].iter().map(|&(_, rx, ry)| (rx, ry)).collect();
-        assert_eq!(vehicle_cells.len(), 10, "All 10 vehicles at unique cells");
-    }
+        let assignments = distribute_group_destinations((20, 20), &members, |member, _| {
+            evaluated_ids.push(member.entity_id);
+            CLEAR
+        });
 
-    #[test]
-    fn test_determinism_same_inputs_same_outputs() {
-        let grid: PathGrid = PathGrid::new(20, 20);
-        let v: Vec<u64> = vec![1, 2, 3];
-        let i: Vec<u64> = vec![4, 5, 6, 7];
-        let r1 = distribute_group_destinations(&grid, (10, 10), &v, &i);
-        let r2 = distribute_group_destinations(&grid, (10, 10), &v, &i);
-        assert_eq!(r1, r2, "Same inputs must produce same outputs");
-    }
-
-    #[test]
-    fn test_ring_cells_center_first() {
-        let cells = collect_ring_cells((5, 5), 2, 10, 10);
-        assert_eq!(cells[0], (5, 5), "Ring 0 should be center");
-        assert!(cells.len() > 1, "Should have cells beyond center");
-    }
-
-    #[test]
-    fn test_ring_cells_at_map_edge() {
-        // Center at corner (0,0) — only quadrant cells should appear.
-        let cells = collect_ring_cells((0, 0), 2, 10, 10);
-        assert_eq!(cells[0], (0, 0));
-        for &(x, y) in &cells {
-            assert!(x < 10 && y < 10, "All cells should be in bounds");
-        }
+        assert_eq!(assignments[1].destination, (21, 20));
+        assert_eq!(assignments[2].destination, (21, 20));
+        assert!(!evaluated_ids.contains(&12));
     }
 }

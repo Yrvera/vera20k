@@ -123,7 +123,7 @@ fn hash_mission_leaf(leaf: &crate::sim::mission::MissionLeafState, hasher: &mut 
 impl Simulation {
     /// Deterministic state hash over canonicalized simulation state.
     ///
-    /// Hashes clocks, all three RNG streams, production, fog, alliances, and all entity
+    /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(true, true)
@@ -156,15 +156,9 @@ impl Simulation {
 
         self.session.tick.hash(&mut hasher);
         self.session.binary_frame.hash(&mut hasher);
-        // Hash ALL THREE RNG streams in a fixed order. Order is part of the hash
-        // contract and must never change. Hashing only some streams would let a
-        // divergence in another produce identical hashes on two desynced clients
-        // (desync detector goes blind exactly where the RNG-stream split matters).
+        // ScenarioClass owns the sole saved/synchronized RNG. Main and MapGen
+        // are process globals and are deliberately absent from this hash.
         self.scenario_rng.hash_state(&mut hasher);
-        self.main_rng.hash_state(&mut hasher);
-        // mapgen_rng (gamemd g_MapGenRng): appended AFTER the two gameplay streams.
-        // This order is part of the hash contract and must never change.
-        self.mapgen_rng.hash_state(&mut hasher);
         self.substrate.next_stable_object_id.hash(&mut hasher);
         self.substrate.next_occupancy_enter_order.hash(&mut hasher);
 
@@ -921,6 +915,8 @@ impl Simulation {
             if include_mission_v29 {
                 hash_mission_com(&entity.mission, hasher);
                 hash_mission_leaf(&entity.mission_leaf, hasher);
+                entity.occupier.hash(hasher);
+                entity.passive_scan_timer.hash(hasher);
                 match entity.suspended_attack_target {
                     Some(target) => {
                         1u8.hash(hasher);
@@ -984,6 +980,12 @@ mod lifecycle_hash_tests {
         });
         assert_entity_mutation_changes_hash(|entity| {
             entity.owned_count_released = !entity.owned_count_released;
+        });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.occupier = !entity.occupier;
+        });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.passive_scan_timer.arm(7, 12);
         });
     }
 
