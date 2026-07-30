@@ -18,8 +18,7 @@ use crate::sim::world::Simulation;
 use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
 
 // --- Facing calculation tests ---
-// Cell deltas map directly to screen-relative RA2 DirStruct values:
-// 0=N, 64=E, 128=S, 192=W. +dx = east, +dy = south.
+// Computed deltas use the high byte of the active-retail 65,534-scale word.
 
 #[test]
 fn test_facing_iso_north() {
@@ -30,16 +29,14 @@ fn test_facing_iso_north() {
 
 #[test]
 fn test_facing_iso_east() {
-    // (1,0) = east on screen → facing 64.
     let f: u8 = facing_from_delta(1, 0);
-    assert_eq!(f, 64, "East (1,0) should be facing 64");
+    assert_eq!(f, 63, "East (1,0) should be computed facing 63");
 }
 
 #[test]
 fn test_facing_iso_south() {
-    // (0,1) = south on screen → facing 128.
     let f: u8 = facing_from_delta(0, 1);
-    assert_eq!(f, 128, "South (0,1) should be facing 128");
+    assert_eq!(f, 127, "South (0,1) should be computed facing 127");
 }
 
 #[test]
@@ -58,15 +55,14 @@ fn test_facing_iso_northeast() {
 
 #[test]
 fn test_facing_iso_southeast() {
-    // (1,1) = SE on screen → facing 96.
     let f: u8 = facing_from_delta(1, 1);
-    assert_eq!(f, 96, "SE (1,1) should be facing 96");
+    assert_eq!(f, 95, "SE (1,1) should be computed facing 95");
 }
 
 #[test]
 fn test_facing_zero_delta() {
     let f: u8 = facing_from_delta(0, 0);
-    assert_eq!(f, 0, "Zero delta should default to facing 0 (north)");
+    assert_eq!(f, 63, "Zero delta follows the native conversion path");
 }
 
 // --- Movement tick tests ---

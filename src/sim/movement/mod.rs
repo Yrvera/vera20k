@@ -200,9 +200,10 @@ pub struct MoveCommand {
 // Public utilities
 // ---------------------------------------------------------------------------
 
-/// Compute RA2 screen-relative facing byte from a cell-coordinate delta.
+/// Compute the active-retail screen-relative facing byte from a coordinate delta.
 ///
-/// 0=north on screen (iso -x,-y), 64=east, 128=south, 192=west.
+/// Computed directions use the high byte of the native 65,534-scale word;
+/// authored quarter-turn values remain distinct.
 pub fn facing_from_delta(dx: i32, dy: i32) -> u8 {
     facing_from_delta_int(dx, dy)
 }

@@ -63,6 +63,8 @@ pub enum NativeX87Error {
     SubnormalResult { format: &'static str },
     #[error("{format} overflow is outside the verified x87 domain")]
     StoreOverflow { format: &'static str },
+    #[error("x87 division by zero is outside the verified finite domain")]
+    DivisionByZero,
     #[error("x87 integer conversion is outside the verified signed 64-bit domain")]
     IntegerConversion,
 }
@@ -219,6 +221,24 @@ impl X87Chop53 {
         let extended = shift_right_jam_u128(product, shift);
         let exponent = lhs.exponent + rhs.exponent + (top as i32 - 104);
         chop_extended(lhs.sign ^ rhs.sign, exponent, extended)
+    }
+
+    pub fn div(lhs: X87Value, rhs: X87Value) -> Result<X87Value, NativeX87Error> {
+        if rhs.is_zero() {
+            return Err(NativeX87Error::DivisionByZero);
+        }
+        if lhs.is_zero() {
+            return Ok(X87Value::zero(lhs.sign ^ rhs.sign));
+        }
+
+        let quotient = ((lhs.significand as u128) << 64) / rhs.significand as u128;
+        let top = 127 - quotient.leading_zeros();
+        let shift = top - 52;
+        Ok(X87Value {
+            sign: lhs.sign ^ rhs.sign,
+            exponent: lhs.exponent - rhs.exponent + (top as i32 - 64),
+            significand: (quotient >> shift) as u64,
+        })
     }
 
     pub fn compare(lhs: X87Value, rhs: X87Value) -> X87Ordering {
@@ -412,6 +432,25 @@ mod tests {
             0x3fd0_0000_0000_0000,
         );
         assert_eq!(X87Chop53::compare(quarter, half), X87Ordering::Less);
+    }
+
+    #[test]
+    fn division_uses_chopped_53_bit_values() {
+        let one = f64_value(0x3ff0_0000_0000_0000);
+        let three = f64_value(0x4008_0000_0000_0000);
+        let third = X87Chop53::div(one, three).unwrap();
+        assert_eq!(
+            X87Chop53::store_f64(third).unwrap().bits(),
+            0x3fd5_5555_5555_5555,
+        );
+        assert_eq!(
+            X87Chop53::store_f64(X87Chop53::neg(third)).unwrap().bits(),
+            0xbfd5_5555_5555_5555,
+        );
+        assert_eq!(
+            X87Chop53::div(one, f64_value(0x0000_0000_0000_0000)),
+            Err(NativeX87Error::DivisionByZero),
+        );
     }
 
     #[test]
