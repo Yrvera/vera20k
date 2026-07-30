@@ -16,6 +16,8 @@
 //! - Part of sim/ — depends on sim/locomotor, sim/movement.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use crate::sim::movement::locomotor::{AirMovePhase, LocomotorState};
 use crate::util::fixed_math::{SIM_1_5, SIM_ZERO, SimFixed};
 
@@ -283,7 +285,7 @@ mod tests {
         use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
         LocomotorState {
             kind: LocomotorKind::Jumpjet,
-            primary_kind: Some(LocomotorKind::Jumpjet),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Jumpjet),
             piggyback: None,
             layer: MovementLayer::Air,
             phase: GroundMovePhase::Idle,

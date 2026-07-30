@@ -36,6 +36,30 @@ impl LocomotorSlot {
     pub const fn installed(self) -> LocomotorClass {
         self.installed
     }
+
+    /// The slot a runtime kind corresponds to.
+    ///
+    /// The dormant Tiberian Sun kinds — Mech, Tunnel, DropPod — and the
+    /// Parachute override are **not installable**: no retail `Locomotor=` key
+    /// selects them, so no type can be constructed with one. They resolve to the
+    /// constructor seed, which is the same answer the original engine gives any
+    /// value it does not recognise.
+    pub const fn from_kind(kind: LocomotorKind) -> Self {
+        Self::new(match kind {
+            LocomotorKind::Drive => LocomotorClass::Drive,
+            LocomotorKind::Hover => LocomotorClass::Hover,
+            LocomotorKind::Walk => LocomotorClass::Walk,
+            LocomotorKind::Fly => LocomotorClass::Fly,
+            LocomotorKind::Teleport => LocomotorClass::Teleport,
+            LocomotorKind::Ship => LocomotorClass::Ship,
+            LocomotorKind::Jumpjet => LocomotorClass::Jumpjet,
+            LocomotorKind::Rocket => LocomotorClass::Rocket,
+            LocomotorKind::Mech
+            | LocomotorKind::Tunnel
+            | LocomotorKind::DropPod
+            | LocomotorKind::Parachute => LocomotorClass::Teleport,
+        })
+    }
 }
 
 impl From<LocomotorSlot> for LocomotorClass {

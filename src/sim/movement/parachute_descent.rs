@@ -16,6 +16,8 @@
 //! - Part of sim/ — depends on sim/game_entity, sim/entity_store, sim/locomotor.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_f32};
@@ -153,7 +155,7 @@ mod tests {
     fn make_walk_loco() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Walk,
-            primary_kind: Some(LocomotorKind::Walk),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Walk),
             piggyback: None,
             layer: MovementLayer::Ground,
             phase: GroundMovePhase::Idle,

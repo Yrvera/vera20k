@@ -1,6 +1,8 @@
 //! Movement integration tests — verifies ground movement, repath behavior, blocked handling,
 //! stuck recovery, and infantry sub-cell mechanics using minimal simulation setups.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use super::*;
 use crate::map::entities::EntityCategory;
 use crate::map::terrain;
@@ -1988,7 +1990,7 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
     use crate::util::fixed_math::SIM_ONE;
     LocomotorState {
         kind: LocomotorKind::Drive,
-        primary_kind: Some(LocomotorKind::Drive),
+        slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
         piggyback: None,
         layer: MovementLayer::Ground,
         phase: GroundMovePhase::Idle,
@@ -2482,7 +2484,7 @@ use std::collections::BTreeMap;
 fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
     LocomotorState {
         kind: LocomotorKind::Drive,
-        primary_kind: Some(LocomotorKind::Drive),
+        slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
         piggyback: None,
         layer,
         phase: GroundMovePhase::Idle,
@@ -2517,7 +2519,7 @@ fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
 fn make_ship_loco(layer: MovementLayer) -> LocomotorState {
     let mut loco = make_drive_loco(layer);
     loco.kind = LocomotorKind::Ship;
-    loco.primary_kind = Some(LocomotorKind::Ship);
+    loco.slot = LocomotorSlot::from_kind(LocomotorKind::Ship);
     loco.speed_type = SpeedType::Float;
     loco.movement_zone = MovementZone::Water;
     loco

@@ -24,6 +24,8 @@
 //! - Part of sim/ — depends on sim/components, sim/locomotor, map/terrain.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::components::MovementTarget;
 use crate::sim::debug_event_log::DebugEventKind;
@@ -741,7 +743,7 @@ mod tests {
     fn make_fly_loco() -> LocomotorState {
         LocomotorState {
             kind: crate::rules::locomotor_type::LocomotorKind::Fly,
-            primary_kind: Some(crate::rules::locomotor_type::LocomotorKind::Fly),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Fly),
             piggyback: None,
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,
@@ -776,7 +778,7 @@ mod tests {
     fn make_jumpjet_loco() -> LocomotorState {
         LocomotorState {
             kind: crate::rules::locomotor_type::LocomotorKind::Jumpjet,
-            primary_kind: Some(crate::rules::locomotor_type::LocomotorKind::Jumpjet),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Jumpjet),
             piggyback: None,
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,

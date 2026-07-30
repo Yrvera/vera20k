@@ -25,6 +25,7 @@
 use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::ObjectType;
+use crate::sim::movement::locomotion::LocomotorSlot;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
 
 /// Which spatial layer the unit currently occupies.
@@ -112,13 +113,13 @@ const FLY_CLIMB_RATE: SimFixed = SimFixed::lit("300");
 pub struct LocomotorState {
     /// Which locomotor class is currently active.
     pub kind: LocomotorKind,
-    /// Primary locomotor class for this unit.
+    /// The locomotor class this unit was built with — the installed slot.
     ///
-    /// `None` represents old serialized states and resolves to `kind`. New
-    /// entities set this explicitly. CMIN keeps Teleport here while Drive can
-    /// become the active piggyback locomotor.
-    #[serde(default)]
-    pub primary_kind: Option<LocomotorKind>,
+    /// Natively a unit holds exactly one locomotor interface, created once in
+    /// its class constructor from the type's `Locomotor=` CLSID; there is no
+    /// second slot and no re-selection. `kind` is the class *currently driving*
+    /// the unit, which differs from this only while a piggyback stash is active.
+    pub slot: LocomotorSlot,
     /// Active piggybacked locomotor storage.
     ///
     /// For CMIN drive phases, `kind` becomes Drive and this stores the primary
@@ -272,7 +273,7 @@ impl LocomotorState {
 
         Self {
             kind,
-            primary_kind: Some(kind),
+            slot: LocomotorSlot::from_kind(kind),
             piggyback: None,
             layer,
             phase: GroundMovePhase::Idle,
@@ -342,7 +343,7 @@ impl LocomotorState {
 
         Self {
             kind,
-            primary_kind: Some(kind),
+            slot: LocomotorSlot::from_kind(kind),
             piggyback: None,
             layer,
             phase: GroundMovePhase::Idle,
@@ -409,10 +410,9 @@ impl LocomotorState {
         self.kind
     }
 
-    /// Primary locomotor class. Old saves without `primary_kind` fall back to
-    /// the active kind they were serialized with.
+    /// The installed locomotor class, as the runtime discriminant.
     pub fn primary_kind(&self) -> LocomotorKind {
-        self.primary_kind.unwrap_or(self.kind)
+        self.slot.into()
     }
 
     /// Whether the primary locomotor is currently active and no piggyback is stored.
@@ -456,7 +456,13 @@ impl LocomotorState {
             return false;
         };
         self.kind = stored.kind;
-        self.primary_kind = Some(stored.kind);
+        // Natively the installed interface pointer never changes — a piggyback
+        // stashes and restores around it. This write is retained because it is
+        // what the current code does, and in stock play it is a no-op: the only
+        // live piggyback stores Teleport under a Teleporter-primary unit, so the
+        // restored class already equals the installed one. Retiring it belongs
+        // with the piggyback mechanism itself.
+        self.slot = LocomotorSlot::from_kind(stored.kind);
         self.layer = stored.layer;
         self.phase = GroundMovePhase::Idle;
         true

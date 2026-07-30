@@ -14,6 +14,8 @@
 //! Dispatch is `match category` only — no trait object / dyn / vtable
 //! (invariant #2).
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use super::Simulation;
 use crate::map::entities::EntityCategory;
 use crate::map::overlay_types::OverlayTypeRegistry;
@@ -2346,7 +2348,7 @@ mod tests {
             .locomotor
             .as_mut()
             .unwrap()
-            .primary_kind = Some(LocomotorKind::Teleport);
+            .slot = LocomotorSlot::from_kind(LocomotorKind::Teleport);
         assert_ordinary_drive_host_error(
             &primary_mismatch,
             &control,

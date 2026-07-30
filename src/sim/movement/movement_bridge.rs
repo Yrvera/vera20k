@@ -10,6 +10,8 @@
 //!
 //! See docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use crate::sim::components::{BridgeOccupancy, Position};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::pathfinding::PathGrid;
@@ -514,7 +516,7 @@ mod tests {
     fn make_loco(layer: MovementLayer) -> Option<LocomotorState> {
         Some(LocomotorState {
             kind: LocomotorKind::Drive,
-            primary_kind: Some(LocomotorKind::Drive),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
             piggyback: None,
             layer,
             phase: GroundMovePhase::Idle,

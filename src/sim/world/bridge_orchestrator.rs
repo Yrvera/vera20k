@@ -13,6 +13,8 @@
 //! Same as sim/world: depends on sim/bridge_state, sim/rng, rules/, map/;
 //! never render / ui / audio / net.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::bridge_facts::{
@@ -1614,7 +1616,7 @@ mod tests {
     fn drive_loco_on_bridge() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Drive,
-            primary_kind: Some(LocomotorKind::Drive),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
             piggyback: None,
             layer: MovementLayer::Bridge,
             phase: GroundMovePhase::Cruising,

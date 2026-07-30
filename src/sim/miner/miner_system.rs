@@ -1564,7 +1564,7 @@ fn issue_stock_miner_drive_move(
             .map(|locomotor| {
                 let snapshot = (
                     locomotor.kind,
-                    locomotor.primary_kind,
+                    locomotor.slot,
                     locomotor.piggyback,
                     locomotor.layer,
                     locomotor.phase,
@@ -1592,7 +1592,7 @@ fn issue_stock_miner_drive_move(
         info.mover_is_crusher,
     );
     if !issued {
-        if let Some((kind, primary_kind, piggyback, layer, phase)) = activation_snapshot
+        if let Some((kind, slot, piggyback, layer, phase)) = activation_snapshot
             && let Some(locomotor) = sim
                 .substrate
                 .entities
@@ -1600,7 +1600,7 @@ fn issue_stock_miner_drive_move(
                 .and_then(|entity| entity.locomotor.as_mut())
         {
             locomotor.kind = kind;
-            locomotor.primary_kind = primary_kind;
+            locomotor.slot = slot;
             locomotor.piggyback = piggyback;
             locomotor.layer = layer;
             locomotor.phase = phase;

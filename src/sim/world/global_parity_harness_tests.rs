@@ -156,8 +156,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// Re-baselined with the native Mission_Harvest per-path dispatch delays:
 /// a behavior-bearing shift (dispatch cadence + scenario-stream draws), so
 /// the legacy-schema probes move together with the live hash.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 4844629824678724271;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 2401965642562130820;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 1443066111213021467;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 5680012827897705755;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -201,7 +201,17 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 2401965642562130820;
 /// This fixture does not cover the paths the change exists for — a same-tick stop
 /// followed by a mid-tick queue-and-commence — so "behaviour-neutral here" is a
 /// statement about this scenario, not about the engine.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x4E6E_9AFE_2620_505B;
+///
+/// Re-baselined 2026-07-30 for S3b: the installed LocomotorSlot joins the hash.
+/// **Composition-only, proved by neutralisation** — the ceremony this file
+/// normally uses cannot decide it, because the locomotor block is hashed
+/// unconditionally, so BOTH schema probes move with the live value. Instead the
+/// new hash line was commented out and the whole suite re-run: all three
+/// constants returned to their previous committed values exactly, so the
+/// primary_kind -> slot retype changed no behaviour and no other hashed state,
+/// and the entire delta is the one new byte. The absolute per-stream RNG pins
+/// and the dense-scenario position fingerprint were unchanged throughout.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x4C90_6E17_0C39_65B5;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

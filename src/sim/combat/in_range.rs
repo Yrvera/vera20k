@@ -13,6 +13,8 @@
 //! height + bridge), util/lepton (constants), util/fixed_math (isqrt_i64).
 //! Does NOT depend on render/ui/sidebar/audio/net.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::ruleset::RuleSet;
@@ -394,7 +396,7 @@ mod tests {
         e.category = EntityCategory::Aircraft;
         e.locomotor = Some(LocomotorState {
             kind: LocomotorKind::Fly,
-            primary_kind: Some(LocomotorKind::Fly),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Fly),
             piggyback: None,
             layer: MovementLayer::Air,
             phase: GroundMovePhase::Idle,

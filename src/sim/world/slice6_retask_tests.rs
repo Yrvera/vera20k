@@ -103,8 +103,8 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// now join the lockstep hash. The current-tree legacy-schema probe below still
 /// reproduces the prior value exactly; this is a Rust regression ratchet, not
 /// gamemd parity evidence.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 14099801084960151601;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 10767158924782362086;
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 2510769160498056923;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 422730620103477980;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -142,7 +142,17 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 10767158924782362086;
 // paths the change exists for — dock, unlink, unload and deploy handoffs that
 // stop a unit and queue-and-commence in the same tick — are not covered here.)
 // Rust regression ratchet, not gamemd evidence.
-const SLICE6_BASELINE_HASH: u64 = 10769305515705145341;
+//
+// Re-baselined 2026-07-30 for S3b: the installed LocomotorSlot joins the hash.
+// **Composition-only, proved by neutralisation** — the ceremony this file
+// normally uses cannot decide it, because the locomotor block is hashed
+// unconditionally, so BOTH schema probes move with the live value. Instead the
+// new hash line was commented out and the whole suite re-run: all three
+// constants returned to their previous committed values exactly, so the
+// primary_kind -> slot retype changed no behaviour and no other hashed state,
+// and the entire delta is the one new byte. The absolute per-stream RNG pins
+// and the dense-scenario position fingerprint were unchanged throughout.
+const SLICE6_BASELINE_HASH: u64 = 16108227846699375953;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

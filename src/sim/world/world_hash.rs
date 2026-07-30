@@ -705,6 +705,11 @@ impl Simulation {
             if let Some(ref loco) = entity.locomotor {
                 1u8.hash(hasher);
                 (loco.kind as u8).hash(hasher);
+                // The installed slot, distinct from the active kind: the two
+                // differ while a piggyback stash is up, so hashing only the
+                // active class would let a desync in which locomotor a unit was
+                // built with hide behind a matching current one.
+                loco.slot.installed().hash(hasher);
                 (loco.layer as u8).hash(hasher);
                 (loco.phase as u8).hash(hasher);
                 // Hover throttle is authoritative movement state (persists across
