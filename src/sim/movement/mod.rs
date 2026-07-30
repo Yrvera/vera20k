@@ -66,6 +66,7 @@ pub mod group_destination;
 pub mod homing_movement;
 pub mod hover;
 pub mod jumpjet_movement;
+pub mod locomotion;
 pub mod locomotor;
 pub mod parachute_descent;
 pub mod rocket_movement;

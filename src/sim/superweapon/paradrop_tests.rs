@@ -50,6 +50,7 @@ ParachuteMaxFallRate=-3
 FlightLevel=1500
 
 [E1]
+Locomotor={4A582744-9839-11d1-B709-00A024DDAFD1}
 Name=GI
 Cost=200
 Strength=125
@@ -58,6 +59,7 @@ Speed=4
 Primary=M60
 
 [PDPLANE]
+Locomotor={4A582746-9839-11d1-B709-00A024DDAFD1}
 Name=Cargo Plane
 Strength=400
 Armor=light
@@ -109,6 +111,7 @@ ParachuteMaxFallRate=-3
 FlightLevel=1500
 
 [E1]
+Locomotor={4A582744-9839-11d1-B709-00A024DDAFD1}
 Name=GI
 Strength=125
 Armor=none
@@ -117,6 +120,7 @@ Size=2
 Primary=M60
 
 [PDPLANE]
+Locomotor={4A582746-9839-11d1-B709-00A024DDAFD1}
 Name=Cargo Plane
 Strength=400
 Armor=light
@@ -512,6 +516,7 @@ YuriParaDropNum=5
 ParachuteMaxFallRate=-3
 
 [E1]
+Locomotor={4A582744-9839-11d1-B709-00A024DDAFD1}
 Name=GI
 Strength=125
 Armor=none
@@ -533,6 +538,7 @@ Speed=4
 Primary=M60
 
 [PDPLANE]
+Locomotor={4A582746-9839-11d1-B709-00A024DDAFD1}
 Strength=400
 Armor=light
 Speed=15

@@ -106,16 +106,6 @@ impl LocomotorKind {
             }
         }
     }
-
-    /// Default locomotor for a given object category when Locomotor= is absent.
-    pub fn default_for_category(category: ObjectCategory) -> Self {
-        match category {
-            ObjectCategory::Infantry => Self::Walk,
-            ObjectCategory::Vehicle => Self::Drive,
-            ObjectCategory::Aircraft => Self::Fly,
-            ObjectCategory::Building => Self::Drive, // immobile, but safe default
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -485,26 +475,6 @@ mod tests {
     fn test_clsid_no_braces() {
         let kind = LocomotorKind::from_clsid("4A582744-9839-11D1-B709-00A024DDAFD1");
         assert_eq!(kind, LocomotorKind::Walk);
-    }
-
-    #[test]
-    fn test_default_for_category() {
-        assert_eq!(
-            LocomotorKind::default_for_category(ObjectCategory::Infantry),
-            LocomotorKind::Walk
-        );
-        assert_eq!(
-            LocomotorKind::default_for_category(ObjectCategory::Vehicle),
-            LocomotorKind::Drive
-        );
-        assert_eq!(
-            LocomotorKind::default_for_category(ObjectCategory::Aircraft),
-            LocomotorKind::Fly
-        );
-        assert_eq!(
-            LocomotorKind::default_for_category(ObjectCategory::Building),
-            LocomotorKind::Drive
-        );
     }
 
     #[test]

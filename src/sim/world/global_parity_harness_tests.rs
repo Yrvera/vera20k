@@ -213,9 +213,9 @@ fn harness_rules() -> RuleSet {
          [VehicleTypes]\n0=MTNK\n1=HARV\n\n\
          [AircraftTypes]\n\n\
          [BuildingTypes]\n0=GAWEAP\n1=GAREFN\n\n\
-         [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
-         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
-         [HARV]\nStrength=600\nArmor=heavy\nSpeed=5\nHarvester=yes\nStorage=28\nDock=GAREFN\n\n\
+         [E1]\nLocomotor={4A582744-9839-11d1-B709-00A024DDAFD1}\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
+         [MTNK]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+         [HARV]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\nStrength=600\nArmor=heavy\nSpeed=5\nHarvester=yes\nStorage=28\nDock=GAREFN\n\n\
          [GAWEAP]\nStrength=1000\nArmor=wood\nFoundation=4x3\n\n\
          [GAREFN]\nStrength=1000\nArmor=wood\nRefinery=yes\nFoundation=3x3\n\n\
          [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\

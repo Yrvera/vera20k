@@ -1064,10 +1064,13 @@ impl ObjectType {
             ore_purifier: section.get_bool("OrePurifier").unwrap_or(false),
 
             // Locomotor / movement fields
-            locomotor: section
-                .get("Locomotor")
-                .map(LocomotorKind::from_clsid)
-                .unwrap_or_else(|| LocomotorKind::default_for_category(category)),
+            // Absent key and unparseable CLSID both resolve to Teleport, which
+            // is the type constructor's seed — see
+            // `sim::movement::locomotion::install` for why there is one rule
+            // here and not a per-category table.
+            locomotor: crate::sim::movement::locomotion::resolve_installed_kind(
+                section.get("Locomotor").as_deref(),
+            ),
             speed_type: section
                 .get("SpeedType")
                 .map(SpeedType::from_ini)
