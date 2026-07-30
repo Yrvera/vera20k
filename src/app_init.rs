@@ -17,7 +17,7 @@ use crate::app_init_helpers::{
     spawn_entities, theater_ext_for,
 };
 use crate::app_list_maps::{
-    LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
+    load_map_by_name_or_path_with_assets, try_load_mmx, LoadedMap, LoadedMapSource,
 };
 use crate::app_skirmish::{
     apply_explicit_skirmish_launch_session, build_overlay_atlas_from_map,
@@ -166,26 +166,17 @@ impl MapLoadInitial {
 }
 
 pub(crate) fn load_csf(asset_manager: &AssetManager) -> Option<crate::assets::csf_file::CsfFile> {
-    for name in [
-        "ra2md.csf",
-        "ra2.csf",
-        "stringtablemd.csf",
-        "stringtable.csf",
-    ] {
-        let Some(bytes) = asset_manager.get_ref(name) else {
-            continue;
-        };
-        match crate::assets::csf_file::CsfFile::from_bytes(bytes) {
-            Ok(csf) => {
-                log::info!("Loaded CSF string table: {name}");
-                return Some(csf);
-            }
-            Err(err) => {
-                log::warn!("Failed to parse CSF {name}: {err:#}");
-            }
+    let bytes = asset_manager.get_ref("ra2md.csf")?;
+    match crate::assets::csf_file::CsfFile::from_bytes(bytes) {
+        Ok(csf) => {
+            log::info!("Loaded CSF string table: ra2md.csf");
+            Some(csf)
+        }
+        Err(err) => {
+            log::warn!("Failed to parse CSF ra2md.csf: {err:#}");
+            None
         }
     }
-    None
 }
 
 /// Rebuild transient app lighting from base map light plus the current live entities.

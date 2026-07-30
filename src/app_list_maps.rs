@@ -15,8 +15,8 @@ use crate::map::briefing::BriefingSection;
 use crate::map::map_file::{self, MapFile};
 use crate::map::preview::{PreviewSection, PreviewSourceBounds, PreviewStartPoint};
 use crate::map::waypoints::{
-    DEFAULT_SKIRMISH_PLAYER_CAPACITY, multiplayer_start_waypoints, parse_waypoints,
-    skirmish_player_capacity,
+    multiplayer_start_waypoints, parse_waypoints, skirmish_player_capacity,
+    DEFAULT_SKIRMISH_PLAYER_CAPACITY,
 };
 use crate::rules::ini_parser::IniFile;
 use crate::skirmish_scenarios::{SkirmishScenarioRecord, SkirmishScenarioSource};
@@ -64,7 +64,7 @@ pub fn list_available_maps() -> Result<Vec<MapMenuEntry>> {
             Err(_) => continue,
         };
         let path = entry.path();
-        if !path.is_file() {
+        if !retail_wildcard_file(&path) {
             continue;
         }
         let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
@@ -230,7 +230,7 @@ fn loose_files_with_extension(ra2_dir: &Path, extension: &str) -> Result<Vec<(Pa
             Err(_) => continue,
         };
         let path = entry.path();
-        if !path.is_file() {
+        if !retail_wildcard_file(&path) {
             continue;
         }
         let Some(file_name) = path
@@ -419,7 +419,7 @@ pub(crate) fn read_map_ini_for_metadata(path: &Path) -> Option<IniFile> {
 
 pub(crate) fn load_map_by_name_or_path(ra2_dir: &Path, map_name: &str) -> Result<LoadedMap> {
     let direct: PathBuf = PathBuf::from(map_name);
-    if direct.exists() {
+    if direct.is_absolute() && direct.exists() {
         return load_map_from_path_with_source(&direct);
     }
 
@@ -436,9 +436,27 @@ pub(crate) fn load_map_by_name_or_path(ra2_dir: &Path, map_name: &str) -> Result
     }
 
     Err(anyhow::anyhow!(
-        "Map '{}' not found (checked cwd, RA2 dir, and .mmx/.yro/.map/.mpr/.yrm variants)",
+        "Map '{}' not found (checked the retail root and .mmx/.yro/.map/.mpr/.yrm variants)",
         map_name
     ))
+}
+
+fn retail_wildcard_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x116 == 0
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
 }
 
 pub(crate) fn load_map_by_name_or_path_with_assets(

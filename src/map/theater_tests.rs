@@ -12,6 +12,71 @@ fn make_test_ini() -> String {
 }
 
 #[test]
+fn active_theater_names_and_archive_order_match_retail() {
+    let expected = [
+        (
+            "TEMPERATE",
+            "temperatmd.ini",
+            &["temperat.mix", "tem.mix", "isotemmd.mix", "isotemp.mix"][..],
+        ),
+        (
+            "SNOW",
+            "snowmd.ini",
+            &[
+                "snowmd.mix",
+                "snow.mix",
+                "sno.mix",
+                "isosnomd.mix",
+                "isosnow.mix",
+            ][..],
+        ),
+        (
+            "URBAN",
+            "urbanmd.ini",
+            &["urban.mix", "urb.mix", "isourbmd.mix", "isourb.mix"][..],
+        ),
+        (
+            "DESERT",
+            "desertmd.ini",
+            &["desert.mix", "des.mix", "isodesmd.mix", "isodes.mix"][..],
+        ),
+        (
+            "NEWURBAN",
+            "urbannmd.ini",
+            &["urbann.mix", "ubn.mix", "isoubnmd.mix", "isoubn.mix"][..],
+        ),
+        (
+            "LUNAR",
+            "lunarmd.ini",
+            &["lunar.mix", "lun.mix", "isolunmd.mix", "isolun.mix"][..],
+        ),
+    ];
+
+    for (name, ini_name, archives) in expected {
+        let def = theater_def(name).expect("active theater definition");
+        assert_eq!(def.ini_name, ini_name);
+        assert_eq!(def.mix_archives, archives);
+    }
+}
+
+#[test]
+fn missing_theater_palette_uses_native_rgb_ramp() {
+    let palette = native_missing_theater_palette();
+    assert_eq!(
+        palette.colors[0],
+        Color {
+            r: 0,
+            g: 255,
+            b: 0,
+            a: 0,
+        }
+    );
+    assert_eq!(palette.colors[1], Color::rgb(1, 254, 4));
+    assert_eq!(palette.colors[64], Color::rgb(64, 191, 0));
+    assert_eq!(palette.colors[255], Color::rgb(255, 0, 252));
+}
+
+#[test]
 fn test_parse_tileset_ini_basic() {
     let ini: &str = &make_test_ini();
     let lookup: TilesetLookup = parse_tileset_ini(ini.as_bytes(), "tem").expect("Should parse");

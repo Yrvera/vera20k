@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::assets::asset_manager::AssetManager;
-use crate::assets::pal_file::Palette;
+use crate::assets::pal_file::{Color, Palette};
 use crate::assets::tmp_file::TmpFile;
 use crate::map::bridge_facts::{BridgeRampKind, BridgeRampTile};
 use crate::map::map_file::MapError;
@@ -56,96 +56,90 @@ pub struct TileImage {
 
 /// Static definition for a theater.
 struct TheaterDef {
-    /// INI filenames to try (YR md variant first, base RA2 fallback).
-    ini_names: &'static [&'static str],
+    /// Exact active-YR theater INI filename.
+    ini_name: &'static str,
     /// File extension for TMP files (e.g., "tem" for temperate).
     extension: &'static str,
-    /// Palette filenames to try (iso palette first, then unit, then generic).
-    palette_names: &'static [&'static str],
-    /// Unit palette filenames to try (theater-specific unit palette).
-    unit_palette_names: &'static [&'static str],
-    /// Tiberium palette filenames to try (used for ore/gem overlays).
-    /// Tiberium uses a separate theater palette: temperat.pal, snow.pal, etc.
-    tiberium_palette_names: &'static [&'static str],
-    /// Theater-specific MIX archives to load for highest priority file access.
-    /// YR md variants first, then base RA2 variants. Loaded via load_nested().
+    /// Exact isometric, unit, and theater/ore palette filenames.
+    iso_palette_name: &'static str,
+    unit_palette_name: &'static str,
+    theater_palette_name: &'static str,
+    /// Theater-specific MIX archives in retail construction order.
     mix_archives: &'static [&'static str],
 }
 
-/// All known theater definitions. First match wins for INI/palette lookup.
+/// All active Yuri's Revenge theater definitions.
 const THEATER_DEFS: &[(&str, TheaterDef)] = &[
-    // Try YR (md) INI first — YR maps use YR tileset indices.
-    // Fall back to base RA2 INI if md version not found.
     (
         "TEMPERATE",
         TheaterDef {
-            ini_names: &["temperatmd.ini", "temperat.ini"],
+            ini_name: "temperatmd.ini",
             extension: "tem",
-            palette_names: &["isotem.pal", "temperat.pal"],
-            unit_palette_names: &["unittem.pal", "unit.pal"],
-            tiberium_palette_names: &["temperat.pal", "isotem.pal"],
-            mix_archives: &["isotemmd.mix", "isotemp.mix", "tem.mix", "temperat.mix"],
+            iso_palette_name: "isotem.pal",
+            unit_palette_name: "unittem.pal",
+            theater_palette_name: "temperat.pal",
+            mix_archives: &["temperat.mix", "tem.mix", "isotemmd.mix", "isotemp.mix"],
         },
     ),
     (
         "SNOW",
         TheaterDef {
-            ini_names: &["snowmd.ini", "snow.ini"],
+            ini_name: "snowmd.ini",
             extension: "sno",
-            palette_names: &["isosno.pal", "snow.pal"],
-            unit_palette_names: &["unitsno.pal", "unit.pal"],
-            tiberium_palette_names: &["snow.pal", "isosno.pal"],
-            mix_archives: &["isosnowmd.mix", "isosnow.mix", "sno.mix", "snow.mix"],
+            iso_palette_name: "isosno.pal",
+            unit_palette_name: "unitsno.pal",
+            theater_palette_name: "snow.pal",
+            mix_archives: &[
+                "snowmd.mix",
+                "snow.mix",
+                "sno.mix",
+                "isosnomd.mix",
+                "isosnow.mix",
+            ],
         },
     ),
     (
         "URBAN",
         TheaterDef {
-            ini_names: &["urbanmd.ini", "urban.ini"],
+            ini_name: "urbanmd.ini",
             extension: "urb",
-            palette_names: &["isourb.pal", "urban.pal"],
-            unit_palette_names: &["uniturb.pal", "unit.pal"],
-            tiberium_palette_names: &["urban.pal", "isourb.pal"],
-            mix_archives: &["isourbnmd.mix", "isourb.mix", "urb.mix", "urban.mix"],
+            iso_palette_name: "isourb.pal",
+            unit_palette_name: "uniturb.pal",
+            theater_palette_name: "urban.pal",
+            mix_archives: &["urban.mix", "urb.mix", "isourbmd.mix", "isourb.mix"],
         },
     ),
-    // YR-introduced theaters. No base RA2 INI variants exist for these in
-    // retail (urbann.ini / lunar.ini / desert.ini absent), so only the YR
-    // `md` INI is listed. MIX/palette names follow the same Westwood
-    // convention as TEMPERATE/SNOW/URBAN: 6-char `iso<ext>.pal` iso
-    // palette, `unit<ext>.pal` unit palette, `<name>.pal` for tiberium.
     (
         "LUNAR",
         TheaterDef {
-            ini_names: &["lunarmd.ini"],
+            ini_name: "lunarmd.ini",
             extension: "lun",
-            palette_names: &["isolun.pal", "lunar.pal"],
-            unit_palette_names: &["unitlun.pal", "unit.pal"],
-            tiberium_palette_names: &["lunar.pal", "isolun.pal"],
-            mix_archives: &["isolunmd.mix", "isolun.mix", "lun.mix", "lunar.mix"],
+            iso_palette_name: "isolun.pal",
+            unit_palette_name: "unitlun.pal",
+            theater_palette_name: "lunar.pal",
+            mix_archives: &["lunar.mix", "lun.mix", "isolunmd.mix", "isolun.mix"],
         },
     ),
     (
         "DESERT",
         TheaterDef {
-            ini_names: &["desertmd.ini"],
+            ini_name: "desertmd.ini",
             extension: "des",
-            palette_names: &["isodes.pal", "desert.pal"],
-            unit_palette_names: &["unitdes.pal", "unit.pal"],
-            tiberium_palette_names: &["desert.pal", "isodes.pal"],
-            mix_archives: &["isodesmd.mix", "isodes.mix", "des.mix", "desert.mix"],
+            iso_palette_name: "isodes.pal",
+            unit_palette_name: "unitdes.pal",
+            theater_palette_name: "desert.pal",
+            mix_archives: &["desert.mix", "des.mix", "isodesmd.mix", "isodes.mix"],
         },
     ),
     (
         "NEWURBAN",
         TheaterDef {
-            // INI key is `urbann` (double-n), the engine theater key is `NEWURBAN`.
-            ini_names: &["urbannmd.ini"],
+            ini_name: "urbannmd.ini",
             extension: "ubn",
-            palette_names: &["isoubn.pal", "urbann.pal"],
-            unit_palette_names: &["unitubn.pal", "unit.pal"],
-            tiberium_palette_names: &["urbann.pal", "isoubn.pal"],
-            mix_archives: &["isoubnmd.mix", "isoubn.mix", "ubn.mix", "urbann.mix"],
+            iso_palette_name: "isoubn.pal",
+            unit_palette_name: "unitubn.pal",
+            theater_palette_name: "urbann.pal",
+            mix_archives: &["urbann.mix", "ubn.mix", "isoubnmd.mix", "isoubn.mix"],
         },
     ),
 ];
@@ -775,71 +769,49 @@ impl BridgeAnchorVariantTable {
 
 /// Load tileset data for a theater.
 ///
-/// Loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority,
-/// then parses the theater INI for tileset definitions and loads palettes.
+/// Replaces the active theater MIX group, then loads the exact active-YR INI
+/// and palette filenames.
 /// The AssetManager is mutable because theater MIX archives are loaded on demand.
 pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Option<TheaterData> {
     let def: &TheaterDef = theater_def(theater_name)?;
 
-    // Load theater-specific MIX archives at highest priority.
-    // These contain the .tmp terrain tiles and theater-specific SHP sprites.
-    for &mix_name in def.mix_archives {
-        match asset_manager.load_nested(mix_name) {
-            Ok(()) => log::info!("Theater {}: loaded MIX '{}'", theater_name, mix_name),
-            Err(_) => log::debug!(
-                "Theater {}: MIX '{}' not found (optional)",
-                theater_name,
-                mix_name
-            ),
-        }
+    if let Err(err) = asset_manager.activate_theater_archives(theater_name, def.mix_archives) {
+        log::warn!(
+            "Theater {}: archive activation failed: {}",
+            theater_name,
+            err
+        );
+        return None;
     }
 
-    // Find the theater INI file (try each name in order, log which one matched).
-    let mut ini_data: Option<Vec<u8>> = None;
-    let mut ini_name: &str = "";
-    for &name in def.ini_names {
-        if let Some((data, source)) = asset_manager.get_with_source(name) {
-            log::info!("Theater {}: INI '{}' from {}", theater_name, name, source);
-            ini_name = name;
-            ini_data = Some(data);
-            break;
-        }
-    }
-    let ini_data: Vec<u8> = ini_data?;
+    let (ini_data, ini_source) = asset_manager.get_with_source(def.ini_name)?;
+    log::info!(
+        "Theater {}: INI '{}' from {}",
+        theater_name,
+        def.ini_name,
+        ini_source
+    );
 
     let lookup: TilesetLookup = parse_tileset_ini(&ini_data, def.extension).ok()?;
     log::info!(
         "Theater {}: loaded {} from INI '{}' ({} tile_id slots, {} tilesets)",
         theater_name,
         def.extension,
-        ini_name,
+        def.ini_name,
         lookup.len(),
         lookup.bounds().len()
     );
 
-    // Find the iso palette (for terrain tile rendering).
-    let iso_palette: Palette = find_palette(asset_manager, def.palette_names, theater_name, "iso")?;
-
-    // Find the unit palette (for unit/overlay sprites on this theater).
-    let unit_palette: Palette =
-        find_palette(asset_manager, def.unit_palette_names, theater_name, "unit")?;
-
-    // Find the tiberium palette (for ore/gem overlays).
-    // Tiberium uses a dedicated palette (e.g., temperat.pal) distinct from the unit palette.
-    // Fall back to iso palette if the dedicated tiberium palette is not found.
-    let tiberium_palette: Palette = find_palette(
+    let iso_palette = load_exact_palette(asset_manager, def.iso_palette_name, theater_name, "iso")?;
+    let unit_palette =
+        load_exact_palette(asset_manager, def.unit_palette_name, theater_name, "unit")?;
+    let tiberium_palette = load_exact_palette(
         asset_manager,
-        def.tiberium_palette_names,
+        def.theater_palette_name,
         theater_name,
-        "tiberium",
+        "theater",
     )
-    .unwrap_or_else(|| {
-        log::warn!(
-            "Theater {}: tiberium palette not found, falling back to iso palette",
-            theater_name
-        );
-        iso_palette.clone()
-    });
+    .unwrap_or_else(native_missing_theater_palette);
 
     // Parse theater [General] tile-set keys directly from the raw text; these
     // keys are not represented by the TileSet parser.
@@ -1044,33 +1016,45 @@ fn parse_general_i32(text: &str, key: &str) -> Option<i32> {
     None
 }
 
-/// Try palette filenames in order, returning the first valid palette found.
-fn find_palette(
+fn load_exact_palette(
     asset_manager: &AssetManager,
-    names: &[&str],
+    name: &str,
     theater_name: &str,
     palette_kind: &str,
 ) -> Option<Palette> {
-    for &name in names {
-        if let Some((data, source)) = asset_manager.get_with_source(name) {
-            if let Ok(pal) = Palette::from_bytes(&data) {
-                log::info!(
-                    "Theater {}: {} palette '{}' from {}",
-                    theater_name,
-                    palette_kind,
-                    name,
-                    source
-                );
-                return Some(pal);
-            }
+    if let Some((data, source)) = asset_manager.get_with_source(name) {
+        if let Ok(palette) = Palette::from_bytes_gamemd_ui(&data) {
+            log::info!(
+                "Theater {}: {} palette '{}' from {}",
+                theater_name,
+                palette_kind,
+                name,
+                source
+            );
+            return Some(palette);
         }
     }
     log::warn!(
-        "Theater {}: no {} palette found",
+        "Theater {}: {} palette '{}' unavailable",
         theater_name,
-        palette_kind
+        palette_kind,
+        name
     );
     None
+}
+
+fn native_missing_theater_palette() -> Palette {
+    let mut colors = [Color::rgb(0, 0, 0); 256];
+    for (index, color) in colors.iter_mut().enumerate() {
+        let value = index as u8;
+        *color = Color {
+            r: value,
+            g: 255u8.wrapping_sub(value),
+            b: value.wrapping_shl(2),
+            a: if index == 0 { 0 } else { 255 },
+        };
+    }
+    Palette { colors }
 }
 
 /// Collect all unique TileKey values used by a terrain grid.
