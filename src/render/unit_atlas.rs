@@ -221,11 +221,7 @@ pub fn collect_needed_unit_keys(
             .and_then(|r| r.object(type_str))
             .map(|o| o.has_turret)
             .unwrap_or(false);
-        let layers: &[VxlLayer] = if has_turret {
-            &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
-        } else {
-            &[VxlLayer::Composite]
-        };
+        let layers: &[VxlLayer] = seed_layers_for(asset_manager, type_str, has_turret, rules, art);
         for &layer in layers {
             let fc_key: (String, VxlLayer) = (type_str.to_string(), layer);
             if !frame_counts.contains_key(&fc_key) {
@@ -332,11 +328,7 @@ pub fn build_unit_atlas(
             .and_then(|r| r.object(type_str))
             .map(|o| o.has_turret)
             .unwrap_or(false);
-        let layers: &[VxlLayer] = if has_turret {
-            &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
-        } else {
-            &[VxlLayer::Composite]
-        };
+        let layers: &[VxlLayer] = seed_layers_for(asset_manager, type_str, has_turret, rules, art);
         for &layer in layers {
             let fc_key: (String, VxlLayer) = (type_str.to_string(), layer);
             if !frame_counts.contains_key(&fc_key) {
@@ -435,11 +427,8 @@ pub fn build_unit_atlas(
             }
         };
         let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
-        let layers: &[VxlLayer] = if uc_obj.has_turret {
-            &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
-        } else {
-            &[VxlLayer::Composite]
-        };
+        let layers: &[VxlLayer] =
+            seed_layers_for(asset_manager, &uc_name, uc_obj.has_turret, rules, art);
         for &layer in layers {
             let fc_key: (String, VxlLayer) = (uc_name.clone(), layer);
             if !frame_counts.contains_key(&fc_key) {
@@ -857,6 +846,56 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
     }
 
     Some((sprite, use_gpu))
+}
+
+/// The layer set to seed atlas keys for, given a type's turret flag.
+///
+/// A turreted type gets separate Body/Turret layers, and a Barrel layer **only
+/// when a barrel voxel actually exists**. Most turreted units model the gun as
+/// part of the turret and ship no `…BARL.VXL`/`…BARREL.VXL` — the Soviet War
+/// Miner is one. Seeding a Barrel key for those produced a key that could never
+/// be satisfied: the Barrel branch of the renderer rebuilds the body and turret
+/// sprites, finds no barrel, and returns `None`, so nothing is cached and the
+/// whole attempt repeats on the next frame, forever. A single such unit on
+/// screen logged ~135k render failures in four minutes of play and paid for two
+/// discarded voxel rasterisations every frame.
+fn seed_layers_for(
+    asset_manager: &AssetManager,
+    type_id: &str,
+    has_turret: bool,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+) -> &'static [VxlLayer] {
+    if !has_turret {
+        return &[VxlLayer::Composite];
+    }
+    if has_barrel_voxel(asset_manager, type_id, rules, art) {
+        &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
+    } else {
+        &[VxlLayer::Body, VxlLayer::Turret]
+    }
+}
+
+/// Whether this type ships a separate barrel voxel under either suffix the
+/// renderer accepts. Resolves the image id exactly as the render path does, so
+/// the seeding decision and the lookup can never disagree.
+fn has_barrel_voxel(
+    asset_manager: &AssetManager,
+    type_id: &str,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+) -> bool {
+    let rules_image: String = rules
+        .and_then(|r| r.object(type_id))
+        .map(|o| o.image.clone())
+        .unwrap_or_else(|| type_id.to_string());
+    let image: String = art
+        .map(|a| a.resolve_effective_image_id(type_id, &rules_image))
+        .unwrap_or_else(|| rules_image.to_uppercase());
+    asset_manager
+        .get_ref(&format!("{image}BARL.VXL"))
+        .or_else(|| asset_manager.get_ref(&format!("{image}BARREL.VXL")))
+        .is_some()
 }
 
 /// Detect the HVA animation frame count for a given (type_id, layer) combo.
