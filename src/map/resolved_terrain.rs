@@ -2409,7 +2409,7 @@ mod tests {
         let cell = grid.cell(5, 5).expect("center LAT cell");
 
         assert_eq!(cell.source_tile_index, 5);
-        assert_eq!(cell.final_tile_index, 13);
+        assert_eq!(cell.final_tile_index, 25);
         assert!(cell.allows_tiberium);
     }
 

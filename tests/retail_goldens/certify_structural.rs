@@ -465,32 +465,158 @@ fn certify_tmp_value_layout() {
 #[ignore] // Requires RA2_DIR (retail game files)
 fn certify_vxl_structural() {
     // Normal-table sizes per src/render/vxl_normals.rs: mode 2 = TS table (36
-    // entries), mode 4 = RA2 table (250 distinct entries; 250–255 stale).
+    // entries), mode 4 = RA2 table (245 entries; 245–254 absent/stale).
     //
     // Machine-derived retail invariant (full-corpus evidence pass 2026-07-19):
     // every retail limb is mode 2 or 4; every voxel's normal_index is either
     // inside its mode's table OR exactly 255. Index 255 appears ONLY in
     // placeholder limbs named DUMMY01/DUMMY02 (1,931 voxels across 8 files);
-    // 250–254 and 36–254 (mode 2) never occur. A new index in that gap is a
+    // 245–254 and 36–254 (mode 2) never occur. A new index in that gap is a
     // real finding — investigate, don't widen the exception.
+    const VXL_FILE_HEADER_SIZE: usize = 32;
+    const VXL_PALETTE_PAGE_SIZE: usize = 770;
+    const VXL_SECTION_HEADER_SIZE: usize = 28;
+    const VXL_SECTION_TAILER_SIZE: usize = 92;
+
     let names = xcc_name_map();
     let mut dummy_255: Vec<String> = Vec::new();
+    let mut vxl_files = 0usize;
+    let mut header_count = 0usize;
+    let mut tailer_count = 0usize;
+    let mut nonidentity_limb_numbers = 0usize;
+    let mut count_mismatch_files = 0usize;
+    let mut nonpermutation_files = 0usize;
     certify_format("vxl", |ce, data| {
         let vxl = VxlFile::from_bytes(data).map_err(|e| e.to_string())?;
-        if vxl.limbs.len() != vxl.limb_count as usize {
+        let raw_u32 = |offset: usize| {
+            u32::from_le_bytes(
+                data[offset..offset + 4]
+                    .try_into()
+                    .expect("parsed VXL extent"),
+            )
+        };
+        let raw_f32 = |offset: usize| {
+            f32::from_le_bytes(
+                data[offset..offset + 4]
+                    .try_into()
+                    .expect("parsed VXL extent"),
+            )
+        };
+        let palette_count = raw_u32(16) as usize;
+        let raw_limb_count = raw_u32(20) as usize;
+        let raw_tailer_count = raw_u32(24) as usize;
+        let raw_body_size = raw_u32(28) as usize;
+
+        if vxl.limbs.len() != raw_limb_count || vxl.limb_count as usize != raw_limb_count {
             return Err(format!(
-                "limbs.len() {} != header limb_count {}",
+                "parsed limbs/count ({}/{}) != raw header limb_count {}",
                 vxl.limbs.len(),
-                vxl.limb_count
+                vxl.limb_count,
+                raw_limb_count
+            ));
+        }
+        if vxl.body_size as usize != raw_body_size {
+            return Err(format!(
+                "parsed body_size {} != raw header body_size {raw_body_size}",
+                vxl.body_size
             ));
         }
         if vxl.palette.len() != 256 {
             return Err(format!("palette.len() {} != 256", vxl.palette.len()));
         }
-        for limb in &vxl.limbs {
+
+        let sections_start = VXL_FILE_HEADER_SIZE
+            .checked_add(
+                palette_count
+                    .checked_mul(VXL_PALETTE_PAGE_SIZE)
+                    .ok_or_else(|| "palette extent overflow".to_string())?,
+            )
+            .ok_or_else(|| "section start overflow".to_string())?;
+        let headers_end = sections_start
+            .checked_add(
+                raw_limb_count
+                    .checked_mul(VXL_SECTION_HEADER_SIZE)
+                    .ok_or_else(|| "header extent overflow".to_string())?,
+            )
+            .ok_or_else(|| "header end overflow".to_string())?;
+        let tailers_start = headers_end
+            .checked_add(raw_body_size)
+            .ok_or_else(|| "tailer start overflow".to_string())?;
+        let tailers_end = tailers_start
+            .checked_add(
+                raw_tailer_count
+                    .checked_mul(VXL_SECTION_TAILER_SIZE)
+                    .ok_or_else(|| "tailer extent overflow".to_string())?,
+            )
+            .ok_or_else(|| "tailer end overflow".to_string())?;
+        if tailers_end > data.len() {
+            return Err(format!(
+                "raw tailer extent {tailers_end} exceeds file size {}",
+                data.len()
+            ));
+        }
+
+        vxl_files += 1;
+        header_count += raw_limb_count;
+        tailer_count += raw_tailer_count;
+        if raw_limb_count != raw_tailer_count {
+            count_mismatch_files += 1;
+        }
+        let mut tailer_references = vec![0usize; raw_tailer_count];
+
+        for (header_index, limb) in vxl.limbs.iter().enumerate() {
+            let header_offset = sections_start + header_index * VXL_SECTION_HEADER_SIZE;
+            let limb_number = raw_u32(header_offset + 16) as usize;
+            if limb_number >= raw_tailer_count {
+                return Err(format!(
+                    "header {header_index} limb_number {limb_number} outside tailer_count {raw_tailer_count}"
+                ));
+            }
+            tailer_references[limb_number] += 1;
+            if limb_number != header_index {
+                nonidentity_limb_numbers += 1;
+            }
+
+            // Restate the native header→tailer lookup independently from the
+            // parser and prove the positional parsed limb carries that tailer.
+            let tailer_offset = tailers_start + limb_number * VXL_SECTION_TAILER_SIZE;
+            let raw_scale = raw_f32(tailer_offset + 12);
+            if limb.scale.to_bits() != raw_scale.to_bits() {
+                return Err(format!(
+                    "header {header_index} selects tailer {limb_number}: parsed scale {:?} != raw {:?}",
+                    limb.scale, raw_scale
+                ));
+            }
+            for (component, &parsed) in limb.transform.iter().enumerate() {
+                let raw = raw_f32(tailer_offset + 16 + component * 4);
+                if parsed.to_bits() != raw.to_bits() {
+                    return Err(format!(
+                        "header {header_index} selects tailer {limb_number}: transform[{component}] mismatch"
+                    ));
+                }
+            }
+            for (component, &parsed) in limb.bounds.iter().enumerate() {
+                let raw = raw_f32(tailer_offset + 64 + component * 4);
+                if parsed.to_bits() != raw.to_bits() {
+                    return Err(format!(
+                        "header {header_index} selects tailer {limb_number}: bounds[{component}] mismatch"
+                    ));
+                }
+            }
+            let raw_grid_and_mode = &data[tailer_offset + 88..tailer_offset + 92];
+            if [limb.size_x, limb.size_y, limb.size_z, limb.normals_mode].as_slice()
+                != raw_grid_and_mode
+            {
+                return Err(format!(
+                    "header {header_index} selects tailer {limb_number}: parsed grid/mode {:?} != raw {:?}",
+                    [limb.size_x, limb.size_y, limb.size_z, limb.normals_mode],
+                    raw_grid_and_mode
+                ));
+            }
+
             let table_size = match limb.normals_mode {
                 2 => 36u8,
-                4 => 250u8,
+                4 => 245u8,
                 m => return Err(format!("limb '{}': unexpected normals mode {m}", limb.name)),
             };
             let mut saw_255 = 0usize;
@@ -522,8 +648,18 @@ fn certify_vxl_structural() {
                 ));
             }
         }
+        if raw_limb_count != raw_tailer_count
+            || tailer_references.iter().any(|&references| references != 1)
+        {
+            nonpermutation_files += 1;
+        }
         Ok(())
     });
+    println!(
+        "RECORD: VXL header→tailer associations: {vxl_files} files, {header_count} headers, \
+         {tailer_count} tailers, {nonidentity_limb_numbers} nonidentity limb_number ordinals, \
+         {count_mismatch_files} count mismatches, {nonpermutation_files} non-permutations"
+    );
     println!("RECORD: retail voxels referencing stale normal index 255:");
     for line in &dummy_255 {
         println!("RECORD:   {line}");
@@ -570,7 +706,7 @@ fn certify_hva_structural() {
 #[test]
 #[ignore] // Requires RA2_DIR (retail game files)
 fn certify_csf_structural() {
-    let mut languages: Vec<u16> = Vec::new();
+    let mut languages: Vec<u32> = Vec::new();
     certify_format("csf", |_, data| {
         let csf = CsfFile::from_bytes(data).map_err(|e| e.to_string())?;
         if csf.version != 3 {
