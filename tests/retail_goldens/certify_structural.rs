@@ -195,21 +195,16 @@ fn certify_shp_structural() {
 #[test]
 #[ignore] // Requires RA2_DIR (retail game files)
 fn certify_shp_rle_row_exactness() {
-    // Value-parity certification for SHP formats 2/3 (the compressed codecs).
+    // Structural certification for every nonempty bit-1-set SHP frame.
     //
     // The original engine's row consumer is WIDTH-driven with no row-length
     // bound (grammar verified from the binary's RLE blitters: nonzero byte =
     // one literal pixel; 0x00,count = count transparent pixels; rows framed
     // by a self-inclusive u16 length prefix consumed by the row walker — see
-    // docs/research/SHP_RLE_ZERO_VALUE_CERTIFICATION_GHIDRA_REPORT.md).
-    // Our decoder is row-length-bound and pads short rows with zeros. The two
-    // produce identical pixels for every input where no row UNDER-RUNS (i.e.
-    // every row's stream yields >= width pixels within its declared bytes) —
-    // over-long rows are ignored-tail in both. This test proves the no-
-    // under-run property for every row of every format-2/3 frame in the
-    // retail corpus, which — together with the verified grammar — certifies
-    // our decoded pixel VALUES equal the original's consumption on all
-    // retail data.
+    // docs/research/SHP_LOAD_DECODE_FRAME_METADATA_GHIDRA_REPORT.md).
+    // Formats 2 and 3 share this grammar; the header byte is a bitfield rather
+    // than a four-codec enum. This replay proves every retail extended row can
+    // produce its visible width without crossing the declared row boundary.
     let mut zero_count_runs = 0usize;
     let mut overshoot_rows = 0usize;
     certify_format("shp", |_, data| {
@@ -225,7 +220,7 @@ fn certify_shp_rle_row_exactness() {
                 data[hdr + 22],
                 data[hdr + 23],
             ]) as usize;
-            if w == 0 || h == 0 || (fmt != 2 && fmt != 3) {
+            if w == 0 || h == 0 || fmt & 0x02 == 0 {
                 continue;
             }
             let mut cursor = off;
@@ -241,47 +236,37 @@ fn certify_shp_rle_row_exactness() {
                 if row_end > data.len() {
                     return Err(format!("frame {i} row {row}: row extends past EOF"));
                 }
-                if fmt == 2 {
-                    if raw_len - 2 < w {
+                // Every bit-1-set format uses the same native width-driven
+                // RLE-zero walk. It must reach `w` pixels inside this row.
+                let mut pixels = 0usize;
+                let mut p = cursor + 2;
+                while pixels < w {
+                    if p >= row_end {
                         return Err(format!(
-                            "frame {i} row {row}: format-2 row has {} bytes < width {w}",
-                            raw_len - 2
+                            "frame {i} row {row}: RLE under-run — {pixels} of {w} \
+                             pixels before row end"
                         ));
                     }
-                } else {
-                    // Format 3: replay the native width-driven walk; it must
-                    // reach `w` pixels without reading past the row's bytes.
-                    let mut pixels = 0usize;
-                    let mut p = cursor + 2;
-                    while pixels < w {
+                    let b = data[p];
+                    p += 1;
+                    if b != 0 {
+                        pixels += 1;
+                    } else {
                         if p >= row_end {
                             return Err(format!(
-                                "frame {i} row {row}: RLE under-run — {pixels} of {w} \
-                                 pixels before row end (native would read into the \
-                                 next row; our decoder pads — VALUE DIVERGENCE)"
+                                "frame {i} row {row}: zero-run count byte past row end"
                             ));
                         }
-                        let b = data[p];
+                        let count = data[p] as usize;
                         p += 1;
-                        if b != 0 {
-                            pixels += 1;
-                        } else {
-                            if p >= row_end {
-                                return Err(format!(
-                                    "frame {i} row {row}: zero-run count byte past row end"
-                                ));
-                            }
-                            let count = data[p] as usize;
-                            p += 1;
-                            if count == 0 {
-                                zero_count_runs += 1;
-                            }
-                            pixels += count;
+                        if count == 0 {
+                            zero_count_runs += 1;
                         }
+                        pixels += count;
                     }
-                    if pixels > w {
-                        overshoot_rows += 1;
-                    }
+                }
+                if pixels > w {
+                    overshoot_rows += 1;
                 }
                 cursor = row_end;
             }
@@ -291,7 +276,7 @@ fn certify_shp_rle_row_exactness() {
     // Benign variants, recorded for the format ledger: a final zero-run may
     // overshoot width (both consumers stop at width; no value difference) and
     // 0x00,0x00 no-op runs may exist (both consume 2 bytes, emit nothing).
-    println!("RECORD: format-3 rows whose final zero-run overshoots width: {overshoot_rows}");
+    println!("RECORD: bit-1-set rows whose final zero-run overshoots width: {overshoot_rows}");
     println!("RECORD: zero-length (00 00) runs encountered: {zero_count_runs}");
 }
 
