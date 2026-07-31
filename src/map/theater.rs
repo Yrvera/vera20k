@@ -25,13 +25,13 @@ use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
 pub const NO_TILE: i32 = -1;
 
 /// Identifies a specific sub-tile within a TMP template, including variant.
-/// Used as a key for atlas lookups. Variant 0 = main tile; 1-4 = visual
-/// replacements loaded from `{name}a.{ext}` through `{name}d.{ext}`.
+/// Used as a key for atlas lookups. Variant 0 is pristine; positive values
+/// index the theater-resolved contiguous suffix chain.
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct TileKey {
     pub tile_id: u16,
     pub sub_tile: u8,
-    /// Visual replacement index: 0 = main tile, 1-4 = variant a-d.
+    /// Visual replacement index: 0 = pristine, 1 = `a`, 2 = `b`, etc.
     pub variant: u8,
 }
 
@@ -254,8 +254,8 @@ pub struct TilesetLookup {
     /// tile_id → TMP filename (e.g., "clear01.tem"). None = blank/empty tileset.
     entries: Vec<Option<String>>,
     /// tile_id → variant TMP filenames (e.g., ["clear01a.tem", "clear01b.tem"]).
-    /// FA2 loads up to 4 visual replacements per tile by inserting 'a'-'d' before
-    /// the extension. Empty vec = no variants for that tile_id.
+    /// Existing suffix siblings are discovered after theater archive activation.
+    /// Empty means that this tile has only its pristine file.
     variant_filenames: Vec<Vec<String>>,
     /// Tileset index → bounds (start tile_id and count).
     /// Index 0 corresponds to [TileSet0000], etc.
@@ -331,12 +331,18 @@ impl TilesetLookup {
     ///
     /// Looks up the tileset's SetName and checks for "Cliff" (case-insensitive).
     /// Note: some cliffs are passable ramps — this is a conservative check.
-    /// Number of visual replacement variants for a tile_id (0 = no variants).
-    /// FA2 loads up to 4 variants per TMP: {base}a.{ext} through {base}d.{ext}.
+    /// Number of suffix siblings for a tile_id (0 = pristine only).
     pub fn variant_count(&self, tile_id: u16) -> u8 {
         self.variant_filenames
             .get(tile_id as usize)
             .map(|v| v.len() as u8)
+            .unwrap_or(0)
+    }
+
+    /// Total independent TMP file count, including the pristine file.
+    pub fn total_file_count(&self, tile_id: u16) -> u8 {
+        self.filename(i32::from(tile_id))
+            .map(|_| self.variant_count(tile_id).saturating_add(1))
             .unwrap_or(0)
     }
 
@@ -346,6 +352,17 @@ impl TilesetLookup {
             .get(tile_id as usize)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Exact independent TMP filename for a resolved file index.
+    pub fn filename_for_variant(&self, tile_id: u16, variant: u8) -> Option<&str> {
+        if variant == 0 {
+            self.filename(i32::from(tile_id))
+        } else {
+            self.variant_filenames(tile_id)
+                .get(usize::from(variant - 1))
+                .map(String::as_str)
+        }
     }
 
     pub fn is_cliff(&self, tile_id: u16) -> bool {
@@ -448,19 +465,13 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
                 variant_filenames.push(Vec::new());
             }
         } else {
-            // Each tile is named {prefix}{NN:02}.{ext}, 1-indexed.
-            // FA2 also loads up to 4 replacement TMP files per tile by inserting
-            // 'a'-'d' before the extension: clear01a.tem, clear01b.tem, etc.
-            // (Loading.cpp:4499-4520). We generate the candidate names here;
-            // actual existence is checked at image load time.
+            // Each tile is named {prefix}{NN:02}.{ext}, 1-indexed. Sibling
+            // discovery waits until load_theater has activated the theater
+            // archives, keeping this parser asset-independent.
             for i in 1..=tiles_in_set {
                 let main_name = format!("{}{:02}.{}", filename, i, extension);
-                let variants: Vec<String> = ['a', 'b', 'c', 'd']
-                    .iter()
-                    .map(|c| format!("{}{:02}{}.{}", filename, i, c, extension))
-                    .collect();
                 entries.push(Some(main_name));
-                variant_filenames.push(variants);
+                variant_filenames.push(Vec::new());
             }
         }
     }
@@ -792,7 +803,8 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         ini_source
     );
 
-    let lookup: TilesetLookup = parse_tileset_ini(&ini_data, def.extension).ok()?;
+    let mut lookup: TilesetLookup = parse_tileset_ini(&ini_data, def.extension).ok()?;
+    resolve_contiguous_variant_chains(&mut lookup, asset_manager);
     log::info!(
         "Theater {}: loaded {} from INI '{}' ({} tile_id slots, {} tilesets)",
         theater_name,
@@ -899,6 +911,61 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         cliff_ranges,
         rmg_tiles,
     })
+}
+
+/// The stock corpus stops at `g`. The alphabet-wide cap is deliberately well
+/// beyond retail while keeping defensive filename generation bounded for mods.
+const MAX_VARIANT_SUFFIXES: usize = 26;
+
+fn contiguous_variant_filenames(
+    pristine: &str,
+    mut exists: impl FnMut(&str) -> bool,
+) -> Vec<String> {
+    if !exists(pristine) {
+        return Vec::new();
+    }
+    let Some((stem, extension)) = pristine.rsplit_once('.') else {
+        return Vec::new();
+    };
+    let mut siblings = Vec::new();
+    for suffix_offset in 0..MAX_VARIANT_SUFFIXES {
+        let suffix = char::from(b'a' + suffix_offset as u8);
+        let candidate = format!("{stem}{suffix}.{extension}");
+        if !exists(&candidate) {
+            break;
+        }
+        siblings.push(candidate);
+    }
+    siblings
+}
+
+fn resolve_contiguous_variant_chains(lookup: &mut TilesetLookup, asset_manager: &AssetManager) {
+    let mut sibling_files = 0usize;
+    let mut groups = 0usize;
+    let mut max_total_files = 1usize;
+    for (pristine, siblings) in lookup
+        .entries
+        .iter()
+        .zip(lookup.variant_filenames.iter_mut())
+    {
+        let Some(pristine) = pristine.as_deref() else {
+            continue;
+        };
+        *siblings = contiguous_variant_filenames(pristine, |candidate| {
+            asset_manager.get_ref(candidate).is_some()
+        });
+        if !siblings.is_empty() {
+            groups += 1;
+            sibling_files += siblings.len();
+            max_total_files = max_total_files.max(siblings.len() + 1);
+        }
+    }
+    log::info!(
+        "Theater TMP variants: {} contiguous sibling files across {} groups (max total files {})",
+        sibling_files,
+        groups,
+        max_total_files,
+    );
 }
 
 fn resolve_tileset_start(lookup: &TilesetLookup, ordinal: Option<i32>) -> Option<u16> {
@@ -1071,6 +1138,20 @@ pub fn collect_used_tiles(cells: &[(i32, u8)]) -> HashSet<TileKey> {
         .collect()
 }
 
+/// Resolve the active positive subtile through the pristine/variant template
+/// grid while leaving the map-requested u8 identity available to atlas keys.
+pub(crate) fn wrapped_subtile_index(
+    sub_tile: u8,
+    template_width: u32,
+    template_height: u32,
+) -> Option<usize> {
+    let cell_count = template_width.checked_mul(template_height)?;
+    if cell_count == 0 {
+        return None;
+    }
+    usize::try_from(u32::from(sub_tile) % cell_count).ok()
+}
+
 /// Inject TileKey entries for the 8 bridge anchor variant tile_ids × all
 /// sub_tiles in each tile_id's TMP template into the `needed` set used by
 /// the atlas pre-loader.
@@ -1219,19 +1300,19 @@ pub fn load_tile_images(
             );
         }
 
-        let cell_count: usize = (tmp.template_width * tmp.template_height) as usize;
-
         for &sub in sub_tiles {
-            if (sub as usize) >= cell_count {
-                empty_cell_count += 1;
-                continue;
-            }
-
-            let Some(tile) = tmp.tiles[sub as usize].as_ref() else {
+            let Some(source_sub) =
+                wrapped_subtile_index(sub, tmp.template_width, tmp.template_height)
+            else {
                 empty_cell_count += 1;
                 continue;
             };
-            match tmp.tile_to_rgba(sub as usize, palette) {
+
+            let Some(tile) = tmp.tiles.get(source_sub).and_then(|tile| tile.as_ref()) else {
+                empty_cell_count += 1;
+                continue;
+            };
+            match tmp.tile_to_rgba(source_sub, palette) {
                 Ok(rgba) => {
                     images.insert(
                         TileKey {
@@ -1256,8 +1337,8 @@ pub fn load_tile_images(
         }
     }
 
-    // Load variant TMP files (FA2 replacements: {base}a.{ext} through {base}d.{ext}).
-    // Each variant that exists in the MIX archive gets its own TileKey with variant=1..4.
+    // Load the exact contiguous sibling chains resolved after theater archive
+    // activation. Each independent TMP gets its own positive variant index.
     let mut variant_count: u32 = 0;
     for (tile_id, sub_tiles) in &by_tile_id {
         let var_names = lookup.variant_filenames(*tile_id);
@@ -1266,20 +1347,23 @@ pub fn load_tile_images(
         }
         for (var_idx, var_name) in var_names.iter().enumerate() {
             let Some(var_data) = asset_manager.get_ref(var_name) else {
-                break; // Stop at first missing variant (same as FA2)
+                log::warn!("Resolved TMP variant disappeared during atlas load: {var_name}");
+                break;
             };
             let Ok(var_tmp) = TmpFile::from_bytes(var_data) else {
                 break;
             };
-            let var_cell_count = (var_tmp.template_width * var_tmp.template_height) as usize;
             for &sub in sub_tiles {
-                if (sub as usize) >= var_cell_count {
-                    continue;
-                }
-                let Some(tile) = var_tmp.tiles[sub as usize].as_ref() else {
+                let Some(source_sub) =
+                    wrapped_subtile_index(sub, var_tmp.template_width, var_tmp.template_height)
+                else {
                     continue;
                 };
-                if let Ok(rgba) = var_tmp.tile_to_rgba(sub as usize, palette) {
+                let Some(tile) = var_tmp.tiles.get(source_sub).and_then(|tile| tile.as_ref())
+                else {
+                    continue;
+                };
+                if let Ok(rgba) = var_tmp.tile_to_rgba(source_sub, palette) {
                     images.insert(
                         TileKey {
                             tile_id: *tile_id,

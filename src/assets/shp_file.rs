@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_to_rgba() {
+    fn gsi_02_13_frame_to_rgba_uses_native_shifted_palette_channels() {
         let data: Vec<u8> = make_test_shp_raw();
         let shp: ShpFile = ShpFile::from_bytes(&data).expect("Should parse");
 
@@ -364,8 +364,8 @@ mod tests {
 
         // 2x2 * 4 bytes = 16 bytes
         assert_eq!(rgba.len(), 16);
-        // Pixel 0 (index 1): red (255, 0, 0, 255)
-        assert_eq!(rgba[0], 255); // R
+        // Pixel 0 (index 1): native-shifted red (252, 0, 0, 255)
+        assert_eq!(rgba[0], 252); // R
         assert_eq!(rgba[1], 0); // G
         assert_eq!(rgba[3], 255); // A (opaque)
         // Pixel 3 (index 0): transparent

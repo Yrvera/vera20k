@@ -498,6 +498,7 @@ pub(crate) fn load_map_from_initial(
     theater_cache_mismatch: bool,
     runtime_color_scheme_count: usize,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
+    tile_variant_selector_cache: &mut crate::map::tile_variant_selector::TileVariantSelectorCache,
     progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> Result<MapLoadResult> {
     let MapLoadInitial {
@@ -511,6 +512,11 @@ pub(crate) fn load_map_from_initial(
         LoadedMapSource::LegacyFallback { .. } => None,
     };
     let skirmish_launch_session = startup.launch_session();
+    // The scenario/Main pair and the one-time TMP selector construction share
+    // the same single resolved seed word. Generic loads retain the explicitly
+    // unverified fallback, but it is sampled exactly once.
+    let match_seed =
+        startup.seed_or_else(crate::app_init_helpers::generate_unverified_legacy_match_seed);
 
     // Load theater INI for tileset lookup, palette, and LAT configuration.
     // Also loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority.
@@ -533,23 +539,9 @@ pub(crate) fn load_map_from_initial(
         None => theater_ext_for(&map_data.header.theater),
     };
 
-    let parse_bool_env = |key: &str| -> Option<bool> {
-        std::env::var(key).ok().map(|v| {
-            let n = v.trim().to_ascii_lowercase();
-            n == "1" || n == "true" || n == "yes" || n == "on"
-        })
-    };
-    // Default for runtime maps: keep original authored transitions.
-    // Set RA2_ENABLE_LAT=1 to opt in to auto-LAT generation.
-    // RA2_DISABLE_LAT=1 always forces LAT off.
-    let enable_lat: bool = parse_bool_env("RA2_ENABLE_LAT").unwrap_or(false);
-    let force_disable_lat: bool = parse_bool_env("RA2_DISABLE_LAT").unwrap_or(false);
-    let lat_enabled: bool = !force_disable_lat && enable_lat;
-    if force_disable_lat {
-        log::warn!("LAT disabled by RA2_DISABLE_LAT");
-    } else if !lat_enabled {
-        log::info!("LAT disabled by default (set RA2_ENABLE_LAT=1 to enable)");
-    }
+    // Native map loading always runs the LAT half. The terrain builder no-ops
+    // when theater data or a complete LAT group configuration is unavailable.
+    let lat_enabled = true;
 
     // Load rules.ini and art.ini before building resolved terrain so overlay
     // semantics and art-foundation data are available to the pipeline.
@@ -649,7 +641,10 @@ pub(crate) fn load_map_from_initial(
         .as_ref()
         .map(|r| r.general.cliff_back_impassability)
         .unwrap_or(2);
-    let mut resolved_terrain = ResolvedTerrainGrid::build(
+    let mut variant_main_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
+    let mut variant_draw = || variant_main_rng.next_u32();
+    let mut variant_selector = tile_variant_selector_cache.begin_load(&mut variant_draw);
+    let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector(
         &map_data,
         theater_result.as_ref(),
         Some(&asset_manager),
@@ -657,6 +652,23 @@ pub(crate) fn load_map_from_initial(
         Some(&overlay_registry),
         lat_enabled,
         cliff_back,
+        &mut variant_selector,
+    );
+    let variant_table_generated = variant_selector.generated_table();
+    let variant_table_draws = variant_selector.raw_draw_count();
+    drop(variant_selector);
+    drop(variant_draw);
+    let variant_advanced_main_rng = variant_table_generated.then_some(variant_main_rng);
+    log::info!(
+        "TMP variant selector: table {} this load, {} raw Main draws",
+        if variant_table_generated {
+            "generated"
+        } else if tile_variant_selector_cache.is_initialized() {
+            "reused"
+        } else {
+            "not reached"
+        },
+        variant_table_draws,
     );
     let anchor_variant_table = theater_result
         .as_ref()
@@ -750,7 +762,7 @@ pub(crate) fn load_map_from_initial(
     // Generic loading alone retains the explicitly noncertifying SystemTime
     // fallback. In every case the selected word exists before Simulation.
     let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
-        seed: startup.seed_or_else(crate::app_init_helpers::generate_unverified_legacy_match_seed),
+        seed: match_seed,
         map_name: skirmish_launch_session
             .and_then(|s| s.selected_map_file.clone())
             .or_else(|| map_data.basic.name.clone())
@@ -791,6 +803,7 @@ pub(crate) fn load_map_from_initial(
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
         &scenario_descriptor,
+        variant_advanced_main_rng,
     );
     // Terrain/tiberium + units/infantry/buildings created from the map
     // (gamemd terrain/units/objects/buildings milestones).
@@ -805,7 +818,16 @@ pub(crate) fn load_map_from_initial(
             sim.session.house_order.clear();
             // Populate per-player HouseState from the map's house roster.
             for house in &house_roster.houses {
-                let side_idx = crate::sim::house_state::side_index_from_name(house.side.as_deref());
+                let fallback_side =
+                    crate::sim::house_state::side_index_from_name(house.side.as_deref());
+                let side_idx = rules.as_ref().map_or(fallback_side, |rules| {
+                    crate::sim::house_state::resolve_house_side_index(
+                        rules,
+                        house.country.as_deref(),
+                        house.side.as_deref(),
+                        fallback_side,
+                    )
+                });
                 let is_human = house.player_control == Some(true);
                 let name_id = sim.interner.intern(&house.name);
                 let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));

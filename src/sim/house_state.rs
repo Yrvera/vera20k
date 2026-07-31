@@ -57,7 +57,8 @@ impl HouseDifficulty {
 pub struct HouseState {
     /// Owner name as interned ID (resolve via interner for display).
     pub name: InternedId,
-    /// Side index: 0=Allied, 1=Soviet, 2=Yuri. From HouseDefinition.side.
+    /// Stable rules-owned side index. Stock YR uses 0=Allied, 1=Soviet,
+    /// 2=Yuri, 3=Civilian, and 4=Mutant.
     pub side_index: u8,
     /// Country interned ID from map INI `Country=` key (e.g., "Americans", "Russians").
     pub country: Option<InternedId>,
@@ -201,12 +202,35 @@ pub fn income_ppm_for_owner(
 /// Map side name string to numeric index.
 /// "Allies"/"GDI" → 0, "Soviet"/"Nod" → 1, "ThirdSide"/"YuriCountry" → 2.
 pub fn side_index_from_name(side: Option<&str>) -> u8 {
+    side_index_alias(side).unwrap_or(0)
+}
+
+fn side_index_alias(side: Option<&str>) -> Option<u8> {
     match side.map(|s| s.to_ascii_lowercase()).as_deref() {
-        Some("allied" | "allies" | "gdi") => 0,
-        Some("soviet" | "nod" | "russia") => 1,
-        Some("thirdside" | "yuricountry" | "yuri") => 2,
-        _ => 0, // default to Allied
+        Some("allied" | "allies" | "gdi") => Some(0),
+        Some("soviet" | "nod" | "russia") => Some(1),
+        Some("thirdside" | "yuricountry" | "yuri") => Some(2),
+        _ => None,
     }
+}
+
+/// Resolve the side identity used to construct a house.
+///
+/// Rules-owned country membership is authoritative. An explicit side name is
+/// the next-best source for incomplete scenario data, followed by the legacy
+/// stock aliases and finally the caller's bounded fallback.
+pub fn resolve_house_side_index(
+    rules: &crate::rules::ruleset::RuleSet,
+    country: Option<&str>,
+    side: Option<&str>,
+    fallback: u8,
+) -> u8 {
+    country
+        .and_then(|country| rules.country_side_index(country))
+        .or_else(|| side.and_then(|side| rules.side_index(side)))
+        .map(|index| index.0)
+        .or_else(|| side_index_alias(side))
+        .unwrap_or(fallback)
 }
 
 /// Compute the closest map edge to a given anchor cell.

@@ -28,6 +28,7 @@ use crate::map::map_file::{MapCell, MapFile};
 use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::theater::{self, TheaterData, TileKey};
+use crate::map::tile_variant_selector::TileVariantSelectionContext;
 use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass, TerrainRules};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -136,7 +137,9 @@ pub struct ResolvedTerrainCell {
     /// should use `zone_type`.
     pub yr_cell_land_type: u8,
     pub slope_type: u8,
+    /// Registered pristine TMP +0x28 height field (CellClass-owned).
     pub template_height: u8,
+    /// Tactical render origin owned by the selected independent TMP.
     pub render_offset_x: i32,
     pub render_offset_y: i32,
     pub terrain_class: TerrainClass,
@@ -157,7 +160,7 @@ pub struct ResolvedTerrainCell {
     /// them. Computed from height differences with back-left neighbor cells
     /// (height diff >= 4). See MapData.cpp:3362-3377 in the EA FA2 source.
     pub is_cliff_redraw: bool,
-    /// Tile visual variant index (FA2 bRNDImage): 0 = main tile, 1-4 = replacement a-d.
+    /// Tile visual variant index: 0 = pristine, positive = suffix sibling.
     pub variant: u8,
     pub has_ramp: bool,
     pub canonical_ramp: Option<RampDirection>,
@@ -203,12 +206,12 @@ pub struct ResolvedTerrainCell {
     pub bridge_facts: BridgeCellFacts,
     /// CellClass+0x116 equivalent: index into `ResolvedTerrainGrid::tube_facts`.
     pub tube_index: Option<TubeId>,
-    /// Per-tile radar minimap color (left half of isometric diamond), from TMP header.
+    /// Selected tactical owner's radar color for the diamond's left half.
     pub radar_left: [u8; 3],
-    /// Per-tile radar minimap color (right half of isometric diamond), from TMP header.
+    /// Selected tactical owner's radar color for the diamond's right half.
     pub radar_right: [u8; 3],
-    /// True if this cell's underlying TMP sub-tile carries a baked damaged-variant
-    /// pixel set. Drives the kickoff gate of the bridge damage flood-fill (only
+    /// True if this cell's registered pristine TMP sub-tile carries a baked
+    /// damaged-variant pixel set. Drives the kickoff gate of the bridge damage flood-fill (only
     /// cells with baked damage art may initiate propagation) and the render-side
     /// substitution that swaps in variant=1 when the bridge sim flags the cell.
     pub has_damaged_data: bool,
@@ -305,6 +308,9 @@ pub struct ResolvedTerrainGrid {
     /// Presentation consumers use this for `NO_TILE` cells while
     /// `ResolvedTerrainCell::final_tile_index` retains the sentinel for sim.
     clear_tile_id: u16,
+    /// Active theater tile registry length. Positive out-of-range ids present
+    /// as ClearTile while their stored semantic id remains untouched.
+    tile_registry_len: Option<usize>,
     /// `[Tiberium]` `SpeedCostProfile` cached at map load, looked up via
     /// `TerrainRules::semantics_by_name("Tiberium")`. Used by
     /// `recalc_overlay_passability` to apply Tiberium-mode speed costs when
@@ -330,6 +336,7 @@ impl ResolvedTerrainGrid {
             cells,
             tube_facts,
             clear_tile_id: 0,
+            tile_registry_len: None,
             tiberium_speed_costs: None,
         }
     }
@@ -361,8 +368,17 @@ impl ResolvedTerrainGrid {
     /// Resolve a cell's presentation tile without rewriting its semantic tile.
     ///
     /// Active YR substitutes the theater ClearTile and sub-tile zero when the
-    /// stored IsoTileTypeIndex is the no-tile sentinel.
+    /// stored IsoTileTypeIndex is absent, the no-tile sentinel, or outside the
+    /// active theater registry.
     pub fn presentation_tile(&self, cell: &ResolvedTerrainCell) -> (u16, u8) {
+        let positive_out_of_range = self.tile_registry_len.is_some_and(|len| {
+            cell.final_tile_index >= 0
+                && cell.final_tile_index != 0xFFFF
+                && cell.final_tile_index as usize >= len
+        });
+        if cell.filled_clear || positive_out_of_range {
+            return (self.clear_tile_id, 0);
+        }
         presentation_tile_parts(
             cell.final_tile_index,
             cell.final_sub_tile,
@@ -456,6 +472,51 @@ impl ResolvedTerrainGrid {
         lat_enabled: bool,
         cliff_back_impassability: u8,
     ) -> Self {
+        Self::build_inner(
+            map,
+            theater_data,
+            asset_manager,
+            terrain_rules,
+            overlay_registry,
+            lat_enabled,
+            cliff_back_impassability,
+            None,
+        )
+    }
+
+    /// Production map-load path with the process-owned native variant selector.
+    pub fn build_with_variant_selector(
+        map: &MapFile,
+        theater_data: Option<&TheaterData>,
+        asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+        terrain_rules: Option<&TerrainRules>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        lat_enabled: bool,
+        cliff_back_impassability: u8,
+        variant_selector: &mut TileVariantSelectionContext<'_, '_>,
+    ) -> Self {
+        Self::build_inner(
+            map,
+            theater_data,
+            asset_manager,
+            terrain_rules,
+            overlay_registry,
+            lat_enabled,
+            cliff_back_impassability,
+            Some(variant_selector),
+        )
+    }
+
+    fn build_inner(
+        map: &MapFile,
+        theater_data: Option<&TheaterData>,
+        asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+        terrain_rules: Option<&TerrainRules>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        lat_enabled: bool,
+        cliff_back_impassability: u8,
+        mut variant_selector: Option<&mut TileVariantSelectionContext<'_, '_>>,
+    ) -> Self {
         let clear_tile_id = theater_data
             .and_then(|td| td.rmg_tiles.clear_tile)
             .unwrap_or(0);
@@ -467,6 +528,7 @@ impl ResolvedTerrainGrid {
                 cells: Vec::new(),
                 tube_facts: Vec::new(),
                 clear_tile_id,
+                tile_registry_len: theater_data.map(|td| td.lookup.len()),
                 tiberium_speed_costs: None,
             };
         }
@@ -510,6 +572,10 @@ impl ResolvedTerrainGrid {
         let mut warned_unknown_land_types: HashSet<u8> = HashSet::new();
         let mut cells: Vec<ResolvedTerrainCell> =
             Vec::with_capacity(width as usize * height as usize);
+        let mut selector_calls = 0usize;
+        let mut replacement_cells = 0usize;
+        let mut high_suffix_cells = 0usize;
+        let mut max_total_files = 1u8;
 
         for ry in 0..height {
             for rx in 0..width {
@@ -520,46 +586,75 @@ impl ResolvedTerrainGrid {
                     .unwrap_or((0, 0, 0));
                 let is_wood_bridge_repair_tile =
                     is_wood_bridge_repair_tile(theater_data, final_tile_index);
-                let tile_key = TileKey {
-                    tile_id: normalize_tile_id(final_tile_index),
-                    sub_tile: final_sub_tile,
-                    variant: 0,
+                let tile_index_out_of_range = theater_data.is_some_and(|td| {
+                    final_tile_index >= 0
+                        && final_tile_index != 0xFFFF
+                        && final_tile_index as usize >= td.lookup.len()
+                });
+                let uses_clear_fallback = raw.is_none()
+                    || final_tile_index < 0
+                    || final_tile_index == 0xFFFF
+                    || tile_index_out_of_range;
+                let (presentation_tile_id, presentation_sub_tile) = if uses_clear_fallback {
+                    (clear_tile_id, 0)
+                } else {
+                    (normalize_tile_id(final_tile_index), final_sub_tile)
                 };
-                let (presentation_tile_id, presentation_sub_tile) =
-                    presentation_tile_parts(final_tile_index, final_sub_tile, clear_tile_id);
-                let presentation_key = TileKey {
+                let pristine_key = TileKey {
                     tile_id: presentation_tile_id,
                     sub_tile: presentation_sub_tile,
                     variant: 0,
                 };
-                let mut metadata = if let Some(metadata) = metadata_cache.get(&tile_key) {
-                    metadata.clone()
-                } else {
-                    let metadata = load_tile_metadata(
+                let pristine_metadata = cached_tile_metadata(
+                    &mut metadata_cache,
+                    theater_data,
+                    asset_manager,
+                    terrain_rules,
+                    pristine_key,
+                    &mut warned_unknown_land_types,
+                );
+                // Retail selects the independent tactical owner early, using
+                // only pristine dimensions and the pristine damaged-data gate.
+                // CellClass attributes remain owned by the registered pristine
+                // head; selected-owner presentation fields are overlaid below.
+                let mut variant = 0u8;
+                if let (Some(td), Some(selector)) = (theater_data, variant_selector.as_mut()) {
+                    let total_file_count = td.lookup.total_file_count(presentation_tile_id);
+                    if ordinary_variant_selection_enabled(
+                        total_file_count,
+                        uses_clear_fallback,
+                        pristine_metadata.has_damaged_data,
+                    ) {
+                        max_total_files = max_total_files.max(total_file_count);
+                        variant = selector.select_variant(
+                            i32::from(rx),
+                            i32::from(ry),
+                            presentation_sub_tile,
+                            pristine_metadata.template_width_cells,
+                            pristine_metadata.template_height_cells,
+                            total_file_count,
+                        );
+                        selector_calls += 1;
+                        replacement_cells += usize::from(variant > 0);
+                        high_suffix_cells += usize::from(variant > 4);
+                    }
+                }
+                let selected_key = TileKey {
+                    variant,
+                    ..pristine_key
+                };
+                let mut metadata = pristine_metadata;
+                if selected_key != pristine_key {
+                    let selected_metadata = cached_tile_metadata(
+                        &mut metadata_cache,
                         theater_data,
                         asset_manager,
                         terrain_rules,
-                        tile_key,
+                        selected_key,
                         &mut warned_unknown_land_types,
                     );
-                    metadata_cache.insert(tile_key, metadata.clone());
-                    metadata
-                };
-                let presentation_metadata = if presentation_key == tile_key {
-                    metadata.clone()
-                } else if let Some(metadata) = metadata_cache.get(&presentation_key) {
-                    metadata.clone()
-                } else {
-                    let metadata = load_tile_metadata(
-                        theater_data,
-                        asset_manager,
-                        terrain_rules,
-                        presentation_key,
-                        &mut warned_unknown_land_types,
-                    );
-                    metadata_cache.insert(presentation_key, metadata.clone());
-                    metadata
-                };
+                    apply_selected_presentation_metadata(&mut metadata, &selected_metadata);
+                }
                 let terrain_object_blocks = terrain_objects.contains(&(rx, ry));
                 let overlay_effects = classify_overlay_effects(
                     overlays_by_cell.get(&(rx, ry)),
@@ -650,18 +745,18 @@ impl ResolvedTerrainGrid {
                 // Morphable=yes. Cells with no resolved tile (filled_clear) default
                 // to false. Computed once at resolve time so the smudge dispatcher
                 // reads a single bool.
-                let accepts_smudge = if raw.is_none() {
+                let accepts_smudge = if uses_clear_fallback {
                     false
                 } else {
                     theater_data
-                        .map(|td| td.lookup.is_morphable(tile_key.tile_id))
+                        .map(|td| td.lookup.is_morphable(presentation_tile_id))
                         .unwrap_or(false)
                 };
-                let allows_tiberium = if raw.is_none() || final_tile_index < 0 {
+                let allows_tiberium = if uses_clear_fallback {
                     false
                 } else {
                     theater_data
-                        .map(|td| td.lookup.allows_tiberium(tile_key.tile_id))
+                        .map(|td| td.lookup.allows_tiberium(presentation_tile_id))
                         .unwrap_or(false)
                 };
                 // Allow layer transitions on any bridge deck cell. High bridges over
@@ -699,7 +794,7 @@ impl ResolvedTerrainGrid {
                     accepts_smudge,
                     allows_tiberium,
                     is_cliff_redraw: false,
-                    variant: 0,
+                    variant,
                     has_ramp: metadata.has_ramp,
                     canonical_ramp,
                     ground_walk_blocked,
@@ -724,12 +819,21 @@ impl ResolvedTerrainGrid {
                     bridge_layer: overlay_effects.bridge_layer,
                     bridge_facts: BridgeCellFacts::default(),
                     tube_index: None,
-                    radar_left: presentation_metadata.radar_left,
-                    radar_right: presentation_metadata.radar_right,
+                    radar_left: metadata.radar_left,
+                    radar_right: metadata.radar_right,
                     has_damaged_data: metadata.has_damaged_data,
                     bridgehead_anchor_class_at_load: None,
                 });
             }
+        }
+        if selector_calls > 0 {
+            log::info!(
+                "ResolvedTerrain variants: {} selector cells, {} replacements, {} e-or-later, max total files {}",
+                selector_calls,
+                replacement_cells,
+                high_suffix_cells,
+                max_total_files,
+            );
         }
 
         let mut bridge_facts = vec![BridgeCellFacts::default(); cells.len()];
@@ -983,48 +1087,6 @@ impl ResolvedTerrainGrid {
             }
         }
 
-        // Assign random tile visual variants (FA2 bRNDImage, MapData.cpp:3292-3306).
-        // Uses deterministic hash of (rx, ry) for reproducibility across sessions.
-        // Tiles with HasDamagedData (bridges) use variants for damage states, not
-        // visual diversity — those are excluded.
-        if let Some(td) = theater_data {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut variant_total: usize = 0;
-            for cell in &mut cells {
-                let (tile_id, _) = presentation_tile_parts(
-                    cell.final_tile_index,
-                    cell.final_sub_tile,
-                    clear_tile_id,
-                );
-                let vc = td.lookup.variant_count(tile_id);
-                if vc == 0 {
-                    continue;
-                }
-                // Bridges with baked damaged variants reserve cell.variant for
-                // the per-frame damaged_variant pick (sim-driven), so the
-                // map-load PRNG must leave it at 0.
-                if cell.has_damaged_data {
-                    continue;
-                }
-                let mut hasher = DefaultHasher::new();
-                (cell.rx, cell.ry).hash(&mut hasher);
-                let hash = hasher.finish();
-                // 0 = main tile, 1..=vc = replacement. Matches FA2's
-                // rand() * (1 + count) / RAND_MAX distribution.
-                cell.variant = (hash % (vc as u64 + 1)) as u8;
-                if cell.variant > 0 {
-                    variant_total += 1;
-                }
-            }
-            if variant_total > 0 {
-                log::info!(
-                    "ResolvedTerrain: {} cells assigned tile variants",
-                    variant_total,
-                );
-            }
-        }
-
         // Pre-classify author-damaged anchor placements: cells whose
         // tileset is BridgeSet AND whose final_tile_index matches one of
         // the 4 NS or 4 EW variant tile_ids get a non-None
@@ -1064,6 +1126,7 @@ impl ResolvedTerrainGrid {
             cells,
             tube_facts,
             clear_tile_id,
+            tile_registry_len: theater_data.map(|td| td.lookup.len()),
             tiberium_speed_costs,
         }
     }
@@ -1129,6 +1192,9 @@ impl ResolvedTerrainGrid {
 struct TileMetadata {
     tileset_index: Option<u16>,
     has_tmp_metadata: bool,
+    /// Pristine TMP grid dimensions used by ordinary variant normalization.
+    template_width_cells: u32,
+    template_height_cells: u32,
     /// Mapped land type (0-7) for passability matrix lookups.
     land_type: u8,
     /// Final gamemd CellClass LandType value where Rust needs the binary
@@ -1163,6 +1229,8 @@ impl Default for TileMetadata {
         Self {
             tileset_index: None,
             has_tmp_metadata: false,
+            template_width_cells: 0,
+            template_height_cells: 0,
             land_type: 0,
             yr_cell_land_type: 0,
             raw_land_type: 0,
@@ -1240,6 +1308,14 @@ fn presentation_tile_parts(tile_index: i32, sub_tile: u8, clear_tile_id: u16) ->
     } else {
         (tile_index as u16, sub_tile)
     }
+}
+
+fn ordinary_variant_selection_enabled(
+    total_file_count: u8,
+    uses_clear_fallback: bool,
+    has_damaged_data: bool,
+) -> bool {
+    !has_damaged_data && total_file_count != 0 && (uses_clear_fallback || total_file_count > 1)
 }
 
 fn is_wood_bridge_repair_tile(theater_data: Option<&TheaterData>, final_tile_index: i32) -> bool {
@@ -1365,6 +1441,39 @@ fn auto_tube_direction_for_tile(
     None
 }
 
+fn cached_tile_metadata(
+    cache: &mut HashMap<TileKey, TileMetadata>,
+    theater_data: Option<&TheaterData>,
+    asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+    terrain_rules: Option<&TerrainRules>,
+    key: TileKey,
+    warned_unknown_land_types: &mut HashSet<u8>,
+) -> TileMetadata {
+    if let Some(metadata) = cache.get(&key) {
+        return metadata.clone();
+    }
+    let metadata = load_tile_metadata(
+        theater_data,
+        asset_manager,
+        terrain_rules,
+        key,
+        warned_unknown_land_types,
+    );
+    cache.insert(key, metadata.clone());
+    metadata
+}
+
+/// Apply only fields owned by the selected independent tactical TMP. Pixel
+/// bounds, Z, and extra planes stay atlas-owned; this resolver carries the
+/// selected cell's radar pair and render-origin offsets. Every CellClass field
+/// remains on `pristine`.
+fn apply_selected_presentation_metadata(pristine: &mut TileMetadata, selected: &TileMetadata) {
+    pristine.radar_left = selected.radar_left;
+    pristine.radar_right = selected.radar_right;
+    pristine.render_offset_x = selected.render_offset_x;
+    pristine.render_offset_y = selected.render_offset_y;
+}
+
 fn load_tile_metadata(
     theater_data: Option<&TheaterData>,
     asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
@@ -1389,7 +1498,7 @@ fn load_tile_metadata(
     let set_name = tileset_index.and_then(|idx| td.lookup.set_name(idx));
     let mut metadata = metadata_from_set_name(set_name, tileset_index);
 
-    let Some(filename) = td.lookup.filename(key.tile_id as i32) else {
+    let Some(filename) = td.lookup.filename_for_variant(key.tile_id, key.variant) else {
         apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
@@ -1401,19 +1510,40 @@ fn load_tile_metadata(
         apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
-    let Some(tile) = tmp
-        .tiles
-        .get(key.sub_tile as usize)
-        .and_then(|t| t.as_ref())
+    merge_tmp_file_metadata(
+        &mut metadata,
+        &tmp,
+        key.sub_tile,
+        terrain_rules,
+        warned_unknown_land_types,
+    );
+    apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
+    metadata
+}
+
+fn merge_tmp_file_metadata(
+    metadata: &mut TileMetadata,
+    tmp: &TmpFile,
+    sub_tile: u8,
+    terrain_rules: Option<&TerrainRules>,
+    warned_unknown_land_types: &mut HashSet<u8>,
+) {
+    metadata.template_width_cells = tmp.template_width;
+    metadata.template_height_cells = tmp.template_height;
+    let Some(source_sub) =
+        theater::wrapped_subtile_index(sub_tile, tmp.template_width, tmp.template_height)
     else {
-        apply_land_type_semantics(&mut metadata, terrain_rules, warned_unknown_land_types);
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
-        return metadata;
+        apply_land_type_semantics(metadata, terrain_rules, warned_unknown_land_types);
+        return;
+    };
+    let Some(tile) = tmp.tiles.get(source_sub).and_then(|t| t.as_ref()) else {
+        apply_land_type_semantics(metadata, terrain_rules, warned_unknown_land_types);
+        return;
     };
     // Remember tileset-name road detection before TMP byte overrides it.
     let tileset_says_road = metadata.is_road;
-    merge_tmp_metadata(&mut metadata, tile);
-    apply_land_type_semantics(&mut metadata, terrain_rules, warned_unknown_land_types);
+    merge_tmp_metadata(metadata, tile);
+    apply_land_type_semantics(metadata, terrain_rules, warned_unknown_land_types);
     // Some road/pavement tilesets encode terrain_type 0 (Clear) in TMP instead of
     // 11 (Road). If the tileset name says "road"/"pavement" but the TMP byte mapped
     // to Clear, trust the tileset name — the visual road should be a road.
@@ -1421,8 +1551,6 @@ fn load_tile_metadata(
         metadata.is_road = true;
         metadata.terrain_class = TerrainClass::Road;
     }
-    apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
-    metadata
 }
 
 fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) -> TileMetadata {
@@ -1865,6 +1993,101 @@ mod tests {
     }
 
     #[test]
+    fn gsi_02_11_clear_fallback_calls_selector_even_with_pristine_only() {
+        let map = make_map(
+            vec![MapCell {
+                rx: 0,
+                ry: 0,
+                tile_index: theater::NO_TILE,
+                sub_tile: 7,
+                z: 0,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        let theater = synthetic_theater_from_ini(
+            b"[General]\nClearTile=0\n[TileSet0000]\nTilesInSet=1\nFileName=clear\nSetName=Clear\n",
+        );
+        assert_eq!(theater.lookup.total_file_count(0), 1);
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut draws = 0u32;
+        let mut raw_draw = || {
+            let value = draws;
+            draws = draws.wrapping_add(1);
+            value
+        };
+        {
+            let mut selector = cache.begin_load(&mut raw_draw);
+            let grid = ResolvedTerrainGrid::build_with_variant_selector(
+                &map,
+                Some(&theater),
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut selector,
+            );
+            assert_eq!(grid.cell(0, 0).expect("fallback cell").variant, 0);
+            assert!(selector.generated_table());
+            assert!(selector.raw_draw_count() > 0);
+        }
+        drop(raw_draw);
+        assert!(draws > 0);
+    }
+
+    #[test]
+    fn gsi_02_11_positive_registry_oor_uses_clear_and_invokes_selector() {
+        let map = make_map(
+            vec![MapCell {
+                rx: 0,
+                ry: 0,
+                tile_index: 1,
+                sub_tile: 7,
+                z: 2,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        let theater = synthetic_theater_from_ini(
+            b"[General]\nClearTile=0\n[TileSet0000]\nTilesInSet=1\nFileName=clear\nSetName=Clear\n",
+        );
+        assert_eq!(theater.lookup.len(), 1);
+        assert_eq!(theater.lookup.total_file_count(0), 1);
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut draws = 0u32;
+        let mut raw_draw = || {
+            let value = draws;
+            draws = draws.wrapping_add(1);
+            value
+        };
+        {
+            let mut selector = cache.begin_load(&mut raw_draw);
+            let grid = ResolvedTerrainGrid::build_with_variant_selector(
+                &map,
+                Some(&theater),
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut selector,
+            );
+            let cell = grid.cell(0, 0).expect("positive out-of-range cell");
+            assert_eq!(cell.final_tile_index, 1);
+            assert_eq!(cell.final_sub_tile, 7);
+            assert_eq!(grid.presentation_tile(cell), (0, 0));
+            assert_eq!(cell.variant, 0);
+            assert!(selector.generated_table());
+            assert!(selector.raw_draw_count() > 0);
+        }
+        drop(raw_draw);
+        assert!(draws > 0);
+    }
+
+    #[test]
     fn explicit_map_tubes_seed_resolved_grid() {
         let mut map = make_map(
             vec![
@@ -2217,6 +2440,170 @@ mod tests {
         assert!(metadata.has_tmp_metadata);
         assert_eq!(metadata.radar_left, [100, 120, 80]);
         assert_eq!(metadata.radar_right, [90, 110, 70]);
+    }
+
+    #[test]
+    fn gsi_02_11_pristine_owns_cellclass_selected_owner_owns_presentation() {
+        let pristine = TmpFile {
+            template_width: 1,
+            template_height: 1,
+            tile_width: 60,
+            tile_height: 30,
+            tiles: vec![Some(TmpTile {
+                height: 2,
+                terrain_type: 1,
+                ramp_type: 1,
+                radar_left: [1, 2, 3],
+                radar_right: [4, 5, 6],
+                pixels: Vec::new(),
+                depth: Vec::new(),
+                pixel_width: 60,
+                pixel_height: 30,
+                offset_x: -3,
+                offset_y: -4,
+                has_damaged_data: false,
+            })],
+        };
+        let divergent_selected = TmpFile {
+            template_width: 2,
+            template_height: 1,
+            tile_width: 60,
+            tile_height: 30,
+            tiles: vec![
+                Some(TmpTile {
+                    height: 7,
+                    terrain_type: 7,
+                    ramp_type: 3,
+                    radar_left: [101, 102, 103],
+                    radar_right: [104, 105, 106],
+                    pixels: Vec::new(),
+                    depth: Vec::new(),
+                    pixel_width: 64,
+                    pixel_height: 35,
+                    offset_x: -8,
+                    offset_y: -9,
+                    has_damaged_data: true,
+                }),
+                None,
+            ],
+        };
+        let mut warned = HashSet::new();
+        let mut metadata = TileMetadata::default();
+        merge_tmp_file_metadata(&mut metadata, &pristine, 0, None, &mut warned);
+        let pristine_metadata = metadata.clone();
+        let mut selected_metadata = TileMetadata::default();
+        merge_tmp_file_metadata(
+            &mut selected_metadata,
+            &divergent_selected,
+            0,
+            None,
+            &mut warned,
+        );
+        assert_ne!(
+            selected_metadata.raw_land_type,
+            pristine_metadata.raw_land_type
+        );
+        assert_ne!(selected_metadata.slope_type, pristine_metadata.slope_type);
+        assert_ne!(
+            selected_metadata.template_height,
+            pristine_metadata.template_height
+        );
+        assert_ne!(
+            selected_metadata.has_damaged_data,
+            pristine_metadata.has_damaged_data
+        );
+
+        apply_selected_presentation_metadata(&mut metadata, &selected_metadata);
+
+        assert_eq!(metadata.raw_land_type, pristine_metadata.raw_land_type);
+        assert_eq!(metadata.land_type, pristine_metadata.land_type);
+        assert_eq!(metadata.slope_type, pristine_metadata.slope_type);
+        assert_eq!(metadata.template_height, pristine_metadata.template_height);
+        assert_eq!(
+            metadata.template_width_cells,
+            pristine_metadata.template_width_cells
+        );
+        assert_eq!(
+            metadata.has_damaged_data,
+            pristine_metadata.has_damaged_data
+        );
+        assert_eq!(metadata.radar_left, [101, 102, 103]);
+        assert_eq!(metadata.radar_right, [104, 105, 106]);
+        assert_eq!(metadata.render_offset_x, -8);
+        assert_eq!(metadata.render_offset_y, -9);
+
+        let sparse_suffix = TmpFile {
+            template_width: 2,
+            template_height: 1,
+            tile_width: 60,
+            tile_height: 30,
+            tiles: vec![None, None],
+        };
+        let mut sparse_selected_metadata = TileMetadata::default();
+        merge_tmp_file_metadata(
+            &mut sparse_selected_metadata,
+            &sparse_suffix,
+            0,
+            None,
+            &mut warned,
+        );
+        let mut sparse_result = pristine_metadata.clone();
+        apply_selected_presentation_metadata(&mut sparse_result, &sparse_selected_metadata);
+        assert_eq!(sparse_result.raw_land_type, pristine_metadata.raw_land_type);
+        assert_eq!(sparse_result.slope_type, pristine_metadata.slope_type);
+        assert_eq!(
+            sparse_result.template_height,
+            pristine_metadata.template_height
+        );
+        assert_eq!(
+            sparse_result.has_damaged_data,
+            pristine_metadata.has_damaged_data
+        );
+        assert_eq!(sparse_result.radar_left, [0, 0, 0]);
+        assert_eq!(sparse_result.radar_right, [0, 0, 0]);
+        assert_eq!(sparse_result.render_offset_x, 0);
+        assert_eq!(sparse_result.render_offset_y, 0);
+    }
+
+    #[test]
+    fn gsi_02_11_damaged_tmp_cell_bypasses_selector_without_table_generation() {
+        let mut metadata = TileMetadata::default();
+        let damaged_tile = TmpTile {
+            height: 0,
+            terrain_type: 0,
+            ramp_type: 0,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            pixels: Vec::new(),
+            depth: Vec::new(),
+            pixel_width: 60,
+            pixel_height: 30,
+            offset_x: 0,
+            offset_y: 0,
+            has_damaged_data: true,
+        };
+        merge_tmp_metadata(&mut metadata, &damaged_tile);
+        assert!(metadata.has_damaged_data);
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut draws = 0usize;
+        let mut raw_draw = || {
+            draws += 1;
+            0
+        };
+        let mut variant = 0u8;
+        {
+            let mut selector = cache.begin_load(&mut raw_draw);
+            if ordinary_variant_selection_enabled(8, false, metadata.has_damaged_data) {
+                variant = selector.select_variant(4, 4, 0, 1, 1, 8);
+            }
+            assert!(!selector.generated_table());
+            assert_eq!(selector.raw_draw_count(), 0);
+        }
+        drop(raw_draw);
+        assert_eq!(variant, 0);
+        assert_eq!(draws, 0);
+        assert!(!cache.is_initialized());
     }
 
     #[test]

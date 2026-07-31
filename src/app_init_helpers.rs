@@ -466,6 +466,7 @@ pub(crate) fn spawn_entities(
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
+    variant_advanced_main_rng: Option<crate::sim::rng::SimRng>,
 ) -> (
     Option<Simulation>,
     Option<UnitAtlas>,
@@ -473,6 +474,9 @@ pub(crate) fn spawn_entities(
     Option<crate::render::palette_textures::PaletteSet>,
 ) {
     let mut sim: Simulation = Simulation::from_descriptor(descriptor);
+    if let Some(main_rng) = variant_advanced_main_rng {
+        sim.install_variant_advanced_main_rng(main_rng);
+    }
     // Frame tripwire: every MP start waypoint must sit inside the session
     // bounds (= the fog window, cell-array frame). A start outside means the
     // descriptor was fed wrong-frame bounds (e.g. raw [Map] Size=) and the

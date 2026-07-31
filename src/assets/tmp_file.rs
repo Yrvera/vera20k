@@ -37,7 +37,8 @@ pub struct TmpTile {
     pub ramp_type: u8,
     pub radar_left: [u8; 3],
     pub radar_right: [u8; 3],
-    /// Palette indices, pixel_width × pixel_height. Index 0 = transparent.
+    /// Palette indices, pixel_width × pixel_height. Index 0 is opaque inside
+    /// the diamond; zero-filled pixels outside its mask remain transparent.
     pub pixels: Vec<u8>,
     /// Depth buffer, same layout as pixels.
     pub depth: Vec<u8>,
@@ -64,8 +65,36 @@ impl TmpFile {
             });
         }
 
-        let template_width: u32 = read_u32_le(data, 0);
-        let template_height: u32 = read_u32_le(data, 4);
+        let raw_template_width: u32 = read_u32_le(data, 0);
+        let raw_template_height: u32 = read_u32_le(data, 4);
+        // The active loader stores only the low byte of each template dimension.
+        // Its initial relocation loop still uses the raw dword product, so files
+        // whose high bytes change that count have no single safe decoded shape.
+        let template_width: u32 = u32::from(data[0]);
+        let template_height: u32 = u32::from(data[4]);
+        let raw_cell_count: u64 = u64::from(raw_template_width) * u64::from(raw_template_height);
+        let decoded_cell_count: u64 = u64::from(template_width) * u64::from(template_height);
+        if raw_cell_count != decoded_cell_count {
+            return Err(AssetError::InvalidTmpFile {
+                reason: format!(
+                    "Raw template cell count {} disagrees with low-byte count {} (raw dimensions {}x{}, decoded {}x{})",
+                    raw_cell_count,
+                    decoded_cell_count,
+                    raw_template_width,
+                    raw_template_height,
+                    template_width,
+                    template_height
+                ),
+            });
+        }
+        if raw_template_width & !0xff != 0 || raw_template_height & !0xff != 0 {
+            return Err(AssetError::InvalidTmpFile {
+                reason: format!(
+                    "Template dimensions contain nonzero high bytes: {}x{}",
+                    raw_template_width, raw_template_height
+                ),
+            });
+        }
         let tile_width: u32 = read_u32_le(data, 8);
         let tile_height: u32 = read_u32_le(data, 12);
 
@@ -88,8 +117,19 @@ impl TmpFile {
             });
         }
 
-        let cell_count: usize = (template_width * template_height) as usize;
-        let offsets_end: usize = TMP_HEADER_SIZE + cell_count * 4;
+        let cell_count: usize = decoded_cell_count as usize;
+        let offset_table_bytes: usize =
+            cell_count
+                .checked_mul(4)
+                .ok_or_else(|| AssetError::InvalidTmpFile {
+                    reason: format!("Template offset table is too large: {} cells", cell_count),
+                })?;
+        let offsets_end: usize =
+            TMP_HEADER_SIZE
+                .checked_add(offset_table_bytes)
+                .ok_or_else(|| AssetError::InvalidTmpFile {
+                    reason: "Template offset table size overflow".to_string(),
+                })?;
         if data.len() < offsets_end {
             return Err(AssetError::InvalidTmpFile {
                 reason: format!(
@@ -106,21 +146,13 @@ impl TmpFile {
         }
 
         let mut tiles: Vec<Option<TmpTile>> = Vec::with_capacity(cell_count);
-        for (i, &offset) in offsets.iter().enumerate() {
+        for &offset in &offsets {
             if offset == 0 {
                 tiles.push(None);
                 continue;
             }
-            let col: u32 = (i as u32) % template_width;
-            let row: u32 = (i as u32) / template_width;
-            let tile: TmpTile = tmp_decode::parse_tile_cell(
-                data,
-                offset as usize,
-                tile_width,
-                tile_height,
-                col,
-                row,
-            )?;
+            let tile: TmpTile =
+                tmp_decode::parse_tile_cell(data, offset as usize, tile_width, tile_height)?;
             tiles.push(Some(tile));
         }
 
@@ -338,7 +370,36 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_tile_offset() {
+    fn gsi_02_11_rejects_high_byte_template_count_disagreement() {
+        let mut data: Vec<u8> = make_test_tmp();
+        // Low-byte width remains 1, while the raw dword width becomes 257.
+        // Native's stored dimensions and initial relocation count would disagree.
+        data[1] = 1;
+
+        let error: AssetError = TmpFile::from_bytes(&data).unwrap_err();
+        assert!(
+            error.to_string().contains("disagrees with low-byte count"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn gsi_02_11_rejects_nonzero_dimension_high_bytes() {
+        let mut data: Vec<u8> = vec![0; TMP_HEADER_SIZE];
+        data[0..4].copy_from_slice(&256u32.to_le_bytes());
+        data[4..8].copy_from_slice(&0u32.to_le_bytes());
+        data[8..12].copy_from_slice(&8u32.to_le_bytes());
+        data[12..16].copy_from_slice(&4u32.to_le_bytes());
+
+        let error: AssetError = TmpFile::from_bytes(&data).unwrap_err();
+        assert!(
+            error.to_string().contains("nonzero high bytes"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn gsi_02_11_preserves_sparse_empty_tile_offset() {
         let (tw, th): (u32, u32) = (8, 4);
         let dpixels: usize = diamond_pixel_count(th);
         let mut data: Vec<u8> = Vec::new();
@@ -401,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn test_index_zero_inside_diamond_is_opaque() {
+    fn gsi_02_11_index_zero_inside_diamond_is_opaque() {
         // Build a TMP where diamond-interior pixels include palette index 0.
         // Verify tile_to_rgba makes those pixels opaque (alpha=255) instead
         // of transparent.

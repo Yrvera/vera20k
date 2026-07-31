@@ -654,6 +654,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.vxl_compute.as_mut(),
+                        &mut state.tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
@@ -674,6 +675,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.vxl_compute.as_mut(),
+                        &mut state.tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
@@ -687,6 +689,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     false,
                     0,
                     state.vxl_compute.as_mut(),
+                    &mut state.tile_variant_selector_cache,
                     &mut NoopProgressSink,
                 ),
             };

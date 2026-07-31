@@ -204,8 +204,8 @@ fn apply_resolved_skirmish_launch_session(
     sim.houses.clear();
     sim.session.house_order.clear();
     sim.ai_players.clear();
-    populate_launch_houses(sim, &slots);
-    populate_special_houses(sim, house_roster);
+    populate_launch_houses(sim, &slots, rules);
+    populate_special_houses(sim, house_roster, rules);
     sim.house_alliances = launch_alliance_map(house_roster, &slots, &session.mode);
     recount_house_owned_counts(sim);
 
@@ -371,7 +371,7 @@ fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<NormalizedSki
     slots
 }
 
-fn populate_special_houses(sim: &mut Simulation, house_roster: &HouseRoster) {
+fn populate_special_houses(sim: &mut Simulation, house_roster: &HouseRoster, rules: &RuleSet) {
     for special_name in ["Neutral", "Special"] {
         let definition = house_roster
             .houses
@@ -379,11 +379,16 @@ fn populate_special_houses(sim: &mut Simulation, house_roster: &HouseRoster) {
             .find(|house| house.name.eq_ignore_ascii_case(special_name));
         let name = definition.map_or(special_name, |house| house.name.as_str());
         let name_id = sim.interner.intern(name);
-        let country_id = definition
+        let country_name = definition
             .and_then(|house| house.country.as_deref())
-            .map(|country| sim.interner.intern(country));
-        let side_idx = crate::sim::house_state::side_index_from_name(
-            definition.and_then(|house| house.side.as_deref()),
+            .unwrap_or(special_name);
+        let country_id = Some(sim.interner.intern(country_name));
+        let declared_side = definition.and_then(|house| house.side.as_deref());
+        let side_idx = crate::sim::house_state::resolve_house_side_index(
+            rules,
+            Some(country_name),
+            declared_side,
+            crate::sim::house_state::side_index_from_name(declared_side),
         );
         sim.houses.insert(
             name_id,
@@ -400,13 +405,20 @@ fn populate_special_houses(sim: &mut Simulation, house_roster: &HouseRoster) {
     }
 }
 
-fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot]) {
+fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot], rules: &RuleSet) {
     for slot in slots {
         let name_id = sim.interner.intern(&slot.owner_name);
-        let country_id = sim.interner.intern(slot.country.country_name());
+        let country_name = slot.country.country_name();
+        let country_id = sim.interner.intern(country_name);
+        let side_index = crate::sim::house_state::resolve_house_side_index(
+            rules,
+            Some(country_name),
+            None,
+            slot.country.side_index(),
+        );
         let mut house = HouseState::new(
             name_id,
-            slot.country.side_index(),
+            side_index,
             Some(country_id),
             slot.is_human,
             sim.session.game_options.starting_credits,
@@ -1391,6 +1403,20 @@ mod tests {
         )
     }
 
+    fn ordered_country_side_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[Countries]\n\
+             0=Americans\n1=Alliance\n2=French\n3=Germans\n4=British\n\
+             5=Africans\n6=Arabs\n7=Confederation\n8=Russians\n9=YuriCountry\n\
+             10=GDI\n11=Nod\n12=Neutral\n13=Special\n\
+             [Sides]\n\
+             GDI=British,French,Germans,Americans,Alliance\n\
+             Nod=Russians,Africans,Confederation,Arabs\n\
+             ThirdSide=YuriCountry\nCivilian=Neutral\nMutant=Special\n",
+        );
+        RuleSet::from_ini(&ini).expect("ordered country/side rules parse")
+    }
+
     fn test_starting_unit_rules() -> RuleSet {
         let ini = IniFile::from_str(
             "[General]\nBaseUnit=AMCV,SMCV,PCV\n\
@@ -1718,9 +1744,10 @@ mod tests {
     fn launch_registration_orders_participants_before_guaranteed_special_houses() {
         let session = test_session();
         let mut sim = Simulation::new();
+        let rules = test_standard_launch_rules();
 
-        populate_launch_houses(&mut sim, &normalized_launch_slots(&session));
-        populate_special_houses(&mut sim, &HouseRoster::default());
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
+        populate_special_houses(&mut sim, &HouseRoster::default(), &rules);
 
         let order: Vec<_> = sim
             .session
@@ -1730,6 +1757,43 @@ mod tests {
             .collect();
         assert_eq!(order, ["Player", "Computer1", "Neutral", "Special"]);
         assert_eq!(sim.houses.len(), 4);
+    }
+
+    #[test]
+    fn ordered_country_side_stock_identities_reach_skirmish_house_state() {
+        let mut session = test_session();
+        session.opponents.push(SkirmishAiSlot {
+            country: LaunchCountry::Yuri,
+            country_random: false,
+            color_index: 3,
+            color_random: false,
+            start_position: LaunchStartPosition::Auto,
+            team: LaunchTeam::None,
+            difficulty: Default::default(),
+        });
+        let rules = ordered_country_side_rules();
+        let mut sim = Simulation::new();
+
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
+        populate_special_houses(&mut sim, &HouseRoster::default(), &rules);
+
+        let side = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .map(|house| house.side_index)
+        };
+        assert_eq!(side("Player"), Some(0));
+        assert_eq!(side("Computer1"), Some(1));
+        assert_eq!(side("Computer2"), Some(2));
+        assert_eq!(side("Neutral"), Some(3));
+        assert_eq!(side("Special"), Some(4));
+
+        let country = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .and_then(|house| house.country)
+                .map(|country| sim.interner.resolve(country).to_string())
+        };
+        assert_eq!(country("Neutral"), Some("Neutral".to_string()));
+        assert_eq!(country("Special"), Some("Special".to_string()));
     }
 
     #[test]
@@ -2091,7 +2155,8 @@ mod tests {
             .collect();
 
         let mut sim = Simulation::new();
-        populate_launch_houses(&mut sim, &normalized_launch_slots(&session));
+        let rules = test_standard_launch_rules();
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
 
         let difficulty = |owner: &str| {
             crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
@@ -2311,7 +2376,8 @@ mod tests {
         sim.session.game_options = session.options.to_game_options(0);
         let all_slots = normalized_launch_slots(&session);
         let slots = &all_slots[..1];
-        populate_launch_houses(&mut sim, slots);
+        let rules = test_starting_unit_rules();
+        populate_launch_houses(&mut sim, slots, &rules);
         crate::sim::house_state::house_state_for_owner_mut(
             &mut sim.houses,
             &slots[0].owner_name,
@@ -2330,7 +2396,6 @@ mod tests {
             }
         }
         let bounds = NativeStartBounds::from_session(&sim, &terrain);
-        let rules = test_starting_unit_rules();
         let mut expected_rng = sim.scenario_rng.clone();
         assert_eq!(STARTING_EXTRA_UNIT_MAX_PLACEMENT_FAILURES, 20);
         for _ in 0..20 {

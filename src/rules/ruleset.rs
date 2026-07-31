@@ -3,13 +3,13 @@
 //! RuleSet is the single source of truth for all game object definitions.
 //! It parses the type registries ([InfantryTypes], [VehicleTypes], etc.),
 //! then loads each referenced object's section into typed structs. Weapons
-//! and warheads referenced by objects are also parsed.
+//! referenced by objects and every explicitly registered warhead are also parsed.
 //!
 //! ## Loading strategy
 //! 1. Parse type registries → collect all object IDs per category
 //! 2. For each ID, look up its [ID] section → parse into ObjectType
 //! 3. Collect weapon/warhead IDs referenced by all objects
-//! 4. Parse each referenced weapon/warhead section
+//! 4. Parse each referenced weapon and every registered/referenced warhead section
 //! 5. Log summary counts
 //!
 //! ## Dependency rules
@@ -78,6 +78,14 @@ impl CountryRules {
         }
     }
 }
+
+/// Stable source-order identity in the `[Countries]` registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CountryIdx(pub u16);
+
+/// Stable source-order identity in the `[Sides]` registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SideIdx(pub u8);
 
 /// Registry section names in rules.ini and their corresponding category.
 const TYPE_REGISTRIES: &[(&str, ObjectCategory)] = &[
@@ -1734,6 +1742,18 @@ pub struct RuleSet {
     projectiles: HashMap<String, ProjectileType>,
     /// Country-level rules indexed by country/house type ID.
     countries: HashMap<String, CountryRules>,
+    /// Country identities in native `[Countries]` registration order.
+    country_ids: Vec<String>,
+    /// Uppercase country identity -> source-order index.
+    country_indices: HashMap<String, CountryIdx>,
+    /// Side identities in native `[Sides]` registration order, including
+    /// sides allocated later by a per-country `Side=` override.
+    side_ids: Vec<String>,
+    /// Uppercase side identity -> source-order index.
+    side_indices: HashMap<String, SideIdx>,
+    /// Effective side for each country after `[Sides]` membership and the
+    /// per-country `Side=` override have both run.
+    country_sides: Vec<Option<SideIdx>>,
     /// `[Colors]` scheme entries in declaration order. Source of truth for every
     /// house-color producer (loading-bar backing, lobby swatch, map `Color=`,
     /// skirmish slot priority).
@@ -1743,6 +1763,8 @@ pub struct RuleSet {
     /// index). Consumed by unit/building atlas bake, the voxel GPU ramp texture,
     /// radar dots, target lines, and the loading screen.
     pub house_color_ramps: crate::rules::house_colors::HouseColorRamps,
+    /// Fixed source-ordered `[ColorAdd]` slots retained as raw RGB565 magnitudes.
+    pub color_add: crate::rules::color_add::ColorAddTable,
     pub production: ProductionRules,
     /// Global gameplay constants (vision, gap generator, etc.).
     pub general: GeneralRules,
@@ -1883,10 +1905,12 @@ impl RuleSet {
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
         let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
-        let countries = parse_country_rules(ini);
+        let country_side_registry = parse_country_side_registry(ini);
+        let countries = country_side_registry.rules;
         let color_schemes = crate::rules::color_scheme::parse_color_schemes(ini);
         let house_color_ramps =
             crate::rules::house_colors::HouseColorRamps::from_schemes(&color_schemes);
+        let color_add = crate::rules::color_add::ColorAddTable::from_ini(ini);
 
         // Step 1: Parse each type registry and load object sections.
         for &(registry_name, category) in TYPE_REGISTRIES {
@@ -1937,7 +1961,13 @@ impl RuleSet {
 
         // Step 3: Parse weapon sections.
         let mut weapons: HashMap<String, WeaponType> = HashMap::new();
-        let mut warhead_ids: HashSet<String> = warhead_refs;
+        // RulesClass allocates every value in [Warheads] before the per-type
+        // ReadINI pass. Keep reference-driven allocations too: later rules
+        // layers and runtime-specific globals can create warheads outside the
+        // explicit registry.
+        let mut warhead_ids: HashSet<String> =
+            parse_registry(ini, "Warheads").into_iter().collect();
+        warhead_ids.extend(warhead_refs);
 
         for weapon_id in &weapon_ids {
             if let Some(section) = ini.section(weapon_id) {
@@ -2143,8 +2173,14 @@ impl RuleSet {
             warheads,
             projectiles,
             countries,
+            country_ids: country_side_registry.country_ids,
+            country_indices: country_side_registry.country_indices,
+            side_ids: country_side_registry.side_ids,
+            side_indices: country_side_registry.side_indices,
+            country_sides: country_side_registry.country_sides,
             color_schemes,
             house_color_ramps,
+            color_add,
             production,
             general,
             initial_veteran,
@@ -2311,13 +2347,40 @@ impl RuleSet {
             .map_or(INCOME_PPM_SCALE, |country| country.income_ppm)
     }
 
+    /// Resolve a country name to its stable `[Countries]` registration index.
+    pub fn country_index(&self, id: &str) -> Option<CountryIdx> {
+        self.country_indices.get(&id.to_ascii_uppercase()).copied()
+    }
+
+    /// Resolve a country index back to its source spelling.
+    pub fn country_name(&self, index: CountryIdx) -> Option<&str> {
+        self.country_ids.get(index.0 as usize).map(String::as_str)
+    }
+
+    /// Resolve a side name to its stable `[Sides]` registration index.
+    pub fn side_index(&self, id: &str) -> Option<SideIdx> {
+        self.side_indices.get(&id.to_ascii_uppercase()).copied()
+    }
+
+    /// Resolve a side index back to its source spelling.
+    pub fn side_name(&self, index: SideIdx) -> Option<&str> {
+        self.side_ids.get(index.0 as usize).map(String::as_str)
+    }
+
+    /// Return the country's effective side after its optional `Side=`
+    /// override has superseded `[Sides]` membership.
+    pub fn country_side_index(&self, id: &str) -> Option<SideIdx> {
+        let country = self.country_index(id)?;
+        self.country_sides
+            .get(country.0 as usize)
+            .copied()
+            .flatten()
+    }
+
     /// Case-insensitive country lookup (gamemd parity), exact key first.
     fn country_rules(&self, id: &str) -> Option<&CountryRules> {
-        self.countries.get(id).or_else(|| {
-            self.countries
-                .iter()
-                .find_map(|(key, country)| key.eq_ignore_ascii_case(id).then_some(country))
-        })
+        let index = self.country_index(id)?;
+        self.countries.get(self.country_name(index)?)
     }
 
     /// Look up a superweapon type by ID (case-insensitive, gamemd parity).
@@ -2611,14 +2674,109 @@ fn parse_registry(ini: &IniFile, section_name: &str) -> Vec<String> {
     }
 }
 
-fn parse_country_rules(ini: &IniFile) -> HashMap<String, CountryRules> {
-    let mut countries = HashMap::new();
-    for id in parse_registry(ini, "Countries") {
-        if let Some(section) = ini.section(&id) {
-            countries.insert(id, CountryRules::from_ini_section(section));
+struct ParsedCountrySideRegistry {
+    rules: HashMap<String, CountryRules>,
+    country_ids: Vec<String>,
+    country_indices: HashMap<String, CountryIdx>,
+    side_ids: Vec<String>,
+    side_indices: HashMap<String, SideIdx>,
+    country_sides: Vec<Option<SideIdx>>,
+}
+
+fn parse_country_side_registry(ini: &IniFile) -> ParsedCountrySideRegistry {
+    let mut country_ids = parse_registry(ini, "Countries");
+    let mut country_indices: HashMap<String, CountryIdx> = country_ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let index = u16::try_from(index).expect("[Countries] exceeds u16 identity space");
+            (id.to_ascii_uppercase(), CountryIdx(index))
+        })
+        .collect();
+    let mut side_ids = Vec::new();
+    let mut side_indices = HashMap::new();
+    let mut country_sides = vec![None; country_ids.len()];
+
+    if let Some(sides) = ini.section("Sides") {
+        for side_name in sides.keys() {
+            let side = find_or_allocate_side(side_name, &mut side_ids, &mut side_indices);
+            if let Some(members) = sides.get_list(side_name) {
+                for member in members {
+                    let country = find_or_allocate_country(
+                        member,
+                        &mut country_ids,
+                        &mut country_indices,
+                        &mut country_sides,
+                    );
+                    country_sides[country.0 as usize] = Some(side);
+                }
+            }
         }
     }
-    countries
+
+    let mut rules = HashMap::with_capacity(country_ids.len());
+    for id in &country_ids {
+        if let Some(section) = ini.section(id) {
+            rules.insert(id.clone(), CountryRules::from_ini_section(section));
+        }
+    }
+
+    // HouseTypeClass::ReadINI runs after the `[Sides]` registration pass. Its
+    // `Side=` value therefore wins and can find-or-allocate a new side.
+    for (country_index, country_id) in country_ids.iter().enumerate() {
+        let Some(section) = ini.section(country_id) else {
+            continue;
+        };
+        let side_name = section.read_string("Side", "", 32);
+        if side_name.is_empty() {
+            continue;
+        }
+        let side = find_or_allocate_side(&side_name, &mut side_ids, &mut side_indices);
+        country_sides[country_index] = Some(side);
+    }
+
+    ParsedCountrySideRegistry {
+        rules,
+        country_ids,
+        country_indices,
+        side_ids,
+        side_indices,
+        country_sides,
+    }
+}
+
+fn find_or_allocate_country(
+    country_name: &str,
+    country_ids: &mut Vec<String>,
+    country_indices: &mut HashMap<String, CountryIdx>,
+    country_sides: &mut Vec<Option<SideIdx>>,
+) -> CountryIdx {
+    let key = country_name.to_ascii_uppercase();
+    if let Some(index) = country_indices.get(&key) {
+        return *index;
+    }
+    let index = u16::try_from(country_ids.len()).expect("[Countries] exceeds u16 identity space");
+    let index = CountryIdx(index);
+    country_ids.push(country_name.to_string());
+    country_indices.insert(key, index);
+    country_sides.push(None);
+    index
+}
+
+fn find_or_allocate_side(
+    side_name: &str,
+    side_ids: &mut Vec<String>,
+    side_indices: &mut HashMap<String, SideIdx>,
+) -> SideIdx {
+    let key = side_name.to_ascii_uppercase();
+    if let Some(index) = side_indices.get(&key) {
+        return *index;
+    }
+    let index = u8::try_from(side_ids.len()).expect("[Sides] exceeds u8 identity space");
+    let index = SideIdx(index);
+    side_ids.push(side_name.to_string());
+    side_indices.insert(key, index);
+    index
 }
 
 /// Collect all weapon and warhead IDs referenced by objects.
@@ -2827,6 +2985,7 @@ fn parse_particle_system_types(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::ini_parser::RulesLayerKind;
 
     /// Build a minimal rules.ini string for testing.
     fn make_test_rules() -> String {
@@ -2946,6 +3105,79 @@ CellSpread=0
         assert_eq!(rules.country_income_ppm("Russia"), INCOME_PPM_SCALE);
         assert_eq!(rules.country_income_ppm("Nonexistent"), INCOME_PPM_SCALE);
         assert_eq!(rules.country_income_ppm("americans"), 1_200_000); // case-insensitive
+    }
+
+    #[test]
+    fn ordered_country_side_source_identity_and_case_insensitive_lookup() {
+        let ini = IniFile::from_str(
+            "[Countries]\n9=Zulu\n2=Alpha\n7=Middle\n\
+             [Sides]\nNorth=Alpha,Middle\nSouth=Zulu\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("country/side registries parse");
+
+        assert_eq!(rules.country_index("zulu"), Some(CountryIdx(0)));
+        assert_eq!(rules.country_index("ALPHA"), Some(CountryIdx(1)));
+        assert_eq!(rules.country_index("Middle"), Some(CountryIdx(2)));
+        assert_eq!(rules.country_name(CountryIdx(1)), Some("Alpha"));
+        assert_eq!(rules.side_index("north"), Some(SideIdx(0)));
+        assert_eq!(rules.side_index("SOUTH"), Some(SideIdx(1)));
+        assert_eq!(rules.side_name(SideIdx(0)), Some("North"));
+    }
+
+    #[test]
+    fn gsi_02_13_ruleset_exposes_parsed_color_add_table() {
+        let ini = IniFile::from_str(
+            "[ColorAdd]\n\
+             First=1,2,3\n\
+             StrongGreen=0,63,0\n\
+             BrightWhite=31,63,31\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("ColorAdd rules parse");
+
+        assert_eq!(rules.color_add.slots[0].name.as_deref(), Some("First"));
+        assert_eq!(rules.color_add.slots[0].rgb, [1, 2, 3]);
+        assert_eq!(
+            rules.color_add.slots[1].name.as_deref(),
+            Some("StrongGreen")
+        );
+        assert_eq!(rules.color_add.slots[1].rgb, [0, 63, 0]);
+        assert_eq!(rules.color_add.slots[2].rgb, [31, 63, 31]);
+        assert_eq!(
+            rules.color_add.slots[15],
+            crate::rules::color_add::ColorAddEntry::default()
+        );
+    }
+
+    #[test]
+    fn ordered_country_side_country_override_moves_and_allocates_side() {
+        let ini = IniFile::from_str(
+            "[Countries]\n0=Alpha\n1=Beta\n2=Gamma\n\
+             [Sides]\nGDI=Alpha,Beta\nNod=Gamma\n\
+             [Beta]\nSide=Nod\n\
+             [Gamma]\nSide=FourthSide\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("country side overrides parse");
+
+        assert_eq!(rules.country_side_index("Alpha"), Some(SideIdx(0)));
+        assert_eq!(rules.country_side_index("beta"), Some(SideIdx(1)));
+        assert_eq!(rules.country_side_index("GAMMA"), Some(SideIdx(2)));
+        assert_eq!(rules.side_name(SideIdx(2)), Some("FourthSide"));
+        assert_eq!(rules.side_index("fourthside"), Some(SideIdx(2)));
+    }
+
+    #[test]
+    fn ordered_country_side_members_find_or_allocate_missing_country() {
+        let ini = IniFile::from_str(
+            "[Countries]\n0=Alpha\n\
+             [Sides]\nGDI=Alpha,Beta\n\
+             [Beta]\nSide=NewSide\nMultiplayPassive=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("side-created country parses");
+
+        assert_eq!(rules.country_index("Beta"), Some(CountryIdx(1)));
+        assert_eq!(rules.side_index("NewSide"), Some(SideIdx(1)));
+        assert_eq!(rules.country_side_index("beta"), Some(SideIdx(1)));
+        assert!(rules.country_multiplay_passive("BETA"));
     }
 
     #[test]
@@ -3097,6 +3329,44 @@ MutateWarhead=MyMutate\n\
 
         let ap: &WarheadType = rules.warhead("AP").expect("AP exists");
         assert_eq!(ap.verses[6], 60); // wood: 60%
+    }
+
+    #[test]
+    fn registry_only_warhead_loads_through_rules_layer_stack() {
+        let mut layers = RulesLayerStack::new(IniFile::from_str("[General]\n"));
+        layers.push(
+            RulesLayerKind::Scenario,
+            IniFile::from_str(
+                "[Warheads]\n\
+                 0=RegistryOnlyWH\n\
+                 [RegistryOnlyWH]\n\
+                 CellSpread=2\n\
+                 PercentAtMax=.5\n\
+                 Verses=100%,90%,80%,70%,60%,50%,40%,30%,20%,10%,0%\n",
+            ),
+        );
+
+        let rules = RuleSet::from_rules_layers(&layers).expect("layered registry-only rules parse");
+        assert_eq!(
+            rules.weapon_count(),
+            0,
+            "the fixture must not smuggle the warhead in through a weapon"
+        );
+        assert_eq!(rules.warhead_count(), 1);
+
+        let lower = rules
+            .warhead("registryonlywh")
+            .expect("scenario-created registry warhead resolves case-insensitively");
+        let mixed = rules
+            .warhead("RegistryOnlyWh")
+            .expect("mixed-case registry warhead lookup resolves");
+        assert!(std::ptr::eq(lower, mixed));
+        assert_eq!(lower.id, "RegistryOnlyWH");
+        assert_eq!(lower.percent_at_max, 50);
+        assert_eq!(
+            lower.verses,
+            vec![100, 90, 80, 70, 60, 50, 40, 30, 20, 10, 0]
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! - `[Map]`: metadata (theater, size, local bounds)
 //! - `[IsoMapPack5]`: base64-encoded, LZO-compressed terrain cell data
 //!
-//! Each terrain cell is 11 bytes: x(i16) y(i16) tile_index(i32)
+//! Each terrain cell is 11 bytes: x(i16) y(u16) tile_index(i32)
 //! sub_tile(u8) level(u8) ice_growth(u8). Cells describe the isometric tile grid.
 //! (Confirmed by ModEnc IsoMapPack5 docs + FinalAlert2 EA source release.)
 //!
@@ -38,6 +38,11 @@ use crate::util::lzo::{self, LzoError};
 
 /// Size of one terrain cell record in the decompressed IsoMapPack5 data.
 const CELL_RECORD_SIZE: usize = 11;
+/// Size of the coordinate header that precedes each terrain cell payload.
+const CELL_HEADER_SIZE: usize = 4;
+/// Native IsoMapPack5 lookup dimensions.
+const ISO_MAP_ROW_WIDTH: i32 = 512;
+const ISO_MAP_CELL_COUNT: i32 = ISO_MAP_ROW_WIDTH * ISO_MAP_ROW_WIDTH;
 
 /// Errors during map file parsing.
 #[derive(Debug)]
@@ -138,9 +143,9 @@ pub struct MapSmudgeEntry {
 /// -1 (0xFFFFFFFF) means "no tile" (clear ground at level 0).
 #[derive(Debug, Clone)]
 pub struct MapCell {
-    /// Isometric X coordinate (can be negative in some edge cases).
+    /// Canonical isometric X coordinate after the 512-wide native lookup.
     pub rx: u16,
-    /// Isometric Y coordinate.
+    /// Canonical isometric Y coordinate after the 512-wide native lookup.
     pub ry: u16,
     /// Flat index into the theater's tile list (i32, NOT u16).
     /// -1 = no tile / clear ground. Cumulative across all TileSet sections.
@@ -329,18 +334,14 @@ fn parse_header(ini: &IniFile) -> Result<MapHeader, MapError> {
 
     let theater: String = map_section
         .get("Theater")
-        .ok_or(MapError::MissingField {
-            section: "Map".into(),
-            key: "Theater".into(),
-        })?
+        .unwrap_or("TEMPERATE")
         .to_uppercase();
 
     // Size=left,top,width,height
-    let size_str: &str = map_section.get("Size").ok_or(MapError::MissingField {
-        section: "Map".into(),
-        key: "Size".into(),
-    })?;
-    let size_parts: Vec<u32> = parse_csv_u32(size_str, "Size")?;
+    let size_parts: Vec<u32> = match map_section.get("Size") {
+        Some(size) => parse_csv_u32(size, "Size")?,
+        None => vec![1, 1, 50, 50],
+    };
     if size_parts.len() < 4 {
         return Err(MapError::MissingField {
             section: "Map".into(),
@@ -349,11 +350,10 @@ fn parse_header(ini: &IniFile) -> Result<MapHeader, MapError> {
     }
 
     // LocalSize=left,top,width,height
-    let local_str: &str = map_section.get("LocalSize").ok_or(MapError::MissingField {
-        section: "Map".into(),
-        key: "LocalSize".into(),
-    })?;
-    let local_parts: Vec<u32> = parse_csv_u32(local_str, "LocalSize")?;
+    let local_parts: Vec<u32> = match map_section.get("LocalSize") {
+        Some(local_size) => parse_csv_u32(local_size, "LocalSize")?,
+        None => size_parts.clone(),
+    };
     if local_parts.len() < 4 {
         return Err(MapError::MissingField {
             section: "Map".into(),
@@ -413,47 +413,7 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
     let compressed: Vec<u8> = base64::base64_decode(&b64_data).map_err(MapError::Base64)?;
     let decompressed: Vec<u8> = lzo::decompress_chunks(&compressed)?;
 
-    // Parse 11-byte cell records.
-    let cell_count: usize = decompressed.len() / CELL_RECORD_SIZE;
-    let mut cells: Vec<MapCell> = Vec::with_capacity(cell_count);
-
-    for i in 0..cell_count {
-        let offset: usize = i * CELL_RECORD_SIZE;
-        if offset + CELL_RECORD_SIZE > decompressed.len() {
-            break;
-        }
-        let d: &[u8] = &decompressed[offset..offset + CELL_RECORD_SIZE];
-
-        let rx: u16 = u16::from_le_bytes([d[0], d[1]]);
-        let ry: u16 = u16::from_le_bytes([d[2], d[3]]);
-        let raw_tile_index: i32 = i32::from_le_bytes([d[4], d[5], d[6], d[7]]);
-        let sub_tile: u8 = d[8];
-        let z: u8 = d[9];
-        // d[10] = ice_growth (TS Snow only, always 0 in RA2)
-
-        // Skip termination sentinel: x=0, y=0 marks end of data.
-        if rx == 0 && ry == 0 {
-            continue;
-        }
-
-        // Normalize "no tile" sentinels to -1. Westwood-saved maps use
-        // -1 (0xFFFFFFFF) but FinalAlert2-saved .yro maps write 0xFFFF
-        // (only the low u16 set), which would otherwise parse as +65535
-        // and be treated as a real tile_id beyond every theater's lookup.
-        let tile_index: i32 = if raw_tile_index == -1 || raw_tile_index == 0xFFFF {
-            -1
-        } else {
-            raw_tile_index
-        };
-
-        cells.push(MapCell {
-            rx,
-            ry,
-            tile_index,
-            sub_tile,
-            z,
-        });
-    }
+    let cells = parse_iso_map_pack_records(&decompressed)?;
 
     // Diagnostic: tile_index distribution. Lets a reader of the load logs see
     // how high a map's IsoMapPack5 reaches vs. what the theater INI defines.
@@ -482,6 +442,57 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
         max_idx,
         distinct.len()
     );
+
+    Ok(cells)
+}
+
+/// Parse native IsoMapPack5 records after chunk decompression.
+fn parse_iso_map_pack_records(decompressed: &[u8]) -> Result<Vec<MapCell>, MapError> {
+    let mut cells: Vec<MapCell> = Vec::with_capacity(decompressed.len() / CELL_RECORD_SIZE);
+    let mut offset: usize = 0;
+
+    while offset < decompressed.len() {
+        let remaining: usize = decompressed.len() - offset;
+        if remaining < CELL_HEADER_SIZE {
+            return Err(MapError::CellDataTruncated {
+                expected: CELL_HEADER_SIZE,
+                actual: remaining,
+            });
+        }
+
+        let x: i16 = i16::from_le_bytes([decompressed[offset], decompressed[offset + 1]]);
+        let y: u16 = u16::from_le_bytes([decompressed[offset + 2], decompressed[offset + 3]]);
+        if x == 0 && y == 0 {
+            break;
+        }
+
+        if remaining < CELL_RECORD_SIZE {
+            return Err(MapError::CellDataTruncated {
+                expected: CELL_RECORD_SIZE,
+                actual: remaining,
+            });
+        }
+
+        let d: &[u8] = &decompressed[offset..offset + CELL_RECORD_SIZE];
+        let tile_index: i32 = i32::from_le_bytes([d[4], d[5], d[6], d[7]]);
+        let sub_tile: u8 = d[8];
+        let z: u8 = d[9];
+        // d[10] is the legacy ice-growth byte; loading consumes but does not apply it here.
+        offset += CELL_RECORD_SIZE;
+
+        let linear: i32 = i32::from(y) * ISO_MAP_ROW_WIDTH + i32::from(x);
+        if !(0..ISO_MAP_CELL_COUNT).contains(&linear) {
+            continue;
+        }
+
+        cells.push(MapCell {
+            rx: (linear % ISO_MAP_ROW_WIDTH) as u16,
+            ry: (linear / ISO_MAP_ROW_WIDTH) as u16,
+            tile_index,
+            sub_tile,
+            z,
+        });
+    }
 
     Ok(cells)
 }
@@ -590,6 +601,22 @@ mod tests {
         .into_bytes()
     }
 
+    fn iso_map_record(
+        x: i16,
+        y: u16,
+        tile_index: i32,
+        sub_tile: u8,
+        z: u8,
+    ) -> [u8; CELL_RECORD_SIZE] {
+        let mut record = [0u8; CELL_RECORD_SIZE];
+        record[0..2].copy_from_slice(&x.to_le_bytes());
+        record[2..4].copy_from_slice(&y.to_le_bytes());
+        record[4..8].copy_from_slice(&tile_index.to_le_bytes());
+        record[8] = sub_tile;
+        record[9] = z;
+        record
+    }
+
     #[test]
     fn test_parse_header_from_ini() {
         let text: &str = "\
@@ -610,9 +637,122 @@ LocalSize=2,4,96,92
     }
 
     #[test]
+    fn gsi_02_09_map_header_uses_retail_defaults_for_missing_fields() {
+        let ini = IniFile::from_str("[Map]\nName=Defaults\n");
+
+        let header = parse_header(&ini).expect("retail defaults should produce a header");
+
+        assert_eq!(header.theater, "TEMPERATE");
+        assert_eq!(header.width, 50);
+        assert_eq!(header.height, 50);
+        assert_eq!(header.local_left, 1);
+        assert_eq!(header.local_top, 1);
+        assert_eq!(header.local_width, 50);
+        assert_eq!(header.local_height, 50);
+    }
+
+    #[test]
+    fn gsi_02_09_missing_local_size_uses_resolved_size_rectangle() {
+        let ini = IniFile::from_str("[Map]\nSize=2,3,40,41\n");
+
+        let header = parse_header(&ini).expect("Size should supply the LocalSize fallback");
+
+        assert_eq!(header.local_left, 2);
+        assert_eq!(header.local_top, 3);
+        assert_eq!(header.local_width, 40);
+        assert_eq!(header.local_height, 41);
+    }
+
+    #[test]
+    fn gsi_02_09_zero_header_terminates_before_later_records() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&iso_map_record(1, 0, 7, 2, 3));
+        bytes.extend_from_slice(&[0; CELL_HEADER_SIZE]);
+        bytes.extend_from_slice(&iso_map_record(2, 0, 8, 4, 5));
+
+        let cells = parse_iso_map_pack_records(&bytes).expect("sentinel terminates decoding");
+
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].rx, 1);
+        assert_eq!(cells[0].tile_index, 7);
+    }
+
+    #[test]
+    fn gsi_02_09_eof_after_complete_record_is_accepted() {
+        let bytes = iso_map_record(10, 20, 5, 3, 2);
+
+        let cells = parse_iso_map_pack_records(&bytes).expect("complete final record is valid");
+
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].rx, 10);
+        assert_eq!(cells[0].ry, 20);
+        assert_eq!(cells[0].tile_index, 5);
+        assert_eq!(cells[0].sub_tile, 3);
+        assert_eq!(cells[0].z, 2);
+    }
+
+    #[test]
+    fn gsi_02_09_incomplete_header_is_an_error() {
+        for actual in 1..CELL_HEADER_SIZE {
+            let mut bytes = iso_map_record(1, 0, 1, 0, 0).to_vec();
+            bytes.extend(std::iter::repeat_n(1, actual));
+            assert!(matches!(
+                parse_iso_map_pack_records(&bytes),
+                Err(MapError::CellDataTruncated {
+                    expected: CELL_HEADER_SIZE,
+                    actual: got,
+                }) if got == actual
+            ));
+        }
+    }
+
+    #[test]
+    fn gsi_02_09_incomplete_non_sentinel_payload_is_an_error() {
+        let mut bytes = vec![0; CELL_RECORD_SIZE - 1];
+        bytes[0] = 1;
+
+        assert!(matches!(
+            parse_iso_map_pack_records(&bytes),
+            Err(MapError::CellDataTruncated {
+                expected: CELL_RECORD_SIZE,
+                actual,
+            }) if actual == CELL_RECORD_SIZE - 1
+        ));
+    }
+
+    #[test]
+    fn gsi_02_09_signed_x_uses_native_flattening_and_bounds() {
+        let negative = parse_iso_map_pack_records(&iso_map_record(-1, 0, 1, 0, 0))
+            .expect("out-of-range records are consumed");
+        assert!(negative.is_empty());
+
+        let canonical = parse_iso_map_pack_records(&iso_map_record(-1, 1, 2, 0, 0))
+            .expect("in-range flattened record is valid");
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(canonical[0].rx, 511);
+        assert_eq!(canonical[0].ry, 0);
+
+        let upper = parse_iso_map_pack_records(&iso_map_record(0, 512, 3, 0, 0))
+            .expect("out-of-range records are consumed");
+        assert!(upper.is_empty());
+    }
+
+    #[test]
+    fn gsi_02_09_tile_index_preserves_raw_i32_values() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&iso_map_record(1, 0, 0x0000_FFFF, 0, 0));
+        bytes.extend_from_slice(&iso_map_record(2, 0, -1, 0, 0));
+
+        let cells = parse_iso_map_pack_records(&bytes).expect("records are valid");
+
+        assert_eq!(cells[0].tile_index, 65_535);
+        assert_eq!(cells[1].tile_index, -1);
+    }
+
+    #[test]
     fn test_parse_cells_from_raw_bytes() {
         // Build a fake 11-byte cell record matching the correct format:
-        // i16 x, i16 y, i32 tile_index, u8 sub_tile, u8 level, u8 ice_growth
+        // i16 x, u16 y, i32 tile_index, u8 sub_tile, u8 level, u8 ice_growth
         let mut cell_bytes: Vec<u8> = Vec::new();
         cell_bytes.extend_from_slice(&10u16.to_le_bytes()); // rx
         cell_bytes.extend_from_slice(&20u16.to_le_bytes()); // ry

@@ -602,6 +602,13 @@ impl Simulation {
         self.mapgen_rng = live.mapgen_rng.clone();
     }
 
+    /// Install the Main cursor advanced by one-time terrain variant-table
+    /// generation. Called only at the app/simulation construction boundary;
+    /// Scenario remains freshly seeded and independent.
+    pub(crate) fn install_variant_advanced_main_rng(&mut self, main_rng: SimRng) {
+        self.main_rng = main_rng;
+    }
+
     /// Create a new empty simulation with the default deterministic seed.
     pub fn new() -> Self {
         Self::with_seed(DEFAULT_SIM_SEED)

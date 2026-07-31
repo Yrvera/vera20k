@@ -187,7 +187,7 @@ pub struct TerrainCell {
     /// FinalAlert2 cliff redraw flag — this tile is drawn a second time after
     /// entities so cliff face pixels occlude units behind them.
     pub is_cliff_redraw: bool,
-    /// Tile visual variant index (FA2 bRNDImage): 0 = main tile, 1-4 = replacement a-d.
+    /// Tile visual variant index: 0 = pristine, positive = suffix sibling.
     pub variant: u8,
     /// RGB color tint from map lighting. [1,1,1] = full brightness (default).
     pub tint: [f32; 3],
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires RA2_DIR with retail RA2/YR assets"]
-    fn xmp29u2_no_tile_cells_use_clear_tile_across_presentation_grid() {
+    fn gsi_02_11_xmp29u2_clear_fallback_loads_and_selects_all_retail_variants() {
         let ra2_dir = PathBuf::from(
             std::env::var("RA2_DIR").expect("set RA2_DIR to the retail RA2/YR directory"),
         );
@@ -1063,38 +1063,64 @@ mod tests {
         let theater = crate::map::theater::load_theater(&mut assets, &map.header.theater)
             .expect("urban theater");
         let clear_tile_id = theater.rmg_tiles.clear_tile.expect("Urban ClearTile");
-        let bounds = LocalBounds::from_header(&map.header);
-        let resolved = crate::map::resolved_terrain::ResolvedTerrainGrid::build(
-            &map,
-            Some(&theater),
-            Some(&assets),
-            None,
-            None,
-            true,
-            0,
+        assert_eq!(clear_tile_id, 0);
+        assert_eq!(theater.lookup.variant_count(clear_tile_id), 7);
+        assert_eq!(theater.lookup.total_file_count(clear_tile_id), 8);
+        let suffixes: Vec<_> = theater
+            .lookup
+            .variant_filenames(clear_tile_id)
+            .iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        assert_eq!(
+            suffixes,
+            (b'a'..=b'g')
+                .map(|suffix| format!("clear01{}.urb", char::from(suffix)))
+                .collect::<Vec<_>>()
         );
+        let bounds = LocalBounds::from_header(&map.header);
+        let mut selector_cache =
+            crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut main_rng = crate::sim::rng::SimRng::new(0);
+        let mut raw_draw = || main_rng.next_u32();
+        let resolved = {
+            let mut selector = selector_cache.begin_load(&mut raw_draw);
+            let resolved =
+                crate::map::resolved_terrain::ResolvedTerrainGrid::build_with_variant_selector(
+                    &map,
+                    Some(&theater),
+                    Some(&assets),
+                    None,
+                    None,
+                    true,
+                    0,
+                    &mut selector,
+                );
+            assert!(selector.generated_table());
+            resolved
+        };
         let grid = build_terrain_grid_from_resolved(&resolved, Some(bounds), None);
 
+        const XMP29U2_NO_TILE: i32 = 0xFFFF;
         let in_bounds_sentinels: Vec<_> = map
             .cells
             .iter()
-            .filter(|cell| cell.tile_index < 0)
+            .filter(|cell| cell.tile_index == XMP29U2_NO_TILE)
             .filter(|cell| {
                 let (sx, sy) = iso_to_screen(cell.rx, cell.ry, cell.z);
                 bounds.contains(sx, sy)
             })
             .collect();
         assert_eq!(
-            map.cells.iter().filter(|cell| cell.tile_index < 0).count(),
+            map.cells
+                .iter()
+                .filter(|cell| cell.tile_index == XMP29U2_NO_TILE)
+                .count(),
             164
         );
         assert_eq!(in_bounds_sentinels.len(), 125);
         assert_eq!(grid.cells.len(), 6_160);
 
-        let clear_reference = resolved
-            .iter()
-            .find(|cell| cell.final_tile_index == clear_tile_id as i32 && cell.final_sub_tile == 0)
-            .expect("ordinary ClearTile reference cell");
         let needed = HashSet::from([crate::map::theater::TileKey {
             tile_id: clear_tile_id,
             sub_tile: 0,
@@ -1114,17 +1140,64 @@ mod tests {
             }),
             "ClearTile must be available to the tactical atlas"
         );
+        for variant in 0..=7 {
+            assert!(
+                clear_images.contains_key(&crate::map::theater::TileKey {
+                    tile_id: clear_tile_id,
+                    sub_tile: 0,
+                    variant,
+                }),
+                "Clear01 variant index {variant} must reach the tactical atlas"
+            );
+        }
+
+        let owner_metadata = |variant: u8| {
+            let filename = theater
+                .lookup
+                .filename_for_variant(clear_tile_id, variant)
+                .expect("contiguous Clear01 owner filename");
+            let bytes = assets.get_ref(filename).expect("selected Clear01 TMP");
+            let tmp = crate::assets::tmp_file::TmpFile::from_bytes(bytes)
+                .expect("selected Clear01 TMP parses");
+            let source_sub = crate::map::theater::wrapped_subtile_index(
+                0,
+                tmp.template_width,
+                tmp.template_height,
+            )
+            .expect("Clear01 sub-tile wraps");
+            let tile = tmp.tiles[source_sub]
+                .as_ref()
+                .expect("selected Clear01 owner has sub-tile zero");
+            (
+                tile.radar_left,
+                tile.radar_right,
+                tile.ramp_type,
+                tile.height,
+                tile.offset_x,
+                tile.offset_y,
+                tile.has_damaged_data,
+            )
+        };
+        let pristine_cellclass = owner_metadata(0);
+        let expected_by_variant: HashMap<_, _> = (0u8..=7)
+            .map(|variant| {
+                let owner = owner_metadata(variant);
+                (variant, (owner.0, owner.1, owner.4, owner.5))
+            })
+            .collect();
 
         let presented: HashMap<_, _> = grid
             .cells
             .iter()
             .map(|cell| ((cell.rx, cell.ry), cell))
             .collect();
+        let mut high_suffix_sentinels = 0usize;
         for source in in_bounds_sentinels {
             let resolved_cell = resolved
                 .cell(source.rx, source.ry)
                 .expect("sentinel remains in resolved terrain");
-            assert_eq!(resolved_cell.final_tile_index, crate::map::theater::NO_TILE);
+            assert_eq!(source.tile_index, XMP29U2_NO_TILE);
+            assert_eq!(resolved_cell.final_tile_index, source.tile_index);
 
             let rendered = presented
                 .get(&(source.rx, source.ry))
@@ -1132,9 +1205,24 @@ mod tests {
             assert_eq!(rendered.tile_id, clear_tile_id);
             assert_eq!(rendered.sub_tile, 0);
             assert_eq!(rendered.z, source.z);
-            assert_eq!(rendered.radar_left, clear_reference.radar_left);
-            assert_eq!(rendered.radar_right, clear_reference.radar_right);
+            let expected = expected_by_variant
+                .get(&resolved_cell.variant)
+                .expect("selected Clear01 owner metadata");
+            assert_eq!(resolved_cell.radar_left, expected.0);
+            assert_eq!(resolved_cell.radar_right, expected.1);
+            assert_eq!(resolved_cell.slope_type, pristine_cellclass.2);
+            assert_eq!(resolved_cell.template_height, pristine_cellclass.3);
+            assert_eq!(resolved_cell.render_offset_x, expected.2);
+            assert_eq!(resolved_cell.render_offset_y, expected.3);
+            assert_eq!(resolved_cell.has_damaged_data, pristine_cellclass.6);
+            assert_eq!(rendered.radar_left, expected.0);
+            assert_eq!(rendered.radar_right, expected.1);
+            high_suffix_sentinels += usize::from(rendered.variant > 4);
         }
+        assert!(
+            high_suffix_sentinels > 0,
+            "at least one of the 125 visible ClearTile fallbacks must select e/f/g"
+        );
     }
 
     #[test]

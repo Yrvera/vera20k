@@ -102,6 +102,54 @@ fn test_parse_tileset_ini_basic() {
 }
 
 #[test]
+fn gsi_02_11_actual_chain_count_stops_at_first_missing_sibling() {
+    let present = [
+        "clear01.urb",
+        "clear01a.urb",
+        "clear01b.urb",
+        "clear01c.urb",
+        "clear01d.urb",
+        "clear01e.urb",
+        "clear01f.urb",
+        "clear01g.urb",
+        // A later file must not bridge the missing `h` slot.
+        "clear01i.urb",
+    ];
+    let siblings = contiguous_variant_filenames("clear01.urb", |name| present.contains(&name));
+    assert_eq!(siblings.len(), 7);
+    assert_eq!(siblings.first().map(String::as_str), Some("clear01a.urb"));
+    assert_eq!(siblings.last().map(String::as_str), Some("clear01g.urb"));
+
+    let orphaned = ["clear01a.urb", "clear01b.urb"];
+    assert!(
+        contiguous_variant_filenames("clear01.urb", |name| orphaned.contains(&name)).is_empty()
+    );
+}
+
+#[test]
+fn gsi_02_11_file_index_resolves_the_exact_independent_tmp_owner() {
+    let mut lookup = parse_tileset_ini(
+        b"[TileSet0000]\nSetName=Clear\nFileName=clear\nTilesInSet=1\n",
+        "urb",
+    )
+    .expect("synthetic tileset");
+    lookup.variant_filenames[0] = vec!["clear01a.urb".to_string(), "clear01b.urb".to_string()];
+
+    assert_eq!(lookup.filename_for_variant(0, 0), Some("clear01.urb"));
+    assert_eq!(lookup.filename_for_variant(0, 1), Some("clear01a.urb"));
+    assert_eq!(lookup.filename_for_variant(0, 2), Some("clear01b.urb"));
+    assert_eq!(lookup.filename_for_variant(0, 3), None);
+}
+
+#[test]
+fn gsi_02_11_positive_subtile_wrap_preserves_requested_identity_boundary() {
+    assert_eq!(wrapped_subtile_index(0, 2, 3), Some(0));
+    assert_eq!(wrapped_subtile_index(9, 2, 3), Some(3));
+    assert_eq!(wrapped_subtile_index(u8::MAX, 2, 3), Some(3));
+    assert_eq!(wrapped_subtile_index(7, 0, 3), None);
+}
+
+#[test]
 fn test_collect_used_tiles() {
     let cells: Vec<(i32, u8)> = vec![(0, 0), (1, 0), (0, 0), (NO_TILE, 0), (2, 1)];
     let used: HashSet<TileKey> = collect_used_tiles(&cells);

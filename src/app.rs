@@ -256,6 +256,10 @@ pub(crate) struct AppState {
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     pub(crate) loading_session: Option<crate::app_loading::LoadingSession>,
+    /// Process-persistent lazy terrain variant table. Scenario teardown,
+    /// failed loads, reseeds, and save transitions must not clear it.
+    pub(crate) tile_variant_selector_cache:
+        crate::map::tile_variant_selector::TileVariantSelectorCache,
     /// Process-lifetime monotonic identity source; zero is permanently reserved.
     pub(crate) next_match_correlation: u64,
     /// Correlation owned by the currently loading accepted attempt.
@@ -4126,6 +4130,7 @@ impl App {
             skirmish_scenario_records,
             skirmish_settings,
             loading_session: None,
+            tile_variant_selector_cache: Default::default(),
             next_match_correlation: 1,
             active_loading_correlation: None,
             loaded_startup: None,
