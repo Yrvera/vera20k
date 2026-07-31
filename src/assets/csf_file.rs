@@ -1,38 +1,31 @@
 //! CSF string table parser — localized text for RA2/YR UI, EVA, and menus.
 //!
-//! CSF files live inside `language.mix` / `langmd.mix` (as `ra2.csf` / `ra2md.csf`).
-//! Each entry maps a label name (e.g., `"NAME:MTNK"`) to a Unicode display string
-//! (e.g., `"Grizzly Battle Tank"`). The game uses these for all localized text.
+//! Active Yuri's Revenge initializes only `ra2md.csf` from the retail language
+//! archive stack. Each entry maps a label name (e.g., `"NAME:MTNK"`) to a
+//! Unicode display string (e.g., `"Grizzly Battle Tank"`).
 //!
 //! ## Binary format
-//! - 24-byte header: signature ` FSC`, version, label count, string count, language, reserved
+//! - 24-byte header: signature ` FSC`, version, label count, string count, reserved, language
 //! - Repeating label entries: ` LBL` marker, pair count, ASCII label name, then one or more
 //!   string values encoded as bitwise-NOT'd UTF-16-LE.
 //!
 //! ## Dependency rules
 //! - Part of assets/ — no dependencies on game modules.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::assets::error::AssetError;
-use crate::util::read_helpers::{read_u16_le, read_u32_le};
+use crate::util::read_helpers::read_u32_le;
 
 /// Magic bytes for the file header: " FSC".
 const HEADER_MAGIC: u32 = 0x4353_4620;
 /// Magic bytes for a label entry: " LBL" in Westwood byte order.
 const LABEL_MAGIC: u32 = 0x4C42_4C20;
-/// Alternate label marker spelling found in CSF docs/tools: "LBL ".
-const LABEL_MAGIC_ALT: u32 = 0x204C_424C;
 /// Magic bytes for a regular string value: " RTS" in Westwood byte order.
 const STRING_MAGIC: u32 = 0x5354_5220;
-/// Alternate string marker spelling found in older tools: " STR".
-const STRING_MAGIC_ALT_STR_PREFIX: u32 = 0x5254_5320;
-/// Alternate string marker spelling found in older tools: "STR ".
-const STRING_MAGIC_ALT_STR_SUFFIX: u32 = 0x2052_5453;
-/// Magic bytes for a string value with extra data: "STRW".
-const STRING_EXTRA_MAGIC: u32 = 0x5752_5453;
-/// Alternate extra-string marker spelling: "WRTS".
-const STRING_EXTRA_MAGIC_ALT: u32 = 0x5354_5257;
+/// Magic bytes for a string value with extra data: "WRTS".
+const STRING_EXTRA_MAGIC: u32 = 0x5354_5257;
 /// Minimum file size: 24-byte header.
 const MIN_FILE_SIZE: usize = 24;
 
@@ -43,7 +36,7 @@ const MIN_FILE_SIZE: usize = 24;
 #[derive(Debug, Clone)]
 pub struct CsfFile {
     pub version: u32,
-    pub language: u16,
+    pub language: u32,
     entries: HashMap<String, String>,
 }
 
@@ -74,29 +67,33 @@ impl CsfFile {
 
         let version: u32 = read_u32_le(data, 4);
         let label_count: u32 = read_u32_le(data, 8);
-        // Bytes 12..16: string pair count (informational, not needed for parsing).
-        let language: u16 = read_u16_le(data, 16);
-        // Bytes 18..24: reserved.
+        let string_count = read_u32_le(data, 12);
+        if label_count == 0 || string_count == 0 {
+            return Err(AssetError::ParseError {
+                format: "CSF".to_string(),
+                detail: "header label and string counts must both be nonzero".to_string(),
+            });
+        }
+        // +0x10 is reserved. Version 2+
+        // stores the language DWORD at +0x14; older tables force language 0.
+        let language = if version >= 2 {
+            read_u32_le(data, 20)
+        } else {
+            0
+        };
 
         let mut entries: HashMap<String, String> = HashMap::with_capacity(label_count as usize);
         let mut offset: usize = 24;
 
-        for _ in 0..label_count {
+        loop {
             match parse_label_entry(data, offset) {
                 Ok((key, value, next_offset)) => {
                     entries.insert(key, value);
                     offset = next_offset;
                 }
-                Err(_) => {
-                    // Malformed entry — stop parsing rather than risk misaligned reads.
-                    log::warn!(
-                        "CSF: stopped parsing at offset {} ({} of {} labels read)",
-                        offset,
-                        entries.len(),
-                        label_count,
-                    );
-                    break;
-                }
+                // Retail walks records until the next read/magic check fails;
+                // header counts are validated but are not the loop bound.
+                Err(_) => break,
             }
         }
 
@@ -119,6 +116,14 @@ impl CsfFile {
         self.entries
             .get(&key.to_ascii_uppercase())
             .map(|s| s.as_str())
+    }
+
+    /// Native initialized-table lookup. Missing labels are visible, not an
+    /// invitation for each caller to substitute its own English fallback.
+    pub fn text<'a>(&'a self, key: &str) -> Cow<'a, str> {
+        self.get(key)
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| Cow::Owned(format!("MISSING:'{key}'")))
     }
 
     /// Number of entries in the string table.
@@ -145,7 +150,7 @@ fn parse_label_entry(data: &[u8], offset: usize) -> Result<(String, String, usiz
     }
 
     let magic: u32 = read_u32_le(data, offset);
-    if magic != LABEL_MAGIC && magic != LABEL_MAGIC_ALT {
+    if magic != LABEL_MAGIC {
         return Err(());
     }
 
@@ -158,8 +163,8 @@ fn parse_label_entry(data: &[u8], offset: usize) -> Result<(String, String, usiz
         return Err(());
     }
 
-    let label_name: String =
-        String::from_utf8_lossy(&data[name_start..name_end]).to_ascii_uppercase();
+    let label_name =
+        crate::util::native_string::widen_bytes(&data[name_start..name_end]).to_ascii_uppercase();
 
     let mut pos: usize = name_end;
     let mut value: String = String::new();
@@ -171,15 +176,9 @@ fn parse_label_entry(data: &[u8], offset: usize) -> Result<(String, String, usiz
         }
 
         let str_magic: u32 = read_u32_le(data, pos);
-        let has_extra: bool =
-            str_magic == STRING_EXTRA_MAGIC || str_magic == STRING_EXTRA_MAGIC_ALT;
+        let has_extra = str_magic == STRING_EXTRA_MAGIC;
 
-        if str_magic != STRING_MAGIC
-            && str_magic != STRING_MAGIC_ALT_STR_PREFIX
-            && str_magic != STRING_MAGIC_ALT_STR_SUFFIX
-            && str_magic != STRING_EXTRA_MAGIC
-            && str_magic != STRING_EXTRA_MAGIC_ALT
-        {
+        if str_magic != STRING_MAGIC && str_magic != STRING_EXTRA_MAGIC {
             return Err(());
         }
 
@@ -292,8 +291,8 @@ mod tests {
         data.extend_from_slice(&3u32.to_le_bytes()); // version
         data.extend_from_slice(&1u32.to_le_bytes()); // label count
         data.extend_from_slice(&1u32.to_le_bytes()); // string pair count
-        data.extend_from_slice(&0u16.to_le_bytes()); // language (US English)
-        data.extend_from_slice(&[0u8; 6]); // reserved
+        data.extend_from_slice(&0xAABB_CCDDu32.to_le_bytes()); // reserved
+        data.extend_from_slice(&0u32.to_le_bytes()); // language (US English)
 
         // Label entry.
         data.extend_from_slice(&LABEL_MAGIC.to_le_bytes()); // " LBL"
@@ -328,10 +327,55 @@ mod tests {
     }
 
     #[test]
-    fn missing_key_returns_none() {
+    fn missing_key_uses_native_visible_marker() {
         let data: Vec<u8> = build_test_csf("NAME:MTNK", "Grizzly Battle Tank");
         let csf: CsfFile = CsfFile::from_bytes(&data).expect("should parse");
         assert_eq!(csf.get("NAME:NONEXISTENT"), None);
+        assert_eq!(csf.text("NAME:NONEXISTENT"), "MISSING:'NAME:NONEXISTENT'");
+    }
+
+    #[test]
+    fn language_is_version_gated_dword_at_header_14() {
+        let mut data = build_test_csf("A", "B");
+        data[16..20].copy_from_slice(&0x1122_3344u32.to_le_bytes());
+        data[20..24].copy_from_slice(&0x5566_7788u32.to_le_bytes());
+        let csf = CsfFile::from_bytes(&data).expect("version 3");
+        assert_eq!(csf.language, 0x5566_7788);
+
+        data[4..8].copy_from_slice(&1u32.to_le_bytes());
+        let csf = CsfFile::from_bytes(&data).expect("version 1");
+        assert_eq!(csf.language, 0);
+    }
+
+    #[test]
+    fn header_requires_nonzero_label_and_string_counts() {
+        let mut data = build_test_csf("A", "B");
+        data[8..12].copy_from_slice(&0u32.to_le_bytes());
+        assert!(CsfFile::from_bytes(&data).is_err());
+
+        let mut data = build_test_csf("A", "B");
+        data[12..16].copy_from_slice(&0u32.to_le_bytes());
+        assert!(CsfFile::from_bytes(&data).is_err());
+    }
+
+    #[test]
+    fn record_walk_is_not_bounded_by_header_label_count() {
+        let mut data = build_test_csf("A", "First");
+        let second = build_test_csf("B", "Second");
+        data.extend_from_slice(&second[MIN_FILE_SIZE..]);
+
+        let csf = CsfFile::from_bytes(&data).expect("record walk");
+        assert_eq!(csf.get("A"), Some("First"));
+        assert_eq!(csf.get("B"), Some("Second"));
+    }
+
+    #[test]
+    fn alternate_record_magics_are_not_accepted() {
+        let mut data = build_test_csf("A", "B");
+        data[MIN_FILE_SIZE..MIN_FILE_SIZE + 4].copy_from_slice(&0x204C_424Cu32.to_le_bytes());
+
+        let csf = CsfFile::from_bytes(&data).expect("valid header");
+        assert!(csf.is_empty());
     }
 
     #[test]
@@ -387,8 +431,8 @@ mod tests {
         data.extend_from_slice(&3u32.to_le_bytes());
         data.extend_from_slice(&1u32.to_le_bytes());
         data.extend_from_slice(&1u32.to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        data.extend_from_slice(&[0u8; 6]);
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
 
         // Label.
         data.extend_from_slice(&LABEL_MAGIC.to_le_bytes());

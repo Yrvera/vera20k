@@ -36,7 +36,7 @@ pub use layout::{
 pub use state::{
     AcceptOutcome, ChooseMapHoverTarget, ChooseMapModalState, ChooseMapSelection, DialogRng,
     DropdownScrollDragState, DropdownScrollbarPart, DropdownScrollbarPressState, OpenComboDropdown,
-    OwnerDrawButton, PLAYER_NAME_CARET_MARGIN_PX, PLAYER_NAME_DEFAULT, PLAYER_NAME_MAX_CHARS,
+    OwnerDrawButton, PLAYER_NAME_CARET_MARGIN_PX, PLAYER_NAME_DEFAULT, PLAYER_NAME_EDIT_LIMIT_BYTES,
     PlayerNameEditState, RandomMapSetupModalState, SAVED_SEED_NAME_MAX_CHARS, SETUP_COMBO_ROWS,
     SavedSeedBrowserState, SavedSeedOutcome, SetupCombo, SetupComboItem, SkirmishAiRowType,
     SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice, SkirmishHoverTarget,

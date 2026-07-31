@@ -14,6 +14,14 @@ use crate::sim::snapshot::{GameSnapshot, GameSnapshotHeader};
 use crate::ui::client_theme;
 
 const SAVES_DIR: &str = "saves";
+const SAVE_ROW_MAIN_X: f32 = 2.0;
+const SAVE_ROW_MAIN_WIDTH: f32 = 249.0;
+const SAVE_ROW_DATE_X: f32 = 255.0;
+const SAVE_ROW_DATE_WIDTH: f32 = 56.0;
+const SAVE_ROW_TIME_X: f32 = 315.0;
+const SAVE_ROW_HEIGHT: f32 = 20.0;
+const SAVE_ROW_LOAD_WIDTH: f32 = 50.0;
+const SAVE_ROW_DELETE_WIDTH: f32 = 20.0;
 
 /// One row in the save file list.
 pub(crate) struct SaveEntry {
@@ -21,8 +29,6 @@ pub(crate) struct SaveEntry {
     pub path: std::path::PathBuf,
     /// Parsed header metadata.
     pub header: GameSnapshotHeader,
-    /// File size in bytes.
-    pub file_size: u64,
 }
 
 /// Cached save-file listing. Stored in `AppState` so the directory is only
@@ -82,54 +88,157 @@ fn scan_saves() -> Vec<SaveEntry> {
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
-        let file_size = bytes.len() as u64;
         let Ok(header) = GameSnapshot::read_header(&bytes) else {
             continue;
         };
-        entries.push(SaveEntry {
-            path,
-            header,
-            file_size,
-        });
+        entries.push(SaveEntry { path, header });
     }
     // Most recent first.
     entries.sort_by(|a, b| b.header.save_timestamp.cmp(&a.header.save_timestamp));
     entries
 }
 
-/// Format a unix timestamp as a human-readable relative string.
+/// Format a Unix timestamp with the user's Windows short-date and time formats.
+///
+/// Retail places these in separate list-view subitems. This compatibility
+/// wrapper joins the two localized fields for callers that currently expose a
+/// single text slot.
 pub(crate) fn format_timestamp(unix_secs: u64) -> String {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    let time = UNIX_EPOCH + Duration::from_secs(unix_secs);
-    let now = SystemTime::now();
-    if let Ok(elapsed) = now.duration_since(time) {
-        let secs = elapsed.as_secs();
-        if secs < 60 {
-            return format!("{secs}s ago");
-        }
-        let mins = secs / 60;
-        if mins < 60 {
-            return format!("{mins}m ago");
-        }
-        let hours = mins / 60;
-        if hours < 24 {
-            return format!("{hours}h {}m ago", mins % 60);
-        }
-        let days = hours / 24;
-        return format!("{days}d {}h ago", hours % 24);
-    }
-    format!("timestamp {unix_secs}")
+    format_timestamp_parts(unix_secs)
+        .map(|(date, time)| format!("{date} {time}"))
+        .unwrap_or_else(|| format!("timestamp {unix_secs}"))
 }
 
-/// Format byte size in a human-friendly way.
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NativeFileTime {
+    low: u32,
+    high: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NativeSystemTime {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    milliseconds: u16,
+}
+
+#[cfg(windows)]
+pub(crate) fn format_timestamp_parts(unix_secs: u64) -> Option<(String, String)> {
+    const WINDOWS_EPOCH_SECONDS: u64 = 11_644_473_600;
+    const TICKS_PER_SECOND: u64 = 10_000_000;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn FileTimeToLocalFileTime(
+            source: *const NativeFileTime,
+            local: *mut NativeFileTime,
+        ) -> i32;
+        fn FileTimeToSystemTime(
+            file_time: *const NativeFileTime,
+            system_time: *mut NativeSystemTime,
+        ) -> i32;
     }
+
+    let ticks = unix_secs
+        .checked_add(WINDOWS_EPOCH_SECONDS)?
+        .checked_mul(TICKS_PER_SECOND)?;
+    let source = NativeFileTime {
+        low: ticks as u32,
+        high: (ticks >> 32) as u32,
+    };
+    let mut local = NativeFileTime { low: 0, high: 0 };
+    let mut system = NativeSystemTime {
+        year: 0,
+        month: 0,
+        day_of_week: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        milliseconds: 0,
+    };
+    // SAFETY: all pointers refer to live, correctly laid-out Win32 structs.
+    unsafe {
+        if FileTimeToLocalFileTime(&source, &mut local) == 0
+            || FileTimeToSystemTime(&local, &mut system) == 0
+        {
+            return None;
+        }
+    }
+    format_local_system_time(&system)
+}
+
+#[cfg(windows)]
+fn format_local_system_time(system: &NativeSystemTime) -> Option<(String, String)> {
+    const LOCALE_USER_DEFAULT: u32 = 0x0400;
+    const DATE_SHORTDATE: u32 = 1;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetDateFormatA(
+            locale: u32,
+            flags: u32,
+            date: *const NativeSystemTime,
+            format: *const u8,
+            output: *mut u8,
+            output_len: i32,
+        ) -> i32;
+        fn GetTimeFormatA(
+            locale: u32,
+            flags: u32,
+            time: *const NativeSystemTime,
+            format: *const u8,
+            output: *mut u8,
+            output_len: i32,
+        ) -> i32;
+    }
+
+    let mut date = [0u8; 128];
+    let mut time = [0u8; 128];
+    // SAFETY: Win32 receives a valid SYSTEMTIME and fixed 128-byte outputs,
+    // exactly matching the native load/save dialog.
+    let (date_len, time_len) = unsafe {
+        (
+            GetDateFormatA(
+                LOCALE_USER_DEFAULT,
+                DATE_SHORTDATE,
+                system,
+                std::ptr::null(),
+                date.as_mut_ptr(),
+                date.len() as i32,
+            ),
+            GetTimeFormatA(
+                LOCALE_USER_DEFAULT,
+                0,
+                system,
+                std::ptr::null(),
+                time.as_mut_ptr(),
+                time.len() as i32,
+            ),
+        )
+    };
+    if date_len <= 0 || time_len <= 0 {
+        return None;
+    }
+    let date_payload = &date[..date_len.saturating_sub(1) as usize];
+    let time_payload = &time[..time_len.saturating_sub(1) as usize];
+    Some((
+        crate::util::native_string::acp_decode(date_payload),
+        crate::util::native_string::acp_decode(time_payload),
+    ))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn format_timestamp_parts(_unix_secs: u64) -> Option<(String, String)> {
+    None
 }
 
 /// Draw the save/load panel. Returns an action for the caller to execute.
@@ -196,32 +305,52 @@ pub(crate) fn draw_save_load_panel(
                 } else {
                     // Header row.
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Map")
-                                .size(12.0)
-                                .strong()
-                                .color(palette.text_muted),
+                        let spacing = ui.spacing().item_spacing.x;
+                        let columns_width = (ui.available_width()
+                            - SAVE_ROW_LOAD_WIDTH
+                            - SAVE_ROW_DELETE_WIDTH
+                            - spacing * 2.0)
+                            .max(SAVE_ROW_TIME_X);
+                        let (columns, _) = ui.allocate_exact_size(
+                            egui::vec2(columns_width, SAVE_ROW_HEIGHT),
+                            egui::Sense::hover(),
                         );
-                        ui.add_space(80.0);
-                        ui.label(
-                            egui::RichText::new("Tick")
-                                .size(12.0)
-                                .strong()
-                                .color(palette.text_muted),
+                        let origin = columns.left_top();
+                        ui.put(
+                            egui::Rect::from_min_size(
+                                egui::pos2(origin.x + SAVE_ROW_MAIN_X, origin.y),
+                                egui::vec2(SAVE_ROW_MAIN_WIDTH, SAVE_ROW_HEIGHT),
+                            ),
+                            egui::Label::new(
+                                egui::RichText::new("Map")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(palette.text_muted),
+                            ),
                         );
-                        ui.add_space(40.0);
-                        ui.label(
-                            egui::RichText::new("Saved")
-                                .size(12.0)
-                                .strong()
-                                .color(palette.text_muted),
+                        ui.put(
+                            egui::Rect::from_min_size(
+                                egui::pos2(origin.x + SAVE_ROW_DATE_X, origin.y),
+                                egui::vec2(SAVE_ROW_DATE_WIDTH, SAVE_ROW_HEIGHT),
+                            ),
+                            egui::Label::new(
+                                egui::RichText::new("Date")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(palette.text_muted),
+                            ),
                         );
-                        ui.add_space(40.0);
-                        ui.label(
-                            egui::RichText::new("Size")
-                                .size(12.0)
-                                .strong()
-                                .color(palette.text_muted),
+                        ui.put(
+                            egui::Rect::from_min_max(
+                                egui::pos2(origin.x + SAVE_ROW_TIME_X, origin.y),
+                                egui::pos2(columns.right(), origin.y + SAVE_ROW_HEIGHT),
+                            ),
+                            egui::Label::new(
+                                egui::RichText::new("Time")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(palette.text_muted),
+                            ),
                         );
                     });
                     ui.add_space(4.0);
@@ -236,14 +365,35 @@ pub(crate) fn draw_save_load_panel(
                                 let resp = ui
                                     .push_id(row_id, |ui| {
                                         ui.horizontal(|ui| {
-                                            // Map name (truncated).
+                                            let spacing = ui.spacing().item_spacing.x;
+                                            let columns_width = (ui.available_width()
+                                                - SAVE_ROW_LOAD_WIDTH
+                                                - SAVE_ROW_DELETE_WIDTH
+                                                - spacing * 2.0)
+                                                .max(SAVE_ROW_TIME_X);
+                                            let (columns, _) = ui.allocate_exact_size(
+                                                egui::vec2(columns_width, SAVE_ROW_HEIGHT),
+                                                egui::Sense::hover(),
+                                            );
+                                            let origin = columns.left_top();
+
+                                            // Native main-text column.
                                             let map_label = if entry.header.map_name.len() > 18 {
                                                 format!("{}...", &entry.header.map_name[..18])
                                             } else {
                                                 entry.header.map_name.clone()
                                             };
-                                            ui.add_sized(
-                                                egui::vec2(120.0, 20.0),
+                                            ui.put(
+                                                egui::Rect::from_min_size(
+                                                    egui::pos2(
+                                                        origin.x + SAVE_ROW_MAIN_X,
+                                                        origin.y,
+                                                    ),
+                                                    egui::vec2(
+                                                        SAVE_ROW_MAIN_WIDTH,
+                                                        SAVE_ROW_HEIGHT,
+                                                    ),
+                                                ),
                                                 egui::Label::new(
                                                     egui::RichText::new(map_label)
                                                         .size(13.0)
@@ -251,47 +401,58 @@ pub(crate) fn draw_save_load_panel(
                                                 ),
                                             );
 
-                                            // Tick number.
-                                            ui.add_sized(
-                                                egui::vec2(70.0, 20.0),
+                                            // Native short-date and time occupy
+                                            // separate owner-draw list columns.
+                                            let (date, time) =
+                                                format_timestamp_parts(entry.header.save_timestamp)
+                                                    .unwrap_or_else(|| {
+                                                        (
+                                                            format!(
+                                                                "timestamp {}",
+                                                                entry.header.save_timestamp
+                                                            ),
+                                                            String::new(),
+                                                        )
+                                                    });
+                                            ui.put(
+                                                egui::Rect::from_min_size(
+                                                    egui::pos2(
+                                                        origin.x + SAVE_ROW_DATE_X,
+                                                        origin.y,
+                                                    ),
+                                                    egui::vec2(
+                                                        SAVE_ROW_DATE_WIDTH,
+                                                        SAVE_ROW_HEIGHT,
+                                                    ),
+                                                ),
                                                 egui::Label::new(
-                                                    egui::RichText::new(format!(
-                                                        "{}",
-                                                        entry.header.tick
-                                                    ))
-                                                    .size(13.0)
-                                                    .color(palette.text),
+                                                    egui::RichText::new(date)
+                                                        .size(13.0)
+                                                        .color(palette.text_muted),
                                                 ),
                                             );
-
-                                            // Timestamp.
-                                            ui.add_sized(
-                                                egui::vec2(100.0, 20.0),
-                                                egui::Label::new(
-                                                    egui::RichText::new(format_timestamp(
-                                                        entry.header.save_timestamp,
-                                                    ))
-                                                    .size(13.0)
-                                                    .color(palette.text_muted),
+                                            ui.put(
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(
+                                                        origin.x + SAVE_ROW_TIME_X,
+                                                        origin.y,
+                                                    ),
+                                                    egui::pos2(
+                                                        columns.right(),
+                                                        origin.y + SAVE_ROW_HEIGHT,
+                                                    ),
                                                 ),
-                                            );
-
-                                            // File size.
-                                            ui.add_sized(
-                                                egui::vec2(70.0, 20.0),
                                                 egui::Label::new(
-                                                    egui::RichText::new(format_size(
-                                                        entry.file_size,
-                                                    ))
-                                                    .size(13.0)
-                                                    .color(palette.text_muted),
+                                                    egui::RichText::new(time)
+                                                        .size(13.0)
+                                                        .color(palette.text_muted),
                                                 ),
                                             );
 
                                             // Load button.
                                             if ui
                                                 .add_sized(
-                                                    egui::vec2(50.0, 22.0),
+                                                    egui::vec2(SAVE_ROW_LOAD_WIDTH, 22.0),
                                                     egui::Button::new(
                                                         egui::RichText::new("Load")
                                                             .size(12.0)
@@ -306,7 +467,7 @@ pub(crate) fn draw_save_load_panel(
                                             // Delete button.
                                             if ui
                                                 .add_sized(
-                                                    egui::vec2(20.0, 22.0),
+                                                    egui::vec2(SAVE_ROW_DELETE_WIDTH, 22.0),
                                                     egui::Button::new(
                                                         egui::RichText::new("X")
                                                             .size(12.0)
@@ -347,4 +508,28 @@ pub(crate) fn draw_save_load_panel(
         });
 
     action
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{NativeSystemTime, format_local_system_time};
+
+    #[test]
+    fn fixed_system_time_uses_platform_short_date_and_time() {
+        let fixed = NativeSystemTime {
+            year: 2026,
+            month: 7,
+            day_of_week: 4,
+            day: 30,
+            hour: 13,
+            minute: 45,
+            second: 12,
+            milliseconds: 0,
+        };
+        let (date, time) = format_local_system_time(&fixed).expect("Win32 locale formatting");
+        assert!(!date.is_empty());
+        assert!(!time.is_empty());
+        assert!(!date.contains("ago"));
+        assert!(!time.contains("ago"));
+    }
 }

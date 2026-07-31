@@ -1243,8 +1243,7 @@ impl App {
         state
             .csf
             .as_ref()
-            .and_then(|csf| csf.get(key))
-            .map(ToOwned::to_owned)
+            .map(|csf| csf.text(key).into_owned())
             .unwrap_or_else(|| fallback.to_string())
     }
 
@@ -2159,8 +2158,7 @@ impl App {
         let description = state
             .csf
             .as_ref()
-            .and_then(|csf| csf.get(RANDOM_MAP_DESCRIPTION_KEY))
-            .map(ToOwned::to_owned)
+            .map(|csf| csf.text(RANDOM_MAP_DESCRIPTION_KEY).into_owned())
             .unwrap_or_else(|| RANDOM_MAP_DESCRIPTION_FALLBACK.to_string());
         let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
             return false;
@@ -2311,9 +2309,8 @@ impl App {
         state
             .csf
             .as_ref()
-            .and_then(|csf| csf.get(key))
-            .unwrap_or("")
-            .to_string()
+            .map(|csf| csf.text(key).into_owned())
+            .unwrap_or_default()
     }
 
     fn update_skirmish_shell_status_help(
@@ -3832,7 +3829,7 @@ impl App {
                 DEV_SKIRMISH_SHELL_ENV
             );
         }
-        let startup_asset_manager = Self::build_startup_asset_manager(game_config.as_ref());
+        let mut startup_asset_manager = Self::build_startup_asset_manager(game_config.as_ref());
         // Native process startup seeds Scenario before the MPModes loader. The
         // Cooperative factory reached by that loader then advances this cursor
         // before the first shell is shown.
@@ -3844,7 +3841,8 @@ impl App {
             .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
         let startup_csf = startup_asset_manager
             .as_ref()
-            .and_then(crate::app_init::load_csf);
+            .map(crate::app_init::load_csf)
+            .transpose()?;
         let startup_sound_registry = startup_asset_manager
             .as_ref()
             .map(crate::app_transitions::load_sound_registry)
@@ -3929,11 +3927,20 @@ impl App {
             Vec::new()
         });
         let skirmish_scenario_records =
-            app_list_maps::list_skirmish_scenario_records_with_csf(startup_csf.as_ref())
-                .unwrap_or_else(|err| {
-                    log::warn!("Could not list Skirmish scenario records: {err:#}");
-                    Vec::new()
-                });
+            match (startup_asset_manager.as_mut(), game_config.as_ref()) {
+                (Some(assets), Some(config)) => {
+                    app_list_maps::list_skirmish_scenario_records_with_assets(
+                        &config.paths.ra2_dir,
+                        assets,
+                        startup_csf.as_ref(),
+                    )
+                }
+                _ => Ok(Vec::new()),
+            }
+            .unwrap_or_else(|err| {
+                log::warn!("Could not list Skirmish scenario records: {err:#}");
+                Vec::new()
+            });
         let skirmish_scenario_records = if skirmish_scenario_records.is_empty() {
             available_maps
                 .iter()

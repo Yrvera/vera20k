@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::rules::combat_damage::CombatDamageDefaults;
 use crate::rules::error::RulesError;
-use crate::rules::ini_parser::IniFile;
+use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerStack};
 use crate::rules::object_type::{FactoryType, ObjectCategory, ObjectType};
 use crate::rules::particle_system_type::{
     ParticleSystemType, ParticleSystemTypeId, PendingParticleSystemType,
@@ -309,7 +309,8 @@ pub struct GeneralRules {
     /// Whether the attack cursor appears on a disguised Spy (AttackCursorOnDisguise= in [General]).
     /// Default false (vanilla RA2). When false, a disguised Spy does not show the attack cursor.
     pub attack_cursor_on_disguise: bool,
-    /// Whether the attack cursor appears on trees/terrain (TreeTargeting= in [General]).
+    /// Whether the attack cursor appears on trees/terrain
+    /// (`TreeTargeting=` in `[CombatDamage]`).
     /// Default false in vanilla RA2.
     pub tree_targeting: bool,
     /// Health ratio threshold below which the bar turns yellow (ConditionYellow= in [AudioVisual]).
@@ -610,13 +611,15 @@ pub struct GeneralRules {
     pub force_shield_fade_sound_time: u32,
     /// Animation played on FS target (ForceShieldInvokeAnim= in [General]). Default FORCSHLD.
     pub force_shield_invoke_anim: String,
-    // --- PsychicReveal ([General]) ---
-    /// Cell radius revealed by PsychicReveal (PsychicRevealRadius= in [General]).
+    // --- PsychicReveal ([CombatDamage]) ---
+    /// Cell radius revealed by PsychicReveal
+    /// (`PsychicRevealRadius=` in `[CombatDamage]`).
     pub psychic_reveal_radius: u32,
-    // --- GeneticConverter ([CombatDamage] + [General]) ---
-    /// Warhead used for mutation (MutateWarhead= in [CombatDamage]). Default "Mutate".
+    // --- GeneticConverter ([SpecialWeapons] + [General]) ---
+    /// Warhead used for mutation (`MutateWarhead=` in `[SpecialWeapons]`).
     pub mutate_warhead: String,
-    /// Warhead used for mutate explosion (MutateExplosionWarhead= in [CombatDamage]).
+    /// Warhead used for mutate explosion
+    /// (`MutateExplosionWarhead=` in `[SpecialWeapons]`).
     pub mutate_explosion_warhead: String,
     /// Whether MutateExplosion is enabled (MutateExplosion= in [General]). Default true.
     pub mutate_explosion: bool,
@@ -1121,8 +1124,10 @@ impl GeneralRules {
         };
         // ConditionYellow/ConditionRed live in [AudioVisual], not [General].
         let audio_visual = ini.section("AudioVisual");
-        // IronCurtainDuration, MutateWarhead, MutateExplosionWarhead live in [CombatDamage].
+        // Combat-only globals are read in the late [CombatDamage] pass.
         let combat_damage = ini.section("CombatDamage");
+        // Genetic Mutator warhead references are read by [SpecialWeapons].
+        let special_weapons = ini.section("SpecialWeapons");
         // INI parser already strips everything after `;` (Westwood comment
         // marker), so values like `WarpOut=WARPOUT;WAKE2` are read as
         // `WARPOUT` — matching gamemd's behaviour. Rate is filled in later
@@ -1259,7 +1264,9 @@ impl GeneralRules {
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(2.0),
             attack_cursor_on_disguise: general.get_bool("AttackCursorOnDisguise").unwrap_or(false),
-            tree_targeting: general.get_bool("TreeTargeting").unwrap_or(false),
+            tree_targeting: combat_damage
+                .and_then(|section| section.get_bool("TreeTargeting"))
+                .unwrap_or(false),
             condition_yellow: condition_yellow_f32,
             condition_yellow_x1000: (condition_yellow_f32 as f64 * 1000.0) as i64,
             condition_red: condition_red_f32,
@@ -1548,13 +1555,15 @@ impl GeneralRules {
                 .get("ForceShieldInvokeAnim")
                 .unwrap_or("FORCSHLD")
                 .to_string(),
-            psychic_reveal_radius: general.get_i32("PsychicRevealRadius").unwrap_or(15) as u32,
-            mutate_warhead: combat_damage
-                .and_then(|s| s.get("MutateWarhead"))
+            psychic_reveal_radius: combat_damage
+                .and_then(|section| section.get_i32("PsychicRevealRadius"))
+                .unwrap_or(15) as u32,
+            mutate_warhead: special_weapons
+                .and_then(|section| section.get("MutateWarhead"))
                 .unwrap_or("Mutate")
                 .to_string(),
-            mutate_explosion_warhead: combat_damage
-                .and_then(|s| s.get("MutateExplosionWarhead"))
+            mutate_explosion_warhead: special_weapons
+                .and_then(|section| section.get("MutateExplosionWarhead"))
                 .unwrap_or("MutateExplosion")
                 .to_string(),
             mutate_explosion: general.get_bool("MutateExplosion").unwrap_or(true),
@@ -1809,8 +1818,9 @@ pub struct RuleSet {
     /// Per-mission behaviour table parsed from the `[<MissionName>]` sections
     /// (Rate/AARate + NoThreat/Zombie/Recruitable/Paralyzed/Retaliate/Scatter).
     pub mission_control: crate::sim::mission::MissionControl,
-    /// Deterministic hash of the merged source INI (rules + rulesmd + the map's
-    /// rules-shaped value overrides) this RuleSet was built from. Unlike a
+    /// Deterministic hash of the processed source INI (RULESMD, optional
+    /// LANGRULE, selected mode, then the map's rules-shaped pass) this RuleSet
+    /// was built from. Unlike a
     /// registry-only hash it is sensitive to scalar value overrides, so it can
     /// gate diagnostic-log/snapshot playback against a mismatched rules set. Lives on
     /// `RuleSet` (in `rules/`) so `sim/` can read it without an app-layer dep.
@@ -1818,6 +1828,20 @@ pub struct RuleSet {
 }
 
 impl RuleSet {
+    /// Build from the active ordered rules sources.
+    pub fn from_rules_layers(layers: &RulesLayerStack) -> Result<Self, RulesError> {
+        let processed = layers.process();
+        Self::from_processed_rules(&processed)
+    }
+
+    pub(crate) fn from_processed_rules(
+        processed: &ProcessedRulesLayers,
+    ) -> Result<Self, RulesError> {
+        let mut rules = Self::from_ini(processed.ini())?;
+        rules.source_ini_hash = processed.content_hash();
+        Ok(rules)
+    }
+
     /// Parse a complete RuleSet from a rules.ini IniFile.
     ///
     /// Loads all type registries, individual object sections, and any
@@ -2150,8 +2174,9 @@ impl RuleSet {
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
             mission_control,
-            // Captures the whole merged INI (incl. any map value overrides),
-            // so diagnostic-log/snapshot headers detect a rules mismatch.
+            // Single-source callers hash their one parsed INI. Production
+            // ordered-stack callers replace this with the boundary-sensitive
+            // RulesLayerStack hash in `from_processed_rules`.
             source_ini_hash: ini.content_hash(),
         })
     }
@@ -2264,8 +2289,9 @@ impl RuleSet {
         Self::lookup_ci(&self.projectiles, id)
     }
 
-    /// Deterministic hash of the merged source INI this RuleSet was built from
-    /// (rules + rulesmd + the map's rules-shaped value overrides). Stamped into
+    /// Deterministic hash of the processed source INI this RuleSet was built from
+    /// (RULESMD, optional LANGRULE, selected mode, then the map's rules-shaped
+    /// pass). Stamped into
     /// diagnostic-log/snapshot headers so playback can detect a mismatched rules set —
     /// sensitive to scalar value overrides, not just the type-registry lists.
     pub fn source_ini_hash(&self) -> u64 {
@@ -2555,13 +2581,12 @@ fn parse_registry(ini: &IniFile, section_name: &str) -> Vec<String> {
     match ini.section(section_name) {
         Some(section) => {
             let raw: Vec<String> = section
-                .get_values()
-                .into_iter()
-                .map(|s| s.to_string())
+                .keys()
+                .map(|key| section.read_string(key, "", 32))
+                .filter(|value| !value.is_empty())
                 .collect();
-            // Deduplicate: rules.ini + rulesmd.ini merge can produce the same
-            // type ID at different numbered keys (e.g., 42=GAAIRC in base and
-            // 150=GAAIRC in YR patch). Keep first occurrence, preserve order.
+            // TypeClass identity is case-insensitive find-or-allocate. Preserve
+            // declaration order while keeping the first spelling of an identity.
             let mut seen: std::collections::HashSet<String> =
                 std::collections::HashSet::with_capacity(raw.len());
             let before = raw.len();
@@ -2622,6 +2647,10 @@ fn collect_weapon_refs(objects: &[ObjectType]) -> (HashSet<String>, HashSet<Stri
         if let Some(ref w) = obj.elite_occupy_weapon {
             weapon_ids.insert(w.clone());
         }
+        if let Some(ref w) = obj.death_weapon {
+            weapon_ids.insert(w.clone());
+        }
+        weapon_ids.extend(obj.weapon_list.iter().cloned());
     }
 
     (weapon_ids, warhead_ids)
@@ -2663,21 +2692,6 @@ fn parse_prerequisite_groups(ini: &IniFile) -> HashMap<String, Vec<String>> {
             if !ids.is_empty() {
                 groups.insert(alias.to_string(), ids);
             }
-        }
-    }
-
-    // ProcAlternate entries merge into the PROC group.
-    if let Some(list) = general.get_list("PrerequisiteProcAlternate") {
-        let alt_ids: Vec<String> = list
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_ascii_uppercase())
-            .collect();
-        if !alt_ids.is_empty() {
-            groups
-                .entry("PROC".to_string())
-                .or_default()
-                .extend(alt_ids);
         }
     }
 
@@ -2958,10 +2972,12 @@ CellSpread=0
         let ini_text = "[General]\n\
 ForceShieldRadius=5\n\
 ForceShieldDuration=600\n\
-PsychicRevealRadius=12\n\
 MutateExplosion=no\n\
 [CombatDamage]\n\
 IronCurtainDuration=900\n\
+PsychicRevealRadius=12\n\
+TreeTargeting=yes\n\
+[SpecialWeapons]\n\
 MutateWarhead=MyMutate\n\
 ";
         let ini = IniFile::from_str(ini_text);
@@ -2971,6 +2987,7 @@ MutateWarhead=MyMutate\n\
         assert_eq!(general.force_shield_duration, 600);
         assert_eq!(general.psychic_reveal_radius, 12);
         assert_eq!(general.mutate_warhead, "MyMutate");
+        assert!(general.tree_targeting);
         assert!(!general.mutate_explosion);
         // Unspecified keys fall back to defaults.
         assert_eq!(general.iron_curtain_invoke_anim, "IRONBLST");
@@ -3834,8 +3851,8 @@ DefaultSparkSystem=SparkSys
             "ConditionRedSparkingProbability=0.05\n\
              ConditionYellowSparkingProbability=0.03",
         ));
-        assert_eq!(g.condition_red_sparking_probability, 0.05);
-        assert_eq!(g.condition_yellow_sparking_probability, 0.03);
+        assert_eq!(g.condition_red_sparking_probability, f64::from(0.05_f32));
+        assert_eq!(g.condition_yellow_sparking_probability, f64::from(0.03_f32));
     }
 
     #[test]
@@ -4004,12 +4021,12 @@ ZAdjust=-10
 
     #[test]
     fn merge_art_propagates_add_remove_occupy() {
-        let rules_text = format!(
-            "{}\n[BuildingTypes]\n0=GAREFN\n[GAREFN]\nName=Refinery\nCost=2000\nFoundation=4x3\n",
-            make_test_rules()
-        );
+        let mut rules_ini = IniFile::from_str(&make_test_rules());
+        rules_ini.merge_rules_layer(&IniFile::from_str(
+            "[BuildingTypes]\n0=GAREFN\n\
+             [GAREFN]\nName=Refinery\nCost=2000\nFoundation=4x3\n",
+        ));
         let art_text = "[GAREFN]\nFoundation=4x3\nCanHideThings=no\nOccupyHeight=4\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
-        let rules_ini: IniFile = IniFile::from_str(&rules_text);
         let mut rules: RuleSet = RuleSet::from_ini(&rules_ini).expect("rules parse");
         let art_ini: IniFile = IniFile::from_str(art_text);
         let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
@@ -4023,11 +4040,11 @@ ZAdjust=-10
 
     #[test]
     fn merge_art_propagates_infantry_crawls_without_building_side_effects() {
-        let rules_text = format!(
-            "{}\n[InfantryTypes]\n0=E1\n\n[BuildingTypes]\n0=GAPOWR\n\n[E1]\nName=GI\nImage=GI\nStrength=125\nArmor=flak\nSpeed=4\n\n[GAPOWR]\nName=Power\nStrength=750\nArmor=wood\nFoundation=2x2\n",
-            make_test_rules()
-        );
-        let rules_ini = IniFile::from_str(&rules_text);
+        let mut rules_ini = IniFile::from_str(&make_test_rules());
+        rules_ini.merge_rules_layer(&IniFile::from_str(
+            "[E1]\nName=GI\nImage=GI\nStrength=125\nArmor=flak\nSpeed=4\n\
+             [GAPOWR]\nName=Power\nStrength=750\nArmor=wood\nFoundation=2x2\n",
+        ));
         let mut rules = RuleSet::from_ini(&rules_ini).expect("rules parse");
         let art_ini = IniFile::from_str(
             "[GI]\nCrawls=yes\nFireUp=2\nFireProne=3\nSecondaryFire=4\nSecondaryProne=5\n\n[GAPOWR]\nCrawls=yes\nFireUp=9\n",

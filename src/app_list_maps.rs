@@ -15,8 +15,8 @@ use crate::map::briefing::BriefingSection;
 use crate::map::map_file::{self, MapFile};
 use crate::map::preview::{PreviewSection, PreviewSourceBounds, PreviewStartPoint};
 use crate::map::waypoints::{
-    multiplayer_start_waypoints, parse_waypoints, skirmish_player_capacity,
-    DEFAULT_SKIRMISH_PLAYER_CAPACITY,
+    DEFAULT_SKIRMISH_PLAYER_CAPACITY, multiplayer_start_waypoints, parse_waypoints,
+    skirmish_player_capacity,
 };
 use crate::rules::ini_parser::IniFile;
 use crate::skirmish_scenarios::{SkirmishScenarioRecord, SkirmishScenarioSource};
@@ -92,10 +92,30 @@ pub fn list_skirmish_scenario_records_with_csf(
 ) -> Result<Vec<SkirmishScenarioRecord>> {
     let config: GameConfig = GameConfig::load()?;
     let ra2_dir: PathBuf = config.paths.ra2_dir;
-    let assets = AssetManager::new(&ra2_dir).ok();
+    let mut assets = AssetManager::new(&ra2_dir).ok();
+    list_skirmish_scenario_records_from_sources(&ra2_dir, assets.as_mut(), csf)
+}
+
+/// Populate the native Choose Map sources through the retained process VFS.
+///
+/// Loose YRO archives become registered while this scan runs and therefore
+/// remain available when the selected scenario is loaded later.
+pub(crate) fn list_skirmish_scenario_records_with_assets(
+    ra2_dir: &Path,
+    assets: &mut AssetManager,
+    csf: Option<&CsfFile>,
+) -> Result<Vec<SkirmishScenarioRecord>> {
+    list_skirmish_scenario_records_from_sources(ra2_dir, Some(assets), csf)
+}
+
+fn list_skirmish_scenario_records_from_sources(
+    ra2_dir: &Path,
+    mut assets: Option<&mut AssetManager>,
+    csf: Option<&CsfFile>,
+) -> Result<Vec<SkirmishScenarioRecord>> {
     let mut records = Vec::new();
 
-    if let Some(assets) = assets.as_ref() {
+    if let Some(assets) = assets.as_deref() {
         if let Some(pkt) = assets
             .get_ref("MISSIONSMD.PKT")
             .and_then(|bytes| IniFile::from_bytes(bytes).ok())
@@ -114,9 +134,9 @@ pub fn list_skirmish_scenario_records_with_csf(
         }
     }
 
-    append_loose_pkt_records(&mut records, &ra2_dir, assets.as_ref(), csf)?;
-    append_loose_yro_records(&mut records, &ra2_dir, assets.as_ref(), csf)?;
-    append_loose_yrm_records(&mut records, &ra2_dir)?;
+    append_loose_pkt_records(&mut records, ra2_dir, assets.as_deref(), csf)?;
+    append_loose_yro_records(&mut records, ra2_dir, assets.as_deref_mut(), csf)?;
+    append_loose_yrm_records(&mut records, ra2_dir)?;
 
     Ok(records)
 }
@@ -160,13 +180,29 @@ fn append_loose_pkt_records(
 fn append_loose_yro_records(
     records: &mut Vec<SkirmishScenarioRecord>,
     ra2_dir: &Path,
-    assets: Option<&AssetManager>,
+    mut assets: Option<&mut AssetManager>,
     csf: Option<&CsfFile>,
 ) -> Result<()> {
     for (path, file_name) in loose_files_with_extension(ra2_dir, "yro")? {
-        let archive = match MixArchive::load(&path) {
-            Ok(archive) => archive,
-            Err(_) => continue,
+        let owned_archive;
+        let archive: &MixArchive;
+        let fallback_assets: Option<&AssetManager>;
+        if let Some(manager) = assets.as_deref_mut() {
+            if manager.register_loose_yro_archive(&path).is_err() {
+                continue;
+            }
+            let Some(registered) = manager.archive(&file_name) else {
+                continue;
+            };
+            archive = registered;
+            fallback_assets = Some(manager);
+        } else {
+            owned_archive = match MixArchive::load(&path) {
+                Ok(archive) => archive,
+                Err(_) => continue,
+            };
+            archive = &owned_archive;
+            fallback_assets = None;
         };
         let pkt_name = Path::new(&file_name)
             .with_extension("PKT")
@@ -190,7 +226,7 @@ fn append_loose_yro_records(
                     .get_by_name(map_file)
                     .and_then(|bytes| IniFile::from_bytes(bytes).ok())
                     .or_else(|| {
-                        assets
+                        fallback_assets
                             .and_then(|assets| assets.get_ref(map_file))
                             .and_then(|bytes| IniFile::from_bytes(bytes).ok())
                     })
@@ -299,9 +335,8 @@ fn pkt_display_name(pkt: &IniFile, map_stem: &str, csf: Option<&CsfFile>) -> Opt
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| {
-            csf.and_then(|csf| csf.get(value))
-                .unwrap_or(value)
-                .to_string()
+            csf.map(|csf| csf.text(value).into_owned())
+                .unwrap_or_else(|| value.to_string())
         })
 }
 

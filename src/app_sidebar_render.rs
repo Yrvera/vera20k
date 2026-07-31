@@ -479,16 +479,10 @@ pub(crate) fn sidebar_theme_for_owner_sources(
 
 /// Resolve a display name through the CSF string table.
 ///
-/// RA2 rules.ini `Name=` values are CSF keys (e.g., `"Name:MTNK"`).
-/// If the name matches a CSF key, return the localized string.
-/// Otherwise return the original name unchanged.
+/// Rules `Name=` values are CSF keys (e.g., `"Name:MTNK"`). Retail emits its
+/// visible `MISSING:'<key>'` marker when the initialized table lacks a key.
 fn resolve_csf_name(csf: &crate::assets::csf_file::CsfFile, name: &str) -> String {
-    // Try the name directly as a CSF key (e.g., "Name:MTNK").
-    if let Some(resolved) = csf.get(name) {
-        return resolved.to_string();
-    }
-    // No match — keep original name.
-    name.to_string()
+    csf.text(name).into_owned()
 }
 
 // ---------------------------------------------------------------------------

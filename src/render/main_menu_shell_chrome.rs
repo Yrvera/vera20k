@@ -176,8 +176,8 @@ fn render_shp_entry(
     frame: usize,
     tag: Option<&str>,
 ) -> Option<RenderedChromeEntry> {
-    let bytes = assets.get_ref(file_name)?;
-    let shp = ShpFile::from_bytes(bytes).ok()?;
+    let load = assets.load_file_from_mix(file_name)?;
+    let shp = ShpFile::from_bytes(&load.bytes).ok()?;
     if frame >= shp.frames.len() {
         return None;
     }

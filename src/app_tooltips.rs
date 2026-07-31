@@ -74,8 +74,7 @@ fn csf_text(state: &AppState, key: &str) -> String {
     state
         .csf
         .as_ref()
-        .and_then(|csf| csf.get(key))
-        .map(ToOwned::to_owned)
+        .map(|csf| csf.text(key).into_owned())
         .unwrap_or_default()
 }
 
@@ -153,8 +152,7 @@ fn sync_in_game_regions(state: &mut AppState) {
                 .as_ref()
                 .and_then(|r| r.object(&item.type_id))
                 .and_then(|o| o.ui_name.as_deref())
-                .and_then(|key| state.csf.as_ref().and_then(|csf| csf.get(key)))
-                .map(ToOwned::to_owned)
+                .and_then(|key| state.csf.as_ref().map(|csf| csf.text(key).into_owned()))
                 .unwrap_or_else(|| item.display_name.clone());
             match item.cost {
                 Some(cost) => format!("{name}\n{CAMEO_TIP_COST_PREFIX}{cost}"),

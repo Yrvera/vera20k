@@ -231,19 +231,12 @@ impl OverlayTypeRegistry {
             }
         };
 
-        // Collect all (numeric_key, value) pairs from the section.
-        let mut pairs: Vec<(usize, String)> = Vec::new();
-        for key in section.keys() {
-            if let Ok(idx) = key.parse::<usize>() {
-                if let Some(val) = section.get(key) {
-                    if !val.is_empty() {
-                        pairs.push((idx, val.to_string()));
-                    }
-                }
-            }
-        }
-
-        if pairs.is_empty() {
+        let names: Vec<String> = section
+            .get_values()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        if names.is_empty() {
             log::warn!("[OverlayTypes] present but empty");
             return OverlayTypeRegistry {
                 names: Vec::new(),
@@ -251,18 +244,10 @@ impl OverlayTypeRegistry {
             };
         }
 
-        // Sort by numeric key to get the canonical ordering, then build a
-        // 0-based sequential list. The numeric keys in [OverlayTypes] are just
-        // ordering hints (may start at 0 in rules.ini or 1 in rulesmd.ini).
-        // Map overlay IDs from [OverlayPack] are 0-based sequential indices
-        // into this ordered list.
-        pairs.sort_by_key(|(k, _)| *k);
-        pairs.dedup_by(|a, b| a.0 == b.0);
-
-        let mut names: Vec<String> = Vec::with_capacity(pairs.len());
-        let mut flags: Vec<OverlayTypeFlags> = Vec::with_capacity(pairs.len());
-        for (idx, (_, name)) in pairs.iter().enumerate() {
-            names.push(name.clone());
+        // Native registry allocation follows declaration order; numeric key
+        // text is not a sorting authority.
+        let mut flags: Vec<OverlayTypeFlags> = Vec::with_capacity(names.len());
+        for (idx, name) in names.iter().enumerate() {
             let upper_name = name.to_ascii_uppercase();
             // Bridge overlays are identified by hardcoded index position in
             // [OverlayTypes], matching the original engine's direct index checks.
@@ -318,7 +303,7 @@ impl OverlayTypeRegistry {
 
         log::info!(
             "OverlayTypeRegistry: {} types loaded (max_id={})",
-            pairs.len(),
+            names.len(),
             max_index,
         );
         OverlayTypeRegistry { names, flags }

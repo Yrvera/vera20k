@@ -362,7 +362,7 @@ fn append_optional_composition_entries(
     if composition.marker_remaps.is_empty() {
         return (Some(preview_label), Vec::new());
     }
-    if assets.get_ref(MMPB_ASSET_NAME).is_none() {
+    if assets.load_file_from_mix(MMPB_ASSET_NAME).is_none() {
         log::warn!(
             "Missing optional standard Skirmish loading marker asset {MMPB_ASSET_NAME}; preview remains available"
         );
@@ -503,11 +503,11 @@ fn render_shp_entry(
     palette: &Palette,
     frame: usize,
 ) -> Option<RenderedLoadingEntry> {
-    let Some(bytes) = assets.get_ref(file_name) else {
+    let Some(load) = assets.load_file_from_mix(file_name) else {
         log::warn!("Missing standard Skirmish loading SHP {file_name}");
         return None;
     };
-    let shp = ShpFile::from_bytes(bytes)
+    let shp = ShpFile::from_bytes(&load.bytes)
         .map_err(|err| {
             log::warn!("Could not parse standard Skirmish loading SHP {file_name}: {err:#}");
             err
@@ -947,8 +947,14 @@ mod tests {
             return;
         }
 
-        let assets = crate::assets::asset_manager::AssetManager::new(&config.paths.ra2_dir)
+        let mut assets = crate::assets::asset_manager::AssetManager::new(&config.paths.ra2_dir)
             .expect("configured RA2 install should load");
+        assert!(
+            assets
+                .register_loading_archives()
+                .expect("configured loading archive setup"),
+            "LOADMD.MIX and LOAD.MIX should register from configured RA2 install"
+        );
 
         assert!(
             assets.get_ref("PROGBARM.SHP").is_some(),

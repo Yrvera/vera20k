@@ -210,13 +210,14 @@ fn in_game_options_static_draws(
     out
 }
 
-/// Resolve a static's CSF caption key to display text, falling back to an English
-/// string when the CSF table is unavailable or the key is missing. `GUI:Blank`
-/// (the footer) and unknown keys fall back to empty, so the footer paints nothing.
+/// Resolve a static's CSF caption key. Once the table is initialized, a missing
+/// label stays visible as retail's `MISSING:'<key>'`; English literals exist
+/// only for assetless operation where no CSF table is available.
 fn resolve_static_text(csf: Option<&CsfFile>, key: &str) -> String {
-    csf.and_then(|c| c.get(key))
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| options_static_fallback(key).to_string())
+    match csf {
+        Some(table) => table.text(key).into_owned(),
+        None => options_static_fallback(key).to_string(),
+    }
 }
 
 fn options_static_fallback(key: &str) -> &'static str {
@@ -310,6 +311,14 @@ pub(crate) fn in_game_options_anchor(
 mod tests {
     use super::*;
     use crate::render::skirmish_shell_chrome::SkirmishShellChromeEntry;
+
+    fn initialized_empty_csf() -> CsfFile {
+        let mut bytes = Vec::new();
+        for value in [0x4353_4620_u32, 3, 1, 1, 0, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        CsfFile::from_bytes(&bytes).expect("valid initialized CSF header")
+    }
 
     fn entry(w: f32, h: f32) -> SkirmishShellChromeEntry {
         SkirmishShellChromeEntry {
@@ -438,6 +447,16 @@ mod tests {
         // The value labels paint the template default ("Faster") at open until the
         // slider is dragged (the gamemd quirk; see the dragged-swap test below).
         assert_eq!(find(control::GAME_SPEED_VALUE).text, "Faster");
+    }
+
+    #[test]
+    fn initialized_csf_exposes_missing_static_label() {
+        let csf = initialized_empty_csf();
+        assert_eq!(
+            resolve_static_text(Some(&csf), "GUI:GameOptions"),
+            "MISSING:'GUI:GameOptions'"
+        );
+        assert_eq!(resolve_static_text(None, "GUI:GameOptions"), "Game Options");
     }
 
     #[test]

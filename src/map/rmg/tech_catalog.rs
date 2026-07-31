@@ -17,7 +17,7 @@ const FOUNDATION: &str = "Foundation";
 
 /// Build the catalog from a merged rules INI and a merged art INI.
 ///
-/// Both must already be YR-patched (`rulesmd`/`artmd` merged over the base):
+/// Both are the active standalone YR sources (`rulesmd` and `artmd`):
 /// the stock YR list has six entries where base RA2 has four.
 pub fn resolve(rules: &IniFile, art: &IniFile) -> Vec<TechType> {
     let Some(names) = rules

@@ -173,13 +173,13 @@ fn compose_startup_splash(
         pixel[3] = 255;
     }
 
-    if let (Some(palette_bytes), Some(shp_bytes)) = (
+    if let (Some(palette_bytes), Some(shp_load)) = (
         assets.get_ref(SPLASH_PALETTE),
-        assets.get_ref(splash_shp_for_width(client_width as u32)),
+        assets.load_file_from_mix(splash_shp_for_width(client_width as u32)),
     ) {
         match (
             Palette::from_bytes_gamemd_ui(palette_bytes),
-            ShpFile::from_bytes(shp_bytes),
+            ShpFile::from_bytes(&shp_load.bytes),
         ) {
             (Ok(palette), Ok(shp)) => {
                 if let Some(frame) = shp.frames.first() {
@@ -287,9 +287,10 @@ fn centered_offset(client_extent: i32, art_extent: i32) -> i32 {
 }
 
 fn csf_text<'a>(csf: Option<&'a CsfFile>, key: &str, fallback: &'a str) -> String {
-    csf.and_then(|table| table.get(key))
-        .unwrap_or(fallback)
-        .to_string()
+    match csf {
+        Some(table) => table.text(key).into_owned(),
+        None => fallback.to_string(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -370,6 +371,14 @@ fn draw_text(
 mod tests {
     use super::*;
 
+    fn initialized_empty_csf() -> CsfFile {
+        let mut bytes = Vec::new();
+        for value in [0x4353_4620_u32, 3, 1, 1, 0, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        CsfFile::from_bytes(&bytes).expect("valid initialized CSF header")
+    }
+
     #[test]
     fn exact_640_selects_small_every_other_width_selects_large() {
         assert_eq!(splash_shp_for_width(640), SMALL_SPLASH_SHP);
@@ -385,6 +394,19 @@ mod tests {
         assert_eq!(centered_offset(799, 800), 0);
         assert_eq!(centered_offset(798, 800), -1);
         assert_eq!(centered_offset(806, 800), 3);
+    }
+
+    #[test]
+    fn initialized_csf_exposes_missing_label_instead_of_english_fallback() {
+        let csf = initialized_empty_csf();
+        assert_eq!(
+            csf_text(Some(&csf), COPYRIGHT_KEY, COPYRIGHT_FALLBACK),
+            format!("MISSING:'{COPYRIGHT_KEY}'")
+        );
+        assert_eq!(
+            csf_text(None, COPYRIGHT_KEY, COPYRIGHT_FALLBACK),
+            COPYRIGHT_FALLBACK
+        );
     }
 
     #[test]

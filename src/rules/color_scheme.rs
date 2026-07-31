@@ -74,9 +74,13 @@ pub fn parse_color_schemes(ini: &IniFile) -> Vec<ColorSchemeEntry> {
     let Some(section) = ini.section("Colors") else {
         return Vec::new();
     };
+    let mut seen = std::collections::HashSet::new();
     section
         .keys()
         .filter_map(|key| {
+            if !seen.insert(key.to_ascii_uppercase()) {
+                return None;
+            }
             let value = section.get(key)?;
             let hsv = parse_hsv_triple(value)?;
             Some(ColorSchemeEntry {
@@ -240,9 +244,19 @@ mod tests {
         let ini = IniFile::from_str("[Colors]\nGold=43,239,255\nDarkRed=0,230,255\n");
         let parsed = parse_color_schemes(&ini);
         assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].name, "gold"); // keys() lowercases
+        assert_eq!(parsed[0].name, "Gold");
         assert_eq!(parsed[0].hsv, [43, 239, 255]);
         assert_eq!(parsed[1].hsv, [0, 230, 255]);
+    }
+
+    #[test]
+    fn parse_color_schemes_find_or_create_keeps_first_identity() {
+        let ini = IniFile::from_str("[Colors]\nGold=43,239,255\ngold=1,2,3\n");
+        let parsed = parse_color_schemes(&ini);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Gold");
+        assert_eq!(parsed[0].hsv, [43, 239, 255]);
     }
 
     #[test]

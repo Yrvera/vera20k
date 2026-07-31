@@ -21,6 +21,7 @@
 //! art lives in the skirmish chrome atlas today) so the emitter stays a pure
 //! composition the quit-confirm and validation modals both delegate to.
 
+use std::borrow::Cow;
 use std::time::Instant;
 
 use crate::render::batch::SpriteInstance;
@@ -91,7 +92,7 @@ pub struct PaintButton {
 /// One static or button label to paint. `rect` is already inset/sunk and `rgb`
 /// already resolved (enabled vs disabled) by the caller-side label builder.
 pub struct PaintLabel<'a> {
-    pub text: &'a str,
+    pub text: Cow<'a, str>,
     pub rect: RectPx,
     pub align: ShellAlign,
     pub rgb: [f32; 3],
@@ -350,7 +351,7 @@ pub fn paint_labels_at_depth(
             match label.path_a_reveal {
                 Some(reveal) => crate::render::shell_text::draw_in_rect_path_a(
                     font,
-                    label.text,
+                    label.text.as_ref(),
                     text_rect,
                     label.align,
                     [0.0, 0.0],
@@ -359,7 +360,7 @@ pub fn paint_labels_at_depth(
                 ),
                 None => crate::render::shell_text::draw_in_rect(
                     font,
-                    label.text,
+                    label.text.as_ref(),
                     text_rect,
                     label.rgb,
                     label.align,
@@ -548,7 +549,7 @@ mod tests {
         let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6)], 4);
         let rect = RectPx::new(9, 11, 80, 20);
         let labels = [PaintLabel {
-            text: "aba",
+            text: "aba".into(),
             rect,
             align: ShellAlign::H_CENTER,
             rgb: [1.0, 1.0, 0.0],

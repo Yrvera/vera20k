@@ -115,7 +115,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_tubes_sorts_numeric_keys_like_other_map_sections() {
+    fn parse_tubes_preserves_source_order() {
         let ini = IniFile::from_str(
             "[Tubes]\n\
              7=7,0,6,4,0,6,6,-1\n\
@@ -125,8 +125,8 @@ mod tests {
         let tubes = parse_tubes(&ini);
 
         assert_eq!(tubes.len(), 2);
-        assert_eq!(tubes[0].entry, (2, 0));
-        assert_eq!(tubes[1].entry, (7, 0));
+        assert_eq!(tubes[0].entry, (7, 0));
+        assert_eq!(tubes[1].entry, (2, 0));
     }
 
     #[test]

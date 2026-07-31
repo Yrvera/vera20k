@@ -17,7 +17,7 @@ use crate::app_init_helpers::{
     spawn_entities, theater_ext_for,
 };
 use crate::app_list_maps::{
-    load_map_by_name_or_path_with_assets, try_load_mmx, LoadedMap, LoadedMapSource,
+    LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
 };
 use crate::app_skirmish::{
     apply_explicit_skirmish_launch_session, build_overlay_atlas_from_map,
@@ -146,7 +146,6 @@ pub struct MapLoadResult {
 }
 
 pub(crate) struct MapLoadInitial {
-    asset_manager: AssetManager,
     map_data: MapFile,
     map_source: LoadedMapSource,
 }
@@ -159,24 +158,18 @@ impl MapLoadInitial {
     pub(crate) fn map_data(&self) -> &MapFile {
         &self.map_data
     }
-
-    pub(crate) fn asset_manager(&self) -> &AssetManager {
-        &self.asset_manager
-    }
 }
 
-pub(crate) fn load_csf(asset_manager: &AssetManager) -> Option<crate::assets::csf_file::CsfFile> {
-    let bytes = asset_manager.get_ref("ra2md.csf")?;
-    match crate::assets::csf_file::CsfFile::from_bytes(bytes) {
-        Ok(csf) => {
-            log::info!("Loaded CSF string table: ra2md.csf");
-            Some(csf)
-        }
-        Err(err) => {
-            log::warn!("Failed to parse CSF ra2md.csf: {err:#}");
-            None
-        }
-    }
+pub(crate) fn load_csf(
+    asset_manager: &AssetManager,
+) -> anyhow::Result<crate::assets::csf_file::CsfFile> {
+    let bytes = asset_manager
+        .get_ref("ra2md.csf")
+        .ok_or_else(|| anyhow::anyhow!("required retail string table ra2md.csf is missing"))?;
+    let csf = crate::assets::csf_file::CsfFile::from_bytes(bytes)
+        .map_err(|err| anyhow::anyhow!("could not parse required ra2md.csf: {err:#}"))?;
+    log::info!("Loaded CSF string table: ra2md.csf");
+    Ok(csf)
 }
 
 /// Rebuild transient app lighting from base map light plus the current live entities.
@@ -332,7 +325,7 @@ pub struct MapMenuEntry {
 
 pub(crate) fn load_map_initial_with_assets(
     ra2_dir: PathBuf,
-    asset_manager: AssetManager,
+    asset_manager: &mut AssetManager,
     requested_map: Option<&str>,
     progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> Result<MapLoadInitial> {
@@ -356,10 +349,6 @@ pub(crate) fn load_map_initial_with_assets(
         .map(str::to_string)
         .or(quickplay_seed);
     if let Some(seed_name) = seed_selection.as_deref() {
-        // Shadowed as mutable: the theater loader needs &mut, and every borrow
-        // has to end before the manager is moved into MapLoadInitial.
-        let mut asset_manager = asset_manager;
-
         let mut options = crate::map::rmg::RmgOptions::default();
         match std::fs::read(ra2_dir.join(seed_name)) {
             Ok(bytes) => match crate::rules::ini_parser::IniFile::from_bytes(&bytes) {
@@ -374,9 +363,9 @@ pub(crate) fn load_map_initial_with_assets(
         }
         options.normalize();
 
-        let settings = crate::map::rmg::RmgSettings::load(&asset_manager);
+        let settings = crate::map::rmg::RmgSettings::load(asset_manager);
         let theater_name = crate::map::rmg::emit::theater_name(options.theater);
-        let theater = crate::map::theater::load_theater(&mut asset_manager, theater_name)
+        let theater = crate::map::theater::load_theater(asset_manager, theater_name)
             .ok_or_else(|| anyhow::anyhow!("random map: theater {theater_name} unavailable"))?;
 
         // Terrain rules feed the zone classifier's wheel-impassable table. The
@@ -406,7 +395,7 @@ pub(crate) fn load_map_initial_with_assets(
         // `[AI] NeutralTechBuildings` plus each type's `Foundation=`. The phase
         // runs for every map type except 0, so an empty list here would both
         // strip the buildings and skip the draws the original consumes.
-        let tech_types = crate::app_init_helpers::load_neutral_tech_types(&asset_manager);
+        let tech_types = crate::app_init_helpers::load_neutral_tech_types(asset_manager);
         let generated = crate::map::rmg::build::generate_map(
             &options,
             &settings,
@@ -434,7 +423,6 @@ pub(crate) fn load_map_initial_with_assets(
 
         progress.milestone(8);
         return Ok(MapLoadInitial {
-            asset_manager,
             map_data: generated.map_file,
             map_source: LoadedMapSource::Generated {
                 seed_name: seed_name.to_string(),
@@ -495,7 +483,6 @@ pub(crate) fn load_map_initial_with_assets(
     progress.milestone(8);
 
     Ok(MapLoadInitial {
-        asset_manager,
         map_data,
         map_source,
     })
@@ -504,6 +491,7 @@ pub(crate) fn load_map_initial_with_assets(
 pub(crate) fn load_map_from_initial(
     gpu: &GpuContext,
     batch: &BatchRenderer,
+    asset_manager: &mut AssetManager,
     initial: MapLoadInitial,
     startup: LoadingStartup,
     skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
@@ -513,7 +501,6 @@ pub(crate) fn load_map_from_initial(
     progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> Result<MapLoadResult> {
     let MapLoadInitial {
-        mut asset_manager,
         map_data,
         map_source,
     } = initial;
@@ -528,7 +515,7 @@ pub(crate) fn load_map_from_initial(
     // Load theater INI for tileset lookup, palette, and LAT configuration.
     // Also loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority.
     let theater_result: Option<theater::TheaterData> =
-        theater::load_theater(&mut asset_manager, &map_data.header.theater);
+        theater::load_theater(asset_manager, &map_data.header.theater);
     if theater_cache_mismatch {
         progress.milestone(12);
         // Native advances while rebuilding each color scheme. Rust's theater
@@ -651,7 +638,7 @@ pub(crate) fn load_map_from_initial(
     progress.milestone(31);
     progress.milestone(35);
     progress.milestone(45);
-    let csf: Option<crate::assets::csf_file::CsfFile> = load_csf(&asset_manager);
+    let csf = Some(load_csf(&asset_manager)?);
     let overlay_registry: OverlayTypeRegistry =
         OverlayTypeRegistry::from_ini(&rules_ini, art_ini.as_ref());
 
@@ -1328,7 +1315,9 @@ pub(crate) fn load_map_from_initial(
         initial_local_owner,
         camera_x,
         camera_y,
-        asset_manager: Some(asset_manager),
+        // The app loading job retains the one process-lifetime manager while
+        // this borrowed phase runs, then moves it into the completed result.
+        asset_manager: None,
     })
 }
 
@@ -1446,10 +1435,10 @@ mod random_map_retail_tests {
                 };
                 let (seed_dir, seed_name) = write_seed(&options, &tag);
 
-                let asset_manager = AssetManager::new(&ra2).expect("AssetManager::new");
+                let mut asset_manager = AssetManager::new(&ra2).expect("AssetManager::new");
                 let mut initial = load_map_initial_with_assets(
                     seed_dir,
-                    asset_manager,
+                    &mut asset_manager,
                     Some(&seed_name),
                     &mut SilentProgress,
                 )
@@ -1461,9 +1450,8 @@ mod random_map_retail_tests {
                 );
 
                 let theater_name = crate::map::rmg::emit::theater_name(theater);
-                let data =
-                    crate::map::theater::load_theater(&mut initial.asset_manager, theater_name)
-                        .unwrap_or_else(|| panic!("{tag}: theater {theater_name} unavailable"));
+                let data = crate::map::theater::load_theater(&mut asset_manager, theater_name)
+                    .unwrap_or_else(|| panic!("{tag}: theater {theater_name} unavailable"));
 
                 // Guard against a vacuous pass: if every cell were NO_TILE the
                 // resolvability filter below would empty and the assertion

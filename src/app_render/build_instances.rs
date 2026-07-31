@@ -751,22 +751,22 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .map(|v| build_sidebar_chrome_instances(state, v))
         .unwrap_or_default();
 
-    let ready_text: &str = state
+    let ready_text = state
         .csf
         .as_ref()
-        .and_then(|csf| csf.get("TXT_READY"))
-        .unwrap_or("Ready");
+        .map(|csf| csf.text("TXT_READY"))
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("Ready"));
     let ready_tint = {
         let theme = crate::app_sidebar_render::current_sidebar_theme(state);
         crate::render::sidebar_text::side_highlight_color(theme)
     };
     let (cameo, gclock, cameo_overlay) = view
         .as_ref()
-        .map(|v| build_sidebar_cameo_instances(state, v, ready_text))
+        .map(|v| build_sidebar_cameo_instances(state, v, ready_text.as_ref()))
         .unwrap_or_default();
     let text = view
         .as_ref()
-        .map(|v| build_sidebar_text_instances(state, v, ready_text, ready_tint))
+        .map(|v| build_sidebar_text_instances(state, v, ready_text.as_ref(), ready_tint))
         .unwrap_or_default();
 
     let radar_anim = build_radar_anim_instance(state);

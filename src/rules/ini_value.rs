@@ -4,14 +4,9 @@
 //! the gamemd parse CONTRACT bit-for-bit on the resolved value: $xx/xxh hex,
 //! C-atoi leniency, first-char bool, '%'-anywhere ×0.01 double, strtrim ≤0x20.
 //!
-//! INVARIANT (P4/P18): "present" = key exists (even if value is empty). A present
-//! key ALWAYS returns its parsed value (which for int may be atoi("")=0). `default`
-//! is returned ONLY when section/key is ABSENT. This is NOT `unwrap_or(default)` —
-//! it does not fall to default on parse failure.
-//!
-//! This service is ADDITIVE this slice: no consumer reads it yet. The corpus
-//! harness (`corpus_tests`) proves where it agrees with — and where it deliberately
-//! corrects — the existing ad-hoc `get_*` accessors, without flipping any consumer.
+//! INVARIANT: the raw loader omits empty keys and empty values. A stored
+//! nonempty key returns its parsed value (malformed numeric text may still
+//! parse as zero); `default` is returned when a key is absent or omitted.
 //!
 //! ## Dependency rules
 //! - rules/ only: depends on `crate::rules::ini_parser`. No sim/render/ui/audio/net.
@@ -23,11 +18,6 @@ use crate::rules::ini_parser::IniSection;
 /// 0x20 = ASCII space; gamemd `strtrim` strips bytes <= 0x20 (space + all ASCII
 /// control) at BOTH ends — NOT Unicode whitespace.
 const STRTRIM_MAX: u8 = 0x20;
-
-/// Smallest gamemd per-accessor ReadString buffer cap (enum/zone/action). A
-/// stock value longer than this would silently truncate in gamemd; we surface it
-/// via a debug_assert instead of reproducing the C buffer truncation.
-const SMALLEST_READSTRING_CAP: usize = 32;
 
 impl IniSection {
     /// ReadInt (P1–P4, P18): `$xx`/`xxh` (case-insensitive `h`) hex, else C-atoi
@@ -41,10 +31,10 @@ impl IniSection {
                 if let Some(rest) = v.strip_prefix('$') {
                     // "$%x": parse hex; junk after digits stops the C scan -> take
                     // the leading hex run (sscanf "$%x" stops at first non-hex).
-                    parse_leading_hex(rest)
+                    parse_leading_hex(rest).unwrap_or(default)
                 } else if ends_with_h(v) {
                     // "%xh": leading hex run, ignore the trailing 'h'/'H'.
-                    parse_leading_hex(&v[..v.len() - 1])
+                    parse_leading_hex(&v[..v.len() - 1]).unwrap_or(default)
                 } else {
                     atoi_lenient(v)
                 }
@@ -73,7 +63,9 @@ impl IniSection {
     /// f64, then ×0.01 iff the value string contains '%' ANYWHERE. Returns the
     /// gamemd double UN-truncated; the consumer truncates toward zero at ITS
     /// boundary (never `.round()` / never truncate here). Default ONLY on absent.
-    /// (precision pinned by the S0 gate in `util::fixed_math`)
+    /// Present junk is absent from stock retail data; native exposes stale
+    /// 32-bit ABI argument bits on failed `%f`, while Rust deterministically
+    /// returns zero rather than importing that non-portable accident.
     pub fn read_double(&self, key: &str, default: f64) -> f64 {
         match self.get(key) {
             None => default,
@@ -90,25 +82,16 @@ impl IniSection {
         }
     }
 
-    /// ReadString (P5, P18): strtrim ≤0x20 both ends; default on ABSENT key;
-    /// present-empty -> "". No C buffer cap in Rust — debug_assert at the smallest
-    /// gamemd per-accessor cap (32) to surface a corpus value that WOULD truncate
-    /// (design open-question 6: debug-assert, do NOT silently truncate).
-    pub fn read_string<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
-        match self.get(key) {
-            None => default,
-            Some(raw) => {
-                let v = strtrim_ascii(raw);
-                debug_assert!(
-                    v.len() <= SMALLEST_READSTRING_CAP,
-                    "INI value for {key:?} is {} chars; gamemd smallest \
-                     ReadString cap is {SMALLEST_READSTRING_CAP} (enum/zone/action) \
-                     — would truncate",
-                    v.len()
-                );
-                v
-            }
+    /// ReadString (P5, P18): copy at most `capacity - 1` bytes, force the final
+    /// NUL, then trim bytes ≤0x20 at both ends. Capacities are caller-specific
+    /// in retail, so they are explicit here too.
+    pub fn read_string(&self, key: &str, default: &str, capacity: usize) -> String {
+        if capacity == 0 {
+            return String::new();
         }
+        let raw = self.get(key).unwrap_or(default);
+        let copied: String = raw.chars().take(capacity - 1).collect();
+        strtrim_ascii(&copied).to_string()
     }
 
     /// Read3Int (P8): comma "%d,%d,%d". All-defaults on ABSENT key. Each field
@@ -234,22 +217,45 @@ fn ends_with_h(s: &str) -> bool {
 }
 
 /// Parse a leading run of hex digits (after `$` strip or before `h` strip).
-/// sscanf "$%x"/"%xh" stop at the first non-hex char. No sign (hex is unsigned
-/// in gamemd's `$`/`h` branches). Empty -> 0.
-fn parse_leading_hex(s: &str) -> i32 {
-    let mut acc: i64 = 0;
+/// sscanf "$%x"/"%xh" accepts an optional sign and `0x` prefix, then stops at
+/// the first non-hex char. No conversion returns `None`, leaving the caller's
+/// initialized default untouched.
+pub(crate) fn parse_leading_hex(s: &str) -> Option<i32> {
+    let bytes = s.as_bytes();
+    let mut index = 0;
+    let negative = if bytes.first() == Some(&b'-') {
+        index += 1;
+        true
+    } else {
+        index += usize::from(bytes.first() == Some(&b'+'));
+        false
+    };
+    if bytes.get(index) == Some(&b'0')
+        && bytes
+            .get(index + 1)
+            .is_some_and(|byte| matches!(byte, b'x' | b'X'))
+        && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit)
+    {
+        index += 2;
+    }
+
+    let mut acc: u32 = 0;
     let mut any = false;
-    for c in s.bytes() {
+    for &c in &bytes[index..] {
         let d = match c {
-            b'0'..=b'9' => (c - b'0') as i64,
-            b'a'..=b'f' => (c - b'a' + 10) as i64,
-            b'A'..=b'F' => (c - b'A' + 10) as i64,
+            b'0'..=b'9' => u32::from(c - b'0'),
+            b'a'..=b'f' => u32::from(c - b'a' + 10),
+            b'A'..=b'F' => u32::from(c - b'A' + 10),
             _ => break,
         };
         any = true;
         acc = acc.wrapping_mul(16).wrapping_add(d);
     }
-    if any { acc as i32 } else { 0 }
+    any.then_some(if negative {
+        0u32.wrapping_sub(acc) as i32
+    } else {
+        acc as i32
+    })
 }
 
 /// C-atoi-equivalent leading-numeric parse (P3): optional leading sign, then
@@ -278,27 +284,44 @@ pub(crate) fn atoi_lenient(s: &str) -> i32 {
     v as i32
 }
 
-/// sscanf "%f"-equivalent leading float (P7): optional sign, digits, single dot,
-/// more digits; stop at first non-float char (so "12.5%"->12.5, "10%0"->10).
-/// Empty/junk -> 0.0. No exponent branch: corpus-confirmed ZERO `e`/`E` stock
-/// double values (plan-review C-R3).
+/// sscanf "%f"-equivalent leading float (P7): optional sign, decimal mantissa,
+/// and optional exponent. Parsing stops at the first byte outside that token
+/// (`12.5%` -> 12.5, `1.25e2junk` -> 125). Empty/junk -> 0.0.
 pub(crate) fn parse_leading_f32(s: &str) -> f32 {
     let b = s.as_bytes();
-    let mut end = 0usize;
-    let mut seen_dot = false;
-    while end < b.len() {
-        let c = b[end];
-        let ok = c.is_ascii_digit()
-            || (end == 0 && (c == b'-' || c == b'+'))
-            || (c == b'.' && !seen_dot);
-        if c == b'.' {
-            seen_dot = true;
-        }
-        if !ok {
-            break;
-        }
+    let mut end = usize::from(b.first().is_some_and(|c| matches!(c, b'-' | b'+')));
+    let mut mantissa_digits = 0usize;
+
+    while end < b.len() && b[end].is_ascii_digit() {
+        mantissa_digits += 1;
         end += 1;
     }
+    if b.get(end) == Some(&b'.') {
+        end += 1;
+        while end < b.len() && b[end].is_ascii_digit() {
+            mantissa_digits += 1;
+            end += 1;
+        }
+    }
+    if mantissa_digits == 0 {
+        return 0.0;
+    }
+
+    if b.get(end).is_some_and(|c| matches!(c, b'e' | b'E')) {
+        let exponent_mark = end;
+        end += 1;
+        if b.get(end).is_some_and(|c| matches!(c, b'-' | b'+')) {
+            end += 1;
+        }
+        let exponent_start = end;
+        while end < b.len() && b[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == exponent_start {
+            end = exponent_mark;
+        }
+    }
+
     s[..end].parse::<f32>().unwrap_or(0.0)
 }
 
@@ -313,13 +336,16 @@ mod tests {
 
     #[test] // P1/P2
     fn test_read_int_hex() {
-        let ini = sec("[S]\nA=$1A\nB=1Ah\nC=0FFH\nD=$0\nE=$FF\n");
+        let ini = sec("[S]\nA=$1A\nB=1Ah\nC=0FFH\nD=$0\nE=$FF\nF=$0xFF\nG=0xFFh\nH=$-1\n");
         let s = ini.section("S").unwrap();
         assert_eq!(s.read_int("A", -9), 26);
         assert_eq!(s.read_int("B", -9), 26);
         assert_eq!(s.read_int("C", -9), 255);
         assert_eq!(s.read_int("D", -9), 0);
         assert_eq!(s.read_int("E", -9), 255);
+        assert_eq!(s.read_int("F", -9), 255);
+        assert_eq!(s.read_int("G", -9), 255);
+        assert_eq!(s.read_int("H", -9), -1);
     }
 
     #[test] // P3/P4/P18
@@ -329,7 +355,7 @@ mod tests {
         assert_eq!(s.read_int("A", -9), 5);
         assert_eq!(s.read_int("B", -9), 0); // present-nonnumeric -> 0, NOT default
         assert_eq!(s.read_int("C", -9), -50);
-        assert_eq!(s.read_int("D", -9), 0); // present-empty -> atoi("") = 0
+        assert_eq!(s.read_int("D", -9), -9); // empty values are omitted
         assert_eq!(s.read_int("E", -9), 7);
         assert_eq!(s.read_int("MISSING", -9), -9); // absent -> default
     }
@@ -343,14 +369,14 @@ mod tests {
 
     #[test]
     fn test_read_int_signs_and_edges() {
-        let ini = sec("[S]\nA=+9\nB=-0\nC=$\nD=h\n");
+        let ini = sec("[S]\nA=+9\nB=-0\nC=$\nD=h\nE=$junk\nF=junkh\n");
         let s = ini.section("S").unwrap();
         assert_eq!(s.read_int("A", -1), 9);
         assert_eq!(s.read_int("B", -1), 0);
-        assert_eq!(s.read_int("C", -1), 0); // "$" with no hex digits -> 0
-        // "h": ends_with_h true, leading hex of "" -> 0. No stock key is `=h`
-        // (corpus-confirmed); this locks the Rust helper's defined behavior.
-        assert_eq!(s.read_int("D", -1), 0);
+        assert_eq!(s.read_int("C", -1), -1);
+        assert_eq!(s.read_int("D", -1), -1);
+        assert_eq!(s.read_int("E", -1), -1);
+        assert_eq!(s.read_int("F", -1), -1);
     }
 
     #[test] // P6/P18
@@ -367,7 +393,7 @@ mod tests {
         }
         assert!(s.read_bool("K", true)); // 'off' first char 'o' -> default
         assert!(s.read_bool("L", true)); // xyz -> default
-        assert!(s.read_bool("M", true)); // present-empty -> default
+        assert!(s.read_bool("M", true)); // empty values are omitted -> default
         assert!(s.read_bool("MISSING", true)); // absent -> default
     }
 
@@ -387,9 +413,12 @@ mod tests {
     fn test_read_string_trim_default() {
         let ini = sec("[S]\nA=  hello  \nB=\n");
         let s = ini.section("S").unwrap();
-        assert_eq!(s.read_string("A", "D"), "hello"); // trimmed
-        assert_eq!(s.read_string("B", "D"), ""); // present-empty -> ""
-        assert_eq!(s.read_string("MISSING", "D"), "D"); // absent -> default
+        assert_eq!(s.read_string("A", "D", 32), "hello");
+        assert_eq!(s.read_string("A", "D", 4), "hel");
+        assert_eq!(s.read_string("B", "D", 32), "D"); // empty values are omitted
+        assert_eq!(s.read_string("MISSING", "D", 32), "D");
+        assert_eq!(s.read_string("MISSING", " default ", 6), "defa");
+        assert_eq!(s.read_string("A", "D", 0), "");
     }
 
     #[test]
@@ -400,6 +429,9 @@ mod tests {
         assert_eq!(atoi_lenient(""), 0);
         assert!((parse_leading_f32("12.5%") - 12.5).abs() < 1e-6);
         assert!((parse_leading_f32(".9") - 0.9).abs() < 1e-6);
+        assert!((parse_leading_f32("1.25e2junk") - 125.0).abs() < 1e-6);
+        assert!((parse_leading_f32("-2.5E-1%") + 0.25).abs() < 1e-6);
+        assert!((parse_leading_f32("1e") - 1.0).abs() < 1e-6);
     }
 
     #[test] // P9 COMMA

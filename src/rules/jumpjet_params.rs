@@ -4,7 +4,7 @@
 //! Stored as `Option<JumpjetParams>` on ObjectType — None for non-jumpjet units.
 //!
 //! Key behavior notes from the locomotor report:
-//! - `JumpjetAccel` controls acceleration; deceleration = accel * 1.5
+//! - `JumpJetAccel` controls acceleration; deceleration = accel * 1.5
 //! - `JumpjetHeight` below 208 is effectively void
 //! - Crash descent speed = `JumpjetClimb + JumpjetCrash` downward
 //! - Infantry with Jumpjet locomotor + JumpJet=yes + no HoverAttack use Walk for
@@ -22,7 +22,7 @@ use crate::util::fixed_math::{SimFixed, sim_from_f32};
 /// and crash behavior. Only populated for units with `JumpJet=yes`.
 #[derive(Debug, Clone)]
 pub struct JumpjetParams {
-    /// Turning speed while airborne (JumpjetTurnRate=).
+    /// Turning speed while airborne (`JumpJetTurnRate=`).
     pub turn_rate: i32,
     /// Flight speed (JumpjetSpeed=). Separate from ground Speed= value.
     pub speed: SimFixed,
@@ -34,7 +34,7 @@ pub struct JumpjetParams {
     /// Target hover altitude in leptons (JumpjetHeight=). Values below 208
     /// are effectively void in the original engine.
     pub height: i32,
-    /// Acceleration rate (JumpjetAccel=). Deceleration = accel * 1.5.
+    /// Acceleration rate (`JumpJetAccel=`). Deceleration = accel * 1.5.
     pub accel: SimFixed,
     /// Wobble amplitude while hovering (JumpjetWobbles=).
     /// KEPT as f32 — only used for render-side visual wobble, not sim state.
@@ -51,7 +51,7 @@ impl JumpjetParams {
     /// Uses RA2/YR defaults for missing keys.
     pub fn from_ini_section(section: &IniSection) -> Self {
         Self {
-            turn_rate: section.get_i32("JumpjetTurnRate").unwrap_or(4),
+            turn_rate: section.get_i32("JumpJetTurnRate").unwrap_or(4),
             speed: section
                 .get_f32("JumpjetSpeed")
                 .map(sim_from_f32)
@@ -66,7 +66,7 @@ impl JumpjetParams {
                 .unwrap_or(sim_from_f32(5.0)),
             height: section.get_i32("JumpjetHeight").unwrap_or(500),
             accel: section
-                .get_f32("JumpjetAccel")
+                .get_f32("JumpJetAccel")
                 .map(sim_from_f32)
                 .unwrap_or(sim_from_f32(2.0)),
             wobbles: section.get_f32("JumpjetWobbles").unwrap_or(0.15),
@@ -101,9 +101,9 @@ mod tests {
     #[test]
     fn test_parse_jumpjet_custom_values() {
         let ini = IniFile::from_str(
-            "[JUMPJET]\nJumpjetTurnRate=8\nJumpjetSpeed=20.0\n\
+            "[JUMPJET]\nJumpJetTurnRate=8\nJumpjetSpeed=20.0\n\
              JumpjetClimb=3.0\nJumpjetCrash=10.0\nJumpjetHeight=750\n\
-             JumpjetAccel=4.0\nJumpjetWobbles=0.0\nJumpjetDeviation=0\n\
+             JumpJetAccel=4.0\nJumpjetWobbles=0.0\nJumpjetDeviation=0\n\
              JumpjetNoWobbles=yes\n",
         );
         let section = ini.section("JUMPJET").unwrap();

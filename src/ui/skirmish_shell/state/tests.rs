@@ -336,7 +336,7 @@ fn player_name_focus_selects_all_and_typing_replaces_default() {
 }
 
 #[test]
-fn player_name_insert_caps_at_nineteen_chars() {
+fn player_name_insert_caps_at_nineteen_ascii_bytes() {
     let mut shell = SkirmishShellState::default();
     focus_player_name_edit(&mut shell);
 
@@ -348,9 +348,32 @@ fn player_name_insert_caps_at_nineteen_chars() {
     assert_eq!(shell.player_name_edit.text, "1234567890123456789");
     assert_eq!(
         shell.player_name_edit.text.chars().count(),
-        PLAYER_NAME_MAX_CHARS
+        PLAYER_NAME_EDIT_LIMIT_BYTES
     );
-    assert_eq!(shell.player_name_edit.caret, PLAYER_NAME_MAX_CHARS);
+    assert_eq!(shell.player_name_edit.caret, PLAYER_NAME_EDIT_LIMIT_BYTES);
+}
+
+#[test]
+fn player_name_crosses_only_the_platform_acp_boundary() {
+    let input = "Aé€Ж😀";
+    let expected = crate::util::native_string::acp_round_trip(input);
+    let state = PlayerNameEditState::with_name(input);
+
+    assert_eq!(state.text, expected);
+}
+
+#[test]
+fn player_name_user_entry_stops_at_nineteen_acp_bytes() {
+    let mut state = PlayerNameEditState::with_name("");
+    assert!(state.insert_text(&"é".repeat(PLAYER_NAME_EDIT_LIMIT_BYTES)));
+
+    assert!(
+        crate::util::native_string::acp_encode(&state.text).len() <= PLAYER_NAME_EDIT_LIMIT_BYTES
+    );
+    assert!(
+        crate::util::native_string::acp_encode(&(state.text.clone() + "é")).len()
+            > PLAYER_NAME_EDIT_LIMIT_BYTES
+    );
 }
 
 #[test]
@@ -389,7 +412,7 @@ fn player_name_backspace_and_delete_remove_selection_first() {
 fn player_name_scroll_keeps_caret_visible_with_five_pixel_margin() {
     let mut shell = SkirmishShellState::default();
     shell.player_name_edit.text = "1234567890123456789".to_string();
-    shell.player_name_edit.caret = PLAYER_NAME_MAX_CHARS;
+    shell.player_name_edit.caret = PLAYER_NAME_EDIT_LIMIT_BYTES;
 
     assert!(update_player_name_scroll_for_caret(&mut shell, 50, 120));
     assert_eq!(shell.player_name_edit.scroll_x, 75);
@@ -2323,11 +2346,11 @@ fn all_colors_claimed_activation_leaves_row_without_claim() {
 }
 
 #[test]
-fn player_name_with_name_caps_to_field_limit() {
-    let long = "X".repeat(PLAYER_NAME_MAX_CHARS + 5);
+fn player_name_programmatic_seed_is_not_subject_to_edit_limit() {
+    let long = "X".repeat(PLAYER_NAME_EDIT_LIMIT_BYTES + 5);
     let edit = PlayerNameEditState::with_name(&long);
-    assert_eq!(edit.text.chars().count(), PLAYER_NAME_MAX_CHARS);
-    assert_eq!(edit.caret, PLAYER_NAME_MAX_CHARS);
+    assert_eq!(edit.text, long);
+    assert_eq!(edit.caret, PLAYER_NAME_EDIT_LIMIT_BYTES + 5);
     assert!(!edit.focused);
 
     let edit = PlayerNameEditState::with_name("Commander");

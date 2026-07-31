@@ -35,18 +35,18 @@ impl SmudgeTypeRegistry {
             return Self::default();
         };
 
-        // Matches the canonical [XxxTypes] numbered-list pattern used by
-        // ruleset.rs:1594 — get_values() returns the values of `1=NAME, 2=NAME, ...`
-        // sorted by numeric index, with empty strings filtered out.
+        // Matches the canonical [XxxTypes] registry pattern used by ruleset:
+        // entry values are consumed in declaration order regardless of key text.
         for value in list_section.get_values() {
-            let name_upper: String = value.trim().to_uppercase();
+            let source_name = value.trim();
+            let name_upper: String = source_name.to_uppercase();
             if name_upper.is_empty() {
                 continue;
             }
             if by_name.contains_key(&name_upper) {
                 continue;
             }
-            let Some(section) = ini.section(&name_upper) else {
+            let Some(section) = ini.section(source_name) else {
                 continue;
             };
             let crater: bool = section.get_bool("Crater").unwrap_or(false);

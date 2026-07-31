@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::assets::error::AssetError;
 use crate::assets::mix_archive::MixArchive;
@@ -53,6 +54,12 @@ struct AssetLocation {
     entry_id: i32,
 }
 
+#[derive(Default)]
+struct WildcardMount {
+    matched: bool,
+    first_registered: bool,
+}
+
 /// Borrowed first-match resolution from the production archive stack.
 ///
 /// This is observational only: callers receive the same bytes that `get_ref`
@@ -62,6 +69,56 @@ struct AssetLocation {
 pub struct AssetResolutionRef<'a> {
     pub bytes: &'a [u8],
     pub source_archive: &'a str,
+    pub entry_id: i32,
+}
+
+/// The media-pack branch selected by active `Init_Mix_Files @ 0x00530460`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaArchiveMode {
+    /// Normal startup uses the current media index plus one in `%02d` names.
+    Numbered { media_index: i32 },
+    /// Retail's `-CD` switch selects the wildcard-enumeration branch.
+    CdWildcard,
+}
+
+impl MediaArchiveMode {
+    fn from_arguments<I, S>(arguments: I, media_index: i32) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        // Native uppercases every argument after argv[0], then uses `strstr`
+        // rather than whole-token equality for the literal `-CD`.
+        if arguments.into_iter().any(|argument| {
+            argument
+                .as_ref()
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .contains("-CD")
+        }) {
+            Self::CdWildcard
+        } else {
+            Self::Numbered { media_index }
+        }
+    }
+}
+
+impl Default for MediaArchiveMode {
+    fn default() -> Self {
+        // The active retail YR executable reports media index 2 for the stock
+        // digital-install path, selecting the `03` archive family.
+        Self::from_arguments(std::env::args_os().skip(1), 2)
+    }
+}
+
+/// An owned result from retail's cache-first `LoadFileFromMIX` path.
+///
+/// The payload is owned by the cache rather than an archive borrow, so the
+/// first winner remains valid after theater archives are destroyed/remounted.
+#[derive(Clone, Debug)]
+pub struct MixFileLoad {
+    pub bytes: Arc<[u8]>,
+    pub source_archive: Arc<str>,
     pub entry_id: i32,
 }
 
@@ -75,6 +132,8 @@ pub struct AssetManager {
     archive_catalog: Vec<NamedArchive>,
     /// Precomputed first-match lookup across all archives.
     lookup_index: HashMap<i32, AssetLocation>,
+    /// `LoadFileFromMIX`'s process-lifetime, normalized-CRC first-winner cache.
+    mix_file_cache: Mutex<HashMap<i32, MixFileLoad>>,
     /// Case-insensitive, non-recursive view of the retail executable directory.
     loose_files: HashMap<String, LooseAsset>,
     /// Currently registered theater identity and its archive names.
@@ -145,10 +204,19 @@ const KNOWN_NESTED_MIX_NAMES: &[&str] = &[
 impl AssetManager {
     /// Load the core runtime archive stack.
     pub fn new(ra2_dir: &Path) -> Result<Self, AssetError> {
+        Self::new_with_media_mode(ra2_dir, MediaArchiveMode::default())
+    }
+
+    /// Load the core runtime archive stack for one native media-selection mode.
+    pub fn new_with_media_mode(
+        ra2_dir: &Path,
+        media_mode: MediaArchiveMode,
+    ) -> Result<Self, AssetError> {
         let mut manager = Self {
             archives: Vec::new(),
             archive_catalog: Vec::new(),
             lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
             loose_files: Self::open_loose_root(ra2_dir)?,
             active_theater: None,
             active_theater_archives: Vec::new(),
@@ -190,22 +258,16 @@ impl AssetManager {
         manager.mount_named_archive("cameomd.mix", true)?;
         manager.mount_named_archive("cameo.mix", true)?;
 
-        // The stock digital install's active YR media pack. Remaining
-        // language/theater/map-pack selection is layered by the callers that
-        // activate those systems.
-        manager.mount_named_archive("mapsmd03.mix", true)?;
-        manager.mount_named_archive("maps03.mix", false)?;
+        manager.mount_native_map_media(media_mode)?;
         manager.mount_named_archive("multimd.mix", true)?;
         if !manager.mount_named_archive("thememd.mix", false)? {
             manager.mount_named_archive("theme.mix", false)?;
         }
-        manager.mount_named_archive("movmd03.mix", false)?;
+        manager.mount_native_movie_media(media_mode)?;
 
-        // SessionClass map enumeration keeps every loose YRO map pack
-        // registered after its PKT has been inspected. AssetManager instances
-        // are rebuilt between shell listing and launch in this architecture,
-        // so replay that persistent global registration here.
-        manager.register_loose_yro_archives()?;
+        // Loose YRO archives are deliberately absent here. Retail registers
+        // each one during SessionClass scenario enumeration, immediately
+        // before opening its embedded PKT, and retains that registered object.
         manager.catalog_named_nested_archives();
         log::info!(
             "Retail archive search order ({} registered archives, first match wins):",
@@ -281,6 +343,63 @@ impl AssetManager {
                 source_archive: named.name.as_str(),
                 entry_id,
             })
+    }
+
+    /// Load through retail's `LoadFileFromMIX @ 0x005B40B0` boundary.
+    ///
+    /// This intentionally differs from [`Self::resolve_ref`]:
+    ///
+    /// - the uppercase-normalized filename CRC is checked first;
+    /// - a cache miss searches registered MIXes before the raw filesystem;
+    /// - the first payload for a CRC remains cached even after archive remounts.
+    pub fn load_file_from_mix(&self, name: &str) -> Option<MixFileLoad> {
+        let cache_key = mix_hash(name);
+        if let Some(cached) = self
+            .mix_file_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&cache_key)
+            .cloned()
+        {
+            return Some(cached);
+        }
+
+        let candidate = if let Some((named, entry_id)) = self.lookup_asset_entry(name) {
+            MixFileLoad {
+                bytes: Arc::from(named.archive.get_by_id(entry_id)?),
+                source_archive: Arc::from(named.name.as_str()),
+                entry_id,
+            }
+        } else {
+            let loose = self.loose_asset(name)?;
+            MixFileLoad {
+                bytes: Arc::from(loose.bytes.as_slice()),
+                source_archive: Arc::from(loose.source_name.as_str()),
+                entry_id: cache_key,
+            }
+        };
+
+        // A concurrent first load wins exactly once for this CRC. Returning
+        // the occupied value preserves the native cache's CRC-only identity.
+        let mut cache = self
+            .mix_file_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Some(cache.entry(cache_key).or_insert(candidate).clone())
+    }
+
+    /// Register the loading-screen archive pair at the scenario-load boundary.
+    ///
+    /// Retail constructs the MD archive first and returns immediately when
+    /// either archive is unavailable.
+    pub(crate) fn register_loading_archives(&mut self) -> Result<bool, AssetError> {
+        if !self.mount_named_archive("loadmd.mix", false)? {
+            return Ok(false);
+        }
+        if !self.mount_named_archive("load.mix", false)? {
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     /// Register an additional named archive at the tail of the search list.
@@ -485,6 +604,143 @@ impl AssetManager {
         self.archives.push(named);
     }
 
+    fn mount_native_map_media(&mut self, mode: MediaArchiveMode) -> Result<(), AssetError> {
+        match mode {
+            MediaArchiveMode::Numbered { media_index } => {
+                let number = media_index.wrapping_add(1);
+                self.mount_named_archive(&format!("mapsmd{number:02}.mix"), true)?;
+                self.mount_named_archive(&format!("maps{number:02}.mix"), false)?;
+            }
+            MediaArchiveMode::CdWildcard => {
+                let md = self.mount_wildcard_archives(None, "mapsmd")?;
+                if !md.matched {
+                    // This is the native fallback branch, even though active
+                    // YR still fails the later required-MD global check.
+                    self.mount_wildcard_archives(None, "maps")?;
+                }
+                if !md.first_registered {
+                    return Err(AssetError::AssetNotFound {
+                        name: "MAPSMD*.MIX".to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn mount_native_movie_media(&mut self, mode: MediaArchiveMode) -> Result<(), AssetError> {
+        match mode {
+            MediaArchiveMode::Numbered { media_index } => {
+                let number = media_index.wrapping_add(1);
+                if !self.mount_named_archive(&format!("movmd{number:02}.mix"), false)? {
+                    self.mount_named_archive(&format!("movies{number:02}.mix"), true)?;
+                }
+            }
+            MediaArchiveMode::CdWildcard => {
+                // Retail starts with root MOVMD, then each successful raw-file
+                // probe overwrites the selected wildcard in this exact order.
+                let mut directory = None;
+                let mut family = "movmd";
+                for (probe, selected_directory, selected_family) in [
+                    ("MOVIES01.MIX", None, "movies"),
+                    ("MIXFILES/MOVIES01.MIX", Some("MIXFILES"), "movies"),
+                    ("MOVMD01.MIX", None, "movmd"),
+                    ("MIXFILES/MOVMD01.MIX", Some("MIXFILES"), "movmd"),
+                    ("MOVMD03.MIX", None, "movmd"),
+                    ("MIXFILES/MOVMD03.MIX", Some("MIXFILES"), "movmd"),
+                ] {
+                    if self.raw_relative_file_available(probe) {
+                        directory = selected_directory;
+                        family = selected_family;
+                    }
+                }
+
+                let mut mounted = self.mount_wildcard_archives(directory, family)?;
+                if !mounted.matched {
+                    mounted = self.mount_wildcard_archives(None, "movies")?;
+                }
+                if !mounted.first_registered {
+                    return Err(AssetError::AssetNotFound {
+                        name: if family == "movmd" {
+                            "MOVMD*.MIX".to_string()
+                        } else {
+                            "MOVIES*.MIX".to_string()
+                        },
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn mount_wildcard_archives(
+        &mut self,
+        relative_directory: Option<&str>,
+        family_prefix: &str,
+    ) -> Result<WildcardMount, AssetError> {
+        let directory = relative_directory
+            .map(|relative| self.ra2_dir.join(relative))
+            .unwrap_or_else(|| self.ra2_dir.clone());
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(WildcardMount::default());
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        let mut result = WildcardMount::default();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if !retail_enumerated_file(&path) {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
+                continue;
+            };
+            if !mix_wildcard_family_matches(file_name, family_prefix) {
+                continue;
+            }
+
+            let first_match = !result.matched;
+            result.matched = true;
+            let display_name = relative_directory
+                .map(|relative| format!("{relative}\\{file_name}"))
+                .unwrap_or_else(|| file_name.to_string());
+            let registered = self.try_register_disk_archive(&path, &display_name);
+            if first_match {
+                result.first_registered = registered;
+            }
+        }
+        Ok(result)
+    }
+
+    fn try_register_disk_archive(&mut self, path: &Path, display_name: &str) -> bool {
+        if self.archive_is_known(display_name) {
+            return true;
+        }
+        let archive = match MixArchive::load(path) {
+            Ok(archive) => archive,
+            Err(err) => {
+                log::debug!("Skipping media archive {}: {}", path.display(), err);
+                return false;
+            }
+        };
+        self.append_registered_archive(NamedArchive {
+            name: display_name.to_string(),
+            archive,
+        });
+        true
+    }
+
+    fn raw_relative_file_available(&self, relative: &str) -> bool {
+        retail_enumerated_file(&self.ra2_dir.join(relative))
+    }
+
     fn mount_named_archive(&mut self, name: &str, required: bool) -> Result<bool, AssetError> {
         if self
             .archives
@@ -584,40 +840,32 @@ impl AssetManager {
         }
     }
 
-    fn register_loose_yro_archives(&mut self) -> Result<(), AssetError> {
-        for entry in std::fs::read_dir(&self.ra2_dir)? {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(_) => continue,
-            };
-            let path = entry.path();
-            if !retail_enumerated_file(&path)
-                || !path
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("yro"))
-            {
-                continue;
-            }
-            let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
-                continue;
-            };
-            if self.archive_is_known(file_name) {
-                continue;
-            }
-            let archive = match MixArchive::load(&path) {
-                Ok(archive) => archive,
-                Err(err) => {
-                    log::debug!("Skipping loose YRO {}: {}", path.display(), err);
-                    continue;
-                }
-            };
-            self.append_registered_archive(NamedArchive {
-                name: file_name.to_string(),
-                archive,
-            });
+    /// Register one loose YRO at its native scenario-enumeration point.
+    ///
+    /// `SessionClass__ScanMultiplayerMapFiles @ 0x00699980` performs this
+    /// registration before deriving and opening the archive's embedded PKT.
+    pub(crate) fn register_loose_yro_archive(&mut self, path: &Path) -> Result<bool, AssetError> {
+        if !retail_enumerated_file(path)
+            || !path
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("yro"))
+        {
+            return Ok(false);
         }
-        Ok(())
+        let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
+            return Ok(false);
+        };
+        if self.archive_is_known(file_name) {
+            return Ok(true);
+        }
+
+        let archive = MixArchive::load(path)?;
+        self.append_registered_archive(NamedArchive {
+            name: file_name.to_string(),
+            archive,
+        });
+        Ok(true)
     }
 
     fn archive_is_known(&self, name: &str) -> bool {
@@ -741,6 +989,20 @@ fn retail_enumerated_file(path: &Path) -> bool {
     }
 }
 
+fn mix_wildcard_family_matches(file_name: &str, family_prefix: &str) -> bool {
+    let path = Path::new(file_name);
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mix"))
+        && path
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .is_some_and(|stem| {
+                stem.get(..family_prefix.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(family_prefix))
+            })
+}
+
 fn archive_lookup_keys(name: &str) -> Vec<String> {
     let mut keys = Vec::with_capacity(3);
     keys.push(name.to_ascii_lowercase());
@@ -760,6 +1022,55 @@ fn archive_lookup_keys(name: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(label: &str) -> Self {
+            let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "vera20k-asset-manager-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn write_mix(&self, archive_name: &str, entry_name: &str, body: &[u8]) {
+            let path = self.0.join(archive_name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create archive parent");
+            }
+            std::fs::write(path, make_new_format_mix_bytes(entry_name, body))
+                .expect("write test MIX");
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn empty_manager(ra2_dir: &Path) -> AssetManager {
+        AssetManager {
+            archives: Vec::new(),
+            archive_catalog: Vec::new(),
+            lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
+            loose_files: AssetManager::open_loose_root(ra2_dir).expect("open loose test root"),
+            active_theater: None,
+            active_theater_archives: Vec::new(),
+            ra2_dir: ra2_dir.to_path_buf(),
+        }
+    }
 
     fn make_new_format_mix_bytes(name: &str, body: &[u8]) -> Vec<u8> {
         let mut data = Vec::new();
@@ -796,6 +1107,256 @@ mod tests {
     }
 
     #[test]
+    fn media_mode_matches_native_uppercase_substring_command_line_test() {
+        assert_eq!(
+            MediaArchiveMode::from_arguments(["-cd"], 2),
+            MediaArchiveMode::CdWildcard
+        );
+        assert_eq!(
+            MediaArchiveMode::from_arguments(["prefix-CDsuffix"], 2),
+            MediaArchiveMode::CdWildcard
+        );
+        assert_eq!(
+            MediaArchiveMode::from_arguments(["--shell-capture"], 2),
+            MediaArchiveMode::Numbered { media_index: 2 }
+        );
+    }
+
+    #[test]
+    fn numbered_media_uses_media_plus_one_and_movie_family_fallback() {
+        let directory = TestDirectory::new("numbered-media");
+        directory.write_mix("MAPSMD03.MIX", "md-map.bin", b"md");
+        directory.write_mix("MAPS03.MIX", "base-map.bin", b"base");
+        directory.write_mix("MOVIES03.MIX", "movie.bin", b"movie");
+
+        let mut manager = empty_manager(directory.path());
+        let mode = MediaArchiveMode::Numbered { media_index: 2 };
+        manager
+            .mount_native_map_media(mode)
+            .expect("numbered map media");
+        manager
+            .mount_native_movie_media(mode)
+            .expect("numbered movie fallback");
+
+        assert_eq!(
+            manager.loaded_archive_names(),
+            vec![
+                "mapsmd03.mix".to_string(),
+                "maps03.mix".to_string(),
+                "movies03.mix".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn cd_map_wildcard_uses_md_family_and_preserves_enumeration_order() {
+        let directory = TestDirectory::new("cd-map-media");
+        directory.write_mix("MAPSMD01.MIX", "one.bin", b"one");
+        directory.write_mix("mapsmd03.mix", "three.bin", b"three");
+        directory.write_mix("MAPS01.MIX", "base.bin", b"base");
+
+        let expected: Vec<String> = std::fs::read_dir(directory.path())
+            .expect("enumerate expected order")
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let file_name = entry.file_name().into_string().ok()?;
+                mix_wildcard_family_matches(&file_name, "mapsmd").then_some(file_name)
+            })
+            .collect();
+
+        let mut manager = empty_manager(directory.path());
+        manager
+            .mount_native_map_media(MediaArchiveMode::CdWildcard)
+            .expect("CD wildcard map media");
+
+        assert_eq!(manager.loaded_archive_names(), expected);
+        assert!(
+            manager
+                .loaded_archive_names()
+                .iter()
+                .all(|name| name.to_ascii_lowercase().starts_with("mapsmd"))
+        );
+    }
+
+    #[test]
+    fn cd_movie_probe_order_selects_movmd_before_movies_family() {
+        let directory = TestDirectory::new("cd-movie-media");
+        directory.write_mix("MOVIES01.MIX", "base-movie.bin", b"base");
+        directory.write_mix("MOVMD03.MIX", "md-three.bin", b"three");
+        directory.write_mix("MOVMD04.MIX", "md-four.bin", b"four");
+
+        let expected: Vec<String> = std::fs::read_dir(directory.path())
+            .expect("enumerate expected order")
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let file_name = entry.file_name().into_string().ok()?;
+                mix_wildcard_family_matches(&file_name, "movmd").then_some(file_name)
+            })
+            .collect();
+
+        let mut manager = empty_manager(directory.path());
+        manager
+            .mount_native_movie_media(MediaArchiveMode::CdWildcard)
+            .expect("CD wildcard movie media");
+
+        assert_eq!(manager.loaded_archive_names(), expected);
+    }
+
+    #[test]
+    fn loose_yro_is_absent_until_scenario_time_registration() {
+        let directory = TestDirectory::new("scenario-yro");
+        directory.write_mix("CUSTOM.YRO", "custom.map", b"[Basic]\nName=Custom");
+        let yro_path = directory.path().join("CUSTOM.YRO");
+
+        let mut manager = empty_manager(directory.path());
+        assert!(manager.lookup_asset_entry("custom.map").is_none());
+
+        assert!(
+            manager
+                .register_loose_yro_archive(&yro_path)
+                .expect("register scenario YRO")
+        );
+        assert_eq!(
+            manager.get_ref("custom.map"),
+            Some(&b"[Basic]\nName=Custom"[..])
+        );
+    }
+
+    #[test]
+    fn loading_archives_register_md_then_base_once_at_resource_setup() {
+        let mut manager = AssetManager {
+            archives: vec![NamedArchive {
+                name: "base.mix".to_string(),
+                archive: make_new_format_mix("base.bin", b"base"),
+            }],
+            // Deliberately reverse catalogue order: the setup function's named
+            // construction order, not discovery order, controls registration.
+            archive_catalog: vec![
+                NamedArchive {
+                    name: "master.mix -> load.mix".to_string(),
+                    archive: make_new_format_mix("loading.bin", b"base-loading"),
+                },
+                NamedArchive {
+                    name: "master.mix -> loadmd.mix".to_string(),
+                    archive: make_new_format_mix("loading.bin", b"md-loading"),
+                },
+            ],
+            lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
+            loose_files: HashMap::new(),
+            active_theater: None,
+            active_theater_archives: Vec::new(),
+            ra2_dir: PathBuf::new(),
+        };
+        manager.rebuild_indexes();
+
+        assert!(
+            manager
+                .register_loading_archives()
+                .expect("register loading archives")
+        );
+        assert_eq!(
+            manager.loaded_archive_names(),
+            vec![
+                "base.mix".to_string(),
+                "master.mix -> loadmd.mix".to_string(),
+                "master.mix -> load.mix".to_string(),
+            ]
+        );
+        assert_eq!(manager.get_ref("loading.bin"), Some(&b"md-loading"[..]));
+
+        assert!(
+            manager
+                .register_loading_archives()
+                .expect("repeat loading setup")
+        );
+        assert_eq!(manager.archives.len(), 3);
+    }
+
+    #[test]
+    fn loading_archive_setup_returns_at_each_missing_archive_boundary() {
+        let directory = TestDirectory::new("loading-archive-failure");
+        let mut missing_md = empty_manager(directory.path());
+        missing_md.archive_catalog.push(NamedArchive {
+            name: "master.mix -> load.mix".to_string(),
+            archive: make_new_format_mix("base-loading.bin", b"base"),
+        });
+        assert!(
+            !missing_md
+                .register_loading_archives()
+                .expect("missing MD archive is not an I/O failure")
+        );
+        assert!(missing_md.archives.is_empty());
+
+        let mut missing_base = empty_manager(directory.path());
+        missing_base.archive_catalog.push(NamedArchive {
+            name: "master.mix -> loadmd.mix".to_string(),
+            archive: make_new_format_mix("md-loading.bin", b"md"),
+        });
+        assert!(
+            !missing_base
+                .register_loading_archives()
+                .expect("missing base archive is not an I/O failure")
+        );
+        assert_eq!(
+            missing_base.loaded_archive_names(),
+            vec!["master.mix -> loadmd.mix".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_file_from_mix_cache_survives_theater_replacement_and_normalizes_case() {
+        let mut manager = AssetManager {
+            archives: vec![NamedArchive {
+                name: "base.mix".to_string(),
+                archive: make_new_format_mix("base.bin", b"base"),
+            }],
+            archive_catalog: vec![
+                NamedArchive {
+                    name: "master.mix -> snow.mix".to_string(),
+                    archive: make_new_format_mix("weather.bin", b"snow"),
+                },
+                NamedArchive {
+                    name: "master.mix -> temperat.mix".to_string(),
+                    archive: make_new_format_mix("weather.bin", b"temperate"),
+                },
+            ],
+            lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
+            loose_files: HashMap::new(),
+            active_theater: None,
+            active_theater_archives: Vec::new(),
+            ra2_dir: PathBuf::new(),
+        };
+        manager.rebuild_indexes();
+        manager
+            .activate_theater_archives("SNOW", &["snow.mix"])
+            .expect("activate snow");
+
+        let first = manager
+            .load_file_from_mix("Weather.Bin")
+            .expect("first MIX load");
+        assert_eq!(&*first.bytes, b"snow");
+
+        manager
+            .activate_theater_archives("TEMPERATE", &["temperat.mix"])
+            .expect("replace theater");
+        assert_eq!(
+            manager
+                .resolve_ref("WEATHER.BIN")
+                .map(|result| result.bytes),
+            Some(&b"temperate"[..])
+        );
+
+        let cached = manager
+            .load_file_from_mix("WEATHER.BIN")
+            .expect("cached MIX load");
+        assert_eq!(&*cached.bytes, b"snow");
+        assert!(Arc::ptr_eq(&first.bytes, &cached.bytes));
+        assert_eq!(cached.source_archive.as_ref(), "master.mix -> snow.mix");
+    }
+
+    #[test]
     fn indexed_lookup_prefers_earliest_archive_across_hash_fallbacks() {
         let mut manager = AssetManager {
             archives: vec![
@@ -810,6 +1371,7 @@ mod tests {
             ],
             archive_catalog: Vec::new(),
             lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
             loose_files: HashMap::new(),
             active_theater: None,
             active_theater_archives: Vec::new(),
@@ -840,6 +1402,7 @@ mod tests {
             }],
             archive_catalog: Vec::new(),
             lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
             loose_files: HashMap::new(),
             active_theater: None,
             active_theater_archives: Vec::new(),
@@ -860,6 +1423,7 @@ mod tests {
             }],
             archive_catalog: Vec::new(),
             lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
             loose_files: HashMap::new(),
             active_theater: None,
             active_theater_archives: Vec::new(),
@@ -897,6 +1461,7 @@ mod tests {
             ],
             archive_catalog: Vec::new(),
             lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
             loose_files: HashMap::new(),
             active_theater: None,
             active_theater_archives: Vec::new(),
@@ -926,6 +1491,7 @@ mod tests {
             }],
             archive_catalog: Vec::new(),
             lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
             loose_files: HashMap::from([(
                 "ra2md.csf".to_string(),
                 LooseAsset {
@@ -946,6 +1512,49 @@ mod tests {
             .expect("case-insensitive loose file should resolve");
         assert_eq!(bytes, b"loose");
         assert_eq!(source, "loose:RA2MD.CSF");
+
+        let mix_only = manager
+            .load_file_from_mix("RA2MD.CSF")
+            .expect("LoadFileFromMIX checks MIX before the loose fallback");
+        assert_eq!(&*mix_only.bytes, b"archived");
+        assert_eq!(mix_only.source_archive.as_ref(), "first.mix");
+    }
+
+    #[test]
+    fn load_file_from_mix_caches_raw_fallback_before_later_mix_registration() {
+        let mut manager = AssetManager {
+            archives: Vec::new(),
+            archive_catalog: Vec::new(),
+            lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
+            loose_files: HashMap::from([(
+                "weather.bin".to_string(),
+                LooseAsset {
+                    path: PathBuf::from("WEATHER.BIN"),
+                    source_name: "loose:WEATHER.BIN".to_string(),
+                    bytes: LooseBytes::Owned(Box::from(&b"raw-first"[..])),
+                },
+            )]),
+            active_theater: None,
+            active_theater_archives: Vec::new(),
+            ra2_dir: PathBuf::new(),
+        };
+
+        let first = manager
+            .load_file_from_mix("Weather.Bin")
+            .expect("raw fallback");
+        assert_eq!(&*first.bytes, b"raw-first");
+        assert_eq!(first.source_archive.as_ref(), "loose:WEATHER.BIN");
+
+        manager.append_registered_archive(NamedArchive {
+            name: "later.mix".to_string(),
+            archive: make_new_format_mix("WEATHER.BIN", b"later-mix"),
+        });
+        let cached = manager
+            .load_file_from_mix("WEATHER.BIN")
+            .expect("cached raw winner");
+        assert_eq!(&*cached.bytes, b"raw-first");
+        assert_eq!(cached.source_archive.as_ref(), "loose:WEATHER.BIN");
     }
 
     #[test]
@@ -966,6 +1575,7 @@ mod tests {
                 },
             ],
             lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
             loose_files: HashMap::new(),
             active_theater: None,
             active_theater_archives: Vec::new(),
