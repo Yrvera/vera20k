@@ -430,8 +430,7 @@ pub(crate) fn render_shell_first_paint_slide(
 
     let rendered = match kind {
         ShellSlideKind::Skirmish => {
-            crate::app::App::ensure_skirmish_shell_chrome(state);
-            if state.skirmish_shell_chrome.is_none() {
+            if !crate::app::App::ensure_skirmish_shell_chrome(state) {
                 log::warn!("Skirmish shell chrome unavailable; cancelling first-paint slide");
                 state.shell_first_paint_slide = None;
                 return Ok(ShellFirstPaintRenderResult::NotRendered);

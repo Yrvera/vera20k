@@ -998,6 +998,18 @@ mod tests {
         ]
     }
 
+    fn retail_assets() -> AssetManager {
+        let config = crate::util::config::GameConfig::load().expect("game config");
+        let mut assets = AssetManager::new(&config.paths.ra2_dir).expect("asset manager");
+        assert!(
+            assets
+                .register_neutral_archives()
+                .expect("neutral archive registration"),
+            "retail neutral archive pair"
+        );
+        assets
+    }
+
     #[test]
     fn skirmish_shell_asset_classification_matches_live_render_path() {
         assert_eq!(
@@ -1192,8 +1204,7 @@ mod tests {
     #[test]
     #[ignore]
     fn retail_shell_shp_dimensions_match_research() {
-        let config = crate::util::config::GameConfig::load().expect("game config");
-        let assets = AssetManager::new(&config.paths.ra2_dir).expect("asset manager");
+        let assets = retail_assets();
         let shell_palette = load_named_palette(&assets, "SHELL.PAL").expect("SHELL.PAL");
         let anim_palette = load_named_palette(&assets, "SDBTNANM.PAL").expect("SDBTNANM.PAL");
         let main_button_palette =
@@ -1219,8 +1230,7 @@ mod tests {
     #[test]
     #[ignore]
     fn retail_parent_backgrounds_decode_with_verified_palette() {
-        let config = crate::util::config::GameConfig::load().expect("game config");
-        let assets = AssetManager::new(&config.paths.ra2_dir).expect("asset manager");
+        let assets = retail_assets();
         let palette = load_parent_background_palette(&assets).expect("parent palette");
         let mnscrns = render_shp_entry(&assets, "MNSCRNS.SHP", &palette, 0).expect("MNSCRNS");
         let coop = render_shp_entry(&assets, "MnScrnLCoopGameSetup.shp", &palette, 0)
@@ -1232,8 +1242,7 @@ mod tests {
     #[test]
     #[ignore]
     fn retail_generic_shell_backgrounds_decode_with_shell_palette() {
-        let config = crate::util::config::GameConfig::load().expect("game config");
-        let assets = AssetManager::new(&config.paths.ra2_dir).expect("asset manager");
+        let assets = retail_assets();
         let palette = load_named_palette(&assets, "SHELL.PAL").expect("SHELL.PAL");
         let small = render_shp_entry(&assets, "MNSCRNS.SHP", &palette, 0).expect("MNSCRNS frame 0");
         let large = render_shp_entry(&assets, "MNSCRNL.SHP", &palette, 0).expect("MNSCRNL frame 0");

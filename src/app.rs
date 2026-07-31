@@ -923,6 +923,14 @@ impl App {
     }
 
     fn enter_native_skirmish_from_single_player(state: &mut AppState) {
+        // Prepare dialog 0x102 from the process-lifetime MIX list before
+        // destroying its 0x100 source. Active YR's FUN_00534E50 registers the
+        // neutral pair on that shared list before the shell SHPs are loaded.
+        if !Self::ensure_skirmish_shell_chrome(state) {
+            log::warn!("Skirmish shell chrome unavailable; retaining the Single Player shell");
+            return;
+        }
+
         // Native destroys dialog 0x100 and its child 0x71A movie handle before
         // constructing 0x102. Drop the hidden Rust session as well so returning
         // to 0x100 cannot continue the pre-Skirmish RA2TS timeline.
@@ -932,7 +940,6 @@ impl App {
         state.skirmish_shell_return_to_single_player_shell = true;
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
-        Self::ensure_skirmish_shell_chrome(state);
         Self::ensure_active_cooperative_shell_selection(state);
         // The skirmish dialog (0x102) slides its controls in on first paint like
         // every shell dialog; the per-frame slide trigger starts that wave once
@@ -1031,26 +1038,31 @@ impl App {
         state.zoom_target = 1.0;
     }
 
-    pub(crate) fn ensure_skirmish_shell_chrome(state: &mut AppState) {
+    pub(crate) fn ensure_skirmish_shell_chrome(state: &mut AppState) -> bool {
         if state.skirmish_shell_chrome.is_some() {
-            return;
+            return true;
         }
 
-        let Ok(config) = GameConfig::load() else {
-            log::warn!("Could not load game config for development Skirmish shell assets");
-            return;
-        };
-        let Ok(assets) = AssetManager::new(&config.paths.ra2_dir) else {
-            log::warn!("Could not load RA2 assets for development Skirmish shell");
-            return;
+        let Some(assets) = state.asset_manager.as_ref() else {
+            log::warn!(
+                "Could not prepare Skirmish shell chrome: process asset manager is unavailable"
+            );
+            return false;
         };
 
         state.skirmish_shell_chrome =
             crate::render::skirmish_shell_chrome::build_skirmish_shell_chrome_atlas(
                 &state.gpu,
                 &state.batch_renderer,
-                &assets,
+                assets,
             );
+        let ready = state.skirmish_shell_chrome.is_some();
+        if !ready {
+            log::warn!(
+                "Could not prepare Skirmish shell chrome from the registered retail archives"
+            );
+        }
+        ready
     }
 
     fn build_startup_asset_manager(config: Option<&GameConfig>) -> Option<AssetManager> {
@@ -1099,11 +1111,18 @@ impl App {
         let dev_shell_changed =
             Self::draw_skirmish_shell_dev_toggle(&state.egui.ctx, &mut dev_shell_enabled);
         if dev_shell_changed {
-            state.dev_skirmish_shell_enabled = dev_shell_enabled;
             Self::enter_shell_window_mode(state);
-            if state.dev_skirmish_shell_enabled || state.main_menu_show_native_skirmish_shell {
-                Self::ensure_skirmish_shell_chrome(state);
+            if dev_shell_enabled {
+                if Self::ensure_skirmish_shell_chrome(state) {
+                    state.dev_skirmish_shell_enabled = true;
+                } else {
+                    state.dev_skirmish_shell_enabled = false;
+                    log::warn!(
+                        "Development Skirmish shell unavailable; retaining the current shell"
+                    );
+                }
             } else {
+                state.dev_skirmish_shell_enabled = false;
                 state.skirmish_shell_state.pressed_owner_draw_button = None;
             }
         }
@@ -3077,7 +3096,7 @@ impl App {
         let modal = crate::ui::main_menu_dialogs::ExitConfirmModalState::open(&csf);
         // The SHP modal sources PUDLGBGN/MNBTTN from the skirmish chrome atlas; load
         // it on demand so the quit-confirm renders straight from the main menu.
-        Self::ensure_skirmish_shell_chrome(state);
+        let _ = Self::ensure_skirmish_shell_chrome(state);
         // Host the modal as a TRUE LIFO push over the active shell (D-B3):
         // teardown pops back to it with focus restored. (ensure_active would
         // reset_to-clobber the stack — the prior "0x120 over 0xE2" comment
@@ -4597,13 +4616,14 @@ impl App {
                 // frozen battlefield before egui. The egui pause card is retired;
                 // egui below now only carries the sidebar text + dev overlay.
                 if state.paused {
-                    Self::ensure_skirmish_shell_chrome(state);
-                    crate::app_skirmish_shell_render::render_in_game_options_overlay(
-                        state,
-                        &mut encoder,
-                        &view,
-                        sidebar_view,
-                    )?;
+                    if Self::ensure_skirmish_shell_chrome(state) {
+                        crate::app_skirmish_shell_render::render_in_game_options_overlay(
+                            state,
+                            &mut encoder,
+                            &view,
+                            sidebar_view,
+                        )?;
+                    }
                 }
                 // Always run egui in-game for sidebar text overlay (Ready labels, credits).
                 state.egui.begin_frame(&state.window);

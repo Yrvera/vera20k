@@ -846,10 +846,21 @@ mod tests {
             eprintln!("SKIPPED: RA2 assets not found at {}", ra2_dir.display());
             return;
         }
-        let Ok(assets) = AssetManager::new(&ra2_dir) else {
+        let Ok(mut assets) = AssetManager::new(&ra2_dir) else {
             eprintln!("SKIPPED: could not mount asset archives");
             return;
         };
+        match assets.register_neutral_archives() {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!("SKIPPED: retail neutral archive pair is unavailable");
+                return;
+            }
+            Err(err) => {
+                eprintln!("SKIPPED: could not register retail neutral archives: {err:#}");
+                return;
+            }
+        }
         let Some(bytes) = assets.get_ref("SDBTNANM.SHP") else {
             eprintln!("SKIPPED: SDBTNANM.SHP not present in mounted archives");
             return;
