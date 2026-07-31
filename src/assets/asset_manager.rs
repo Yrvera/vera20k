@@ -402,6 +402,22 @@ impl AssetManager {
         Ok(true)
     }
 
+    /// Register the neutral shell archive pair at the shell-init boundary.
+    ///
+    /// `Shell_LoadNeutralMixArchives @ 0x00534E50` constructs `NTRLMD.MIX`
+    /// first and returns immediately when it is unavailable, then constructs
+    /// `NEUTRAL.MIX`. Their registration order makes MD duplicates win retail's
+    /// first-match archive scan.
+    pub(crate) fn register_neutral_archives(&mut self) -> Result<bool, AssetError> {
+        if !self.mount_named_archive("ntrlmd.mix", false)? {
+            return Ok(false);
+        }
+        if !self.mount_named_archive("neutral.mix", false)? {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     /// Register an additional named archive at the tail of the search list.
     ///
     /// This matches `MixFileClass__Constructor_Registered @ 0x005B3C20`.
@@ -1480,6 +1496,74 @@ mod tests {
             .expect("duplicate should resolve");
         assert_eq!(bytes, b"early");
         assert_eq!(source, "early.mix");
+    }
+
+    #[test]
+    fn neutral_archive_registration_preserves_md_first_winner() {
+        let mut manager = AssetManager {
+            archives: Vec::new(),
+            archive_catalog: vec![
+                NamedArchive {
+                    name: "ra2md.mix -> ntrlmd.mix".to_string(),
+                    archive: make_new_format_mix("duplicate.shp", b"yr"),
+                },
+                NamedArchive {
+                    name: "ra2.mix -> neutral.mix".to_string(),
+                    archive: make_new_format_mix("duplicate.shp", b"base"),
+                },
+            ],
+            lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
+            loose_files: HashMap::new(),
+            active_theater: None,
+            active_theater_archives: Vec::new(),
+            ra2_dir: PathBuf::new(),
+        };
+        manager.rebuild_indexes();
+
+        assert!(
+            manager
+                .register_neutral_archives()
+                .expect("register neutral pair")
+        );
+        assert_eq!(
+            manager.loaded_archive_names(),
+            [
+                "ra2md.mix -> ntrlmd.mix".to_string(),
+                "ra2.mix -> neutral.mix".to_string(),
+            ]
+        );
+
+        let loaded = manager
+            .load_file_from_mix("DUPLICATE.SHP")
+            .expect("registered neutral asset");
+        assert_eq!(&*loaded.bytes, b"yr");
+        assert_eq!(loaded.source_archive.as_ref(), "ra2md.mix -> ntrlmd.mix");
+    }
+
+    #[test]
+    fn neutral_archive_registration_stops_when_md_archive_is_missing() {
+        let mut manager = AssetManager {
+            archives: Vec::new(),
+            archive_catalog: vec![NamedArchive {
+                name: "ra2.mix -> neutral.mix".to_string(),
+                archive: make_new_format_mix("base-only.shp", b"base"),
+            }],
+            lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
+            loose_files: HashMap::new(),
+            active_theater: None,
+            active_theater_archives: Vec::new(),
+            ra2_dir: PathBuf::new(),
+        };
+        manager.rebuild_indexes();
+
+        assert!(
+            !manager
+                .register_neutral_archives()
+                .expect("missing MD archive is the native optional path")
+        );
+        assert!(manager.load_file_from_mix("BASE-ONLY.SHP").is_none());
     }
 
     #[test]

@@ -3901,6 +3901,21 @@ impl App {
                 }
             }
         }
+        if let Some(assets) = startup_asset_manager.as_mut() {
+            match assets.register_neutral_archives() {
+                Ok(true) => {
+                    log::info!("Registered retail neutral shell archives");
+                }
+                Ok(false) => {
+                    log::warn!(
+                        "Retail neutral shell archives are unavailable; shell presentation may fall back"
+                    );
+                }
+                Err(err) => {
+                    log::warn!("Could not register retail neutral shell archives: {err:#}");
+                }
+            }
+        }
         let skirmish_shell_chrome = if dev_skirmish_shell_enabled {
             startup_asset_manager.as_ref().and_then(|assets| {
                 crate::render::skirmish_shell_chrome::build_skirmish_shell_chrome_atlas(
