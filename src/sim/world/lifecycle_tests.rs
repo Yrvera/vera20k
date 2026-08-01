@@ -13,7 +13,8 @@ use crate::sim::house_state::HouseState;
 use crate::sim::mission::state::MissionTestFixture;
 use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionType};
 use crate::sim::movement::homing_movement::{HomingTarget, attach_homing_state};
-use crate::sim::movement::locomotor::LocomotorState;
+use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+use crate::sim::occupancy::CellListInsertion;
 use crate::sim::particles::ParticleSystem;
 use crate::sim::passenger::{PassengerCargo, PassengerRole};
 use crate::util::fixed_math::SimFixed;
@@ -515,6 +516,56 @@ fn lifecycle_authority_conceal_deselects_unmarks_unregisters_then_sets_limbo() {
     assert!(!entity.lifecycle.cell_marked);
     assert!(!entity.in_logic_vector);
     assert!(entity.lifecycle.in_limbo);
+}
+
+#[test]
+fn gsi_04_05_conceal_removes_only_selected_object_list_layer() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    let _ = sim.reveal(1);
+
+    let (rx, ry) = {
+        let entity = sim.substrate.entities.get(1).unwrap();
+        (entity.position.rx, entity.position.ry)
+    };
+    sim.substrate.occupancy.add(
+        rx,
+        ry,
+        1,
+        MovementLayer::Bridge,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+    assert_eq!(
+        sim.substrate
+            .occupancy
+            .count_on_layer(rx, ry, MovementLayer::Ground),
+        1
+    );
+    assert_eq!(
+        sim.substrate
+            .occupancy
+            .count_on_layer(rx, ry, MovementLayer::Bridge),
+        1
+    );
+
+    let _ = sim.object_conceal(1);
+
+    assert_eq!(
+        sim.substrate
+            .occupancy
+            .count_on_layer(rx, ry, MovementLayer::Ground),
+        0,
+        "conceal must unlink the current ground-list entry"
+    );
+    assert_eq!(
+        sim.substrate
+            .occupancy
+            .count_on_layer(rx, ry, MovementLayer::Bridge),
+        1,
+        "conceal must not cross-scan the bridge object list"
+    );
+    assert!(!sim.substrate.entities.get(1).unwrap().lifecycle.cell_marked);
 }
 
 #[test]

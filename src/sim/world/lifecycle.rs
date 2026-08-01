@@ -293,8 +293,13 @@ impl Simulation {
             return false;
         }
         let cells = entity_occupancy_cells(entity);
-        for (rx, ry) in cells {
-            self.substrate.occupancy.remove(rx, ry, stable_id);
+        let layer = entity.occupancy_list_layer();
+        if let Some(layer) = layer {
+            for (rx, ry) in cells {
+                self.substrate
+                    .occupancy
+                    .remove_on_layer(rx, ry, stable_id, layer);
+            }
         }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.lifecycle.cell_marked = false;
