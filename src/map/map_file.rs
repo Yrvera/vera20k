@@ -43,6 +43,8 @@ const CELL_HEADER_SIZE: usize = 4;
 /// Native IsoMapPack5 lookup dimensions.
 const ISO_MAP_ROW_WIDTH: i32 = 512;
 const ISO_MAP_CELL_COUNT: i32 = ISO_MAP_ROW_WIDTH * ISO_MAP_ROW_WIDTH;
+const DEFAULT_SIZE_RECT: [i32; 4] = [1, 1, 50, 50];
+const MISSING_RECT_TEXT: &str = "0,0,0,0";
 
 /// Errors during map file parsing.
 #[derive(Debug)]
@@ -337,53 +339,74 @@ fn parse_header(ini: &IniFile) -> Result<MapHeader, MapError> {
         .unwrap_or("TEMPERATE")
         .to_uppercase();
 
-    // Size=left,top,width,height
-    let size_parts: Vec<u32> = match map_section.get("Size") {
-        Some(size) => parse_csv_u32(size, "Size")?,
-        None => vec![1, 1, 50, 50],
-    };
-    if size_parts.len() < 4 {
-        return Err(MapError::MissingField {
-            section: "Map".into(),
-            key: "Size (need 4 values)".into(),
-        });
-    }
-
-    // LocalSize=left,top,width,height
-    let local_parts: Vec<u32> = match map_section.get("LocalSize") {
-        Some(local_size) => parse_csv_u32(local_size, "LocalSize")?,
-        None => size_parts.clone(),
-    };
-    if local_parts.len() < 4 {
-        return Err(MapError::MissingField {
-            section: "Map".into(),
-            key: "LocalSize (need 4 values)".into(),
-        });
-    }
+    // Full-map resizing stores Size width/height but normalizes its origin before LocalSize is read.
+    let size_parts = read_rect_i32(map_section.get("Size"), DEFAULT_SIZE_RECT);
+    let normalized_size = [0, 0, size_parts[2], size_parts[3]];
+    let local_parts = read_rect_i32(map_section.get("LocalSize"), normalized_size);
 
     Ok(MapHeader {
         theater,
-        width: size_parts[2],
-        height: size_parts[3],
-        local_left: local_parts[0],
-        local_top: local_parts[1],
-        local_width: local_parts[2],
-        local_height: local_parts[3],
+        width: size_parts[2] as u32,
+        height: size_parts[3] as u32,
+        local_left: local_parts[0] as u32,
+        local_top: local_parts[1] as u32,
+        local_width: local_parts[2] as u32,
+        local_height: local_parts[3] as u32,
     })
 }
 
-/// Parse comma-separated u32 values from an INI value string.
-fn parse_csv_u32(s: &str, field_name: &str) -> Result<Vec<u32>, MapError> {
-    s.split(',')
-        .map(|part| {
-            part.trim()
-                .parse::<u32>()
-                .map_err(|_| MapError::MissingField {
-                    section: "Map".into(),
-                    key: format!("{} (invalid number: '{}')", field_name, part.trim()),
-                })
-        })
-        .collect()
+/// Read a signed rectangle by overlaying each successfully scanned CSV prefix field.
+fn read_rect_i32(value: Option<&str>, default: [i32; 4]) -> [i32; 4] {
+    let value = value.unwrap_or(MISSING_RECT_TEXT);
+    let bytes = value.as_bytes();
+    let mut parsed = default;
+    let mut cursor = 0;
+
+    for (index, field) in parsed.iter_mut().enumerate() {
+        let Some((value, end)) = scan_decimal_i32(bytes, cursor) else {
+            break;
+        };
+        *field = value;
+        cursor = end;
+
+        if index == 3 {
+            break;
+        }
+        if bytes.get(cursor) != Some(&b',') {
+            break;
+        }
+        cursor += 1;
+    }
+
+    parsed
+}
+
+fn scan_decimal_i32(bytes: &[u8], mut cursor: usize) -> Option<(i32, usize)> {
+    while bytes
+        .get(cursor)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        cursor += 1;
+    }
+
+    let start = cursor;
+    if bytes
+        .get(cursor)
+        .is_some_and(|byte| matches!(*byte, b'+' | b'-'))
+    {
+        cursor += 1;
+    }
+
+    let digits_start = cursor;
+    while bytes.get(cursor).is_some_and(|byte| byte.is_ascii_digit()) {
+        cursor += 1;
+    }
+    if cursor == digits_start {
+        return None;
+    }
+
+    let number = std::str::from_utf8(&bytes[start..cursor]).ok()?;
+    Some((number.parse().ok()?, cursor))
 }
 
 /// Extract and decode the [IsoMapPack5] terrain data.
@@ -618,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_header_from_ini() {
+    fn gsi_04_01_explicit_rects_map_fields_verbatim() {
         let text: &str = "\
 [Map]
 Theater=TEMPERATE
@@ -637,30 +660,111 @@ LocalSize=2,4,96,92
     }
 
     #[test]
-    fn gsi_02_09_map_header_uses_retail_defaults_for_missing_fields() {
-        let ini = IniFile::from_str("[Map]\nName=Defaults\n");
+    fn gsi_04_01_missing_rects_ignore_nonzero_caller_defaults() {
+        assert_eq!(read_rect_i32(None, DEFAULT_SIZE_RECT), [0, 0, 0, 0]);
+        assert_eq!(read_rect_i32(None, [0, 0, 40, 41]), [0, 0, 0, 0]);
 
-        let header = parse_header(&ini).expect("retail defaults should produce a header");
+        let ini = IniFile::from_str("[Map]\nSize=2,3,40,41\n");
+
+        let header = parse_header(&ini).expect("missing rectangles should remain loadable");
 
         assert_eq!(header.theater, "TEMPERATE");
+        assert_eq!(header.width, 40);
+        assert_eq!(header.height, 41);
+        assert_eq!(header.local_left, 0);
+        assert_eq!(header.local_top, 0);
+        assert_eq!(header.local_width, 0);
+        assert_eq!(header.local_height, 0);
+    }
+
+    #[test]
+    fn gsi_04_01_direct_helper_present_empty_text_preserves_caller_default() {
+        assert_eq!(
+            read_rect_i32(Some(""), DEFAULT_SIZE_RECT),
+            DEFAULT_SIZE_RECT
+        );
+        assert_eq!(read_rect_i32(Some(" \t"), [0, 0, 40, 41]), [0, 0, 40, 41]);
+    }
+
+    #[test]
+    fn gsi_04_01_loaded_empty_rect_values_are_omitted_and_become_missing_zeros() {
+        let ini = IniFile::from_str("[Map]\nSize=\nLocalSize= \t \n");
+        let map_section = ini.section("Map").expect("Map section");
+
+        assert!(map_section.get("Size").is_none());
+        assert!(map_section.get("LocalSize").is_none());
+
+        let header = parse_header(&ini).expect("omitted empty rectangles should remain loadable");
+        assert_eq!(header.width, 0);
+        assert_eq!(header.height, 0);
+        assert_eq!(header.local_left, 0);
+        assert_eq!(header.local_top, 0);
+        assert_eq!(header.local_width, 0);
+        assert_eq!(header.local_height, 0);
+    }
+
+    #[test]
+    fn gsi_04_01_short_size_and_local_size_partially_overlay_defaults() {
+        let ini = IniFile::from_str("[Map]\nSize=2,3,40\nLocalSize=5,6\n");
+
+        let header = parse_header(&ini).expect("short rectangles retain unassigned defaults");
+
+        assert_eq!(header.width, 40);
+        assert_eq!(header.height, 50);
+        assert_eq!(header.local_left, 5);
+        assert_eq!(header.local_top, 6);
+        assert_eq!(header.local_width, 40);
+        assert_eq!(header.local_height, 50);
+    }
+
+    #[test]
+    fn gsi_04_01_invalid_field_stops_after_prior_assignments() {
+        assert_eq!(
+            read_rect_i32(Some("2,invalid,40,41"), DEFAULT_SIZE_RECT),
+            [2, 1, 50, 50]
+        );
+        assert_eq!(
+            read_rect_i32(Some("2 ,3,40,41"), DEFAULT_SIZE_RECT),
+            [2, 1, 50, 50]
+        );
+
+        let ini = IniFile::from_str("[Map]\nSize=2,invalid,40,41\nLocalSize=5,invalid,30,31\n");
+        let header = parse_header(&ini).expect("valid prefixes should remain assigned");
+
         assert_eq!(header.width, 50);
         assert_eq!(header.height, 50);
-        assert_eq!(header.local_left, 1);
-        assert_eq!(header.local_top, 1);
+        assert_eq!(header.local_left, 5);
+        assert_eq!(header.local_top, 0);
         assert_eq!(header.local_width, 50);
         assert_eq!(header.local_height, 50);
     }
 
     #[test]
-    fn gsi_02_09_missing_local_size_uses_resolved_size_rectangle() {
-        let ini = IniFile::from_str("[Map]\nSize=2,3,40,41\n");
+    fn gsi_04_01_signed_rect_fields_round_trip_through_u32_storage() {
+        let ini = IniFile::from_str("[Map]\nSize=-1,-2,-40,-41\nLocalSize=-5,-6,-30,-31\n");
 
-        let header = parse_header(&ini).expect("Size should supply the LocalSize fallback");
+        let header = parse_header(&ini).expect("signed rectangle fields should parse");
 
-        assert_eq!(header.local_left, 2);
-        assert_eq!(header.local_top, 3);
-        assert_eq!(header.local_width, 40);
-        assert_eq!(header.local_height, 41);
+        assert_eq!(header.width as i32, -40);
+        assert_eq!(header.height as i32, -41);
+        assert_eq!(header.local_left as i32, -5);
+        assert_eq!(header.local_top as i32, -6);
+        assert_eq!(header.local_width as i32, -30);
+        assert_eq!(header.local_height as i32, -31);
+    }
+
+    #[test]
+    fn gsi_04_01_rects_ignore_fields_after_the_first_four() {
+        let ini = IniFile::from_str("[Map]\nSize=2,3,40,41,invalid\nLocalSize=5,6,30,31,invalid\n");
+
+        let header = parse_header(&ini).expect("trailing fields do not invalidate a rectangle");
+
+        assert_eq!(header.width, 40);
+        assert_eq!(header.height, 41);
+        assert_eq!(header.local_left, 5);
+        assert_eq!(header.local_top, 6);
+        assert_eq!(header.local_width, 30);
+        assert_eq!(header.local_height, 31);
     }
 
     #[test]

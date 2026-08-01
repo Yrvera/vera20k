@@ -65,17 +65,18 @@ impl Eq for CellRef<'_> {}
 /// Engine `Get_CellClass`: coord → cell via the fixed stride; an out-of-range or
 /// missing cell returns `CellRef::Dummy { coord }` carrying the *requested* coord
 /// (NOT `(0,0)`, NOT `None`). The width-based `PathGrid`/`ResolvedTerrainGrid`
-/// index stays as the cache; this is the never-null parity lookup.
+/// index stays as the cache; this is the never-null parity lookup. Components are
+/// not checked separately: any valid linear index aliases its canonical 512-wide slot.
 pub fn get_cellclass_fallback<'a>(
     terrain: Option<&'a ResolvedTerrainGrid>,
     x: i32,
     y: i32,
 ) -> CellRef<'a> {
-    if cell_linear_index(x, y).is_some() {
-        if let (Ok(rx), Ok(ry)) = (u16::try_from(x), u16::try_from(y)) {
-            if let Some(cell) = terrain.and_then(|t| t.cell(rx, ry)) {
-                return CellRef::Real(cell);
-            }
+    if let Some(index) = cell_linear_index(x, y) {
+        let rx = (index % CELL_ROW_STRIDE) as u16;
+        let ry = (index / CELL_ROW_STRIDE) as u16;
+        if let Some(cell) = terrain.and_then(|t| t.cell(rx, ry)) {
+            return CellRef::Real(cell);
         }
     }
     CellRef::Dummy { coord: (x, y) }
@@ -838,6 +839,30 @@ mod tests {
         assert_eq!(
             get_cellclass_fallback(Some(&g), -3, 7),
             CellRef::Dummy { coord: (-3, 7) }
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_get_cellclass_fixed_stride_aliases_canonical_slot() {
+        let terrain = flat_terrain(512, 2);
+
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), -1, 1),
+            CellRef::Real(terrain.cell(511, 0).expect("canonical index 511"))
+        );
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), 512, 0),
+            CellRef::Real(terrain.cell(0, 1).expect("canonical index 512"))
+        );
+
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), -1, 0),
+            CellRef::Dummy { coord: (-1, 0) }
+        );
+        let missing_canonical_cell = flat_terrain(2, 1);
+        assert_eq!(
+            get_cellclass_fallback(Some(&missing_canonical_cell), 512, 0),
+            CellRef::Dummy { coord: (512, 0) }
         );
     }
 
