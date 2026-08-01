@@ -52,9 +52,11 @@ pub struct ZoneMap {
     bridge_redirect: Option<Vec<Option<(u16, u16)>>>,
     pub width: u16,
     pub height: u16,
-    /// Number of distinct zones (ground + bridge combined).
+    /// Highest assigned zone ID. Native-derived maps reserve label 1, so this
+    /// can be greater than the number of publicly passable components.
     pub zone_count: u16,
-    /// Per-zone centroid and cell count (index = zone_id - 1, since zones are 1-based).
+    /// Per-zone centroid and cell count (index = zone_id - 1). Reserved labels
+    /// retain default metadata.
     pub zone_info: Vec<ZoneInfo>,
 }
 
@@ -215,28 +217,38 @@ impl ZoneGrid {
         let mut maps = BTreeMap::new();
         let mut adjacency = BTreeMap::new();
         let mut super_zones = BTreeMap::new();
+        let base_topology = resolved_terrain.map(|terrain| {
+            zone_build::build_base_zone_topology(
+                path_grid,
+                terrain,
+                bridge_records,
+                width,
+                height,
+            )
+        });
 
         for &mz in MovementZone::all_ground() {
             let speed_type = mz.speed_type();
             let cost_grid = terrain_costs.get(&speed_type);
 
-            let (mut zone_map, mut adj) = zone_build::build_zone_map_with_terrain(
-                path_grid,
-                cost_grid,
-                resolved_terrain,
-                mz,
-                width,
-                height,
-            );
+            let (mut zone_map, mut adj) = if let Some(base) = &base_topology {
+                zone_build::build_zone_map_from_base_topology(base, mz, width, height)
+            } else {
+                zone_build::build_zone_map_with_terrain(
+                    path_grid, cost_grid, None, mz, width, height,
+                )
+            };
 
             if mz.can_use_bridges() {
-                zone_build::inject_bridge_adjacency(
-                    &mut adj,
-                    zone_map.zone_ids_slice(),
-                    bridge_records,
-                    width,
-                    zone_build::BridgeRecordFilter::AllActive,
-                );
+                if base_topology.is_none() {
+                    zone_build::inject_bridge_adjacency(
+                        &mut adj,
+                        zone_map.zone_ids_slice(),
+                        bridge_records,
+                        width,
+                        zone_build::BridgeRecordFilter::AllActive,
+                    );
+                }
                 zone_map.set_bridge_redirect(zone_build::build_bridge_redirect(
                     path_grid,
                     bridge_records,

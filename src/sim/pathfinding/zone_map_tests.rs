@@ -10,7 +10,7 @@ use crate::map::resolved_terrain::{
 use crate::map::tube_facts::{TubeFact, TubeId, TubeSource};
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
-use crate::sim::bridge_state::{BridgeRecordKind, BridgeRuntimeState};
+use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind, BridgeRuntimeState};
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::{PathCell, PathGrid};
 use std::collections::BTreeMap;
@@ -276,6 +276,236 @@ fn stock_low_bridge_auto_shell_terrain() -> ResolvedTerrainGrid {
         });
     }
     ResolvedTerrainGrid::from_cells_with_tubes(5, 1, cells, tubes)
+}
+
+fn terrain_from_zone_classes(
+    width: u16,
+    height: u16,
+    classes: &[u8],
+    levels: &[u8],
+) -> ResolvedTerrainGrid {
+    assert_eq!(classes.len(), width as usize * height as usize);
+    assert_eq!(levels.len(), classes.len());
+    let prototype = water_row_terrain(1).cells.into_iter().next().unwrap();
+    let cells = classes
+        .iter()
+        .zip(levels)
+        .enumerate()
+        .map(|(index, (&zone_type, &level))| {
+            let mut cell = prototype.clone();
+            cell.rx = (index % width as usize) as u16;
+            cell.ry = (index / width as usize) as u16;
+            cell.level = level;
+            cell.zone_type = zone_type;
+            cell.outside_playfield = zone_type == zone_class::OUTSIDE;
+            cell.is_water = zone_type == zone_class::WATER;
+            cell.land_type = if cell.is_water {
+                crate::sim::pathfinding::passability::LandType::Water.as_index()
+            } else if zone_type == zone_class::BEACH {
+                crate::sim::pathfinding::passability::LandType::Beach.as_index()
+            } else {
+                crate::sim::pathfinding::passability::LandType::Clear.as_index()
+            };
+            cell.yr_cell_land_type = cell.land_type;
+            cell.terrain_class = if cell.is_water {
+                TerrainClass::Water
+            } else if zone_type == zone_class::BEACH {
+                TerrainClass::Beach
+            } else {
+                TerrainClass::Clear
+            };
+            cell.ground_walk_blocked = false;
+            cell.terrain_object_blocks = false;
+            cell.overlay_blocks = false;
+            cell
+        })
+        .collect();
+    ResolvedTerrainGrid::from_cells(width, height, cells)
+}
+
+#[test]
+fn gsi_04_06_scanline_storage_fringe_merges_isometric_cardinal_cells() {
+    let terrain = terrain_from_zone_classes(
+        2,
+        2,
+        &[zone_class::GROUND, 7, 7, zone_class::GROUND],
+        &[0; 4],
+    );
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let zones =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 2, 2);
+    let normal = zones.map_for(MovementZone::Normal).unwrap();
+
+    assert_eq!(normal.zone_at(0, 0, MovementLayer::Ground), 2);
+    assert_eq!(normal.zone_at(1, 1, MovementLayer::Ground), 2);
+}
+
+#[test]
+fn gsi_04_06_scanline_fringe_edge_merges_amphibious_class_transition() {
+    let terrain = terrain_from_zone_classes(
+        2,
+        2,
+        &[zone_class::GROUND, 7, 7, zone_class::BEACH],
+        &[0; 4],
+    );
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let zones =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 2, 2);
+
+    let normal = zones.map_for(MovementZone::Normal).unwrap();
+    assert_eq!(normal.zone_at(0, 0, MovementLayer::Ground), 2);
+    assert_eq!(normal.zone_at(1, 1, MovementLayer::Ground), ZONE_INVALID);
+
+    let amphibious = zones.map_for(MovementZone::Amphibious).unwrap();
+    assert_eq!(amphibious.zone_at(0, 0, MovementLayer::Ground), 2);
+    assert_eq!(amphibious.zone_at(1, 1, MovementLayer::Ground), 2);
+}
+
+#[test]
+fn gsi_04_06_base_fill_allows_right_delta_three_but_not_vertical() {
+    let east = terrain_from_zone_classes(2, 1, &[0, 0], &[0, 3]);
+    let east_path = PathGrid::from_resolved_terrain(&east);
+    let east_zones =
+        ZoneGrid::build_with_terrain(&east_path, &BTreeMap::new(), Some(&east), &[], 2, 1);
+    let east_normal = east_zones.map_for(MovementZone::Normal).unwrap();
+    assert_eq!(
+        east_normal.zone_at(0, 0, MovementLayer::Ground),
+        east_normal.zone_at(1, 0, MovementLayer::Ground)
+    );
+
+    let vertical = terrain_from_zone_classes(1, 2, &[0, 0], &[0, 3]);
+    let vertical_path = PathGrid::from_resolved_terrain(&vertical);
+    let vertical_zones = ZoneGrid::build_with_terrain(
+        &vertical_path,
+        &BTreeMap::new(),
+        Some(&vertical),
+        &[],
+        1,
+        2,
+    );
+    let vertical_normal = vertical_zones.map_for(MovementZone::Normal).unwrap();
+    assert_eq!(vertical_normal.zone_at(0, 0, MovementLayer::Ground), 2);
+    assert_eq!(vertical_normal.zone_at(0, 1, MovementLayer::Ground), 3);
+}
+
+#[test]
+fn gsi_04_06_class_transition_merges_for_amphibious_not_normal() {
+    let terrain = terrain_from_zone_classes(2, 1, &[zone_class::GROUND, zone_class::BEACH], &[0; 2]);
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let zones =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 2, 1);
+
+    let amphibious = zones.map_for(MovementZone::Amphibious).unwrap();
+    assert_eq!(amphibious.zone_at(0, 0, MovementLayer::Ground), 2);
+    assert_eq!(amphibious.zone_at(1, 0, MovementLayer::Ground), 2);
+
+    let normal = zones.map_for(MovementZone::Normal).unwrap();
+    assert_eq!(normal.zone_at(0, 0, MovementLayer::Ground), 2);
+    assert_eq!(normal.zone_at(1, 0, MovementLayer::Ground), ZONE_INVALID);
+}
+
+#[test]
+fn gsi_04_06_class_six_boundary_bypasses_height_for_subterranean_row() {
+    let terrain = terrain_from_zone_classes(
+        2,
+        1,
+        &[zone_class::GROUND, zone_class::IMPASSABLE],
+        &[0, 7],
+    );
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let zones =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 2, 1);
+    let subterranean = zones.map_for(MovementZone::Subterranean).unwrap();
+
+    assert_eq!(subterranean.zone_at(0, 0, MovementLayer::Ground), 2);
+    assert_eq!(subterranean.zone_at(1, 0, MovementLayer::Ground), 2);
+}
+
+#[test]
+fn gsi_04_06_active_bridge_edge_merges_base_zones_before_projection() {
+    let terrain = terrain_from_zone_classes(5, 1, &[0, 7, 7, 7, 0], &[0; 5]);
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let without_bridge =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 5, 1);
+    let normal = without_bridge.map_for(MovementZone::Normal).unwrap();
+    assert_eq!(normal.zone_at(0, 0, MovementLayer::Ground), 2);
+    assert_eq!(normal.zone_at(4, 0, MovementLayer::Ground), 3);
+
+    let records = [BridgeEndpointRecord {
+        endpoint_a: (0, 0),
+        endpoint_b: (4, 0),
+        group_id: 1,
+        active: true,
+        bridge_kind: BridgeRecordKind::High,
+    }];
+    let with_bridge = ZoneGrid::build_with_terrain(
+        &path_grid,
+        &BTreeMap::new(),
+        Some(&terrain),
+        &records,
+        5,
+        1,
+    );
+    let normal = with_bridge.map_for(MovementZone::Normal).unwrap();
+    assert_eq!(normal.zone_at(0, 0, MovementLayer::Ground), 2);
+    assert_eq!(normal.zone_at(4, 0, MovementLayer::Ground), 2);
+}
+
+#[test]
+fn gsi_04_06_all_thirteen_rows_preserve_native_derived_labels() {
+    let classes = [0, 7, 1, 7, 2, 7, 3, 7, 4, 7, 5, 7, 6];
+    let terrain = terrain_from_zone_classes(13, 1, &classes, &[0; 13]);
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let zones = ZoneGrid::build_with_terrain(
+        &path_grid,
+        &BTreeMap::new(),
+        Some(&terrain),
+        &[],
+        13,
+        1,
+    );
+
+    assert_eq!(MovementZone::all_ground().len(), 13);
+    for &movement_zone in MovementZone::all_ground() {
+        let row = crate::sim::pathfinding::passability::MOVEMENT_ZONE_PASSABILITY
+            [movement_zone.matrix_row().unwrap()];
+        let map = zones.map_for(movement_zone).unwrap();
+        let mut next_label = 2;
+        for class in 0..=6u8 {
+            let x = u16::from(class) * 2;
+            let expected = if row[class as usize] == 1 {
+                let label = next_label;
+                next_label += 1;
+                label
+            } else {
+                ZONE_INVALID
+            };
+            assert_eq!(
+                map.zone_at(x, 0, MovementLayer::Ground),
+                expected,
+                "{movement_zone:?} class {class}"
+            );
+        }
+        assert_eq!(map.zone_count, next_label - 1, "{movement_zone:?}");
+        assert_eq!(map.zone_at(1, 0, MovementLayer::Ground), ZONE_INVALID);
+    }
+}
+
+#[test]
+fn gsi_04_06_simulation_rebuild_initializes_zone_grid() {
+    let terrain = terrain_from_zone_classes(1, 1, &[zone_class::GROUND], &[0]);
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let mut sim = crate::sim::world::Simulation::new();
+    sim.resolved_terrain = Some(terrain);
+
+    sim.rebuild_zone_grid(&path_grid);
+
+    let normal = sim
+        .zone_grid
+        .as_ref()
+        .and_then(|zones| zones.map_for(MovementZone::Normal))
+        .unwrap();
+    assert_eq!(normal.zone_at(0, 0, MovementLayer::Ground), 2);
 }
 
 #[test]

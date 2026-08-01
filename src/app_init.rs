@@ -1240,6 +1240,10 @@ pub(crate) fn load_map_from_initial(
         Some(grid)
     };
 
+    if let (Some(sim), Some(grid)) = (&mut simulation, path_grid.as_ref()) {
+        sim.rebuild_zone_grid(grid);
+    }
+
     // Prefer the first multiplayer start waypoint as the initial anchor when
     // present. Otherwise, center on the playable area / terrain grid.
     let sw: f32 = gpu.config.width as f32;
