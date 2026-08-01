@@ -75,7 +75,7 @@ use crate::sim::ore_growth;
 use crate::sim::overlay_grid::{WallDamageEvent, cleanup_wall_neighbors, damage_wall_overlay};
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::pathfinding::terrain_cost::{TerrainCostGrid, build_canonical_terrain_cost_grids};
 use crate::sim::pathfinding::terrain_speed;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::power_system::{self, PowerState};
@@ -1718,11 +1718,9 @@ impl Simulation {
     /// Tries an incremental update first (diffing against the previous PathGrid).
     /// Falls back to full rebuild if too many cells changed or no previous state.
     pub fn rebuild_zone_grid(&mut self, path_grid: &PathGrid) {
-        let Some(terrain) = &self.resolved_terrain else {
+        if self.resolved_terrain.is_none() {
             return;
-        };
-        let width = terrain.width();
-        let height = terrain.height();
+        }
 
         // Try incremental update if we have previous state.
         if let (Some(prev), Some(zones)) = (&self.prev_path_grid, &mut self.zone_grid) {
@@ -1751,6 +1749,18 @@ impl Simulation {
         }
 
         // Full rebuild fallback.
+        self.rebuild_zone_grid_full(path_grid);
+    }
+
+    /// Rebuild without the PathGrid-only incremental shortcut. Reduced zone
+    /// type can change while boolean walkability stays identical (notably a
+    /// live OccupationBits=0 terrain object changing Building to Ground).
+    fn rebuild_zone_grid_full(&mut self, path_grid: &PathGrid) {
+        let Some(terrain) = &self.resolved_terrain else {
+            return;
+        };
+        let width = terrain.width();
+        let height = terrain.height();
         self.zone_grid = Some(ZoneGrid::build_with_terrain(
             path_grid,
             &self.terrain_costs,
@@ -1763,6 +1773,38 @@ impl Simulation {
             height,
         ));
         self.prev_path_grid = Some(path_grid.clone());
+    }
+
+    /// Refresh navigation authority after one or more terrain objects were
+    /// destroyed during combat. The incoming grid carries dynamic structure
+    /// and wall blockers, so only cells whose terrain object died are replaced
+    /// from the current resolved-terrain/bridge projection.
+    fn refresh_navigation_after_terrain_deaths(
+        &mut self,
+        input_path_grid: Option<&PathGrid>,
+        destroyed_cells: &[(u16, u16)],
+    ) -> Option<PathGrid> {
+        let (resolved_path_grid, terrain_costs) = {
+            let terrain = self.resolved_terrain.as_ref()?;
+            (
+                PathGrid::from_resolved_terrain_with_bridges(terrain, self.bridge_state.as_ref()),
+                build_canonical_terrain_cost_grids(terrain),
+            )
+        };
+
+        self.terrain_costs = terrain_costs;
+        let mut tail_path_grid = input_path_grid
+            .filter(|grid| {
+                grid.width() == resolved_path_grid.width()
+                    && grid.height() == resolved_path_grid.height()
+            })
+            .cloned()?;
+        for &(rx, ry) in destroyed_cells {
+            let replaced = tail_path_grid.replace_cell_from(&resolved_path_grid, rx, ry);
+            debug_assert!(replaced, "destroyed terrain cell must be inside the map");
+        }
+        self.rebuild_zone_grid_full(&tail_path_grid);
+        Some(tail_path_grid)
     }
 
     pub(crate) fn effective_build_blocked(&self, rx: u16, ry: u16) -> Option<bool> {
@@ -2731,6 +2773,7 @@ impl Simulation {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
+        let mut tail_path_grid: Option<PathGrid> = None;
         // No command-boundary drain: command-applied deaths (sell, MCV/slave
         // deploy-undeploy, engineer capture) now stay in the Dying window like
         // combat deaths, freed only by the single end-of-tick drain — matching
@@ -3153,6 +3196,7 @@ impl Simulation {
                     overlay_registry,
                 );
             }
+            let mut destroyed_terrain_cells = Vec::new();
             for event in &combat_result.terrain_damage_events {
                 let Some(warhead) = rules.warhead(self.interner.resolve(event.warhead_ref)) else {
                     continue;
@@ -3171,8 +3215,17 @@ impl Simulation {
                     crate::sim::terrain_object::TerrainDamageResult::Destroyed
                 ) {
                     destroyed_structure = true;
+                    let cell = (event.rx, event.ry);
+                    if !destroyed_terrain_cells.contains(&cell) {
+                        destroyed_terrain_cells.push(cell);
+                    }
                 }
             }
+            if !destroyed_terrain_cells.is_empty() {
+                tail_path_grid = self
+                    .refresh_navigation_after_terrain_deaths(path_grid, &destroyed_terrain_cells);
+            }
+            let post_terrain_path_grid = tail_path_grid.as_ref().or(path_grid);
             // Apply RevealOnFire events from combat.
             for ev in &combat_result.reveal_events {
                 vision::reveal_radius(&mut self.fog, ev.owner, ev.rx, ev.ry, ev.radius);
@@ -3259,7 +3312,7 @@ impl Simulation {
                 self.smudge_grid.as_mut(),
                 self.overlay_grid.as_mut(),
                 self.resolved_terrain.as_mut(),
-                path_grid,
+                post_terrain_path_grid,
             ) {
                 let mut tiberium_ctx = crate::sim::combat::smudge_dispatch::SmudgeTiberiumContext {
                     resource_nodes: &mut self.production.resource_nodes,
@@ -3321,6 +3374,7 @@ impl Simulation {
             // (count decrement, owner snapshot) — that runs before this point.
             // --- Phase 6: Retaliation + Passengers ---
             // DEPENDS ON: combat (sets last_attacker_id read by retaliation).
+            let phase_six_path_grid = post_terrain_path_grid;
             let logic_order = self.live_object_order_snapshot();
             combat::tick_retaliation(
                 &mut self.substrate.entities,
@@ -3329,7 +3383,7 @@ impl Simulation {
                 &logic_order,
             );
             passenger_ownership_changed = passenger::tick_passenger_system(self, rules);
-            self.tick_order_intents_post_combat(path_grid, Some(rules));
+            self.tick_order_intents_post_combat(phase_six_path_grid, Some(rules));
             // --- Phase 7: Scatter + Production + Repairs + Docks + Ore ---
             // DEPENDS ON: combat (dead entities removed), movement (positions stable).
             // PRODUCES: new entities (spawned units), credit changes, ore growth.
@@ -3367,12 +3421,16 @@ impl Simulation {
                 self,
                 rules,
                 height_map,
-                path_grid,
+                phase_six_path_grid,
                 overlay_registry,
             );
             production::tick_repairs(self, rules);
             building_dock::tick_building_docks(self, rules);
-            crate::sim::docking::bunker_install::tick_bunker_install(self, rules, path_grid);
+            crate::sim::docking::bunker_install::tick_bunker_install(
+                self,
+                rules,
+                phase_six_path_grid,
+            );
             aircraft_dock::tick_aircraft_docks(self, rules);
             // TIBTRE ore spawning: runs AFTER ore_growth so a spawn this tick
             // can't be grown/spread until next tick.
@@ -3402,11 +3460,11 @@ impl Simulation {
                 .with_validation_context(
                     self.resolved_terrain.as_ref(),
                     overlay_registry,
-                    path_grid,
+                    phase_six_path_grid,
                 ),
             );
             if spawned_entities {
-                self.refresh_fog(path_grid, &vision_config, Some(rules));
+                self.refresh_fog(phase_six_path_grid, &vision_config, Some(rules));
             }
         }
 
@@ -3415,6 +3473,7 @@ impl Simulation {
         // behavior-preserving.) Native-spine note: gamemd runs HouseClass updates
         // (incl. defeat) in the tail and commits the frame counter late; AI
         // placement is project-deferred and kept in its current slot.
+        let late_path_grid = tail_path_grid.as_ref().or(path_grid);
         let frame_committed = self.run_late_region(
             if lane == TickLane::Ordinary {
                 commands
@@ -3422,7 +3481,7 @@ impl Simulation {
                 &[]
             },
             rules,
-            path_grid,
+            late_path_grid,
             height_map,
             overlay_registry,
             tick_ms,

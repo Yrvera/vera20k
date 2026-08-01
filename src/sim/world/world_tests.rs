@@ -174,6 +174,176 @@ fn water_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
     water_terrain_with_land_type(width, height, 4, false)
 }
 
+fn gsi_04_10_clear_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+    use crate::map::resolved_terrain::zone_class;
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
+
+    let speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
+    let mut terrain = water_terrain(width, height);
+    for cell in &mut terrain.cells {
+        cell.land_type = LandType::Clear.as_index();
+        cell.yr_cell_land_type = LandType::Clear.as_index();
+        cell.terrain_class = TerrainClass::Clear;
+        cell.speed_costs = speed_costs;
+        cell.is_water = false;
+        cell.ground_walk_blocked = false;
+        cell.zone_type = zone_class::GROUND;
+        cell.base_ground_walk_blocked = false;
+        cell.base_build_blocked = false;
+        cell.base_land_type = LandType::Clear.as_index();
+        cell.base_yr_cell_land_type = LandType::Clear.as_index();
+        cell.base_terrain_class = TerrainClass::Clear;
+        cell.base_speed_costs = speed_costs;
+        cell.build_blocked = false;
+    }
+    terrain
+}
+
+fn gsi_04_10_terrain_object(
+    sim: &mut Simulation,
+    stable_id: u64,
+    cell: (u16, u16),
+    occupation_bits: u8,
+) -> crate::sim::terrain_object::TerrainObjectState {
+    crate::sim::terrain_object::TerrainObjectState {
+        stable_id,
+        type_ref: sim.interner.intern("TREE01"),
+        rx: cell.0,
+        ry: cell.1,
+        health: 10,
+        max_health: 10,
+        occupation_bits,
+        lifecycle: crate::sim::terrain_object::TerrainObjectLifecycle::Live,
+    }
+}
+
+#[test]
+fn gsi_04_10_in_tick_refresh_updates_tail_path_and_cost_before_consumers() {
+    use crate::rules::locomotor_type::SpeedType;
+    use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
+    use crate::sim::terrain_object::{mark_terrain_occupation, unmark_terrain_occupation};
+
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(2, 1));
+    let tree = gsi_04_10_terrain_object(&mut sim, 1, (0, 0), 7);
+    {
+        let (production, terrain) = (&mut sim.production, &mut sim.resolved_terrain);
+        mark_terrain_occupation(production, &tree, terrain.as_mut());
+    }
+    sim.terrain_costs = build_canonical_terrain_cost_grids(
+        sim.resolved_terrain.as_ref().expect("resolved terrain"),
+    );
+    let mut input_path_grid = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().expect("resolved terrain"),
+        sim.bridge_state.as_ref(),
+    );
+    input_path_grid.set_blocked(1, 0, true);
+    assert!(!input_path_grid.is_walkable(0, 0));
+    assert_eq!(sim.terrain_costs[&SpeedType::Track].cost_at(0, 0), 0);
+
+    {
+        let (production, terrain) = (&mut sim.production, &mut sim.resolved_terrain);
+        unmark_terrain_occupation(production, &tree, terrain.as_mut());
+    }
+    let tail_path_grid =
+        sim.refresh_navigation_after_terrain_deaths(Some(&input_path_grid), &[(0, 0)]);
+    let phase_six_consumer_grid = tail_path_grid.as_ref().or(Some(&input_path_grid));
+    let phase_six_consumer_grid = phase_six_consumer_grid.expect("tail grid");
+
+    assert!(phase_six_consumer_grid.is_walkable(0, 0));
+    assert!(
+        !phase_six_consumer_grid.is_walkable(1, 0),
+        "unrelated dynamic blockers from the input grid must survive"
+    );
+    assert_eq!(sim.terrain_costs.len(), SpeedType::ALL_WITH_COSTS.len());
+    assert_eq!(
+        sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
+        100,
+        "Phase 6+ must see the rebuilt cost authority in the lethal-event tick"
+    );
+}
+
+#[test]
+fn gsi_04_10_zero_occupation_removal_forces_ground_zone_with_same_walkability() {
+    use crate::map::resolved_terrain::zone_class;
+    use crate::rules::locomotor_type::{MovementZone, SpeedType};
+    use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
+    use crate::sim::pathfinding::zone_map::ZONE_INVALID;
+    use crate::sim::terrain_object::{mark_terrain_occupation, unmark_terrain_occupation};
+
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(1, 1));
+    let tree = gsi_04_10_terrain_object(&mut sim, 1, (0, 0), 0);
+    {
+        let (production, terrain) = (&mut sim.production, &mut sim.resolved_terrain);
+        mark_terrain_occupation(production, &tree, terrain.as_mut());
+    }
+    assert_eq!(
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .cell(0, 0)
+            .unwrap()
+            .zone_type,
+        zone_class::BUILDING
+    );
+    sim.terrain_costs = build_canonical_terrain_cost_grids(
+        sim.resolved_terrain.as_ref().expect("resolved terrain"),
+    );
+    let input_path_grid = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().expect("resolved terrain"),
+        sim.bridge_state.as_ref(),
+    );
+    assert!(input_path_grid.is_walkable(0, 0));
+    assert_eq!(sim.terrain_costs[&SpeedType::Track].cost_at(0, 0), 100);
+    sim.rebuild_zone_grid_full(&input_path_grid);
+    assert_eq!(
+        sim.zone_grid
+            .as_ref()
+            .and_then(|zones| zones.map_for(MovementZone::Normal))
+            .expect("normal zone map")
+            .zone_at(0, 0, MovementLayer::Ground),
+        ZONE_INVALID,
+        "OccupationBits=0 is a reduced Building zone even though PathGrid is walkable"
+    );
+
+    {
+        let (production, terrain) = (&mut sim.production, &mut sim.resolved_terrain);
+        unmark_terrain_occupation(production, &tree, terrain.as_mut());
+    }
+    let tail_path_grid = sim
+        .refresh_navigation_after_terrain_deaths(Some(&input_path_grid), &[(0, 0)])
+        .expect("tail grid");
+
+    assert_eq!(tail_path_grid, input_path_grid);
+    assert_eq!(
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .cell(0, 0)
+            .unwrap()
+            .zone_type,
+        zone_class::GROUND
+    );
+    assert_ne!(
+        sim.zone_grid
+            .as_ref()
+            .and_then(|zones| zones.map_for(MovementZone::Normal))
+            .expect("normal zone map")
+            .zone_at(0, 0, MovementLayer::Ground),
+        ZONE_INVALID,
+        "forced rebuild must observe the reduced-zone change despite identical PathGrid cells"
+    );
+}
+
 fn water_terrain_with_land_type(
     width: u16,
     height: u16,

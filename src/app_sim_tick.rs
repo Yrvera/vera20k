@@ -27,6 +27,7 @@ use crate::render::unit_atlas;
 use crate::sim::animation::{self, SequenceSet};
 use crate::sim::overlay_grid::recalc_overlay_passability;
 use crate::sim::pathfinding::PathGrid;
+use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
@@ -1403,6 +1404,16 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
     state.camera_y = sy - sh / (2.0 * z);
 }
 
+/// Rebuild both terrain-derived navigation caches from one resolved-terrain
+/// snapshot. Runtime terrain removal mutates that snapshot, so refreshing only
+/// PathGrid would leave movement's per-SpeedType costs permanently blocked.
+fn rebuild_dynamic_terrain_navigation(sim: &mut crate::sim::world::Simulation) -> Option<PathGrid> {
+    let terrain = sim.resolved_terrain.as_ref()?;
+    let grid = PathGrid::from_resolved_terrain_with_bridges(terrain, sim.bridge_state.as_ref());
+    sim.terrain_costs = build_canonical_terrain_cost_grids(terrain);
+    Some(grid)
+}
+
 pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
     // Build fresh from terrain + current bridge_state every time. Bridge
     // runtime walkability mutates during gameplay (collapse/repair), so a
@@ -1410,15 +1421,12 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
     let Some(rules) = state.rules.as_ref() else {
         return;
     };
-    let Some(ref sim) = state.simulation else {
+    let Some(ref mut sim) = state.simulation else {
         return;
     };
-    let Some(terrain) = sim.resolved_terrain.as_ref() else {
+    let Some(mut grid) = rebuild_dynamic_terrain_navigation(sim) else {
         return;
     };
-
-    let mut grid: PathGrid =
-        PathGrid::from_resolved_terrain_with_bridges(terrain, sim.bridge_state.as_ref());
 
     let mut structures: Vec<(u16, u16, String)> = sim
         .entities()
@@ -1811,15 +1819,22 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        finish_fire_effect_batch, upsert_overlay_entries, validate_exact_step_receipt,
-        world_point_to_cell,
+        finish_fire_effect_batch, rebuild_dynamic_terrain_navigation, upsert_overlay_entries,
+        validate_exact_step_receipt, world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+    use crate::rules::locomotor_type::SpeedType;
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
     use crate::sim::combat::TargetKind;
     use crate::sim::combat::combat_weapon::WeaponSlot;
-    use crate::sim::intern::{InternedId, test_intern};
+    use crate::sim::intern::{InternedId, StringInterner, test_intern};
     use crate::sim::overlay_grid::OverlayGrid;
+    use crate::sim::terrain_object::{
+        TerrainObjectLifecycle, TerrainObjectState, mark_terrain_occupation,
+        unmark_terrain_occupation,
+    };
     use crate::sim::world::{FireOriginSnapshot, SimFireEvent};
     use crate::util::fixed_math::SimFixed;
     use std::collections::BTreeMap;
@@ -1831,6 +1846,116 @@ mod tests {
             overlay_id,
             frame,
         }
+    }
+
+    #[test]
+    fn gsi_04_10_dynamic_navigation_rebuild_refreshes_path_and_track_costs() {
+        let speed_costs = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+        };
+        let terrain = ResolvedTerrainGrid::from_cells(
+            1,
+            1,
+            vec![ResolvedTerrainCell {
+                rx: 0,
+                ry: 0,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
+                level: 0,
+                filled_clear: false,
+                tileset_index: None,
+                land_type: LandType::Clear.as_index(),
+                yr_cell_land_type: LandType::Clear.as_index(),
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs,
+                is_water: false,
+                is_cliff_like: false,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                allows_tiberium: false,
+                is_cliff_redraw: false,
+                variant: 0,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: false,
+                terrain_object_blocks: false,
+                terrain_object_occupation: None,
+                overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
+                zone_type: zone_class::GROUND,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                base_land_type: LandType::Clear.as_index(),
+                base_yr_cell_land_type: LandType::Clear.as_index(),
+                base_terrain_class: TerrainClass::Clear,
+                base_speed_costs: speed_costs,
+                build_blocked: false,
+                has_bridge_deck: false,
+                bridge_walkable: false,
+                bridge_transition: false,
+                bridge_deck_level: 0,
+                bridge_layer: None,
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
+                radar_left: [0; 3],
+                radar_right: [0; 3],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
+            }],
+        );
+        let mut sim = crate::sim::world::Simulation::new();
+        sim.resolved_terrain = Some(terrain);
+        let mut interner = StringInterner::default();
+        let tree = TerrainObjectState {
+            stable_id: 1,
+            type_ref: interner.intern("TREE01"),
+            rx: 0,
+            ry: 0,
+            health: 10,
+            max_health: 10,
+            occupation_bits: 7,
+            lifecycle: TerrainObjectLifecycle::Live,
+        };
+        {
+            let (production, resolved) = (&mut sim.production, &mut sim.resolved_terrain);
+            mark_terrain_occupation(production, &tree, resolved.as_mut());
+        }
+
+        let blocked_path = rebuild_dynamic_terrain_navigation(&mut sim).expect("terrain");
+        assert!(!blocked_path.is_walkable(0, 0));
+        assert_eq!(
+            sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
+            0,
+            "terrain object must block both navigation caches before removal"
+        );
+
+        {
+            let (production, resolved) = (&mut sim.production, &mut sim.resolved_terrain);
+            unmark_terrain_occupation(production, &tree, resolved.as_mut());
+        }
+        let rebuilt_path = rebuild_dynamic_terrain_navigation(&mut sim).expect("terrain");
+
+        assert!(rebuilt_path.is_walkable(0, 0));
+        assert_eq!(
+            sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
+            100,
+            "terrain cost authority must be rebuilt from the cleared resolved cell"
+        );
     }
 
     fn fire_event(attacker_id: u64, occupant_anim: Option<InternedId>) -> SimFireEvent {

@@ -1192,11 +1192,6 @@ pub(crate) fn load_map_from_initial(
             }
         }
 
-        // Block cells occupied by terrain objects (trees, rocks, light posts, etc.).
-        for obj in &map_data.terrain_objects {
-            grid.set_blocked(obj.rx, obj.ry, true);
-        }
-
         // Build per-SpeedType terrain cost grids for cost-aware pathfinding.
         // Units look up their SpeedType to pick the right grid at move time.
         {

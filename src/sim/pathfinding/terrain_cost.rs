@@ -13,6 +13,8 @@
 //! - Part of sim/ — depends on map/ (MapCell, TilesetLookup).
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use std::collections::BTreeMap;
+
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::SpeedType;
 
@@ -33,6 +35,23 @@ pub struct TerrainCostGrid {
     costs: Vec<u8>,
     width: u16,
     height: u16,
+}
+
+/// Build every ground/naval terrain-cost row used by the simulation.
+/// Winged movement deliberately has no grid because it ignores terrain.
+pub(crate) fn build_canonical_terrain_cost_grids(
+    terrain: &ResolvedTerrainGrid,
+) -> BTreeMap<SpeedType, TerrainCostGrid> {
+    SpeedType::ALL_WITH_COSTS
+        .iter()
+        .copied()
+        .map(|speed_type| {
+            (
+                speed_type,
+                TerrainCostGrid::from_resolved_terrain(terrain, speed_type),
+            )
+        })
+        .collect()
 }
 
 impl TerrainCostGrid {

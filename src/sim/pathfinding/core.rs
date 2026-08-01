@@ -1653,6 +1653,23 @@ impl PathGrid {
             .get(y as usize * self.width as usize + x as usize)
     }
 
+    /// Replace one derived terrain cell while retaining every other dynamic
+    /// blocker already stamped into this grid.
+    pub(crate) fn replace_cell_from(&mut self, source: &PathGrid, x: u16, y: u16) -> bool {
+        let Some(source_cell) = source.cell(x, y).copied() else {
+            return false;
+        };
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        let idx = y as usize * self.width as usize + x as usize;
+        let Some(target_cell) = self.cells.get_mut(idx) else {
+            return false;
+        };
+        *target_cell = source_cell;
+        true
+    }
+
     /// Whether this cell is a bridge transition point (units can switch layers here).
     pub fn is_transition(&self, x: u16, y: u16) -> bool {
         self.cell(x, y)

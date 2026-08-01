@@ -3237,6 +3237,25 @@ fn gsi_04_03a_signed_minus_one_height_uses_lower_raw_slope_in_both_directions() 
 }
 
 #[test]
+fn gsi_04_10_resolved_zero_occupation_is_walkable_path_input() {
+    let terrain = ResolvedTerrainGrid::from_cells(
+        1,
+        1,
+        vec![ResolvedTerrainCell {
+            terrain_object_occupation: Some(0),
+            terrain_object_blocks: false,
+            ..make_resolved_cell(0, 0)
+        }],
+    );
+
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    assert!(
+        grid.is_walkable(0, 0),
+        "resolved OccupationBits=0 is a walkable PathGrid input"
+    );
+}
+
+#[test]
 fn gsi_04_03a_signed_minus_one_height_accepts_high_nonzero_raw_slope() {
     let lower = bridge_test_cell(0xFF, false, false, 0xFE);
     let upper = bridge_test_cell(0, false, false, 0);
