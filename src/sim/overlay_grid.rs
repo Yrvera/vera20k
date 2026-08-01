@@ -7,7 +7,7 @@
 //! Dependency rules: depends on map/overlay (OverlayEntry for seeding).
 //! Never depends on render/, ui/, sidebar/, audio/, net/.
 
-use crate::map::overlay::OverlayEntry;
+use crate::map::overlay::{OverlayDataPack, OverlayEntry};
 use crate::map::overlay_types::{
     OverlayTypeRegistry, clears_tiberium_on_slope, is_bridge_overlay_index, retained_overlay_land,
 };
@@ -59,6 +59,11 @@ pub struct OverlayGrid {
     /// Always empty at tick boundaries (drained every tick after `advance_tick`).
     #[serde(skip, default)]
     dirty_cells: Vec<(u16, u16)>,
+    /// A synchronous sim-side recalc already observed a passability change for
+    /// one of the dirty cells. The app drain must preserve that first result
+    /// even though recalculating the now-current terrain returns `false`.
+    #[serde(skip, default)]
+    synchronous_passability_changed: bool,
 }
 
 impl OverlayGrid {
@@ -70,6 +75,7 @@ impl OverlayGrid {
             height,
             cells: vec![OverlayCell::default(); count],
             dirty_cells: Vec::new(),
+            synchronous_passability_changed: false,
         }
     }
 
@@ -90,6 +96,30 @@ impl OverlayGrid {
                     overlay_data: entry.frame,
                     wall_owner: None,
                 };
+            }
+        }
+        grid
+    }
+
+    /// Seed overlay identities from `[OverlayPack]`, then apply the raw
+    /// `[OverlayDataPack]` byte to every cell when that pack is present.
+    ///
+    /// The native map reader performs the data-pack overwrite after stamping
+    /// overlay identities, including cells whose overlay identity is empty.
+    /// Initialization writes directly so it creates no runtime dirtiness.
+    pub fn from_overlay_packs(
+        entries: &[OverlayEntry],
+        data: &OverlayDataPack,
+        width: u16,
+        height: u16,
+    ) -> Self {
+        let mut grid = Self::from_overlay_entries(entries, width, height);
+        if data.is_present() {
+            for ry in 0..height {
+                for rx in 0..width {
+                    let idx = ry as usize * width as usize + rx as usize;
+                    grid.cells[idx].overlay_data = data.byte_at(rx, ry);
+                }
             }
         }
         grid
@@ -219,7 +249,24 @@ impl OverlayGrid {
     ///
     /// MUST be called every tick to keep the list empty at snapshot boundaries.
     pub fn take_dirty_cells(&mut self) -> Vec<(u16, u16)> {
-        std::mem::take(&mut self.dirty_cells)
+        self.take_dirty_cells_with_passability_signal().0
+    }
+
+    /// Preserve a passability-change result from a required synchronous recalc
+    /// until the normal app-side dirty drain can rebuild paths and zones.
+    pub(crate) fn record_synchronous_passability_change(&mut self, changed: bool) {
+        self.synchronous_passability_changed |= changed;
+    }
+
+    /// Drain overlay dirtiness and any already-observed passability change as
+    /// one runtime-only result. Neither component is serialized or hashed.
+    pub(crate) fn take_dirty_cells_with_passability_signal(
+        &mut self,
+    ) -> (Vec<(u16, u16)>, bool) {
+        (
+            std::mem::take(&mut self.dirty_cells),
+            std::mem::take(&mut self.synchronous_passability_changed),
+        )
     }
 }
 
@@ -704,6 +751,40 @@ mod tests {
             "bridge overlay byte is owned by BridgeRuntimeState"
         );
         assert_eq!(grid.cell(2, 1).overlay_id, Some(5));
+    }
+
+    #[test]
+    fn gsi_04_09_overlay_pack_init_preserves_all_raw_data_without_dirtying() {
+        let entries = [OverlayEntry {
+            rx: 1,
+            ry: 1,
+            overlay_id: 5,
+            frame: 7,
+        }];
+        let data = OverlayDataPack::from_cells([(0, 0, 42), (1, 1, 9)]);
+        let mut present = OverlayGrid::from_overlay_packs(&entries, &data, 2, 2);
+
+        assert_eq!(present.cell(0, 0).overlay_id, None);
+        assert_eq!(present.cell(0, 0).overlay_data, 42);
+        assert_eq!(present.cell(1, 1).overlay_id, Some(5));
+        assert_eq!(
+            present.cell(1, 1).overlay_data,
+            9,
+            "raw data pack overwrites the frame stamped with OverlayPack"
+        );
+        assert!(present.take_dirty_cells().is_empty());
+
+        let mut missing = OverlayGrid::from_overlay_packs(
+            &entries,
+            &OverlayDataPack::missing(),
+            2,
+            2,
+        );
+        assert_eq!(missing.cell(0, 0).overlay_id, None);
+        assert_eq!(missing.cell(0, 0).overlay_data, 0);
+        assert_eq!(missing.cell(1, 1).overlay_id, Some(5));
+        assert_eq!(missing.cell(1, 1).overlay_data, 7);
+        assert!(missing.take_dirty_cells().is_empty());
     }
 
     #[test]

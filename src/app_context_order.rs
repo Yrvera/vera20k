@@ -119,11 +119,26 @@ pub(crate) fn try_queue_context_order_at_screen_point(
 
         // Check if the clicked cell has a resource node (ore/gems).
         let clicked_ore = !force_fire
-            && sim
-                .production
-                .resource_nodes
-                .get(&(target_rx, target_ry))
-                .is_some_and(|n| n.remaining > 0);
+            && match (
+                sim.overlay_grid.as_ref(),
+                state.overlay_registry.as_ref(),
+                state.rules.as_ref(),
+            ) {
+                (Some(grid), Some(registry), Some(rules)) if !rules.tiberium_types.is_empty() => {
+                    crate::sim::tiberium::tiberium_cell_view(
+                        grid,
+                        registry,
+                        &rules.tiberium_types,
+                        (target_rx, target_ry),
+                    )
+                    .is_some()
+                }
+                _ => sim
+                    .production
+                    .resource_nodes
+                    .get(&(target_rx, target_ry))
+                    .is_some_and(|node| node.remaining > 0),
+            };
 
         if clicked_friendly_refinery && only_miners_selected {
             for stable_id in selected_miner_ids {

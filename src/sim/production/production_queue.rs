@@ -3,10 +3,13 @@
 //! Core queue loop driven by `tick_production()`. Handles credit deduction,
 //! timer advancement with dynamic rate scaling, and completed-item dispatch.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
+#[cfg(test)]
 use crate::sim::miner::{ResourceNode, ResourceType};
 use crate::sim::world::Simulation;
 
@@ -96,9 +99,11 @@ pub(super) fn next_enqueue_order(sim: &mut Simulation) -> u64 {
     order
 }
 
-/// Seed deterministic resource nodes from parsed map overlays.
+/// Legacy fixture adapter for tests that do not construct `OverlayGrid` and
+/// the parsed type registries. Production map load must never call this.
 ///
 /// Returns how many resource cells were added.
+#[cfg(test)]
 pub fn seed_resource_nodes_from_overlays(
     sim: &mut Simulation,
     overlays: &[crate::map::overlay::OverlayEntry],

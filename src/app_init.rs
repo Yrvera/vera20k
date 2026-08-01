@@ -59,7 +59,6 @@ use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::{GeneralRules, RuleSet};
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::production;
 use crate::sim::trigger_runtime::TriggerRuntime;
 use crate::sim::world::Simulation;
 
@@ -250,11 +249,6 @@ fn clear_tiberium_source_cells_for_spawning_terrain(
     }
 
     let mut cleared_cells = BTreeSet::new();
-    for &cell in &source_cells {
-        if sim.production.resource_nodes.remove(&cell).is_some() {
-            cleared_cells.insert(cell);
-        }
-    }
 
     let mut overlay_cleared = Vec::new();
     if let Some(grid) = sim.overlay_grid.as_mut() {
@@ -1053,11 +1047,6 @@ pub(crate) fn load_map_from_initial(
     }
 
     if let Some(sim) = &mut simulation {
-        let seeded =
-            production::seed_resource_nodes_from_overlays(sim, &map_data.overlays, &overlay_names);
-        if seeded > 0 {
-            log::info!("Seeded {} resource node cells for economy loop", seeded);
-        }
         // Seed TIBTRE-style ore-spawning terrain objects. Skip gracefully if
         // rules failed to load (matches the ore_growth_config pattern below).
         if let Some(rules_for_terrain) = rules.as_ref() {
@@ -1082,8 +1071,9 @@ pub(crate) fn load_map_from_initial(
         if let Some(rt) = &sim.resolved_terrain {
             let grid_width = rt.width();
             let grid_height = rt.height();
-            sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::from_overlay_entries(
+            sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::from_overlay_packs(
                 &map_data.overlays,
+                &map_data.overlay_data,
                 grid_width,
                 grid_height,
             ));
@@ -1110,7 +1100,7 @@ pub(crate) fn load_map_from_initial(
                             .is_some_and(|flags| flags.tiberium)
                 });
                 log::info!(
-                    "Cleared {} same-cell tiberium overlay/resource source cell(s) for spawning terrain",
+                    "Cleared {} same-cell tiberium overlay source cell(s) for spawning terrain",
                     cleared_cells.len(),
                 );
             }

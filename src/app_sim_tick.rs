@@ -1245,11 +1245,11 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         // Uses the existing `rebuild_dynamic_path_grid` → `rebuild_zone_grid`
         // path; no new zone-rebuild plumbing.
         //
-        // Also collects info for any cells that gained an overlay this tick
-        // (e.g. TIBTRE-spawned ore, ore_growth-spread ore). The renderer iterates
-        // `state.overlays` (the static map list), so without this sync new cells
-        // are invisible even though their sim state and OverlayGrid entries are
-        // correct. We dedupe against `state.overlays` after the sim borrow drops.
+        // Also collect the authoritative live identity for occupied cells that
+        // changed this tick (e.g. TIBTRE-spawned ore or ore-growth spread). The
+        // renderer iterates `state.overlays` (the static map list), so the render
+        // handoff must both insert new coordinates and replace a stale identity
+        // when a cleared cell is later populated with a different variant.
         let new_render_overlays: Vec<crate::map::overlay::OverlayEntry> = {
             let mut collected: Vec<crate::map::overlay::OverlayEntry> = Vec::new();
             if let (Some(sim), Some(registry)) =
@@ -1258,16 +1258,13 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 if let (Some(overlay_grid), Some(terrain)) =
                     (sim.overlay_grid.as_mut(), sim.resolved_terrain.as_mut())
                 {
-                    let dirty = overlay_grid.take_dirty_cells();
+                    let (dirty, mut passability_changed) =
+                        overlay_grid.take_dirty_cells_with_passability_signal();
                     if !dirty.is_empty() {
-                        let mut passability_changed = false;
                         for &(rx, ry) in &dirty {
                             if recalc_overlay_passability(overlay_grid, terrain, registry, rx, ry) {
                                 passability_changed = true;
                             }
-                        }
-                        if passability_changed {
-                            refresh_after_tick = true;
                         }
                         for &(rx, ry) in &dirty {
                             let cell = overlay_grid.cell(rx, ry);
@@ -1280,6 +1277,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                                 });
                             }
                         }
+                    }
+                    if passability_changed {
+                        refresh_after_tick = true;
                     }
                 }
             }
@@ -1623,55 +1623,63 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     }
 }
 
-/// Inject newly-spawned ore cells (TIBTRE, ore-spread) into `state.overlays`.
+/// Sync occupied dirty overlay cells (TIBTRE, ore-spread, walls) into
+/// `state.overlays`.
 ///
 /// Background: the overlay renderer iterates `state.overlays`, the static list
 /// loaded from the map's `[OverlayPack]`. Sim-side mutations that create new
 /// overlay cells (TIBTRE ore spawn, ore_growth spread) update `OverlayGrid`
 /// but never touched `state.overlays`, so the new cells were invisible even
-/// though their sim state and pathfinding were correct. This sync closes that
-/// gap by injecting an `OverlayEntry` for each newly-overlaid cell, deduping
-/// against existing entries.
+/// though their sim state and pathfinding were correct. A coordinate can also
+/// be cleared and later receive a different overlay variant; the renderer only
+/// accepts live data when the cached identity matches. This sync therefore
+/// inserts absent coordinates and updates identity plus frame in place for
+/// existing coordinates.
 ///
-/// Cells whose overlay data merely changed (e.g. ore density grew on an
-/// already-overlaid cell, wall took damage) are not handled here — the
-/// renderer reads live frames from `OverlayGrid` for entries already in
-/// `state.overlays`.
+/// Cleared cached entries are render-inert because the renderer treats live
+/// `OverlayGrid` state as authoritative; a later occupied dirty update replaces
+/// their stale identity. Unrelated entries retain their order and fields.
 fn sync_new_overlay_cells_to_render_list(
     state: &mut AppState,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
 ) {
-    let new_entries = filter_new_overlay_entries(&state.overlays, candidates);
-    if !new_entries.is_empty() {
+    let synced = upsert_overlay_entries(&mut state.overlays, candidates);
+    if synced != 0 {
         log::trace!(
-            "Synced {} newly-overlaid cells from OverlayGrid to state.overlays",
-            new_entries.len()
+            "Synced {} occupied dirty cells from OverlayGrid to state.overlays",
+            synced
         );
-        state.overlays.extend(new_entries);
     }
 }
 
-/// Pure helper: filter out candidate `OverlayEntry`s whose `(rx, ry)` is
-/// already represented in `existing`, and dedup within the candidate list.
-///
-/// Pulled out for unit testing — the wrapper above does the `state.overlays`
-/// extend and logging.
-fn filter_new_overlay_entries(
-    existing: &[crate::map::overlay::OverlayEntry],
+/// Upsert authoritative occupied cells by coordinate. Returns the number of
+/// entries inserted or changed.
+fn upsert_overlay_entries(
+    existing: &mut Vec<crate::map::overlay::OverlayEntry>,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
-) -> Vec<crate::map::overlay::OverlayEntry> {
-    let existing_set: std::collections::HashSet<(u16, u16)> =
-        existing.iter().map(|e| (e.rx, e.ry)).collect();
-    let mut seen: std::collections::HashSet<(u16, u16)> = std::collections::HashSet::new();
-    let mut out: Vec<crate::map::overlay::OverlayEntry> = Vec::new();
-    for entry in candidates {
-        let key = (entry.rx, entry.ry);
-        if existing_set.contains(&key) || !seen.insert(key) {
-            continue;
+) -> usize {
+    let mut by_coordinate: std::collections::HashMap<(u16, u16), usize> = existing
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| ((entry.rx, entry.ry), index))
+        .collect();
+    let mut synced = 0;
+    for candidate in candidates {
+        let coordinate = (candidate.rx, candidate.ry);
+        if let Some(&index) = by_coordinate.get(&coordinate) {
+            let entry = &mut existing[index];
+            if entry.overlay_id != candidate.overlay_id || entry.frame != candidate.frame {
+                entry.overlay_id = candidate.overlay_id;
+                entry.frame = candidate.frame;
+                synced += 1;
+            }
+        } else {
+            by_coordinate.insert(coordinate, existing.len());
+            existing.push(candidate);
+            synced += 1;
         }
-        out.push(entry);
     }
-    out
+    synced
 }
 
 fn load_unit_palette(asset_manager: &AssetManager, theater_ext: &str) -> Option<Palette> {
@@ -1803,7 +1811,7 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        filter_new_overlay_entries, finish_fire_effect_batch, validate_exact_step_receipt,
+        finish_fire_effect_batch, upsert_overlay_entries, validate_exact_step_receipt,
         world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
@@ -1811,6 +1819,7 @@ mod tests {
     use crate::sim::combat::TargetKind;
     use crate::sim::combat::combat_weapon::WeaponSlot;
     use crate::sim::intern::{InternedId, test_intern};
+    use crate::sim::overlay_grid::OverlayGrid;
     use crate::sim::world::{FireOriginSnapshot, SimFireEvent};
     use crate::util::fixed_math::SimFixed;
     use std::collections::BTreeMap;
@@ -1875,38 +1884,75 @@ mod tests {
     }
 
     #[test]
-    fn filter_skips_entries_already_in_existing() {
-        let existing = vec![entry(5, 5, 2, 0)];
+    fn upsert_updates_existing_and_inserts_absent_coordinates() {
+        let mut existing = vec![entry(5, 5, 2, 0)];
         let candidates = vec![entry(5, 5, 2, 3), entry(6, 6, 2, 0)];
-        let new_entries = filter_new_overlay_entries(&existing, candidates);
-        assert_eq!(new_entries.len(), 1);
-        assert_eq!((new_entries[0].rx, new_entries[0].ry), (6, 6));
+        assert_eq!(upsert_overlay_entries(&mut existing, candidates), 2);
+        assert_eq!(existing.len(), 2);
+        assert_eq!(existing[0].frame, 3);
+        assert_eq!((existing[1].rx, existing[1].ry), (6, 6));
     }
 
     #[test]
-    fn filter_dedups_within_candidate_list() {
-        let existing: Vec<OverlayEntry> = Vec::new();
+    fn upsert_reuses_coordinate_within_candidate_list() {
+        let mut existing: Vec<OverlayEntry> = Vec::new();
         let candidates = vec![entry(7, 7, 2, 0), entry(7, 7, 2, 5), entry(8, 8, 2, 0)];
-        let new_entries = filter_new_overlay_entries(&existing, candidates);
-        assert_eq!(new_entries.len(), 2);
-        // Order preserved; first occurrence kept.
-        assert_eq!((new_entries[0].rx, new_entries[0].ry), (7, 7));
-        assert_eq!(new_entries[0].frame, 0);
-        assert_eq!((new_entries[1].rx, new_entries[1].ry), (8, 8));
+        assert_eq!(upsert_overlay_entries(&mut existing, candidates), 3);
+        assert_eq!(existing.len(), 2);
+        assert_eq!((existing[0].rx, existing[0].ry), (7, 7));
+        assert_eq!(existing[0].frame, 5);
+        assert_eq!((existing[1].rx, existing[1].ry), (8, 8));
     }
 
     #[test]
-    fn filter_empty_inputs() {
-        let existing: Vec<OverlayEntry> = Vec::new();
+    fn upsert_empty_inputs() {
+        let mut existing: Vec<OverlayEntry> = Vec::new();
         let candidates: Vec<OverlayEntry> = Vec::new();
-        assert!(filter_new_overlay_entries(&existing, candidates).is_empty());
+        assert_eq!(upsert_overlay_entries(&mut existing, candidates), 0);
+        assert!(existing.is_empty());
     }
 
     #[test]
-    fn filter_all_candidates_already_in_existing() {
-        let existing = vec![entry(1, 1, 2, 0), entry(2, 2, 3, 5)];
-        let candidates = vec![entry(1, 1, 2, 7), entry(2, 2, 3, 0)];
-        assert!(filter_new_overlay_entries(&existing, candidates).is_empty());
+    fn upsert_identical_existing_entries_is_a_noop() {
+        let mut existing = vec![entry(1, 1, 2, 0), entry(2, 2, 3, 5)];
+        let candidates = existing.clone();
+        assert_eq!(upsert_overlay_entries(&mut existing, candidates), 0);
+    }
+
+    #[test]
+    fn gsi_04_09_render_handoff_replaces_regerminated_overlay_variant() {
+        let old_variant = entry(4, 4, 2, 7);
+        let untouched = entry(5, 4, 99, 3);
+        let mut render_entries = vec![old_variant.clone(), untouched.clone()];
+        let mut live = OverlayGrid::from_overlay_entries(&[old_variant], 8, 8);
+
+        live.clear_overlay(4, 4);
+        let cleared = live.take_dirty_cells();
+        assert_eq!(cleared, vec![(4, 4)]);
+        assert_eq!(live.cell(4, 4).overlay_id, None);
+
+        live.place_overlay(4, 4, 3, 1);
+        let repopulated = live.take_dirty_cells();
+        let authoritative = repopulated
+            .into_iter()
+            .filter_map(|(rx, ry)| {
+                let cell = live.cell(rx, ry);
+                cell.overlay_id.map(|overlay_id| OverlayEntry {
+                    rx,
+                    ry,
+                    overlay_id,
+                    frame: cell.overlay_data,
+                })
+            })
+            .collect();
+
+        assert_eq!(upsert_overlay_entries(&mut render_entries, authoritative), 1);
+        assert_eq!(render_entries.len(), 2);
+        assert_eq!((render_entries[0].rx, render_entries[0].ry), (4, 4));
+        assert_eq!(render_entries[0].overlay_id, 3);
+        assert_eq!(render_entries[0].frame, 1);
+        assert_eq!(render_entries[1].overlay_id, untouched.overlay_id);
+        assert_eq!(render_entries[1].frame, untouched.frame);
     }
 
     #[test]

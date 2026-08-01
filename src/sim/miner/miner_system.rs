@@ -550,8 +550,12 @@ pub(super) fn process_miner(
 
     let state_before = format!("{:?}", snap.state);
     match snap.state {
-        MinerState::SearchOre => handle_search_ore(sim, rules, config, path_grid, snap),
-        MinerState::MoveToOre => handle_move_to_ore(sim, rules, config, path_grid, snap),
+        MinerState::SearchOre => {
+            handle_search_ore(sim, rules, config, path_grid, overlay_registry, snap)
+        }
+        MinerState::MoveToOre => {
+            handle_move_to_ore(sim, rules, config, path_grid, overlay_registry, snap)
+        }
         MinerState::Harvest => {
             handle_harvest(sim, rules, config, path_grid, overlay_registry, snap)
         }
@@ -670,6 +674,7 @@ fn handle_search_ore(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     // gamemd's Mission_Harvest state 0 checks full storage before scanning
@@ -713,7 +718,7 @@ fn handle_search_ore(
         // off between the save and the next cycle.
         let mut archive_hit = None;
         if let Some(archive) = snap.miner.last_harvest_cell {
-            let archive_has_ore = sim.production.resource_nodes.contains_key(&archive);
+            let archive_has_ore = resource_cell_present(sim, rules, overlay_registry, archive);
             let archive_reachable = filter_ref.is_none_or(|f| f(archive));
             if archive_has_ore && archive_reachable {
                 archive_hit = Some(ScanOutcome::Archive(archive));
@@ -735,18 +740,21 @@ fn handle_search_ore(
         // Set_Destination resolves to drive. Only the inbound trip
         // (ore → refinery) uses the warp; outbound is a normal drive.
         archive_hit.unwrap_or_else(|| {
-            search_local_ore(
-                &sim.production.resource_nodes,
+            search_local_resource(
+                sim,
+                rules,
+                overlay_registry,
                 (snap.rx, snap.ry),
                 config.long_scan_radius,
                 filter_ref,
-                config.ore_bale_value,
-                config.gem_bale_value,
+                config,
             )
             // Global search — find nearest reachable ore anywhere on the map.
             .or_else(|| {
-                pick_best_resource_node(
-                    &sim.production.resource_nodes,
+                pick_best_resource_cell(
+                    sim,
+                    rules,
+                    overlay_registry,
                     (snap.rx, snap.ry),
                     filter_ref,
                 )
@@ -791,6 +799,7 @@ fn handle_move_to_ore(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     let has_destination_or_movement =
@@ -817,11 +826,7 @@ fn handle_move_to_ore(
     };
 
     // Check if current target has been depleted.
-    let still_has_ore = sim
-        .production
-        .resource_nodes
-        .get(&current_target)
-        .is_some_and(|node| node.remaining > 0);
+    let still_has_ore = resource_cell_present(sim, rules, overlay_registry, current_target);
     if !still_has_ore {
         snap.miner.target_ore_cell = None;
         snap.state = MinerState::SearchOre;
@@ -851,13 +856,14 @@ fn handle_move_to_ore(
     let new_target = {
         let scan_filter = build_scan_filter(sim, path_grid, snap);
         let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-        search_local_ore(
-            &sim.production.resource_nodes,
+        search_local_resource(
+            sim,
+            rules,
+            overlay_registry,
             (snap.rx, snap.ry),
             config.long_scan_radius,
             filter_ref,
-            config.ore_bale_value,
-            config.gem_bale_value,
+            config,
         )
     };
     let target = new_target.unwrap_or(current_target);
@@ -903,7 +909,7 @@ fn handle_harvest(
         // mission dispatch.
         snap.miner.harvest_timer.reset(sim.session.binary_frame);
         snap.state = MinerState::ReturnToRefinery;
-        save_archive_via_short_scan(sim, config, path_grid, snap);
+        save_archive_via_short_scan(sim, rules, config, path_grid, overlay_registry, snap);
         return;
     }
 
@@ -953,13 +959,14 @@ fn handle_harvest(
     let continuation_target = {
         let scan_filter = build_scan_filter(sim, path_grid, snap);
         let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-        search_local_ore(
-            &sim.production.resource_nodes,
+        search_local_resource(
+            sim,
+            rules,
+            overlay_registry,
             (snap.rx, snap.ry),
             config.local_continuation_radius,
             filter_ref,
-            config.ore_bale_value,
-            config.gem_bale_value,
+            config,
         )
     };
     if let Some(next_cell) = continuation_target {
@@ -979,19 +986,22 @@ fn handle_harvest(
 /// a nearby still-productive patch. On scan miss, clears the archive.
 fn save_archive_via_short_scan(
     sim: &Simulation,
+    rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     let scan_filter = build_scan_filter(sim, path_grid, snap);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-    snap.miner.last_harvest_cell = search_local_ore(
-        &sim.production.resource_nodes,
+    snap.miner.last_harvest_cell = search_local_resource(
+        sim,
+        rules,
+        overlay_registry,
         (snap.rx, snap.ry),
         config.local_continuation_radius,
         filter_ref,
-        config.ore_bale_value,
-        config.gem_bale_value,
+        config,
     );
 }
 
@@ -1184,10 +1194,13 @@ fn handle_forced_return(
 /// so the visual depletion in the renderer tracks correctly.
 pub(crate) fn extract_bale(
     sim: &mut Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     cell: (u16, u16),
     config: &MinerConfig,
 ) -> Option<CargoBale> {
-    let outcome = sim.reduce_tiberium_at(cell, 1);
+    let outcome =
+        sim.reduce_tiberium_at_with_native_context(cell, 1, Some(rules), overlay_registry);
     if outcome.removed_amount == 0 {
         return None;
     }
@@ -1685,6 +1698,144 @@ fn ore_reachable(
         }
     }
     false
+}
+
+fn native_tiberium_context<'a>(
+    sim: &'a Simulation,
+    rules: &'a RuleSet,
+    overlay_registry: Option<&'a crate::map::overlay_types::OverlayTypeRegistry>,
+) -> Option<(
+    &'a crate::sim::overlay_grid::OverlayGrid,
+    &'a crate::map::overlay_types::OverlayTypeRegistry,
+    &'a crate::rules::tiberium_type::TiberiumTypeRegistry,
+)> {
+    let grid = sim.overlay_grid.as_ref()?;
+    let registry = overlay_registry?;
+    (!rules.tiberium_types.is_empty()).then_some((grid, registry, &rules.tiberium_types))
+}
+
+pub(crate) fn resource_cell_present(
+    sim: &Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    cell: (u16, u16),
+) -> bool {
+    if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
+        return crate::sim::tiberium::tiberium_cell_view(grid, registry, types, cell).is_some();
+    }
+    sim.production
+        .resource_nodes
+        .get(&cell)
+        .is_some_and(|node| node.remaining > 0)
+}
+
+pub(crate) fn search_local_resource(
+    sim: &Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    center: (u16, u16),
+    radius: u16,
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
+    config: &MinerConfig,
+) -> Option<(u16, u16)> {
+    if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
+        return search_local_tiberium(grid, registry, types, center, radius, filter);
+    }
+    search_local_ore(
+        &sim.production.resource_nodes,
+        center,
+        radius,
+        filter,
+        config.ore_bale_value,
+        config.gem_bale_value,
+    )
+}
+
+fn pick_best_resource_cell(
+    sim: &Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    from: (u16, u16),
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
+) -> Option<(u16, u16)> {
+    let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) else {
+        return pick_best_resource_node(&sim.production.resource_nodes, from, filter);
+    };
+    let mut best: Option<(i32, u32, u16, u16)> = None;
+    for (rx, ry, _) in grid.iter_occupied() {
+        let cell = (rx, ry);
+        if filter.is_some_and(|candidate_filter| !candidate_filter(cell)) {
+            continue;
+        }
+        let Some(view) = crate::sim::tiberium::tiberium_cell_view(grid, registry, types, cell)
+        else {
+            continue;
+        };
+        let dx = i64::from(rx) - i64::from(from.0);
+        let dy = i64::from(ry) - i64::from(from.1);
+        let distance = (dx * dx + dy * dy) as u32;
+        let candidate = (view.nominal_value, distance, ry, rx);
+        let replace = match best {
+            None => true,
+            Some(current) => {
+                candidate.0 > current.0
+                    || (candidate.0 == current.0 && candidate.1 < current.1)
+                    || (candidate.0 == current.0
+                        && candidate.1 == current.1
+                        && (candidate.2, candidate.3) < (current.2, current.3))
+            }
+        };
+        if replace {
+            best = Some(candidate);
+        }
+    }
+    best.map(|(_, _, ry, rx)| (rx, ry))
+}
+
+fn search_local_tiberium(
+    grid: &crate::sim::overlay_grid::OverlayGrid,
+    registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    types: &crate::rules::tiberium_type::TiberiumTypeRegistry,
+    center: (u16, u16),
+    radius: u16,
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
+) -> Option<(u16, u16)> {
+    if crate::sim::tiberium::tiberium_cell_view(grid, registry, types, center).is_some() {
+        return Some(center);
+    }
+    let cx = i32::from(center.0);
+    let cy = i32::from(center.1);
+    for ring in 1..i32::from(radius) {
+        let mut best_in_ring: Option<(i32, (u16, u16))> = None;
+        for col in -ring..=ring {
+            for (nx, ny) in [
+                (cx + col, cy - ring),
+                (cx + col, cy + ring),
+                (cx - ring, cy + col),
+                (cx + ring, cy + col),
+            ] {
+                if nx < 0 || ny < 0 || nx > i32::from(u16::MAX) || ny > i32::from(u16::MAX) {
+                    continue;
+                }
+                let cell = (nx as u16, ny as u16);
+                if filter.is_some_and(|candidate_filter| !candidate_filter(cell)) {
+                    continue;
+                }
+                let Some(view) =
+                    crate::sim::tiberium::tiberium_cell_view(grid, registry, types, cell)
+                else {
+                    continue;
+                };
+                if best_in_ring.is_none_or(|(value, _)| view.nominal_value > value) {
+                    best_in_ring = Some((view.nominal_value, cell));
+                }
+            }
+        }
+        if let Some((_, cell)) = best_in_ring {
+            return Some(cell);
+        }
+    }
+    None
 }
 
 /// Search for ore within `radius` cells of `center`. Returns best cell.

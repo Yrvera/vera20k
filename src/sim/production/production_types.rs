@@ -206,7 +206,9 @@ pub struct ProductionState {
     pub ready_by_owner: BTreeMap<InternedId, VecDeque<InternedId>>,
     pub active_producer_by_owner: BTreeMap<InternedId, BTreeMap<ProductionCategory, u64>>,
     pub next_enqueue_order: u64,
-    /// Deterministic map resource stock by cell (ore/gem type + remaining amount).
+    /// Legacy test/save compatibility only. Live YR maps derive resource type
+    /// and raw quantity from `Simulation::overlay_grid`; this map is neither
+    /// seeded nor read/hashed when the production registries are available.
     pub resource_nodes: BTreeMap<(u16, u16), ResourceNode>,
     /// Refinery dock reservation state — one dock per refinery, FIFO queue.
     pub dock_reservations: RefineryDockContacts,

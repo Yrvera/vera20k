@@ -349,12 +349,9 @@ impl Simulation {
         self.production.next_enqueue_order.hash(hasher);
         self.hash_factory_registry(hasher); // P5b: the authoritative factory registry
 
-        for (&(rx, ry), node) in &self.production.resource_nodes {
-            rx.hash(hasher);
-            ry.hash(hasher);
-            (node.resource_type as u8).hash(hasher);
-            node.remaining.hash(hasher);
-        }
+        // Live ore/gem identity and quantity are already folded by
+        // `hash_overlay_grid`. `resource_nodes` is a legacy test-fixture seam,
+        // not production authority and therefore must not affect sync state.
         self.production.ore_growth_state.hash_state(hasher);
         // Hash terrain spawners (TIBTRE-style ore generators).
         for (&(rx, ry), spawner) in &self.production.terrain_spawners {
@@ -529,12 +526,17 @@ impl Simulation {
             return;
         };
         1u8.hash(hasher);
-        for (rx, ry, cell) in overlay_grid.iter_occupied() {
-            rx.hash(hasher);
-            ry.hash(hasher);
-            cell.overlay_id.hash(hasher);
-            cell.overlay_data.hash(hasher);
-            cell.wall_owner.hash(hasher);
+        overlay_grid.width().hash(hasher);
+        overlay_grid.height().hash(hasher);
+        for ry in 0..overlay_grid.height() {
+            for rx in 0..overlay_grid.width() {
+                let cell = overlay_grid.cell(rx, ry);
+                rx.hash(hasher);
+                ry.hash(hasher);
+                cell.overlay_id.hash(hasher);
+                cell.overlay_data.hash(hasher);
+                cell.wall_owner.hash(hasher);
+            }
         }
     }
 
@@ -944,6 +946,41 @@ impl Simulation {
             id.hash(hasher);
             anim.hash(hasher);
         }
+    }
+}
+
+#[cfg(test)]
+mod overlay_grid_hash_tests {
+    use super::Simulation;
+    use crate::map::overlay::OverlayDataPack;
+    use crate::sim::overlay_grid::OverlayGrid;
+
+    #[test]
+    fn gsi_04_09_empty_overlay_raw_data_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        sim_a.overlay_grid = Some(OverlayGrid::from_overlay_packs(
+            &[],
+            &OverlayDataPack::from_cells([]),
+            2,
+            2,
+        ));
+        sim_b.overlay_grid = Some(OverlayGrid::from_overlay_packs(
+            &[],
+            &OverlayDataPack::from_cells([(1, 1, 42)]),
+            2,
+            2,
+        ));
+
+        let a = sim_a.overlay_grid.as_ref().expect("overlay grid A");
+        let b = sim_b.overlay_grid.as_ref().expect("overlay grid B");
+        assert_eq!(a.cell(1, 1).overlay_id, None);
+        assert_eq!(b.cell(1, 1).overlay_id, None);
+        assert_eq!(a.cell(1, 1).overlay_data, 0);
+        assert_eq!(b.cell(1, 1).overlay_data, 42);
+        assert!(a.iter_occupied().next().is_none());
+        assert!(b.iter_occupied().next().is_none());
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
 }
 

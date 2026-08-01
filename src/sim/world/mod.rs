@@ -84,6 +84,7 @@ use crate::sim::radar::{RadarEventQueue, RadarEventType};
 use crate::sim::replay::ReplayLog;
 use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
 use crate::sim::scenario_session::ScenarioSession;
+use crate::sim::tiberium::TiberiumPlacementObjectContext;
 use crate::sim::trigger_runtime::{TriggerEffect, TriggerRuntime};
 use crate::sim::vision::{self, FogState};
 use crate::util::fixed_math::SimFixed;
@@ -868,7 +869,7 @@ impl Simulation {
             ore_growth_state: &mut self.production.ore_growth_state,
             overlay_registry,
             tiberium_types: rules.map(|rules| &rules.tiberium_types),
-            resolved_terrain: self.resolved_terrain.as_ref(),
+            resolved_terrain: self.resolved_terrain.as_mut(),
             source_object_cells: Some(&self.production.tiberium_spawning_terrain_cells),
             // ore growth/spread — scenario stream. Direct field (not ore_rng()): this
             // literal co-borrows other &mut self fields, so the all-self accessor conflicts.
@@ -879,7 +880,7 @@ impl Simulation {
             radar_dirty_generation: Some(&mut self.radar_terrain_dirty_generation),
             tactical_dirty_cells: Some(&mut self.tactical_dirty_cells),
         };
-        crate::sim::tiberium::reduce_tiberium(&mut ctx, cell, amount)
+        crate::sim::tiberium::reduce_tiberium(&mut ctx, cell, i32::from(amount))
     }
 
     /// Intern a string, returning its InternedId.
@@ -1066,6 +1067,12 @@ impl Simulation {
             && self.overlay_grid.is_some()
             && overlay_registry.is_some();
         if native_growth_ready {
+            let live_objects = TiberiumPlacementObjectContext::new(
+                &self.substrate.entities,
+                &self.substrate.occupancy,
+                rules,
+                &self.interner,
+            );
             if let (Some(grid), Some(registry)) = (self.overlay_grid.as_mut(), overlay_registry) {
                 self.production.ore_growth_state.tick_native_growth_driver(
                     grid,
@@ -1073,11 +1080,15 @@ impl Simulation {
                     &rules.tiberium_types,
                     self.resolved_terrain.as_ref(),
                     &self.production.tiberium_spawning_terrain_cells,
+                    Some(live_objects),
                     &mut self.production.resource_nodes,
                     &mut self.scenario_rng,
                     self.session.binary_frame,
                     self.production.ore_growth_config.grows,
                     self.production.ore_growth_config.spreads,
+                    Some(&mut self.radar_terrain_dirty_cells),
+                    Some(&mut self.radar_terrain_dirty_generation),
+                    Some(&mut self.tactical_dirty_cells),
                 );
                 self.production.ore_growth_state.tick_native_spread_driver(
                     grid,
@@ -1087,10 +1098,14 @@ impl Simulation {
                     path_grid,
                     self.resolved_terrain.as_ref(),
                     &self.production.tiberium_spawning_terrain_cells,
+                    Some(live_objects),
                     &mut self.scenario_rng,
                     self.session.binary_frame,
                     self.production.ore_growth_config.grows,
                     self.production.ore_growth_config.spreads,
+                    Some(&mut self.radar_terrain_dirty_cells),
+                    Some(&mut self.radar_terrain_dirty_generation),
+                    Some(&mut self.tactical_dirty_cells),
                 );
             }
         } else {
@@ -3243,13 +3258,20 @@ impl Simulation {
             if let (Some(smudge_grid), Some(overlay), Some(terrain), Some(pg)) = (
                 self.smudge_grid.as_mut(),
                 self.overlay_grid.as_mut(),
-                self.resolved_terrain.as_ref(),
+                self.resolved_terrain.as_mut(),
                 path_grid,
             ) {
                 let mut tiberium_ctx = crate::sim::combat::smudge_dispatch::SmudgeTiberiumContext {
                     resource_nodes: &mut self.production.resource_nodes,
                     overlay_grid: overlay,
                     ore_growth_state: &mut self.production.ore_growth_state,
+                    overlay_registry,
+                    tiberium_types: Some(&rules.tiberium_types),
+                    source_object_cells: Some(
+                        &self.production.tiberium_spawning_terrain_cells,
+                    ),
+                    binary_frame: self.session.binary_frame,
+                    spread_enabled: self.production.ore_growth_config.spreads,
                     radar_dirty_cells: &mut self.radar_terrain_dirty_cells,
                     radar_dirty_generation: &mut self.radar_terrain_dirty_generation,
                     tactical_dirty_cells: &mut self.tactical_dirty_cells,
@@ -3365,6 +3387,11 @@ impl Simulation {
                     &mut self.scenario_rng,
                 )
                 .with_growth_queue(&mut production.ore_growth_state, self.session.binary_frame)
+                .with_dirty_tracking(
+                    &mut self.radar_terrain_dirty_cells,
+                    &mut self.radar_terrain_dirty_generation,
+                    &mut self.tactical_dirty_cells,
+                )
                 .with_spawning_terrain_cells(&production.tiberium_spawning_terrain_cells)
                 .with_live_object_context(
                     &self.substrate.entities,

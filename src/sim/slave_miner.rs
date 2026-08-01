@@ -21,7 +21,10 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::economy::apply_income_mult;
 use crate::sim::house_state::{house_state_for_owner_mut, income_ppm_for_owner};
 use crate::sim::intern::InternedId;
-use crate::sim::miner::miner_system::{effective_purifier_count, is_cell_path_clear_for_scan};
+use crate::sim::miner::miner_system::{
+    effective_purifier_count, is_cell_path_clear_for_scan, resource_cell_present,
+    search_local_resource,
+};
 use crate::sim::miner::{CargoBale, MinerConfig};
 use crate::sim::miner::{extract_bale, search_local_ore};
 use crate::sim::pathfinding::PathGrid;
@@ -134,6 +137,7 @@ pub(super) fn tick_slave_harvesters(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
     // Phase 1: Snapshot all slave harvesters.
     let mut snapshots: Vec<SlaveSnapshot> = Vec::new();
@@ -159,7 +163,7 @@ pub(super) fn tick_slave_harvesters(
 
     // Phase 2: Process each slave.
     for snap in &mut snapshots {
-        process_slave(sim, rules, config, path_grid, snap);
+        process_slave(sim, rules, config, path_grid, overlay_registry, snap);
     }
 
     // Phase 3: Write back.
@@ -176,6 +180,7 @@ fn process_slave(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut SlaveSnapshot,
 ) {
     // Check master is still alive.
@@ -191,12 +196,18 @@ fn process_slave(
     }
 
     match snap.harvester.state {
-        SlaveHarvestState::SearchOre => handle_slave_search(sim, rules, config, path_grid, snap),
+        SlaveHarvestState::SearchOre => {
+            handle_slave_search(sim, rules, config, path_grid, overlay_registry, snap)
+        }
         SlaveHarvestState::MoveToOre => handle_slave_move_to_ore(snap),
-        SlaveHarvestState::Harvest => handle_slave_harvest(sim, config, snap),
+        SlaveHarvestState::Harvest => {
+            handle_slave_harvest(sim, rules, config, overlay_registry, snap)
+        }
         SlaveHarvestState::ReturnToMaster => handle_slave_return(sim, snap),
         SlaveHarvestState::Deposit => handle_slave_deposit(sim, rules, config, snap),
-        SlaveHarvestState::Idle => handle_slave_idle(sim, rules, config, path_grid, snap),
+        SlaveHarvestState::Idle => {
+            handle_slave_idle(sim, rules, config, path_grid, overlay_registry, snap)
+        }
     }
 }
 
@@ -206,6 +217,7 @@ fn handle_slave_search(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut SlaveSnapshot,
 ) {
     let scan_radius: u16 = rules.general.slave_miner_slave_scan.max(1) as u16;
@@ -220,13 +232,14 @@ fn handle_slave_search(
 
     let scan_filter = build_slave_scan_filter(sim, path_grid, snap.entity_id);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = Some(&*scan_filter);
-    if let Some(cell) = search_local_ore(
-        &sim.production.resource_nodes,
+    if let Some(cell) = search_local_resource(
+        sim,
+        rules,
+        overlay_registry,
         master_pos,
         scan_radius,
         filter_ref,
-        config.ore_bale_value,
-        config.gem_bale_value,
+        config,
     ) {
         snap.harvester.target_cell = Some(cell);
         snap.harvester.state = SlaveHarvestState::MoveToOre;
@@ -254,18 +267,20 @@ fn handle_slave_move_to_ore(snap: &mut SlaveSnapshot) {
 }
 
 /// Slave extracting bales from the ore cell.
-fn handle_slave_harvest(sim: &mut Simulation, config: &MinerConfig, snap: &mut SlaveSnapshot) {
+fn handle_slave_harvest(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    snap: &mut SlaveSnapshot,
+) {
     let Some(cell) = snap.harvester.target_cell else {
         snap.harvester.state = SlaveHarvestState::SearchOre;
         return;
     };
 
     // Check if ore still exists at target.
-    let has_ore: bool = sim
-        .production
-        .resource_nodes
-        .get(&cell)
-        .is_some_and(|n| n.remaining > 0);
+    let has_ore = resource_cell_present(sim, rules, overlay_registry, cell);
 
     if !has_ore {
         // Ore depleted — search for more.
@@ -285,7 +300,7 @@ fn handle_slave_harvest(sim: &mut Simulation, config: &MinerConfig, snap: &mut S
     }
 
     // Extract one bale.
-    if let Some(bale) = extract_bale(sim, cell, config) {
+    if let Some(bale) = extract_bale(sim, rules, overlay_registry, cell, config) {
         snap.harvester.cargo.push(bale);
     }
 
@@ -381,6 +396,7 @@ fn handle_slave_idle(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut SlaveSnapshot,
 ) {
     // Try to find ore every few ticks (reuse search logic).
@@ -394,13 +410,14 @@ fn handle_slave_idle(
 
     let scan_filter = build_slave_scan_filter(sim, path_grid, snap.entity_id);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = Some(&*scan_filter);
-    if let Some(cell) = search_local_ore(
-        &sim.production.resource_nodes,
+    if let Some(cell) = search_local_resource(
+        sim,
+        rules,
+        overlay_registry,
         master_pos,
         scan_radius,
         filter_ref,
-        config.ore_bale_value,
-        config.gem_bale_value,
+        config,
     ) {
         snap.harvester.target_cell = Some(cell);
         snap.harvester.state = SlaveHarvestState::MoveToOre;
