@@ -275,7 +275,7 @@ fn clear_tiberium_source_cells_for_spawning_terrain(
         }
     }
 
-    if let Some(grid) = sim.overlay_grid.as_ref() {
+    if let Some(grid) = sim.overlay_grid.as_mut() {
         for &(rx, ry) in &overlay_cleared {
             crate::sim::overlay_grid::recalc_overlay_passability(
                 grid,
@@ -654,6 +654,7 @@ pub(crate) fn load_map_from_initial(
         Some(&asset_manager),
         rules.as_ref().map(|r| &r.terrain_rules),
         Some(&overlay_registry),
+        rules.as_ref().map(|r| &r.terrain_object_types),
         lat_enabled,
         cliff_back,
         &mut scenario_fill_ranged,

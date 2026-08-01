@@ -931,11 +931,15 @@ fn test_from_resolved_terrain_uses_resolved_blocking_flags() {
             },
             ResolvedTerrainCell {
                 terrain_object_blocks: true,
+                terrain_object_occupation: Some(1),
                 build_blocked: true,
                 ..make_resolved_cell(0, 1)
             },
             ResolvedTerrainCell {
                 overlay_blocks: true,
+                overlay_zone_type: Some(
+                    crate::map::resolved_terrain::zone_class::IMPASSABLE,
+                ),
                 build_blocked: true,
                 ..make_resolved_cell(1, 1)
             },
@@ -1526,7 +1530,10 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         canonical_ramp: None,
         ground_walk_blocked: false,
         terrain_object_blocks: false,
+        terrain_object_occupation: None,
         overlay_blocks: false,
+        overlay_zone_type: None,
+        outside_playfield: false,
         zone_type: 0,
         base_ground_walk_blocked: false,
         base_build_blocked: false,

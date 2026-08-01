@@ -25,7 +25,7 @@ use crate::map::terrain;
 use crate::render::sprite_atlas;
 use crate::render::unit_atlas;
 use crate::sim::animation::{self, SequenceSet};
-use crate::sim::overlay_grid::{OverlayGrid, recalc_overlay_passability};
+use crate::sim::overlay_grid::recalc_overlay_passability;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
@@ -1266,10 +1266,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 {
                     let dirty = overlay_grid.take_dirty_cells();
                     if !dirty.is_empty() {
-                        let overlay_ref: &OverlayGrid = overlay_grid;
                         let mut passability_changed = false;
                         for &(rx, ry) in &dirty {
-                            if recalc_overlay_passability(overlay_ref, terrain, registry, rx, ry) {
+                            if recalc_overlay_passability(overlay_grid, terrain, registry, rx, ry) {
                                 passability_changed = true;
                             }
                         }
@@ -1277,7 +1276,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             refresh_after_tick = true;
                         }
                         for &(rx, ry) in &dirty {
-                            let cell = overlay_ref.cell(rx, ry);
+                            let cell = overlay_grid.cell(rx, ry);
                             if let Some(overlay_id) = cell.overlay_id {
                                 collected.push(crate::map::overlay::OverlayEntry {
                                     rx,

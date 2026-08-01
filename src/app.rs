@@ -1779,6 +1779,7 @@ impl App {
                 asset_manager,
                 Some(&job.terrain_rules),
                 None,
+                None,
                 false,
                 RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
                 &mut scenario_fill_ranged,

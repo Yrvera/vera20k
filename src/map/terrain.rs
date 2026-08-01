@@ -1105,6 +1105,7 @@ mod tests {
                     Some(&assets),
                     None,
                     None,
+                    None,
                     true,
                     0,
                     &mut scenario_fill_ranged,

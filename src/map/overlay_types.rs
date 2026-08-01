@@ -11,6 +11,7 @@
 //! - Part of map/ — depends on rules/ (ini_parser).
 
 use crate::rules::ini_parser::IniFile;
+use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainRules};
 use crate::rules::tiberium_type::{TiberiumType, TiberiumTypeId, TiberiumTypeRegistry};
 use std::borrow::Cow;
 use std::sync::OnceLock;
@@ -127,8 +128,7 @@ pub struct OverlayTypeFlags {
     pub is_veins: bool,
     /// IsVeinholeMonster=yes — rendered with unit palette.
     pub is_veinhole_monster: bool,
-    /// Gate=yes — overlay acts as a gate (impassable for zone classification).
-    /// No standard YR overlay uses this; included for binary fidelity with RecalcZoneType.
+    /// Gate=yes — retained for gate-specific consumers; RecalcZoneType does not read it.
     pub is_gate: bool,
     /// Crushable=yes inherited from ObjectTypeClass; RecalcZoneType column 1.
     pub crushable: bool,
@@ -150,9 +150,13 @@ pub struct OverlayTypeFlags {
     pub radar_color: Option<[u8; 3]>,
     /// Railroad track overlay (TRACKS01..TRACKS16). FA2 renders these +15px lower.
     pub track: bool,
-    /// Land= key from INI — terrain classification for this overlay.
-    /// "Road" means the overlay acts as a road surface (pavement, concrete).
-    pub land: Option<String>,
+    /// Canonical Land= value. Constructor default is Clear.
+    pub land: LandType,
+    /// Whether CellClass retains the overlay's land instead of restoring tile land.
+    /// Constructor default is true and ReadINI uses the existing field as default.
+    pub no_use_tile_land_type: bool,
+    /// Final Land row's speed profile, when that canonical rules section exists.
+    pub land_speed_costs: Option<SpeedCostProfile>,
     /// Strength= from rules.ini — hit points for destructible overlays.
     /// Only meaningful when wall=true. Default 1.
     pub strength: u16,
@@ -176,7 +180,9 @@ impl Default for OverlayTypeFlags {
             land_wheel_speed_zero: false,
             bridge_deck: false,
             track: false,
-            land: None,
+            land: LandType::Clear,
+            no_use_tile_land_type: true,
+            land_speed_costs: None,
             radar_color: None,
             strength: 1,
             damage_levels: 1,
@@ -246,6 +252,10 @@ impl OverlayTypeRegistry {
 
         // Native registry allocation follows declaration order; numeric key
         // text is not a sorting authority.
+        let terrain_rules = TerrainRules::from_ini(ini);
+        let clear_speed_costs = terrain_rules
+            .semantics_for_land_type(LandType::Clear.as_index())
+            .map(|semantics| semantics.speed_costs);
         let mut flags: Vec<OverlayTypeFlags> = Vec::with_capacity(names.len());
         for (idx, name) in names.iter().enumerate() {
             let upper_name = name.to_ascii_uppercase();
@@ -254,11 +264,19 @@ impl OverlayTypeRegistry {
             let bridge_deck = is_bridge_overlay_index(idx as u8);
             let track = upper_name.starts_with("TRACKS");
             if let Some(type_section) = ini.section(name) {
-                let land = type_section.get("Land").map(|s| s.to_string());
-                let land_wheel_speed_zero = land
-                    .as_deref()
-                    .and_then(|land| ini.section(land))
-                    .is_some_and(section_wheel_speed_is_exact_zero);
+                let tiberium = type_section.get_bool("Tiberium").unwrap_or(false);
+                let mut land = type_section
+                    .get("Land")
+                    .and_then(parse_land_type)
+                    .unwrap_or(LandType::Clear);
+                if tiberium && land == LandType::Clear {
+                    land = LandType::Tiberium;
+                }
+                let land_speed_costs = terrain_rules
+                    .semantics_for_land_type(land.as_index())
+                    .map(|semantics| semantics.speed_costs);
+                let land_wheel_speed_zero =
+                    land_speed_costs.is_some_and(|speed_costs| speed_costs.wheel == Some(0));
                 // Strength from rules section (e.g., [GAWALL] Strength=300).
                 let strength = type_section
                     .get("Strength")
@@ -272,7 +290,7 @@ impl OverlayTypeRegistry {
                     .and_then(|v| v.parse::<u16>().ok())
                     .unwrap_or(1);
                 flags.push(OverlayTypeFlags {
-                    tiberium: type_section.get_bool("Tiberium").unwrap_or(false),
+                    tiberium,
                     wall: type_section.get_bool("Wall").unwrap_or(false),
                     is_veins: type_section.get_bool("IsVeins").unwrap_or(false),
                     is_veinhole_monster: type_section
@@ -287,6 +305,10 @@ impl OverlayTypeRegistry {
                     bridge_deck,
                     track,
                     land,
+                    no_use_tile_land_type: type_section
+                        .get_bool("NoUseTileLandType")
+                        .unwrap_or(true),
+                    land_speed_costs,
                     radar_color,
                     strength,
                     damage_levels,
@@ -295,6 +317,9 @@ impl OverlayTypeRegistry {
                 flags.push(OverlayTypeFlags {
                     bridge_deck,
                     track,
+                    land_speed_costs: clear_speed_costs,
+                    land_wheel_speed_zero: clear_speed_costs
+                        .is_some_and(|speed_costs| speed_costs.wheel == Some(0)),
                     ..OverlayTypeFlags::default()
                 });
             }
@@ -446,12 +471,32 @@ fn tiberium_flat_overlay_name(image: u8, variant: u8) -> Option<String> {
     }
 }
 
-fn section_wheel_speed_is_exact_zero(section: &crate::rules::ini_parser::IniSection) -> bool {
-    section
-        .get("Wheel")
-        .map(|raw| raw.trim().trim_end_matches('%').trim())
-        .and_then(|raw| raw.parse::<f32>().ok())
-        == Some(0.0)
+fn parse_land_type(value: &str) -> Option<LandType> {
+    LandType::ALL
+        .into_iter()
+        .find(|land_type| value.eq_ignore_ascii_case(land_type.section_name()))
+}
+
+/// Whether RecalcAttributes removes this resource overlay before retaining Land.
+pub(crate) fn clears_tiberium_on_slope(flags: &OverlayTypeFlags, slope_type: u8) -> bool {
+    flags.tiberium
+        && slope_type != 0
+        && (flags.land == LandType::Wall
+            || flags.land == LandType::Railroad
+            || flags.no_use_tile_land_type
+            || slope_type >= 5)
+}
+
+/// Cell land retained after the overlay portion of RecalcAttributes.
+pub(crate) fn retained_overlay_land(flags: &OverlayTypeFlags, slope_type: u8) -> Option<LandType> {
+    if clears_tiberium_on_slope(flags, slope_type) {
+        return None;
+    }
+    (flags.land == LandType::Wall
+        || flags.land == LandType::Railroad
+        || flags.no_use_tile_land_type
+        || flags.tiberium)
+        .then_some(flags.land)
 }
 
 /// Generate candidate SHP filenames for an overlay name.
@@ -647,6 +692,125 @@ IsRubble=yes
 
         let rubble = reg.flags(2).expect("rubble flags");
         assert!(rubble.is_rubble);
+    }
+
+    #[test]
+    fn gsi_04_04_overlay_land_defaults_and_exact_names() {
+        let mut text = String::from("[OverlayTypes]\n0=MISSING_SECTION\n");
+        for (index, _land) in LandType::ALL.into_iter().enumerate() {
+            text.push_str(&format!("{}=LAND_{index}\n", index + 1));
+        }
+        text.push_str("13=LOWERCASE\n");
+        for (index, land) in LandType::ALL.into_iter().enumerate() {
+            text.push_str(&format!(
+                "[LAND_{index}]\nLand={}\nNoUseTileLandType=no\n",
+                land.section_name()
+            ));
+        }
+        text.push_str("[LOWERCASE]\nLand=road\n");
+
+        let ini = IniFile::from_str(&text);
+        let reg = OverlayTypeRegistry::from_ini(&ini, None);
+
+        let missing = reg.flags(0).expect("missing-section defaults");
+        assert_eq!(missing.land, LandType::Clear);
+        assert!(missing.no_use_tile_land_type);
+        for (index, expected) in LandType::ALL.into_iter().enumerate() {
+            let flags = reg.flags((index + 1) as u8).expect("canonical land flags");
+            assert_eq!(flags.land, expected, "{}", expected.section_name());
+            assert!(!flags.no_use_tile_land_type);
+        }
+        let lowercase = reg.flags(13).expect("lowercase land flags");
+        assert_eq!(lowercase.land, LandType::Road);
+        assert!(lowercase.no_use_tile_land_type);
+    }
+
+    #[test]
+    fn gsi_04_04_tiberium_forces_land_before_final_wheel_lookup() {
+        let ini = IniFile::from_str(
+            "\
+[OverlayTypes]
+0=ORE
+[Clear]
+Wheel=100%
+[Tiberium]
+Wheel=0%
+[ORE]
+Tiberium=yes
+Land=Clear
+NoUseTileLandType=no
+",
+        );
+        let reg = OverlayTypeRegistry::from_ini(&ini, None);
+        let flags = reg.flags(0).expect("ore flags");
+
+        assert!(flags.tiberium);
+        assert_eq!(flags.land, LandType::Tiberium);
+        assert!(!flags.no_use_tile_land_type);
+        assert!(flags.land_wheel_speed_zero);
+        assert_eq!(
+            flags.land_speed_costs.expect("Tiberium speed row").wheel,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn gsi_04_04_overlay_land_retention_matches_recalc_attributes() {
+        let mut ordinary = OverlayTypeFlags {
+            land: LandType::Road,
+            no_use_tile_land_type: false,
+            ..OverlayTypeFlags::default()
+        };
+        assert_eq!(retained_overlay_land(&ordinary, 0), None);
+
+        ordinary.no_use_tile_land_type = true;
+        assert_eq!(retained_overlay_land(&ordinary, 0), Some(LandType::Road));
+
+        for land in [LandType::Wall, LandType::Railroad] {
+            let flags = OverlayTypeFlags {
+                land,
+                no_use_tile_land_type: false,
+                ..OverlayTypeFlags::default()
+            };
+            assert_eq!(retained_overlay_land(&flags, 0), Some(land));
+        }
+
+        let resource = OverlayTypeFlags {
+            tiberium: true,
+            land: LandType::Tiberium,
+            no_use_tile_land_type: false,
+            ..OverlayTypeFlags::default()
+        };
+        assert_eq!(
+            retained_overlay_land(&resource, 4),
+            Some(LandType::Tiberium)
+        );
+        assert_eq!(
+            retained_overlay_land(&resource, 1),
+            Some(LandType::Tiberium)
+        );
+        assert_eq!(retained_overlay_land(&resource, 5), None);
+
+        let stock_default = OverlayTypeFlags {
+            tiberium: true,
+            land: LandType::Tiberium,
+            ..OverlayTypeFlags::default()
+        };
+        assert_eq!(
+            [0, 1, 4, 5].map(|slope| retained_overlay_land(&stock_default, slope)),
+            [Some(LandType::Tiberium), None, None, None]
+        );
+
+        for land in [LandType::Wall, LandType::Railroad] {
+            let authoritative = OverlayTypeFlags {
+                tiberium: true,
+                land,
+                no_use_tile_land_type: false,
+                ..OverlayTypeFlags::default()
+            };
+            assert_eq!(retained_overlay_land(&authoritative, 0), Some(land));
+            assert_eq!(retained_overlay_land(&authoritative, 1), None);
+        }
     }
 
     #[test]

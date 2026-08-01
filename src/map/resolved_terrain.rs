@@ -9,7 +9,7 @@
 /// These index columns of `MOVEMENT_ZONE_PASSABILITY` in pathfinding/passability.rs.
 pub mod zone_class {
     pub const GROUND: u8 = 0;
-    pub const ROAD: u8 = 1;
+    pub const CRUSHABLE: u8 = 1;
     pub const WALL: u8 = 2;
     pub const BEACH: u8 = 3;
     pub const WATER: u8 = 4;
@@ -26,14 +26,62 @@ use crate::map::bridge_facts::{
 use crate::map::lat;
 use crate::map::map_file::{MapCell, MapFile};
 use crate::map::overlay::OverlayEntry;
-use crate::map::overlay_types::OverlayTypeRegistry;
+use crate::map::overlay_types::{
+    OverlayTypeFlags, OverlayTypeRegistry, clears_tiberium_on_slope, retained_overlay_land,
+};
+use crate::map::rmg::preview::Playfield;
 use crate::map::theater::{self, TheaterData, TileKey};
 use crate::map::tile_variant_selector::TileVariantSelectionContext;
 use crate::map::tube_facts::{TubeFact, TubeId};
+use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass, TerrainRules};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
+
+/// Exact overlay portion of RecalcZoneType. `Some(GROUND)` is the terminal
+/// IsRubble result and is intentionally distinct from no overlay result.
+pub(crate) fn overlay_reduced_zone_type(flags: Option<&OverlayTypeFlags>) -> Option<u8> {
+    let flags = flags?;
+    if flags.crushable {
+        Some(zone_class::CRUSHABLE)
+    } else if flags.wall {
+        Some(zone_class::WALL)
+    } else if flags.land_wheel_speed_zero || flags.is_a_rock {
+        Some(zone_class::IMPASSABLE)
+    } else if flags.is_rubble {
+        Some(zone_class::GROUND)
+    } else {
+        None
+    }
+}
+
+/// Shared RecalcZoneType priority writer for load and runtime attribute changes.
+pub(crate) fn recalc_zone_type(
+    outside: bool,
+    overlay_zone_type: Option<u8>,
+    land_type: u8,
+    wheel_speed: Option<u8>,
+    terrain_object_occupation: Option<u8>,
+) -> u8 {
+    if outside {
+        zone_class::OUTSIDE
+    } else if let Some(zone_type) = overlay_zone_type {
+        zone_type
+    } else if land_type == LandType::Water.as_index() {
+        zone_class::WATER
+    } else if land_type == LandType::Beach.as_index() {
+        zone_class::BEACH
+    } else if wheel_speed_at_or_below_one_percent(wheel_speed) {
+        zone_class::IMPASSABLE
+    } else if terrain_object_occupation == Some(7) {
+        zone_class::WALL
+    } else if terrain_object_occupation.is_some() {
+        zone_class::BUILDING
+    } else {
+        zone_class::GROUND
+    }
+}
 
 /// Route-scoped bridge oracle dump for a resolved terrain cell.
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -130,11 +178,11 @@ pub struct ResolvedTerrainCell {
     pub level: u8,
     pub filled_clear: bool,
     pub tileset_index: Option<u16>,
+    /// Canonical effective LandType after TMP and overlay derivation.
     pub land_type: u8,
-    /// Final CellClass LandType value for binary predicates that need the
-    /// original gamemd.exe value. Do not confuse this with `land_type`, which
-    /// is a legacy terrain/speed bucket for compatibility paths; matrix legality
-    /// should use `zone_type`.
+    /// Retained CellClass LandType mirror for binary-derived predicates and
+    /// compatibility consumers. Reduced `zone_type`, not either Land field,
+    /// selects the movement matrix column.
     pub yr_cell_land_type: u8,
     pub slope_type: u8,
     /// Registered pristine TMP +0x28 height field (CellClass-owned).
@@ -166,7 +214,16 @@ pub struct ResolvedTerrainCell {
     pub canonical_ramp: Option<RampDirection>,
     pub ground_walk_blocked: bool,
     pub terrain_object_blocks: bool,
+    /// Selected current-theater occupation byte for a present terrain object.
+    /// `Some(0)` preserves presence without physical blockage.
+    pub terrain_object_occupation: Option<u8>,
     pub overlay_blocks: bool,
+    /// Explicit terminal overlay result used by RecalcZoneType. In particular,
+    /// `Some(GROUND)` preserves IsRubble priority across later mutations.
+    pub overlay_zone_type: Option<u8>,
+    /// Production CellClass playfield result. Synthetic `from_cells` grids set
+    /// this false so focused rectangular fixtures remain in-playfield.
+    pub outside_playfield: bool,
     /// Cached zone classification (0-7) matching gamemd.exe RecalcZoneType (0x483C80).
     /// Indexes columns of `MOVEMENT_ZONE_PASSABILITY` in pathfinding/passability.rs.
     ///
@@ -314,12 +371,6 @@ pub struct ResolvedTerrainGrid {
     /// Active theater tile registry length. Positive out-of-range ids present
     /// as ClearTile while their stored semantic id remains untouched.
     tile_registry_len: Option<usize>,
-    /// `[Tiberium]` `SpeedCostProfile` cached at map load, looked up via
-    /// `TerrainRules::semantics_by_name("Tiberium")`. Used by
-    /// `recalc_overlay_passability` to apply Tiberium-mode speed costs when
-    /// ore appears on a cell at runtime (spread / TIBTRE spawn / growth).
-    /// None when `terrain_rules` was unavailable at build time (test paths).
-    tiberium_speed_costs: Option<SpeedCostProfile>,
 }
 
 impl ResolvedTerrainGrid {
@@ -341,24 +392,7 @@ impl ResolvedTerrainGrid {
             tube_facts,
             clear_tile_id: 0,
             tile_registry_len: None,
-            tiberium_speed_costs: None,
         }
-    }
-
-    /// Cached `[Tiberium]` `SpeedCostProfile`. Populated at map load when
-    /// `terrain_rules` is available. Used by `recalc_overlay_passability` to
-    /// apply Tiberium-mode speed costs on runtime overlay placement.
-    pub fn tiberium_speed_costs(&self) -> Option<&SpeedCostProfile> {
-        self.tiberium_speed_costs.as_ref()
-    }
-
-    /// Test-only setter for the cached `[Tiberium]` speed profile. Production
-    /// paths populate this via `build()` from rules; tests that drive
-    /// `recalc_overlay_passability` directly use this to install a non-default
-    /// profile so the round-trip on overlay add/remove can be verified end-to-end.
-    #[cfg(test)]
-    pub fn set_tiberium_speed_costs_for_test(&mut self, costs: SpeedCostProfile) {
-        self.tiberium_speed_costs = Some(costs);
     }
 
     pub fn width(&self) -> u16 {
@@ -496,6 +530,7 @@ impl ResolvedTerrainGrid {
             asset_manager,
             terrain_rules,
             overlay_registry,
+            None,
             lat_enabled,
             cliff_back_impassability,
             None,
@@ -510,6 +545,7 @@ impl ResolvedTerrainGrid {
         asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
         terrain_rules: Option<&TerrainRules>,
         overlay_registry: Option<&OverlayTypeRegistry>,
+        terrain_object_types: Option<&HashMap<String, TerrainObjectType>>,
         lat_enabled: bool,
         cliff_back_impassability: u8,
         scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
@@ -521,6 +557,7 @@ impl ResolvedTerrainGrid {
             asset_manager,
             terrain_rules,
             overlay_registry,
+            terrain_object_types,
             lat_enabled,
             cliff_back_impassability,
             Some(scenario_fill_ranged),
@@ -534,6 +571,7 @@ impl ResolvedTerrainGrid {
         asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
         terrain_rules: Option<&TerrainRules>,
         overlay_registry: Option<&OverlayTypeRegistry>,
+        terrain_object_types: Option<&HashMap<String, TerrainObjectType>>,
         lat_enabled: bool,
         cliff_back_impassability: u8,
         mut scenario_fill_ranged: Option<&mut dyn FnMut(u32, u32) -> u32>,
@@ -543,6 +581,8 @@ impl ResolvedTerrainGrid {
             .and_then(|td| td.rmg_tiles.clear_tile)
             .unwrap_or(0);
         let materialized_size_diamond = variant_selector.is_some();
+        let playfield =
+            materialized_size_diamond.then(|| Playfield::from_header(&map.header));
         let raw_cells = if let (Some(selector), Some(fill_ranged)) = (
             variant_selector.as_deref_mut(),
             scenario_fill_ranged.as_deref_mut(),
@@ -563,15 +603,8 @@ impl ResolvedTerrainGrid {
                 tube_facts: Vec::new(),
                 clear_tile_id,
                 tile_registry_len: theater_data.map(|td| td.lookup.len()),
-                tiberium_speed_costs: None,
             };
         }
-        // Cache the `[Tiberium]` SpeedCostProfile once per map load — used at
-        // runtime by `recalc_overlay_passability` when ore appears on a cell
-        // after spread / TIBTRE spawn / growth.
-        let tiberium_speed_costs = terrain_rules
-            .and_then(|tr| tr.semantics_by_name("Tiberium"))
-            .map(|sem| sem.speed_costs);
 
         let mut final_cells: Vec<MapCell> = raw_cells.clone();
         let mut metadata_cache: HashMap<TileKey, TileMetadata> = HashMap::new();
@@ -637,10 +670,24 @@ impl ResolvedTerrainGrid {
         let final_lookup: HashMap<(u16, u16), &MapCell> =
             final_cells.iter().map(|c| ((c.rx, c.ry), c)).collect();
 
-        let terrain_objects: HashSet<(u16, u16)> = map
+        let snow_theater = map.header.theater.eq_ignore_ascii_case("SNOW");
+        let terrain_objects: HashMap<(u16, u16), u8> = map
             .terrain_objects
             .iter()
-            .map(|obj| (obj.rx, obj.ry))
+            .map(|obj| {
+                let occupation = terrain_object_types
+                    .and_then(|types| types.get(&obj.name.to_ascii_uppercase()))
+                    .map(|terrain_type| {
+                        if snow_theater {
+                            terrain_type.snow_occupation_bits
+                        } else {
+                            terrain_type.temperate_occupation_bits
+                        }
+                    })
+                    .unwrap_or(7)
+                    & 0x07;
+                ((obj.rx, obj.ry), occupation)
+            })
             .collect();
 
         let mut overlays_by_cell: HashMap<(u16, u16), Vec<&OverlayEntry>> = HashMap::new();
@@ -747,88 +794,46 @@ impl ResolvedTerrainGrid {
                     metadata.slope_type = slope_type;
                     metadata.has_ramp = slope_type != 0;
                 }
-                let terrain_object_blocks = terrain_objects.contains(&(rx, ry));
+                let terrain_object_occupation = terrain_objects.get(&(rx, ry)).copied();
+                let terrain_object_blocks =
+                    terrain_object_occupation.is_some_and(|occupation| occupation != 0);
                 let overlay_effects = classify_overlay_effects(
                     overlays_by_cell.get(&(rx, ry)),
                     overlay_registry,
                     level,
+                    metadata.slope_type,
                 );
                 let canonical_ramp = canonical_ramp_from_slope_type(metadata.slope_type);
-                // Low bridge overlays are visual/damage facts. Movement is
-                // driven by the final YR cell land type plus TubeClass facts,
-                // not by forcing the surface terrain into ordinary road.
-                // Road/pavement overlays override underlying terrain to Road.
-                // Matches original engine: RecalcLandType sets LandType=Road(1)
-                // when overlay.Wall is true.
-                if overlay_effects.is_road && !overlay_effects.is_low_bridge {
-                    metadata.is_road = true;
-                    metadata.terrain_class = TerrainClass::Road;
-                    metadata.land_type =
-                        crate::sim::pathfinding::passability::LandType::Road.as_index();
-                    metadata.yr_cell_land_type = metadata.land_type;
-                }
-                // Tiberium/ore overlays change the effective terrain type for passability.
-                // Matches original engine: RecalcLandType sets cell+0xEC when tiberium present.
-                // Also update speed_costs from [Tiberium] INI section so the terrain
-                // cost grid uses correct speed modifiers (Foot=90%, Track=70%, etc.).
-                //
-                // Capture the underlying (pre-override) values FIRST so
-                // `recalc_overlay_passability` can restore them when the overlay is
-                // later removed at runtime (ore harvested to zero, wall destroyed,
-                // crate picked up). Same pattern as `base_ground_walk_blocked`.
+                // The registered pristine TMP owns the base snapshot. Overlay
+                // land never feeds back into these restoration fields.
                 let base_land_type = metadata.land_type;
                 let base_yr_cell_land_type = metadata.yr_cell_land_type;
                 let base_terrain_class = metadata.terrain_class;
                 let base_speed_costs = metadata.speed_costs;
-                if overlay_effects.has_tiberium {
-                    metadata.land_type =
-                        crate::sim::pathfinding::passability::LandType::Tiberium.as_index();
-                    metadata.yr_cell_land_type = metadata.land_type;
-                    metadata.terrain_class = TerrainClass::Tiberium;
-                    if let Some(tib_semantics) =
-                        terrain_rules.and_then(|tr| tr.semantics_by_name("Tiberium"))
-                    {
-                        metadata.speed_costs = tib_semantics.speed_costs;
-                    }
-                }
                 let base_ground_walk_blocked = canonical_ramp.is_none() && metadata.ground_blocked;
+                let base_build_blocked = metadata.build_blocked || canonical_ramp.is_some();
+
+                if let Some(land) = overlay_effects.effective_land {
+                    apply_canonical_land_to_metadata(
+                        &mut metadata,
+                        land,
+                        overlay_effects.effective_land_speed_costs,
+                    );
+                }
                 let is_cliff_like = metadata.is_cliff_like;
-                // Compute zone_type matching RecalcZoneType (0x483C80) priority chain.
-                // Must be computed BEFORE ground_walk_blocked is OR'd with overlay/terrain
-                // object flags, since we need the base terrain passability.
-                let zone_type = if overlay_effects.is_crushable {
-                    zone_class::ROAD
-                } else if overlay_effects.is_wall {
-                    zone_class::WALL
-                } else if overlay_effects.overlay_land_wheel_speed_zero || overlay_effects.is_a_rock
-                {
-                    zone_class::IMPASSABLE
-                } else if overlay_effects.is_rubble {
-                    zone_class::GROUND
-                } else if overlay_effects.is_gate {
-                    zone_class::IMPASSABLE
-                } else if metadata.is_water {
-                    zone_class::WATER
-                } else if metadata.land_type
-                    == crate::sim::pathfinding::passability::LandType::Beach.as_index()
-                {
-                    zone_class::BEACH
-                } else if wheel_speed_at_or_below_one_percent(metadata.speed_costs.wheel)
-                    || base_ground_walk_blocked
-                {
-                    zone_class::IMPASSABLE
-                } else if terrain_object_blocks {
-                    zone_class::BUILDING
-                } else {
-                    zone_class::GROUND
-                };
+                let outside = playfield.is_some_and(|playfield| {
+                    !playfield.contains_raised(rx, ry, level as i8, metadata.slope_type)
+                });
+                let zone_type = recalc_zone_type(
+                    outside,
+                    overlay_effects.overlay_zone_type,
+                    metadata.land_type,
+                    metadata.speed_costs.wheel,
+                    terrain_object_occupation,
+                );
                 let ground_walk_blocked = base_ground_walk_blocked
                     || terrain_object_blocks
                     || overlay_effects.overlay_blocks;
-                let base_build_blocked = metadata.build_blocked
-                    || terrain_object_blocks
-                    || overlay_effects.overlay_blocks
-                    || canonical_ramp.is_some();
                 let bridge_walkable = overlay_effects.has_bridge_deck
                     && !overlay_effects.is_low_bridge
                     && !terrain_object_blocks
@@ -859,7 +864,10 @@ impl ResolvedTerrainGrid {
                 // the A* can switch Bridge→Ground mid-span and units clip
                 // through the bridge.
                 let bridge_transition = false;
-                let build_blocked = base_build_blocked || overlay_effects.has_bridge_deck;
+                let build_blocked = base_build_blocked
+                    || terrain_object_blocks
+                    || overlay_effects.overlay_blocks
+                    || overlay_effects.has_bridge_deck;
                 cells.push(ResolvedTerrainCell {
                     rx,
                     ry,
@@ -891,7 +899,10 @@ impl ResolvedTerrainGrid {
                     canonical_ramp,
                     ground_walk_blocked,
                     terrain_object_blocks,
+                    terrain_object_occupation,
                     overlay_blocks: overlay_effects.overlay_blocks,
+                    overlay_zone_type: overlay_effects.overlay_zone_type,
+                    outside_playfield: outside,
                     zone_type,
                     base_ground_walk_blocked,
                     base_build_blocked,
@@ -962,7 +973,10 @@ impl ResolvedTerrainGrid {
                 cell.has_bridge_deck = true;
                 cell.bridge_walkable = !cell.terrain_object_blocks && !cell.overlay_blocks;
                 cell.bridge_deck_level = cell.level.saturating_add(4);
-                cell.build_blocked = cell.base_build_blocked || cell.bridge_walkable;
+                cell.build_blocked = cell.base_build_blocked
+                    || cell.terrain_object_blocks
+                    || cell.overlay_blocks
+                    || cell.bridge_walkable;
             } else if facts.family != crate::map::bridge_facts::BridgeStampFamily::None
                 && cell
                     .bridge_layer
@@ -972,7 +986,9 @@ impl ResolvedTerrainGrid {
                 cell.has_bridge_deck = false;
                 cell.bridge_walkable = false;
                 cell.bridge_deck_level = cell.level;
-                cell.build_blocked = cell.base_build_blocked;
+                cell.build_blocked = cell.base_build_blocked
+                    || cell.terrain_object_blocks
+                    || cell.overlay_blocks;
             }
 
             if facts.has_transition_flag() {
@@ -1145,12 +1161,6 @@ impl ResolvedTerrainGrid {
                     // reduced zone follows the new Rock land (wheel speed 0 →
                     // Impassable) unless an overlay branch already claimed the
                     // cell (those branches outrank the land checks).
-                    if matches!(
-                        cell.zone_type,
-                        zone_class::GROUND | zone_class::WATER | zone_class::BEACH
-                    ) {
-                        cell.zone_type = zone_class::IMPASSABLE;
-                    }
                     if let Some(rock) = terrain_rules
                         .and_then(|tr| tr.semantics_for_land_type(LandType::Rock.as_index()))
                     {
@@ -1159,6 +1169,13 @@ impl ResolvedTerrainGrid {
                         cell.is_water = rock.water;
                         cell.build_blocked = true;
                     }
+                    cell.zone_type = recalc_zone_type(
+                        cell.outside_playfield,
+                        cell.overlay_zone_type,
+                        cell.land_type,
+                        cell.speed_costs.wheel,
+                        cell.terrain_object_occupation,
+                    );
                     // Bake the reclass into the base (pre-overlay) snapshot too:
                     // it is derived purely from neighbor LEVELS, which never
                     // change at runtime, and the engine re-derives it on every
@@ -1223,7 +1240,6 @@ impl ResolvedTerrainGrid {
             tube_facts,
             clear_tile_id,
             tile_registry_len: theater_data.map(|td| td.lookup.len()),
-            tiberium_speed_costs,
         }
     }
 
@@ -1291,10 +1307,11 @@ struct TileMetadata {
     /// Pristine TMP grid dimensions used by ordinary variant normalization.
     template_width_cells: u32,
     template_height_cells: u32,
-    /// Mapped land type (0-7) for passability matrix lookups.
+    /// Canonical YR LandType used for terrain semantics and CellClass Land
+    /// derivation. Reduced `zone_type` selects the movement matrix column.
     land_type: u8,
-    /// Final gamemd CellClass LandType value where Rust needs the binary
-    /// predicate. This is not the TMP terrain_type byte.
+    /// Retained CellClass LandType mirror for binary-derived predicates and
+    /// compatibility consumers. This is not the raw TMP terrain_type byte.
     yr_cell_land_type: u8,
     /// Raw TMP terrain_type byte (0-15) for rules.ini semantic lookups.
     raw_land_type: u8,
@@ -1353,25 +1370,12 @@ impl Default for TileMetadata {
 #[derive(Debug, Clone, Default)]
 struct OverlayEffects {
     overlay_blocks: bool,
-    /// Overlay is Crushable=yes. RecalcZoneType -> reduced ZoneType 1.
-    is_crushable: bool,
-    /// Overlay is a gate (Gate=yes). RecalcZoneType → ZoneType 6 (Impassable).
-    is_gate: bool,
-    /// Overlay is Wall=yes after Crushable failed. RecalcZoneType -> 2.
-    is_wall: bool,
-    overlay_land_wheel_speed_zero: bool,
-    is_a_rock: bool,
-    is_rubble: bool,
+    overlay_zone_type: Option<u8>,
     has_bridge_deck: bool,
     bridge_layer: Option<BridgeLayer>,
-    /// Low bridges override terrain to Road (NoUseTileLandType=true, Land=Road).
-    /// When set, overrides the cell's is_water/is_road/ground_walk_blocked flags.
     is_low_bridge: bool,
-    /// Cell has a Tiberium/ore overlay — changes effective land_type to Tiberium (5).
-    has_tiberium: bool,
-    /// Cell has a road/pavement overlay (Land=Road in rules.ini).
-    /// Original engine: RecalcLandType sets LandType=Road(1) when overlay.Wall is true.
-    is_road: bool,
+    effective_land: Option<LandType>,
+    effective_land_speed_costs: Option<SpeedCostProfile>,
 }
 
 fn grid_dimensions(cells: &[MapCell]) -> (u16, u16) {
@@ -1630,17 +1634,8 @@ fn merge_tmp_file_metadata(
         apply_land_type_semantics(metadata, terrain_rules, warned_unknown_land_types);
         return;
     };
-    // Remember tileset-name road detection before TMP byte overrides it.
-    let tileset_says_road = metadata.is_road;
     merge_tmp_metadata(metadata, tile);
     apply_land_type_semantics(metadata, terrain_rules, warned_unknown_land_types);
-    // Some road/pavement tilesets encode terrain_type 0 (Clear) in TMP instead of
-    // 11 (Road). If the tileset name says "road"/"pavement" but the TMP byte mapped
-    // to Clear, trust the tileset name — the visual road should be a road.
-    if tileset_says_road && !metadata.is_road && metadata.terrain_class == TerrainClass::Clear {
-        metadata.is_road = true;
-        metadata.terrain_class = TerrainClass::Road;
-    }
 }
 
 fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) -> TileMetadata {
@@ -1767,10 +1762,26 @@ fn apply_land_type_semantics(
     metadata.build_blocked = !semantics.buildable;
 }
 
+fn apply_canonical_land_to_metadata(
+    metadata: &mut TileMetadata,
+    land: LandType,
+    speed_costs: Option<SpeedCostProfile>,
+) {
+    metadata.land_type = land.as_index();
+    metadata.yr_cell_land_type = land.as_index();
+    metadata.terrain_class = land.terrain_class();
+    metadata.speed_costs = speed_costs.unwrap_or_default();
+    metadata.is_water = land.is_water();
+    metadata.is_cliff_like = land.is_cliff_like();
+    metadata.is_rough = land.is_rough();
+    metadata.is_road = land.is_road();
+}
+
 fn classify_overlay_effects(
     overlays: Option<&Vec<&OverlayEntry>>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     level: u8,
+    slope_type: u8,
 ) -> OverlayEffects {
     let mut result = OverlayEffects::default();
     let Some(entries) = overlays else {
@@ -1784,46 +1795,24 @@ fn classify_overlay_effects(
         let is_bridge = crate::map::overlay_types::is_bridge_overlay_index(overlay.overlay_id);
 
         let flags = overlay_registry.and_then(|reg| reg.flags(overlay.overlay_id));
-        let is_wall = flags.map(|f| f.wall).unwrap_or(false);
-        let is_crushable = flags.map(|f| f.crushable).unwrap_or(false);
-        let is_tiberium = flags.map(|f| f.tiberium).unwrap_or(false);
-        let is_gate = flags.map(|f| f.is_gate).unwrap_or(false);
-        let overlay_land_wheel_speed_zero = flags.map(|f| f.land_wheel_speed_zero).unwrap_or(false);
-        let is_a_rock = flags.map(|f| f.is_a_rock).unwrap_or(false);
-        let is_rubble = flags.map(|f| f.is_rubble).unwrap_or(false);
-
-        // Road/pavement overlays have Land=Road in rules.ini. In the original
-        // engine, Wall=yes overlays with Land=Road act as road surfaces, not
-        // movement blockers. Only walls WITHOUT Land=Road actually block.
-        let is_road_overlay = flags
-            .and_then(|f| f.land.as_deref())
-            .map(|land| land.eq_ignore_ascii_case("Road"))
-            .unwrap_or(false);
-
-        if is_crushable {
-            result.is_crushable = true;
-        } else if is_road_overlay {
-            result.is_road = true;
-        } else if is_wall {
-            result.overlay_blocks = true;
-            result.is_wall = true;
-        } else if overlay_land_wheel_speed_zero || is_a_rock {
-            result.overlay_blocks = true;
-        }
-        if is_tiberium {
-            result.has_tiberium = true;
-        }
-        if is_gate {
-            result.is_gate = true;
-        }
-        if overlay_land_wheel_speed_zero {
-            result.overlay_land_wheel_speed_zero = true;
-        }
-        if is_a_rock {
-            result.is_a_rock = true;
-        }
-        if is_rubble {
-            result.is_rubble = true;
+        if let Some(flags) = flags {
+            // RecalcAttributes can remove resource overlays in its early
+            // authoritative-land branch before land or zone flags take effect.
+            if clears_tiberium_on_slope(flags, slope_type) {
+                continue;
+            }
+            result.overlay_zone_type = merge_overlay_zone_type(
+                result.overlay_zone_type,
+                overlay_reduced_zone_type(Some(flags)),
+            );
+            result.overlay_blocks = matches!(
+                result.overlay_zone_type,
+                Some(zone_class::WALL) | Some(zone_class::IMPASSABLE)
+            );
+            if let Some(land) = retained_overlay_land(flags, slope_type) {
+                result.effective_land = Some(land);
+                result.effective_land_speed_costs = flags.land_speed_costs;
+            }
         }
         if is_bridge && result.bridge_layer.is_none() {
             result.has_bridge_deck = true;
@@ -1851,6 +1840,30 @@ fn classify_overlay_effects(
         }
     }
     result
+}
+
+fn merge_overlay_zone_type(current: Option<u8>, candidate: Option<u8>) -> Option<u8> {
+    fn priority(zone_type: u8) -> u8 {
+        match zone_type {
+            zone_class::CRUSHABLE => 0,
+            zone_class::WALL => 1,
+            zone_class::IMPASSABLE => 2,
+            zone_class::GROUND => 3,
+            _ => u8::MAX,
+        }
+    }
+
+    match (current, candidate) {
+        (None, candidate) => candidate,
+        (current, None) => current,
+        (Some(current), Some(candidate)) => {
+            Some(if priority(candidate) < priority(current) {
+                candidate
+            } else {
+                current
+            })
+        }
+    }
 }
 
 fn wheel_speed_at_or_below_one_percent(wheel: Option<u8>) -> bool {
@@ -1929,6 +1942,7 @@ mod tests {
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::tube_facts::TubeSource;
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
     use crate::rules::terrain_rules::{TerrainClass, TerrainRules};
     use crate::sim::rng::SimRng;
     use std::collections::HashSet;
@@ -2067,7 +2081,10 @@ mod tests {
             canonical_ramp: None,
             ground_walk_blocked: false,
             terrain_object_blocks: false,
+            terrain_object_occupation: None,
             overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
             zone_type: 0,
             base_ground_walk_blocked: false,
             base_build_blocked: false,
@@ -2285,6 +2302,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 false,
                 0,
                 &mut scenario_fill_ranged,
@@ -2415,6 +2433,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 false,
                 0,
                 &mut scenario_fill_ranged,
@@ -2460,6 +2479,7 @@ mod tests {
             let grid = ResolvedTerrainGrid::build_with_variant_selector(
                 &map,
                 Some(&theater),
+                None,
                 None,
                 None,
                 None,
@@ -3005,6 +3025,7 @@ mod tests {
             }]),
             Some(&reg),
             3,
+            0,
         );
         assert!(effects.has_bridge_deck);
         assert!(!effects.overlay_blocks);
@@ -3060,7 +3081,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_zone_type_priority_matches_recalc_zone_type_on_load() {
+    fn gsi_04_04_overlay_zone_type_priority_matches_recalc_zone_type_on_load() {
         let ini = IniFile::from_str(
             "\
 [OverlayTypes]
@@ -3143,12 +3164,21 @@ IsRubble=yes
                     frame: 0,
                 },
             ],
-            Vec::new(),
+            (0..4)
+                .map(|rx| TerrainObject {
+                    rx,
+                    ry: 0,
+                    name: "DEFAULT_OCCUPATION".to_string(),
+                })
+                .collect(),
         );
 
         let grid = ResolvedTerrainGrid::build(&map, None, None, None, Some(&reg), false, 0);
 
-        assert_eq!(grid.cell(0, 0).unwrap().zone_type, zone_class::ROAD);
+        assert_eq!(
+            grid.cell(0, 0).unwrap().zone_type,
+            zone_class::CRUSHABLE
+        );
         assert!(!grid.cell(0, 0).unwrap().overlay_blocks);
         assert_eq!(grid.cell(1, 0).unwrap().zone_type, zone_class::WALL);
         assert!(grid.cell(1, 0).unwrap().overlay_blocks);
@@ -3156,6 +3186,264 @@ IsRubble=yes
         assert!(grid.cell(2, 0).unwrap().overlay_blocks);
         assert_eq!(grid.cell(3, 0).unwrap().zone_type, zone_class::GROUND);
         assert!(!grid.cell(3, 0).unwrap().overlay_blocks);
+    }
+
+    #[test]
+    fn gsi_04_04_load_selects_current_theater_terrain_occupation() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "\
+[InfantryTypes]
+[VehicleTypes]
+[AircraftTypes]
+[BuildingTypes]
+[TerrainTypes]
+0=TIBTRE03
+1=ZEROTREE
+[TIBTRE03]
+TemperateOccupationBits=4
+SnowOccupationBits=7
+[ZEROTREE]
+TemperateOccupationBits=0
+SnowOccupationBits=0
+",
+        ))
+        .expect("terrain rules");
+        let mut map = make_map(
+            vec![
+                MapCell {
+                    rx: 0,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+            ],
+            Vec::new(),
+            vec![
+                TerrainObject {
+                    rx: 0,
+                    ry: 0,
+                    name: "TIBTRE03".to_string(),
+                },
+                TerrainObject {
+                    rx: 1,
+                    ry: 0,
+                    name: "ZEROTREE".to_string(),
+                },
+            ],
+        );
+
+        let temperate = ResolvedTerrainGrid::build_inner(
+            &map,
+            None,
+            None,
+            None,
+            None,
+            Some(&rules.terrain_object_types),
+            false,
+            0,
+            None,
+            None,
+        );
+        let temperate_tree = temperate.cell(0, 0).unwrap();
+        assert_eq!(temperate_tree.terrain_object_occupation, Some(4));
+        assert!(temperate_tree.terrain_object_blocks);
+        assert_eq!(temperate_tree.zone_type, zone_class::BUILDING);
+        assert!(!temperate_tree.base_build_blocked);
+        let zero_tree = temperate.cell(1, 0).unwrap();
+        assert_eq!(zero_tree.terrain_object_occupation, Some(0));
+        assert!(!zero_tree.terrain_object_blocks);
+        assert_eq!(zero_tree.zone_type, zone_class::BUILDING);
+
+        map.header.theater = "SNOW".to_string();
+        let snow = ResolvedTerrainGrid::build_inner(
+            &map,
+            None,
+            None,
+            None,
+            None,
+            Some(&rules.terrain_object_types),
+            false,
+            0,
+            None,
+            None,
+        );
+        let snow_tree = snow.cell(0, 0).unwrap();
+        assert_eq!(snow_tree.terrain_object_occupation, Some(7));
+        assert!(snow_tree.terrain_object_blocks);
+        assert_eq!(snow_tree.zone_type, zone_class::WALL);
+    }
+
+    #[test]
+    fn gsi_04_04_outside_precedes_overlay_land_and_terrain_occupation() {
+        let playfield = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let outside = !playfield.contains_raised(0, 0, 0, 0);
+        assert!(outside);
+        assert_eq!(
+            recalc_zone_type(
+                outside,
+                Some(zone_class::CRUSHABLE),
+                LandType::Water.as_index(),
+                Some(0),
+                Some(7),
+            ),
+            zone_class::OUTSIDE
+        );
+    }
+
+    #[test]
+    fn gsi_04_04_load_land_writer_retains_arbitrary_profiles_and_pristine_base() {
+        let ini = IniFile::from_str(
+            "\
+[OverlayTypes]
+0=ROADKEEP
+1=ROADRESTORE
+2=WALLLAND
+3=RAILLAND
+4=WATERKEEP
+5=ROUGHKEEP
+[Road]
+Foot=80%
+Wheel=55%
+[Wall]
+Wheel=40%
+[Railroad]
+Wheel=60%
+[Water]
+Float=66%
+Wheel=44%
+[Rough]
+Foot=77%
+Wheel=33%
+[ROADKEEP]
+Land=Road
+NoUseTileLandType=yes
+[ROADRESTORE]
+Land=Road
+NoUseTileLandType=no
+[WALLLAND]
+Land=Wall
+NoUseTileLandType=no
+[RAILLAND]
+Land=Railroad
+NoUseTileLandType=no
+[WATERKEEP]
+Land=Water
+NoUseTileLandType=yes
+[ROUGHKEEP]
+Land=Rough
+NoUseTileLandType=yes
+",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let cells = (0..6)
+            .map(|rx| MapCell {
+                rx,
+                ry: 0,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            })
+            .collect();
+        let overlays = (0..6)
+            .map(|overlay_id| OverlayEntry {
+                rx: u16::from(overlay_id),
+                ry: 0,
+                overlay_id,
+                frame: 0,
+            })
+            .collect();
+        let map = make_map(cells, overlays, Vec::new());
+
+        let grid = ResolvedTerrainGrid::build(&map, None, None, None, Some(&registry), false, 0);
+        for (rx, overlay_id, land, class) in [
+            (0, 0, LandType::Road, TerrainClass::Road),
+            (2, 2, LandType::Wall, TerrainClass::Wall),
+            (3, 3, LandType::Railroad, TerrainClass::Railroad),
+            (4, 4, LandType::Water, TerrainClass::Water),
+            (5, 5, LandType::Rough, TerrainClass::Rough),
+        ] {
+            let cell = grid.cell(rx, 0).expect("retained load cell");
+            assert_eq!(cell.base_land_type, LandType::Clear.as_index());
+            assert_eq!(cell.land_type, land.as_index(), "overlay {overlay_id}");
+            assert_eq!(cell.terrain_class, class, "overlay {overlay_id}");
+            assert_eq!(
+                cell.speed_costs,
+                registry.flags(overlay_id).unwrap().land_speed_costs.unwrap(),
+                "overlay {overlay_id} profile"
+            );
+            assert_eq!(cell.is_water, land == LandType::Water);
+            assert_eq!(cell.is_road, land == LandType::Road);
+            assert_eq!(cell.is_rough, land == LandType::Rough);
+        }
+
+        let restored = grid.cell(1, 0).expect("ordinary restoration cell");
+        assert_eq!(restored.land_type, restored.base_land_type);
+        assert_eq!(restored.terrain_class, restored.base_terrain_class);
+        assert_eq!(restored.speed_costs, restored.base_speed_costs);
+    }
+
+    #[test]
+    fn gsi_04_04_load_tiberium_slope_branches_ignore_cleared_resources() {
+        let ini = IniFile::from_str(
+            "\
+[OverlayTypes]
+0=ORE
+1=STOCKORE
+2=WALLORE
+3=RAILORE
+[Tiberium]
+Wheel=80%
+[ORE]
+Tiberium=yes
+NoUseTileLandType=no
+[STOCKORE]
+Tiberium=yes
+[WALLORE]
+Tiberium=yes
+Land=Wall
+NoUseTileLandType=no
+[RAILORE]
+Tiberium=yes
+Land=Railroad
+NoUseTileLandType=no
+",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+        for (overlay_id, land, retained_slopes) in [
+            (0, LandType::Tiberium, &[0, 1, 4][..]),
+            (1, LandType::Tiberium, &[0][..]),
+            (2, LandType::Wall, &[0][..]),
+            (3, LandType::Railroad, &[0][..]),
+        ] {
+            for slope in [0, 1, 4, 5] {
+                let overlay = OverlayEntry {
+                    rx: 0,
+                    ry: 0,
+                    overlay_id,
+                    frame: 7,
+                };
+                let entries = vec![&overlay];
+                let effects = classify_overlay_effects(Some(&entries), Some(&registry), 0, slope);
+                assert_eq!(
+                    effects.effective_land,
+                    retained_slopes.contains(&slope).then_some(land),
+                    "overlay={overlay_id} slope={slope}"
+                );
+                if !retained_slopes.contains(&slope) {
+                    assert_eq!(effects.overlay_zone_type, None);
+                    assert!(!effects.overlay_blocks);
+                }
+            }
+        }
     }
 
     #[test]
@@ -3296,7 +3584,10 @@ IsRubble=yes
                 canonical_ramp,
                 ground_walk_blocked: false,
                 terrain_object_blocks: false,
+                terrain_object_occupation: None,
                 overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
                 zone_type: 0,
                 base_ground_walk_blocked: false,
                 base_build_blocked: true,

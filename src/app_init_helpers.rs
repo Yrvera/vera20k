@@ -704,6 +704,7 @@ mod tests {
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
 
     #[derive(Debug, PartialEq, Eq)]
     struct OverlayRegistryEntrySnapshot {
@@ -722,7 +723,9 @@ mod tests {
         bridge_deck: bool,
         radar_color: Option<[u8; 3]>,
         track: bool,
-        land: Option<String>,
+        land: LandType,
+        no_use_tile_land_type: bool,
+        land_speed_costs: Option<SpeedCostProfile>,
         strength: u16,
         damage_levels: u16,
     }
@@ -751,7 +754,9 @@ mod tests {
                     bridge_deck: flags.bridge_deck,
                     radar_color: flags.radar_color,
                     track: flags.track,
-                    land: flags.land.clone(),
+                    land: flags.land,
+                    no_use_tile_land_type: flags.no_use_tile_land_type,
+                    land_speed_costs: flags.land_speed_costs,
                     strength: flags.strength,
                     damage_levels: flags.damage_levels,
                 }

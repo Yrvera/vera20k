@@ -138,6 +138,41 @@ impl Default for TerrainClass {
     }
 }
 
+impl LandType {
+    pub const fn terrain_class(self) -> TerrainClass {
+        match self {
+            Self::Clear => TerrainClass::Clear,
+            Self::Road => TerrainClass::Road,
+            Self::Water => TerrainClass::Water,
+            Self::Rock => TerrainClass::Rock,
+            Self::Wall => TerrainClass::Wall,
+            Self::Tiberium => TerrainClass::Tiberium,
+            Self::Beach => TerrainClass::Beach,
+            Self::Rough => TerrainClass::Rough,
+            Self::Ice => TerrainClass::Ice,
+            Self::Railroad => TerrainClass::Railroad,
+            Self::Tunnel => TerrainClass::Tunnel,
+            Self::Weeds => TerrainClass::Weeds,
+        }
+    }
+
+    pub const fn is_water(self) -> bool {
+        matches!(self, Self::Water)
+    }
+
+    pub const fn is_road(self) -> bool {
+        matches!(self, Self::Road)
+    }
+
+    pub const fn is_rough(self) -> bool {
+        matches!(self, Self::Rough)
+    }
+
+    pub const fn is_cliff_like(self) -> bool {
+        matches!(self, Self::Rock)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SpeedCostProfile {
     pub foot: Option<u8>,
