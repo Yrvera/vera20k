@@ -307,18 +307,6 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
         rx,
         ry
     );
-
-    // Wall fill: if the placed type is a wall, flood-fill free overlay segments
-    // toward the nearest same-type wall in each cardinal direction.
-    let is_wall = state
-        .rules
-        .as_ref()
-        .and_then(|r| r.object(type_id))
-        .map(|o| o.wall)
-        .unwrap_or(false);
-    if is_wall {
-        fill_wall_between_endpoints(state, type_id, rx, ry);
-    }
 }
 
 /// Schedule `Command::LaunchSuperWeapon` at the current cursor cell.
@@ -362,97 +350,6 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
         rx,
         ry
     );
-}
-
-/// Fill wall overlay segments between the newly placed cell and the nearest existing
-/// same-type wall in each of the 4 cardinal directions, for free.
-///
-/// RA2 behavior: placing a wall between two existing wall endpoints auto-fills all
-/// intermediate cells at no cost. Only overlay entries are injected — no entities,
-/// no queue consumption — then connectivity is recomputed across the whole line.
-fn fill_wall_between_endpoints(state: &mut AppState, type_id: &str, rx: u16, ry: u16) {
-    let overlay_id = match state
-        .overlay_registry
-        .as_ref()
-        .and_then(|r| r.id_for_name(type_id))
-    {
-        Some(id) => id,
-        None => return,
-    };
-
-    // Directions: (drx, dry) — one axis moves, the other stays.
-    // Check each direction for an existing wall of the same overlay_id.
-    // If found, inject free overlay entries for all cells between click and that wall.
-    let directions: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
-    let mut new_cells: Vec<(u16, u16)> = Vec::new();
-
-    for (drx, dry) in directions {
-        // Walk outward until we hit an existing wall, a building, or the map edge.
-        let mut cx = rx as i32 + drx;
-        let mut cy = ry as i32 + dry;
-        let mut line: Vec<(u16, u16)> = Vec::new();
-        loop {
-            if cx < 0 || cy < 0 || cx > 511 || cy > 511 {
-                break;
-            }
-            let cell = (cx as u16, cy as u16);
-            // Stop if a non-wall building occupies this cell (can't build through it).
-            if let (Some(sim), Some(rules)) = (&state.simulation, &state.rules) {
-                if crate::sim::production::structure_occupies_cell(
-                    sim.entities(),
-                    rules,
-                    cell.0,
-                    cell.1,
-                    &sim.interner,
-                ) {
-                    break;
-                }
-            }
-            let has_wall = state
-                .overlays
-                .iter()
-                .any(|e| e.rx == cell.0 && e.ry == cell.1 && e.overlay_id == overlay_id);
-            if has_wall {
-                // Found an existing wall — fill everything in `line` between here and click.
-                new_cells.extend_from_slice(&line);
-                break;
-            }
-            line.push(cell);
-            cx += drx;
-            cy += dry;
-        }
-    }
-
-    if new_cells.is_empty() {
-        return;
-    }
-
-    // Inject free overlay entries for all fill cells.
-    for (fx, fy) in &new_cells {
-        let already = state
-            .overlays
-            .iter()
-            .any(|e| e.rx == *fx && e.ry == *fy && e.overlay_id == overlay_id);
-        if !already {
-            state.overlays.push(crate::map::overlay::OverlayEntry {
-                rx: *fx,
-                ry: *fy,
-                overlay_id,
-                frame: 0,
-            });
-        }
-    }
-    log::info!(
-        "Wall fill: {} free cells between ({},{}) and existing walls",
-        new_cells.len(),
-        rx,
-        ry
-    );
-
-    // Recompute connectivity for the whole updated overlay list.
-    if let Some(registry) = &state.overlay_registry {
-        crate::map::overlay::compute_wall_connectivity(&mut state.overlays, registry);
-    }
 }
 
 pub(crate) fn place_starter_base_for_local_owner(state: &mut AppState) {

@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::{FactoryType, ObjectCategory};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{Command, CommandEnvelope, QueueMode};
@@ -67,6 +68,7 @@ pub fn tick_ai(
     rules: &RuleSet,
     path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Vec<CommandEnvelope> {
     let mut commands: Vec<CommandEnvelope> = Vec::new();
     let execute_tick = sim.session.tick.saturating_add(1);
@@ -93,6 +95,7 @@ pub fn tick_ai(
                 rules,
                 path_grid,
                 height_map,
+                overlay_registry,
                 execute_tick,
                 &mut commands,
             );
@@ -132,6 +135,7 @@ pub fn tick_ai(
             rules,
             path_grid,
             height_map,
+            overlay_registry,
             execute_tick,
             &mut commands,
         );
@@ -369,6 +373,7 @@ fn place_ready_buildings(
     rules: &RuleSet,
     path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
     execute_tick: u64,
     commands: &mut Vec<CommandEnvelope>,
 ) {
@@ -405,6 +410,7 @@ fn place_ready_buildings(
             fh,
             path_grid,
             height_map,
+            overlay_registry,
         ) {
             if let Some(owner_id) = sim.interner.get(owner) {
                 commands.push(CommandEnvelope::new(
@@ -571,6 +577,7 @@ fn find_placement_cell(
     _fh: u16,
     path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Option<(u16, u16)> {
     // Try placement in a spiral pattern around the base center.
     let max_radius: i32 = 12;
@@ -583,8 +590,16 @@ fn find_placement_cell(
         // Only check the perimeter of this ring.
         for x in min_x..=max_x {
             for y in [min_y, max_y] {
-                let preview = production::placement_preview_for_owner(
-                    sim, rules, owner, type_id, x as u16, y as u16, path_grid, height_map,
+                let preview = production::placement_preview_for_owner_with_overlays(
+                    sim,
+                    rules,
+                    owner,
+                    type_id,
+                    x as u16,
+                    y as u16,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
                 );
                 if preview.as_ref().is_some_and(|p| p.valid) {
                     return Some((x as u16, y as u16));
@@ -593,8 +608,16 @@ fn find_placement_cell(
         }
         for y in (min_y + 1)..max_y {
             for x in [min_x, max_x] {
-                let preview = production::placement_preview_for_owner(
-                    sim, rules, owner, type_id, x as u16, y as u16, path_grid, height_map,
+                let preview = production::placement_preview_for_owner_with_overlays(
+                    sim,
+                    rules,
+                    owner,
+                    type_id,
+                    x as u16,
+                    y as u16,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
                 );
                 if preview.as_ref().is_some_and(|p| p.valid) {
                     return Some((x as u16, y as u16));
@@ -661,9 +684,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::sim::components::Health;
     use crate::sim::miner::{MinerState, RefineryDockPhase, ResourceNode, ResourceType};
+    use crate::sim::overlay_grid::OverlayGrid;
     use crate::sim::pathfinding::PathGrid;
 
     fn modded_ai_rules() -> RuleSet {
@@ -845,7 +870,7 @@ mod tests {
         // No house registered -> not defeated -> the MCV is deployed.
         let (sim, owner_id) = build_sim();
         let mut ai = vec![AiPlayerState::new(owner_id)];
-        let live = tick_ai(&sim, &mut ai, &rules, None, &height_map);
+        let live = tick_ai(&sim, &mut ai, &rules, None, &height_map, None);
         assert_eq!(live.len(), 1, "a live AI house deploys its MCV");
         assert!(matches!(live[0].payload, Command::DeployMcv { .. }));
 
@@ -856,11 +881,105 @@ mod tests {
         house.is_defeated = true;
         sim.houses.insert(owner_id, house);
         let mut ai = vec![AiPlayerState::new(owner_id)];
-        let defeated = tick_ai(&sim, &mut ai, &rules, None, &height_map);
+        let defeated = tick_ai(&sim, &mut ai, &rules, None, &height_map, None);
         assert!(
             defeated.is_empty(),
             "a defeated AI house must issue no command"
         );
+    }
+
+    #[test]
+    fn gsi_04_07_ai_ready_wall_uses_authoritative_overlay_command_path() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GACNST\n\
+             1=GAWALL\n\
+             [OverlayTypes]\n\
+             0=GASAND\n\
+             1=CYCL\n\
+             2=GAWALL\n\
+             [GACNST]\n\
+             Strength=1000\n\
+             Foundation=2x2\n\
+             BaseNormal=yes\n\
+             [GASAND]\n\
+             Wall=yes\n\
+             Armor=wood\n\
+             Strength=100\n\
+             [CYCL]\n\
+             [GAWALL]\n\
+             Wall=yes\n\
+             Armor=concrete\n\
+             Strength=300\n\
+             Foundation=1x1\n\
+             Adjacent=0\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("AI wall rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let path_grid = PathGrid::new(32, 32);
+        let height_map = BTreeMap::new();
+        let mut sim = Simulation::new();
+        sim.session.binary_frame = 1;
+        sim.overlay_grid = Some(OverlayGrid::new(32, 32));
+        spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+        let owner = sim.interner.intern("Americans");
+        let wall_type = sim.interner.intern("GAWALL");
+        sim.production
+            .ready_by_owner
+            .entry(owner)
+            .or_default()
+            .push_back(wall_type);
+
+        let mut ai = vec![AiPlayerState::new(owner)];
+        let commands = tick_ai(
+            &sim,
+            &mut ai,
+            &rules,
+            Some(&path_grid),
+            &height_map,
+            Some(&registry),
+        );
+        let (rx, ry) = match commands.as_slice() {
+            [CommandEnvelope {
+                payload:
+                    Command::PlaceReadyBuilding {
+                        owner: command_owner,
+                        type_id,
+                        rx,
+                        ry,
+                    },
+                ..
+            }] => {
+                assert_eq!(*command_owner, owner);
+                assert_eq!(*type_id, wall_type);
+                (*rx, *ry)
+            }
+            other => panic!("ready wall should emit one placement command, got {other:?}"),
+        };
+
+        let entity_count = sim.substrate.entities.len();
+        let tick = sim.advance_tick(
+            &commands,
+            Some(&rules),
+            &height_map,
+            Some(&path_grid),
+            Some(&registry),
+            67,
+        );
+        assert_eq!(tick.executed_commands, 1);
+        assert!(!tick.spawned_entities);
+        assert_eq!(sim.substrate.entities.len(), entity_count);
+        assert!(!sim.production.ready_by_owner.contains_key(&owner));
+        let wall = sim
+            .overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(rx, ry);
+        assert_eq!(wall.overlay_id, registry.id_for_name("GAWALL"));
+        assert_eq!(wall.wall_owner, Some(owner));
     }
 
     #[test]
@@ -1095,7 +1214,7 @@ mod tests {
             vec![modproc_id]
         );
 
-        assert!(production::place_ready_building(
+        assert!(production::place_ready_building_without_overlays(
             &mut sim,
             &rules,
             "Americans",

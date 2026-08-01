@@ -99,7 +99,7 @@ use crate::sim::world::Simulation;
 // serialized; production load retains their live pre-load process state.
 // Bumped 37 -> 38: DriveLocomotionRuntime persists the independent head-to
 // occupation footprint and whether the current-cell occupation was cleared.
-const SNAPSHOT_VERSION: u32 = 38;
+const SNAPSHOT_VERSION: u32 = 39;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1234,22 +1234,22 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_05_v37_header_is_rejected_before_drive_runtime_decode() {
+    fn gsi_04_07_v38_header_is_rejected_before_wall_owner_decode() {
         let bytes = bincode::serialize(&GameSnapshotHeader {
-            version: 37,
+            version: 38,
             map_hash: 1,
             rules_hash: 2,
             tick: 3,
             save_timestamp: 4,
-            map_name: "old-layout".to_string(),
+            map_name: "v38-layout".to_string(),
         })
-        .expect("serialize old header only");
+        .expect("serialize v38 header only");
 
         assert!(matches!(
             GameSnapshot::load(&bytes),
             Err(SnapshotError::VersionMismatch {
-                expected: 38,
-                found: 37,
+                expected: 39,
+                found: 38,
             })
         ));
     }
@@ -1286,15 +1286,16 @@ mod tests {
     /// the consolidated Phase-0 persistence schema took 34 -> 35, and
     /// lifecycle target/animation identity state took 35 -> 36, and omission
     /// of process-global Main/MapGen RNG state took 36 -> 37, and serialized
-    /// Drive occupation footprints took 37 -> 38. This pins it so a later
+    /// Drive occupation footprints took 37 -> 38, and authoritative wall
+    /// ownership took 38 -> 39. This pins it so a later
     /// accidental bump is caught.
     #[test]
-    fn snapshot_version_is_38() {
-        assert_eq!(super::SNAPSHOT_VERSION, 38);
+    fn snapshot_version_is_39() {
+        assert_eq!(super::SNAPSHOT_VERSION, 39);
     }
 
     #[test]
-    fn gsi_04_05_v38_roundtrip_restores_drive_footprint_and_cell_occupation() {
+    fn gsi_04_05_v39_roundtrip_restores_drive_footprint_and_cell_occupation() {
         use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
         use crate::sim::game_entity::GameEntity;
         use crate::sim::occupancy::{CellOccupationGrid, VEHICLE_OCCUPATION_BIT};
@@ -1331,7 +1332,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            38
+            39
         );
 
         let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1371,6 +1372,44 @@ mod tests {
                 VEHICLE_OCCUPATION_BIT
             );
         }
+    }
+
+    #[test]
+    fn gsi_04_07_v39_roundtrip_restores_wall_owner() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
+        overlays.place_owned_wall(3, 4, 2, 0x1A, owner);
+        sim.overlay_grid = Some(overlays);
+        let expected_hash = sim.state_hash();
+        let mut unowned = Simulation::new();
+        let _ = unowned.interner.intern("AMERICANS");
+        let mut unowned_overlays = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
+        unowned_overlays.place_overlay(3, 4, 2, 0x1A);
+        unowned.overlay_grid = Some(unowned_overlays);
+        assert_ne!(
+            unowned.state_hash(),
+            expected_hash,
+            "wall ownership participates in deterministic state"
+        );
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_07", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes)
+                .expect("current snapshot header")
+                .version,
+            39
+        );
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        let cell = restored
+            .overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(3, 4);
+        assert_eq!(cell.overlay_id, Some(2));
+        assert_eq!(cell.overlay_data, 0x1A);
+        assert_eq!(cell.wall_owner, Some(owner));
+        assert_eq!(restored.state_hash(), expected_hash);
     }
 
     #[test]

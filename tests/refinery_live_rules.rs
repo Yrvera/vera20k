@@ -7,7 +7,7 @@ use vera20k::rules::art_data::ArtRegistry;
 use vera20k::rules::ini_parser::IniFile;
 use vera20k::rules::ruleset::RuleSet;
 use vera20k::sim::pathfinding::PathGrid;
-use vera20k::sim::production::place_ready_building;
+use vera20k::sim::production::place_ready_building_without_overlays;
 use vera20k::sim::world::Simulation;
 
 fn ra2_dir() -> String {
@@ -135,7 +135,7 @@ fn real_garefn_placement_spawns_cmin() {
         VecDeque::from([vera20k::sim::intern::test_intern("GAREFN")]),
     );
 
-    assert!(place_ready_building(
+    assert!(place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",

@@ -1777,16 +1777,12 @@ impl Simulation {
 
     /// Apply combat-emitted wall damage events: drives the per-cell damage
     /// progression in `damage_wall_overlay`, runs the cardinal-neighbor cleanup
-    /// for any cells the damage destroys, and despawns the wall GameEntity at
-    /// each destroyed cell.
+    /// for any cells the damage destroys.
     ///
-    /// `rules` and `overlay_registry` are required because the wall damage
-    /// pipeline reads per-overlay-type Strength/DamageLevels and identifies
-    /// wall entities via the `Wall=yes` flag on their ObjectType.
+    /// `overlay_registry` supplies per-overlay-type Strength/DamageLevels.
     pub(crate) fn apply_wall_damage_events(
         &mut self,
         events: &[WallDamageEvent],
-        rules: &RuleSet,
         overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
     ) {
         if events.is_empty() {
@@ -1795,8 +1791,6 @@ impl Simulation {
         let Some(grid) = self.overlay_grid.as_mut() else {
             return;
         };
-
-        let mut destroyed_cells: Vec<(u16, u16)> = Vec::new();
 
         for event in events {
             let result = damage_wall_overlay(
@@ -1811,53 +1805,8 @@ impl Simulation {
             );
 
             for &cell in &result.destroyed_cells {
-                destroyed_cells.push(cell);
-                let chained = cleanup_wall_neighbors(grid, overlay_registry, cell.0, cell.1);
-                destroyed_cells.extend(chained);
+                let _ = cleanup_wall_neighbors(grid, overlay_registry, cell.0, cell.1);
             }
-        }
-
-        if destroyed_cells.is_empty() {
-            return;
-        }
-
-        destroyed_cells.sort_unstable();
-        destroyed_cells.dedup();
-
-        for (rx, ry) in destroyed_cells {
-            self.remove_wall_entity_at(rx, ry, rules);
-        }
-    }
-
-    /// Despawn the GameEntity backing a wall overlay cell, if one exists.
-    /// Walls have a paired `GameEntity` for HP/ownership and an OverlayCell for
-    /// rendering/passability. When the overlay is destroyed via wall-damage
-    /// events, the entity must be removed too. Mod-loaded maps may have stale
-    /// state with no matching entity; in that case a warn is logged and the
-    /// caller continues without panicking.
-    fn remove_wall_entity_at(&mut self, rx: u16, ry: u16, rules: &RuleSet) {
-        let to_remove: Option<u64> = self.substrate.entities.iter_sorted().find_map(|(id, e)| {
-            if e.position.rx == rx
-                && e.position.ry == ry
-                && self.object_type(e.type_ref, rules).is_some_and(|o| o.wall)
-            {
-                Some(id)
-            } else {
-                None
-            }
-        });
-
-        if let Some(id) = to_remove {
-            // Route through the lifecycle chokepoint, not a raw store remove: a
-            // wall is an EntityCategory::Structure, so it owns owned-building
-            // count, foundation occupancy, logic-vector membership, and any radio
-            // contacts. uninit tears all of those down in native order, marks the
-            // entity dead-limbo, and enqueues the slot for the ordinary tail
-            // pending-delete drain. A direct entities.remove leaks count/occupancy and
-            // leaves a dangling id in the active order.
-            self.uninit(id);
-        } else {
-            log::warn!("apply_wall_damage_events: no wall entity at ({rx}, {ry})");
         }
     }
 
@@ -1877,9 +1826,8 @@ impl Simulation {
     /// so this self-limits to one destruction per wall with no per-tick re-fire.
     ///
     /// Runs immediately after Phase-1 ground movement, before vision. Reuses the
-    /// shared `apply_wall_damage_events` teardown so overlay clear, cardinal
-    /// neighbor connectivity cleanup, chain reaction, and wall-entity `uninit`
-    /// match the weapon path's downstream behavior exactly.
+    /// shared `apply_wall_damage_events` path so overlay clear, cardinal
+    /// neighbor connectivity cleanup, and chain reaction match weapon damage.
     ///
     /// Parity follow-up: gamemd also plays a Voc cue and adds a small forward
     /// rocking tilt on the crush; the exact Voc index is unresolved
@@ -1890,7 +1838,7 @@ impl Simulation {
         rules: Option<&RuleSet>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     ) {
-        let (Some(rules), Some(registry)) = (rules, overlay_registry) else {
+        let (Some(_rules), Some(registry)) = (rules, overlay_registry) else {
             return;
         };
         let Some(grid) = self.overlay_grid.as_ref() else {
@@ -1935,7 +1883,7 @@ impl Simulation {
         }
 
         // Phase 2 (mutating): shared teardown, identical to the combat wall path.
-        self.apply_wall_damage_events(&events, rules, registry);
+        self.apply_wall_damage_events(&events, registry);
     }
 
     pub(crate) fn default_vision_range_for_category(category: EntityCategory) -> u16 {
@@ -2146,18 +2094,27 @@ impl Simulation {
         rules: Option<&RuleSet>,
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     ) -> (bool, bool) {
         let cmd_owner_str = self.interner.resolve(cmd.owner).to_string();
-        let applied =
-            self.apply_command(&cmd_owner_str, &cmd.payload, rules, path_grid, height_map);
+        let applied = self.apply_command_with_overlays(
+            &cmd_owner_str,
+            &cmd.payload,
+            rules,
+            path_grid,
+            height_map,
+            overlay_registry,
+        );
         let spawned_entity = applied
-            && matches!(
-                cmd.payload,
-                Command::PlaceReadyBuilding { .. }
-                    | Command::DeployMcv { .. }
-                    | Command::UndeployBuilding { .. }
-                    | Command::LaunchSuperWeapon { .. }
-            );
+            && match cmd.payload {
+                Command::PlaceReadyBuilding { type_id, .. } => rules
+                    .and_then(|rules| rules.object(self.interner.resolve(type_id)))
+                    .is_some_and(|object| !object.wall),
+                Command::DeployMcv { .. }
+                | Command::UndeployBuilding { .. }
+                | Command::LaunchSuperWeapon { .. } => true,
+                _ => false,
+            };
         let destroyed_structure = applied
             && matches!(
                 cmd.payload,
@@ -2497,6 +2454,7 @@ impl Simulation {
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
         execute_tick: u64,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     ) -> (usize, bool, bool) {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
@@ -2521,7 +2479,13 @@ impl Simulation {
                     && !Self::command_uses_megamission(&command.payload)
             }) {
                 let (spawned, destroyed) =
-                    self.apply_one_due_command(command, rules, path_grid, height_map);
+                    self.apply_one_due_command(
+                        command,
+                        rules,
+                        path_grid,
+                        height_map,
+                        overlay_registry,
+                    );
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
                 executed_commands += 1;
@@ -2539,7 +2503,13 @@ impl Simulation {
             self.adjust_staged_megamission_destinations(&mut staged, path_grid);
             for command in &staged {
                 let (spawned, destroyed) =
-                    self.apply_one_due_command(command, rules, path_grid, height_map);
+                    self.apply_one_due_command(
+                        command,
+                        rules,
+                        path_grid,
+                        height_map,
+                        overlay_registry,
+                    );
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
                 executed_commands += 1;
@@ -2559,6 +2529,7 @@ impl Simulation {
         rules: Option<&RuleSet>,
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
         execute_tick: u64,
         executed_commands: &mut usize,
@@ -2588,20 +2559,29 @@ impl Simulation {
                 rules.expect("rules checked above"),
                 path_grid,
                 height_map,
+                overlay_registry,
             );
             self.ai_players = ai_state;
             for cmd in &ai_commands {
                 let cmd_owner_str = self.interner.resolve(cmd.owner).to_string();
-                let applied =
-                    self.apply_command(&cmd_owner_str, &cmd.payload, rules, path_grid, height_map);
+                let applied = self.apply_command_with_overlays(
+                    &cmd_owner_str,
+                    &cmd.payload,
+                    rules,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
+                );
                 if applied
-                    && matches!(
-                        cmd.payload,
-                        Command::PlaceReadyBuilding { .. }
-                            | Command::DeployMcv { .. }
-                            | Command::UndeployBuilding { .. }
-                            | Command::LaunchSuperWeapon { .. }
-                    )
+                    && match cmd.payload {
+                        Command::PlaceReadyBuilding { type_id, .. } => rules
+                            .and_then(|rules| rules.object(self.interner.resolve(type_id)))
+                            .is_some_and(|object| !object.wall),
+                        Command::DeployMcv { .. }
+                        | Command::UndeployBuilding { .. }
+                        | Command::LaunchSuperWeapon { .. } => true,
+                        _ => false,
+                    }
                 {
                     *spawned_entities = true;
                 }
@@ -2648,7 +2628,14 @@ impl Simulation {
         // Logic walk observes frame N's pre-command state, so an accepted
         // command first changes that object's AI behavior on frame N+1.
         let (executed, spawned, destroyed) =
-            self.apply_due_commands(commands, rules, path_grid, height_map, execute_tick);
+            self.apply_due_commands(
+                commands,
+                rules,
+                path_grid,
+                height_map,
+                execute_tick,
+                overlay_registry,
+            );
         *executed_commands += executed;
         *spawned_entities |= spawned;
         *destroyed_structure |= destroyed;
@@ -3138,12 +3125,10 @@ impl Simulation {
                     rules,
                     &combat_result.bridge_damage_events,
                 );
-            // Wall damage: feed combat-emitted wall hits through the per-cell damage
-            // pipeline and despawn destroyed wall entities. Requires overlay_registry
-            // (wall flag on OverlayType plus per-type Strength/DamageLevels); rules
-            // is already unwrapped in this block.
+            // Wall damage: feed combat-emitted wall hits through the authoritative
+            // per-cell pipeline. OverlayType supplies Strength/DamageLevels.
             if let Some(reg) = overlay_registry {
-                self.apply_wall_damage_events(&combat_result.wall_damage_events, rules, reg);
+                self.apply_wall_damage_events(&combat_result.wall_damage_events, reg);
             }
             for req in &combat_result.tiberium_reduction_requests {
                 self.reduce_tiberium_at_with_native_context(
@@ -3412,6 +3397,7 @@ impl Simulation {
             rules,
             path_grid,
             height_map,
+            overlay_registry,
             tick_ms,
             execute_tick,
             &mut executed_commands,

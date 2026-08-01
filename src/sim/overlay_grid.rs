@@ -15,6 +15,7 @@ use crate::map::resolved_terrain::{
     ResolvedTerrainGrid, overlay_reduced_zone_type, recalc_zone_type,
 };
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
+use crate::sim::intern::InternedId;
 
 /// Per-cell mutable overlay state — mirrors CellClass +0x44 / +0x11E.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -28,6 +29,12 @@ pub struct OverlayCell {
     /// - Bridges: damage state 0-17 (EW 0-8, NS 9-17)
     /// - Other: raw frame index
     pub overlay_data: u8,
+    /// Owning house for a placed wall. Map-pack overlays start unowned.
+    ///
+    /// A cleared GAWALL/NAWALL cell may retain this value after native's
+    /// isolated-neighbor cleanup. It is inert while `overlay_id` is `None` and
+    /// is overwritten by the next placement.
+    pub wall_owner: Option<InternedId>,
 }
 
 impl Default for OverlayCell {
@@ -35,6 +42,7 @@ impl Default for OverlayCell {
         Self {
             overlay_id: None,
             overlay_data: 0,
+            wall_owner: None,
         }
     }
 }
@@ -80,6 +88,7 @@ impl OverlayGrid {
                 grid.cells[idx] = OverlayCell {
                     overlay_id: Some(entry.overlay_id),
                     overlay_data: entry.frame,
+                    wall_owner: None,
                 };
             }
         }
@@ -116,9 +125,39 @@ impl OverlayGrid {
             self.cells[idx] = OverlayCell {
                 overlay_id: Some(overlay_id),
                 overlay_data: data,
+                wall_owner: None,
             };
             self.dirty_cells.push((rx, ry));
         }
+    }
+
+    /// Stamp a player-owned wall overlay at a cell.
+    pub fn place_owned_wall(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        overlay_id: u8,
+        data: u8,
+        owner: InternedId,
+    ) {
+        if let Some(idx) = index_of(self.width, self.height, rx, ry) {
+            self.cells[idx] = OverlayCell {
+                overlay_id: Some(overlay_id),
+                overlay_data: data,
+                wall_owner: Some(owner),
+            };
+            self.dirty_cells.push((rx, ry));
+        }
+    }
+
+    /// Clear type/data while retaining the wall owner.
+    fn clear_overlay_preserving_owner(&mut self, rx: u16, ry: u16) -> Option<u8> {
+        let idx = index_of(self.width, self.height, rx, ry)?;
+        let prev = self.cells[idx].overlay_id;
+        self.cells[idx].overlay_id = None;
+        self.cells[idx].overlay_data = 0;
+        self.dirty_cells.push((rx, ry));
+        prev
     }
 
     /// Update overlay_data in place (density change, damage increment).
@@ -407,7 +446,11 @@ fn damage_wall_recursive(
     }
 
     // Check if fully destroyed.
-    if damage != u16::MAX && (damage_level as u16) < flags.damage_levels {
+    let penultimate = flags.damage_levels.saturating_sub(1);
+    let connected = new_data & 0x0F != 0;
+    let retain = u16::from(damage_level) < penultimate
+        || (u16::from(damage_level) == penultimate && connected);
+    if damage != u16::MAX && retain {
         // Not fully destroyed — just update damage level.
         grid.set_overlay_data(rx, ry, new_data);
         result.changed_cells.push((rx, ry));
@@ -435,10 +478,7 @@ pub enum RecomputeResult {
 fn auto_destruct_threshold(overlay_id: u8, full_byte: u8) -> bool {
     match overlay_id {
         0x00 => matches!(full_byte, 0x10 | 0x20), // GASAND
-        0x01 => full_byte == 0x20,                // CYCL
         0x02 => matches!(full_byte, 0x20 | 0x30), // GAWALL
-        0x03 => full_byte == 0x10,                // BARB
-        0x16 => matches!(full_byte, 0x10 | 0x20),
         0x1A => matches!(full_byte, 0x20 | 0x30), // NAWALL
         _ => false,
     }
@@ -488,7 +528,11 @@ pub fn recompute_wall_connectivity_at(
     // damaged isolated wall, even if the connectivity nibble itself is
     // unchanged. Mirrors PostDestructionWallCleanup §5.2.
     if auto_destruct_threshold(overlay_id, new_byte) {
-        grid.clear_overlay(rx, ry);
+        if matches!(overlay_id, 0x02 | 0x1A) {
+            grid.clear_overlay_preserving_owner(rx, ry);
+        } else {
+            grid.clear_overlay(rx, ry);
+        }
         return RecomputeResult::Destroyed;
     }
 
@@ -500,34 +544,45 @@ pub fn recompute_wall_connectivity_at(
     RecomputeResult::Updated
 }
 
-/// Refresh connectivity on the 4 cardinal neighbors of `(rx, ry)`, recursively
-/// extending into any neighbor that gets auto-destructed by the safety net.
+/// Refresh a newly stamped wall and its four cardinal neighbors only.
+pub fn refresh_wall_connectivity_after_placement(
+    grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    rx: u16,
+    ry: u16,
+) {
+    const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    let _ = recompute_wall_connectivity_at(grid, registry, rx, ry);
+    for (dx, dy) in CARDINAL {
+        let nx = i32::from(rx) + dx;
+        let ny = i32::from(ry) + dy;
+        if nx < 0 || ny < 0 {
+            continue;
+        }
+        let _ = recompute_wall_connectivity_at(grid, registry, nx as u16, ny as u16);
+    }
+}
+
+/// Reproduce the fixed cleanup fan-out after direct destruction.
 ///
-/// Returns the list of cells destroyed by the cleanup pass (caller is responsible
-/// for removing the corresponding wall entities).
-///
-/// Bounded by a visited set so each cell is recomputed at most once per call.
+/// Each cardinal neighbor receives a N/E/S/W/self cross update in table order.
+/// Cleanup removals do not recursively expand this fixed scope.
 pub fn cleanup_wall_neighbors(
     grid: &mut OverlayGrid,
     registry: &OverlayTypeRegistry,
     rx: u16,
     ry: u16,
 ) -> Vec<(u16, u16)> {
-    use std::collections::{BTreeSet, VecDeque};
     const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    const CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
 
     let mut destroyed: Vec<(u16, u16)> = Vec::new();
-    // `BTreeSet` (not `HashSet`) per sim convention — membership-only here,
-    // but no reason for the BFS dedup to be the one non-deterministic
-    // collection in the file.
-    let mut visited: BTreeSet<(u16, u16)> = BTreeSet::new();
-    let mut worklist: VecDeque<(u16, u16)> = VecDeque::new();
-    worklist.push_back((rx, ry));
-
-    while let Some((cx, cy)) = worklist.pop_front() {
-        for (dx, dy) in CARDINAL {
-            let nx = cx as i32 + dx;
-            let ny = cy as i32 + dy;
+    for (outer_dx, outer_dy) in CARDINAL {
+        let cx = i32::from(rx) + outer_dx;
+        let cy = i32::from(ry) + outer_dy;
+        for (dx, dy) in CROSS {
+            let nx = cx + dx;
+            let ny = cy + dy;
             if nx < 0 || ny < 0 {
                 continue;
             }
@@ -536,14 +591,12 @@ pub fn cleanup_wall_neighbors(
             if nx >= grid.width() || ny >= grid.height() {
                 continue;
             }
-            if !visited.insert((nx, ny)) {
-                continue;
-            }
             if let RecomputeResult::Destroyed =
                 recompute_wall_connectivity_at(grid, registry, nx, ny)
             {
-                destroyed.push((nx, ny));
-                worklist.push_back((nx, ny));
+                if !destroyed.contains(&(nx, ny)) {
+                    destroyed.push((nx, ny));
+                }
             }
         }
     }
@@ -567,6 +620,7 @@ const ADJACENT_8: [(i32, i32); 8] = [
 const DEFAULT_CELL: OverlayCell = OverlayCell {
     overlay_id: None,
     overlay_data: 0,
+    wall_owner: None,
 };
 
 fn index_of(width: u16, height: u16, rx: u16, ry: u16) -> Option<usize> {
@@ -582,6 +636,24 @@ mod tests {
         let grid = OverlayGrid::new(4, 4);
         assert_eq!(grid.cell(0, 0).overlay_id, None);
         assert_eq!(grid.cell(3, 3).overlay_id, None);
+    }
+
+    #[test]
+    fn gsi_04_07_map_seeded_overlay_is_unowned() {
+        let grid = OverlayGrid::from_overlay_entries(
+            &[OverlayEntry {
+                rx: 1,
+                ry: 2,
+                overlay_id: 2,
+                frame: 0x18,
+            }],
+            4,
+            4,
+        );
+        let cell = grid.cell(1, 2);
+        assert_eq!(cell.overlay_id, Some(2));
+        assert_eq!(cell.overlay_data, 0x18);
+        assert_eq!(cell.wall_owner, None);
     }
 
     #[test]
@@ -1385,6 +1457,91 @@ Strength=400
 ";
         let ini = IniFile::from_str(text);
         OverlayTypeRegistry::from_ini(&ini, None)
+    }
+
+    fn make_retail_stage_registry() -> OverlayTypeRegistry {
+        let rules = IniFile::from_str(
+            "[OverlayTypes]\n\
+             0=GASAND\n\
+             1=CYCL\n\
+             2=GAWALL\n\
+             [GASAND]\n\
+             Wall=yes\n\
+             Armor=wood\n\
+             Strength=100\n\
+             [CYCL]\n\
+             [GAWALL]\n\
+             Wall=yes\n\
+             Armor=concrete\n\
+             Strength=100\n",
+        );
+        let art = IniFile::from_str(
+            "[GASAND]\n\
+             DamageLevels=2\n\
+             [GAWALL]\n\
+             DamageLevels=3\n",
+        );
+        OverlayTypeRegistry::from_ini(&rules, Some(&art))
+    }
+
+    #[test]
+    fn gsi_04_07_damage_stage_connection_forced_and_chain_order() {
+        let registry = make_retail_stage_registry();
+        let mut rng = crate::sim::rng::SimRng::new(7);
+
+        let mut isolated = OverlayGrid::new(12, 12);
+        isolated.place_overlay(5, 5, 0, 0);
+        let result = damage_wall_overlay(&mut isolated, &registry, 5, 5, 100, &mut rng);
+        assert_eq!(result.destroyed_cells, vec![(5, 5)]);
+
+        let mut connected = OverlayGrid::new(12, 12);
+        connected.place_overlay(5, 5, 0, 0x02);
+        connected.place_overlay(6, 5, 0, 0x08);
+        let result = damage_wall_overlay(&mut connected, &registry, 5, 5, 100, &mut rng);
+        assert!(result.destroyed_cells.is_empty());
+        assert_eq!(connected.cell(5, 5).overlay_data, 0x12);
+        let result = damage_wall_overlay(&mut connected, &registry, 5, 5, 100, &mut rng);
+        assert_eq!(result.destroyed_cells, vec![(5, 5)]);
+
+        let mut forced_chain = OverlayGrid::new(12, 12);
+        forced_chain.place_overlay(5, 5, 2, 0x1A);
+        forced_chain.place_overlay(6, 5, 2, 0x08);
+        let result = damage_wall_overlay(&mut forced_chain, &registry, 5, 5, u16::MAX, &mut rng);
+        assert!(result.destroyed_cells.contains(&(5, 5)));
+        assert_eq!(
+            forced_chain.cell(6, 5).overlay_data & 0xF0,
+            0x10,
+            "forced terminal removal chains into pristine neighbors first"
+        );
+    }
+
+    #[test]
+    fn gsi_04_07_cleanup_has_fixed_scope_and_preserves_concrete_owner_quirk() {
+        let registry = make_retail_stage_registry();
+        let owner = crate::sim::intern::InternedId::from_index(9);
+        let mut grid = OverlayGrid::new(16, 8);
+        grid.place_owned_wall(4, 3, 2, 0x20, owner);
+        grid.place_owned_wall(6, 3, 2, 0x20, owner);
+
+        let destroyed = cleanup_wall_neighbors(&mut grid, &registry, 2, 3);
+        assert_eq!(destroyed, vec![(4, 3)]);
+        assert_eq!(grid.cell(4, 3).overlay_id, None);
+        assert_eq!(grid.cell(4, 3).overlay_data, 0);
+        assert_eq!(
+            grid.cell(4, 3).wall_owner,
+            Some(owner),
+            "GAWALL isolated cleanup leaves its stale owner"
+        );
+        assert_eq!(
+            grid.cell(6, 3).overlay_id,
+            Some(2),
+            "cleanup does not recursively flood beyond the fixed cross fan-out"
+        );
+
+        grid.place_owned_wall(4, 4, 0, 0x10, owner);
+        let _ = cleanup_wall_neighbors(&mut grid, &registry, 2, 4);
+        assert_eq!(grid.cell(4, 4).overlay_id, None);
+        assert_eq!(grid.cell(4, 4).wall_owner, None);
     }
 
     #[test]

@@ -29,7 +29,9 @@ pub(crate) use self::production_placement::structure_occupies_cell;
 pub(crate) use self::production_refinery::spawn_completed_refinery_free_units;
 pub use self::production_placement::{
     active_producer_for_owner_category, cycle_active_producer_for_owner_category,
-    place_ready_building, placement_preview_for_owner, toggle_pause_for_owner_category,
+    place_ready_building_with_overlays, place_ready_building_without_overlays,
+    placement_preview_for_owner_with_overlays, placement_preview_for_owner_without_overlays,
+    toggle_pause_for_owner_category,
 };
 pub use self::production_queue::{
     build_options_for_owner, cancel_by_type_for_owner, cancel_last_for_owner, credits_for_owner,

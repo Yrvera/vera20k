@@ -122,8 +122,9 @@ pub struct OverlayTypeFlags {
     /// Tiberium=yes — rendered with unit palette, gets -12px Y offset.
     pub tiberium: bool,
     /// Wall=yes — rendered with unit palette, gets -12px Y offset.
-    /// In RA2, Wall=yes is used for BOTH destructible walls AND road/pavement overlays.
     pub wall: bool,
+    /// Overlay `Armor=wood`, used by the Wood warhead wall-damage route.
+    pub armor_is_wood: bool,
     /// IsVeins=yes — rendered with unit palette, gets -12px Y offset.
     pub is_veins: bool,
     /// IsVeinholeMonster=yes — rendered with unit palette.
@@ -170,6 +171,7 @@ impl Default for OverlayTypeFlags {
         Self {
             tiberium: false,
             wall: false,
+            armor_is_wood: false,
             is_veins: false,
             is_veinhole_monster: false,
             is_gate: false,
@@ -292,6 +294,9 @@ impl OverlayTypeRegistry {
                 flags.push(OverlayTypeFlags {
                     tiberium,
                     wall: type_section.get_bool("Wall").unwrap_or(false),
+                    armor_is_wood: type_section
+                        .get("Armor")
+                        .is_some_and(|armor| armor.eq_ignore_ascii_case("wood")),
                     is_veins: type_section.get_bool("IsVeins").unwrap_or(false),
                     is_veinhole_monster: type_section
                         .get_bool("IsVeinholeMonster")

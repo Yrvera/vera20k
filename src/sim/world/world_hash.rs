@@ -534,6 +534,7 @@ impl Simulation {
             ry.hash(hasher);
             cell.overlay_id.hash(hasher);
             cell.overlay_data.hash(hasher);
+            cell.wall_owner.hash(hasher);
         }
     }
 

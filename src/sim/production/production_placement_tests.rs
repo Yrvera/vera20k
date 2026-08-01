@@ -6,11 +6,14 @@ use std::collections::{BTreeMap, VecDeque};
 use super::{
     BuildingPlacementError, ProductionCategory, cancel_last_for_owner, credits_for_owner,
     cycle_active_producer_for_owner_category, find_spawn_cell_for_owner, foundation_dimensions,
-    place_ready_building, placement_preview_for_owner, producer_candidates_for_owner_category,
+    place_ready_building_with_overlays, place_ready_building_without_overlays,
+    placement_preview_for_owner_with_overlays, placement_preview_for_owner_without_overlays,
+    producer_candidates_for_owner_category,
     ready_buildings_for_owner, sell_building, tick_production,
 };
 use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
 use crate::map::entities::EntityCategory;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::{
     RampDirection, ResolvedTerrainCell, ResolvedTerrainGrid, zone_class,
 };
@@ -105,7 +108,7 @@ fn ready_and_place(
         .entry(owner_id)
         .or_default()
         .push_back(type_ref);
-    assert!(place_ready_building(
+    assert!(place_ready_building_without_overlays(
         sim,
         rules,
         owner,
@@ -334,6 +337,41 @@ fn ground_occupant_placement_rules() -> RuleSet {
     RuleSet::from_ini(&ini).expect("ground-occupant placement rules should parse")
 }
 
+fn gsi_04_07_wall_placement_contract() -> (RuleSet, OverlayTypeRegistry) {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GACNST\n\
+         1=GAWALL\n\
+         [OverlayTypes]\n\
+         0=GASAND\n\
+         1=CYCL\n\
+         2=GAWALL\n\
+         [GACNST]\n\
+         Strength=1000\n\
+         Armor=wood\n\
+         Foundation=2x2\n\
+         BaseNormal=yes\n\
+         [GASAND]\n\
+         Wall=yes\n\
+         Armor=wood\n\
+         Strength=100\n\
+         [CYCL]\n\
+         [GAWALL]\n\
+         Wall=yes\n\
+         Armor=concrete\n\
+         Strength=300\n\
+         Foundation=1x1\n\
+         Adjacent=0\n",
+    );
+    (
+        RuleSet::from_ini(&ini).expect("wall placement rules"),
+        OverlayTypeRegistry::from_ini(&ini, None),
+    )
+}
+
 fn mark_allied(sim: &mut Simulation, a: &str, b: &str) {
     let a = a.to_ascii_uppercase();
     let b = b.to_ascii_uppercase();
@@ -435,7 +473,7 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
         .ready_by_owner
         .insert(americans, VecDeque::from([gacnst]));
 
-    assert!(place_ready_building(
+    assert!(place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -581,7 +619,7 @@ fn place_ready_building_accepts_clear_mixed_height_footprint() {
         .ready_by_owner
         .insert(americans, VecDeque::from([gapowr]));
 
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         "Americans",
@@ -601,7 +639,7 @@ fn place_ready_building_accepts_clear_mixed_height_footprint() {
         "all otherwise-clear mixed-height cells should be individually valid"
     );
 
-    assert!(place_ready_building(
+    assert!(place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -640,7 +678,7 @@ fn place_ready_building_rejects_blocked_cell_inside_mixed_height_footprint() {
         .ready_by_owner
         .insert(americans, VecDeque::from([gapowr]));
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1140,7 +1178,7 @@ fn place_ready_building_rejects_blocked_or_overlapping_cells() {
         .ready_by_owner
         .insert(americans, VecDeque::from([gacnst, gacnst]));
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1150,7 +1188,7 @@ fn place_ready_building_rejects_blocked_or_overlapping_cells() {
         Some(&grid),
         &height_map,
     ));
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1196,7 +1234,7 @@ fn placement_command_rejects_marked_ground_mobiles_until_they_are_unmarked() {
         }
 
         ready_building(&mut sim, "Americans", "GAPOWR");
-        let preview = placement_preview_for_owner(
+        let preview = placement_preview_for_owner_without_overlays(
             &sim,
             &rules,
             "Americans",
@@ -1261,7 +1299,7 @@ fn placement_command_rejects_marked_ground_mobiles_until_they_are_unmarked() {
             !sim.substrate.occupancy.contains_entity(13, 11, blocker_id),
             "Conceal must remove the blocker before placement becomes legal"
         );
-        let preview = placement_preview_for_owner(
+        let preview = placement_preview_for_owner_without_overlays(
             &sim,
             &rules,
             "Americans",
@@ -1319,7 +1357,7 @@ fn placement_command_rejects_nonblocking_overlay_and_preserves_ready_building() 
     sim.overlay_grid = Some(overlay_grid);
     ready_building(&mut sim, "Americans", "GAPOWR");
 
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         "Americans",
@@ -1381,7 +1419,7 @@ fn placement_command_rejects_nonblocking_overlay_and_preserves_ready_building() 
         .as_mut()
         .expect("overlay grid retained")
         .clear_overlay(13, 11);
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         "Americans",
@@ -1421,14 +1459,15 @@ fn placement_command_rejects_nonblocking_overlay_and_preserves_ready_building() 
 
 #[test]
 fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
-    let rules = ground_occupant_placement_rules();
+    let (rules, registry) = gsi_04_07_wall_placement_contract();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let grid = PathGrid::new(64, 64);
 
     let mut clear_sim = Simulation::new();
     spawn_structure(&mut clear_sim, 1, "Americans", "GACNST", 10, 10);
+    clear_sim.overlay_grid = Some(OverlayGrid::new(64, 64));
     ready_building(&mut clear_sim, "Americans", "GAWALL");
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_with_overlays(
         &clear_sim,
         &rules,
         "Americans",
@@ -1437,6 +1476,7 @@ fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
         10,
         Some(&grid),
         &height_map,
+        Some(&registry),
     )
     .expect("ready wall should have a preview");
     assert!(
@@ -1445,7 +1485,7 @@ fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
         preview.reason
     );
     assert!(
-        place_ready_building(
+        place_ready_building_with_overlays(
             &mut clear_sim,
             &rules,
             "Americans",
@@ -1454,6 +1494,7 @@ fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
             10,
             Some(&grid),
             &height_map,
+            Some(&registry),
         ),
         "the ordinary empty-cell wall commit must remain accepted"
     );
@@ -1464,7 +1505,7 @@ fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
     overlay_grid.place_overlay(12, 10, 7, 4);
     overlay_sim.overlay_grid = Some(overlay_grid);
     ready_building(&mut overlay_sim, "Americans", "GAWALL");
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_with_overlays(
         &overlay_sim,
         &rules,
         "Americans",
@@ -1473,12 +1514,139 @@ fn empty_cell_wall_placement_still_works_but_wall_on_overlay_rejects() {
         10,
         Some(&grid),
         &height_map,
+        Some(&registry),
     )
     .expect("ready wall should have a preview");
     assert!(!preview.valid, "an ordinary wall must not replace ore");
     assert_eq!(
         ready_buildings_for_owner(&overlay_sim, &rules, "Americans").len(),
         1
+    );
+}
+
+#[test]
+fn gsi_04_07_command_places_authoritative_owned_wall_without_entity() {
+    let (rules, registry) = gsi_04_07_wall_placement_contract();
+    let height_map = BTreeMap::new();
+    let path_grid = PathGrid::new(64, 64);
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+    ready_building(&mut sim, "Americans", "GAWALL");
+    let owner = sim.interner.get("Americans").expect("owner");
+    let type_id = sim.interner.get("GAWALL").expect("wall type");
+    let entities_before = sim.substrate.entities.len();
+
+    let tick = sim.advance_tick(
+        &[CommandEnvelope::new(
+            owner,
+            sim.session.tick + 1,
+            Command::PlaceReadyBuilding {
+                owner,
+                type_id,
+                rx: 12,
+                ry: 10,
+            },
+        )],
+        Some(&rules),
+        &height_map,
+        Some(&path_grid),
+        Some(&registry),
+        67,
+    );
+
+    assert_eq!(tick.executed_commands, 1);
+    assert!(
+        !tick.spawned_entities,
+        "wall stamps no BuildingClass entity"
+    );
+    assert_eq!(sim.substrate.entities.len(), entities_before);
+    assert!(ready_buildings_for_owner(&sim, &rules, "Americans").is_empty());
+    let cell = sim.overlay_grid.as_ref().unwrap().cell(12, 10);
+    assert_eq!(cell.overlay_id, Some(2));
+    assert_eq!(cell.overlay_data, 0);
+    assert_eq!(cell.wall_owner, Some(owner));
+    assert!(!sim.substrate.entities.values().any(|entity| {
+        entity.type_ref == type_id && (entity.position.rx, entity.position.ry) == (12, 10)
+    }));
+}
+
+#[test]
+fn gsi_04_07_wall_replacement_requires_damaged_same_type_and_owner_and_stays_local() {
+    let (rules, registry) = gsi_04_07_wall_placement_contract();
+    let height_map = BTreeMap::new();
+    let path_grid = PathGrid::new(64, 64);
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+    ready_building(&mut sim, "Americans", "GAWALL");
+    let owner = sim.interner.get("Americans").expect("owner");
+    let enemy = sim.interner.intern("Russians");
+
+    let preview = |sim: &Simulation| {
+        placement_preview_for_owner_with_overlays(
+            sim,
+            &rules,
+            "Americans",
+            "GAWALL",
+            12,
+            10,
+            Some(&path_grid),
+            &height_map,
+            Some(&registry),
+        )
+        .expect("wall preview")
+        .valid
+    };
+
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_overlay(12, 10, 2, 0x20);
+    assert!(!preview(&sim), "unowned map wall is not replaceable");
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_owned_wall(12, 10, 2, 0x20, enemy);
+    assert!(!preview(&sim), "enemy wall is not replaceable");
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_owned_wall(12, 10, 2, 0x0F, owner);
+    assert!(
+        !preview(&sim),
+        "pristine same-owner wall is not replaceable"
+    );
+
+    let overlay_grid = sim.overlay_grid.as_mut().unwrap();
+    overlay_grid.place_owned_wall(12, 10, 2, 0x20, owner);
+    overlay_grid.place_owned_wall(13, 10, 2, 0x2F, owner);
+    overlay_grid.place_owned_wall(30, 30, 2, 0x1B, owner);
+    assert!(preview(&sim), "damaged same-owner wall is replaceable");
+    assert!(place_ready_building_with_overlays(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAWALL",
+        12,
+        10,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    ));
+
+    let overlay_grid = sim.overlay_grid.as_ref().unwrap();
+    assert_eq!(overlay_grid.cell(12, 10).overlay_data, 0x02);
+    assert_eq!(overlay_grid.cell(12, 10).wall_owner, Some(owner));
+    assert_eq!(
+        overlay_grid.cell(13, 10).overlay_data,
+        0x28,
+        "neighbor damage nibble is preserved while connectivity is refreshed"
+    );
+    assert_eq!(
+        overlay_grid.cell(30, 30).overlay_data,
+        0x1B,
+        "placement does not globally rewrite wall frames"
     );
 }
 
@@ -1496,7 +1664,7 @@ fn place_ready_building_requires_base_normal_provider_within_adjacent_range() {
         .ready_by_owner
         .insert(americans, VecDeque::from([gapowr]));
 
-    assert!(place_ready_building(
+    assert!(place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1517,7 +1685,7 @@ fn place_ready_building_requires_base_normal_provider_within_adjacent_range() {
         .insert(far_americans, VecDeque::from([far_gapowr]));
     // GACNST has Adjacent=6 (default), foundation 2x2 at (10,10).
     // Expanded zone: max_x = 10+2-1+7 = 18, so (20,10) is out of range.
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut far_sim,
         &rules,
         "Americans",
@@ -1543,7 +1711,7 @@ fn base_normal_false_structures_do_not_extend_build_area() {
         .ready_by_owner
         .insert(americans, VecDeque::from([gapowr]));
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1566,7 +1734,7 @@ fn build_off_ally_enabled_accepts_allied_eligible_provider() {
     mark_allied(&mut sim, "Americans", "Alliance");
     ready_building(&mut sim, "Americans", "GAPOWR");
 
-    assert!(place_ready_building(
+    assert!(place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1590,7 +1758,7 @@ fn build_off_ally_disabled_rejects_allied_eligible_provider() {
     mark_allied(&mut sim, "Americans", "Alliance");
     ready_building(&mut sim, "Americans", "GAPOWR");
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1613,7 +1781,7 @@ fn build_off_ally_requires_eligibile_for_ally_building() {
     mark_allied(&mut sim, "Americans", "Alliance");
     ready_building(&mut sim, "Americans", "GAPOWR");
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1636,7 +1804,7 @@ fn build_off_ally_off_keeps_own_base_provider() {
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     ready_building(&mut sim, "Americans", "GAPOWR");
 
-    assert!(place_ready_building(
+    assert!(place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1661,7 +1829,7 @@ fn placement_preview_reports_out_of_build_area() {
         .ready_by_owner
         .insert(americans, VecDeque::from([gapowr]));
 
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         "Americans",
@@ -1690,7 +1858,7 @@ fn placement_preview_reports_blocked_terrain() {
         .ready_by_owner
         .insert(americans, VecDeque::from([gapowr]));
 
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         "Americans",
@@ -1728,7 +1896,7 @@ fn place_ready_building_rejects_bridge_deck_cells() {
         }
     }));
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1739,7 +1907,7 @@ fn place_ready_building_rejects_bridge_deck_cells() {
         &height_map,
     ));
 
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         "Americans",
@@ -1772,7 +1940,7 @@ fn place_ready_building_rejects_bridge_0x400_marker_cells() {
         }
     }));
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1783,7 +1951,7 @@ fn place_ready_building_rejects_bridge_0x400_marker_cells() {
         &height_map,
     ));
 
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         "Americans",
@@ -1824,7 +1992,7 @@ fn place_ready_building_rejects_canonical_ramp_cells() {
         }
     }));
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1835,7 +2003,7 @@ fn place_ready_building_rejects_canonical_ramp_cells() {
         &height_map,
     ));
 
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         "Americans",
@@ -1893,7 +2061,7 @@ fn place_ready_building_rejects_destroyed_bridge_over_blocked_ground() {
         }
     }
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1930,7 +2098,7 @@ fn gsi_04_04_water_bound_building_rejects_beach_zone() {
     let grid =
         PathGrid::from_resolved_terrain(sim.resolved_terrain.as_ref().expect("resolved terrain"));
 
-    assert!(!place_ready_building(
+    assert!(!place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",
@@ -1941,7 +2109,7 @@ fn gsi_04_04_water_bound_building_rejects_beach_zone() {
         &height_map,
     ));
 
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         "Americans",
@@ -1980,7 +2148,7 @@ fn gsi_04_04_water_bound_building_accepts_water_zone() {
     let grid =
         PathGrid::from_resolved_terrain(sim.resolved_terrain.as_ref().expect("resolved terrain"));
 
-    assert!(place_ready_building(
+    assert!(place_ready_building_without_overlays(
         &mut sim,
         &rules,
         "Americans",

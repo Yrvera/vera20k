@@ -836,6 +836,70 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
 }
 
 #[test]
+fn gsi_04_07_wall_absolute_and_wood_armor_route_ordinary_damage() {
+    fn fire(extra_warhead_flags: &str, overlay_armor: &str) -> CombatTickResult {
+        let ini = IniFile::from_str(&format!(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n0=MTNK\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [OverlayTypes]\n0=TESTWALL\n\
+             [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=Gun\n\
+             [Gun]\nDamage=65\nROF=50\nRange=6\nWarhead=WH\n\
+             [WH]\n{extra_warhead_flags}\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+             [TESTWALL]\nWall=yes\nArmor={overlay_armor}\nStrength=100\n"
+        ));
+        let mut rules = RuleSet::from_ini(&ini).expect("wall route rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let mut entities = EntityStore::new();
+        entities.insert(make_entity(1, "MTNK", 5, 5, 300));
+        entities.insert(make_entity(2, "MTNK", 8, 5, 300));
+        let mut interner = test_interner();
+        rules.resolve_bridge_warheads(&mut interner);
+        issue_attack_command(&mut entities, 1, 2, None, &interner);
+        let mut overlays = OverlayGrid::new(12, 12);
+        overlays.place_overlay(8, 5, 0, 0);
+        let mut scenario_rng = SimRng::new(1);
+        tick_combat_with_fog(
+            &mut entities,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            None,
+            &BTreeMap::new(),
+            None,
+            &mut BTreeMap::new(),
+            Some(&overlays),
+            Some(&registry),
+            None,
+            0,
+            100,
+            0,
+            &[],
+            None,
+            &mut scenario_rng,
+        )
+    }
+
+    let absolute = fire("WallAbsoluteDestroyer=yes", "concrete");
+    assert_eq!(
+        absolute.wall_damage_events,
+        vec![WallDamageEvent {
+            rx: 8,
+            ry: 5,
+            damage: 65,
+        }],
+        "WallAbsoluteDestroyer passes current damage rather than a forced sentinel"
+    );
+    assert!(absolute.bridge_damage_events.is_empty());
+
+    let wood = fire("Wood=yes", "wood");
+    assert_eq!(wood.wall_damage_events[0].damage, 65);
+    let concrete = fire("Wood=yes", "concrete");
+    assert!(concrete.wall_damage_events.is_empty());
+}
+
+#[test]
 fn test_tick_combat_respects_cooldown() {
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();
@@ -2076,9 +2140,7 @@ fn wall_test_ini() -> &'static str {
      [CYCL]\nWall=yes\nStrength=400\n"
 }
 
-/// Build a Simulation with a 10x10 OverlayGrid and a GAWALL placed at (rx, ry)
-/// with both an OverlayCell entry and a matching wall GameEntity. Returns the
-/// sim, ruleset, and registry tied to the same INI.
+/// Build a Simulation with an ephemeral GAWALL overlay at `(rx, ry)`.
 fn build_minimal_sim_with_gawall(rx: u16, ry: u16) -> (Simulation, RuleSet, OverlayTypeRegistry) {
     let ini = IniFile::from_str(wall_test_ini());
     let rules = RuleSet::from_ini(&ini).expect("wall rules parse");
@@ -2089,20 +2151,6 @@ fn build_minimal_sim_with_gawall(rx: u16, ry: u16) -> (Simulation, RuleSet, Over
     // Place GAWALL (overlay_id=2). Initial frame = 0 (isolated, stage 0).
     grid.place_overlay(rx, ry, 2, 0);
     sim.overlay_grid = Some(grid);
-
-    // Spawn a wall GameEntity at the same cell. Intern the type_ref and owner
-    // through sim.interner so later lookups via sim.interner.resolve() succeed.
-    let owner_id = sim.interner.intern("Test");
-    let type_id = sim.interner.intern("GAWALL");
-    let mut entity = GameEntity::test_default(1, "GAWALL", "Test", rx, ry);
-    entity.owner = owner_id;
-    entity.type_ref = type_id;
-    entity.health = Health {
-        current: 400,
-        max: 400,
-    };
-    sim.substrate.entities.insert(entity);
-    sim.substrate.entities.rebuild_owner_index();
 
     (sim, rules, registry)
 }
@@ -2121,10 +2169,7 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
                 .is_some_and(|o| o.wall)
         })
         .count();
-    assert_eq!(
-        initial_wall_entities, 1,
-        "fixture must place exactly one wall entity"
-    );
+    assert_eq!(initial_wall_entities, 0, "wall state is cell-owned");
 
     // Forced destruction (u16::MAX bypasses the probabilistic gate).
     let events = [WallDamageEvent {
@@ -2132,12 +2177,7 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
         ry: 5,
         damage: u16::MAX,
     }];
-    sim.apply_wall_damage_events(&events, &rules, &registry);
-    // Wall removal now routes through `uninit` (deferred death): the wall is
-    // marked Dying and freed at flush_pending_delete, not removed synchronously.
-    // Drain it so the remaining-count below sees the slot actually freed.
-    sim.flush_pending_delete();
-
+    sim.apply_wall_damage_events(&events, &registry);
     // Overlay cleared.
     let grid = sim
         .overlay_grid
@@ -2148,7 +2188,7 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
         "overlay should be cleared"
     );
 
-    // Wall entity removed.
+    // No persistent wall entity is created or removed.
     let remaining = sim
         .substrate
         .entities
@@ -2159,91 +2199,7 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
                 .is_some_and(|o| o.wall)
         })
         .count();
-    assert_eq!(
-        remaining, 0,
-        "wall entity should be despawned after overlay destruction"
-    );
-}
-
-#[test]
-fn wall_destruction_routes_through_uninit_no_leak() {
-    // A wall destroyed in combat must tear down its logic-vector membership and
-    // foundation occupancy, then free its slot via the deferred pending_delete
-    // flush — i.e. removal routes through `uninit`, NOT a raw store remove. Build
-    // the wall via an ACTIVE spawn (`unlimbo`) so it actually holds logic
-    // membership + occupancy; a raw insert (Limbo) could not expose the leak.
-    let ini = IniFile::from_str(wall_test_ini());
-    let rules = RuleSet::from_ini(&ini).expect("wall rules parse");
-    let registry = OverlayTypeRegistry::from_ini(&ini, None);
-
-    let mut sim = Simulation::new();
-    let mut grid = OverlayGrid::new(10, 10);
-    grid.place_overlay(5, 5, 2, 0); // GAWALL overlay_id=2
-    sim.overlay_grid = Some(grid);
-
-    let owner_id = sim.interner.intern("Test");
-    let type_id = sim.interner.intern("GAWALL");
-    let mut entity = GameEntity::test_default(1, "GAWALL", "Test", 5, 5);
-    entity.owner = owner_id;
-    entity.type_ref = type_id;
-    // test_default makes a Unit; a wall is a Structure (foundation + building count).
-    entity.category = EntityCategory::Structure;
-    entity.health = Health {
-        current: 400,
-        max: 400,
-    };
-    // Active spawn: insert -> reveal (logic order) -> increment count -> occupancy.
-    let (id, _) = sim.unlimbo(entity);
-
-    // Pre-destruction: the wall is a live, occupying member.
-    assert!(
-        sim.substrate.logic.as_slice().contains(&id),
-        "active wall must be in the live logic order"
-    );
-    assert!(
-        sim.substrate.occupancy.contains_entity(5, 5, id),
-        "active wall must occupy its cell"
-    );
-    let wall = sim.substrate.entities.get(id).unwrap();
-    assert!(wall.lifecycle.object_alive);
-    assert!(!wall.lifecycle.in_limbo);
-    assert!(wall.lifecycle.cell_marked);
-
-    // Forced destruction (u16::MAX bypasses the probabilistic gate).
-    let events = [WallDamageEvent {
-        rx: 5,
-        ry: 5,
-        damage: u16::MAX,
-    }];
-    sim.apply_wall_damage_events(&events, &rules, &registry);
-
-    // Post-uninit, pre-flush: torn down from the active order + occupancy, but
-    // still resolvable as a one-tick Dying corpse (deferred death — synchronous
-    // teardown, deferred slot-free). A raw entities.remove would instead leave
-    // the id dangling in the logic order and the cell still occupied.
-    assert!(
-        !sim.substrate.logic.as_slice().contains(&id),
-        "destroyed wall must leave the live logic order (no dangling id)"
-    );
-    assert!(
-        !sim.substrate.occupancy.contains_entity(5, 5, id),
-        "destroyed wall must release its occupancy"
-    );
-    let wall = sim.substrate.entities.get(id).unwrap();
-    assert!(!wall.lifecycle.object_alive);
-    assert!(wall.lifecycle.in_limbo);
-    assert!(!wall.lifecycle.cell_marked);
-    assert!(
-        wall.dying,
-        "wall is a deferred-death corpse until the flush"
-    );
-
-    // After the flush the slot is actually freed.
-    sim.flush_pending_delete();
-    assert!(
-        sim.substrate.entities.get(id).is_none(),
-        "flush_pending_delete frees the wall slot"
-    );
+    assert_eq!(remaining, 0);
 }
 
 #[test]
@@ -2266,7 +2222,7 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
     let rules = RuleSet::from_ini(&ini).expect("rules parse");
     let registry = OverlayTypeRegistry::from_ini(&ini, None);
 
-    // Build a sim with a GAWALL (overlay + active wall entity) at (5,5) and one
+    // Build a sim with a GAWALL overlay at (5,5) and one
     // vehicle of `veh_type` placed on that same cell, its crusher flag +
     // locomotor derived from the real ObjectType.
     let build = |veh_type: &str| -> Simulation {
@@ -2276,17 +2232,6 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
         sim.overlay_grid = Some(grid);
 
         let owner_id = sim.interner.intern("Test");
-        let wall_type = sim.interner.intern("GAWALL");
-        let mut wall = GameEntity::test_default(1, "GAWALL", "Test", 5, 5);
-        wall.owner = owner_id;
-        wall.type_ref = wall_type;
-        wall.category = EntityCategory::Structure;
-        wall.health = Health {
-            current: 400,
-            max: 400,
-        };
-        let _ = sim.unlimbo(wall);
-
         let obj = rules.object(veh_type).expect("veh object");
         let veh_type_id = sim.interner.intern(veh_type);
         let mut veh = GameEntity::test_default(2, veh_type, "Test", 5, 5);
@@ -2314,7 +2259,7 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
             .is_some()
     };
 
-    // Crusher (BFRT): wall destroyed, crusher unharmed, wall entity despawned.
+    // Crusher (BFRT): wall destroyed and crusher unharmed.
     let mut sim = build("BFRT");
     sim.apply_wall_crush_on_driveover(Some(&rules), Some(&registry));
     sim.flush_pending_delete();
@@ -2339,7 +2284,7 @@ fn crusher_driveover_destroys_wall_but_noncrusher_does_not() {
                 .is_some_and(|o| o.wall)
         })
         .count();
-    assert_eq!(walls_left, 0, "wall entity despawned after crush");
+    assert_eq!(walls_left, 0, "walls never create persistent entities");
 
     // Non-crusher (MTNK): wall stays intact.
     let mut sim = build("MTNK");
@@ -2405,7 +2350,7 @@ fn concrete_wall_chain_reaction_runs_without_panic() {
         ry: 5,
         damage: 400,
     }];
-    sim.apply_wall_damage_events(&events, &rules, &registry);
+    sim.apply_wall_damage_events(&events, &registry);
 
     // The chain code path ran (no panic). Assert (5,5) is at stage ≥ 3 or
     // gone — either outcome is consistent with the binary's behavior at the
@@ -2468,13 +2413,13 @@ fn wall_damage_deterministic_across_replays() {
 
     let snapshot_a: (Option<u8>, u8) = {
         let (mut sim, rules, registry) = build_minimal_sim_with_gawall_seeded(5, 5, seed);
-        sim.apply_wall_damage_events(&events, &rules, &registry);
+        sim.apply_wall_damage_events(&events, &registry);
         let cell = sim.overlay_grid.as_ref().unwrap().cell(5, 5);
         (cell.overlay_id, cell.overlay_data)
     };
     let snapshot_b: (Option<u8>, u8) = {
         let (mut sim, rules, registry) = build_minimal_sim_with_gawall_seeded(5, 5, seed);
-        sim.apply_wall_damage_events(&events, &rules, &registry);
+        sim.apply_wall_damage_events(&events, &registry);
         let cell = sim.overlay_grid.as_ref().unwrap().cell(5, 5);
         (cell.overlay_id, cell.overlay_data)
     };

@@ -117,6 +117,25 @@ impl Simulation {
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
     ) -> bool {
+        self.apply_command_with_overlays(
+            command_owner,
+            cmd,
+            rules,
+            path_grid,
+            height_map,
+            None,
+        )
+    }
+
+    pub(crate) fn apply_command_with_overlays(
+        &mut self,
+        command_owner: &str,
+        cmd: &Command,
+        rules: Option<&RuleSet>,
+        path_grid: Option<&PathGrid>,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> bool {
         match cmd {
             Command::Select { entity_ids, .. } => {
                 let mut snapshot = entity_ids.clone();
@@ -699,8 +718,16 @@ impl Simulation {
                 let Some(rules) = rules else { return false };
                 let owner_s = self.interner.resolve(*owner).to_string();
                 let type_s = self.interner.resolve(*type_id).to_string();
-                production::place_ready_building(
-                    self, rules, &owner_s, &type_s, *rx, *ry, path_grid, height_map,
+                production::place_ready_building_with_overlays(
+                    self,
+                    rules,
+                    &owner_s,
+                    &type_s,
+                    *rx,
+                    *ry,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
                 )
             }
             Command::CancelLastProduction { owner } => {

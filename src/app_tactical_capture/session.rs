@@ -819,6 +819,7 @@ impl TacticalCaptureSession {
                             .context("placement radius exceeds u16")?,
                         path_grid,
                         &state.height_map,
+                        state.overlay_registry.as_ref(),
                     )
                     .map_err(anyhow::Error::from)
                 })

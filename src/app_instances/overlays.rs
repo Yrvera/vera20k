@@ -314,16 +314,14 @@ pub(crate) fn build_overlay_instances(
             .and_then(|sim| sim.overlay_grid.as_ref())
         {
             let live_cell = overlay_grid.cell(entry.rx, entry.ry);
-            if live_cell.overlay_id.is_none() && is_resource {
-                // Overlay cleared (fully depleted) — skip rendering.
-                continue;
-            }
-            if live_cell.overlay_id.is_some() {
-                // Use live overlay_data for all overlay types.
+            if is_bridge_overlay_index(entry.overlay_id) {
+                // Bridge bytes remain owned by BridgeRuntimeState.
+                entry.frame
+            } else if live_cell.overlay_id == Some(entry.overlay_id) {
                 live_cell.overlay_data
             } else {
-                // No overlay in grid — fall back to static map frame.
-                entry.frame
+                // Live non-bridge state is authoritative over the map pack.
+                continue;
             }
         } else {
             // No OverlayGrid — fall back to old behavior.

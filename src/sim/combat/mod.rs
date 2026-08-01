@@ -133,22 +133,29 @@ pub(crate) fn combat_target_category(
     }
 }
 
-/// True iff the cell at `(rx, ry)` has an overlay whose type is flagged `Wall=yes`.
-/// Used to discriminate wall-damage events from bridge-damage events at warhead
-/// emission sites. Returns false when grid or registry is missing.
-fn cell_has_wall_overlay(
+/// Return the active wall-overlay flags at a cell, if available.
+fn wall_overlay_flags_at<'a>(
     overlay_grid: Option<&OverlayGrid>,
-    overlay_registry: Option<&OverlayTypeRegistry>,
+    overlay_registry: Option<&'a OverlayTypeRegistry>,
     rx: u16,
     ry: u16,
-) -> bool {
+) -> Option<&'a crate::map::overlay_types::OverlayTypeFlags> {
     let (Some(grid), Some(registry)) = (overlay_grid, overlay_registry) else {
-        return false;
+        return None;
     };
     grid.cell(rx, ry)
         .overlay_id
         .and_then(|id| registry.flags(id))
-        .is_some_and(|f| f.wall)
+        .filter(|flags| flags.wall)
+}
+
+fn warhead_damages_wall(
+    warhead: &WarheadType,
+    wall_flags: &crate::map::overlay_types::OverlayTypeFlags,
+) -> bool {
+    warhead.wall
+        || warhead.wall_absolute_destroyer
+        || (warhead.wood && wall_flags.armor_is_wood)
 }
 
 pub(crate) fn apply_prone_damage_modifier(
@@ -1069,17 +1076,17 @@ fn handle_entity_deaths(
     // Apply death explosion AoE damage.
     for (rx, ry, sub_x, sub_y, z, dmg, wh_id, owner_id) in &death_aoe {
         if let Some(warhead) = rules.warhead(interner.resolve(*wh_id)) {
-            if warhead.wall && *dmg > 0 {
-                // Wall cells produce WallDamageEvent; remaining cells (bridges
-                // or unaffiliated) keep the bridge_damage_events path.
+            if *dmg > 0 {
                 let damage_u16 = (*dmg).max(0) as u16;
-                if cell_has_wall_overlay(overlay_grid, overlay_registry, *rx, *ry) {
+                let wall_flags =
+                    wall_overlay_flags_at(overlay_grid, overlay_registry, *rx, *ry);
+                if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
                     wall_damage_events.push(WallDamageEvent {
                         rx: *rx,
                         ry: *ry,
                         damage: damage_u16,
                     });
-                } else {
+                } else if wall_flags.is_none() && warhead.wall {
                     let wh_iid = *wh_id;
                     bridge_damage_events.push(BridgeDamageEvent {
                         rx: *rx,
@@ -2507,15 +2514,17 @@ pub(crate) fn resolve_attacker_fire(
             out.damage_events
                 .push((target_id, dmg, snap.stable_id, wh_iid));
         }
-        if warhead.wall && weapon.damage > 0 {
-            let damage_u16 = weapon.damage.max(0) as u16;
-            if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
+        if base_damage > 0 {
+            let damage_u16 = base_damage as u16;
+            let wall_flags =
+                wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
+            if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
                 out.wall_damage_events.push(WallDamageEvent {
                     rx: target_rx,
                     ry: target_ry,
                     damage: damage_u16,
                 });
-            } else {
+            } else if wall_flags.is_none() && warhead.wall {
                 let wh_iid = interner.intern(&warhead.id);
                 out.bridge_damage_events.push(BridgeDamageEvent {
                     rx: target_rx,
@@ -2552,15 +2561,17 @@ pub(crate) fn resolve_attacker_fire(
                     .push((target_id, actual_damage, snap.stable_id, wh_iid));
             }
         }
-        if warhead.wall && weapon.damage > 0 {
-            let damage_u16 = weapon.damage.max(0) as u16;
-            if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
+        if base_damage > 0 {
+            let damage_u16 = base_damage as u16;
+            let wall_flags =
+                wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
+            if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
                 out.wall_damage_events.push(WallDamageEvent {
                     rx: target_rx,
                     ry: target_ry,
                     damage: damage_u16,
                 });
-            } else {
+            } else if wall_flags.is_none() && warhead.wall {
                 let wh_iid = interner.intern(&warhead.id);
                 out.bridge_damage_events.push(BridgeDamageEvent {
                     rx: target_rx,

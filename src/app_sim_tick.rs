@@ -650,8 +650,6 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
 fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bool {
     let mut refresh_after_tick = false;
     let mut crane_owners: Vec<String> = Vec::new();
-    // (rx, ry, type_id) for wall buildings placed this frame — injected into state.overlays.
-    let mut placed_walls: Vec<(u16, u16, String)> = Vec::new();
     let runtime_active = state.simulation.is_some() || !state.trigger_graph.triggers.is_empty();
     if !runtime_active {
         return false;
@@ -1163,16 +1161,12 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 );
                 for cmd in &due_commands {
                     if let crate::sim::command::Command::PlaceReadyBuilding {
-                        owner,
-                        type_id,
-                        rx,
-                        ry,
+                        owner, type_id, ..
                     } = &cmd.payload
                     {
                         // Trigger one-shot crane animation on ConYard for each owner that placed a building.
                         let owner_str = sim.interner.resolve(*owner).to_string();
                         let type_str = sim.interner.resolve(*type_id).to_string();
-                        crane_owners.push(owner_str);
                         // Walls are overlays — inject OverlayEntry so the overlay renderer
                         // draws them with auto-tiled connectivity frames.
                         let is_wall = state
@@ -1181,8 +1175,8 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             .and_then(|r| r.object(&type_str))
                             .map(|o| o.wall)
                             .unwrap_or(false);
-                        if is_wall {
-                            placed_walls.push((*rx, *ry, type_str));
+                        if !is_wall {
+                            crane_owners.push(owner_str);
                         }
                     }
                 }
@@ -1309,10 +1303,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     }
 
     // Inject overlay entries for walls placed this frame, then recompute connectivity.
-    if !placed_walls.is_empty() {
-        inject_placed_wall_overlays(state, &placed_walls);
-    }
-
     if refresh_after_tick {
         rebuild_dynamic_path_grid(state);
         refresh_entity_atlases(state);
@@ -1516,7 +1506,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     // The building sprite is anchored to iso_to_screen(rx, ry) — same as the first
     // diamond cell — so the preview and the placed building always align.
     let (rx, ry) = screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
-    state.building_placement_preview = production::placement_preview_for_owner(
+    state.building_placement_preview = production::placement_preview_for_owner_with_overlays(
         sim,
         rules,
         &owner,
@@ -1525,6 +1515,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         ry,
         state.path_grid.as_ref(),
         &state.height_map,
+        state.overlay_registry.as_ref(),
     );
 }
 
@@ -1681,94 +1672,6 @@ fn filter_new_overlay_entries(
         out.push(entry);
     }
     out
-}
-
-/// Inject newly placed wall buildings as OverlayEntry items into state.overlays,
-/// then recompute wall connectivity for all walls so frames auto-tile correctly.
-///
-/// In RA2, walls (GAWALL, NAWALL) are both [BuildingTypes] and [OverlayTypes].
-/// The sim spawns them as GameEntity for health/ownership/combat, but the visual
-/// is rendered via the overlay atlas (connectivity bitmask frames 0–15).
-/// Without this step, placed walls appear in state.overlays as isolated pillars
-/// and never connect to adjacent walls from the map or prior placements.
-fn inject_placed_wall_overlays(state: &mut AppState, placed: &[(u16, u16, String)]) {
-    let Some(registry) = &state.overlay_registry else {
-        return;
-    };
-    // Collect new entries — need registry borrow released before mutable borrow of overlays.
-    let new_entries: Vec<crate::map::overlay::OverlayEntry> = placed
-        .iter()
-        .filter_map(|(rx, ry, type_id)| {
-            let overlay_id = registry.id_for_name(type_id)?;
-            // Don't add duplicate — wall may have been on map already.
-            let already_present = state
-                .overlays
-                .iter()
-                .any(|e| e.rx == *rx && e.ry == *ry && e.overlay_id == overlay_id);
-            if already_present {
-                return None;
-            }
-            Some(crate::map::overlay::OverlayEntry {
-                rx: *rx,
-                ry: *ry,
-                overlay_id,
-                frame: 0,
-            })
-        })
-        .collect();
-
-    if new_entries.is_empty() {
-        return;
-    }
-
-    log::info!(
-        "Injecting {} placed wall overlay entries into state.overlays",
-        new_entries.len()
-    );
-    state.overlays.extend(new_entries);
-
-    // Recompute connectivity bitmasks for ALL walls (existing + newly placed).
-    if let Some(registry) = &state.overlay_registry {
-        let updated = crate::map::overlay::compute_wall_connectivity(&mut state.overlays, registry);
-        if updated > 0 {
-            log::info!(
-                "Wall connectivity recomputed: {} entries updated after placement",
-                updated
-            );
-        }
-    }
-
-    // Write placed walls to OverlayGrid and sync connectivity frames.
-    if let Some(registry) = &state.overlay_registry {
-        if let Some(sim) = &mut state.simulation {
-            if let Some(grid) = &mut sim.overlay_grid {
-                // Place new wall overlays.
-                for (rx, ry, type_id) in placed {
-                    if let Some(overlay_id) = registry.id_for_name(type_id) {
-                        grid.place_overlay(*rx, *ry, overlay_id, 0);
-                    }
-                }
-                // Sync connectivity frames from state.overlays to OverlayGrid.
-                for entry in &state.overlays {
-                    if registry.flags(entry.overlay_id).is_some_and(|f| f.wall) {
-                        grid.set_overlay_data(entry.rx, entry.ry, entry.frame);
-                    }
-                }
-            }
-        }
-    }
-
-    // Also register the overlay name in overlay_names so the renderer can look it up.
-    if let Some(registry) = &state.overlay_registry {
-        for (_, _, type_id) in placed {
-            if let Some(overlay_id) = registry.id_for_name(type_id) {
-                state
-                    .overlay_names
-                    .entry(overlay_id)
-                    .or_insert_with(|| type_id.clone());
-            }
-        }
-    }
 }
 
 fn load_unit_palette(asset_manager: &AssetManager, theater_ext: &str) -> Option<Palette> {
