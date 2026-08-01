@@ -15,7 +15,6 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::pathfinding::passability;
 use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneId};
 
 /// Fixed cell-array stride — the engine indexes cells `y*0x200 + x` regardless of
@@ -384,10 +383,9 @@ fn speed_type_allows_cell(
                 | MovementZone::CrusherAll
         );
     }
-    if let Some(cost) = cell.speed_costs.cost_for_speed_type(speed_type) {
-        return cost > 0;
-    }
-    passability::is_passable_for_speed_type(cell.land_type, speed_type)
+    cell.speed_costs
+        .cost_for_speed_type(speed_type)
+        .is_none_or(|cost| cost > 0)
 }
 
 fn terrain_object_blocks(resolved_terrain: Option<&ResolvedTerrainGrid>, rx: u16, ry: u16) -> bool {

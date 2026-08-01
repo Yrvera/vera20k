@@ -379,7 +379,7 @@ fn cell_placeable(
         let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
             terrain.cell(cx, cy).is_some_and(|cell| {
                 let ship_passable = pathfinding::passability::is_passable_for_zone(
-                    cell.land_type,
+                    cell.zone_type,
                     MovementZone::Water,
                 );
                 ship_passable

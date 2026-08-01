@@ -30,7 +30,7 @@ use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::theater::{self, TheaterData, TileKey};
 use crate::map::tile_variant_selector::TileVariantSelectionContext;
 use crate::map::tube_facts::{TubeFact, TubeId};
-use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass, TerrainRules};
+use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass, TerrainRules};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
@@ -1151,7 +1151,9 @@ impl ResolvedTerrainGrid {
                     ) {
                         cell.zone_type = zone_class::IMPASSABLE;
                     }
-                    if let Some(rock) = terrain_rules.and_then(|tr| tr.semantics_for_land_type(7)) {
+                    if let Some(rock) = terrain_rules
+                        .and_then(|tr| tr.semantics_for_land_type(LandType::Rock.as_index()))
+                    {
                         cell.terrain_class = rock.terrain_class;
                         cell.speed_costs = rock.speed_costs;
                         cell.is_water = rock.water;
@@ -1738,17 +1740,18 @@ fn apply_land_type_semantics(
     if !metadata.has_tmp_metadata {
         return;
     }
-    // Use the raw TMP byte (0-15) for rules.ini section lookup — that's how the
-    // KNOWN_LAND_TYPES table is indexed.  The mapped land_type (0-7) is already
-    // stored on the metadata for passability matrix lookups.
+    // Rules rows use the canonical LandType index. The raw TMP byte remains
+    // diagnostic context only after the fixed TMP-to-land conversion has run.
     let Some(semantics) = terrain_rules
-        .semantics_for_land_type(metadata.raw_land_type)
+        .semantics_for_land_type(metadata.land_type)
         .copied()
     else {
         if warned_unknown_land_types.insert(metadata.raw_land_type) {
             log::warn!(
-                "Unknown TMP LandType byte {}; falling back to tileset-name heuristics",
-                metadata.raw_land_type
+                "No terrain-rules row for canonical LandType {} converted from TMP byte {}; \
+                 falling back to tileset-name heuristics",
+                metadata.land_type,
+                metadata.raw_land_type,
             );
         }
         return;
@@ -2779,7 +2782,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_tmp_metadata_reads_land_and_slope_bytes() {
+    fn gsi_04_04_merge_tmp_metadata_maps_raw_rock_to_canonical_land() {
         let mut metadata = TileMetadata::default();
         let tile = TmpTile {
             height: 4,
@@ -2796,7 +2799,7 @@ mod tests {
             has_damaged_data: false,
         };
         merge_tmp_metadata(&mut metadata, &tile);
-        assert_eq!(metadata.land_type, 7);
+        assert_eq!(metadata.land_type, LandType::Rock.as_index());
         assert_eq!(metadata.slope_type, 2);
         assert_eq!(metadata.template_height, 4);
         assert_eq!(metadata.render_offset_x, -5);
@@ -3156,7 +3159,7 @@ IsRubble=yes
     }
 
     #[test]
-    fn test_rules_backed_land_type_overrides_tileset_heuristics_when_tmp_exists() {
+    fn gsi_04_04_rules_backed_land_type_uses_canonical_tmp_conversion() {
         let terrain_rules =
             TerrainRules::from_ini(&IniFile::from_str("[Rough]\nBuildable=yes\nTrack=75%\n"));
         let mut metadata = metadata_from_set_name(Some("Water"), Some(2));

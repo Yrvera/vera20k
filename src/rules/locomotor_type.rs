@@ -277,7 +277,7 @@ impl MovementZone {
             "amphibiousdestroyer" => Self::AmphibiousDestroyer,
             "amphibiouscrusher" => Self::AmphibiousCrusher,
             "amphibious" => Self::Amphibious,
-            "subterannean" | "subterranean" | "subterrannean" => Self::Subterranean,
+            "subterannean" => Self::Subterranean,
             "infantry" => Self::Infantry,
             "infantrydestroyer" => Self::InfantryDestroyer,
             "fly" => Self::Fly,
@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn test_movement_zone_from_ini() {
+    fn gsi_04_04_movement_zone_parser_accepts_only_retail_labels() {
         assert_eq!(MovementZone::from_ini("Normal"), MovementZone::Normal);
         assert_eq!(MovementZone::from_ini("crusher"), MovementZone::Crusher);
         assert_eq!(MovementZone::from_ini("DESTROYER"), MovementZone::Destroyer);
@@ -516,16 +516,7 @@ mod tests {
         );
         assert_eq!(MovementZone::from_ini("Fly"), MovementZone::Fly);
         assert_eq!(
-            MovementZone::from_ini("Subterranean"),
-            MovementZone::Subterranean
-        );
-        assert_eq!(
             MovementZone::from_ini("Subterannean"),
-            MovementZone::Subterranean
-        );
-        // Legacy misspelling still works
-        assert_eq!(
-            MovementZone::from_ini("Subterrannean"),
             MovementZone::Subterranean
         );
         assert_eq!(
@@ -540,6 +531,14 @@ mod tests {
         assert_eq!(
             MovementZone::from_ini("CrusherAll"),
             MovementZone::CrusherAll
+        );
+        assert_eq!(
+            MovementZone::from_ini("Subterranean"),
+            MovementZone::Invalid
+        );
+        assert_eq!(
+            MovementZone::from_ini("Subterrannean"),
+            MovementZone::Invalid
         );
     }
 

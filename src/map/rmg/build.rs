@@ -26,8 +26,7 @@ use super::{
 };
 
 /// Land type → rules section, the RA2 `LandType` enum order (verified against
-/// the zone classifier's `LAND_WATER == 2` / `LAND_BEACH == 6`). Indices past
-/// Cliff never occur on generated terrain, so they resolve to no section.
+/// the zone classifier's `LAND_WATER == 2` / `LAND_BEACH == 6`).
 const LAND_TYPE_SECTIONS: [Option<&str>; LAND_TYPES] = [
     Some("Clear"),    // 0
     Some("Road"),     // 1
@@ -37,10 +36,10 @@ const LAND_TYPE_SECTIONS: [Option<&str>; LAND_TYPES] = [
     Some("Tiberium"), // 5
     Some("Beach"),    // 6
     Some("Rough"),    // 7
-    Some("Cliff"),    // 8
-    None,             // 9
-    None,             // 10
-    None,             // 11
+    Some("Ice"),      // 8
+    Some("Railroad"), // 9
+    Some("Tunnel"),   // 10
+    Some("Weeds"),    // 11
     None,             // 12
     None,             // 13
     None,             // 14
@@ -296,6 +295,32 @@ mod tests {
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
     use crate::map::rmg::tiles::SpecialTerrain;
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::terrain_rules::LandType;
+
+    #[test]
+    fn gsi_04_04_rmg_land_sections_follow_canonical_order() {
+        assert_eq!(
+            LAND_TYPE_SECTIONS,
+            [
+                Some("Clear"),
+                Some("Road"),
+                Some("Water"),
+                Some("Rock"),
+                Some("Wall"),
+                Some("Tiberium"),
+                Some("Beach"),
+                Some("Rough"),
+                Some("Ice"),
+                Some("Railroad"),
+                Some("Tunnel"),
+                Some("Weeds"),
+                None,
+                None,
+                None,
+                None,
+            ],
+        );
+    }
 
     struct OneByOne(TileBlock);
     impl TileBlocks for OneByOne {
@@ -351,24 +376,22 @@ mod tests {
     }
 
     #[test]
-    fn wheel_table_marks_only_rock_for_stock_rules() {
-        // Stock rules give Rock Wheel=0% and everything else a passable value.
+    fn gsi_04_04_wheel_table_uses_canonical_land_indices() {
         let rules = TerrainRules::from_ini(&IniFile::from_str(
             "[Clear]\nWheel=100%\n\
              [Road]\nWheel=100%\n\
              [Rough]\nWheel=60%\n\
              [Rock]\nWheel=0%\n\
              [Water]\nWheel=0%\n\
-             [Cliff]\nWheel=0%\n",
+             [Ice]\nWheel=100%\n",
         ));
         let wheel = wheel_impassable_from_rules(&rules);
-        assert!(wheel[3], "Rock (land 3) is wheel-impassable");
-        assert!(!wheel[0], "Clear passable");
-        assert!(!wheel[1], "Road passable");
-        assert!(!wheel[7], "Rough passable at 60%");
-        // Water and Cliff are also 0% here, but the classifier returns before
-        // (water) or never reaches (cliff) their wheel check on generated maps.
-        assert!(wheel[2] && wheel[8]);
+        assert!(wheel[LandType::Water.as_index() as usize]);
+        assert!(wheel[LandType::Rock.as_index() as usize]);
+        assert!(!wheel[LandType::Clear.as_index() as usize]);
+        assert!(!wheel[LandType::Road.as_index() as usize]);
+        assert!(!wheel[LandType::Rough.as_index() as usize]);
+        assert!(!wheel[LandType::Ice.as_index() as usize]);
     }
 
     #[test]

@@ -24,7 +24,6 @@
 use std::collections::BTreeSet;
 
 use super::PathGrid;
-use super::passability;
 use super::terrain_cost::TerrainCostGrid;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{self, HouseAllianceMap};
@@ -181,10 +180,9 @@ fn terrain_cost_result(
 }
 
 fn speed_type_allows_cell(cell: &ResolvedTerrainCell, speed_type: SpeedType) -> bool {
-    if let Some(cost) = cell.speed_costs.cost_for_speed_type(speed_type) {
-        return cost > 0;
-    }
-    passability::is_passable_for_speed_type(cell.land_type, speed_type)
+    cell.speed_costs
+        .cost_for_speed_type(speed_type)
+        .is_none_or(|cost| cost > 0)
 }
 
 /// Layer selections used by Can_Enter_Cell-style checks.

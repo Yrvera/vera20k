@@ -11,12 +11,14 @@ use super::{
 };
 use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
 use crate::map::entities::EntityCategory;
-use crate::map::resolved_terrain::{RampDirection, ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::map::resolved_terrain::{
+    RampDirection, ResolvedTerrainCell, ResolvedTerrainGrid, zone_class,
+};
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
-use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::{BuildingUp, Health};
 use crate::sim::game_entity::GameEntity;
@@ -1901,7 +1903,7 @@ fn place_ready_building_rejects_destroyed_bridge_over_blocked_ground() {
 }
 
 #[test]
-fn water_bound_building_rejects_beach_like_water_cells() {
+fn gsi_04_04_water_bound_building_rejects_beach_zone() {
     let mut sim = Simulation::new();
     let rules = naval_yard_placement_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
@@ -1915,7 +1917,8 @@ fn water_bound_building_rejects_beach_like_water_cells() {
     sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |cell| {
         if cell.rx == 20 && cell.ry == 20 {
             cell.is_water = true;
-            cell.land_type = 3; // Beach/shallow shore: amphibious OK, ships blocked.
+            cell.land_type = LandType::Beach.as_index();
+            cell.zone_type = zone_class::BEACH;
             cell.terrain_class = TerrainClass::Water;
             cell.base_build_blocked = true;
             cell.build_blocked = true;
@@ -1950,7 +1953,7 @@ fn water_bound_building_rejects_beach_like_water_cells() {
 }
 
 #[test]
-fn water_bound_building_accepts_true_ship_water_cells() {
+fn gsi_04_04_water_bound_building_accepts_water_zone() {
     let mut sim = Simulation::new();
     let rules = naval_yard_placement_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
@@ -1964,7 +1967,8 @@ fn water_bound_building_accepts_true_ship_water_cells() {
     sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |cell| {
         if cell.rx == 20 && cell.ry == 20 {
             cell.is_water = true;
-            cell.land_type = 4; // Water
+            cell.land_type = LandType::Water.as_index();
+            cell.zone_type = zone_class::WATER;
             cell.terrain_class = TerrainClass::Water;
             cell.base_build_blocked = true;
             cell.build_blocked = true;

@@ -225,12 +225,15 @@ mod tests {
     }
 
     #[test]
-    fn speed_multiplier_zero_boosted_to_half() {
+    fn gsi_04_04_speed_profile_preserves_zero_multiplier() {
         let profile = SpeedCostProfile {
             foot: Some(0),
             ..Default::default()
         };
-        assert_eq!(profile.speed_multiplier_for(SpeedType::Foot), SIM_HALF);
+        assert_eq!(
+            profile.speed_multiplier_for(SpeedType::Foot),
+            SimFixed::from_num(0),
+        );
     }
 
     #[test]
