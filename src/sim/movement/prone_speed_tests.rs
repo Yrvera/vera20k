@@ -93,6 +93,7 @@ fn advance_prone_mover(crawls: bool) -> SimFixed {
         &terrain_costs,
         &Default::default(),
         &mut occupancy,
+        &mut crate::sim::occupancy::CellOccupationGrid::new(),
         &mut next_occupancy_enter_order,
         &mut rng,
         0,

@@ -141,7 +141,13 @@ pub(super) fn finish_drive_navigation(
         }
         return;
     }
-    // Non-drive movers (and drive movers with no owner destination) keep the
+    // A soft Stop can clear the owner destination while an already-committed
+    // Drive curve is still consuming. Its ordinary terminal Enter still clears
+    // the head/valid/selector/cursor tuple even though NavCom is already null.
+    if is_drive_locomotor(entity) {
+        reset_drive_track_runtime(entity);
+    }
+    // Non-drive movers (and the remaining Drive owner state) keep the
     // pre-existing immediate cleanup.
     set_destination_internal_null(entity);
     entity.navigation.nav_queue.clear();

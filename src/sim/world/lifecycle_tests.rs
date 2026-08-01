@@ -7,7 +7,9 @@ use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::anim_class::{AnimObject, AnimRuntime, AnimWorldCoord};
 use crate::sim::animation::{Animation, SequenceKind};
 use crate::sim::combat::{AttackTarget, PendingInfantryFire, TargetKind};
-use crate::sim::components::{C4PlantState, Health, NavTargetRef};
+use crate::sim::components::{
+    C4PlantState, DriveLocomotionRuntime, DriveOccupationFootprint, Health, NavTargetRef,
+};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::house_state::HouseState;
 use crate::sim::mission::state::MissionTestFixture;
@@ -566,6 +568,66 @@ fn gsi_04_05_conceal_removes_only_selected_object_list_layer() {
         "conceal must not cross-scan the bridge object list"
     );
     assert!(!sim.substrate.entities.get(1).unwrap().lifecycle.cell_marked);
+}
+
+#[test]
+fn gsi_04_05_hard_limbo_clears_pending_then_current_vehicle_occupation() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    let _ = sim.reveal(1);
+    let current = {
+        let entity = sim.substrate.entities.get(1).unwrap();
+        (entity.position.rx, entity.position.ry)
+    };
+    let head = (current.0 + 1, current.1);
+    {
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        entity.drive_locomotion = Some(DriveLocomotionRuntime {
+            occupation_head_to: Some(DriveOccupationFootprint {
+                rx: head.0,
+                ry: head.1,
+                layer: MovementLayer::Ground,
+            }),
+            ..Default::default()
+        });
+    }
+    sim.substrate.cell_occupation.mark_vehicle_on_layer(
+        head.0,
+        head.1,
+        1,
+        MovementLayer::Ground,
+    );
+
+    let _ = sim.object_conceal(1);
+
+    assert_eq!(
+        sim.substrate.cell_occupation.vehicle_bits(
+            head.0,
+            head.1,
+            MovementLayer::Ground
+        ),
+        0
+    );
+    assert_eq!(
+        sim.substrate.cell_occupation.vehicle_bits(
+            current.0,
+            current.1,
+            MovementLayer::Ground
+        ),
+        0
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .drive_locomotion
+            .as_ref()
+            .unwrap()
+            .occupation_head_to,
+        None
+    );
 }
 
 #[test]

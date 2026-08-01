@@ -20,7 +20,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
-use crate::sim::components::{MovementTarget, NavTargetRef, Position};
+use crate::sim::components::{DriveOccupationFootprint, MovementTarget, NavTargetRef, Position};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::infantry;
@@ -55,11 +55,14 @@ use super::{
     MIN_BRAKE_FRACTION, MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT,
     PathfindingContext, PendingCrushKill, facing_from_delta, walking_to_subcell_dest,
 };
-use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
+use crate::sim::occupancy::{CellListInsertion, CellOccupationGrid, OccupancyGrid};
 
 fn tick_forced_drive_tracks(
     entities: &mut EntityStore,
     entity_order: &[u64],
+    occupancy: &mut OccupancyGrid,
+    cell_occupation: &mut CellOccupationGrid,
+    next_occupancy_enter_order: &mut EnterOrderCounter,
     dt: SimFixed,
     stats: &mut MovementTickStats,
 ) -> BTreeSet<u64> {
@@ -71,22 +74,52 @@ fn tick_forced_drive_tracks(
         if entity.forced_drive_track.is_none() || entity.low_bridge_tube_state.is_some() {
             continue;
         }
-        let layer = entity.movement_layer_or_ground();
-        if matches!(layer, MovementLayer::Air | MovementLayer::Underground) {
+        if entity.movement_layer_or_ground() != MovementLayer::Ground {
             continue;
         }
 
-        let (advance, residual) = {
-            let forced = entity
-                .forced_drive_track
-                .as_mut()
-                .expect("checked forced_drive_track");
-            let advance =
-                super::drive_track::advance_drive_track(&mut forced.track, forced.speed, dt);
-            let residual = forced.track.residual;
-            (advance, residual)
+        let (advance, residual, point_index, paid_point) = {
+            let (forced_track, drive_locomotion) =
+                (&mut entity.forced_drive_track, &mut entity.drive_locomotion);
+            let forced = forced_track.as_mut().expect("checked forced_drive_track");
+            let prior_point_index = forced.track.point_index;
+            let advance = if let Some(drive) = drive_locomotion.as_mut() {
+                super::drive_track::advance_forced_drive_track(
+                    forced,
+                    dt,
+                    &mut drive.residual_budget,
+                )
+            } else {
+                // Defensive compatibility for old/test snapshots without the
+                // owner runtime. Active Force_Track installers always create it.
+                let mut residual = forced.track.residual;
+                super::drive_track::advance_forced_drive_track(forced, dt, &mut residual)
+            };
+            let residual = drive_locomotion
+                .as_ref()
+                .map_or(forced.track.residual, |drive| drive.residual_budget);
+            (
+                advance,
+                residual,
+                forced.track.point_index,
+                forced.track.point_index != prior_point_index,
+            )
         };
 
+        let current_cell = (entity.position.rx, entity.position.ry);
+        if paid_point && let Some(drive) = entity.drive_locomotion.as_mut() {
+            crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
+                drive,
+                cell_occupation,
+                entity_id,
+                current_cell,
+                MovementLayer::Ground,
+            );
+        }
+        if let Some(drive) = entity.drive_locomotion.as_mut() {
+            drive.point_index = point_index;
+            drive.track_valid = true;
+        }
         entity.facing = advance.facing;
         entity.facing_target = None;
         entity.position.sub_x = advance.sub_x;
@@ -108,15 +141,88 @@ fn tick_forced_drive_tracks(
         stats.movers_total = stats.movers_total.saturating_add(1);
         stats.moved_steps = stats.moved_steps.saturating_add(1);
 
-        if advance.finished || advance.cell_jump || advance.chain_ready {
-            if advance.cell_jump || advance.chain_ready {
-                log::warn!(
-                    "forced drive track entity={} ended on unsupported event: cell_jump={} chain_ready={}",
-                    entity_id,
-                    advance.cell_jump,
-                    advance.chain_ready
-                );
+        if advance.finished {
+            let head = entity
+                .drive_locomotion
+                .as_ref()
+                .and_then(|drive| drive.head_to);
+            if let Some(head) = head {
+                let target_rx = head.x.div_euclid(256);
+                let target_ry = head.y.div_euclid(256);
+                if let (Ok(target_rx), Ok(target_ry)) =
+                    (u16::try_from(target_rx), u16::try_from(target_ry))
+                {
+                    let old_cell = (entity.position.rx, entity.position.ry);
+                    let target_cell = (target_rx, target_ry);
+                    let cell_changed = old_cell != target_cell;
+                    if cell_changed && entity.lifecycle.cell_marked {
+                        // Native terminal order: Exit old cell, commit the exact
+                        // head coordinates, then Enter the target list.
+                        occupancy.remove_on_layer(
+                            old_cell.0,
+                            old_cell.1,
+                            entity_id,
+                            MovementLayer::Ground,
+                        );
+                        cell_occupation.clear_vehicle_on_layer(
+                            old_cell.0,
+                            old_cell.1,
+                            entity_id,
+                            MovementLayer::Ground,
+                        );
+                    }
+
+                    entity.position.rx = target_rx;
+                    entity.position.ry = target_ry;
+                    entity.position.sub_x = SimFixed::from_num(head.x.rem_euclid(256));
+                    entity.position.sub_y = SimFixed::from_num(head.y.rem_euclid(256));
+                    if let Ok(z) = u8::try_from(head.z) {
+                        entity.position.z = z;
+                    }
+
+                    if cell_changed && entity.lifecycle.cell_marked {
+                        entity.occupancy_enter_order = next_occupancy_enter_order.next();
+                        occupancy.add(
+                            target_rx,
+                            target_ry,
+                            entity_id,
+                            MovementLayer::Ground,
+                            None,
+                            CellListInsertion::from_category(entity.category),
+                        );
+                    }
+                    if let Some(drive) = entity.drive_locomotion.as_mut() {
+                        crate::sim::occupancy::finish_drive_head_to_occupation(
+                            drive,
+                            cell_occupation,
+                            entity_id,
+                            target_cell,
+                            MovementLayer::Ground,
+                        );
+                        drive.head_to = None;
+                        drive.track_valid = false;
+                        drive.track_index = -1;
+                        drive.point_index = 0;
+                    }
+                } else {
+                    log::warn!(
+                        "forced drive track entity={} has out-of-map terminal head ({}, {})",
+                        entity_id,
+                        head.x,
+                        head.y
+                    );
+                }
             }
+            entity.forced_drive_track = None;
+        } else if advance.cell_jump || advance.chain_ready {
+            // Forced advancement deliberately does not synthesize ordinary
+            // cell jumps. Keep this guard for malformed/unsupported metadata.
+            log::warn!(
+                "forced drive track entity={} ended on unsupported event: cell_jump={} chain_ready={}",
+                entity_id,
+                advance.cell_jump,
+                advance.chain_ready
+            );
             entity.forced_drive_track = None;
         }
     }
@@ -444,6 +550,7 @@ fn process_pending_drive_arrivals(
     >,
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
+    cell_occupation: &mut CellOccupationGrid,
 ) {
     let Some(grid) = path_grid else {
         super::navcom::process_pending_empty_drive_arrivals_in_order(entities, entity_order);
@@ -499,6 +606,10 @@ fn process_pending_drive_arrivals(
             .get(&entity.owner)
             .map(|(b, m)| (Some(b), Some(m)))
             .unwrap_or((None, None));
+        let mut occupied_blocks = entity_blocks.cloned().unwrap_or_default();
+        occupied_blocks
+            .extend(cell_occupation.occupied_cells_ignoring(MovementLayer::Ground, entity_id));
+        let occupied_blocks_ref = (!occupied_blocks.is_empty()).then_some(&occupied_blocks);
         let Some((path, path_layers)) = find_move_path(
             PathfindingContext {
                 path_grid,
@@ -511,9 +622,9 @@ fn process_pending_drive_arrivals(
             current_layer,
             (rx, ry),
             terrain_cost,
-            entity_blocks,
-            entity_blocks,
-            entity_blocks,
+            occupied_blocks_ref,
+            occupied_blocks_ref,
+            occupied_blocks_ref,
             loco.movement_zone,
             movement_zone,
             entity.too_big_to_fit_under_bridge,
@@ -572,6 +683,7 @@ fn process_pending_drive_arrivals(
             final_goal: Some((rx, ry)),
             ..Default::default()
         };
+        let mut track_occupation_target = None;
         if matches!(
             loco_kind,
             crate::rules::locomotor_type::LocomotorKind::Drive
@@ -590,6 +702,13 @@ fn process_pending_drive_arrivals(
                 );
                 if entity.drive_track.is_some() {
                     entity.facing_target = None;
+                    if movement.layer_at(1) == MovementLayer::Ground {
+                        track_occupation_target = Some(DriveOccupationFootprint {
+                            rx: movement.path[1].0,
+                            ry: movement.path[1].1,
+                            layer: MovementLayer::Ground,
+                        });
+                    }
                 }
             } else if let Some(fb) = super::drive_track::build_sharp_turn_fallback(entity.facing) {
                 let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity.facing);
@@ -608,7 +727,37 @@ fn process_pending_drive_arrivals(
                     movement.move_dir_y = move_dir_y;
                     movement.move_dir_len = move_dir_len;
                     entity.facing_target = None;
+                    if current_layer == MovementLayer::Ground {
+                        let rx = u16::try_from(i32::from(entity.position.rx) + cdx).ok();
+                        let ry = u16::try_from(i32::from(entity.position.ry) + cdy).ok();
+                        if let (Some(rx), Some(ry)) = (rx, ry) {
+                            track_occupation_target = Some(DriveOccupationFootprint {
+                                rx,
+                                ry,
+                                layer: MovementLayer::Ground,
+                            });
+                        }
+                    }
                 }
+            }
+        }
+        if let Some(drive) = entity.drive_locomotion.as_mut() {
+            match track_occupation_target {
+                Some(next) => crate::sim::occupancy::replace_drive_head_to_occupation(
+                    drive,
+                    cell_occupation,
+                    entity_id,
+                    current,
+                    current_layer,
+                    next,
+                ),
+                None => crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+                    drive,
+                    cell_occupation,
+                    entity_id,
+                    current,
+                    current_layer,
+                ),
             }
         }
         entity.movement_target = Some(movement);
@@ -633,6 +782,7 @@ fn classify_drive_track_chain_entry(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     entity_cost_grid: Option<&TerrainCostGrid>,
     occupancy: &OccupancyGrid,
+    cell_occupation: &CellOccupationGrid,
     live_building_entry_skips: &super::movement_occupancy::LiveBuildingEntrySkipMap,
     entities: &EntityStore,
     alliances: &HouseAllianceMap,
@@ -671,6 +821,11 @@ fn classify_drive_track_chain_entry(
         chain.target_cell,
         chain.layers,
         live_building_entry_skips,
+    ) && !cell_occupation.occupied_by_other(
+        chain.target_cell.0,
+        chain.target_cell.1,
+        chain.layers.occupancy_bits_layer,
+        entity_id,
     ) {
         return CellEntryResult::Clear;
     }
@@ -681,7 +836,7 @@ fn classify_drive_track_chain_entry(
         .map_or(crate::rules::locomotor_type::LocomotorKind::Drive, |l| {
             l.kind
         });
-    cell_entry::classify_occupied_cell_with_layers_and_ignored(
+    cell_entry::classify_occupied_cell_with_layers_and_ignored_and_occupation(
         chain.target_cell,
         chain.layers,
         entity_id,
@@ -691,6 +846,7 @@ fn classify_drive_track_chain_entry(
         snap.bypass_grid,
         live_building_entry_skips.get(&chain.target_cell),
         occupancy,
+        cell_occupation,
         entities,
         alliances,
         interner,
@@ -702,6 +858,7 @@ fn drive_track_chain_entry_allows_track_install(entry_result: &CellEntryResult) 
         entry_result,
         CellEntryResult::Clear
             | CellEntryResult::TemporaryBlock { .. }
+            | CellEntryResult::TemporaryOccupation
             | CellEntryResult::Crushable { .. }
     )
 }
@@ -742,6 +899,7 @@ fn handle_deferred_drive_track_chain(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     entity_cost_grid: Option<&TerrainCostGrid>,
     occupancy: &mut OccupancyGrid,
+    cell_occupation: &mut CellOccupationGrid,
     live_building_entry_skips: &super::movement_occupancy::LiveBuildingEntrySkipMap,
     alliances: &HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
@@ -759,6 +917,7 @@ fn handle_deferred_drive_track_chain(
         resolved_terrain,
         entity_cost_grid,
         occupancy,
+        cell_occupation,
         live_building_entry_skips,
         entities,
         alliances,
@@ -767,7 +926,9 @@ fn handle_deferred_drive_track_chain(
     let install_chain = drive_track_chain_entry_allows_track_install(&entry_result);
 
     match entry_result {
-        CellEntryResult::Clear | CellEntryResult::TemporaryBlock { .. } => {}
+        CellEntryResult::Clear
+        | CellEntryResult::TemporaryBlock { .. }
+        | CellEntryResult::TemporaryOccupation => {}
         CellEntryResult::ScatterRequired { .. } => {
             drive_track_chain_check_crushable_obstacle(
                 entities, occupancy, chain, entity_id, snap, rules, alliances, interner,
@@ -805,7 +966,15 @@ fn handle_deferred_drive_track_chain(
                 if let Some(victim) = entities.get_mut(victim_id) {
                     // This forced-drive path shares the same UNCHECKED
                     // pre-UnInit unmark timing as the ordinary crush path.
+                    if let Some(drive) = victim.drive_locomotion.as_mut() {
+                        crate::sim::occupancy::clear_drive_head_to_occupation_for_remove(
+                            drive,
+                            cell_occupation,
+                            victim_id,
+                        );
+                    }
                     victim.lifecycle.cell_marked = false;
+                    cell_occupation.reconcile_entity(victim);
                 }
             }
             crush_kills.extend(victims.into_iter().map(|victim_id| PendingCrushKill {
@@ -858,6 +1027,36 @@ fn handle_deferred_drive_track_chain(
         return false;
     };
     entity.drive_track = Some(new_track);
+    let current_cell = (entity.position.rx, entity.position.ry);
+    let current_layer = entity
+        .occupancy_list_layer()
+        .unwrap_or(MovementLayer::Ground);
+    if let Some(drive) = entity.drive_locomotion.as_mut() {
+        let next = (chain.layers.occupancy_bits_layer == MovementLayer::Ground).then_some(
+            DriveOccupationFootprint {
+                rx: chain.target_cell.0,
+                ry: chain.target_cell.1,
+                layer: MovementLayer::Ground,
+            },
+        );
+        match next {
+            Some(next) => crate::sim::occupancy::replace_drive_head_to_occupation(
+                drive,
+                cell_occupation,
+                entity_id,
+                current_cell,
+                current_layer,
+                next,
+            ),
+            None => crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+                drive,
+                cell_occupation,
+                entity_id,
+                current_cell,
+                current_layer,
+            ),
+        }
+    }
     true
 }
 
@@ -869,6 +1068,7 @@ pub(crate) fn tick_movement_with_grids(
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     alliances: &HouseAllianceMap,
     occupancy: &mut OccupancyGrid,
+    cell_occupation: &mut CellOccupationGrid,
     next_occupancy_enter_order: &mut EnterOrderCounter,
     rng: &mut SimRng,
     sim_tick: u64,
@@ -891,6 +1091,7 @@ pub(crate) fn tick_movement_with_grids(
         terrain_costs,
         alliances,
         occupancy,
+        cell_occupation,
         next_occupancy_enter_order,
         rng,
         sim_tick,
@@ -917,6 +1118,7 @@ pub(crate) fn tick_movement_object_with_grids(
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     alliances: &HouseAllianceMap,
     occupancy: &mut OccupancyGrid,
+    cell_occupation: &mut CellOccupationGrid,
     next_occupancy_enter_order: &mut EnterOrderCounter,
     rng: &mut SimRng,
     sim_tick: u64,
@@ -939,6 +1141,7 @@ pub(crate) fn tick_movement_object_with_grids(
         terrain_costs,
         alliances,
         occupancy,
+        cell_occupation,
         next_occupancy_enter_order,
         rng,
         sim_tick,
@@ -965,6 +1168,7 @@ fn tick_movement_with_grids_scoped(
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     alliances: &HouseAllianceMap,
     occupancy: &mut OccupancyGrid,
+    cell_occupation: &mut CellOccupationGrid,
     next_occupancy_enter_order: &mut EnterOrderCounter,
     rng: &mut SimRng,
     sim_tick: u64,
@@ -1017,6 +1221,11 @@ fn tick_movement_with_grids_scoped(
             &fallback_order
         }
     };
+    for &entity_id in entity_order {
+        if let Some(entity) = entities.get(entity_id) {
+            cell_occupation.reconcile_entity(entity);
+        }
+    }
     // Collect entities that have finished their paths (need movement_target removal after loop).
     let mut finished_entities: Vec<u64> = Vec::new();
     // Deferred effects — applied after the movement loop to avoid borrow conflicts.
@@ -1048,7 +1257,15 @@ fn tick_movement_with_grids_scoped(
             entity_order,
         );
     }
-    let forced_drive_processed = tick_forced_drive_tracks(entities, entity_order, dt, &mut stats);
+    let forced_drive_processed = tick_forced_drive_tracks(
+        entities,
+        entity_order,
+        occupancy,
+        cell_occupation,
+        next_occupancy_enter_order,
+        dt,
+        &mut stats,
+    );
 
     // Collect movers in live object order: ground/bridge entities with a movement_target.
     let mut movers: Vec<u64> = Vec::new();
@@ -1111,6 +1328,7 @@ fn tick_movement_with_grids_scoped(
         &entity_block_sets,
         interner,
         rules,
+        cell_occupation,
     );
     movers.clear();
     for &id in entity_order {
@@ -1487,6 +1705,11 @@ fn tick_movement_with_grids_scoped(
             // Advance sub_x/sub_y toward the next cell — either via drive track
             // (smooth curve) or straight-line lepton vector.
             let mut skip_cell_crossings_after_chain_ready = false;
+            let current_occupation_layer = if entity.on_bridge {
+                MovementLayer::Bridge
+            } else {
+                MovementLayer::Ground
+            };
             match movement_step::advance_lepton_position(
                 target,
                 &mut entity.position,
@@ -1500,10 +1723,12 @@ fn tick_movement_with_grids_scoped(
                 frame_budget,
                 dt,
                 entity_id,
+                Some(&mut *cell_occupation),
+                current_occupation_layer,
             ) {
                 movement_step::AdvanceResult::DriveTrackActive => continue,
                 movement_step::AdvanceResult::DriveTrackCellJump => {
-                    // Drive track crossed a cell boundary at cell_cross_index.
+                    // Drive track coordinates crossed a cell boundary.
                     // Perform the cell transition: update rx/ry, advance next_index,
                     // reserve destination, handle bridge state.
                     if target.next_index < target.path.len() {
@@ -1586,6 +1811,17 @@ fn tick_movement_with_grids_scoped(
                             entity.sub_cell,
                             CellListInsertion::from_category(entity.category),
                         );
+                        if entity.category == EntityCategory::Unit
+                            && let Some(drive) = entity.drive_locomotion.as_mut()
+                        {
+                            crate::sim::occupancy::mark_current_drive_occupation_after_crossing(
+                                drive,
+                                cell_occupation,
+                                entity_id,
+                                (nx, ny),
+                                new_occupancy_layer,
+                            );
+                        }
                         // Reserve destination cell.
                         super::movement_reservation::reserve_destination_after_transition(
                             entity.category,
@@ -1707,6 +1943,7 @@ fn tick_movement_with_grids_scoped(
                     &mut entity.facing_target,
                     &mut entity.locomotor,
                     &mut entity.drive_track,
+                    &mut entity.drive_locomotion,
                     &mut entity.sub_cell,
                     entity.category,
                     entity_id,
@@ -1719,6 +1956,7 @@ fn tick_movement_with_grids_scoped(
                     mover_entity_block_map,
                     &live_building_entry_skips,
                     occupancy,
+                    cell_occupation,
                     &mut entity.occupancy_enter_order,
                     next_occupancy_enter_order,
                     &mut stats,
@@ -1824,6 +2062,7 @@ fn tick_movement_with_grids_scoped(
                 resolved_terrain,
                 entity_cost_grid,
                 occupancy,
+                cell_occupation,
                 &live_building_entry_skips,
                 alliances,
                 interner,
@@ -1851,6 +2090,7 @@ fn tick_movement_with_grids_scoped(
                 mover_entity_blocks,
                 mover_entity_block_map,
                 occupancy,
+                cell_occupation,
                 &live_building_entry_skips,
                 alliances,
                 path_grid,
@@ -1921,6 +2161,7 @@ fn tick_movement_with_grids_scoped(
         &crush_kills,
         sim_tick,
         resolved_terrain,
+        cell_occupation,
     );
     update_locomotor_phases(entities, entity_order, &crush_kills, sim_tick);
 
@@ -2054,12 +2295,28 @@ fn finalize_finished_entities(
     crush_kills: &[PendingCrushKill],
     sim_tick: u64,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
+    cell_occupation: &mut CellOccupationGrid,
 ) {
     for &entity_id in finished {
         if contains_crush_victim(crush_kills, entity_id) {
             continue;
         }
         if let Some(entity) = entities.get_mut(entity_id) {
+            let current_cell = (entity.position.rx, entity.position.ry);
+            let current_layer = entity
+                .occupancy_list_layer()
+                .unwrap_or(MovementLayer::Ground);
+            if entity.category == EntityCategory::Unit
+                && let Some(drive) = entity.drive_locomotion.as_mut()
+            {
+                crate::sim::occupancy::finish_drive_head_to_occupation(
+                    drive,
+                    cell_occupation,
+                    entity_id,
+                    current_cell,
+                    current_layer,
+                );
+            }
             super::navcom::finish_drive_navigation(entity, resolved_terrain);
             entity.movement_target = None;
             entity.drive_track = None; // clear any active drive track curve
@@ -2351,6 +2608,7 @@ mod drive_track_chain_tests {
         entities.insert(blocker);
 
         let mut occupancy = OccupancyGrid::rebuild(&entities);
+        let mut cell_occupation = CellOccupationGrid::new();
         let snap = drive_snapshot();
         let chain = chain_to_east_cell();
         let live_building_entry_skips: BTreeMap<(u16, u16), BTreeSet<u64>> = BTreeMap::new();
@@ -2370,6 +2628,7 @@ mod drive_track_chain_tests {
             None,
             None,
             &mut occupancy,
+            &mut cell_occupation,
             &live_building_entry_skips,
             &alliances,
             &interner,
@@ -2498,6 +2757,7 @@ mod drive_track_chain_tests {
         entities.insert(victim);
 
         let mut occupancy = OccupancyGrid::rebuild(&entities);
+        let mut cell_occupation = CellOccupationGrid::new();
         let mut snap = drive_snapshot();
         snap.regular_crusher = true;
         let live_building_entry_skips = BTreeMap::new();
@@ -2517,6 +2777,7 @@ mod drive_track_chain_tests {
             None,
             None,
             &mut occupancy,
+            &mut cell_occupation,
             &live_building_entry_skips,
             &alliances,
             &interner,

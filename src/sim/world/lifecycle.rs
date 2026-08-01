@@ -265,6 +265,8 @@ impl Simulation {
             None
         };
         let insertion = CellListInsertion::from_category(entity.category);
+        let category = entity.category;
+        let current_cell = (entity.position.rx, entity.position.ry);
         let inside_transport = entity.passenger_role.is_inside_transport();
         let order = self.substrate.next_occupancy_enter_order.next();
 
@@ -275,11 +277,22 @@ impl Simulation {
                         .occupancy
                         .add(rx, ry, stable_id, layer, sub_cell, insertion);
                 }
+                if category == EntityCategory::Unit {
+                    self.substrate.cell_occupation.mark_vehicle_on_layer(
+                        current_cell.0,
+                        current_cell.1,
+                        stable_id,
+                        layer,
+                    );
+                }
             }
         }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.occupancy_enter_order = order;
             entity.lifecycle.cell_marked = true;
+            if let Some(drive) = entity.drive_locomotion.as_mut() {
+                drive.current_occupation_cleared = false;
+            }
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::CellMarked);
@@ -294,15 +307,42 @@ impl Simulation {
         }
         let cells = entity_occupancy_cells(entity);
         let layer = entity.occupancy_list_layer();
+        let category = entity.category;
+        let current_cell = (entity.position.rx, entity.position.ry);
+        if category == EntityCategory::Unit {
+            let (entities, occupation) = (
+                &mut self.substrate.entities,
+                &mut self.substrate.cell_occupation,
+            );
+            if let Some(drive) = entities
+                .get_mut(stable_id)
+                .and_then(|entity| entity.drive_locomotion.as_mut())
+            {
+                crate::sim::occupancy::clear_drive_head_to_occupation_for_remove(
+                    drive, occupation, stable_id,
+                );
+            }
+        }
         if let Some(layer) = layer {
             for (rx, ry) in cells {
                 self.substrate
                     .occupancy
                     .remove_on_layer(rx, ry, stable_id, layer);
             }
+            if category == EntityCategory::Unit {
+                self.substrate.cell_occupation.clear_vehicle_on_layer(
+                    current_cell.0,
+                    current_cell.1,
+                    stable_id,
+                    layer,
+                );
+            }
         }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.lifecycle.cell_marked = false;
+            if let Some(drive) = entity.drive_locomotion.as_mut() {
+                drive.current_occupation_cleared = true;
+            }
         }
         true
     }

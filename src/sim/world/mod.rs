@@ -2797,6 +2797,7 @@ impl Simulation {
                 &sim.terrain_costs,
                 &sim.house_alliances,
                 &mut sim.substrate.occupancy,
+                &mut sim.substrate.cell_occupation,
                 &mut sim.substrate.next_occupancy_enter_order,
                 &mut sim.scenario_rng,
                 sim.session.tick,

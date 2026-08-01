@@ -107,10 +107,10 @@ pub struct RawTrack {
     /// At this point the engine tries to start a follow-on track curve.
     /// -1 = no chaining for this track.
     pub chain_index: i16,
-    /// Point index where cell crossing occurs (binary +0x0C).
-    /// When the vehicle reaches this point, it crosses into the next cell.
-    /// -1 = no cell crossing for this track.
-    pub cell_cross_index: i16,
+    /// Point index for the occupation handoff callback (binary +0x0C).
+    /// This is distinct from coordinate-driven object-list cell crossing.
+    /// -1 = no occupation handoff point for this track.
+    pub occupation_handoff_point_index: i16,
 }
 
 /// Turn angle to track curve mapping.
@@ -711,7 +711,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 0,
         entry_index: 192,
         chain_index: 0,
-        cell_cross_index: 0,
+        occupation_handoff_point_index: 0,
     },
     // Track 1: straight north (23 points, sentinel-terminated)
     RawTrack {
@@ -719,7 +719,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 23,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 2: straight NE diagonal (31 points)
     RawTrack {
@@ -727,7 +727,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 31,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 3: turning curve N→NE (54 points, crosses cell)
     RawTrack {
@@ -735,7 +735,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 54,
         entry_index: 12,
         chain_index: 37,
-        cell_cross_index: 22,
+        occupation_handoff_point_index: 22,
     },
     // Track 4: turning curve N→E (38 points, crosses cell)
     RawTrack {
@@ -743,7 +743,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 38,
         entry_index: 11,
         chain_index: 26,
-        cell_cross_index: 19,
+        occupation_handoff_point_index: 19,
     },
     // Track 5: wide turn NE→E (61 points, crosses cell)
     RawTrack {
@@ -751,7 +751,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 61,
         entry_index: 15,
         chain_index: 45,
-        cell_cross_index: 31,
+        occupation_handoff_point_index: 31,
     },
     // Track 6: wide turn NE→E variant (56 points, crosses cell)
     RawTrack {
@@ -759,7 +759,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 56,
         entry_index: 16,
         chain_index: 44,
-        cell_cross_index: 27,
+        occupation_handoff_point_index: 27,
     },
     // Track 7: short curve A (27 points)
     RawTrack {
@@ -767,7 +767,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 27,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 8: short curve B (21 points)
     RawTrack {
@@ -775,7 +775,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 21,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 9: short curve C (30 points)
     RawTrack {
@@ -783,7 +783,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 30,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 10: short curve D (27 points)
     RawTrack {
@@ -791,7 +791,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 27,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 11: special A (13 points)
     RawTrack {
@@ -799,7 +799,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 13,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 12: special B (12 points)
     RawTrack {
@@ -807,7 +807,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 12,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 13: special C — long straight east (68 points)
     RawTrack {
@@ -815,7 +815,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 68,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 14: special D — short NE diagonal (15 points)
     RawTrack {
@@ -823,7 +823,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 15,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
     // Track 15: special E — SE to S arc (16 points)
     RawTrack {
@@ -831,7 +831,7 @@ pub const RAW_TRACKS: [RawTrack; 16] = [
         points_count: 16,
         entry_index: 0,
         chain_index: -1,
-        cell_cross_index: -1,
+        occupation_handoff_point_index: -1,
     },
 ];
 
@@ -3501,7 +3501,7 @@ pub fn select_drive_track(
         raw_track_index: raw_index,
         entry_index: raw_meta.entry_index,
         chain_index: raw_meta.chain_index,
-        cell_cross_index: raw_meta.cell_cross_index,
+        occupation_handoff_point_index: raw_meta.occupation_handoff_point_index,
         points_count: raw_meta.points_count,
         target_facing: turn_track.target_facing,
         flags: turn_track.flags,
@@ -3534,7 +3534,7 @@ pub fn build_sharp_turn_fallback(current_facing: u8) -> Option<DriveTrackSelecti
         raw_track_index: turn_track.normal_track,
         entry_index: raw_meta.entry_index,
         chain_index: raw_meta.chain_index,
-        cell_cross_index: raw_meta.cell_cross_index,
+        occupation_handoff_point_index: raw_meta.occupation_handoff_point_index,
         points_count: raw_meta.points_count,
         target_facing: turn_track.target_facing,
         flags: turn_track.flags,
@@ -3559,8 +3559,9 @@ pub struct DriveTrackSelection {
     pub entry_index: u16,
     /// Point index where track chaining is attempted (-1 = none).
     pub chain_index: i16,
-    /// Point index where cell crossing occurs (-1 = none).
-    pub cell_cross_index: i16,
+    /// RawTrack +0x0C occupation handoff point (-1 = none).
+    /// Runtime wiring remains intentionally separate from coordinate crossing.
+    pub occupation_handoff_point_index: i16,
     /// Total points in the track.
     pub points_count: u16,
     /// Target facing after completing the track (0-255).
@@ -3732,6 +3733,28 @@ pub fn advance_drive_track_with_budget(
     fresh_budget: i32,
     residual_budget: &mut i32,
 ) -> DriveTrackAdvance {
+    advance_drive_track_with_budget_mode(state, fresh_budget, residual_budget, true)
+}
+
+/// Advance a forced track without interpreting its head-relative coordinates
+/// as ordinary per-cell crossing coordinates. `Force_Track` transforms every
+/// raw point from the stored absolute head and only relinks the object on the
+/// paid terminal sentinel.
+pub(crate) fn advance_forced_drive_track(
+    state: &mut ForcedDriveTrackState,
+    dt: SimFixed,
+    residual_budget: &mut i32,
+) -> DriveTrackAdvance {
+    let fresh_budget: i32 = (state.speed * dt).to_num::<i32>();
+    advance_drive_track_with_budget_mode(&mut state.track, fresh_budget, residual_budget, false)
+}
+
+fn advance_drive_track_with_budget_mode(
+    state: &mut DriveTrackState,
+    fresh_budget: i32,
+    residual_budget: &mut i32,
+    detect_cell_jump: bool,
+) -> DriveTrackAdvance {
     let meta = &RAW_TRACKS[state.raw_track_index as usize];
     let points = raw_track_points(state.raw_track_index);
     let last_index = meta.points_count.saturating_sub(1);
@@ -3750,7 +3773,7 @@ pub fn advance_drive_track_with_budget(
         // Coordinate-based cell detection: transform the track point and
         // check if the resulting sub-cell position is outside [0, 256).
         // Every step checks whether the world position lands in a different cell.
-        if let Some(pt) = points.get(state.point_index as usize) {
+        if detect_cell_jump && let Some(pt) = points.get(state.point_index as usize) {
             let (tx, ty, _) = transform_track_point(pt.x, pt.y, pt.facing, state.transform_flags);
             let sx = state.head_offset_x + tx as i32 + state.cell_offset_x;
             let sy = state.head_offset_y + ty as i32 + state.cell_offset_y;
@@ -3779,7 +3802,8 @@ pub fn advance_drive_track_with_budget(
     *residual_budget = budget;
 
     let finished = state.point_index >= last_index;
-    // Track complete — discard residual (will be cleared with the state).
+    // Track completion retains the canonical owner residual and its synchronized
+    // detached-state mirror for the caller's next movement decision.
 
     // Read position and facing from current track point, applying
     // transform flags and head/cell offsets.

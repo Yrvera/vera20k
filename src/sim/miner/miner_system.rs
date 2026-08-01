@@ -25,7 +25,7 @@ use crate::sim::miner::{
 };
 use crate::sim::movement;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::zone_map::{ZONE_INVALID, ZoneGrid};
 use crate::sim::production::pick_best_resource_node;
@@ -191,10 +191,7 @@ mod gsi_04_03b_tests {
 
         sim.substrate.entities.get_mut(1).unwrap().position.sub_x = SimFixed::from_num(0);
         sim.substrate.entities.get_mut(2).unwrap().position.sub_x = SimFixed::from_num(0);
-        assert_eq!(
-            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
-            Some(false)
-        );
+        assert_eq!(return_exceeds_too_far_threshold(&sim, 1, 2, 1), Some(false));
 
         sim.substrate.entities.get_mut(1).unwrap().on_bridge = true;
         assert_eq!(
@@ -212,6 +209,90 @@ mod gsi_04_03b_tests {
             return_exceeds_too_far_threshold(&sim, 1, 2, 1),
             Some(true),
             "locomotor altitude contributes to raw object-coordinate Z"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_sequential_miner_helper_reserves_head_without_reconcile() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let type_ref = sim.interner.intern("HARV");
+        for (entity_id, rx, facing) in [(1, 1, 0x40), (2, 3, 0xC0)] {
+            let mut miner = GameEntity::test_default(entity_id, "HARV", "AMERICANS", rx, 2);
+            miner.owner = owner;
+            miner.type_ref = type_ref;
+            miner.facing = facing;
+            miner.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+            miner.drive_locomotion = Some(Default::default());
+            sim.substrate.entities.insert(miner);
+            sim.add_entity_occupancy(entity_id);
+        }
+
+        let grid = PathGrid::new(5, 5);
+        let shared_head = (2, 2);
+        {
+            let (entities, cell_occupation) = (
+                &mut sim.substrate.entities,
+                &mut sim.substrate.cell_occupation,
+            );
+            issue_move_if_idle(
+                entities,
+                cell_occupation,
+                &grid,
+                1,
+                shared_head,
+                SimFixed::from_num(128),
+            );
+        }
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .and_then(|entity| entity.drive_locomotion.as_ref())
+                .and_then(|drive| drive.occupation_head_to)
+                .map(|head| (head.rx, head.ry)),
+            Some(shared_head)
+        );
+        assert!(sim.substrate.cell_occupation.occupied_by_other(
+            shared_head.0,
+            shared_head.1,
+            MovementLayer::Ground,
+            2,
+        ));
+
+        {
+            let (entities, cell_occupation) = (
+                &mut sim.substrate.entities,
+                &mut sim.substrate.cell_occupation,
+            );
+            issue_move_if_idle(
+                entities,
+                cell_occupation,
+                &grid,
+                2,
+                shared_head,
+                SimFixed::from_num(128),
+            );
+        }
+
+        let second = sim.substrate.entities.get(2).expect("second miner");
+        assert_ne!(
+            second
+                .drive_locomotion
+                .as_ref()
+                .and_then(|drive| drive.occupation_head_to)
+                .map(|head| (head.rx, head.ry)),
+            Some(shared_head),
+            "the second production miner helper must observe the first head mark immediately"
+        );
+        assert_ne!(
+            second
+                .movement_target
+                .as_ref()
+                .and_then(|movement| movement.final_goal),
+            Some(shared_head),
+            "contention must be resolved before any movement-tick reconciliation"
         );
     }
 }
@@ -1030,8 +1111,13 @@ fn handle_return(
     }
 
     if let Some(grid) = path_grid {
-        issue_move_if_idle(
+        let (entities, cell_occupation) = (
             &mut sim.substrate.entities,
+            &mut sim.substrate.cell_occupation,
+        );
+        issue_move_if_idle(
+            entities,
+            cell_occupation,
             grid,
             snap.entity_id,
             dock,
@@ -1257,8 +1343,13 @@ fn try_begin_close_return_radio(
             && !is_adjacent_or_at((snap.rx, snap.ry), staging)
             && let Some(grid) = path_grid
         {
-            issue_move_if_idle(
+            let (entities, cell_occupation) = (
                 &mut sim.substrate.entities,
+                &mut sim.substrate.cell_occupation,
+            );
+            issue_move_if_idle(
+                entities,
+                cell_occupation,
                 grid,
                 snap.entity_id,
                 staging,
@@ -1735,6 +1826,7 @@ fn issue_stock_miner_drive_move(
         sim.zone_grid.as_ref(),
         None,
         info.mover_is_crusher,
+        Some(&mut sim.substrate.cell_occupation),
     );
     if !issued {
         if let Some((kind, slot, piggyback, layer, phase)) = activation_snapshot
@@ -1769,6 +1861,7 @@ fn issue_stock_miner_drive_move(
 /// Issue a move command only if the entity isn't already pathing to this target.
 fn issue_move_if_idle(
     entities: &mut crate::sim::entity_store::EntityStore,
+    cell_occupation: &mut CellOccupationGrid,
     grid: &PathGrid,
     entity_id: u64,
     target: (u16, u16),
@@ -1783,8 +1876,20 @@ fn issue_move_if_idle(
         .and_then(|mt| mt.path.last().copied())
         .is_some_and(|goal| goal == target);
     if !already {
-        let _ = movement::issue_move_command(
-            entities, grid, entity_id, target, speed, false, None, None, None, false,
+        let _ = movement::issue_move_command_with_layered(
+            entities,
+            grid,
+            entity_id,
+            target,
+            speed,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some(cell_occupation),
         );
     }
 }

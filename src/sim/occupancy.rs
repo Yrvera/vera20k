@@ -14,8 +14,477 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
+
+/// UnitClass vehicle-occupation bit in both CellClass occupation planes.
+pub(crate) const VEHICLE_OCCUPATION_BIT: u8 = 0x20;
+
+/// Entity-aware ownership behind one native occupation plane.
+///
+/// The public observation remains the native ORed bit. Keeping the contributing
+/// entity IDs lets a Unit ignore its own head-to mark without manufacturing a
+/// phantom `CellOccupant` in the destination cell.
+#[derive(Debug, Clone, Default)]
+struct VehicleOccupationPlane {
+    owners: BTreeMap<u64, u8>,
+}
+
+impl VehicleOccupationPlane {
+    fn mark(&mut self, entity_id: u64) {
+        self.owners.insert(entity_id, VEHICLE_OCCUPATION_BIT);
+    }
+
+    fn clear(&mut self, entity_id: u64) {
+        self.owners.remove(&entity_id);
+    }
+
+    fn bits(&self) -> u8 {
+        self.owners
+            .values()
+            .copied()
+            .fold(0, |bits, mark| bits | mark)
+    }
+
+    fn bits_ignoring(&self, entity_id: u64) -> u8 {
+        self.owners
+            .iter()
+            .filter(|(owner, _)| **owner != entity_id)
+            .map(|(_, mark)| *mark)
+            .fold(0, |bits, mark| bits | mark)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.owners.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct CellVehicleOccupation {
+    ground: VehicleOccupationPlane,
+    deck: VehicleOccupationPlane,
+}
+
+impl CellVehicleOccupation {
+    fn plane(&self, layer: MovementLayer) -> Option<&VehicleOccupationPlane> {
+        match layer {
+            MovementLayer::Ground => Some(&self.ground),
+            MovementLayer::Bridge => Some(&self.deck),
+            MovementLayer::Air | MovementLayer::Underground => None,
+        }
+    }
+
+    fn plane_mut(&mut self, layer: MovementLayer) -> Option<&mut VehicleOccupationPlane> {
+        match layer {
+            MovementLayer::Ground => Some(&mut self.ground),
+            MovementLayer::Bridge => Some(&mut self.deck),
+            MovementLayer::Air | MovementLayer::Underground => None,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ground.is_empty() && self.deck.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CellOccupationFootprint {
+    rx: u16,
+    ry: u16,
+    layer: MovementLayer,
+}
+
+/// Reverse lookup for one Unit's at-most-current/head occupation marks.
+///
+/// Native storage is one ORed bit per owner and plane, not a reference count:
+/// coincident current/head roles therefore occupy one slot here as well.
+#[derive(Debug, Clone, Copy, Default)]
+struct OwnerOccupationFootprints {
+    first: Option<CellOccupationFootprint>,
+    second: Option<CellOccupationFootprint>,
+}
+
+impl OwnerOccupationFootprints {
+    fn insert(&mut self, footprint: CellOccupationFootprint) {
+        if self.first == Some(footprint) || self.second == Some(footprint) {
+            return;
+        }
+        if self.first.is_none() {
+            self.first = Some(footprint);
+            return;
+        }
+        if self.second.is_none() {
+            self.second = Some(footprint);
+            return;
+        }
+        panic!("CellOccupationGrid owner exceeded current/head footprint bound");
+    }
+
+    fn remove(&mut self, footprint: CellOccupationFootprint) {
+        if self.first == Some(footprint) {
+            self.first = self.second.take();
+        } else if self.second == Some(footprint) {
+            self.second = None;
+        }
+    }
+
+    fn iter(self) -> impl Iterator<Item = CellOccupationFootprint> {
+        [self.first, self.second].into_iter().flatten()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_none() && self.second.is_none()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        usize::from(self.first.is_some()) + usize::from(self.second.is_some())
+    }
+}
+
+/// Independent CellClass-style vehicle-occupation bit planes.
+///
+/// This is deliberately separate from [`OccupancyGrid`]: object-list identity
+/// and order come only from `CellOccupant`, while an accepted Drive track can
+/// mark its head-to cell before the unit is linked there. The index is transient
+/// and rebuilt from serialized entity/Drive state.
+#[derive(Debug, Clone, Default)]
+pub struct CellOccupationGrid {
+    cells: BTreeMap<(u16, u16), CellVehicleOccupation>,
+    footprints_by_owner: BTreeMap<u64, OwnerOccupationFootprints>,
+}
+
+impl CellOccupationGrid {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn rebuild(entities: &crate::sim::entity_store::EntityStore) -> Self {
+        let mut grid = Self::new();
+        for entity in entities.values() {
+            if entity.category != EntityCategory::Unit
+                || !entity.lifecycle.cell_marked
+                || entity.passenger_role.is_inside_transport()
+            {
+                continue;
+            }
+            let current_cleared = entity
+                .drive_locomotion
+                .as_ref()
+                .is_some_and(|drive| drive.current_occupation_cleared);
+            if !current_cleared && let Some(layer) = entity.occupancy_list_layer() {
+                grid.mark_vehicle_on_layer(
+                    entity.position.rx,
+                    entity.position.ry,
+                    entity.stable_id,
+                    layer,
+                );
+            }
+            if let Some(mark) = entity
+                .drive_locomotion
+                .as_ref()
+                .and_then(|drive| drive.occupation_head_to)
+            {
+                grid.mark_vehicle_on_layer(mark.rx, mark.ry, entity.stable_id, mark.layer);
+            }
+        }
+        grid
+    }
+
+    /// Reconcile one entity from its serialized current/head-to footprint.
+    ///
+    /// Most world command paths update this transient index directly. This
+    /// narrow reconciliation also covers internal direct/scatter orders whose
+    /// command surface owns only `EntityStore`.
+    pub(crate) fn reconcile_entity(&mut self, entity: &GameEntity) {
+        let old_footprints = self
+            .footprints_by_owner
+            .get_mut(&entity.stable_id)
+            .map(|footprints| {
+                let old = *footprints;
+                *footprints = OwnerOccupationFootprints::default();
+                old
+            })
+            .unwrap_or_default();
+        for footprint in old_footprints.iter() {
+            self.clear_vehicle_plane(footprint, entity.stable_id);
+        }
+
+        if entity.category != EntityCategory::Unit
+            || !entity.lifecycle.cell_marked
+            || entity.passenger_role.is_inside_transport()
+        {
+            self.footprints_by_owner.remove(&entity.stable_id);
+            return;
+        }
+        let current_cleared = entity
+            .drive_locomotion
+            .as_ref()
+            .is_some_and(|drive| drive.current_occupation_cleared);
+        if !current_cleared && let Some(layer) = entity.occupancy_list_layer() {
+            self.mark_vehicle_on_layer(
+                entity.position.rx,
+                entity.position.ry,
+                entity.stable_id,
+                layer,
+            );
+        }
+        if let Some(head) = entity
+            .drive_locomotion
+            .as_ref()
+            .and_then(|drive| drive.occupation_head_to)
+        {
+            self.mark_vehicle_on_layer(head.rx, head.ry, entity.stable_id, head.layer);
+        }
+        if self
+            .footprints_by_owner
+            .get(&entity.stable_id)
+            .is_some_and(OwnerOccupationFootprints::is_empty)
+        {
+            self.footprints_by_owner.remove(&entity.stable_id);
+        }
+    }
+
+    /// Exact explicit-plane mark. Ground/deck storage is independent.
+    pub(crate) fn mark_vehicle_on_layer(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        entity_id: u64,
+        layer: MovementLayer,
+    ) {
+        if !matches!(layer, MovementLayer::Ground | MovementLayer::Bridge) {
+            return;
+        }
+        let cell = self.cells.entry((rx, ry)).or_default();
+        cell.plane_mut(layer)
+            .expect("ground/deck layer has an occupation plane")
+            .mark(entity_id);
+        self.footprints_by_owner
+            .entry(entity_id)
+            .or_default()
+            .insert(CellOccupationFootprint { rx, ry, layer });
+    }
+
+    /// Exact explicit-plane clear. It intentionally accepts the selected layer
+    /// directly so an elevated clear never depends on a cell's current bridge
+    /// structural flag.
+    pub(crate) fn clear_vehicle_on_layer(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        entity_id: u64,
+        layer: MovementLayer,
+    ) {
+        let footprint = CellOccupationFootprint { rx, ry, layer };
+        self.clear_vehicle_plane(footprint, entity_id);
+        let remove_owner = self
+            .footprints_by_owner
+            .get_mut(&entity_id)
+            .is_some_and(|footprints| {
+                footprints.remove(footprint);
+                footprints.is_empty()
+            });
+        if remove_owner {
+            self.footprints_by_owner.remove(&entity_id);
+        }
+    }
+
+    fn clear_vehicle_plane(&mut self, footprint: CellOccupationFootprint, entity_id: u64) {
+        let remove_cell = self
+            .cells
+            .get_mut(&(footprint.rx, footprint.ry))
+            .is_some_and(|cell| {
+                if let Some(plane) = cell.plane_mut(footprint.layer) {
+                    plane.clear(entity_id);
+                }
+                cell.is_empty()
+            });
+        if remove_cell {
+            self.cells.remove(&(footprint.rx, footprint.ry));
+        }
+    }
+
+    /// Mark-layer selection: elevated objects use the deck only when the cell
+    /// still carries the structural bridge fact.
+    pub(crate) fn mark_vehicle_by_height(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        entity_id: u64,
+        at_or_above_bridge_height: bool,
+        has_structural_bridge: bool,
+    ) -> MovementLayer {
+        let layer = if at_or_above_bridge_height && has_structural_bridge {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
+        self.mark_vehicle_on_layer(rx, ry, entity_id, layer);
+        layer
+    }
+
+    /// Clear-layer selection: the height result alone selects the deck. This
+    /// preserves cleanup after the structural bridge flag has disappeared.
+    pub(crate) fn clear_vehicle_by_height(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        entity_id: u64,
+        at_or_above_bridge_height: bool,
+    ) -> MovementLayer {
+        let layer = if at_or_above_bridge_height {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
+        self.clear_vehicle_on_layer(rx, ry, entity_id, layer);
+        layer
+    }
+
+    pub(crate) fn vehicle_bits(&self, rx: u16, ry: u16, layer: MovementLayer) -> u8 {
+        self.cells
+            .get(&(rx, ry))
+            .and_then(|cell| cell.plane(layer))
+            .map_or(0, VehicleOccupationPlane::bits)
+    }
+
+    pub(crate) fn vehicle_bits_ignoring(
+        &self,
+        rx: u16,
+        ry: u16,
+        layer: MovementLayer,
+        entity_id: u64,
+    ) -> u8 {
+        self.cells
+            .get(&(rx, ry))
+            .and_then(|cell| cell.plane(layer))
+            .map_or(0, |plane| plane.bits_ignoring(entity_id))
+    }
+
+    pub(crate) fn occupied_by_other(
+        &self,
+        rx: u16,
+        ry: u16,
+        layer: MovementLayer,
+        entity_id: u64,
+    ) -> bool {
+        self.vehicle_bits_ignoring(rx, ry, layer, entity_id) & VEHICLE_OCCUPATION_BIT != 0
+    }
+
+    pub(crate) fn occupied_cells_ignoring(
+        &self,
+        layer: MovementLayer,
+        entity_id: u64,
+    ) -> impl Iterator<Item = (u16, u16)> + '_ {
+        self.cells.iter().filter_map(move |(&(rx, ry), cell)| {
+            let occupied = cell
+                .plane(layer)
+                .is_some_and(|plane| plane.bits_ignoring(entity_id) & VEHICLE_OCCUPATION_BIT != 0);
+            occupied.then_some((rx, ry))
+        })
+    }
+}
+
+/// Replace the Drive head-to mark without disturbing a still-valid current-cell
+/// mark. The old auxiliary cell is cleared before the new one is installed.
+pub(crate) fn replace_drive_head_to_occupation(
+    drive: &mut DriveLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    current_cell: (u16, u16),
+    current_layer: MovementLayer,
+    next: DriveOccupationFootprint,
+) {
+    if let Some(old) = drive.occupation_head_to.take() {
+        let aliases_marked_current = (old.rx, old.ry, old.layer)
+            == (current_cell.0, current_cell.1, current_layer)
+            && !drive.current_occupation_cleared;
+        if !aliases_marked_current {
+            occupation.clear_vehicle_on_layer(old.rx, old.ry, entity_id, old.layer);
+        }
+    }
+    occupation.mark_vehicle_on_layer(next.rx, next.ry, entity_id, next.layer);
+    drive.occupation_head_to = Some(next);
+}
+
+/// Clear an obsolete head-to mark during accepted track replacement while
+/// preserving a coincident committed current-cell mark.
+pub(crate) fn clear_drive_head_to_occupation_for_replacement(
+    drive: &mut DriveLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    current_cell: (u16, u16),
+    current_layer: MovementLayer,
+) {
+    let Some(old) = drive.occupation_head_to.take() else {
+        return;
+    };
+    let aliases_marked_current = (old.rx, old.ry, old.layer)
+        == (current_cell.0, current_cell.1, current_layer)
+        && !drive.current_occupation_cleared;
+    if !aliases_marked_current {
+        occupation.clear_vehicle_on_layer(old.rx, old.ry, entity_id, old.layer);
+    }
+}
+
+/// A paid Drive point clears the owner's current-coordinate occupation before
+/// the coordinate commit. Object-list membership is intentionally untouched.
+pub(crate) fn clear_current_drive_occupation_for_paid_point(
+    drive: &mut DriveLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    current_cell: (u16, u16),
+    current_layer: MovementLayer,
+) {
+    occupation.clear_vehicle_on_layer(current_cell.0, current_cell.1, entity_id, current_layer);
+    drive.current_occupation_cleared = true;
+}
+
+/// AddContent after an actual cell crossing re-marks the committed cell.
+pub(crate) fn mark_current_drive_occupation_after_crossing(
+    drive: &mut DriveLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    current_cell: (u16, u16),
+    current_layer: MovementLayer,
+) {
+    occupation.mark_vehicle_on_layer(current_cell.0, current_cell.1, entity_id, current_layer);
+    drive.current_occupation_cleared = false;
+}
+
+/// Normal track completion promotes an aliased head-to mark into the current
+/// mark. There is no endpoint clear when the unit has actually relinked there.
+pub(crate) fn finish_drive_head_to_occupation(
+    drive: &mut DriveLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    current_cell: (u16, u16),
+    current_layer: MovementLayer,
+) {
+    let Some(head) = drive.occupation_head_to.take() else {
+        return;
+    };
+    if (head.rx, head.ry, head.layer) == (current_cell.0, current_cell.1, current_layer) {
+        occupation.mark_vehicle_on_layer(current_cell.0, current_cell.1, entity_id, current_layer);
+        drive.current_occupation_cleared = false;
+    } else {
+        occupation.clear_vehicle_on_layer(head.rx, head.ry, entity_id, head.layer);
+    }
+}
+
+/// Hard limbo/world removal clears the pending head-to cell before the ordinary
+/// current-cell RemoveContent clear.
+pub(crate) fn clear_drive_head_to_occupation_for_remove(
+    drive: &mut DriveLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+) {
+    if let Some(head) = drive.occupation_head_to.take() {
+        occupation.clear_vehicle_on_layer(head.rx, head.ry, entity_id, head.layer);
+    }
+}
 
 /// Single occupant entry in a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1000,5 +1469,307 @@ mod tests {
         let grid = OccupancyGrid::rebuild(&entities);
         assert!(!grid.contains_entity(5, 5, 1));
         assert_eq!(grid.occupied_cell_count(), 0);
+    }
+
+    fn gsi_04_05_unit(stable_id: u64, rx: u16, ry: u16) -> crate::sim::game_entity::GameEntity {
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(stable_id, "MTNK", "Allies", rx, ry);
+        entity.category = EntityCategory::Unit;
+        entity.lifecycle.cell_marked = true;
+        entity.locomotor = Some(
+            crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+                crate::rules::locomotor_type::LocomotorKind::Drive,
+            ),
+        );
+        entity.drive_locomotion = Some(DriveLocomotionRuntime::default());
+        entity
+    }
+
+    #[test]
+    fn gsi_04_05_head_to_premark_is_separate_from_object_list() {
+        let mut objects = OccupancyGrid::new();
+        objects.add(
+            2,
+            2,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let mut bits = CellOccupationGrid::new();
+        bits.mark_vehicle_on_layer(2, 2, 1, MovementLayer::Ground);
+        let mut drive = DriveLocomotionRuntime::default();
+        replace_drive_head_to_occupation(
+            &mut drive,
+            &mut bits,
+            1,
+            (2, 2),
+            MovementLayer::Ground,
+            DriveOccupationFootprint {
+                rx: 3,
+                ry: 2,
+                layer: MovementLayer::Ground,
+            },
+        );
+
+        assert!(objects.contains_entity(2, 2, 1));
+        assert!(!objects.contains_entity(3, 2, 1));
+        assert_eq!(bits.vehicle_bits(2, 2, MovementLayer::Ground), 0x20);
+        assert_eq!(bits.vehicle_bits(3, 2, MovementLayer::Ground), 0x20);
+    }
+
+    #[test]
+    fn gsi_04_05_paid_same_cell_point_clears_current_not_head_or_list() {
+        let mut objects = OccupancyGrid::new();
+        objects.add(
+            2,
+            2,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let mut bits = CellOccupationGrid::new();
+        bits.mark_vehicle_on_layer(2, 2, 1, MovementLayer::Ground);
+        bits.mark_vehicle_on_layer(3, 2, 1, MovementLayer::Ground);
+        let mut drive = DriveLocomotionRuntime {
+            occupation_head_to: Some(DriveOccupationFootprint {
+                rx: 3,
+                ry: 2,
+                layer: MovementLayer::Ground,
+            }),
+            ..Default::default()
+        };
+
+        clear_current_drive_occupation_for_paid_point(
+            &mut drive,
+            &mut bits,
+            1,
+            (2, 2),
+            MovementLayer::Ground,
+        );
+
+        assert!(objects.contains_entity(2, 2, 1));
+        assert_eq!(bits.vehicle_bits(2, 2, MovementLayer::Ground), 0);
+        assert_eq!(bits.vehicle_bits(3, 2, MovementLayer::Ground), 0x20);
+        assert!(drive.current_occupation_cleared);
+    }
+
+    #[test]
+    fn gsi_04_05_actual_crossing_relinks_and_remarks_committed_cell() {
+        let mut objects = OccupancyGrid::new();
+        objects.add(
+            2,
+            2,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let mut bits = CellOccupationGrid::new();
+        let mut drive = DriveLocomotionRuntime {
+            occupation_head_to: Some(DriveOccupationFootprint {
+                rx: 3,
+                ry: 2,
+                layer: MovementLayer::Ground,
+            }),
+            current_occupation_cleared: true,
+            ..Default::default()
+        };
+        bits.mark_vehicle_on_layer(3, 2, 1, MovementLayer::Ground);
+
+        objects.move_entity(
+            2,
+            2,
+            3,
+            2,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        mark_current_drive_occupation_after_crossing(
+            &mut drive,
+            &mut bits,
+            1,
+            (3, 2),
+            MovementLayer::Ground,
+        );
+
+        assert!(!objects.contains_entity(2, 2, 1));
+        assert!(objects.contains_entity(3, 2, 1));
+        assert_eq!(bits.vehicle_bits(3, 2, MovementLayer::Ground), 0x20);
+        assert!(!drive.current_occupation_cleared);
+    }
+
+    #[test]
+    fn gsi_04_05_soft_stop_preserves_committed_head_to_reservation() {
+        let mut entity = gsi_04_05_unit(1, 2, 2);
+        let head = DriveOccupationFootprint {
+            rx: 3,
+            ry: 2,
+            layer: MovementLayer::Ground,
+        };
+        entity.drive_locomotion.as_mut().unwrap().occupation_head_to = Some(head);
+        let mut bits = CellOccupationGrid::rebuild(&{
+            let mut entities = crate::sim::entity_store::EntityStore::new();
+            entities.insert(entity.clone());
+            entities
+        });
+
+        crate::sim::movement::clear_navigation_for_entity(&mut entity);
+
+        assert_eq!(
+            entity.drive_locomotion.as_ref().unwrap().occupation_head_to,
+            Some(head)
+        );
+        assert_eq!(bits.vehicle_bits(3, 2, MovementLayer::Ground), 0x20);
+        bits.reconcile_entity(&entity);
+        assert_eq!(bits.vehicle_bits(3, 2, MovementLayer::Ground), 0x20);
+    }
+
+    #[test]
+    fn gsi_04_05_reconcile_one_owner_leaves_large_unrelated_set_untouched() {
+        const UNRELATED_OWNERS: u16 = 2_048;
+
+        let mut entity = gsi_04_05_unit(1, 1, 1);
+        entity.drive_locomotion.as_mut().unwrap().occupation_head_to =
+            Some(DriveOccupationFootprint {
+                rx: 2,
+                ry: 1,
+                layer: MovementLayer::Ground,
+            });
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        entities.insert(entity.clone());
+        let mut bits = CellOccupationGrid::rebuild(&entities);
+
+        for offset in 0..UNRELATED_OWNERS {
+            let entity_id = u64::from(offset) + 2;
+            let rx = offset + 100;
+            let layer = if offset & 1 == 0 {
+                MovementLayer::Ground
+            } else {
+                MovementLayer::Bridge
+            };
+            bits.mark_vehicle_on_layer(rx, 10, entity_id, layer);
+        }
+
+        entity.position.rx = 3;
+        entity.drive_locomotion.as_mut().unwrap().occupation_head_to =
+            Some(DriveOccupationFootprint {
+                rx: 3,
+                ry: 1,
+                layer: MovementLayer::Ground,
+            });
+        bits.reconcile_entity(&entity);
+
+        assert_eq!(bits.vehicle_bits(1, 1, MovementLayer::Ground), 0);
+        assert_eq!(bits.vehicle_bits(2, 1, MovementLayer::Ground), 0);
+        assert_eq!(bits.vehicle_bits(3, 1, MovementLayer::Ground), 0x20);
+        assert_eq!(
+            bits.footprints_by_owner
+                .get(&1)
+                .expect("reconciled owner footprint")
+                .len(),
+            1,
+            "coincident current/head roles are one native OR-bit footprint"
+        );
+        assert_eq!(
+            bits.footprints_by_owner.len(),
+            usize::from(UNRELATED_OWNERS) + 1
+        );
+        for offset in 0..UNRELATED_OWNERS {
+            let rx = offset + 100;
+            let layer = if offset & 1 == 0 {
+                MovementLayer::Ground
+            } else {
+                MovementLayer::Bridge
+            };
+            assert_eq!(bits.vehicle_bits(rx, 10, layer), 0x20);
+        }
+    }
+
+    #[test]
+    fn gsi_04_05_hard_remove_clears_head_then_current_footprint() {
+        let mut bits = CellOccupationGrid::new();
+        bits.mark_vehicle_on_layer(2, 2, 1, MovementLayer::Ground);
+        bits.mark_vehicle_on_layer(3, 2, 1, MovementLayer::Ground);
+        let mut drive = DriveLocomotionRuntime {
+            occupation_head_to: Some(DriveOccupationFootprint {
+                rx: 3,
+                ry: 2,
+                layer: MovementLayer::Ground,
+            }),
+            ..Default::default()
+        };
+
+        clear_drive_head_to_occupation_for_remove(&mut drive, &mut bits, 1);
+        bits.clear_vehicle_on_layer(2, 2, 1, MovementLayer::Ground);
+
+        assert_eq!(drive.occupation_head_to, None);
+        assert_eq!(bits.vehicle_bits(2, 2, MovementLayer::Ground), 0);
+        assert_eq!(bits.vehicle_bits(3, 2, MovementLayer::Ground), 0);
+    }
+
+    #[test]
+    fn gsi_04_05_owner_ignores_own_reservation_other_mover_does_not() {
+        let mut bits = CellOccupationGrid::new();
+        bits.mark_vehicle_on_layer(3, 2, 1, MovementLayer::Ground);
+
+        assert!(!bits.occupied_by_other(3, 2, MovementLayer::Ground, 1));
+        assert!(bits.occupied_by_other(3, 2, MovementLayer::Ground, 2));
+    }
+
+    #[test]
+    fn gsi_04_05_ground_deck_independent_and_elevated_clear_needs_no_bridge_flag() {
+        let mut bits = CellOccupationGrid::new();
+        bits.mark_vehicle_by_height(4, 4, 1, false, true);
+        bits.mark_vehicle_by_height(4, 4, 2, true, true);
+        assert_eq!(bits.vehicle_bits(4, 4, MovementLayer::Ground), 0x20);
+        assert_eq!(bits.vehicle_bits(4, 4, MovementLayer::Bridge), 0x20);
+
+        let cleared = bits.clear_vehicle_by_height(4, 4, 2, true);
+        assert_eq!(cleared, MovementLayer::Bridge);
+        assert_eq!(bits.vehicle_bits(4, 4, MovementLayer::Bridge), 0);
+        assert_eq!(bits.vehicle_bits(4, 4, MovementLayer::Ground), 0x20);
+    }
+
+    #[test]
+    fn gsi_04_05_normal_finish_promotes_endpoint_and_clears_runtime_head() {
+        let mut bits = CellOccupationGrid::new();
+        bits.mark_vehicle_on_layer(3, 2, 1, MovementLayer::Ground);
+        let mut drive = DriveLocomotionRuntime {
+            occupation_head_to: Some(DriveOccupationFootprint {
+                rx: 3,
+                ry: 2,
+                layer: MovementLayer::Ground,
+            }),
+            current_occupation_cleared: true,
+            ..Default::default()
+        };
+
+        finish_drive_head_to_occupation(&mut drive, &mut bits, 1, (3, 2), MovementLayer::Ground);
+
+        assert_eq!(drive.occupation_head_to, None);
+        assert!(!drive.current_occupation_cleared);
+        assert_eq!(bits.vehicle_bits(3, 2, MovementLayer::Ground), 0x20);
+    }
+
+    #[test]
+    fn gsi_04_05_rebuild_restores_active_current_and_head_footprint() {
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        let mut unit = gsi_04_05_unit(1, 2, 2);
+        unit.drive_locomotion.as_mut().unwrap().occupation_head_to =
+            Some(DriveOccupationFootprint {
+                rx: 3,
+                ry: 2,
+                layer: MovementLayer::Ground,
+            });
+        entities.insert(unit);
+
+        let bits = CellOccupationGrid::rebuild(&entities);
+
+        assert_eq!(bits.vehicle_bits(2, 2, MovementLayer::Ground), 0x20);
+        assert_eq!(bits.vehicle_bits(3, 2, MovementLayer::Ground), 0x20);
     }
 }

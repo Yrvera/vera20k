@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::LogicVector;
 use crate::sim::anim_class::AnimStore;
 use crate::sim::entity_store::EntityStore;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid};
 use crate::sim::particles::ParticleSystemStore;
 
 const FIRST_MULTIPLAYER_FEEDBACK_ANIM_ID: u64 = 1 << 63;
@@ -77,6 +77,10 @@ pub(crate) struct ObjectSubstrate {
     /// appears in the serialized snapshot and does not enter the state hash directly.
     #[serde(skip)]
     pub(crate) occupancy: OccupancyGrid,
+    /// Independent ground/deck vehicle-occupation bit planes. Rebuilt from
+    /// entity lifecycle and serialized Drive footprint state after load.
+    #[serde(skip)]
+    pub(crate) cell_occupation: CellOccupationGrid,
     /// Plain-struct entity storage (`BTreeMap<u64, GameEntity>` + by_owner index).
     /// The authoritative object store — serialized verbatim (NOT skipped).
     pub(crate) entities: EntityStore,
@@ -114,6 +118,7 @@ impl ObjectSubstrate {
             next_occupancy_enter_order: EnterOrderCounter::new(),
             logic: LogicVector::new(),
             occupancy: OccupancyGrid::new(),
+            cell_occupation: CellOccupationGrid::new(),
             entities: EntityStore::new(),
             anims: AnimStore::default(),
             multiplayer_feedback_anims: AnimStore::default(),

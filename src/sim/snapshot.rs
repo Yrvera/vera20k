@@ -97,7 +97,9 @@ use crate::sim::world::Simulation;
 // Bumped 35 -> 36: lifecycle target and animation identity state is persisted.
 // Bumped 36 -> 37: process-global Main/MapGen RNG cursors are no longer
 // serialized; production load retains their live pre-load process state.
-const SNAPSHOT_VERSION: u32 = 37;
+// Bumped 37 -> 38: DriveLocomotionRuntime persists the independent head-to
+// occupation footprint and whether the current-cell occupation was cleared.
+const SNAPSHOT_VERSION: u32 = 38;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -933,6 +935,8 @@ impl Simulation {
         self.rebuild_logic_membership();
         self.substrate.occupancy =
             crate::sim::occupancy::OccupancyGrid::rebuild(&self.substrate.entities);
+        self.substrate.cell_occupation =
+            crate::sim::occupancy::CellOccupationGrid::rebuild(&self.substrate.entities);
         Ok(())
     }
 
@@ -1097,6 +1101,8 @@ mod tests {
         sim.rebuild_logic_membership();
         sim.substrate.occupancy =
             crate::sim::occupancy::OccupancyGrid::rebuild(&sim.substrate.entities);
+        sim.substrate.cell_occupation =
+            crate::sim::occupancy::CellOccupationGrid::rebuild(&sim.substrate.entities);
         sim.rebuild_caches_after_load(
             terrain,
             crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -1228,9 +1234,9 @@ mod tests {
     }
 
     #[test]
-    fn old_header_is_rejected_before_an_absent_body_is_decoded() {
+    fn gsi_04_05_v37_header_is_rejected_before_drive_runtime_decode() {
         let bytes = bincode::serialize(&GameSnapshotHeader {
-            version: SNAPSHOT_VERSION - 1,
+            version: 37,
             map_hash: 1,
             rules_hash: 2,
             tick: 3,
@@ -1242,9 +1248,9 @@ mod tests {
         assert!(matches!(
             GameSnapshot::load(&bytes),
             Err(SnapshotError::VersionMismatch {
-                expected: SNAPSHOT_VERSION,
-                found,
-            }) if found == SNAPSHOT_VERSION - 1
+                expected: 38,
+                found: 37,
+            })
         ));
     }
 
@@ -1279,11 +1285,92 @@ mod tests {
     /// `MissionCom.handler_state`) took 29 -> 30. Particle systems reached 34;
     /// the consolidated Phase-0 persistence schema took 34 -> 35, and
     /// lifecycle target/animation identity state took 35 -> 36, and omission
-    /// of process-global Main/MapGen RNG state took 36 -> 37. This pins it so
-    /// a later accidental bump is caught.
+    /// of process-global Main/MapGen RNG state took 36 -> 37, and serialized
+    /// Drive occupation footprints took 37 -> 38. This pins it so a later
+    /// accidental bump is caught.
     #[test]
-    fn snapshot_version_is_37() {
-        assert_eq!(super::SNAPSHOT_VERSION, 37);
+    fn snapshot_version_is_38() {
+        assert_eq!(super::SNAPSHOT_VERSION, 38);
+    }
+
+    #[test]
+    fn gsi_04_05_v38_roundtrip_restores_drive_footprint_and_cell_occupation() {
+        use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::occupancy::{CellOccupationGrid, VEHICLE_OCCUPATION_BIT};
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let type_ref = sim.interner.intern("MTNK");
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::test_default(entity_id, "MTNK", "AMERICANS", 2, 2);
+        entity.owner = owner;
+        entity.type_ref = type_ref;
+        sim.substrate.entities.insert(entity);
+        sim.add_entity_occupancy(entity_id);
+
+        let footprint = DriveOccupationFootprint {
+            rx: 3,
+            ry: 2,
+            layer: MovementLayer::Ground,
+        };
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .expect("Drive unit")
+            .drive_locomotion = Some(DriveLocomotionRuntime {
+            occupation_head_to: Some(footprint),
+            current_occupation_cleared: true,
+            ..Default::default()
+        });
+        sim.substrate.cell_occupation = CellOccupationGrid::rebuild(&sim.substrate.entities);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_05", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes)
+                .expect("current snapshot header")
+                .version,
+            38
+        );
+
+        let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        let mut restored_b = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored_a
+            .restore_after_snapshot_load()
+            .expect("first deterministic rebuild");
+        restored_b
+            .restore_after_snapshot_load()
+            .expect("second deterministic rebuild");
+
+        for restored in [&restored_a, &restored_b] {
+            let drive = restored
+                .substrate
+                .entities
+                .get(entity_id)
+                .expect("restored Drive unit")
+                .drive_locomotion
+                .as_ref()
+                .expect("restored Drive runtime");
+            assert_eq!(drive.occupation_head_to, Some(footprint));
+            assert!(drive.current_occupation_cleared);
+            assert_eq!(restored.state_hash(), expected_hash);
+            assert_eq!(
+                restored
+                    .substrate
+                    .cell_occupation
+                    .vehicle_bits(2, 2, MovementLayer::Ground),
+                0
+            );
+            assert_eq!(
+                restored.substrate.cell_occupation.vehicle_bits(
+                    footprint.rx,
+                    footprint.ry,
+                    footprint.layer
+                ),
+                VEHICLE_OCCUPATION_BIT
+            );
+        }
     }
 
     #[test]

@@ -57,7 +57,7 @@ fn turn_track_0x47_selects_raw_track_15_not_facing_0x47() {
     assert_eq!(meta.points_count, 16);
     assert_eq!(meta.entry_index, 0);
     assert_eq!(meta.chain_index, -1);
-    assert_eq!(meta.cell_cross_index, -1);
+    assert_eq!(meta.occupation_handoff_point_index, -1);
 
     let points = raw_track_points(15);
     let first = points.first().expect("Track 15 first point");
@@ -219,21 +219,21 @@ fn select_drive_track_ne_diagonal_gives_track_2() {
 }
 
 #[test]
-fn turning_tracks_have_valid_cell_cross_indices() {
-    // Tracks 3-6 have positive cell_cross indices (cell crossings)
+fn gsi_04_05_turning_tracks_preserve_valid_occupation_handoff_metadata() {
+    // RawTrack +0x0C is the occupation handoff point, not object-list crossing.
     for idx in 3..=6 {
         let track = &RAW_TRACKS[idx];
         assert!(
-            track.cell_cross_index >= 0,
-            "RawTrack[{}] should have positive cell_cross_index, got {}",
+            track.occupation_handoff_point_index >= 0,
+            "RawTrack[{}] should have a non-negative occupation handoff point, got {}",
             idx,
-            track.cell_cross_index
+            track.occupation_handoff_point_index
         );
         assert!(
-            track.cell_cross_index < track.points_count as i16,
-            "RawTrack[{}] cell_cross_index {} exceeds points_count {}",
+            track.occupation_handoff_point_index < track.points_count as i16,
+            "RawTrack[{}] occupation handoff point {} exceeds points_count {}",
             idx,
-            track.cell_cross_index,
+            track.occupation_handoff_point_index,
             track.points_count
         );
         assert!(
@@ -324,7 +324,7 @@ fn select_drive_track_north_to_ne_gives_track_3() {
     assert_eq!(sel.raw_track_index, 3);
     assert_eq!(sel.target_facing, 0x20);
     assert_eq!(sel.chain_index, 37);
-    assert_eq!(sel.cell_cross_index, 22);
+    assert_eq!(sel.occupation_handoff_point_index, 22);
     assert_eq!(sel.entry_index, 12);
 }
 

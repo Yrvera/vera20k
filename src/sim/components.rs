@@ -353,6 +353,18 @@ fn default_drive_track_index() -> i16 {
     -1
 }
 
+/// Drive-owned occupation mark installed ahead of the live object-list cell.
+///
+/// The cell list remains tied to the unit's committed coordinates. This record
+/// persists the independent head-to mark so the transient per-cell occupation
+/// index can be rebuilt after loading a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DriveOccupationFootprint {
+    pub rx: u16,
+    pub ry: u16,
+    pub layer: MovementLayer,
+}
+
 /// DriveLocomotion-owned destination/head-to state.
 ///
 /// This is distinct from `DriveTrackState`: gamemd can clear destination,
@@ -383,6 +395,15 @@ pub struct DriveLocomotionRuntime {
     pub residual_budget: i32,
     #[serde(default)]
     pub active_tube: Option<DriveTubePayload>,
+    /// Head-to vehicle-occupation mark, independent from CellClass object-list
+    /// membership. Ordinary flat Drive installs one mark for its accepted next
+    /// cell before any paid track point is consumed.
+    #[serde(default)]
+    pub occupation_head_to: Option<DriveOccupationFootprint>,
+    /// A paid within-cell Drive point clears the current-coordinate occupation
+    /// bit before committing coordinates. Entering a new cell marks it again.
+    #[serde(default)]
+    pub current_occupation_cleared: bool,
 }
 
 impl Default for DriveLocomotionRuntime {
@@ -400,6 +421,8 @@ impl Default for DriveLocomotionRuntime {
             current_speed_fraction: SIM_ZERO,
             residual_budget: 0,
             active_tube: None,
+            occupation_head_to: None,
+            current_occupation_cleared: false,
         }
     }
 }

@@ -2625,6 +2625,234 @@ fn test_stop_command_clears_move_and_attack_intent() {
 }
 
 #[test]
+fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
+    let mut sim = Simulation::new();
+    sim.spawn_from_map(
+        &[MapEntity {
+            owner: "Americans".to_string(),
+            type_id: "MTNK".to_string(),
+            health: 256,
+            cell_x: 4,
+            cell_y: 4,
+            facing: 64,
+            category: EntityCategory::Unit,
+            sub_cell: 0,
+            veterancy: 0,
+            high: false,
+        }],
+        None,
+        &empty_heights(),
+    );
+    {
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        entity.locomotor = Some(
+            crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+                crate::rules::locomotor_type::LocomotorKind::Drive,
+            ),
+        );
+        entity.drive_locomotion = Some(Default::default());
+        entity.facing = 64;
+    }
+
+    let grid = PathGrid::new(16, 16);
+    let issued = {
+        let (entities, cell_occupation) = (
+            &mut sim.substrate.entities,
+            &mut sim.substrate.cell_occupation,
+        );
+        crate::sim::movement::issue_move_command_with_layered(
+            entities,
+            &grid,
+            1,
+            (8, 4),
+            SimFixed::from_num(128),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some(cell_occupation),
+        )
+    };
+    assert!(issued);
+    {
+        let movement = sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .movement_target
+            .as_mut()
+            .unwrap();
+        movement.accel_factor = SimFixed::lit("0.03");
+        movement.decel_factor = SimFixed::lit("0.002");
+        movement.slowdown_distance = SimFixed::from_num(500);
+    }
+    assert!(sim.substrate.entities.get(1).unwrap().drive_track.is_some());
+    let committed_head = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .drive_locomotion
+        .as_ref()
+        .and_then(|drive| drive.occupation_head_to)
+        .expect("first Drive step has a committed occupation head");
+    assert_eq!((committed_head.rx, committed_head.ry), (5, 4));
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .movement_target
+            .as_ref()
+            .unwrap()
+            .final_goal,
+        Some((8, 4))
+    );
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Stop { entity_id: 1 },
+        None,
+        Some(&grid),
+        &empty_heights(),
+    ));
+    let stopped = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(stopped.navigation.nav_com, None);
+    assert!(stopped.movement_target.is_some());
+    assert!(stopped.drive_track.is_some());
+    let stopped_target = stopped.movement_target.as_ref().unwrap();
+    assert_eq!(
+        stopped_target.path,
+        vec![(4, 4), (committed_head.rx, committed_head.ry)]
+    );
+    assert_eq!(
+        stopped_target.final_goal,
+        Some((committed_head.rx, committed_head.ry))
+    );
+    let drive = stopped.drive_locomotion.as_ref().unwrap();
+    assert!(drive.head_to.is_some());
+    assert!(drive.occupation_head_to.is_some());
+    assert!(sim.substrate.occupancy.contains_entity(4, 4, 1));
+    assert!(
+        !sim.substrate
+            .occupancy
+            .contains_entity(committed_head.rx, committed_head.ry, 1)
+    );
+
+    let heights = empty_heights();
+    let initial_point_index = stopped.drive_track.as_ref().unwrap().point_index;
+    let mut cursor_advanced = false;
+    for _ in 0..32 {
+        let _ = sim.advance_tick(&[], None, &heights, Some(&grid), None, 33);
+        cursor_advanced = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .drive_track
+            .as_ref()
+            .is_some_and(|track| track.point_index > initial_point_index);
+        if cursor_advanced {
+            break;
+        }
+    }
+    assert!(
+        cursor_advanced,
+        "the committed Drive cursor must keep consuming after Stop clears its owner destination"
+    );
+    assert!(sim.substrate.occupancy.contains_entity(4, 4, 1));
+    assert!(
+        !sim.substrate
+            .occupancy
+            .contains_entity(committed_head.rx, committed_head.ry, 1)
+    );
+    assert_eq!(
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(4, 4, MovementLayer::Ground),
+        0,
+        "the first paid post-Stop point clears current occupation without stranding the track"
+    );
+
+    for _ in 0..192 {
+        if sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .movement_target
+            .is_none()
+        {
+            break;
+        }
+        let _ = sim.advance_tick(&[], None, &heights, Some(&grid), None, 33);
+    }
+
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        (entity.position.rx, entity.position.ry),
+        (committed_head.rx, committed_head.ry)
+    );
+    assert!(entity.movement_target.is_none());
+    assert!(entity.drive_track.is_none());
+    let drive = entity.drive_locomotion.as_ref().unwrap();
+    assert_eq!(drive.head_to, None);
+    assert_eq!(drive.occupation_head_to, None);
+    assert!(
+        sim.substrate
+            .occupancy
+            .contains_entity(committed_head.rx, committed_head.ry, 1)
+    );
+    assert_eq!(
+        sim.substrate.cell_occupation.vehicle_bits(
+            committed_head.rx,
+            committed_head.ry,
+            MovementLayer::Ground
+        ),
+        crate::sim::occupancy::VEHICLE_OCCUPATION_BIT
+    );
+    assert!(!sim.substrate.occupancy.contains_entity(6, 4, 1));
+    assert!(!sim.substrate.occupancy.contains_entity(8, 4, 1));
+    assert_eq!(
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(6, 4, MovementLayer::Ground),
+        0
+    );
+    assert_eq!(
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(8, 4, MovementLayer::Ground),
+        0
+    );
+
+    for _ in 0..32 {
+        let _ = sim.advance_tick(&[], None, &heights, Some(&grid), None, 33);
+    }
+    let parked = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        (parked.position.rx, parked.position.ry),
+        (committed_head.rx, committed_head.ry),
+        "Stop must remain parked at the committed head after the old route is gone"
+    );
+    assert!(parked.movement_target.is_none());
+    let drive = parked.drive_locomotion.as_ref().unwrap();
+    assert_eq!(drive.head_to, None);
+    assert_eq!(drive.occupation_head_to, None);
+    assert!(!sim.substrate.occupancy.contains_entity(6, 4, 1));
+    assert_eq!(
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(6, 4, MovementLayer::Ground),
+        0
+    );
+}
+
+#[test]
 fn test_move_command_rejects_non_owned_entity() {
     let mut sim: Simulation = Simulation::new();
     sim.spawn_from_map(

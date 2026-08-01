@@ -40,7 +40,7 @@ use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed, facing_from_delta_int};
+use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed, facing_from_delta_int};
 
 // --- Internal submodules ---
 mod drive_locomotion;
@@ -99,6 +99,68 @@ pub(crate) use movement_tick::{
     sync_formation_speeds_after_live_pass, tick_movement_object_with_grids,
     tick_movement_with_grids,
 };
+
+/// Install the active-YR `DriveLocomotion::Force_Track` state for a flat-ground
+/// unit. The caller supplies head offsets from the unit's current cell origin;
+/// the stored head itself is an exact absolute lepton coordinate.
+pub(crate) fn install_forced_drive_track(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    cell_occupation: &mut crate::sim::occupancy::CellOccupationGrid,
+    mut forced: drive_track::ForcedDriveTrackState,
+) -> bool {
+    if entity.occupancy_list_layer() != Some(locomotor::MovementLayer::Ground) {
+        return false;
+    }
+
+    let absolute_x = i32::from(entity.position.rx) * 256 + forced.track.head_offset_x;
+    let absolute_y = i32::from(entity.position.ry) * 256 + forced.track.head_offset_y;
+    let target_rx = absolute_x.div_euclid(256);
+    let target_ry = absolute_y.div_euclid(256);
+    let (Ok(target_rx), Ok(target_ry)) = (u16::try_from(target_rx), u16::try_from(target_ry))
+    else {
+        return false;
+    };
+
+    let head = crate::sim::components::DriveCoord {
+        x: absolute_x,
+        y: absolute_y,
+        z: i32::from(entity.position.z),
+    };
+    let footprint = crate::sim::components::DriveOccupationFootprint {
+        rx: target_rx,
+        ry: target_ry,
+        layer: locomotor::MovementLayer::Ground,
+    };
+
+    let drive = entity
+        .drive_locomotion
+        .get_or_insert_with(crate::sim::components::DriveLocomotionRuntime::default);
+    // Force_Track preserves DriveLocomotion's integer movement residual. The
+    // detached forced cursor mirrors that canonical owner field for snapshots.
+    forced.track.residual = drive.residual_budget;
+    drive.destination = Some(head);
+    drive.head_to = Some(head);
+    drive.track_index = i16::from(forced.turn_track_index);
+    drive.point_index = forced.track.point_index;
+    drive.track_valid = true;
+    drive.target_speed_fraction = SIM_ONE;
+    drive.current_speed_fraction = SIM_ONE;
+    // Force_Track directly installs the new head mark. Its active retail
+    // callers enter with no old head, so ordinary replacement/old-mark clear
+    // semantics do not apply here.
+    cell_occupation.mark_vehicle_on_layer(
+        footprint.rx,
+        footprint.ry,
+        entity.stable_id,
+        footprint.layer,
+    );
+    drive.occupation_head_to = Some(footprint);
+
+    entity.drive_track = None;
+    entity.forced_drive_track = Some(forced);
+    entity.facing_target = None;
+    true
+}
 
 // ---------------------------------------------------------------------------
 // Constants — shared across movement submodules via `super::`
@@ -321,6 +383,7 @@ pub(crate) fn tick_movement_with_grid(
 ) -> MovementTickStats {
     let mut sound_events: Vec<crate::sim::world::SimSoundEvent> = Vec::new();
     let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
+    let mut cell_occupation = crate::sim::occupancy::CellOccupationGrid::rebuild(entities);
     tick_movement_with_grids(
         entities,
         None,
@@ -328,6 +391,7 @@ pub(crate) fn tick_movement_with_grid(
         terrain_costs,
         alliances,
         occupancy,
+        &mut cell_occupation,
         &mut next_occupancy_enter_order,
         rng,
         sim_tick,

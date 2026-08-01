@@ -168,6 +168,7 @@ impl Simulation {
                     self.zone_grid.as_ref(),
                     None,
                     false, // mover_is_crusher
+                    Some(&mut self.substrate.cell_occupation),
                 );
             }
         }
@@ -1031,6 +1032,7 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         info.mover_is_crusher,
+                        Some(&mut self.substrate.cell_occupation),
                     );
                     // No-op if A* fails — pursuit retries next tick.
                 }

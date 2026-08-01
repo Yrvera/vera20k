@@ -566,6 +566,7 @@ pub fn tick_production_with_overlay_registry(
                         sim.zone_grid.as_ref(),
                         None,
                         false, // mover_is_crusher
+                        Some(&mut sim.substrate.cell_occupation),
                     );
                 }
             }

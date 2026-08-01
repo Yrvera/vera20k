@@ -13,7 +13,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::GeneralRules;
-use crate::sim::components::MovementTarget;
+use crate::sim::components::{DriveOccupationFootprint, MovementTarget};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::PathGrid;
@@ -108,6 +108,7 @@ pub fn issue_move_command(
         None, // zone_grid — basic entrypoint has no Simulation context
         entity_block_map,
         mover_is_crusher,
+        None,
     )
 }
 
@@ -163,6 +164,7 @@ pub fn set_destination_for_teleporter_entity(
             zone_grid,
             entity_block_map,
             mover_is_crusher,
+            None,
         );
     }
 
@@ -188,6 +190,7 @@ pub fn set_destination_for_teleporter_entity(
             zone_grid,
             entity_block_map,
             mover_is_crusher,
+            None,
         );
     }
 
@@ -288,6 +291,7 @@ pub fn issue_move_command_with_layered(
     zone_grid: Option<&ZoneGrid>,
     entity_block_map: Option<&LayeredEntityBlockMap>,
     mover_is_crusher: bool,
+    mut cell_occupation: Option<&mut crate::sim::occupancy::CellOccupationGrid>,
 ) -> bool {
     // Read the entity's current position and locomotor state.
     let Some(entity) = entities.get(entity_id) else {
@@ -334,12 +338,18 @@ pub fn issue_move_command_with_layered(
     } else {
         (start_rx, start_ry)
     };
-    let merged_entity_blocks = merge_path_blocks(
+    let mut merged_entity_blocks = merge_path_blocks(
         entity_blocks,
         resolved_terrain,
         movement_zone,
         too_big_to_fit_under_bridge,
     );
+    if let Some(occupation) = cell_occupation.as_deref() {
+        merged_entity_blocks.extend(occupation.occupied_cells_ignoring(
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+            entity_id,
+        ));
+    }
     let merged_entity_blocks_ref =
         (!merged_entity_blocks.is_empty()).then_some(&merged_entity_blocks);
     let Some(effective_target) = resolve_requested_move_goal(
@@ -582,6 +592,7 @@ pub fn issue_move_command_with_layered(
             );
         }
         let mut drive_track_started = false;
+        let mut track_occupation_target: Option<DriveOccupationFootprint> = None;
         if let Some(f) = new_facing {
             if entity_mut.category != EntityCategory::Infantry
                 && uses_drive_locomotor
@@ -596,6 +607,17 @@ pub fn issue_move_command_with_layered(
                         sel.target_facing,
                     );
                     drive_track_started = entity_mut.drive_track.is_some();
+                    if drive_track_started
+                        && let Some(&(rx, ry)) = movement.path.get(1)
+                        && movement.layer_at(1)
+                            == crate::sim::movement::locomotor::MovementLayer::Ground
+                    {
+                        track_occupation_target = Some(DriveOccupationFootprint {
+                            rx,
+                            ry,
+                            layer: crate::sim::movement::locomotor::MovementLayer::Ground,
+                        });
+                    }
                 } else if let Some(fb) = drive_track::build_sharp_turn_fallback(entity_mut.facing) {
                     let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity_mut.facing);
                     entity_mut.drive_track = drive_track::begin_drive_track(
@@ -613,6 +635,19 @@ pub fn issue_move_command_with_layered(
                         movement.move_dir_y = d_y;
                         movement.move_dir_len = d_len;
                         drive_track_started = true;
+                        if entity_mut.movement_layer_or_ground()
+                            == crate::sim::movement::locomotor::MovementLayer::Ground
+                        {
+                            let rx = i32::from(entity_mut.position.rx) + cdx;
+                            let ry = i32::from(entity_mut.position.ry) + cdy;
+                            if let (Ok(rx), Ok(ry)) = (u16::try_from(rx), u16::try_from(ry)) {
+                                track_occupation_target = Some(DriveOccupationFootprint {
+                                    rx,
+                                    ry,
+                                    layer: crate::sim::movement::locomotor::MovementLayer::Ground,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -631,6 +666,37 @@ pub fn issue_move_command_with_layered(
                     entity_mut.facing_target = Some(f);
                 } else {
                     entity_mut.facing = f;
+                }
+            }
+        }
+        if uses_drive_locomotor {
+            let current_cell = (entity_mut.position.rx, entity_mut.position.ry);
+            let current_layer = entity_mut
+                .occupancy_list_layer()
+                .unwrap_or(crate::sim::movement::locomotor::MovementLayer::Ground);
+            if let Some(drive) = entity_mut.drive_locomotion.as_mut() {
+                match (track_occupation_target, cell_occupation.as_deref_mut()) {
+                    (Some(next), Some(occupation)) => {
+                        crate::sim::occupancy::replace_drive_head_to_occupation(
+                            drive,
+                            occupation,
+                            entity_id,
+                            current_cell,
+                            current_layer,
+                            next,
+                        );
+                    }
+                    (Some(next), None) => drive.occupation_head_to = Some(next),
+                    (None, Some(occupation)) => {
+                        crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+                            drive,
+                            occupation,
+                            entity_id,
+                            current_cell,
+                            current_layer,
+                        );
+                    }
+                    (None, None) => drive.occupation_head_to = None,
                 }
             }
         }
