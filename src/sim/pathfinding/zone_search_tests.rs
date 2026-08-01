@@ -268,10 +268,7 @@ fn zone_precheck_hierarchy_path_bypasses_reduced_superzone_abort() {
     let mut reduced_grid = PathGrid::new(3, 1);
     reduced_grid.set_blocked(1, 0, true);
     let mut zg = ZoneGrid::build(&reduced_grid, &BTreeMap::new(), 3, 1);
-    zg.set_hierarchy(
-        MovementZone::Normal,
-        linear_level0_hierarchy(vec![1, 2, 3], &[(1, 2), (2, 3)]),
-    );
+    zg.set_hierarchy(linear_level0_hierarchy(vec![1, 2, 3], &[(1, 2), (2, 3)]));
     assert!(
         !zg.can_reach(
             MovementZone::Normal,
@@ -309,10 +306,10 @@ fn zone_precheck_hierarchy_path_bypasses_reduced_superzone_abort() {
 fn zone_precheck_failed_hierarchy_keeps_zone_map_same_zone_fallback() {
     let astar_grid = PathGrid::new(3, 1);
     let mut zg = ZoneGrid::build(&astar_grid, &BTreeMap::new(), 3, 1);
-    zg.set_hierarchy(
-        MovementZone::Normal,
-        linear_level0_hierarchy(vec![ZONE_INVALID, ZONE_INVALID, ZONE_INVALID], &[]),
-    );
+    zg.set_hierarchy(linear_level0_hierarchy(
+        vec![ZONE_INVALID, ZONE_INVALID, ZONE_INVALID],
+        &[],
+    ));
 
     let blocker_counts = BlockerNeighborCounts::new(3, 1);
     let path = find_path_zoned_marker_inner(

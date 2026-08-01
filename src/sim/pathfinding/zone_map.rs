@@ -186,8 +186,8 @@ pub struct ZoneGrid {
     adjacency: BTreeMap<MovementZone, ZoneAdjacency>,
     /// Connected-component labels for O(1) reachability checks.
     super_zones: BTreeMap<MovementZone, SuperZoneMap>,
-    /// Optional gamemd-style route-selection hierarchy for `Zone_precheck`.
-    hierarchies: BTreeMap<MovementZone, ZoneHierarchy>,
+    /// One optional gamemd-style route-selection hierarchy shared by all rows.
+    hierarchy: Option<ZoneHierarchy>,
     pub width: u16,
     pub height: u16,
 }
@@ -226,6 +226,9 @@ impl ZoneGrid {
                 height,
             )
         });
+        let hierarchy = base_topology
+            .as_ref()
+            .map(|base| zone_build::build_zone_hierarchy(base, path_grid, width, height));
 
         for &mz in MovementZone::all_ground() {
             let speed_type = mz.speed_type();
@@ -268,7 +271,7 @@ impl ZoneGrid {
             maps,
             adjacency,
             super_zones,
-            hierarchies: BTreeMap::new(),
+            hierarchy,
             width,
             height,
         }
@@ -284,33 +287,36 @@ impl ZoneGrid {
         self.adjacency.get(&mz)
     }
 
-    /// Get the optional route-selection hierarchy for a movement zone.
+    /// Get the shared route-selection hierarchy when this movement row exists.
     pub(crate) fn hierarchy_for(&self, mz: MovementZone) -> Option<&ZoneHierarchy> {
-        self.hierarchies.get(&mz)
+        if !self.maps.contains_key(&mz) {
+            return None;
+        }
+        self.hierarchy.as_ref()
     }
 
     /// Mutable access to the zone map for a movement zone (for incremental updates).
     pub(crate) fn map_mut(&mut self, mz: MovementZone) -> Option<&mut ZoneMap> {
-        self.hierarchies.remove(&mz);
+        self.hierarchy = None;
         self.maps.get_mut(&mz)
     }
 
     /// Mutable access to the adjacency graph for a movement zone (for incremental updates).
     pub(crate) fn adjacency_mut(&mut self, mz: MovementZone) -> Option<&mut ZoneAdjacency> {
-        self.hierarchies.remove(&mz);
+        self.hierarchy = None;
         self.adjacency.get_mut(&mz)
     }
 
     /// Replace the super-zone map for a movement zone (after incremental adjacency update).
     pub(crate) fn set_super_zone(&mut self, mz: MovementZone, sz: SuperZoneMap) {
-        self.hierarchies.remove(&mz);
+        self.hierarchy = None;
         self.super_zones.insert(mz, sz);
     }
 
-    /// Replace the optional route-selection hierarchy for a movement zone.
+    /// Replace the one shared route-selection hierarchy (test fixtures only).
     #[allow(dead_code)]
-    pub(crate) fn set_hierarchy(&mut self, mz: MovementZone, hierarchy: ZoneHierarchy) {
-        self.hierarchies.insert(mz, hierarchy);
+    pub(crate) fn set_hierarchy(&mut self, hierarchy: ZoneHierarchy) {
+        self.hierarchy = Some(hierarchy);
     }
 
     /// O(1) reachability check: can a unit with this movement zone reach `to` from `from`?

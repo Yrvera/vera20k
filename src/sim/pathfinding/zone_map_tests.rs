@@ -531,27 +531,50 @@ fn single_open_area_one_zone() {
 
 #[test]
 fn zone_grid_hierarchy_accessors_clear_on_mutation() {
-    let grid = PathGrid::new(1, 1);
+    let terrain = terrain_from_zone_classes(1, 1, &[zone_class::GROUND], &[0]);
+    let grid = PathGrid::from_resolved_terrain(&terrain);
     let terrain_costs = BTreeMap::new();
-    let mut zg = ZoneGrid::build(&grid, &terrain_costs, 1, 1);
+    let mut zg = ZoneGrid::build_with_terrain(&grid, &terrain_costs, Some(&terrain), &[], 1, 1);
 
-    zg.set_hierarchy(MovementZone::Normal, tiny_hierarchy());
-    assert!(zg.hierarchy_for(MovementZone::Normal).is_some());
+    let normal = zg.hierarchy_for(MovementZone::Normal).unwrap();
+    let water = zg.hierarchy_for(MovementZone::Water).unwrap();
+    assert!(std::ptr::eq(normal, water));
+    assert!(zg.hierarchy_for(MovementZone::Invalid).is_none());
 
-    assert!(zg.map_mut(MovementZone::Normal).is_some());
+    assert!(zg.map_mut(MovementZone::Water).is_some());
     assert!(zg.hierarchy_for(MovementZone::Normal).is_none());
+    assert!(zg.hierarchy_for(MovementZone::Water).is_none());
 
-    zg.set_hierarchy(MovementZone::Normal, tiny_hierarchy());
+    zg.set_hierarchy(tiny_hierarchy());
     assert!(zg.adjacency_mut(MovementZone::Normal).is_some());
+    assert!(zg.hierarchy_for(MovementZone::Water).is_none());
+
+    zg.set_hierarchy(tiny_hierarchy());
+    let sz = super::zone_hierarchy::SuperZoneMap::from_adjacency(
+        zg.adjacency_for(MovementZone::Water).unwrap(),
+        zg.map_for(MovementZone::Water).unwrap().zone_count,
+    );
+    zg.set_super_zone(MovementZone::Water, sz);
     assert!(zg.hierarchy_for(MovementZone::Normal).is_none());
 
-    zg.set_hierarchy(MovementZone::Normal, tiny_hierarchy());
-    let sz = super::zone_hierarchy::SuperZoneMap::from_adjacency(
-        zg.adjacency_for(MovementZone::Normal).unwrap(),
-        zg.map_for(MovementZone::Normal).unwrap().zone_count,
+    let rebuilt_terrain =
+        terrain_from_zone_classes(3, 1, &[zone_class::GROUND; 3], &[0; 3]);
+    let rebuilt_grid = PathGrid::from_resolved_terrain(&rebuilt_terrain);
+    let rebuilt = ZoneGrid::build_with_terrain(
+        &rebuilt_grid,
+        &terrain_costs,
+        Some(&rebuilt_terrain),
+        &[],
+        3,
+        1,
     );
-    zg.set_super_zone(MovementZone::Normal, sz);
-    assert!(zg.hierarchy_for(MovementZone::Normal).is_none());
+    let rebuilt_normal = rebuilt.hierarchy_for(MovementZone::Normal).unwrap();
+    let rebuilt_water = rebuilt.hierarchy_for(MovementZone::Water).unwrap();
+    assert!(std::ptr::eq(rebuilt_normal, rebuilt_water));
+    let rebuilt_level0 = rebuilt_normal.level(0).unwrap();
+    assert_eq!(rebuilt_level0.zone_count(), 2);
+    assert_eq!(rebuilt_level0.zone_at(0, 0), 1);
+    assert_eq!(rebuilt_level0.zone_at(2, 0), 2);
 }
 
 #[test]

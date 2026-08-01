@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 use super::PathGrid;
 use super::passability;
 use super::terrain_cost::TerrainCostGrid;
+use super::zone_hierarchy::{ZoneEdgeRecord, ZoneHierarchy, ZoneLevelGraph, ZoneRecord};
 use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneId, ZoneInfo, ZoneMap};
 use crate::map::resolved_terrain::{ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::MovementZone;
@@ -40,6 +41,71 @@ pub(crate) struct BaseZoneTopology {
 
 struct BaseEdgeBuckets {
     buckets: Vec<Vec<(ZoneId, ZoneId)>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HierarchyTempEdge {
+    existing: ZoneId,
+    current: ZoneId,
+    flag: u8,
+}
+
+/// Native temporary edge table used by `BuildZoneLevel`.
+///
+/// The directed `(existing, current)` pair is the identity: a later reversed
+/// pair remains distinct, while reinserting the exact pair preserves its first
+/// flag and discovery position. Buckets drain in ascending index order.
+struct HierarchyEdgeBuckets {
+    buckets: Vec<Vec<HierarchyTempEdge>>,
+}
+
+impl HierarchyEdgeBuckets {
+    fn new() -> Self {
+        Self {
+            buckets: vec![Vec::new(); 256],
+        }
+    }
+
+    fn register(&mut self, existing: ZoneId, current: ZoneId, flag: u8) {
+        if existing == ZONE_INVALID || current == ZONE_INVALID || existing == current {
+            return;
+        }
+        let bucket = (((existing & 0x0f) << 4) | (current & 0x0f)) as usize;
+        if self.buckets[bucket]
+            .iter()
+            .any(|edge| edge.existing == existing && edge.current == current)
+        {
+            return;
+        }
+        self.buckets[bucket].push(HierarchyTempEdge {
+            existing,
+            current,
+            flag,
+        });
+    }
+
+    fn drain_into(self, graph: &mut ZoneLevelGraph) {
+        for bucket in self.buckets {
+            for edge in bucket {
+                graph.push_edge(edge.current, ZoneEdgeRecord::new(edge.existing, edge.flag));
+                graph.push_edge(edge.existing, ZoneEdgeRecord::new(edge.current, edge.flag));
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HierarchyBlock {
+    x_min: i32,
+    x_max: i32,
+    y_min: i32,
+    y_max: i32,
+}
+
+impl HierarchyBlock {
+    fn contains(self, x: i32, y: i32) -> bool {
+        x >= self.x_min && x <= self.x_max && y >= self.y_min && y <= self.y_max
+    }
 }
 
 impl BaseEdgeBuckets {
@@ -204,6 +270,417 @@ pub(crate) fn build_base_zone_topology(
         zone_count,
         adjacency,
     }
+}
+
+/// Build the one three-level hierarchy shared by every MovementZone row.
+///
+/// `BuildZoneLevel` constructs levels coarse-to-fine (2, 1, 0), and
+/// `FloodFillScanline` partitions each level by copied base-node
+/// identity inside aligned blocks. This is deliberately separate from the base
+/// topology flood fill: its height thresholds, scan history, fringe flags, and
+/// temporary-edge ordering differ.
+pub(crate) fn build_zone_hierarchy(
+    base: &BaseZoneTopology,
+    path_grid: &PathGrid,
+    width: u16,
+    height: u16,
+) -> ZoneHierarchy {
+    let level2 = build_hierarchy_level(base, path_grid, width, height, 2, None);
+    let level1 = build_hierarchy_level(base, path_grid, width, height, 1, Some(&level2));
+    let level0 = build_hierarchy_level(base, path_grid, width, height, 0, Some(&level1));
+
+    // GSI04.12/13/15 residual: native bridge/tube injection needs three exact
+    // geometry-derived pairs. BridgeEndpointRecord only exposes endpoints, so
+    // an endpoint-to-endpoint approximation must not enter this hierarchy.
+    ZoneHierarchy::new(level0, level1, level2)
+}
+
+fn build_hierarchy_level(
+    base: &BaseZoneTopology,
+    path_grid: &PathGrid,
+    width: u16,
+    height: u16,
+    level: usize,
+    parent_level: Option<&ZoneLevelGraph>,
+) -> ZoneLevelGraph {
+    debug_assert_eq!(base.zone_ids.len(), width as usize * height as usize);
+    debug_assert_eq!(base.movement_classes.len(), base.zone_ids.len());
+
+    // Each native level begins by clearing the complete per-cell ID array.
+    let mut zone_ids = vec![ZONE_INVALID; width as usize * height as usize];
+    let mut records = Vec::new();
+    let mut edge_buckets = HierarchyEdgeBuckets::new();
+    let mut next_zone_number = 1u32;
+    let block_size = 1i32 << (level + 1);
+
+    for ry in 0..height {
+        let mut rx = 0i32;
+        while rx < i32::from(width) {
+            let idx = ry as usize * width as usize + rx as usize;
+            if base.movement_classes[idx] == zone_class::OUTSIDE || zone_ids[idx] != ZONE_INVALID {
+                rx += 1;
+                continue;
+            }
+
+            let block = HierarchyBlock {
+                x_min: rx & !(block_size - 1),
+                x_max: (rx & !(block_size - 1)) + block_size - 1,
+                y_min: i32::from(ry) & !(block_size - 1),
+                y_max: (i32::from(ry) & !(block_size - 1)) + block_size - 1,
+            };
+            let parent = parent_level
+                .map(|graph| graph.zone_at(rx as u16, ry))
+                .unwrap_or(ZONE_INVALID);
+            let current_zone = ZoneId::try_from(next_zone_number).unwrap_or_else(|_| {
+                panic!(
+                    "zone hierarchy level {level} exceeds ZoneId capacity at real zone {next_zone_number}"
+                )
+            });
+            records.push(ZoneRecord::new(
+                current_zone,
+                parent,
+                base.movement_classes[idx],
+            ));
+
+            let run_advance = flood_fill_hierarchy_scanline(
+                rx as u16,
+                ry,
+                current_zone,
+                base.zone_ids[idx],
+                base,
+                &mut zone_ids,
+                path_grid,
+                width,
+                height,
+                block,
+                &mut edge_buckets,
+            );
+            next_zone_number = next_zone_number
+                .checked_add(1)
+                .expect("zone hierarchy real-zone counter overflow");
+            // Native advances to R, then the assigned-cell branch rechecks R
+            // once and advances past it.
+            rx += run_advance;
+        }
+    }
+
+    let real_zone_count = next_zone_number
+        .checked_sub(1)
+        .expect("zone hierarchy real-zone counter underflow");
+    let zone_count = ZoneId::try_from(real_zone_count).unwrap_or_else(|_| {
+        panic!(
+            "zone hierarchy level {level} exceeds ZoneId capacity at real zone {real_zone_count}"
+        )
+    });
+    let mut graph = ZoneLevelGraph::new(zone_count).with_cell_zone_ids(zone_ids, width, height);
+    graph.set_record(ZoneRecord::new(
+        ZONE_INVALID,
+        ZONE_INVALID,
+        zone_class::OUTSIDE,
+    ));
+    for record in records {
+        graph.set_record(record);
+    }
+    edge_buckets.drain_into(&mut graph);
+    graph
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flood_fill_hierarchy_scanline(
+    start_x: u16,
+    start_y: u16,
+    current_zone: ZoneId,
+    captured_base_id: ZoneId,
+    base: &BaseZoneTopology,
+    zone_ids: &mut [ZoneId],
+    path_grid: &PathGrid,
+    width: u16,
+    height: u16,
+    block: HierarchyBlock,
+    edge_buckets: &mut HierarchyEdgeBuckets,
+) -> i32 {
+    let seed_x = i32::from(start_x);
+    let seed_y = i32::from(start_y);
+    let Some(seed_height) = base_level_at(path_grid, seed_x, seed_y, width, height) else {
+        return 0;
+    };
+
+    // LEFT starts on the seed and uses a stepwise <2 height comparison.
+    // Existing hierarchy IDs do not stop the horizontal write.
+    let mut stopped_left = seed_x;
+    let mut previous_height = seed_height;
+    loop {
+        if !block.contains(stopped_left, seed_y) {
+            break;
+        }
+        let Some(index) = base_record_index(stopped_left, seed_y, width, height) else {
+            break;
+        };
+        if base.zone_ids[index] != captured_base_id {
+            break;
+        }
+        let Some(height_at_cell) = base_level_at(path_grid, stopped_left, seed_y, width, height)
+        else {
+            break;
+        };
+        if height_at_cell.abs_diff(previous_height) >= 2 {
+            break;
+        }
+        zone_ids[index] = current_zone;
+        previous_height = height_at_cell;
+        stopped_left -= 1;
+    }
+    let run_left = stopped_left + 1;
+    register_hierarchy_boundary_edge(
+        stopped_left,
+        seed_y,
+        run_left,
+        seed_y,
+        current_zone,
+        0,
+        base,
+        zone_ids,
+        path_grid,
+        width,
+        height,
+        edge_buckets,
+    );
+
+    // RIGHT restarts on the seed and resets its carried height to the seed.
+    let mut stopped_right = seed_x;
+    previous_height = seed_height;
+    loop {
+        if !block.contains(stopped_right, seed_y) {
+            break;
+        }
+        let Some(index) = base_record_index(stopped_right, seed_y, width, height) else {
+            break;
+        };
+        if base.zone_ids[index] != captured_base_id {
+            break;
+        }
+        let Some(height_at_cell) = base_level_at(path_grid, stopped_right, seed_y, width, height)
+        else {
+            break;
+        };
+        if height_at_cell.abs_diff(previous_height) >= 2 {
+            break;
+        }
+        zone_ids[index] = current_zone;
+        previous_height = height_at_cell;
+        stopped_right += 1;
+    }
+    let run_right = stopped_right - 1;
+    register_hierarchy_boundary_edge(
+        stopped_right,
+        seed_y,
+        run_right,
+        seed_y,
+        current_zone,
+        0,
+        base,
+        zone_ids,
+        path_grid,
+        width,
+        height,
+        edge_buckets,
+    );
+
+    scan_hierarchy_adjacent_row(
+        seed_y - 1,
+        seed_y,
+        run_left,
+        run_right,
+        current_zone,
+        captured_base_id,
+        base,
+        zone_ids,
+        path_grid,
+        width,
+        height,
+        block,
+        edge_buckets,
+    );
+    scan_hierarchy_adjacent_row(
+        seed_y + 1,
+        seed_y,
+        run_left,
+        run_right,
+        current_zone,
+        captured_base_id,
+        base,
+        zone_ids,
+        path_grid,
+        width,
+        height,
+        block,
+        edge_buckets,
+    );
+
+    run_right - seed_x
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_hierarchy_adjacent_row(
+    candidate_y: i32,
+    reference_y: i32,
+    run_left: i32,
+    run_right: i32,
+    current_zone: ZoneId,
+    captured_base_id: ZoneId,
+    base: &BaseZoneTopology,
+    zone_ids: &mut [ZoneId],
+    path_grid: &PathGrid,
+    width: u16,
+    height: u16,
+    block: HierarchyBlock,
+    edge_buckets: &mut HierarchyEdgeBuckets,
+) {
+    let mut candidate_x = run_left - 1;
+    while candidate_x <= run_right + 1 {
+        let reference_x = candidate_x.clamp(run_left, run_right);
+        let Some(candidate_index) = base_record_index(candidate_x, candidate_y, width, height)
+        else {
+            candidate_x += 1;
+            continue;
+        };
+        let height_allowed = hierarchy_height_allowed(
+            path_grid,
+            candidate_x,
+            candidate_y,
+            reference_x,
+            reference_y,
+            width,
+            height,
+        );
+
+        if zone_ids[candidate_index] == ZONE_INVALID
+            && block.contains(candidate_x, candidate_y)
+            && base.zone_ids[candidate_index] == captured_base_id
+            && height_allowed
+        {
+            // Native ignores the recursive return and reloads this candidate
+            // exactly once before applying the existing-zone edge branch.
+            flood_fill_hierarchy_scanline(
+                candidate_x as u16,
+                candidate_y as u16,
+                current_zone,
+                captured_base_id,
+                base,
+                zone_ids,
+                path_grid,
+                width,
+                height,
+                block,
+                edge_buckets,
+            );
+        }
+
+        let existing = zone_ids[candidate_index];
+        if existing != ZONE_INVALID
+            && existing != current_zone
+            && height_allowed
+            && hierarchy_cells_are_playfield(
+                base,
+                candidate_x,
+                candidate_y,
+                reference_x,
+                reference_y,
+                width,
+                height,
+            )
+        {
+            let flag = u8::from(candidate_x < block.x_min || candidate_x > block.x_max);
+            edge_buckets.register(existing, current_zone, flag);
+        }
+
+        candidate_x += 1;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn register_hierarchy_boundary_edge(
+    candidate_x: i32,
+    candidate_y: i32,
+    reference_x: i32,
+    reference_y: i32,
+    current_zone: ZoneId,
+    flag: u8,
+    base: &BaseZoneTopology,
+    zone_ids: &[ZoneId],
+    path_grid: &PathGrid,
+    width: u16,
+    height: u16,
+    edge_buckets: &mut HierarchyEdgeBuckets,
+) {
+    let Some(candidate_index) = base_record_index(candidate_x, candidate_y, width, height) else {
+        return;
+    };
+    let existing = zone_ids[candidate_index];
+    if existing == ZONE_INVALID || existing == current_zone {
+        return;
+    }
+    if !hierarchy_height_allowed(
+        path_grid,
+        candidate_x,
+        candidate_y,
+        reference_x,
+        reference_y,
+        width,
+        height,
+    ) || !hierarchy_cells_are_playfield(
+        base,
+        candidate_x,
+        candidate_y,
+        reference_x,
+        reference_y,
+        width,
+        height,
+    ) {
+        return;
+    }
+    edge_buckets.register(existing, current_zone, flag);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hierarchy_height_allowed(
+    path_grid: &PathGrid,
+    candidate_x: i32,
+    candidate_y: i32,
+    reference_x: i32,
+    reference_y: i32,
+    width: u16,
+    height: u16,
+) -> bool {
+    match (
+        base_level_at(path_grid, candidate_x, candidate_y, width, height),
+        base_level_at(path_grid, reference_x, reference_y, width, height),
+    ) {
+        (Some(candidate_height), Some(reference_height)) => {
+            candidate_height.abs_diff(reference_height) < 2
+        }
+        _ => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hierarchy_cells_are_playfield(
+    base: &BaseZoneTopology,
+    candidate_x: i32,
+    candidate_y: i32,
+    reference_x: i32,
+    reference_y: i32,
+    width: u16,
+    height: u16,
+) -> bool {
+    let Some(candidate) = base_record_index(candidate_x, candidate_y, width, height) else {
+        return false;
+    };
+    let Some(reference) = base_record_index(reference_x, reference_y, width, height) else {
+        return false;
+    };
+    base.movement_classes[candidate] != zone_class::OUTSIDE
+        && base.movement_classes[reference] != zone_class::OUTSIDE
 }
 
 /// Project the shared base topology through one exact MovementZone matrix row.
@@ -927,6 +1404,23 @@ mod tests {
     use super::*;
     use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind};
 
+    fn hierarchy_base(movement_classes: Vec<u8>, zone_ids: Vec<ZoneId>) -> BaseZoneTopology {
+        assert_eq!(movement_classes.len(), zone_ids.len());
+        let zone_count = zone_ids.iter().copied().max().unwrap_or(ZONE_INVALID);
+        BaseZoneTopology {
+            movement_classes,
+            zone_ids,
+            zone_count,
+            adjacency: ZoneAdjacency::new(vec![Vec::new(); zone_count as usize + 1]),
+        }
+    }
+
+    fn level_cell_ids(graph: &ZoneLevelGraph, width: u16, height: u16) -> Vec<ZoneId> {
+        (0..height)
+            .flat_map(|y| (0..width).map(move |x| graph.zone_at(x, y)))
+            .collect()
+    }
+
     fn bridge_record(kind: BridgeRecordKind) -> BridgeEndpointRecord {
         BridgeEndpointRecord {
             endpoint_a: (0, 0),
@@ -935,6 +1429,171 @@ mod tests {
             active: true,
             bridge_kind: kind,
         }
+    }
+
+    #[test]
+    fn gsi_04_06_hierarchy_uses_aligned_blocks_and_coarse_parents() {
+        let width = 9;
+        let height = 1;
+        let base = hierarchy_base(vec![zone_class::GROUND; 9], vec![1; 9]);
+        let hierarchy = build_zone_hierarchy(&base, &PathGrid::new(width, height), width, height);
+
+        let level2 = hierarchy.level(2).unwrap();
+        assert_eq!(level2.zone_count(), 2);
+        assert_eq!(
+            level_cell_ids(level2, width, height),
+            vec![1, 1, 1, 1, 1, 1, 1, 1, 2]
+        );
+        assert_eq!(
+            level2.record(0),
+            Some(ZoneRecord::new(0, 0, zone_class::OUTSIDE))
+        );
+        assert_eq!(
+            level2.record(1),
+            Some(ZoneRecord::new(1, 0, zone_class::GROUND))
+        );
+        assert_eq!(
+            level2.record(2),
+            Some(ZoneRecord::new(2, 0, zone_class::GROUND))
+        );
+
+        let level1 = hierarchy.level(1).unwrap();
+        assert_eq!(level1.zone_count(), 3);
+        assert_eq!(
+            level_cell_ids(level1, width, height),
+            vec![1, 1, 1, 1, 2, 2, 2, 2, 3]
+        );
+        assert_eq!(
+            level1.record(1),
+            Some(ZoneRecord::new(1, 1, zone_class::GROUND))
+        );
+        assert_eq!(
+            level1.record(2),
+            Some(ZoneRecord::new(2, 1, zone_class::GROUND))
+        );
+        assert_eq!(
+            level1.record(3),
+            Some(ZoneRecord::new(3, 2, zone_class::GROUND))
+        );
+
+        let level0 = hierarchy.level(0).unwrap();
+        assert_eq!(level0.zone_count(), 5);
+        assert_eq!(
+            level_cell_ids(level0, width, height),
+            vec![1, 1, 2, 2, 3, 3, 4, 4, 5]
+        );
+        for (zone, parent) in [(1, 1), (2, 1), (3, 2), (4, 2), (5, 3)] {
+            assert_eq!(
+                level0.record(zone),
+                Some(ZoneRecord::new(zone, parent, zone_class::GROUND))
+            );
+        }
+        assert_eq!(level0.edges(1), &[ZoneEdgeRecord::new(2, 0)]);
+        assert_eq!(
+            level0.edges(2),
+            &[ZoneEdgeRecord::new(1, 0), ZoneEdgeRecord::new(3, 0)]
+        );
+        assert_eq!(
+            level0.edges(3),
+            &[ZoneEdgeRecord::new(2, 0), ZoneEdgeRecord::new(4, 0)]
+        );
+        assert_eq!(
+            level0.edges(4),
+            &[ZoneEdgeRecord::new(3, 0), ZoneEdgeRecord::new(5, 0)]
+        );
+        assert_eq!(level0.edges(5), &[ZoneEdgeRecord::new(4, 0)]);
+    }
+
+    #[test]
+    fn gsi_04_06_hierarchy_vertical_fringe_preserves_flag_one() {
+        let width = 4;
+        let height = 2;
+        let base = hierarchy_base(
+            vec![
+                zone_class::GROUND,
+                zone_class::OUTSIDE,
+                zone_class::BEACH,
+                zone_class::BEACH,
+                zone_class::GROUND,
+                zone_class::GROUND,
+                zone_class::BEACH,
+                zone_class::BEACH,
+            ],
+            vec![1, 0, 2, 2, 1, 1, 2, 2],
+        );
+        let hierarchy = build_zone_hierarchy(&base, &PathGrid::new(width, height), width, height);
+
+        let level0 = hierarchy.level(0).unwrap();
+        assert_eq!(level0.zone_count(), 2);
+        assert_eq!(
+            level_cell_ids(level0, width, height),
+            vec![1, 0, 2, 2, 1, 1, 2, 2]
+        );
+        assert_eq!(
+            level0.record(1),
+            Some(ZoneRecord::new(1, 1, zone_class::GROUND))
+        );
+        assert_eq!(
+            level0.record(2),
+            Some(ZoneRecord::new(2, 2, zone_class::BEACH))
+        );
+        assert_eq!(level0.edges(2), &[ZoneEdgeRecord::new(1, 1)]);
+        assert_eq!(level0.edges(1), &[ZoneEdgeRecord::new(2, 1)]);
+
+        for level in [1, 2] {
+            let graph = hierarchy.level(level).unwrap();
+            assert_eq!(graph.zone_count(), 2);
+            assert_eq!(
+                level_cell_ids(graph, width, height),
+                vec![1, 0, 2, 2, 1, 1, 2, 2]
+            );
+            assert_eq!(graph.edges(2), &[ZoneEdgeRecord::new(1, 0)]);
+            assert_eq!(graph.edges(1), &[ZoneEdgeRecord::new(2, 0)]);
+        }
+        assert_eq!(hierarchy.level(1).unwrap().record(1).unwrap().parent, 1);
+        assert_eq!(hierarchy.level(1).unwrap().record(2).unwrap().parent, 2);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "zone hierarchy level 0 exceeds ZoneId capacity at real zone 65536"
+    )]
+    fn gsi_04_06_hierarchy_rejects_65536th_real_zone_before_aliasing() {
+        let width: u16 = 512;
+        let height: u16 = 512;
+        let cell_count = usize::from(width) * usize::from(height);
+        let base = hierarchy_base(
+            vec![zone_class::GROUND; cell_count],
+            vec![1; cell_count],
+        );
+
+        let _ = build_zone_hierarchy(&base, &PathGrid::new(width, height), width, height);
+    }
+
+    #[test]
+    fn gsi_04_06_hierarchy_edge_buckets_keep_directed_first_insertion() {
+        let mut buckets = HierarchyEdgeBuckets::new();
+        buckets.register(1, 2, 1);
+        buckets.register(3, 2, 0);
+        buckets.register(2, 1, 0);
+        buckets.register(1, 2, 0);
+
+        let mut graph = ZoneLevelGraph::new(3);
+        buckets.drain_into(&mut graph);
+
+        assert_eq!(
+            graph.edges(1),
+            &[ZoneEdgeRecord::new(2, 1), ZoneEdgeRecord::new(2, 0)]
+        );
+        assert_eq!(
+            graph.edges(2),
+            &[
+                ZoneEdgeRecord::new(1, 1),
+                ZoneEdgeRecord::new(1, 0),
+                ZoneEdgeRecord::new(3, 0),
+            ]
+        );
+        assert_eq!(graph.edges(3), &[ZoneEdgeRecord::new(2, 0)]);
     }
 
     #[test]
