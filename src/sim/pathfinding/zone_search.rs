@@ -25,8 +25,9 @@ use super::terrain_cost::TerrainCostGrid;
 use super::zone_hierarchy::{ZonePrecheckExclusions, ZonePrecheckOutcome, zone_precheck_flat};
 use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneGrid, ZoneId, ZoneMap};
 use super::{
-    LayeredPathStep, PathGrid, find_layered_path_marker, find_path_with_costs_corridor_marker,
-    find_path_with_costs_hierarchy_marker_progress, find_path_with_costs_marker,
+    LayeredPathStep, PathGrid, find_layered_path_hierarchy_marker, find_layered_path_marker,
+    find_path_with_costs_corridor_marker, find_path_with_costs_hierarchy_marker_progress,
+    find_path_with_costs_marker,
 };
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::tube_facts::TubeSource;
@@ -501,13 +502,14 @@ pub fn find_layered_path_zoned(
         resolved_terrain,
         entity_block_map,
         None,
+        None,
         urgency,
         mover_is_crusher,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn find_layered_path_zoned_marker(
+pub(crate) fn find_layered_path_zoned_marker(
     grid: &PathGrid,
     ground_blocks: Option<&BTreeSet<(u16, u16)>>,
     bridge_blocks: Option<&BTreeSet<(u16, u16)>>,
@@ -521,12 +523,10 @@ pub fn find_layered_path_zoned_marker(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     entity_block_map: Option<&LayeredEntityBlockMap>,
     marker_overlay: Option<&SearchMarkerOverlay>,
+    blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<LayeredPathStep>> {
-    // Foundation First deliberately leaves layered bridge routing on the
-    // compatibility path. Flat hierarchy precheck/marker gating here does not
-    // prove high-bridge route parity or retry producer parity.
     if !can_use_reduced_zone_precheck(movement_zone) {
         return find_layered_path_marker(
             grid,
@@ -544,10 +544,108 @@ pub fn find_layered_path_zoned_marker(
         );
     }
 
-    // Zone pre-check: bridge cells redirect to ground endpoint zones,
-    // so a single ground-layer check covers cross-bridge reachability.
     if let Some(zg) = zone_grid {
-        if !zg.can_reach(mz, start, start_layer, goal, MovementLayer::Ground) {
+        let source_layer = if start_layer == MovementLayer::Bridge {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
+        let goal_layer = if resolved_terrain
+            .and_then(|terrain| terrain.cell(goal.0, goal.1))
+            .is_some_and(|cell| cell.bridge_facts.has_structural_bridge())
+        {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
+        let zones_match = zg.map_for(mz).is_some_and(|zone_map| {
+            zone_map.zone_at(start.0, start.1, source_layer)
+                == zone_map.zone_at(goal.0, goal.1, goal_layer)
+        });
+
+        if blocker_neighbor_counts.is_some()
+            && !has_explicit_tube_scenario(resolved_terrain)
+            && let Some(terrain) = resolved_terrain
+            && let Some(hierarchy) = zg.hierarchy_for(mz)
+            && let Some(level0_zones) = hierarchy.level(0)
+        {
+            let hierarchy_start = super::zone_build::resolve_hierarchy_path_coord(
+                terrain,
+                zg.bridge_records(),
+                start,
+                source_layer == MovementLayer::Bridge,
+            );
+            let hierarchy_goal = super::zone_build::resolve_hierarchy_path_coord(
+                terrain,
+                zg.bridge_records(),
+                goal,
+                goal_layer == MovementLayer::Bridge,
+            );
+            match zone_precheck_flat(
+                hierarchy,
+                level0_zones.zone_at(hierarchy_start.0, hierarchy_start.1),
+                level0_zones.zone_at(hierarchy_goal.0, hierarchy_goal.1),
+                movement_zone.unwrap_or(mz),
+                &ZonePrecheckExclusions::default(),
+            ) {
+                ZonePrecheckOutcome::Passed(result) => {
+                    return find_layered_path_hierarchy_marker(
+                        grid,
+                        ground_blocks,
+                        bridge_blocks,
+                        start,
+                        start_layer,
+                        goal,
+                        terrain_costs,
+                        level0_zones,
+                        &result.marked[0],
+                        blocker_neighbor_counts.expect("checked above"),
+                        &result.paths[0],
+                        movement_zone,
+                        resolved_terrain,
+                        entity_block_map,
+                        marker_overlay,
+                        urgency,
+                        mover_is_crusher,
+                    );
+                }
+                ZonePrecheckOutcome::Failed if zones_match => {
+                    return find_layered_path_marker(
+                        grid,
+                        ground_blocks,
+                        bridge_blocks,
+                        start,
+                        start_layer,
+                        goal,
+                        terrain_costs,
+                        resolved_terrain,
+                        entity_block_map,
+                        marker_overlay,
+                        urgency,
+                        mover_is_crusher,
+                    );
+                }
+                ZonePrecheckOutcome::Failed => return None,
+            }
+        }
+
+        if !zg.can_reach(mz, start, source_layer, goal, goal_layer) {
+            if zones_match {
+                return find_layered_path_marker(
+                    grid,
+                    ground_blocks,
+                    bridge_blocks,
+                    start,
+                    start_layer,
+                    goal,
+                    terrain_costs,
+                    resolved_terrain,
+                    entity_block_map,
+                    marker_overlay,
+                    urgency,
+                    mover_is_crusher,
+                );
+            }
             if can_reach_through_explicit_tube(zg, mz, start, start_layer, goal, resolved_terrain) {
                 return find_layered_path_marker(
                     grid,

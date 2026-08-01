@@ -1098,8 +1098,7 @@ pub fn astar_search(
                         MovementLayer::Ground
                     };
                     layer_context = CanEnterLayerContext::single(layer);
-                    let diff = i16::from(neighbor_height as i8)
-                        - i16::from(current.height as i8);
+                    let diff = i16::from(neighbor_height as i8) - i16::from(current.height as i8);
                     let lower_slope = if diff < 0 {
                         neighbor_cell.slope_type
                     } else {
@@ -2429,6 +2428,56 @@ pub(crate) fn find_path_with_costs_hierarchy_marker_progress(
         progress_cell: progress.progress_cell(),
         progress_index: progress.progress_index(),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn find_layered_path_hierarchy_marker(
+    grid: &PathGrid,
+    ground_blocks: Option<&BTreeSet<(u16, u16)>>,
+    bridge_blocks: Option<&BTreeSet<(u16, u16)>>,
+    start: (u16, u16),
+    start_layer: MovementLayer,
+    goal: (u16, u16),
+    terrain_costs: Option<&TerrainCostGrid>,
+    level0_zones: &ZoneLevelGraph,
+    marked_level0: &BTreeSet<ZoneId>,
+    blocker_neighbor_counts: &BlockerNeighborCounts,
+    level0_path: &[ZoneId],
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+) -> Option<Vec<LayeredPathStep>> {
+    if !matches!(start_layer, MovementLayer::Ground | MovementLayer::Bridge) {
+        return None;
+    }
+    let progress = HierarchyProgressTracker::new(start, level0_path);
+    astar_search(
+        grid,
+        start,
+        start_layer,
+        goal,
+        &AStarOptions {
+            terrain_costs,
+            resolved_terrain,
+            entity_blocks: ground_blocks,
+            bridge_blocks,
+            hierarchy_gate: Some(HierarchyGate {
+                level0_zones,
+                marked_level0,
+                blocker_neighbor_counts,
+            }),
+            hierarchy_progress: Some(&progress),
+            entity_block_map,
+            marker_overlay,
+            urgency,
+            mover_is_crusher,
+            movement_zone,
+            ..Default::default()
+        },
+    )
 }
 
 /// Resolve a gamemd foundation name into pathfinding footprint dimensions.

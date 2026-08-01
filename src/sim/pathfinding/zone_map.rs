@@ -189,6 +189,9 @@ pub struct ZoneGrid {
     super_zones: BTreeMap<MovementZone, SuperZoneMap>,
     /// One optional gamemd-style route-selection hierarchy shared by all rows.
     hierarchy: Option<ZoneHierarchy>,
+    /// Map-load bridge records paired with the hierarchy snapshot. These are
+    /// consumed only by hierarchy-coordinate projection.
+    bridge_records: Vec<crate::sim::bridge_state::BridgeEndpointRecord>,
     pub width: u16,
     pub height: u16,
 }
@@ -219,17 +222,18 @@ impl ZoneGrid {
         let mut adjacency = BTreeMap::new();
         let mut super_zones = BTreeMap::new();
         let base_topology = resolved_terrain.map(|terrain| {
-            zone_build::build_base_zone_topology(
+            zone_build::build_base_zone_topology(path_grid, terrain, bridge_records, width, height)
+        });
+        let hierarchy = base_topology.as_ref().map(|base| {
+            zone_build::build_zone_hierarchy(
+                base,
                 path_grid,
-                terrain,
+                resolved_terrain,
                 bridge_records,
                 width,
                 height,
             )
         });
-        let hierarchy = base_topology
-            .as_ref()
-            .map(|base| zone_build::build_zone_hierarchy(base, path_grid, width, height));
 
         for &mz in MovementZone::all_ground() {
             let speed_type = mz.speed_type();
@@ -273,6 +277,7 @@ impl ZoneGrid {
             adjacency,
             super_zones,
             hierarchy,
+            bridge_records: bridge_records.to_vec(),
             width,
             height,
         }
@@ -294,6 +299,10 @@ impl ZoneGrid {
             return None;
         }
         self.hierarchy.as_ref()
+    }
+
+    pub(crate) fn bridge_records(&self) -> &[crate::sim::bridge_state::BridgeEndpointRecord] {
+        &self.bridge_records
     }
 
     /// Mutable access to the zone map for a movement zone (for incremental updates).

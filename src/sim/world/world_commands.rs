@@ -117,14 +117,7 @@ impl Simulation {
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
     ) -> bool {
-        self.apply_command_with_overlays(
-            command_owner,
-            cmd,
-            rules,
-            path_grid,
-            height_map,
-            None,
-        )
+        self.apply_command_with_overlays(command_owner, cmd, rules, path_grid, height_map, None)
     }
 
     pub(crate) fn apply_command_with_overlays(
@@ -216,6 +209,14 @@ impl Simulation {
                         ) {
                             let Some(grid) = path_grid else { return false };
                             let cost_grid = self.terrain_costs.get(&info.speed_type);
+                            let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                                &self.substrate.entities,
+                                grid.width(),
+                                grid.height(),
+                                self.resolved_terrain.as_ref(),
+                                &self.interner,
+                                rules,
+                            );
                             return movement::issue_move_command_with_layered(
                                 &mut self.substrate.entities,
                                 grid,
@@ -229,6 +230,7 @@ impl Simulation {
                                 self.zone_grid.as_ref(),
                                 Some(&entity_block_map),
                                 info.mover_is_crusher,
+                                Some(&blocker_neighbor_counts),
                                 Some(&mut self.substrate.cell_occupation),
                             );
                         }
@@ -256,6 +258,14 @@ impl Simulation {
                 } else {
                     let Some(grid) = path_grid else { return false };
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
+                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        &self.interner,
+                        rules,
+                    );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -269,6 +279,7 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         info.mover_is_crusher,
+                        Some(&blocker_neighbor_counts),
                         Some(&mut self.substrate.cell_occupation),
                     )
                 };
@@ -521,6 +532,14 @@ impl Simulation {
                 } else {
                     let Some(grid) = path_grid else { return false };
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
+                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        &self.interner,
+                        rules,
+                    );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -534,6 +553,7 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         info.mover_is_crusher,
+                        Some(&blocker_neighbor_counts),
                         Some(&mut self.substrate.cell_occupation),
                     )
                 };
@@ -915,6 +935,14 @@ impl Simulation {
                 );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
+                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        &self.interner,
+                        Some(rules),
+                    );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -928,6 +956,7 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
+                        Some(&blocker_neighbor_counts),
                         Some(&mut self.substrate.cell_occupation),
                     );
                 }
@@ -1017,6 +1046,14 @@ impl Simulation {
                 );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
+                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        &self.interner,
+                        Some(rules),
+                    );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -1030,6 +1067,7 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
+                        Some(&blocker_neighbor_counts),
                         Some(&mut self.substrate.cell_occupation),
                     );
                 }
@@ -1192,6 +1230,15 @@ impl Simulation {
                     );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
+                    let blocker_neighbor_counts =
+                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            &self.interner,
+                            Some(rules),
+                        );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -1205,6 +1252,7 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
+                        Some(&blocker_neighbor_counts),
                         Some(&mut self.substrate.cell_occupation),
                     );
                 }
@@ -1298,6 +1346,15 @@ impl Simulation {
                     );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
+                    let blocker_neighbor_counts =
+                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            &self.interner,
+                            Some(rules),
+                        );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -1311,6 +1368,7 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
+                        Some(&blocker_neighbor_counts),
                         Some(&mut self.substrate.cell_occupation),
                     );
                 }
@@ -1502,6 +1560,14 @@ impl Simulation {
                     );
                     if let Some(grid) = path_grid {
                         let cost_grid = self.terrain_costs.get(&speed_type);
+                        let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            &self.interner,
+                            Some(rules),
+                        );
                         movement::issue_move_command_with_layered(
                             &mut self.substrate.entities,
                             grid,
@@ -1515,6 +1581,7 @@ impl Simulation {
                             self.zone_grid.as_ref(),
                             Some(&entity_block_map),
                             crusher,
+                            Some(&blocker_neighbor_counts),
                             Some(&mut self.substrate.cell_occupation),
                         );
                     }

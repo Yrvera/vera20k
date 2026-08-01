@@ -292,6 +292,7 @@ fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
             None,
             None,
             false,
+            None,
             Some(cell_occupation),
         )
     };
@@ -664,6 +665,7 @@ fn gsi_04_05_second_mover_cannot_adopt_reserved_head_to_endpoint() {
         None,
         None,
         false,
+        None,
         Some(&mut occupation),
     ));
     assert_eq!(
@@ -692,6 +694,7 @@ fn gsi_04_05_second_mover_cannot_adopt_reserved_head_to_endpoint() {
         None,
         None,
         false,
+        None,
         Some(&mut occupation),
     );
     let second_goal = entities

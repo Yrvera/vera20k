@@ -14,11 +14,13 @@ use super::passability;
 use super::terrain_cost::TerrainCostGrid;
 use super::zone_hierarchy::{ZoneEdgeRecord, ZoneHierarchy, ZoneLevelGraph, ZoneRecord};
 use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneId, ZoneInfo, ZoneMap};
+use crate::map::bridge_facts::BRIDGE_FLAG_DIRECTION_ZERO;
 use crate::map::resolved_terrain::{ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::terrain_rules::LandType;
 use crate::sim::bridge_state::BridgeEndpointRecord;
 use crate::sim::movement::locomotor::MovementLayer;
+use crate::util::native_x87::{X87Chop53, X87Value, sqrt_approx_f32};
 
 /// 8-directional neighbor offsets: (dx, dy, is_diagonal).
 pub(crate) const NEIGHBORS: [(i32, i32, bool); 8] = [
@@ -257,12 +259,7 @@ pub(crate) fn build_base_zone_topology(
 
     let (zone_ids, zone_count, mut edge_buckets) =
         rebuild_node_indices(&movement_classes, path_grid, width, height);
-    register_bridge_base_edges(
-        &mut edge_buckets,
-        &zone_ids,
-        bridge_records,
-        width,
-    );
+    register_bridge_base_edges(&mut edge_buckets, &zone_ids, bridge_records, width);
     let adjacency = edge_buckets.into_adjacency(zone_count);
 
     BaseZoneTopology {
@@ -283,22 +280,50 @@ pub(crate) fn build_base_zone_topology(
 pub(crate) fn build_zone_hierarchy(
     base: &BaseZoneTopology,
     path_grid: &PathGrid,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    bridge_records: &[BridgeEndpointRecord],
     width: u16,
     height: u16,
 ) -> ZoneHierarchy {
-    let level2 = build_hierarchy_level(base, path_grid, width, height, 2, None);
-    let level1 = build_hierarchy_level(base, path_grid, width, height, 1, Some(&level2));
-    let level0 = build_hierarchy_level(base, path_grid, width, height, 0, Some(&level1));
+    let level2 = build_hierarchy_level(
+        base,
+        path_grid,
+        resolved_terrain,
+        bridge_records,
+        width,
+        height,
+        2,
+        None,
+    );
+    let level1 = build_hierarchy_level(
+        base,
+        path_grid,
+        resolved_terrain,
+        bridge_records,
+        width,
+        height,
+        1,
+        Some(&level2),
+    );
+    let level0 = build_hierarchy_level(
+        base,
+        path_grid,
+        resolved_terrain,
+        bridge_records,
+        width,
+        height,
+        0,
+        Some(&level1),
+    );
 
-    // GSI04.12/13/15 residual: native bridge/tube injection needs three exact
-    // geometry-derived pairs. BridgeEndpointRecord only exposes endpoints, so
-    // an endpoint-to-endpoint approximation must not enter this hierarchy.
     ZoneHierarchy::new(level0, level1, level2)
 }
 
 fn build_hierarchy_level(
     base: &BaseZoneTopology,
     path_grid: &PathGrid,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    bridge_records: &[BridgeEndpointRecord],
     width: u16,
     height: u16,
     level: usize,
@@ -373,6 +398,17 @@ fn build_hierarchy_level(
             "zone hierarchy level {level} exceeds ZoneId capacity at real zone {real_zone_count}"
         )
     });
+    if let Some(terrain) = resolved_terrain {
+        register_high_bridge_hierarchy_edges(
+            &mut edge_buckets,
+            &zone_ids,
+            terrain,
+            bridge_records,
+            width,
+            height,
+        );
+    }
+
     let mut graph = ZoneLevelGraph::new(zone_count).with_cell_zone_ids(zone_ids, width, height);
     graph.set_record(ZoneRecord::new(
         ZONE_INVALID,
@@ -384,6 +420,95 @@ fn build_hierarchy_level(
     }
     edge_buckets.drain_into(&mut graph);
     graph
+}
+
+/// Endpoint-A bridge-tile slot to the native `BuildZoneLevel` side direction.
+const HIGH_BRIDGE_HIERARCHY_DIRECTIONS: [i8; 16] =
+    [0, 0, -1, 2, 2, -1, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2];
+
+fn register_high_bridge_hierarchy_edges(
+    edge_buckets: &mut HierarchyEdgeBuckets,
+    zone_ids: &[ZoneId],
+    terrain: &ResolvedTerrainGrid,
+    bridge_records: &[BridgeEndpointRecord],
+    width: u16,
+    height: u16,
+) {
+    for record in bridge_records {
+        if !record.active || !record.is_high() {
+            continue;
+        }
+        let Some(endpoint_a_cell) = terrain.cell(record.endpoint_a.0, record.endpoint_a.1) else {
+            continue;
+        };
+        let Some(tile_offset) = terrain.high_bridge_tile_offset(endpoint_a_cell) else {
+            continue;
+        };
+        let raw_direction = i32::from(HIGH_BRIDGE_HIERARCHY_DIRECTIONS[tile_offset]);
+        let direction = (raw_direction & 7) as u8;
+        let opposite = ((raw_direction - 4) & 7) as u8;
+
+        register_hierarchy_cell_pair(
+            edge_buckets,
+            zone_ids,
+            (
+                i32::from(record.endpoint_a.0),
+                i32::from(record.endpoint_a.1),
+            ),
+            (
+                i32::from(record.endpoint_b.0),
+                i32::from(record.endpoint_b.1),
+            ),
+            width,
+            height,
+        );
+        register_hierarchy_cell_pair(
+            edge_buckets,
+            zone_ids,
+            hierarchy_side_coord(record.endpoint_a, direction),
+            hierarchy_side_coord(record.endpoint_b, direction),
+            width,
+            height,
+        );
+        register_hierarchy_cell_pair(
+            edge_buckets,
+            zone_ids,
+            hierarchy_side_coord(record.endpoint_a, opposite),
+            hierarchy_side_coord(record.endpoint_b, opposite),
+            width,
+            height,
+        );
+    }
+}
+
+fn hierarchy_side_coord(coord: (u16, u16), direction: u8) -> (i32, i32) {
+    let (dx, dy) = crate::util::direction::direction_delta(direction)
+        .expect("high-bridge hierarchy direction is masked to 0..=7");
+    (i32::from(coord.0) + dx, i32::from(coord.1) + dy)
+}
+
+fn register_hierarchy_cell_pair(
+    edge_buckets: &mut HierarchyEdgeBuckets,
+    zone_ids: &[ZoneId],
+    a: (i32, i32),
+    b: (i32, i32),
+    width: u16,
+    height: u16,
+) {
+    let zone_cell_count = usize::from(width) * usize::from(height);
+    debug_assert_eq!(zone_ids.len(), zone_cell_count);
+    let zone_at = |coord: (i32, i32)| {
+        if zone_cell_count == 0 {
+            return ZONE_INVALID;
+        }
+        let linear_index = i64::from(coord.1) * i64::from(width) + i64::from(coord.0);
+        let clamped_index = linear_index.clamp(0, (zone_cell_count - 1) as i64) as usize;
+        zone_ids
+            .get(clamped_index)
+            .copied()
+            .unwrap_or(ZONE_INVALID)
+    };
+    edge_buckets.register(zone_at(a), zone_at(b), 0);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -785,11 +910,7 @@ fn rebuild_node_indices(
         }
     }
 
-    (
-        node_indices,
-        next_node.saturating_sub(1),
-        edge_buckets,
-    )
+    (node_indices, next_node.saturating_sub(1), edge_buckets)
 }
 
 fn flood_fill_node_index(
@@ -807,8 +928,7 @@ fn flood_fill_node_index(
     let movement_class = movement_classes[start_idx];
     let seed_x = i32::from(start_x);
     let seed_y = i32::from(start_y);
-    let Some(mut carried_level) = base_level_at(path_grid, seed_x, seed_y, width, height)
-    else {
+    let Some(mut carried_level) = base_level_at(path_grid, seed_x, seed_y, width, height) else {
         return 0;
     };
 
@@ -969,13 +1089,7 @@ fn base_record_index(x: i32, y: i32, width: u16, height: u16) -> Option<usize> {
     Some(y as usize * width as usize + x as usize)
 }
 
-fn base_level_at(
-    path_grid: &PathGrid,
-    x: i32,
-    y: i32,
-    width: u16,
-    height: u16,
-) -> Option<u8> {
+fn base_level_at(path_grid: &PathGrid, x: i32, y: i32, width: u16, height: u16) -> Option<u8> {
     base_record_index(x, y, width, height)?;
     path_grid
         .cell(x as u16, y as u16)
@@ -1355,6 +1469,133 @@ pub(crate) fn find_high_bridge_record(
     })
 }
 
+/// Resolve the coordinate used only by hierarchy lookup in the layered path
+/// precheck. The caller must continue to pass the unmodified start, layer, and
+/// goal to cell A* and must return its unmodified cell path.
+pub(crate) fn resolve_hierarchy_path_coord(
+    terrain: &ResolvedTerrainGrid,
+    bridge_records: &[BridgeEndpointRecord],
+    query: (u16, u16),
+    bridge_enabled: bool,
+) -> (u16, u16) {
+    if !bridge_enabled {
+        return query;
+    }
+    let Some(query_cell) = terrain.cell(query.0, query.1) else {
+        return query;
+    };
+    if !query_cell.bridge_facts.has_structural_bridge() {
+        return query;
+    }
+
+    let preserve_y = query_cell.bridge_facts.raw_flags & BRIDGE_FLAG_DIRECTION_ZERO != 0;
+    let Some(record) = find_high_bridge_record(bridge_records, 0, query, 2) else {
+        return resolve_hierarchy_coord_without_record(terrain, query, preserve_y);
+    };
+
+    let selected_endpoint = if record.active {
+        if native_cell_distance(query, record.endpoint_a)
+            < native_cell_distance(query, record.endpoint_b)
+        {
+            record.endpoint_a
+        } else {
+            record.endpoint_b
+        }
+    } else {
+        let walk_direction = if record.endpoint_a.0 == record.endpoint_b.0 {
+            4
+        } else {
+            2
+        };
+        let select_b = walk_to_nonstructural_exit(terrain, query, walk_direction)
+            .and_then(|exit| terrain.cell(exit.0, exit.1))
+            .is_some_and(|exit| {
+                terrain.high_bridge_tile_offset(exit).is_some()
+                    && exit.yr_cell_land_type != LandType::Rock.as_index()
+            });
+        if select_b {
+            record.endpoint_b
+        } else {
+            record.endpoint_a
+        }
+    };
+
+    project_bridge_endpoint(query, record.endpoint_a, selected_endpoint, preserve_y)
+        .unwrap_or(query)
+}
+
+fn project_bridge_endpoint(
+    query: (u16, u16),
+    endpoint_a: (u16, u16),
+    selected_endpoint: (u16, u16),
+    preserve_y: bool,
+) -> Option<(u16, u16)> {
+    if preserve_y {
+        let y = i32::from(selected_endpoint.1) + i32::from(query.1) - i32::from(endpoint_a.1);
+        Some((selected_endpoint.0, u16::try_from(y).ok()?))
+    } else {
+        let x = i32::from(selected_endpoint.0) + i32::from(query.0) - i32::from(endpoint_a.0);
+        Some((u16::try_from(x).ok()?, selected_endpoint.1))
+    }
+}
+
+fn resolve_hierarchy_coord_without_record(
+    terrain: &ResolvedTerrainGrid,
+    query: (u16, u16),
+    preserve_y: bool,
+) -> (u16, u16) {
+    let (positive_direction, negative_direction) = if preserve_y { (2, 6) } else { (4, 0) };
+    let positive = hierarchy_high_tile_exit(terrain, query, positive_direction);
+    let negative = hierarchy_high_tile_exit(terrain, query, negative_direction);
+    match (positive, negative) {
+        (Some(positive), Some(negative)) => {
+            if native_cell_distance(query, positive) <= native_cell_distance(query, negative) {
+                positive
+            } else {
+                negative
+            }
+        }
+        (Some(exit), None) | (None, Some(exit)) => exit,
+        (None, None) => query,
+    }
+}
+
+fn hierarchy_high_tile_exit(
+    terrain: &ResolvedTerrainGrid,
+    query: (u16, u16),
+    direction: u8,
+) -> Option<(u16, u16)> {
+    let exit = walk_to_nonstructural_exit(terrain, query, direction)?;
+    let cell = terrain.cell(exit.0, exit.1)?;
+    (!cell.outside_playfield && terrain.high_bridge_tile_offset(cell).is_some()).then_some(exit)
+}
+
+fn walk_to_nonstructural_exit(
+    terrain: &ResolvedTerrainGrid,
+    start: (u16, u16),
+    direction: u8,
+) -> Option<(u16, u16)> {
+    let mut cursor = start;
+    loop {
+        cursor = terrain.step_coord_by_direction(cursor, direction)?;
+        let cell = terrain.cell(cursor.0, cursor.1)?;
+        if !cell.bridge_facts.has_structural_bridge() {
+            return Some(cursor);
+        }
+    }
+}
+
+fn native_cell_distance(lhs: (u16, u16), rhs: (u16, u16)) -> i32 {
+    let dx = X87Chop53::load_i32(i32::from(lhs.0).wrapping_sub(i32::from(rhs.0)));
+    let dy = X87Chop53::load_i32(i32::from(lhs.1).wrapping_sub(i32::from(rhs.1)));
+    let squared = X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy));
+    let root_bits =
+        sqrt_approx_f32(squared).expect("map-space squared distance stays in finite f32 range");
+    let root: X87Value =
+        X87Chop53::load_f32(root_bits).expect("Sqrt_Approx returns a finite normal or zero");
+    X87Chop53::ftol_i64(root).expect("map-space distance fits a signed integer") as i32
+}
+
 /// Build the exact per-cell bridge redirect used by bridge-aware zone lookup.
 /// Nonstructural cells resolve to themselves. Structural cells require the
 /// first matching high record at tolerance one.
@@ -1648,11 +1889,351 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_12_hierarchy_projection_preserves_vertical_and_horizontal_lanes() {
+        let vertical = redirect_terrain(8, 7, None, None, |cell| {
+            if cell.rx == 4 && cell.ry == 4 {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            }
+        });
+        let vertical_record = [BridgeEndpointRecord {
+            endpoint_a: (3, 1),
+            endpoint_b: (3, 5),
+            group_id: 1,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        }];
+        assert_eq!(
+            resolve_hierarchy_path_coord(&vertical, &vertical_record, (4, 4), true),
+            (4, 5),
+            "clear 0x800 preserves the X lane offset from endpoint A"
+        );
+
+        let horizontal = redirect_terrain(8, 7, None, None, |cell| {
+            if cell.rx == 4 && cell.ry == 4 {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                    | crate::map::bridge_facts::BRIDGE_FLAG_DIRECTION_ZERO;
+            }
+        });
+        let horizontal_record = [BridgeEndpointRecord {
+            endpoint_a: (1, 3),
+            endpoint_b: (5, 3),
+            group_id: 1,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        }];
+        assert_eq!(
+            resolve_hierarchy_path_coord(&horizontal, &horizontal_record, (4, 4), true),
+            (5, 4),
+            "set 0x800 preserves the Y lane offset from endpoint A"
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_hierarchy_projection_native_truncated_tie_chooses_b() {
+        let terrain = redirect_terrain(7, 6, None, None, |cell| {
+            if (cell.rx, cell.ry) == (1, 2) {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            }
+        });
+        let records = [BridgeEndpointRecord {
+            endpoint_a: (3, 1),
+            endpoint_b: (3, 4),
+            group_id: 1,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        }];
+
+        // sqrt(5) and sqrt(8) both ftol to 2. The strict native comparison
+        // therefore ties even though A is geometrically nearer, and selects B.
+        assert_eq!(
+            resolve_hierarchy_path_coord(&terrain, &records, (1, 2), true),
+            (1, 4)
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_hierarchy_projection_disabled_or_nonstructural_is_raw() {
+        let terrain = redirect_terrain(6, 3, None, None, |cell| {
+            if (cell.rx, cell.ry) == (2, 1) {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                    | crate::map::bridge_facts::BRIDGE_FLAG_DIRECTION_ZERO;
+            }
+        });
+        let records = [BridgeEndpointRecord {
+            endpoint_a: (0, 1),
+            endpoint_b: (5, 1),
+            group_id: 1,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        }];
+
+        assert_eq!(
+            resolve_hierarchy_path_coord(&terrain, &records, (2, 1), false),
+            (2, 1)
+        );
+        assert_eq!(
+            resolve_hierarchy_path_coord(&terrain, &records, (2, 0), true),
+            (2, 0)
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_hierarchy_projection_inactive_uses_east_axis_exit() {
+        let mut terrain = redirect_terrain(8, 5, Some(100), None, |cell| {
+            if cell.ry == 2 && (2..=3).contains(&cell.rx) {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                    | crate::map::bridge_facts::BRIDGE_FLAG_DIRECTION_ZERO;
+            }
+            if (cell.rx, cell.ry) == (4, 2) {
+                cell.final_tile_index = 100;
+            }
+        });
+        let records = [BridgeEndpointRecord {
+            endpoint_a: (1, 2),
+            endpoint_b: (6, 2),
+            group_id: 1,
+            active: false,
+            bridge_kind: BridgeRecordKind::High,
+        }];
+
+        assert_eq!(
+            resolve_hierarchy_path_coord(&terrain, &records, (2, 2), true),
+            (6, 2)
+        );
+        terrain.cell_mut(4, 2).unwrap().yr_cell_land_type = LandType::Rock.as_index();
+        assert_eq!(
+            resolve_hierarchy_path_coord(&terrain, &records, (2, 2), true),
+            (1, 2)
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_hierarchy_projection_no_record_ties_choose_east_and_south() {
+        let horizontal = redirect_terrain(7, 5, Some(100), None, |cell| {
+            if cell.ry == 2 && (2..=4).contains(&cell.rx) {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                    | crate::map::bridge_facts::BRIDGE_FLAG_DIRECTION_ZERO;
+            }
+            if cell.ry == 2 && (cell.rx == 1 || cell.rx == 5) {
+                cell.final_tile_index = 100;
+            }
+        });
+        assert_eq!(
+            resolve_hierarchy_path_coord(&horizontal, &[], (3, 2), true),
+            (5, 2)
+        );
+
+        let vertical = redirect_terrain(5, 7, Some(100), None, |cell| {
+            if cell.rx == 2 && (2..=4).contains(&cell.ry) {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            }
+            if cell.rx == 2 && (cell.ry == 1 || cell.ry == 5) {
+                cell.final_tile_index = 100;
+            }
+        });
+        assert_eq!(
+            resolve_hierarchy_path_coord(&vertical, &[], (2, 3), true),
+            (2, 5)
+        );
+    }
+
+    fn unique_hierarchy_base(width: u16, height: u16) -> BaseZoneTopology {
+        let zone_ids: Vec<ZoneId> = (1..=width * height).collect();
+        hierarchy_base(vec![zone_class::GROUND; zone_ids.len()], zone_ids)
+    }
+
+    fn assert_zero_edge(graph: &ZoneLevelGraph, a: (u16, u16), b: (u16, u16)) {
+        let za = graph.zone_at(a.0, a.1);
+        let zb = graph.zone_at(b.0, b.1);
+        assert!(
+            graph
+                .edges(za)
+                .iter()
+                .any(|edge| edge.neighbor == zb && edge.flag == 0),
+            "missing flag-0 edge {a:?} zone {za} -> {b:?} zone {zb}"
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_hierarchy_geometry_inserts_all_three_pairs_at_all_levels() {
+        let width = 7;
+        let height = 5;
+        let terrain = redirect_terrain(width, height, Some(100), None, |cell| {
+            if (cell.rx, cell.ry) == (2, 2) {
+                cell.final_tile_index = 100;
+            }
+        });
+        let records = [BridgeEndpointRecord {
+            endpoint_a: (2, 2),
+            endpoint_b: (4, 2),
+            group_id: 1,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        }];
+        let hierarchy = build_zone_hierarchy(
+            &unique_hierarchy_base(width, height),
+            &PathGrid::new(width, height),
+            Some(&terrain),
+            &records,
+            width,
+            height,
+        );
+
+        for level in 0..3 {
+            let graph = hierarchy.level(level).unwrap();
+            assert_zero_edge(graph, (2, 2), (4, 2));
+            assert_zero_edge(graph, (2, 1), (4, 1));
+            assert_zero_edge(graph, (2, 3), (4, 3));
+        }
+    }
+
+    #[test]
+    fn gsi_04_12_hierarchy_geometry_negative_table_entry_wraps_nw_and_se() {
+        let width = 7;
+        let height = 5;
+        let terrain = redirect_terrain(width, height, Some(100), None, |cell| {
+            if (cell.rx, cell.ry) == (2, 2) {
+                cell.final_tile_index = 102;
+            }
+        });
+        let records = [BridgeEndpointRecord {
+            endpoint_a: (2, 2),
+            endpoint_b: (4, 2),
+            group_id: 1,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        }];
+        let hierarchy = build_zone_hierarchy(
+            &unique_hierarchy_base(width, height),
+            &PathGrid::new(width, height),
+            Some(&terrain),
+            &records,
+            width,
+            height,
+        );
+
+        for level in 0..3 {
+            let graph = hierarchy.level(level).unwrap();
+            assert_zero_edge(graph, (1, 1), (3, 1));
+            assert_zero_edge(graph, (3, 3), (5, 3));
+        }
+    }
+
+    #[test]
+    fn gsi_04_12_hierarchy_geometry_clamps_side_pair_linear_indices_at_boundaries() {
+        let width = 4;
+        let height = 3;
+        let terrain = redirect_terrain(width, height, Some(100), None, |cell| {
+            if matches!((cell.rx, cell.ry), (0, 0) | (1, 1)) {
+                cell.final_tile_index = 102;
+            }
+        });
+        let records = [
+            BridgeEndpointRecord {
+                endpoint_a: (0, 0),
+                endpoint_b: (2, 1),
+                group_id: 1,
+                active: true,
+                bridge_kind: BridgeRecordKind::High,
+            },
+            BridgeEndpointRecord {
+                endpoint_a: (1, 1),
+                endpoint_b: (3, 2),
+                group_id: 2,
+                active: true,
+                bridge_kind: BridgeRecordKind::High,
+            },
+        ];
+        let zone_ids: Vec<ZoneId> = (1..=width * height).collect();
+        let mut buckets = HierarchyEdgeBuckets::new();
+        register_high_bridge_hierarchy_edges(
+            &mut buckets,
+            &zone_ids,
+            &terrain,
+            &records,
+            width,
+            height,
+        );
+        let mut graph = ZoneLevelGraph::new(width * height);
+        buckets.drain_into(&mut graph);
+
+        assert!(
+            graph.edges(1).contains(&ZoneEdgeRecord::new(2, 0)),
+            "NW (-1,-1) must clamp its negative linear index to the first zone cell"
+        );
+        assert!(
+            graph.edges(11).contains(&ZoneEdgeRecord::new(12, 0)),
+            "SE (4,3) must clamp its oversized linear index to the last zone cell"
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_hierarchy_geometry_keeps_scanline_flag_order_and_skips_inactive() {
+        let terrain = redirect_terrain(5, 3, Some(100), None, |cell| {
+            if (cell.rx, cell.ry) == (1, 1) || (cell.rx, cell.ry) == (0, 1) {
+                cell.final_tile_index = 100;
+            }
+        });
+        let mut zone_ids = vec![ZONE_INVALID; 15];
+        zone_ids[6] = 1;
+        zone_ids[8] = 2;
+        zone_ids[1] = 3;
+        zone_ids[3] = 4;
+        zone_ids[11] = 5;
+        zone_ids[13] = 6;
+        zone_ids[5] = 7;
+        zone_ids[9] = 8;
+        let records = [
+            BridgeEndpointRecord {
+                endpoint_a: (1, 1),
+                endpoint_b: (3, 1),
+                group_id: 1,
+                active: true,
+                bridge_kind: BridgeRecordKind::High,
+            },
+            BridgeEndpointRecord {
+                endpoint_a: (0, 1),
+                endpoint_b: (4, 1),
+                group_id: 2,
+                active: false,
+                bridge_kind: BridgeRecordKind::High,
+            },
+        ];
+        let mut buckets = HierarchyEdgeBuckets::new();
+        buckets.register(1, 2, 1);
+        register_high_bridge_hierarchy_edges(&mut buckets, &zone_ids, &terrain, &records, 5, 3);
+        let mut graph = ZoneLevelGraph::new(8);
+        buckets.drain_into(&mut graph);
+
+        assert_eq!(graph.edges(1), &[ZoneEdgeRecord::new(2, 1)]);
+        assert_eq!(graph.edges(2), &[ZoneEdgeRecord::new(1, 1)]);
+        assert_eq!(graph.edges(3), &[ZoneEdgeRecord::new(4, 0)]);
+        assert_eq!(graph.edges(4), &[ZoneEdgeRecord::new(3, 0)]);
+        assert_eq!(graph.edges(5), &[ZoneEdgeRecord::new(6, 0)]);
+        assert_eq!(graph.edges(6), &[ZoneEdgeRecord::new(5, 0)]);
+        assert!(
+            graph.edges(7).is_empty(),
+            "inactive record must add no edge"
+        );
+        assert!(
+            graph.edges(8).is_empty(),
+            "inactive record must add no edge"
+        );
+    }
+
+    #[test]
     fn gsi_04_06_hierarchy_uses_aligned_blocks_and_coarse_parents() {
         let width = 9;
         let height = 1;
         let base = hierarchy_base(vec![zone_class::GROUND; 9], vec![1; 9]);
-        let hierarchy = build_zone_hierarchy(&base, &PathGrid::new(width, height), width, height);
+        let hierarchy = build_zone_hierarchy(
+            &base,
+            &PathGrid::new(width, height),
+            None,
+            &[],
+            width,
+            height,
+        );
 
         let level2 = hierarchy.level(2).unwrap();
         assert_eq!(level2.zone_count(), 2);
@@ -1737,7 +2318,14 @@ mod tests {
             ],
             vec![1, 0, 2, 2, 1, 1, 2, 2],
         );
-        let hierarchy = build_zone_hierarchy(&base, &PathGrid::new(width, height), width, height);
+        let hierarchy = build_zone_hierarchy(
+            &base,
+            &PathGrid::new(width, height),
+            None,
+            &[],
+            width,
+            height,
+        );
 
         let level0 = hierarchy.level(0).unwrap();
         assert_eq!(level0.zone_count(), 2);
@@ -1771,19 +2359,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "zone hierarchy level 0 exceeds ZoneId capacity at real zone 65536"
-    )]
+    #[should_panic(expected = "zone hierarchy level 0 exceeds ZoneId capacity at real zone 65536")]
     fn gsi_04_06_hierarchy_rejects_65536th_real_zone_before_aliasing() {
         let width: u16 = 512;
         let height: u16 = 512;
         let cell_count = usize::from(width) * usize::from(height);
-        let base = hierarchy_base(
-            vec![zone_class::GROUND; cell_count],
-            vec![1; cell_count],
-        );
+        let base = hierarchy_base(vec![zone_class::GROUND; cell_count], vec![1; cell_count]);
 
-        let _ = build_zone_hierarchy(&base, &PathGrid::new(width, height), width, height);
+        let _ = build_zone_hierarchy(
+            &base,
+            &PathGrid::new(width, height),
+            None,
+            &[],
+            width,
+            height,
+        );
     }
 
     #[test]
@@ -1839,17 +2429,10 @@ mod tests {
     fn gsi_04_06_scanline_history_does_not_invent_final_cardinal_edge() {
         let mut grid = PathGrid::new(2, 2);
         for (index, level) in [2, 3, 1, 0].into_iter().enumerate() {
-            grid.set_cell_for_test(
-                (index % 2) as u16,
-                (index / 2) as u16,
-                level,
-                false,
-                false,
-            );
+            grid.set_cell_for_test((index % 2) as u16, (index / 2) as u16, level, false, false);
         }
 
-        let (zone_ids, zone_count, edge_buckets) =
-            rebuild_node_indices(&[0; 4], &grid, 2, 2);
+        let (zone_ids, zone_count, edge_buckets) = rebuild_node_indices(&[0; 4], &grid, 2, 2);
         let adjacency = edge_buckets.into_adjacency(zone_count);
 
         assert_eq!(zone_ids, vec![1, 1, 2, 2]);
@@ -1866,12 +2449,8 @@ mod tests {
             }
         }
 
-        let (zone_ids, zone_count, _) = rebuild_node_indices(
-            &[zone_class::GROUND, 7, 7, zone_class::GROUND],
-            &grid,
-            2,
-            2,
-        );
+        let (zone_ids, zone_count, _) =
+            rebuild_node_indices(&[zone_class::GROUND, 7, 7, zone_class::GROUND], &grid, 2, 2);
 
         assert_eq!(zone_ids, vec![1, 0, 0, 1]);
         assert_eq!(zone_count, 1);

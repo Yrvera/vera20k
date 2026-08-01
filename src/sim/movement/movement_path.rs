@@ -241,56 +241,56 @@ pub(super) fn find_move_path_with_marker(
             resolved_terrain,
             entity_block_map,
             marker_overlay,
+            ctx.blocker_neighbor_counts,
             urgency,
             mover_is_crusher,
         );
-        if let Some(path) = layered_result {
+        let Some(path) = layered_result else {
             log::trace!(
-                "find_move_path: layered A* succeeded ({:?}→{:?}), {} steps",
-                start,
-                goal,
-                path.len(),
-            );
-            let coords: Vec<(u16, u16)> = path.iter().map(|step| (step.rx, step.ry)).collect();
-            let layers: Vec<MovementLayer> = path.iter().map(|step| step.layer).collect();
-            if contains_non_adjacent_step(&coords) {
-                let (coords, layers) =
-                    truncate_layered_path(coords, layers, MAX_PATH_SEGMENT_STEPS);
-                return Some((coords, layers));
-            }
-            let layered_smooth_walkable = |x: u16, y: u16, layer: MovementLayer| -> bool {
-                if !grid.is_walkable_on_layer(x, y, layer) {
-                    return false;
-                }
-                // Soft-blocked cells (code 2/5/6) must not be used as zigzag
-                // shortcuts: A* deliberately routed around them, smoothing
-                // through them would undo the detour.
-                if entity_block_map.is_some_and(|m| m.contains_key(layer, &(x, y))) {
-                    return false;
-                }
-                if marker_overlay.is_some_and(|m| m.contains((x, y)) && (x, y) != goal) {
-                    return false;
-                }
-                match layer {
-                    MovementLayer::Ground => !ground_blocks.is_some_and(|gb| gb.contains(&(x, y))),
-                    MovementLayer::Bridge => !bridge_blocks.is_some_and(|bb| bb.contains(&(x, y))),
-                    _ => true,
-                }
-            };
-            let (coords, layers) =
-                path_smooth::smooth_layered_path(coords, layers, &layered_smooth_walkable);
-            let (coords, layers) =
-                path_smooth::optimize_layered_path(coords, layers, &layered_smooth_walkable);
-            let (coords, layers) = truncate_layered_path(coords, layers, MAX_PATH_SEGMENT_STEPS);
-            return Some((coords, layers));
-        } else {
-            log::info!(
-                "find_move_path: layered A* FAILED ({:?} layer={:?} → {:?}), falling back to flat A*",
+                "find_move_path: layered A* failed ({:?} layer={:?} → {:?})",
                 start,
                 start_layer,
                 goal,
             );
+            return None;
+        };
+        log::trace!(
+            "find_move_path: layered A* succeeded ({:?}→{:?}), {} steps",
+            start,
+            goal,
+            path.len(),
+        );
+        let coords: Vec<(u16, u16)> = path.iter().map(|step| (step.rx, step.ry)).collect();
+        let layers: Vec<MovementLayer> = path.iter().map(|step| step.layer).collect();
+        if contains_non_adjacent_step(&coords) {
+            let (coords, layers) = truncate_layered_path(coords, layers, MAX_PATH_SEGMENT_STEPS);
+            return Some((coords, layers));
         }
+        let layered_smooth_walkable = |x: u16, y: u16, layer: MovementLayer| -> bool {
+            if !grid.is_walkable_on_layer(x, y, layer) {
+                return false;
+            }
+            // Soft-blocked cells (code 2/5/6) must not be used as zigzag
+            // shortcuts: A* deliberately routed around them, smoothing
+            // through them would undo the detour.
+            if entity_block_map.is_some_and(|m| m.contains_key(layer, &(x, y))) {
+                return false;
+            }
+            if marker_overlay.is_some_and(|m| m.contains((x, y)) && (x, y) != goal) {
+                return false;
+            }
+            match layer {
+                MovementLayer::Ground => !ground_blocks.is_some_and(|gb| gb.contains(&(x, y))),
+                MovementLayer::Bridge => !bridge_blocks.is_some_and(|bb| bb.contains(&(x, y))),
+                _ => true,
+            }
+        };
+        let (coords, layers) =
+            path_smooth::smooth_layered_path(coords, layers, &layered_smooth_walkable);
+        let (coords, layers) =
+            path_smooth::optimize_layered_path(coords, layers, &layered_smooth_walkable);
+        let (coords, layers) = truncate_layered_path(coords, layers, MAX_PATH_SEGMENT_STEPS);
+        return Some((coords, layers));
     }
 
     if is_bridge_only_goal(grid, goal) {
@@ -696,5 +696,68 @@ mod tests {
             path
         );
         assert_eq!(path.len(), layers.len());
+    }
+
+    #[test]
+    fn gsi_04_12_layered_failure_does_not_retry_flat_ground_path() {
+        let mut grid = PathGrid::test_all_passable(3, 1);
+        // Start on a non-transition bridge deck. Native layered A* cannot
+        // descend directly to the ground-only neighbor, while a separate flat
+        // search from the same coordinate would incorrectly find (0..=2, 0).
+        grid.set_cell_for_test(0, 0, 0, true, false);
+        assert!(grid.is_walkable(2, 0), "goal must remain ground-walkable");
+
+        let flat = find_move_path(
+            PathfindingContext {
+                path_grid: Some(&grid),
+                zone_grid: None,
+                resolved_terrain: None,
+                blocker_neighbor_counts: None,
+            },
+            false,
+            (0, 0),
+            MovementLayer::Ground,
+            (2, 0),
+            None,
+            None,
+            None,
+            None,
+            MovementZone::Normal,
+            Some(MovementZone::Normal),
+            false,
+            None,
+            0,
+            false,
+        )
+        .expect("fixture must prove the removed ground-only retry could succeed");
+        assert_eq!(flat.0.last().copied(), Some((2, 0)));
+
+        let layered = find_move_path(
+            PathfindingContext {
+                path_grid: Some(&grid),
+                zone_grid: None,
+                resolved_terrain: None,
+                blocker_neighbor_counts: None,
+            },
+            true,
+            (0, 0),
+            MovementLayer::Bridge,
+            (2, 0),
+            None,
+            None,
+            None,
+            None,
+            MovementZone::Normal,
+            Some(MovementZone::Normal),
+            false,
+            None,
+            0,
+            false,
+        );
+
+        assert!(
+            layered.is_none(),
+            "a failed layered search must remain failed instead of launching a second flat A*"
+        );
     }
 }

@@ -2843,6 +2843,7 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             None,
             None,
             false,
+            None,
             Some(cell_occupation),
         )
     };

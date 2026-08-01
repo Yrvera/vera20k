@@ -15,10 +15,10 @@ use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::GeneralRules;
 use crate::sim::components::{DriveOccupationFootprint, MovementTarget};
 use crate::sim::entity_store::EntityStore;
-use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
+use crate::sim::pathfinding::{BlockerNeighborCounts, LayeredEntityBlockMap};
 use crate::util::direction::{DIRECTION_DELTAS, TUBE_STEP_DIRECTION};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
@@ -109,6 +109,7 @@ pub fn issue_move_command(
         entity_block_map,
         mover_is_crusher,
         None,
+        None,
     )
 }
 
@@ -165,6 +166,7 @@ pub fn set_destination_for_teleporter_entity(
             entity_block_map,
             mover_is_crusher,
             None,
+            None,
         );
     }
 
@@ -190,6 +192,7 @@ pub fn set_destination_for_teleporter_entity(
             zone_grid,
             entity_block_map,
             mover_is_crusher,
+            None,
             None,
         );
     }
@@ -278,7 +281,7 @@ pub fn issue_direct_move(
     true
 }
 
-pub fn issue_move_command_with_layered(
+pub(crate) fn issue_move_command_with_layered(
     entities: &mut EntityStore,
     grid: &PathGrid,
     entity_id: u64,
@@ -291,6 +294,7 @@ pub fn issue_move_command_with_layered(
     zone_grid: Option<&ZoneGrid>,
     entity_block_map: Option<&LayeredEntityBlockMap>,
     mover_is_crusher: bool,
+    blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
     mut cell_occupation: Option<&mut crate::sim::occupancy::CellOccupationGrid>,
 ) -> bool {
     // Read the entity's current position and locomotor state.
@@ -404,7 +408,7 @@ pub fn issue_move_command_with_layered(
                         path_grid: Some(grid),
                         zone_grid,
                         resolved_terrain,
-                        blocker_neighbor_counts: None,
+                        blocker_neighbor_counts,
                     },
                     layered_pathing,
                     append_start,
@@ -451,7 +455,7 @@ pub fn issue_move_command_with_layered(
             path_grid: Some(grid),
             zone_grid,
             resolved_terrain,
-            blocker_neighbor_counts: None,
+            blocker_neighbor_counts,
         },
         layered_pathing,
         (start_rx, start_ry),

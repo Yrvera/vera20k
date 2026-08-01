@@ -155,6 +155,14 @@ impl Simulation {
                     speed,
                 );
             } else {
+                let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                    &self.substrate.entities,
+                    grid.width(),
+                    grid.height(),
+                    self.resolved_terrain.as_ref(),
+                    &self.interner,
+                    rules,
+                );
                 let _ = movement::issue_move_command_with_layered(
                     &mut self.substrate.entities,
                     grid,
@@ -168,6 +176,7 @@ impl Simulation {
                     self.zone_grid.as_ref(),
                     None,
                     false, // mover_is_crusher
+                    Some(&blocker_neighbor_counts),
                     Some(&mut self.substrate.cell_occupation),
                 );
             }
@@ -1019,6 +1028,14 @@ impl Simulation {
                         Some(rules),
                     );
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
+                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        &self.interner,
+                        Some(rules),
+                    );
                     let _issued = movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -1032,6 +1049,7 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         info.mover_is_crusher,
+                        Some(&blocker_neighbor_counts),
                         Some(&mut self.substrate.cell_occupation),
                     );
                     // No-op if A* fails — pursuit retries next tick.

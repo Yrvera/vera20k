@@ -23,7 +23,7 @@ use crate::sim::mission::MissionType;
 use crate::sim::movement;
 use crate::sim::movement::facing_class::FacingClass;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid};
+use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 use crate::util::fixed_math::SimFixed;
@@ -898,18 +898,7 @@ fn phase_approach(
     {
         if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
             if let Some(grid) = path_grid {
-                let (entities, cell_occupation) = (
-                    &mut sim.substrate.entities,
-                    &mut sim.substrate.cell_occupation,
-                );
-                issue_move_if_idle(
-                    entities,
-                    cell_occupation,
-                    grid,
-                    snap.entity_id,
-                    wait_queue,
-                    snap.speed,
-                );
+                issue_move_if_idle(sim, rules, grid, snap.entity_id, wait_queue, snap.speed);
             }
         }
         return;
@@ -945,18 +934,7 @@ fn phase_approach(
     schedule_approach_hello(sim, rules, snap);
     if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
         if let Some(grid) = path_grid {
-            let (entities, cell_occupation) = (
-                &mut sim.substrate.entities,
-                &mut sim.substrate.cell_occupation,
-            );
-            issue_move_if_idle(
-                entities,
-                cell_occupation,
-                grid,
-                snap.entity_id,
-                wait_queue,
-                snap.speed,
-            );
+            issue_move_if_idle(sim, rules, grid, snap.entity_id, wait_queue, snap.speed);
         }
     }
 }
@@ -1002,18 +980,7 @@ fn phase_mission_enter(
         snap.miner.dock_queued = true;
         if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
             if let Some(grid) = path_grid {
-                let (entities, cell_occupation) = (
-                    &mut sim.substrate.entities,
-                    &mut sim.substrate.cell_occupation,
-                );
-                issue_move_if_idle(
-                    entities,
-                    cell_occupation,
-                    grid,
-                    snap.entity_id,
-                    wait_queue,
-                    snap.speed,
-                );
+                issue_move_if_idle(sim, rules, grid, snap.entity_id, wait_queue, snap.speed);
             }
         }
         schedule_enter_retry(sim, rules, snap);
@@ -1466,8 +1433,8 @@ fn is_adjacent_or_at(pos: (u16, u16), target: (u16, u16)) -> bool {
 
 /// Issue a move command only if the entity isn't already pathing to this target.
 fn issue_move_if_idle(
-    entities: &mut crate::sim::entity_store::EntityStore,
-    cell_occupation: &mut CellOccupationGrid,
+    sim: &mut Simulation,
+    rules: &RuleSet,
     grid: &PathGrid,
     entity_id: u64,
     target: (u16, u16),
@@ -1476,14 +1443,24 @@ fn issue_move_if_idle(
     if target.0 >= grid.width() || target.1 >= grid.height() {
         return;
     }
-    let already = entities
+    let already = sim
+        .substrate
+        .entities
         .get(entity_id)
         .and_then(|e| e.movement_target.as_ref())
         .and_then(|mt| mt.path.last().copied())
         .is_some_and(|goal| goal == target);
     if !already {
+        let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
+            &sim.substrate.entities,
+            grid.width(),
+            grid.height(),
+            sim.resolved_terrain.as_ref(),
+            &sim.interner,
+            Some(rules),
+        );
         let _ = movement::issue_move_command_with_layered(
-            entities,
+            &mut sim.substrate.entities,
             grid,
             entity_id,
             target,
@@ -1491,11 +1468,12 @@ fn issue_move_if_idle(
             false,
             None,
             None,
-            None,
-            None,
+            sim.resolved_terrain.as_ref(),
+            sim.zone_grid.as_ref(),
             None,
             false,
-            Some(cell_occupation),
+            Some(&blocker_neighbor_counts),
+            Some(&mut sim.substrate.cell_occupation),
         );
     }
 }

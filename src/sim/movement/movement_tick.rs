@@ -538,9 +538,8 @@ fn apply_subcell_redirect(
 fn process_pending_drive_arrivals(
     entities: &mut EntityStore,
     entity_order: &[u64],
-    path_grid: Option<&PathGrid>,
+    ctx: PathfindingContext<'_>,
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
-    resolved_terrain: Option<&ResolvedTerrainGrid>,
     entity_block_sets: &BTreeMap<
         crate::sim::intern::InternedId,
         (
@@ -552,7 +551,7 @@ fn process_pending_drive_arrivals(
     rules: Option<&crate::rules::ruleset::RuleSet>,
     cell_occupation: &mut CellOccupationGrid,
 ) {
-    let Some(grid) = path_grid else {
+    let Some(grid) = ctx.path_grid else {
         super::navcom::process_pending_empty_drive_arrivals_in_order(entities, entity_order);
         return;
     };
@@ -584,7 +583,7 @@ fn process_pending_drive_arrivals(
             continue;
         };
         super::navcom::foot_stop_moving(entity);
-        super::navcom::set_destination_internal_cell(entity, (rx, ry), resolved_terrain);
+        super::navcom::set_destination_internal_cell(entity, (rx, ry), ctx.resolved_terrain);
 
         let current = (entity.position.rx, entity.position.ry);
         let current_layer = entity.movement_layer_or_ground();
@@ -611,12 +610,7 @@ fn process_pending_drive_arrivals(
             .extend(cell_occupation.occupied_cells_ignoring(MovementLayer::Ground, entity_id));
         let occupied_blocks_ref = (!occupied_blocks.is_empty()).then_some(&occupied_blocks);
         let Some((path, path_layers)) = find_move_path(
-            PathfindingContext {
-                path_grid,
-                zone_grid: None,
-                resolved_terrain,
-                blocker_neighbor_counts: None,
-            },
+            ctx,
             layered_pathing,
             current,
             current_layer,
@@ -1322,9 +1316,8 @@ fn tick_movement_with_grids_scoped(
     process_pending_drive_arrivals(
         entities,
         entity_order,
-        path_grid,
+        ctx,
         terrain_costs,
-        resolved_terrain,
         &entity_block_sets,
         interner,
         rules,

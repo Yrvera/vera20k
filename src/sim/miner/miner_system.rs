@@ -25,7 +25,7 @@ use crate::sim::miner::{
 };
 use crate::sim::movement;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid};
+use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::zone_map::{ZONE_INVALID, ZoneGrid};
 use crate::sim::production::pick_best_resource_node;
@@ -230,20 +230,14 @@ mod gsi_04_03b_tests {
 
         let grid = PathGrid::new(5, 5);
         let shared_head = (2, 2);
-        {
-            let (entities, cell_occupation) = (
-                &mut sim.substrate.entities,
-                &mut sim.substrate.cell_occupation,
-            );
-            issue_move_if_idle(
-                entities,
-                cell_occupation,
-                &grid,
-                1,
-                shared_head,
-                SimFixed::from_num(128),
-            );
-        }
+        issue_move_if_idle(
+            &mut sim,
+            None,
+            &grid,
+            1,
+            shared_head,
+            SimFixed::from_num(128),
+        );
 
         assert_eq!(
             sim.substrate
@@ -261,20 +255,14 @@ mod gsi_04_03b_tests {
             2,
         ));
 
-        {
-            let (entities, cell_occupation) = (
-                &mut sim.substrate.entities,
-                &mut sim.substrate.cell_occupation,
-            );
-            issue_move_if_idle(
-                entities,
-                cell_occupation,
-                &grid,
-                2,
-                shared_head,
-                SimFixed::from_num(128),
-            );
-        }
+        issue_move_if_idle(
+            &mut sim,
+            None,
+            &grid,
+            2,
+            shared_head,
+            SimFixed::from_num(128),
+        );
 
         let second = sim.substrate.entities.get(2).expect("second miner");
         assert_ne!(
@@ -1121,18 +1109,7 @@ fn handle_return(
     }
 
     if let Some(grid) = path_grid {
-        let (entities, cell_occupation) = (
-            &mut sim.substrate.entities,
-            &mut sim.substrate.cell_occupation,
-        );
-        issue_move_if_idle(
-            entities,
-            cell_occupation,
-            grid,
-            snap.entity_id,
-            dock,
-            snap.speed,
-        );
+        issue_move_if_idle(sim, Some(rules), grid, snap.entity_id, dock, snap.speed);
     }
 }
 
@@ -1356,18 +1333,7 @@ fn try_begin_close_return_radio(
             && !is_adjacent_or_at((snap.rx, snap.ry), staging)
             && let Some(grid) = path_grid
         {
-            let (entities, cell_occupation) = (
-                &mut sim.substrate.entities,
-                &mut sim.substrate.cell_occupation,
-            );
-            issue_move_if_idle(
-                entities,
-                cell_occupation,
-                grid,
-                snap.entity_id,
-                staging,
-                snap.speed,
-            );
+            issue_move_if_idle(sim, Some(rules), grid, snap.entity_id, staging, snap.speed);
         }
     }
 
@@ -1758,7 +1724,8 @@ fn pick_best_resource_cell(
     from: (u16, u16),
     filter: Option<&dyn Fn((u16, u16)) -> bool>,
 ) -> Option<(u16, u16)> {
-    let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) else {
+    let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry)
+    else {
         return pick_best_resource_node(&sim.production.resource_nodes, from, filter);
     };
     let mut best: Option<(i32, u32, u16, u16)> = None;
@@ -1929,7 +1896,7 @@ pub(crate) fn search_local_ore(
 }
 
 /// Hand a selected stock-miner destination to the normal Drive command authority.
-fn issue_stock_miner_drive_move(
+pub(crate) fn issue_stock_miner_drive_move(
     sim: &mut Simulation,
     rules: &RuleSet,
     grid: &PathGrid,
@@ -1964,6 +1931,14 @@ fn issue_stock_miner_drive_move(
     };
 
     let terrain_costs = sim.terrain_costs.get(&info.speed_type);
+    let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
+        &sim.substrate.entities,
+        grid.width(),
+        grid.height(),
+        sim.resolved_terrain.as_ref(),
+        &sim.interner,
+        Some(rules),
+    );
     let issued = movement::issue_move_command_with_layered(
         &mut sim.substrate.entities,
         grid,
@@ -1977,6 +1952,7 @@ fn issue_stock_miner_drive_move(
         sim.zone_grid.as_ref(),
         None,
         info.mover_is_crusher,
+        Some(&blocker_neighbor_counts),
         Some(&mut sim.substrate.cell_occupation),
     );
     if !issued {
@@ -2010,9 +1986,9 @@ fn issue_stock_miner_drive_move(
 }
 
 /// Issue a move command only if the entity isn't already pathing to this target.
-fn issue_move_if_idle(
-    entities: &mut crate::sim::entity_store::EntityStore,
-    cell_occupation: &mut CellOccupationGrid,
+pub(crate) fn issue_move_if_idle(
+    sim: &mut Simulation,
+    rules: Option<&RuleSet>,
     grid: &PathGrid,
     entity_id: u64,
     target: (u16, u16),
@@ -2021,14 +1997,24 @@ fn issue_move_if_idle(
     if target.0 >= grid.width() || target.1 >= grid.height() {
         return;
     }
-    let already = entities
+    let already = sim
+        .substrate
+        .entities
         .get(entity_id)
         .and_then(|e| e.movement_target.as_ref())
         .and_then(|mt| mt.path.last().copied())
         .is_some_and(|goal| goal == target);
     if !already {
+        let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
+            &sim.substrate.entities,
+            grid.width(),
+            grid.height(),
+            sim.resolved_terrain.as_ref(),
+            &sim.interner,
+            rules,
+        );
         let _ = movement::issue_move_command_with_layered(
-            entities,
+            &mut sim.substrate.entities,
             grid,
             entity_id,
             target,
@@ -2036,11 +2022,12 @@ fn issue_move_if_idle(
             false,
             None,
             None,
-            None,
-            None,
+            sim.resolved_terrain.as_ref(),
+            sim.zone_grid.as_ref(),
             None,
             false,
-            Some(cell_occupation),
+            Some(&blocker_neighbor_counts),
+            Some(&mut sim.substrate.cell_occupation),
         );
     }
 }
