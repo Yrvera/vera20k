@@ -2425,6 +2425,11 @@ impl Simulation {
                     {
                         continue;
                     }
+                    let Some(coord_z) = self.resolved_terrain.as_ref().and_then(|terrain| {
+                        combat::in_range::effective_z_leptons(entity, terrain)
+                    }) else {
+                        continue;
+                    };
                     members.push(group_destination::GroupDestinationMember {
                         command_index,
                         entity_id,
@@ -2435,7 +2440,7 @@ impl Simulation {
                             i32::from(entity.position.ry)
                                 .wrapping_mul(256)
                                 .wrapping_add(entity.position.sub_y.to_num::<i32>()),
-                            combat::in_range::effective_z_leptons(entity) as i32,
+                            coord_z as i32,
                         ],
                         source_cell: (entity.position.rx as i16, entity.position.ry as i16),
                     });

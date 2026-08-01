@@ -14,9 +14,9 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::cell_rect::{CELL_ROW_STRIDE, cell_linear_index};
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::world::Simulation;
+use crate::util::lepton::{UnsupportedGroundSlope, ground_height_leptons};
 use crate::util::native_x87::NativeF32Bits;
 
-const LEVEL_HEIGHT: i32 = 90;
 const CELL_AXIS_MASK: i64 = CELL_ROW_STRIDE - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -98,7 +98,8 @@ impl<'a> SparkCollisionWorld<'a> {
                 candidate_cell.slope_type,
                 motion.candidate_coords.x,
                 motion.candidate_coords.y,
-            )?,
+            )
+            .map_err(|UnsupportedGroundSlope(slope)| SparkWorldError::UnsupportedSlope(slope))?,
             slope_matrix: slope_matrix(candidate_cell.slope_type)?,
             old_has_structural_bridge,
             candidate_has_structural_bridge,
@@ -195,60 +196,6 @@ fn canonical_cell(x: i32, y: i32) -> Option<(u16, u16)> {
         (index / CELL_ROW_STRIDE) as u16,
     ))
 }
-
-/// Native CellClass ground-Z calculation using the signed level byte and the
-/// verified 21-entry slope coefficient table.
-pub fn ground_height_leptons(
-    level: u8,
-    slope: u8,
-    world_x: i32,
-    world_y: i32,
-) -> Result<i32, SparkWorldError> {
-    let signed_level = level as i8 as i32;
-    let level_numerator = signed_level.wrapping_mul(LEVEL_HEIGHT).wrapping_mul(256);
-    let base = level_numerator.wrapping_add(128) / 256;
-    if slope == 0 {
-        return Ok(base);
-    }
-    let Some(&(coefficient_x, coefficient_y, bias_a, maximum, bias_b)) =
-        GROUND_SLOPE_RECORDS.get(slope as usize)
-    else {
-        return Err(SparkWorldError::UnsupportedSlope(slope));
-    };
-    let local_x = (world_x as u32 & 0xff) as i32;
-    let local_y = (world_y as u32 & 0xff) as i32;
-    let slope_numerator = (local_y.wrapping_mul(coefficient_y)
-        + local_x.wrapping_mul(coefficient_x))
-    .wrapping_mul(LEVEL_HEIGHT)
-    .wrapping_add((bias_a + bias_b).wrapping_mul(256))
-    .clamp(0, maximum.wrapping_mul(256));
-    Ok(base.wrapping_mul(256).wrapping_add(slope_numerator) / 256)
-}
-
-const L: i32 = LEVEL_HEIGHT;
-const GROUND_SLOPE_RECORDS: [(i32, i32, i32, i32, i32); 21] = [
-    (0, 0, 0, 0, 0),
-    (1, 0, 0, L, 0),
-    (0, 1, 0, L, 0),
-    (-1, 0, L, L, 0),
-    (0, -1, L, L, 0),
-    (1, 1, -L, L, 0),
-    (-1, 1, 0, L, 0),
-    (-1, -1, L, L, 0),
-    (1, -1, 0, L, 0),
-    (1, 1, 0, L, 0),
-    (-1, 1, L, L, 0),
-    (-1, -1, 2 * L, L, 0),
-    (1, -1, L, L, 0),
-    (1, 1, 0, 2 * L, 0),
-    (-1, 1, L, 2 * L, 0),
-    (-1, -1, 2 * L, 2 * L, 0),
-    (1, -1, L, 2 * L, 0),
-    (0, 0, 0, L / 2, L / 2),
-    (0, 0, L, L / 2, -L / 2),
-    (0, 0, 0, L / 2, L / 2),
-    (0, 0, L, L / 2, -L / 2),
-];
 
 macro_rules! matrix {
     ($($bits:expr),+ $(,)?) => {
@@ -473,27 +420,6 @@ mod tests {
     }
 
     #[test]
-    fn ground_height_matches_all_verified_slope_records() {
-        let expected = [
-            180, 202, 247, 247, 202, 180, 225, 180, 180, 270, 270, 270, 225, 270, 315, 270, 225,
-            225, 225, 225, 225,
-        ];
-        for (slope, expected) in expected.into_iter().enumerate() {
-            assert_eq!(
-                ground_height_leptons(2, slope as u8, 64, 192),
-                Ok(expected),
-                "slope {slope}",
-            );
-        }
-    }
-
-    #[test]
-    fn negative_level_uses_signed_byte_and_ftol_chop() {
-        assert_eq!(ground_height_leptons(0xff, 0, 0, 0), Ok(-89));
-        assert_eq!(ground_height_leptons(0xff, 1, 1, 0), Ok(-88));
-    }
-
-    #[test]
     fn matrix_table_preserves_exact_aliases_and_zero_rows() {
         assert_eq!(slope_matrix(5), slope_matrix(9));
         assert_eq!(slope_matrix(6), slope_matrix(10));
@@ -564,7 +490,7 @@ mod tests {
             .unwrap()
             .query(motion_at(512 * 256, -256))
             .unwrap();
-        assert_eq!(aliased.ground_z, 180);
+        assert_eq!(aliased.ground_z, 208);
     }
 
     #[test]

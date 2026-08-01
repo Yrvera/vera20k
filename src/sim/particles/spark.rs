@@ -12,7 +12,8 @@ use crate::util::native_x87::{
     NativeF32Bits, NativeF64Bits, NativeX87Error, X87Chop53, X87Ordering, X87Value,
 };
 
-const STRUCTURAL_BRIDGE_HEIGHT: i32 = 360;
+// Spark collision's verified structural-bridge role; keep independently named.
+const STRUCTURAL_BRIDGE_HEIGHT: i32 = 416;
 const ASCENDING_BRIDGE_DELETE_OFFSET: i32 = 20;
 const GROUND_CLAMP_DEPTH: i32 = 100;
 const BUILDING_CONTACT_HEIGHT_F32: NativeF32Bits = NativeF32Bits::from_bits(0x4316_0000);
@@ -778,20 +779,20 @@ mod tests {
     }
 
     #[test]
-    fn structural_bridge_predicates_keep_their_equality_sides() {
+    fn gsi_04_03b_structural_bridge_predicates_keep_their_equality_sides() {
         let mut structural = facts(0);
         structural.old_has_structural_bridge = true;
-        let descending = resolve_collision(motion(370, 358), structural).unwrap();
-        assert_eq!(descending.committed_coords.z, 360);
+        let descending = resolve_collision(motion(426, 414), structural).unwrap();
+        assert_eq!(descending.committed_coords.z, 416);
         assert_eq!(descending.kind, Some(SparkCollisionKind::DescendingBridge));
 
-        let ascending = resolve_collision(motion(350, 368), structural).unwrap();
-        assert_eq!(ascending.committed_coords.z, 340);
+        let ascending = resolve_collision(motion(406, 424), structural).unwrap();
+        assert_eq!(ascending.committed_coords.z, 396);
         assert_eq!(ascending.kind, Some(SparkCollisionKind::AscendingBridge));
 
-        let equality = resolve_collision(motion(370, 360), structural).unwrap();
+        let equality = resolve_collision(motion(426, 416), structural).unwrap();
         assert_eq!(equality.kind, None);
-        assert_eq!(equality.committed_coords.z, 360);
+        assert_eq!(equality.committed_coords.z, 416);
     }
 
     #[test]

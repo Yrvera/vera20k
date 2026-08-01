@@ -236,8 +236,8 @@ pub struct TerrainGrid {
 ///   Y = 15*(rx+ry) + 15 - z*15
 pub fn iso_to_screen(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     let sx: f32 = (rx as f32 - ry as f32) * TILE_WIDTH / 2.0 - TILE_WIDTH / 2.0;
-    let sy: f32 =
-        (rx as f32 + ry as f32) * TILE_HEIGHT / 2.0 + TILE_HEIGHT / 2.0 - z as f32 * HEIGHT_STEP;
+    let sy: f32 = (rx as f32 + ry as f32) * TILE_HEIGHT / 2.0 + TILE_HEIGHT / 2.0
+        - f32::from(z as i8) * HEIGHT_STEP;
     (sx, sy)
 }
 
@@ -314,7 +314,7 @@ pub fn screen_to_cell_tactical_inverse(
             .get(&(cell_rx, cell_ry))
             .copied()
             .unwrap_or(0);
-        let mut adjusted_scan_y = scan_y - terrain_z as f32 * HEIGHT_STEP;
+        let mut adjusted_scan_y = scan_y - f32::from(terrain_z as i8) * HEIGHT_STEP;
 
         if let Some(bridge_result) = apply_tactical_bridge_inverse(
             input_x,
@@ -384,14 +384,14 @@ fn apply_tactical_bridge_inverse(
 
     let dir2_height = tactical_neighbor_height(context.height_map, cell_rx, cell_ry, DIR_EAST);
     let dir4_height = tactical_neighbor_height(context.height_map, cell_rx, cell_ry, DIR_SOUTH);
-    let terrain_z_i16 = terrain_z as i16;
+    let terrain_z_i16 = i16::from(terrain_z as i8);
     let direct_y = if bridge.direction_zero {
         !dir4_is_bridge
     } else {
-        !dir4_is_bridge && (terrain_z_i16 - dir4_height as i16).abs() <= 1
+        !dir4_is_bridge && (terrain_z_i16 - i16::from(dir4_height as i8)).abs() <= 1
     };
     let direct_x = if bridge.direction_zero {
-        !dir2_is_bridge && (terrain_z_i16 - dir2_height as i16).abs() <= 1
+        !dir2_is_bridge && (terrain_z_i16 - i16::from(dir2_height as i8)).abs() <= 1
     } else {
         !dir2_is_bridge
     };
@@ -422,8 +422,9 @@ fn apply_tactical_bridge_inverse(
         true
     };
     if apply_extra_bridge_lift {
-        *adjusted_scan_y =
-            scan_y - terrain_z as f32 * HEIGHT_STEP - TACTICAL_BRIDGE_EXTRA_HEIGHT_PX;
+        *adjusted_scan_y = scan_y
+            - f32::from(terrain_z as i8) * HEIGHT_STEP
+            - TACTICAL_BRIDGE_EXTRA_HEIGHT_PX;
     }
     None
 }
@@ -502,7 +503,7 @@ pub fn screen_to_iso_with_height_and_bridges(
         if z == 0 {
             break;
         }
-        let corrected_y: f32 = screen_y + z as f32 * HEIGHT_STEP;
+        let corrected_y: f32 = screen_y + f32::from(z as i8) * HEIGHT_STEP;
         let (new_rx, new_ry) = screen_to_iso(screen_x, corrected_y);
         if (new_rx - rx).abs() < 0.01 && (new_ry - ry).abs() < 0.01 {
             break;
@@ -531,7 +532,8 @@ pub fn screen_to_iso_with_height_and_bridges(
                 let bx: u16 = bx_i as u16;
                 let by: u16 = by_i as u16;
                 if let Some(&bridge_z) = bridge_map.get(&(bx, by)) {
-                    let corrected_y: f32 = screen_y + bridge_z as f32 * HEIGHT_STEP;
+                    let corrected_y: f32 =
+                        screen_y + f32::from(bridge_z as i8) * HEIGHT_STEP;
                     let (new_rx, new_ry) = screen_to_iso(screen_x, corrected_y);
                     let dist: f32 = (new_rx - bx as f32).abs() + (new_ry - by as f32).abs();
                     if dist < 0.7 && dist < best_dist {
@@ -784,9 +786,10 @@ pub fn build_visible_instances(
         // Depth: reconstruct elevation-free iso row, then normalize.
         // Lower screen_y → larger depth (drawn behind). Elevation bias ensures
         // elevated tiles draw in front of same-row ground tiles.
-        let iso_row: f32 = cell.screen_y + cell.z as f32 * HEIGHT_STEP;
+        let signed_z = f32::from(cell.z as i8);
+        let iso_row: f32 = cell.screen_y + signed_z * HEIGHT_STEP;
         let normalized: f32 = ((iso_row - grid.origin_y) / grid.world_height).clamp(0.0, 1.0);
-        let z_bias: f32 = cell.z as f32 * 0.0001;
+        let z_bias: f32 = signed_z * 0.0001;
         let depth: f32 = (1.0 - normalized - z_bias).clamp(0.001, 0.999);
 
         // Bridge cells with baked damaged-variant TMP data ignore the FA2
@@ -897,6 +900,13 @@ mod tests {
         let (sx, sy): (f32, f32) = iso_to_screen(0, 0, 2);
         assert!((sx - (-30.0)).abs() < f32::EPSILON);
         assert!((sy - (-15.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn gsi_04_03b_iso_to_screen_sign_extends_raw_level() {
+        let (sx, sy) = iso_to_screen(0, 0, 0xff);
+        assert_eq!(sx, -30.0);
+        assert_eq!(sy, 30.0, "raw level 0xFF is signed -1");
     }
 
     #[test]

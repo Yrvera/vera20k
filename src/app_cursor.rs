@@ -465,10 +465,13 @@ fn any_selected_unit_in_range(
             continue;
         }
         let in_range = if let Some(t) = terrain {
+            let Some(source_z) = combat::in_range::effective_z_leptons(entity, t) else {
+                continue;
+            };
             let src = (
                 entity.position.rx as i64 * 256 + entity.position.sub_x.to_num::<i64>(),
                 entity.position.ry as i64 * 256 + entity.position.sub_y.to_num::<i64>(),
-                combat::in_range::effective_z_leptons(entity),
+                source_z,
             );
             combat::in_range::compute_in_range(
                 entity,

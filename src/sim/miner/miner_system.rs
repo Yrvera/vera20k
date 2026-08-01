@@ -36,7 +36,7 @@ use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::intern::InternedId;
 
 use crate::sim::production::foundation_dimensions;
-use crate::util::lepton::LEPTONS_PER_LEVEL;
+use crate::util::lepton::ground_height_leptons;
 
 /// Compare object-coordinate distance in leptons against `threshold_cells * 256`.
 /// Strict `>` — a miner exactly at the threshold still uses the close radio path.
@@ -56,12 +56,47 @@ fn return_exceeds_too_far_threshold(
 
     let miner_x = i64::from(miner.position.rx) * 256 + miner.position.sub_x.to_num::<i64>();
     let miner_y = i64::from(miner.position.ry) * 256 + miner.position.sub_y.to_num::<i64>();
-    let miner_z = i64::from(miner.position.z) * LEPTONS_PER_LEVEL;
     let refinery_x =
         i64::from(refinery.position.rx) * 256 + refinery.position.sub_x.to_num::<i64>();
     let refinery_y =
         i64::from(refinery.position.ry) * 256 + refinery.position.sub_y.to_num::<i64>();
-    let refinery_z = i64::from(refinery.position.z) * LEPTONS_PER_LEVEL;
+    let terrain = sim.resolved_terrain.as_ref()?;
+    let miner_cell = terrain.cell(miner.position.rx, miner.position.ry)?;
+    let refinery_cell = terrain.cell(refinery.position.rx, refinery.position.ry)?;
+    let miner_z = i64::from(
+        ground_height_leptons(
+            miner_cell.level,
+            miner_cell.slope_type,
+            miner_x as i32,
+            miner_y as i32,
+        )
+        .ok()?,
+    ) + if miner.on_bridge {
+        i64::from(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS)
+    } else {
+        0
+    } + miner
+        .locomotor
+        .as_ref()
+        .map(|locomotor| locomotor.altitude.to_num::<i64>())
+        .unwrap_or(0);
+    let refinery_z = i64::from(
+        ground_height_leptons(
+            refinery_cell.level,
+            refinery_cell.slope_type,
+            refinery_x as i32,
+            refinery_y as i32,
+        )
+        .ok()?,
+    ) + if refinery.on_bridge {
+        i64::from(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS)
+    } else {
+        0
+    } + refinery
+        .locomotor
+        .as_ref()
+        .map(|locomotor| locomotor.altitude.to_num::<i64>())
+        .unwrap_or(0);
 
     let dx = miner_x - refinery_x;
     let dy = miner_y - refinery_y;
@@ -69,6 +104,113 @@ fn return_exceeds_too_far_threshold(
     let distance_sq = dx * dx + dy * dy + dz * dz;
     let threshold = i64::from(threshold_cells.max(1)) * 256;
     Some(distance_sq > threshold * threshold)
+}
+
+#[cfg(test)]
+mod gsi_04_03b_tests {
+    use super::*;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotor::LocomotorState;
+
+    fn sloped_cell() -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx: 0,
+            ry: 0,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: true,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 1,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: Default::default(),
+            speed_costs: Default::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: true,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: Default::default(),
+            tube_index: None,
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            accepts_smudge: true,
+            allows_tiberium: false,
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    #[test]
+    fn gsi_04_03b_miner_return_distance_uses_terrain_bridge_and_altitude_z() {
+        let mut sim = Simulation::new();
+        let mut miner = GameEntity::test_default(1, "CMIN", "Allies", 0, 0);
+        miner.position.sub_x = SimFixed::from_num(0);
+        let mut refinery = GameEntity::test_default(2, "GAOREP", "Allies", 0, 0);
+        refinery.position.sub_x = SimFixed::from_num(255);
+        sim.substrate.entities.insert(miner);
+        sim.substrate.entities.insert(refinery);
+        sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(1, 1, vec![sloped_cell()]));
+
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            Some(true),
+            "255 horizontal leptons plus the slope Z delta exceeds one cell"
+        );
+
+        sim.substrate.entities.get_mut(1).unwrap().position.sub_x = SimFixed::from_num(0);
+        sim.substrate.entities.get_mut(2).unwrap().position.sub_x = SimFixed::from_num(0);
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            Some(false)
+        );
+
+        sim.substrate.entities.get_mut(1).unwrap().on_bridge = true;
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            Some(true),
+            "OnBridge coordinate Z contributes the full deck offset"
+        );
+
+        let miner = sim.substrate.entities.get_mut(1).unwrap();
+        miner.on_bridge = false;
+        let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Fly);
+        locomotor.altitude = SimFixed::from_num(300);
+        miner.locomotor = Some(locomotor);
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            Some(true),
+            "locomotor altitude contributes to raw object-coordinate Z"
+        );
+    }
 }
 
 /// The per-frame handler return. Native Mission_Harvest returns it from the

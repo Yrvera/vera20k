@@ -31,8 +31,8 @@ use crate::util::lepton::CELL_CENTER_LEPTON;
 
 // GATE A1/A2 CUTOVER (authoritative): the bridge-AoE deck height is now the single
 // gamemd-verified value sourced from `bridge_topology` — the full deck offset is
-// `2 × per_level` (208 leptons = 2 Level units), so the half-deck term used by the
-// object-layer selector is `2 / 2 = 1`, NOT the prior ad-hoc `4`/`2`. The layer
+// `4 × per_level` (416 leptons = 4 Level units), so the half-deck term used by the
+// object-layer selector is `4 / 2 = 2`. The layer
 // boundary math lives in `CellBridgeView::aoe_object_layer` (strict `>` against
 // `ground_z + half_deck`); this module routes through it so there is ONE source of
 // truth for the deck height. This replaces the old `BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS
@@ -63,7 +63,7 @@ pub(crate) fn bridge_adjusted_impact_z(
 
     let mut impact_z = cell.level as i32;
     if cell.bridge_facts.has_structural_bridge() {
-        // Authoritative deck offset = full deck height (2 levels), not a per-cell
+        // Authoritative deck offset = full deck height (4 levels), not a per-cell
         // span. Same const the layer selector below compares against, so the
         // synthesized impact Z and the layer threshold stay consistent.
         impact_z += BRIDGE_DECK_HEIGHT_LEVELS;
@@ -232,7 +232,7 @@ fn select_object_damage_layer(
 
     // Authoritative: delegate the ground-vs-deck choice to the single verified
     // selector in bridge_topology. It applies the strict-`>` half-deck boundary
-    // (`impact_z > ground_z + DECK/2`, half = 1 level) on the structural-bridge gate.
+    // (`impact_z > ground_z + DECK/2`, half = 2 levels) on the structural-bridge gate.
     // `ground_z` is `cell.level` in the same Level domain as `impact_z` (P0b: the
     // generic cell-center callers add the fixed deck offset, never a routed
     // GetGroundHeight, so both operands are cell-Level units here).
@@ -448,11 +448,10 @@ mod tests {
             AoELayerContext {
                 occupancy: Some(&occupancy),
                 terrain: Some(&terrain),
-                // Exactly at the half-deck mid-height (ground_z 0 + DECK/2 = 1).
-                // Verified deck = 2 levels → half-deck = 1; strict `>` keeps the
-                // boundary on the ground list (was tested at impact_z 2 under the
-                // proven-wrong deck = 4 / half = 2 selector).
-                impact_z: 1,
+                // Exactly at the half-deck mid-height (ground_z 0 + DECK/2 = 2).
+                // Verified deck = 4 levels → half-deck = 2; strict `>` keeps the
+                // boundary on the ground list.
+                impact_z: 2,
             },
         );
 
@@ -465,8 +464,8 @@ mod tests {
         let (_, _, terrain, _, _, _) = bridge_layer_test_fixture();
         assert_eq!(bridge_adjusted_impact_z(Some(&terrain), 4, 4), 0);
         // Structural cell (5,5): ground level 0 + verified full deck height
-        // (BRIDGE_DECK_HEIGHT_LEVELS = 2). Was 4 under the proven-wrong const.
-        assert_eq!(bridge_adjusted_impact_z(Some(&terrain), 5, 5), 2);
+        // (BRIDGE_DECK_HEIGHT_LEVELS = 4).
+        assert_eq!(bridge_adjusted_impact_z(Some(&terrain), 5, 5), 4);
         assert_eq!(bridge_adjusted_impact_z(None, 5, 5), 0);
     }
 

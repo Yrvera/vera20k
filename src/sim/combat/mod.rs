@@ -2351,10 +2351,13 @@ pub(crate) fn resolve_attacker_fire(
         // Standard fire: 3D check via compute_in_range when terrain available.
         match (terrain, entities.get(snap.stable_id)) {
             (Some(t), Some(attacker_entity)) => {
+                let Some(source_z) = in_range::effective_z_leptons(attacker_entity, t) else {
+                    return;
+                };
                 let src = (
                     snap.pos_rx as i64 * 256 + snap.sub_x.to_num::<i64>(),
                     snap.pos_ry as i64 * 256 + snap.sub_y.to_num::<i64>(),
-                    in_range::effective_z_leptons(attacker_entity),
+                    source_z,
                 );
                 in_range::compute_in_range(
                     attacker_entity,

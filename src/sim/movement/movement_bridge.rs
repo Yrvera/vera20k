@@ -71,9 +71,9 @@ pub(super) fn projected_on_bridge(current: bool, update: BridgeStateUpdate) -> b
 }
 
 /// Bridge vertical clearance in leptons.
-/// 360 == 90 * 4 — the Z distance from water surface to bridge deck.
+/// 416 == 104 * 4 — the verified Foot-role Z distance from water surface to bridge deck.
 /// Added to braking distance when a ship passes under a bridge cell.
-pub(super) const BRIDGE_Z_OFFSET: SimFixed = SimFixed::lit("360");
+pub(super) const BRIDGE_Z_OFFSET: SimFixed = SimFixed::lit("416");
 
 /// The on_bridge cell-flag predicate at a cell-boundary crossing.
 ///
@@ -246,6 +246,23 @@ mod tests {
             tube_index: None,
             low_bridge_tube_cell: false,
         }
+    }
+
+    #[test]
+    fn gsi_04_03b_water_mover_bridge_clearance_crosses_braking_boundary() {
+        let planar_distance = SimFixed::from_num(100);
+        let slowdown_distance = SimFixed::from_num(500);
+        let distance_under_bridge = planar_distance + BRIDGE_Z_OFFSET;
+
+        assert_eq!(distance_under_bridge, SimFixed::from_num(516));
+        assert!(
+            !(distance_under_bridge < slowdown_distance),
+            "the verified 416-lepton deck offset must keep this mover outside braking range"
+        );
+        assert!(
+            planar_distance + SimFixed::from_num(360) < slowdown_distance,
+            "the stale 360-lepton offset would incorrectly begin braking at this boundary"
+        );
     }
 
     #[test]

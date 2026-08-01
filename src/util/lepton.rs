@@ -1,7 +1,7 @@
 //! Lepton coordinate system — sub-cell spatial precision matching RA2's internal units.
 //!
 //! RA2 uses **leptons** as its fundamental spatial unit: 256 leptons = 1 cell.
-//! Each isometric cell spans 256×256 leptons, with height levels at 128 leptons.
+//! Each isometric cell spans 256×256 leptons, with retail ground-height levels at 104 leptons.
 //!
 //! To avoid SimFixed (I16F16, max 32767) overflow on large maps, we store lepton
 //! positions as **cell coordinate + sub-cell offset** rather than absolute leptons.
@@ -70,10 +70,14 @@ pub const SUBCELL_4_Y: SimFixed = SimFixed::lit("192");
 // InRange (3D distance) constants
 // ---------------------------------------------------------------------------
 
-/// Leptons per cell-elevation level. The gameplay-grade Z conversion factor.
-/// Distinct from rendering's `HEIGHT_STEP = 15.0` pixels — THIS is the value
-/// combat uses for 3D distance.
+/// Native 104-lepton level step used by bridge and coordinate-height globals.
+/// CellClass ground interpolation has a separately initialized constant with
+/// the same retail value; keep the domains named rather than aliasing them.
 pub const LEPTONS_PER_LEVEL: i64 = 104;
+
+/// Native CellClass ground-level increment used by the coordinate-Z evaluator.
+/// Its active initializer independently resolves to 104 leptons.
+pub const GROUND_LEVEL_HEIGHT_LEPTONS: i32 = 104;
 
 /// Sentinel weapon range meaning "always in range". When the configured
 /// weapon range equals -512 leptons, InRange short-circuits to true regardless
@@ -90,14 +94,76 @@ pub const WEAPON_RANGE_ALWAYS_IN_RANGE_LEPTONS: i64 = -512;
 /// classifies as low-flying.
 pub const HIGH_FLIGHT_THRESHOLD_LEPTONS: i64 = 1000;
 
-/// Z bump in leptons added to a cell's ground height when a bridge deck is
-/// present on the cell. Placeholder = 4 × LEPTONS_PER_LEVEL = 416 lep,
-/// matching the Rules.ini `BridgeHeight=4` default.
+/// Range/LOS cell-to-deck delta. Kept separate from entity OnBridge coordinate
+/// selection even though both active retail values are 416 leptons.
 pub const BRIDGE_HEIGHT_DELTA_LEPTONS: i64 = 416;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedGroundSlope(pub u8);
+
+const G: i32 = GROUND_LEVEL_HEIGHT_LEPTONS;
+const GROUND_SLOPE_RECORDS: [(i32, i32, i32, i32, i32); 21] = [
+    (0, 0, 0, 0, 0),
+    (1, 0, 0, G, 0),
+    (0, 1, 0, G, 0),
+    (-1, 0, G, G, 0),
+    (0, -1, G, G, 0),
+    (1, 1, -G, G, 0),
+    (-1, 1, 0, G, 0),
+    (-1, -1, G, G, 0),
+    (1, -1, 0, G, 0),
+    (1, 1, 0, G, 0),
+    (-1, 1, G, G, 0),
+    (-1, -1, 2 * G, G, 0),
+    (1, -1, G, G, 0),
+    (1, 1, 0, 2 * G, 0),
+    (-1, 1, G, 2 * G, 0),
+    (-1, -1, 2 * G, 2 * G, 0),
+    (1, -1, G, 2 * G, 0),
+    (0, 0, 0, G / 2, G / 2),
+    (0, 0, G, G / 2, -G / 2),
+    (0, 0, 0, G / 2, G / 2),
+    (0, 0, G, G / 2, -G / 2),
+];
 
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
+
+/// Native CellClass ground-Z calculation using the signed level byte and the
+/// exact 21-entry slope coefficient table.
+///
+/// Residuals kept outside this pure evaluator: TMP `+0x28` lifecycle state and
+/// CellClass `+0x11D` HeightInPixels remain unmodelled sim fields.
+pub fn ground_height_leptons(
+    level_byte: u8,
+    slope: u8,
+    world_x: i32,
+    world_y: i32,
+) -> Result<i32, UnsupportedGroundSlope> {
+    let signed_level = i32::from(level_byte as i8);
+    let level_numerator = signed_level
+        .wrapping_mul(GROUND_LEVEL_HEIGHT_LEPTONS)
+        .wrapping_mul(256);
+    let base = level_numerator.wrapping_add(128) / 256;
+    if slope == 0 {
+        return Ok(base);
+    }
+    let Some(&(coefficient_x, coefficient_y, bias_a, maximum, bias_b)) =
+        GROUND_SLOPE_RECORDS.get(slope as usize)
+    else {
+        return Err(UnsupportedGroundSlope(slope));
+    };
+    let local_x = (world_x as u32 & 0xff) as i32;
+    let local_y = (world_y as u32 & 0xff) as i32;
+    let slope_numerator = local_y
+        .wrapping_mul(coefficient_y)
+        .wrapping_add(local_x.wrapping_mul(coefficient_x))
+        .wrapping_mul(GROUND_LEVEL_HEIGHT_LEPTONS)
+        .wrapping_add(bias_a.wrapping_add(bias_b).wrapping_mul(256))
+        .clamp(0, maximum.wrapping_mul(256));
+    Ok(base.wrapping_mul(256).wrapping_add(slope_numerator) / 256)
+}
 
 /// Get the lepton sub-cell offset for a given sub-cell index (0–4).
 ///
@@ -138,7 +204,8 @@ pub fn lepton_to_screen(rx: u16, ry: u16, sub_x: SimFixed, sub_y: SimFixed, z: u
     //   screenX = 30*(rx - ry)         (cell center +128 cancels in X-Y)
     //   screenY = 15*(rx + ry) + 15    (+15 from sub-cell 128+128 projection)
     let base_sx: f32 = (rx as f32 - ry as f32) * 30.0;
-    let base_sy: f32 = (rx as f32 + ry as f32) * 15.0 + 15.0 - z as f32 * 15.0;
+    let base_sy: f32 =
+        (rx as f32 + ry as f32) * 15.0 + 15.0 - f32::from(z as i8) * 15.0;
     // Sub-cell offset from center
     let (offset_x, offset_y) = lepton_sub_to_screen_offset(sub_x, sub_y);
     (base_sx + offset_x, base_sy + offset_y)
@@ -176,6 +243,51 @@ pub fn cell_delta_to_lepton_dir(dx: i32, dy: i32) -> (SimFixed, SimFixed, SimFix
 mod tests {
     use super::*;
     use crate::map::terrain;
+
+    #[test]
+    fn gsi_04_03b_ground_height_matches_all_verified_slope_records() {
+        let expected = [
+            208, 234, 286, 286, 234, 208, 260, 208, 208, 312, 312, 312, 260, 312, 364, 312,
+            260, 260, 260, 260, 260,
+        ];
+        for (slope, expected) in expected.into_iter().enumerate() {
+            assert_eq!(
+                ground_height_leptons(2, slope as u8, 64, 192),
+                Ok(expected),
+                "slope {slope}",
+            );
+        }
+        assert_eq!(
+            ground_height_leptons(0, 21, 0, 0),
+            Err(UnsupportedGroundSlope(21))
+        );
+    }
+
+    #[test]
+    fn gsi_04_03b_ground_height_signed_level_and_ftol_chop() {
+        assert_eq!(ground_height_leptons(0xff, 0, 0, 0), Ok(-103));
+        assert_eq!(ground_height_leptons(0xff, 1, 1, 0), Ok(-102));
+    }
+
+    #[test]
+    fn gsi_04_03b_lepton_projection_sign_extends_raw_level() {
+        let (_, sy_zero) = lepton_to_screen(
+            0,
+            0,
+            CELL_CENTER_LEPTON,
+            CELL_CENTER_LEPTON,
+            0,
+        );
+        let (_, sy_minus_one) = lepton_to_screen(
+            0,
+            0,
+            CELL_CENTER_LEPTON,
+            CELL_CENTER_LEPTON,
+            0xff,
+        );
+        assert_eq!(sy_zero, 15.0);
+        assert_eq!(sy_minus_one, 30.0);
+    }
 
     #[test]
     fn cell_center_is_iso_plus_half_tile() {

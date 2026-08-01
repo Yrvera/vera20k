@@ -1100,7 +1100,7 @@ impl ResolvedTerrainGrid {
         // is ≥4 levels above get land_type=Rock and ground_walk_blocked=true.
         // Only overrides Clear(0), Water(4), Beach(3) land types.
         if cliff_back_impassability == 2 {
-            const CLIFF_BACK_HEIGHT_DIFF: u8 = 4;
+            const CLIFF_BACK_HEIGHT_DIFF: i16 = 4;
             // 6 neighbor offsets in (dx, dy) matching gamemd.exe RecalcAttributes:
             // (X, Y-1), (X-1, Y), (X+2, Y+2), (X+1, Y+1), (X-1, Y+1), (X+1, Y-1)
             const NEIGHBOR_OFFSETS: [(i32, i32); 6] =
@@ -1116,7 +1116,7 @@ impl ResolvedTerrainGrid {
                 if lt != clear_lt && lt != water_lt && lt != beach_lt {
                     continue;
                 }
-                let cell_level = cells[idx].level;
+                let cell_level = i16::from(cells[idx].level as i8);
                 let rx = cells[idx].rx as i32;
                 let ry = cells[idx].ry as i32;
 
@@ -1127,7 +1127,8 @@ impl ResolvedTerrainGrid {
                     if nx >= 0 && ny >= 0 && nx < width as i32 && ny < height as i32 {
                         let nidx = ny as usize * width as usize + nx as usize;
                         if nidx < cells.len()
-                            && cells[nidx].level >= cell_level + CLIFF_BACK_HEIGHT_DIFF
+                            && i16::from(cells[nidx].level as i8)
+                                >= cell_level + CLIFF_BACK_HEIGHT_DIFF
                         {
                             behind_cliff = true;
                             break;
@@ -3479,6 +3480,50 @@ IsRubble=yes
         assert_eq!(
             cell.yr_cell_land_type,
             crate::sim::pathfinding::passability::LandType::Rock.as_index()
+        );
+    }
+
+    #[test]
+    fn gsi_04_03b_cliff_back_compares_levels_as_signed_bytes() {
+        let map = make_map(
+            vec![
+                MapCell {
+                    rx: 0,
+                    ry: 0,
+                    tile_index: -1,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 0,
+                    tile_index: -1,
+                    sub_tile: 0,
+                    z: 3,
+                },
+                MapCell {
+                    rx: 0,
+                    ry: 1,
+                    tile_index: -1,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 1,
+                    tile_index: -1,
+                    sub_tile: 0,
+                    z: 0xff,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let grid = ResolvedTerrainGrid::build(&map, None, None, None, None, false, 2);
+        let cell = grid.cell(1, 1).expect("signed -1 cell");
+        assert!(
+            cell.ground_walk_blocked,
+            "signed -1 to +3 is the exact four-level CliffBack boundary"
         );
     }
 
