@@ -179,6 +179,8 @@ impl Simulation {
             }
         }
 
+        self.hash_raw_cell_occupation(&mut hasher);
+
         self.hash_game_options(&mut hasher);
         self.hash_houses(&mut hasher);
         self.hash_production(&mut hasher);
@@ -195,6 +197,29 @@ impl Simulation {
         self.hash_session_identity(&mut hasher);
 
         hasher.finish()
+    }
+
+    /// Fold the authoritative sparse raw occupation bytes without conflating
+    /// coordinates or the ground/deck planes. Empty raw state contributes no
+    /// bytes, preserving established hashes while every modeled zero remains
+    /// represented canonically by the absence of a sparse entry.
+    fn hash_raw_cell_occupation(&self, hasher: &mut impl Hasher) {
+        let entry_count = self.substrate.raw_cell_occupation.entry_count();
+        if entry_count == 0 {
+            return;
+        }
+
+        b"raw-cell-occupation-v1".hash(hasher);
+        entry_count.hash(hasher);
+        for (rx, ry, ground, deck) in self.substrate.raw_cell_occupation.entries() {
+            0xC1u8.hash(hasher); // entry delimiter
+            rx.hash(hasher);
+            ry.hash(hasher);
+            0u8.hash(hasher); // ground-plane tag
+            ground.hash(hasher);
+            1u8.hash(hasher); // deck-plane tag
+            deck.hash(hasher);
+        }
     }
 
     /// Session identity/bounds/waypoints — appended AFTER the legacy folds so
@@ -946,6 +971,58 @@ impl Simulation {
             id.hash(hasher);
             anim.hash(hasher);
         }
+    }
+}
+
+#[cfg(test)]
+mod raw_cell_occupation_hash_tests {
+    use super::Simulation;
+
+    #[test]
+    fn gsi_04_12_raw_occupation_hash_distinguishes_byte_plane_and_coordinate() {
+        let empty = Simulation::new();
+
+        let mut ground = Simulation::new();
+        ground.substrate.raw_cell_occupation.mark_ground(4, 9, 0x20);
+
+        let mut different_byte = Simulation::new();
+        different_byte
+            .substrate
+            .raw_cell_occupation
+            .mark_ground(4, 9, 0x40);
+
+        let mut deck = Simulation::new();
+        deck.substrate.raw_cell_occupation.mark_deck(4, 9, 0x20);
+
+        let mut different_coordinate = Simulation::new();
+        different_coordinate
+            .substrate
+            .raw_cell_occupation
+            .mark_ground(9, 4, 0x20);
+
+        assert_ne!(empty.state_hash(), ground.state_hash());
+        assert_ne!(ground.state_hash(), different_byte.state_hash());
+        assert_ne!(ground.state_hash(), deck.state_hash());
+        assert_ne!(ground.state_hash(), different_coordinate.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_12_raw_occupation_hash_is_insertion_order_independent() {
+        let mut forward = Simulation::new();
+        forward
+            .substrate
+            .raw_cell_occupation
+            .mark_ground(2, 7, 0x04);
+        forward.substrate.raw_cell_occupation.mark_deck(8, 3, 0x80);
+
+        let mut reverse = Simulation::new();
+        reverse.substrate.raw_cell_occupation.mark_deck(8, 3, 0x80);
+        reverse
+            .substrate
+            .raw_cell_occupation
+            .mark_ground(2, 7, 0x04);
+
+        assert_eq!(forward.state_hash(), reverse.state_hash());
     }
 }
 

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::LogicVector;
 use crate::sim::anim_class::AnimStore;
 use crate::sim::entity_store::EntityStore;
-use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid};
+use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid, RawCellOccupationGrid};
 use crate::sim::particles::ParticleSystemStore;
 
 const FIRST_MULTIPLAYER_FEEDBACK_ANIM_ID: u64 = 1 << 63;
@@ -81,6 +81,11 @@ pub(crate) struct ObjectSubstrate {
     /// entity lifecycle and serialized Drive footprint state after load.
     #[serde(skip)]
     pub(crate) cell_occupation: CellOccupationGrid,
+    /// Authoritative raw CellClass occupation bytes. Unlike the owner-aware
+    /// Drive compatibility cache above, these destructive OR/AND-not bytes are
+    /// serialized verbatim and are never rebuilt from entity lists.
+    #[serde(default)]
+    pub(crate) raw_cell_occupation: RawCellOccupationGrid,
     /// Plain-struct entity storage (`BTreeMap<u64, GameEntity>` + by_owner index).
     /// The authoritative object store — serialized verbatim (NOT skipped).
     pub(crate) entities: EntityStore,
@@ -119,6 +124,7 @@ impl ObjectSubstrate {
             logic: LogicVector::new(),
             occupancy: OccupancyGrid::new(),
             cell_occupation: CellOccupationGrid::new(),
+            raw_cell_occupation: RawCellOccupationGrid::new(),
             entities: EntityStore::new(),
             anims: AnimStore::default(),
             multiplayer_feedback_anims: AnimStore::default(),

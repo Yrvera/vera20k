@@ -99,7 +99,10 @@ use crate::sim::world::Simulation;
 // serialized; production load retains their live pre-load process state.
 // Bumped 37 -> 38: DriveLocomotionRuntime persists the independent head-to
 // occupation footprint and whether the current-cell occupation was cleared.
-const SNAPSHOT_VERSION: u32 = 39;
+// Bumped 38 -> 39: overlay wall ownership became authoritative persisted state.
+// Bumped 39 -> 40: ObjectSubstrate persists the authoritative per-cell raw
+// ground/deck occupation bytes instead of reconstructing them from object lists.
+const SNAPSHOT_VERSION: u32 = 40;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1248,7 +1251,7 @@ mod tests {
         assert!(matches!(
             GameSnapshot::load(&bytes),
             Err(SnapshotError::VersionMismatch {
-                expected: 39,
+                expected: SNAPSHOT_VERSION,
                 found: 38,
             })
         ));
@@ -1287,15 +1290,51 @@ mod tests {
     /// lifecycle target/animation identity state took 35 -> 36, and omission
     /// of process-global Main/MapGen RNG state took 36 -> 37, and serialized
     /// Drive occupation footprints took 37 -> 38, and authoritative wall
-    /// ownership took 38 -> 39. This pins it so a later
-    /// accidental bump is caught.
+    /// ownership took 38 -> 39, and raw occupation bytes took 39 -> 40. This
+    /// pins it so a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_39() {
-        assert_eq!(super::SNAPSHOT_VERSION, 39);
+    fn snapshot_version_is_40() {
+        assert_eq!(super::SNAPSHOT_VERSION, 40);
     }
 
     #[test]
-    fn gsi_04_05_v39_roundtrip_restores_drive_footprint_and_cell_occupation() {
+    fn gsi_04_12_raw_occupation_snapshot_roundtrip_preserves_both_planes() {
+        let mut sim = Simulation::new();
+        sim.substrate.raw_cell_occupation.mark_ground(17, 23, 0x23);
+        sim.substrate.raw_cell_occupation.mark_deck(17, 23, 0xC4);
+        sim.substrate.raw_cell_occupation.mark_ground(2, 31, 0x02);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_12_raw_occupation", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes)
+                .expect("current snapshot header")
+                .version,
+            40
+        );
+
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("restore transient caches without replacing raw bytes");
+
+        assert_eq!(
+            restored.substrate.raw_cell_occupation.ground_bits(17, 23),
+            0x23
+        );
+        assert_eq!(
+            restored.substrate.raw_cell_occupation.deck_bits(17, 23),
+            0xC4
+        );
+        assert_eq!(
+            restored.substrate.raw_cell_occupation.ground_bits(2, 31),
+            0x02
+        );
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn gsi_04_05_v40_roundtrip_restores_drive_footprint_and_cell_occupation() {
         use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
         use crate::sim::game_entity::GameEntity;
         use crate::sim::occupancy::{CellOccupationGrid, VEHICLE_OCCUPATION_BIT};
@@ -1332,7 +1371,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            39
+            40
         );
 
         let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1375,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_07_v39_roundtrip_restores_wall_owner() {
+    fn gsi_04_07_v40_roundtrip_restores_wall_owner() {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("AMERICANS");
         let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
@@ -1398,7 +1437,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            39
+            40
         );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         let cell = restored

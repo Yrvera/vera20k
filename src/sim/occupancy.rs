@@ -21,6 +21,91 @@ use crate::sim::movement::locomotor::MovementLayer;
 /// UnitClass vehicle-occupation bit in both CellClass occupation planes.
 pub(crate) const VEHICLE_OCCUPATION_BIT: u8 = 0x20;
 
+/// One cell's two independent raw occupation bytes.
+///
+/// These bytes are authoritative state. They deliberately carry no owner or
+/// reference-count information: producers OR their mask when marking and clear
+/// that mask destructively when unmarking.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct RawCellOccupation {
+    ground: u8,
+    deck: u8,
+}
+
+/// Sparse canonical storage for the raw ground/deck occupation bytes.
+///
+/// An absent entry is exactly `(ground = 0, deck = 0)`. Zero entries are
+/// removed eagerly, so serialization and deterministic hashing have one
+/// representation for an unoccupied cell. This state is independent of both
+/// the CellClass-style object lists and the owner-aware Drive compatibility
+/// cache below.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RawCellOccupationGrid {
+    cells: BTreeMap<(u16, u16), RawCellOccupation>,
+}
+
+impl RawCellOccupationGrid {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn mark_ground(&mut self, rx: u16, ry: u16, mask: u8) {
+        if mask != 0 {
+            self.cells.entry((rx, ry)).or_default().ground |= mask;
+        }
+    }
+
+    pub(crate) fn clear_ground(&mut self, rx: u16, ry: u16, mask: u8) {
+        self.update_and_prune(rx, ry, |cell| cell.ground &= !mask);
+    }
+
+    pub(crate) fn ground_bits(&self, rx: u16, ry: u16) -> u8 {
+        self.cells.get(&(rx, ry)).map_or(0, |cell| cell.ground)
+    }
+
+    /// The active bridge-avoidance consumer treats every nonzero ground byte as
+    /// occupied, including the consumer-visible bit without an active producer.
+    pub(crate) fn ground_is_occupied(&self, rx: u16, ry: u16) -> bool {
+        self.ground_bits(rx, ry) != 0
+    }
+
+    pub(crate) fn mark_deck(&mut self, rx: u16, ry: u16, mask: u8) {
+        if mask != 0 {
+            self.cells.entry((rx, ry)).or_default().deck |= mask;
+        }
+    }
+
+    pub(crate) fn clear_deck(&mut self, rx: u16, ry: u16, mask: u8) {
+        self.update_and_prune(rx, ry, |cell| cell.deck &= !mask);
+    }
+
+    pub(crate) fn deck_bits(&self, rx: u16, ry: u16) -> u8 {
+        self.cells.get(&(rx, ry)).map_or(0, |cell| cell.deck)
+    }
+
+    fn update_and_prune(&mut self, rx: u16, ry: u16, update: impl FnOnce(&mut RawCellOccupation)) {
+        let key = (rx, ry);
+        let should_remove = self.cells.get_mut(&key).is_some_and(|cell| {
+            update(cell);
+            cell.ground == 0 && cell.deck == 0
+        });
+        if should_remove {
+            self.cells.remove(&key);
+        }
+    }
+
+    pub(crate) fn entry_count(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Canonical coordinate-key iteration used by the deterministic hash.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (u16, u16, u8, u8)> + '_ {
+        self.cells
+            .iter()
+            .map(|(&(rx, ry), cell)| (rx, ry, cell.ground, cell.deck))
+    }
+}
+
 /// Entity-aware ownership behind one native occupation plane.
 ///
 /// The public observation remains the native ORed bit. Keeping the contributing
@@ -854,6 +939,58 @@ impl OccupancyGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gsi_04_12_raw_occupation_preserves_every_raw_bit() {
+        let mut grid = RawCellOccupationGrid::new();
+        for mask in [
+            0x01,
+            0x02,
+            0x04,
+            0x08,
+            0x10,
+            VEHICLE_OCCUPATION_BIT,
+            0x40,
+            0x80,
+        ] {
+            grid.mark_ground(7, 9, mask);
+        }
+
+        assert_eq!(grid.ground_bits(7, 9), u8::MAX);
+        assert!(grid.ground_is_occupied(7, 9));
+        assert_eq!(grid.ground_bits(9, 7), 0);
+        assert!(!grid.ground_is_occupied(9, 7));
+    }
+
+    #[test]
+    fn gsi_04_12_raw_occupation_clear_is_destructive_not_reference_counted() {
+        let mut grid = RawCellOccupationGrid::new();
+        grid.mark_ground(3, 4, VEHICLE_OCCUPATION_BIT);
+        grid.mark_ground(3, 4, VEHICLE_OCCUPATION_BIT);
+        assert_eq!(grid.ground_bits(3, 4), VEHICLE_OCCUPATION_BIT);
+
+        grid.clear_ground(3, 4, VEHICLE_OCCUPATION_BIT);
+
+        assert_eq!(grid.ground_bits(3, 4), 0);
+        assert_eq!(grid.entry_count(), 0);
+    }
+
+    #[test]
+    fn gsi_04_12_raw_occupation_ground_and_deck_planes_are_independent() {
+        let mut grid = RawCellOccupationGrid::new();
+        grid.mark_ground(11, 12, 0x21);
+        grid.mark_deck(11, 12, 0xC0);
+        assert_eq!(grid.ground_bits(11, 12), 0x21);
+        assert_eq!(grid.deck_bits(11, 12), 0xC0);
+
+        grid.clear_ground(11, 12, VEHICLE_OCCUPATION_BIT);
+        assert_eq!(grid.ground_bits(11, 12), 0x01);
+        assert_eq!(grid.deck_bits(11, 12), 0xC0);
+
+        grid.clear_deck(11, 12, 0x40);
+        assert_eq!(grid.ground_bits(11, 12), 0x01);
+        assert_eq!(grid.deck_bits(11, 12), 0x80);
+    }
 
     #[test]
     fn generation_bumps_on_every_mutation() {
