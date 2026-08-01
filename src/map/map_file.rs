@@ -115,6 +115,9 @@ pub struct MapHeader {
     /// Raw `[Map] Fill` value. Active YR defaults this to `Clear`; terrain
     /// initialization interprets the verified `Water` spelling.
     pub fill: String,
+    /// Signed `[Map] Level` value. Map allocation consumes its low byte before
+    /// explicit IsoMapPack records replace individual cell levels.
+    pub level: i32,
     /// Full map width (from Size= 3rd value).
     pub width: u32,
     /// Full map height (from Size= 4th value).
@@ -342,6 +345,7 @@ fn parse_header(ini: &IniFile) -> Result<MapHeader, MapError> {
         .unwrap_or("TEMPERATE")
         .to_uppercase();
     let fill = map_section.get("Fill").unwrap_or("Clear").to_string();
+    let level = map_section.get_i32("Level").unwrap_or(0);
 
     // Full-map resizing stores Size width/height but normalizes its origin before LocalSize is read.
     let size_parts = read_rect_i32(map_section.get("Size"), DEFAULT_SIZE_RECT);
@@ -351,6 +355,7 @@ fn parse_header(ini: &IniFile) -> Result<MapHeader, MapError> {
     Ok(MapHeader {
         theater,
         fill,
+        level,
         width: size_parts[2] as u32,
         height: size_parts[3] as u32,
         local_left: local_parts[0] as u32,
@@ -673,6 +678,21 @@ LocalSize=2,4,96,92
         let water_ini = IniFile::from_str("[Map]\nSize=0,0,3,2\nFill=  wAtEr \t\n");
         let water_header = parse_header(&water_ini).expect("present Fill parses");
         assert_eq!(water_header.fill, "wAtEr");
+    }
+
+    #[test]
+    fn gsi_04_03a_map_level_defaults_and_preserves_signed_values() {
+        let default_ini = IniFile::from_str("[Map]\nSize=0,0,3,2\n");
+        let default_header = parse_header(&default_ini).expect("default Level parses");
+        assert_eq!(default_header.level, 0);
+
+        let present_ini = IniFile::from_str("[Map]\nSize=0,0,3,2\nLevel=260\n");
+        let present_header = parse_header(&present_ini).expect("present Level parses");
+        assert_eq!(present_header.level, 260);
+
+        let negative_ini = IniFile::from_str("[Map]\nSize=0,0,3,2\nLevel=-2\n");
+        let negative_header = parse_header(&negative_ini).expect("negative Level parses");
+        assert_eq!(negative_header.level, -2);
     }
 
     #[test]

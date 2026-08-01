@@ -28,7 +28,7 @@ pub struct GridCell {
     pub sub_tile: u8,
     /// Ground level.
     pub level: u8,
-    /// Slope index (0 flat, 1..18 ramps).
+    /// Native raw slope id (0 flat; generated ramps use values through at least 16).
     pub slope: u8,
     /// Overlay type index, -1 = none.
     pub overlay: i32,

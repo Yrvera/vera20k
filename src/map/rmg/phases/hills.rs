@@ -88,7 +88,7 @@ pub fn water_seed(
         let cell = *grid.get(x, y).expect("native cell");
         let is_shore = ids.is_shore_piece(cell.tile);
         let is_obstacle =
-            !is_shore && cliff.is_cliff_or_impassable_tile(cell.tile as u16, cell.sub_tile);
+            !is_shore && cliff.is_special_terrain_tile(cell.tile as u16, cell.sub_tile);
         if !is_shore && !is_obstacle {
             continue;
         }
@@ -259,6 +259,7 @@ mod tests {
         TileIds {
             clear: 0,
             ramp_base: 600,
+            ramp_smooth: 620,
             rough: -1,
             sand: -1,
             green: 100,

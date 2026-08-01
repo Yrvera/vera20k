@@ -1018,6 +1018,7 @@ mod tests {
         let header = MapHeader {
             theater: "TEMPERATE".to_string(),
             fill: "Clear".to_string(),
+            level: 0,
             width: 70,
             height: 76,
             local_left: 2,

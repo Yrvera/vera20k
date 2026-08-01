@@ -175,8 +175,8 @@ pub struct TheaterCliffRanges {
 }
 
 impl TheaterCliffRanges {
-    /// Broad `IsCliffOrImpassableTile @ 0x004863d0` predicate.
-    pub fn is_cliff_or_impassable_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
+    /// Broad special-terrain identity predicate used by terrain-height logic.
+    pub fn is_special_terrain_tile(&self, tile_id: u16, sub_tile: u8) -> bool {
         in_fixed_range(self.cliff_set, tile_id, 0x28)
             || in_fixed_range(self.cliff_ramps, tile_id, 0x14)
             || in_fixed_range(self.water_cliffs, tile_id, 0x1c)
@@ -184,10 +184,10 @@ impl TheaterCliffRanges {
             || in_fixed_range(self.bridge_set, tile_id, 0x10)
             || in_fixed_range(self.wood_bridge_set, tile_id, 0x10)
             || in_fixed_range(self.water_caves, tile_id, 4)
-            || waterfall_blocks(self.waterfall_east, tile_id, slope_byte, &[0, 4])
-            || waterfall_blocks(self.waterfall_west, tile_id, slope_byte, &[1, 3])
-            || waterfall_blocks(self.waterfall_south, tile_id, slope_byte, &[0, 1])
-            || waterfall_blocks(self.waterfall_north, tile_id, slope_byte, &[2, 3])
+            || waterfall_is_special(self.waterfall_east, tile_id, sub_tile, &[0, 4])
+            || waterfall_is_special(self.waterfall_west, tile_id, sub_tile, &[1, 3])
+            || waterfall_is_special(self.waterfall_south, tile_id, sub_tile, &[0, 1])
+            || waterfall_is_special(self.waterfall_north, tile_id, sub_tile, &[2, 3])
     }
 
     /// Narrow `IsOnBridgeRamp @ 0x00578d80` predicate.
@@ -209,6 +209,7 @@ impl TheaterCliffRanges {
 pub struct RmgTileKeys {
     pub clear_tile: Option<u16>,
     pub ramp_base: Option<u16>,
+    pub ramp_smooth: Option<u16>,
     pub rough_tile: Option<u16>,
     pub sand_tile: Option<u16>,
     pub green_tile: Option<u16>,
@@ -675,9 +676,9 @@ impl BridgeRampTileTable {
 }
 
 impl TheaterData {
-    pub fn is_cliff_or_impassable_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
+    pub fn is_special_terrain_tile(&self, tile_id: u16, sub_tile: u8) -> bool {
         self.cliff_ranges
-            .is_cliff_or_impassable_tile(tile_id, slope_byte)
+            .is_special_terrain_tile(tile_id, sub_tile)
     }
 
     pub fn is_on_bridge_ramp_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
@@ -985,6 +986,7 @@ fn resolve_rmg_tile_keys(lookup: &TilesetLookup, ini_text: &str) -> RmgTileKeys 
     RmgTileKeys {
         clear_tile: resolve("ClearTile"),
         ramp_base: resolve("RampBase"),
+        ramp_smooth: resolve("RampSmooth"),
         rough_tile: resolve("RoughTile"),
         sand_tile: resolve("SandTile"),
         green_tile: resolve("GreenTile"),
@@ -1047,6 +1049,15 @@ fn apply_lunar_global_zeroing(
     *wood_bridge_set = None;
     *cliff_ranges = TheaterCliffRanges::default();
     rmg_tiles.water_set = None;
+}
+
+fn waterfall_is_special(
+    start: Option<u16>,
+    tile_id: u16,
+    sub_tile: u8,
+    ordinary: &[u8],
+) -> bool {
+    waterfall_blocks(start, tile_id, sub_tile, ordinary)
 }
 
 /// Parse a key=value integer from the `[General]` section of a theater INI file.

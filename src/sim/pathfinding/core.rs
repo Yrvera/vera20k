@@ -1044,8 +1044,8 @@ pub fn astar_search(
                     rejected_reason: None,
                 };
 
-                // Height-diff legality gate. Diff-1 transitions require the LOWER cell to
-                // be a canonical ramp (slope_type != 0); diff ∈ {±2, ±3, ±4, ±5+} is
+                // Height-diff legality gate. Diff-1 transitions require the LOWER cell's
+                // raw slope byte to be nonzero; diff ∈ {±2, ±3, ±4, ±5+} is
                 // always blocked. Legitimate bridge transitions arrive here as diff-0
                 // because `compute_neighbor_height` already shifts unit Z onto/off the deck.
                 let needs_bridge_traversal =
@@ -1057,7 +1057,7 @@ pub fn astar_search(
                             candidate: neighbor_cell,
                             candidate_coord: (nx, ny),
                             direction: dir_index as i8,
-                            path_height: current.height as i16,
+                            path_height: i16::from(current.height as i8),
                             parent: Some((cur_cell, (cx, cy))),
                         },
                     );
@@ -1098,7 +1098,8 @@ pub fn astar_search(
                         MovementLayer::Ground
                     };
                     layer_context = CanEnterLayerContext::single(layer);
-                    let diff = neighbor_height as i16 - current.height as i16;
+                    let diff = i16::from(neighbor_height as i8)
+                        - i16::from(current.height as i8);
                     let lower_slope = if diff < 0 {
                         neighbor_cell.slope_type
                     } else {

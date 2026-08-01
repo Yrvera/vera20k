@@ -574,6 +574,8 @@ impl ResolvedTerrainGrid {
             .map(|sem| sem.speed_costs);
 
         let mut final_cells: Vec<MapCell> = raw_cells.clone();
+        let mut metadata_cache: HashMap<TileKey, TileMetadata> = HashMap::new();
+        let mut warned_unknown_land_types: HashSet<u8> = HashSet::new();
         let native_allocated = materialized_size_diamond.then(|| {
             let mut mask = vec![false; width as usize * height as usize];
             for cell in &raw_cells {
@@ -584,14 +586,51 @@ impl ResolvedTerrainGrid {
             }
             mask
         });
-        if lat_enabled {
-            if let Some(td) = theater_data {
+        let load_slope_states = if lat_enabled {
+            theater_data.map(|td| {
                 let lat_config = lat::parse_lat_config(&td.ini_data, &td.lookup);
-                if !lat_config.grounds.is_empty() {
-                    lat::apply_lat(&mut final_cells, &lat_config, &td.lookup);
-                }
-            }
-        }
+                let slope_config = lat::SlopeFixupConfig {
+                    ramp_base: td.rmg_tiles.ramp_base.map_or(-1, i32::from),
+                    ramp_smooth: td.rmg_tiles.ramp_smooth.map_or(-1, i32::from),
+                };
+                let mut pristine_slope = |tile_index: i32, sub_tile: u8| {
+                    let Ok(tile_id) = u16::try_from(tile_index) else {
+                        return 0;
+                    };
+                    if tile_index == theater::NO_TILE || usize::from(tile_id) >= td.lookup.len() {
+                        return 0;
+                    }
+                    cached_tile_metadata(
+                        &mut metadata_cache,
+                        theater_data,
+                        asset_manager,
+                        terrain_rules,
+                        TileKey {
+                            tile_id,
+                            sub_tile,
+                            variant: 0,
+                        },
+                        &mut warned_unknown_land_types,
+                    )
+                    .slope_type
+                };
+                lat::apply_load_recalc_sweeps(
+                    &mut final_cells,
+                    &lat_config,
+                    slope_config,
+                    &mut pristine_slope,
+                )
+            })
+        } else {
+            None
+        };
+        let load_slope_lookup = load_slope_states.as_ref().map(|states| {
+            final_cells
+                .iter()
+                .zip(states)
+                .map(|(cell, &slope)| ((cell.rx, cell.ry), slope))
+                .collect::<HashMap<_, _>>()
+        });
 
         let raw_lookup: HashMap<(u16, u16), &MapCell> =
             raw_cells.iter().map(|c| ((c.rx, c.ry), c)).collect();
@@ -612,8 +651,6 @@ impl ResolvedTerrainGrid {
                 .push(overlay);
         }
 
-        let mut metadata_cache: HashMap<TileKey, TileMetadata> = HashMap::new();
-        let mut warned_unknown_land_types: HashSet<u8> = HashSet::new();
         let mut cells: Vec<ResolvedTerrainCell> =
             Vec::with_capacity(width as usize * height as usize);
         let mut selector_calls = 0usize;
@@ -701,6 +738,14 @@ impl ResolvedTerrainGrid {
                         &mut warned_unknown_land_types,
                     );
                     apply_selected_presentation_metadata(&mut metadata, &selected_metadata);
+                }
+                if let Some(slope_type) = load_slope_lookup
+                    .as_ref()
+                    .and_then(|slopes| slopes.get(&(rx, ry)))
+                    .copied()
+                {
+                    metadata.slope_type = slope_type;
+                    metadata.has_ramp = slope_type != 0;
                 }
                 let terrain_object_blocks = terrain_objects.contains(&(rx, ry));
                 let overlay_effects = classify_overlay_effects(
@@ -1533,29 +1578,24 @@ fn load_tile_metadata(
         return TileMetadata::default();
     };
     let Some(asset_manager) = asset_manager else {
-        let mut metadata = metadata_from_set_name(
+        return metadata_from_set_name(
             td.lookup
                 .tileset_index(key.tile_id)
                 .and_then(|idx| td.lookup.set_name(idx)),
             td.lookup.tileset_index(key.tile_id),
         );
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
-        return metadata;
     };
     let tileset_index = td.lookup.tileset_index(key.tile_id);
     let set_name = tileset_index.and_then(|idx| td.lookup.set_name(idx));
     let mut metadata = metadata_from_set_name(set_name, tileset_index);
 
     let Some(filename) = td.lookup.filename_for_variant(key.tile_id, key.variant) else {
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     let Some(bytes) = asset_manager.get(filename) else {
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     let Ok(tmp) = TmpFile::from_bytes(&bytes) else {
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     merge_tmp_file_metadata(
@@ -1565,7 +1605,6 @@ fn load_tile_metadata(
         terrain_rules,
         warned_unknown_land_types,
     );
-    apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
     metadata
 }
 
@@ -1646,26 +1685,6 @@ fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) ->
         ground_blocked: is_water || is_cliff_like,
         build_blocked: is_water || is_cliff_like,
         ..TileMetadata::default()
-    }
-}
-
-fn apply_theater_cliff_ranges(
-    metadata: &mut TileMetadata,
-    theater_data: &TheaterData,
-    tile_id: u16,
-) {
-    if !theater_data.is_cliff_or_impassable_tile(tile_id, metadata.slope_type) {
-        return;
-    }
-    metadata.is_cliff_like = true;
-    metadata.ground_blocked = true;
-    metadata.build_blocked = true;
-    if !metadata.is_water && !metadata.has_tmp_metadata {
-        metadata.terrain_class = TerrainClass::Cliff;
-        metadata.land_type = crate::sim::pathfinding::passability::LandType::Rock.as_index();
-        metadata.yr_cell_land_type = metadata.land_type;
-    } else if !metadata.is_water {
-        metadata.terrain_class = TerrainClass::Cliff;
     }
 }
 
@@ -1882,9 +1901,7 @@ fn materialize_map_load_cells(
                 ry,
                 tile_index: selector.draw_fill_tile_index(is_water, scenario_fill_ranged),
                 sub_tile: 0,
-                // `[Map] Level` is the next Phase 3 item; Fill itself writes
-                // no elevation beyond the existing zero-initialized cell.
-                z: 0,
+                z: 0u8.wrapping_add(map.header.level as u8),
             });
             index_by_coord.insert((rx, ry), index);
         }
@@ -1921,6 +1938,7 @@ mod tests {
             header: crate::map::map_file::MapHeader {
                 theater: "TEMPERATE".to_string(),
                 fill: "Clear".to_string(),
+                level: 0,
                 width: 4,
                 height: 4,
                 local_left: 0,
@@ -2069,21 +2087,31 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_02_cached_water_and_scenario_fill_precede_isomap_overwrite() {
+    fn gsi_04_03a_level_prefill_wraps_before_absolute_last_isomap_overwrite() {
         let mut map = make_map(
-            vec![MapCell {
-                rx: 2,
-                ry: 2,
-                tile_index: 99,
-                sub_tile: 7,
-                z: 5,
-            }],
+            vec![
+                MapCell {
+                    rx: 2,
+                    ry: 2,
+                    tile_index: 98,
+                    sub_tile: 6,
+                    z: 5,
+                },
+                MapCell {
+                    rx: 2,
+                    ry: 2,
+                    tile_index: 99,
+                    sub_tile: 7,
+                    z: 9,
+                },
+            ],
             Vec::new(),
             Vec::new(),
         );
         map.header.width = 3;
         map.header.height = 2;
         map.header.fill = " \twAtEr\r\n".to_string();
+        map.header.level = 260;
 
         let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
         assert_eq!(cache.cached_clear_tile_base(), 0);
@@ -2137,11 +2165,11 @@ mod tests {
             assert_eq!(selector.map_fill_scenario_advance_count(), 10);
             for (index, cell) in cells.iter().enumerate() {
                 if index == 1 {
-                    assert_eq!((cell.tile_index, cell.sub_tile, cell.z), (99, 7, 5));
+                    assert_eq!((cell.tile_index, cell.sub_tile, cell.z), (99, 7, 9));
                 } else {
                     assert_eq!(
                         (cell.tile_index, cell.sub_tile, cell.z),
-                        (expected_tiles[index], 0, 0)
+                        (expected_tiles[index], 0, 4)
                     );
                 }
             }
@@ -2624,7 +2652,7 @@ mod tests {
     }
 
     #[test]
-    fn theater_numeric_cliff_range_blocks_plain_named_tiles() {
+    fn gsi_04_03a_special_terrain_identity_is_not_promoted_to_hard_blocking() {
         let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n\n\
                     [TileSet0001]\nTilesInSet=10\nFileName=plain\nSetName=Plain Terrain\n";
         let mut theater = synthetic_theater_from_ini(ini);
@@ -2642,13 +2670,14 @@ mod tests {
         );
 
         let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
-        let cell = grid.cell(0, 0).expect("numeric cliff cell");
+        let cell = grid.cell(0, 0).expect("special-identity cell");
 
-        assert!(cell.is_cliff_like);
-        assert!(cell.base_ground_walk_blocked);
-        assert!(cell.ground_walk_blocked);
-        assert!(cell.build_blocked);
-        assert_eq!(cell.terrain_class, TerrainClass::Cliff);
+        assert!(theater.cliff_ranges.is_special_terrain_tile(10, 0));
+        assert!(!cell.is_cliff_like);
+        assert!(!cell.base_ground_walk_blocked);
+        assert!(!cell.ground_walk_blocked);
+        assert!(!cell.build_blocked);
+        assert_eq!(cell.terrain_class, TerrainClass::Clear);
     }
 
     #[test]
@@ -2674,32 +2703,6 @@ mod tests {
         assert!(!cell.base_ground_walk_blocked);
         assert!(!cell.ground_walk_blocked);
         assert_eq!(cell.terrain_class, TerrainClass::Clear);
-    }
-
-    #[test]
-    fn numeric_cliff_range_preserves_tmp_land_bytes() {
-        let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n";
-        let mut theater = synthetic_theater_from_ini(ini);
-        theater.cliff_ranges.cliff_set = Some(0);
-        let mut metadata = TileMetadata {
-            has_tmp_metadata: true,
-            land_type: crate::sim::pathfinding::passability::LandType::Road.as_index(),
-            yr_cell_land_type: 11,
-            raw_land_type: 11,
-            ..TileMetadata::default()
-        };
-
-        apply_theater_cliff_ranges(&mut metadata, &theater, 0);
-
-        assert!(metadata.is_cliff_like);
-        assert!(metadata.ground_blocked);
-        assert!(metadata.build_blocked);
-        assert_eq!(
-            metadata.land_type,
-            crate::sim::pathfinding::passability::LandType::Road.as_index()
-        );
-        assert_eq!(metadata.yr_cell_land_type, 11);
-        assert_eq!(metadata.terrain_class, TerrainClass::Cliff);
     }
 
     #[test]

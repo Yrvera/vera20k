@@ -5,7 +5,7 @@
 //! indices against those bases. `TileIds` carries the resolved values, with
 //! `-1` for a missing key exactly like the native globals, so range tests can
 //! be ported verbatim. Cliff/impassable classification is NOT here — it is
-//! the existing `TheaterCliffRanges::is_cliff_or_impassable_tile`.
+//! the existing `TheaterCliffRanges::is_special_terrain_tile`.
 
 use crate::map::theater::TheaterData;
 
@@ -31,6 +31,7 @@ const PAVE_SPAN: i32 = 16;
 pub struct TileIds {
     pub clear: i32,
     pub ramp_base: i32,
+    pub ramp_smooth: i32,
     pub rough: i32,
     pub sand: i32,
     pub green: i32,
@@ -115,6 +116,7 @@ impl TileIds {
         Self {
             clear: flat(keys.clear_tile),
             ramp_base: flat(keys.ramp_base),
+            ramp_smooth: flat(keys.ramp_smooth),
             rough: flat(keys.rough_tile),
             sand: flat(keys.sand_tile),
             green: flat(keys.green_tile),
@@ -249,6 +251,7 @@ mod tests {
         let keys = RmgTileKeys {
             clear_tile: start(0),
             ramp_base: start(1),
+            ramp_smooth: start(2),
             rough_tile: start(2),
             clear_to_rough_lat: start(3),
             sand_tile: start(4),
@@ -268,8 +271,15 @@ mod tests {
         let ids = TileIds::from_keys(&keys);
         assert_eq!(ids.clear, 0);
         assert_eq!(ids.ramp_base, 64);
+        assert_eq!(ids.ramp_smooth, 128);
         assert_eq!(ids.medians, 16 * 64);
         ids
+    }
+
+    #[test]
+    fn gsi_04_03a_ramp_base_and_smooth_bind_to_distinct_resolved_keys() {
+        let ids = contract_ids();
+        assert_eq!((ids.ramp_base, ids.ramp_smooth), (64, 128));
     }
 
     #[test]
@@ -306,6 +316,7 @@ mod tests {
         let ids = TileIds {
             clear: -1,
             ramp_base: -1,
+            ramp_smooth: -1,
             rough: -1,
             sand: -1,
             green: -1,

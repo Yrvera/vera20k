@@ -3214,6 +3214,38 @@ fn astar_blocks_structural_body_to_body_bad_height_jump() {
 // ============================================================================
 
 #[test]
+fn gsi_04_03a_signed_minus_one_height_uses_lower_raw_slope_in_both_directions() {
+    let lower = bridge_test_cell(0xFF, false, false, 0);
+    let upper = bridge_test_cell(0, false, false, 0xFE);
+    let grid = PathGrid::from_cells(vec![lower, upper], 2, 1);
+
+    assert!(
+        find_path(&grid, (0, 0), (1, 0)).is_none(),
+        "-1 to 0 must test the lower -1 cell's zero raw slope byte"
+    );
+    assert!(
+        find_path(&grid, (1, 0), (0, 0)).is_none(),
+        "0 to -1 must test the lower -1 cell's zero raw slope byte"
+    );
+}
+
+#[test]
+fn gsi_04_03a_signed_minus_one_height_accepts_high_nonzero_raw_slope() {
+    let lower = bridge_test_cell(0xFF, false, false, 0xFE);
+    let upper = bridge_test_cell(0, false, false, 0);
+    let grid = PathGrid::from_cells(vec![lower, upper], 2, 1);
+
+    assert!(
+        find_path(&grid, (0, 0), (1, 0)).is_some(),
+        "-1 to 0 must accept any nonzero lower raw slope byte, including 0xFE"
+    );
+    assert!(
+        find_path(&grid, (1, 0), (0, 0)).is_some(),
+        "0 to -1 must accept any nonzero lower raw slope byte, including 0xFE"
+    );
+}
+
+#[test]
 fn diff_1_slope_zero_lower_blocks_going_up() {
     // 3x1 grid: level 0 (slope 0) — level 1 (slope 0) — level 0 (slope 0).
     // Both diff-1 edges have a slope=0 lower cell — gate must block both.

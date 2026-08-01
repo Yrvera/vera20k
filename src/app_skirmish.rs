@@ -1443,6 +1443,7 @@ mod tests {
             header: crate::map::map_file::MapHeader {
                 theater: "TEMPERATE".to_string(),
                 fill: "Clear".to_string(),
+                level: 0,
                 width: 64,
                 height: 64,
                 local_left: 0,
