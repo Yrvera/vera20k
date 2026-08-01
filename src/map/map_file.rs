@@ -112,6 +112,9 @@ impl From<std::io::Error> for MapError {
 pub struct MapHeader {
     /// Theater name: "TEMPERATE", "SNOW", "URBAN", etc.
     pub theater: String,
+    /// Raw `[Map] Fill` value. Active YR defaults this to `Clear`; terrain
+    /// initialization interprets the verified `Water` spelling.
+    pub fill: String,
     /// Full map width (from Size= 3rd value).
     pub width: u32,
     /// Full map height (from Size= 4th value).
@@ -338,6 +341,7 @@ fn parse_header(ini: &IniFile) -> Result<MapHeader, MapError> {
         .get("Theater")
         .unwrap_or("TEMPERATE")
         .to_uppercase();
+    let fill = map_section.get("Fill").unwrap_or("Clear").to_string();
 
     // Full-map resizing stores Size width/height but normalizes its origin before LocalSize is read.
     let size_parts = read_rect_i32(map_section.get("Size"), DEFAULT_SIZE_RECT);
@@ -346,6 +350,7 @@ fn parse_header(ini: &IniFile) -> Result<MapHeader, MapError> {
 
     Ok(MapHeader {
         theater,
+        fill,
         width: size_parts[2] as u32,
         height: size_parts[3] as u32,
         local_left: local_parts[0] as u32,
@@ -657,6 +662,17 @@ LocalSize=2,4,96,92
         assert_eq!(header.local_top, 4);
         assert_eq!(header.local_width, 96);
         assert_eq!(header.local_height, 92);
+    }
+
+    #[test]
+    fn gsi_04_02_map_fill_defaults_to_clear_and_preserves_present_value() {
+        let default_ini = IniFile::from_str("[Map]\nSize=0,0,3,2\n");
+        let default_header = parse_header(&default_ini).expect("default Fill parses");
+        assert_eq!(default_header.fill, "Clear");
+
+        let water_ini = IniFile::from_str("[Map]\nSize=0,0,3,2\nFill=  wAtEr \t\n");
+        let water_header = parse_header(&water_ini).expect("present Fill parses");
+        assert_eq!(water_header.fill, "wAtEr");
     }
 
     #[test]

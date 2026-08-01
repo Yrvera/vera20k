@@ -382,7 +382,7 @@ fn bridge_ramp_predicate_is_narrower_than_broad_impassable() {
 }
 
 #[test]
-fn lunar_theater_zeroing_clears_numeric_cliff_and_bridge_ranges() {
+fn gsi_04_02_lunar_theater_zeroing_clears_water_cliff_and_bridge_globals() {
     let mut ini = String::from(
         "[General]\n\
          CliffSet=10\n\
@@ -402,14 +402,25 @@ fn lunar_theater_zeroing_clears_numeric_cliff_and_bridge_ranges() {
     let mut bridge_set = super::parse_general_int(&ini, "BridgeSet");
     let mut wood_bridge_set = super::parse_general_int(&ini, "WoodBridgeSet");
     let mut ranges = super::resolve_cliff_ranges(&lookup, &ini, bridge_set, wood_bridge_set);
+    let mut rmg_tiles = RmgTileKeys {
+        water_set: Some(17),
+        ..RmgTileKeys::default()
+    };
 
     assert!(ranges.is_cliff_or_impassable_tile(1, 0));
 
-    super::apply_lunar_cliff_zeroing("LUNAR", &mut bridge_set, &mut wood_bridge_set, &mut ranges);
+    super::apply_lunar_global_zeroing(
+        "LUNAR",
+        &mut bridge_set,
+        &mut wood_bridge_set,
+        &mut ranges,
+        &mut rmg_tiles,
+    );
 
     assert_eq!(bridge_set, None);
     assert_eq!(wood_bridge_set, None);
     assert_eq!(ranges, TheaterCliffRanges::default());
+    assert_eq!(rmg_tiles.water_set, None);
     assert!(!ranges.is_cliff_or_impassable_tile(1, 0));
 }
 

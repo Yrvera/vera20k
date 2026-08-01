@@ -152,6 +152,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
     MapFile {
         header: MapHeader {
             theater: state.theater_name.clone(),
+            fill: "Clear".to_string(),
             width: 0,
             height: 0,
             local_left: 0,

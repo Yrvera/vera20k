@@ -256,10 +256,14 @@ pub(crate) struct AppState {
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     pub(crate) loading_session: Option<crate::app_loading::LoadingSession>,
-    /// Process-persistent lazy terrain variant table. Scenario teardown,
-    /// failed loads, reseeds, and save transitions must not clear it.
+    /// Process-persistent terrain-load cache. Scenario teardown, failed loads,
+    /// reseeds, and save transitions must not clear it.
     pub(crate) tile_variant_selector_cache:
         crate::map::tile_variant_selector::TileVariantSelectorCache,
+    /// Process-owned front-end Main stream. RMG dialog actions and the first
+    /// preview selector reach share this cursor; accepted matches reseed their
+    /// own Main stream instead of inheriting it.
+    pub(crate) frontend_main_rng: crate::sim::rng::SimRng,
     /// Process-lifetime monotonic identity source; zero is permanently reserved.
     pub(crate) next_match_correlation: u64,
     /// Correlation owned by the currently loading accepted attempt.
@@ -1508,7 +1512,7 @@ impl App {
                     Some(previous),
                     // Saved-seed browsing (0x6C2/0x6C3/0x6C4) is not implemented.
                     false,
-                    &mut crate::ui::skirmish_shell::DialogRng::from_entropy(),
+                    &mut state.frontend_main_rng,
                 ));
         }
         if close_modal {
@@ -1535,6 +1539,14 @@ impl App {
             log::warn!("random map: theater {theater_name} unavailable");
             return false;
         };
+        // Stock RMG preview publishes its resolved theater registry before the
+        // later ordinary map load, even if generation subsequently fails.
+        state
+            .tile_variant_selector_cache
+            .complete_theater_registry_load(
+                theater.rmg_tiles.clear_tile,
+                theater.rmg_tiles.water_set,
+            );
         let terrain_rules = asset_manager
             .get_ref("rulesmd.ini")
             .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
@@ -1723,7 +1735,7 @@ impl App {
 
     /// Rasterise the finished map and persist it as the chooser's thumbnail.
     fn rasterise_generated_map(
-        state: &AppState,
+        state: &mut AppState,
         job: &RandomMapGenerationJob,
         generated: &crate::map::rmg::GeneratedMap,
     ) -> Option<crate::map::rmg::preview::PreviewImage> {
@@ -1741,7 +1753,7 @@ impl App {
     /// Mid-generation snapshots go through here too, so an in-progress preview
     /// is coloured by exactly the path that colours the finished one.
     fn rasterise_map(
-        state: &AppState,
+        state: &mut AppState,
         job: &RandomMapGenerationJob,
         map_file: &crate::map::map_file::MapFile,
         start_waypoints: &[(u8, u16, u16)],
@@ -1749,15 +1761,30 @@ impl App {
         // LAT defaults off for runtime maps, so resolve the same way the load
         // path will; a different setting here would colour cells the player
         // never sees.
-        let resolved_terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::build(
-            map_file,
-            Some(&job.theater),
-            state.asset_manager.as_ref(),
-            Some(&job.terrain_rules),
-            None,
-            false,
-            RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
-        );
+        let resolved_terrain = {
+            let frontend_main_rng = &mut state.frontend_main_rng;
+            let selector_cache = &mut state.tile_variant_selector_cache;
+            let asset_manager = state.asset_manager.as_ref();
+            let mut raw_draw = || frontend_main_rng.next_u32();
+            let mut selector = selector_cache.begin_load(&mut raw_draw);
+            // RMG InitMap supplies explicit Clear cells. Its preview never
+            // borrows a Scenario cursor; equal-bound Fill remains zero-cost.
+            let mut scenario_fill_ranged = |low, high| {
+                debug_assert_eq!((low, high), (0, 0));
+                0
+            };
+            crate::map::resolved_terrain::ResolvedTerrainGrid::build_with_variant_selector(
+                map_file,
+                Some(&job.theater),
+                asset_manager,
+                Some(&job.terrain_rules),
+                None,
+                false,
+                RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
+                &mut scenario_fill_ranged,
+                &mut selector,
+            )
+        };
         // Ore and gem cells take their colour from the overlay's own SHP: the
         // growth stage indexes the frame list and the frame header carries the
         // radar triple. The artwork is never sampled for it, so there is no
@@ -2221,11 +2248,12 @@ impl App {
             Control::Randomize0x621 => {
                 modal.randomize_options(
                     &settings,
-                    &mut crate::ui::skirmish_shell::DialogRng::from_entropy(),
+                    &mut state.frontend_main_rng,
                     &description,
                 );
             }
             Control::Generate0x620 => {
+                modal.reroll_derived_for_generate(&settings, &mut state.frontend_main_rng);
                 modal.begin_generate();
                 generate_requested = true;
             }
@@ -2236,6 +2264,7 @@ impl App {
                     modal.accept(),
                     crate::ui::skirmish_shell::AcceptOutcome::NeedsGenerate
                 ) {
+                    modal.reroll_derived_for_generate(&settings, &mut state.frontend_main_rng);
                     modal.begin_generate();
                     generate_requested = true;
                 }
@@ -4131,6 +4160,7 @@ impl App {
             skirmish_settings,
             loading_session: None,
             tile_variant_selector_cache: Default::default(),
+            frontend_main_rng: crate::sim::rng::SimRng::new(u64::from(frontend_seed.value)),
             next_match_correlation: 1,
             active_loading_correlation: None,
             loaded_startup: None,

@@ -302,6 +302,9 @@ pub struct ResolvedTerrainGrid {
     width: u16,
     height: u16,
     pub cells: Vec<ResolvedTerrainCell>,
+    /// Production-only membership for native Size-diamond CellClass slots.
+    /// `None` keeps synthetic/from_cells grids rectangular for focused tests.
+    native_allocated: Option<Vec<bool>>,
     tube_facts: Vec<TubeFact>,
     /// Theater `[General] ClearTile` resolved to a flat tile id.
     ///
@@ -334,6 +337,7 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
+            native_allocated: None,
             tube_facts,
             clear_tile_id: 0,
             tile_registry_len: None,
@@ -388,7 +392,16 @@ impl ResolvedTerrainGrid {
 
     pub fn index(&self, rx: u16, ry: u16) -> Option<usize> {
         if rx < self.width && ry < self.height {
-            Some(ry as usize * self.width as usize + rx as usize)
+            let index = ry as usize * self.width as usize + rx as usize;
+            if self
+                .native_allocated
+                .as_ref()
+                .is_some_and(|mask| !mask.get(index).copied().unwrap_or(false))
+            {
+                None
+            } else {
+                Some(index)
+            }
         } else {
             None
         }
@@ -405,7 +418,12 @@ impl ResolvedTerrainGrid {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &ResolvedTerrainCell> {
-        self.cells.iter()
+        self.cells.iter().enumerate().filter_map(|(index, cell)| {
+            self.native_allocated
+                .as_ref()
+                .is_none_or(|mask| mask.get(index).copied().unwrap_or(false))
+                .then_some(cell)
+        })
     }
 
     pub fn tube_facts(&self) -> &[TubeFact] {
@@ -481,6 +499,7 @@ impl ResolvedTerrainGrid {
             lat_enabled,
             cliff_back_impassability,
             None,
+            None,
         )
     }
 
@@ -493,6 +512,7 @@ impl ResolvedTerrainGrid {
         overlay_registry: Option<&OverlayTypeRegistry>,
         lat_enabled: bool,
         cliff_back_impassability: u8,
+        scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
         variant_selector: &mut TileVariantSelectionContext<'_, '_>,
     ) -> Self {
         Self::build_inner(
@@ -503,6 +523,7 @@ impl ResolvedTerrainGrid {
             overlay_registry,
             lat_enabled,
             cliff_back_impassability,
+            Some(scenario_fill_ranged),
             Some(variant_selector),
         )
     }
@@ -515,17 +536,30 @@ impl ResolvedTerrainGrid {
         overlay_registry: Option<&OverlayTypeRegistry>,
         lat_enabled: bool,
         cliff_back_impassability: u8,
+        mut scenario_fill_ranged: Option<&mut dyn FnMut(u32, u32) -> u32>,
         mut variant_selector: Option<&mut TileVariantSelectionContext<'_, '_>>,
     ) -> Self {
         let clear_tile_id = theater_data
             .and_then(|td| td.rmg_tiles.clear_tile)
             .unwrap_or(0);
-        let (width, height) = grid_dimensions(&map.cells);
+        let materialized_size_diamond = variant_selector.is_some();
+        let raw_cells = if let (Some(selector), Some(fill_ranged)) = (
+            variant_selector.as_deref_mut(),
+            scenario_fill_ranged.as_deref_mut(),
+        ) {
+            materialize_map_load_cells(map, selector, fill_ranged)
+        } else {
+            // The selector-free constructor is retained for focused tests and
+            // synthetic grids. Production always takes the native load path.
+            map.cells.clone()
+        };
+        let (width, height) = grid_dimensions(&raw_cells);
         if width == 0 || height == 0 {
             return Self {
                 width: 0,
                 height: 0,
                 cells: Vec::new(),
+                native_allocated: materialized_size_diamond.then(Vec::new),
                 tube_facts: Vec::new(),
                 clear_tile_id,
                 tile_registry_len: theater_data.map(|td| td.lookup.len()),
@@ -539,7 +573,17 @@ impl ResolvedTerrainGrid {
             .and_then(|tr| tr.semantics_by_name("Tiberium"))
             .map(|sem| sem.speed_costs);
 
-        let mut final_cells: Vec<MapCell> = map.cells.clone();
+        let mut final_cells: Vec<MapCell> = raw_cells.clone();
+        let native_allocated = materialized_size_diamond.then(|| {
+            let mut mask = vec![false; width as usize * height as usize];
+            for cell in &raw_cells {
+                let index = cell.ry as usize * width as usize + cell.rx as usize;
+                if let Some(slot) = mask.get_mut(index) {
+                    *slot = true;
+                }
+            }
+            mask
+        });
         if lat_enabled {
             if let Some(td) = theater_data {
                 let lat_config = lat::parse_lat_config(&td.ini_data, &td.lookup);
@@ -550,7 +594,7 @@ impl ResolvedTerrainGrid {
         }
 
         let raw_lookup: HashMap<(u16, u16), &MapCell> =
-            map.cells.iter().map(|c| ((c.rx, c.ry), c)).collect();
+            raw_cells.iter().map(|c| ((c.rx, c.ry), c)).collect();
         let final_lookup: HashMap<(u16, u16), &MapCell> =
             final_cells.iter().map(|c| ((c.rx, c.ry), c)).collect();
 
@@ -620,11 +664,14 @@ impl ResolvedTerrainGrid {
                 let mut variant = 0u8;
                 if let (Some(td), Some(selector)) = (theater_data, variant_selector.as_mut()) {
                     let total_file_count = td.lookup.total_file_count(presentation_tile_id);
-                    if ordinary_variant_selection_enabled(
-                        total_file_count,
-                        uses_clear_fallback,
-                        pristine_metadata.has_damaged_data,
-                    ) {
+                    let outside_size_diamond = materialized_size_diamond && raw.is_none();
+                    if !outside_size_diamond
+                        && ordinary_variant_selection_enabled(
+                            total_file_count,
+                            uses_clear_fallback,
+                            pristine_metadata.has_damaged_data,
+                        )
+                    {
                         max_total_files = max_total_files.max(total_file_count);
                         variant = selector.select_variant(
                             i32::from(rx),
@@ -1124,6 +1171,7 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
+            native_allocated,
             tube_facts,
             clear_tile_id,
             tile_registry_len: theater_data.map(|td| td.lookup.len()),
@@ -1786,6 +1834,72 @@ fn wheel_speed_at_or_below_one_percent(wheel: Option<u8>) -> bool {
     wheel.is_some_and(|speed| speed <= 1)
 }
 
+/// Reproduce the active map-load order: initialize every allocated Size-diamond
+/// CellClass, then let IsoMapPack records overwrite those cells in stream order.
+fn materialize_map_load_cells(
+    map: &MapFile,
+    selector: &mut TileVariantSelectionContext<'_, '_>,
+    scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
+) -> Vec<MapCell> {
+    let n = map.header.width;
+    let m = map.header.height;
+    let Some(max_coord) = n.checked_add(m) else {
+        return Vec::new();
+    };
+    // The native owner is a fixed 512x512 CellClass lookup. Retail maps fit
+    // this boundary; reject malformed dimensions instead of iterating an
+    // unbounded signed-bit-pattern value from the INI.
+    if n == 0 || m == 0 || max_coord > 512 {
+        return Vec::new();
+    }
+
+    let is_water = map
+        .header
+        .fill
+        .trim_matches(|ch: char| ch <= ' ')
+        .eq_ignore_ascii_case("Water");
+    let expected_count = m
+        .checked_mul(n.saturating_mul(2).saturating_sub(1))
+        .and_then(|count| usize::try_from(count).ok())
+        .unwrap_or(0);
+    let mut cells = Vec::with_capacity(expected_count);
+    let mut index_by_coord = HashMap::with_capacity(expected_count);
+    let last_sum = n + m * 2;
+
+    // This sum-major form is the native iterator's anti-diagonal order: each
+    // diagonal advances x and retreats y, beginning at (1, Size.Width).
+    for sum in (n + 1)..=last_sum {
+        for rx in 0..=sum {
+            let ry = sum - rx;
+            if rx.abs_diff(ry) >= n {
+                continue;
+            }
+            let rx = u16::try_from(rx).expect("validated Size diamond x fits u16");
+            let ry = u16::try_from(ry).expect("validated Size diamond y fits u16");
+            let index = cells.len();
+            cells.push(MapCell {
+                rx,
+                ry,
+                tile_index: selector.draw_fill_tile_index(is_water, scenario_fill_ranged),
+                sub_tile: 0,
+                // `[Map] Level` is the next Phase 3 item; Fill itself writes
+                // no elevation beyond the existing zero-initialized cell.
+                z: 0,
+            });
+            index_by_coord.insert((rx, ry), index);
+        }
+    }
+    debug_assert_eq!(cells.len(), expected_count);
+
+    for explicit in &map.cells {
+        let Some(&index) = index_by_coord.get(&(explicit.rx, explicit.ry)) else {
+            continue;
+        };
+        cells[index] = explicit.clone();
+    }
+    cells
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1795,6 +1909,7 @@ mod tests {
     use crate::map::tube_facts::TubeSource;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{TerrainClass, TerrainRules};
+    use crate::sim::rng::SimRng;
     use std::collections::HashSet;
 
     fn make_map(
@@ -1805,6 +1920,7 @@ mod tests {
         MapFile {
             header: crate::map::map_file::MapHeader {
                 theater: "TEMPERATE".to_string(),
+                fill: "Clear".to_string(),
                 width: 4,
                 height: 4,
                 local_left: 0,
@@ -1953,6 +2069,247 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_02_cached_water_and_scenario_fill_precede_isomap_overwrite() {
+        let mut map = make_map(
+            vec![MapCell {
+                rx: 2,
+                ry: 2,
+                tile_index: 99,
+                sub_tile: 7,
+                z: 5,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.header.width = 3;
+        map.header.height = 2;
+        map.header.fill = " \twAtEr\r\n".to_string();
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        assert_eq!(cache.cached_clear_tile_base(), 0);
+        assert_eq!(cache.cached_water_set_base(), 0);
+
+        // Stock RMG preview A publishes both resolved bases for the following
+        // ordinary load B. Repeating preview A preserves the same values.
+        cache.complete_theater_registry_load(Some(37), Some(50));
+        assert_eq!(cache.cached_clear_tile_base(), 37);
+        assert_eq!(cache.cached_water_set_base(), 50);
+        cache.complete_theater_registry_load(Some(37), Some(50));
+        assert_eq!(cache.cached_water_set_base(), 50);
+
+        let seed = 0xA55A_1234;
+        let mut expected_scenario = SimRng::new(seed);
+        let expected_tiles: Vec<_> = (0..10)
+            .map(|_| 50 + expected_scenario.next_range_u32_inclusive(0, 3) as i32)
+            .collect();
+        let mut scenario_rng = SimRng::new(seed);
+        let mut scenario_calls = 0usize;
+        let mut scenario_fill_ranged = |low, high| {
+            scenario_calls += 1;
+            scenario_rng.next_range_u32_inclusive(low, high)
+        };
+        let mut main_rng = SimRng::new(seed);
+        let main_before = main_rng.logical_state();
+        let mut main_draw = || main_rng.next_u32();
+        {
+            let mut selector = cache.begin_load(&mut main_draw);
+            let cells = materialize_map_load_cells(
+                &map,
+                &mut selector,
+                &mut scenario_fill_ranged,
+            );
+            let coords: Vec<_> = cells.iter().map(|cell| (cell.rx, cell.ry)).collect();
+            assert_eq!(
+                coords,
+                vec![
+                    (1, 3),
+                    (2, 2),
+                    (3, 1),
+                    (2, 3),
+                    (3, 2),
+                    (2, 4),
+                    (3, 3),
+                    (4, 2),
+                    (3, 4),
+                    (4, 3),
+                ]
+            );
+            assert_eq!(selector.map_fill_scenario_advance_count(), 10);
+            for (index, cell) in cells.iter().enumerate() {
+                if index == 1 {
+                    assert_eq!((cell.tile_index, cell.sub_tile, cell.z), (99, 7, 5));
+                } else {
+                    assert_eq!(
+                        (cell.tile_index, cell.sub_tile, cell.z),
+                        (expected_tiles[index], 0, 0)
+                    );
+                }
+            }
+            assert!(!coords.contains(&(0, 0)));
+            assert!(!coords.contains(&(1, 4)));
+            assert!(!selector.generated_table());
+            assert_eq!(selector.raw_draw_count(), 0);
+        }
+        drop(main_draw);
+        drop(scenario_fill_ranged);
+        assert_eq!(scenario_calls, 10);
+        assert_eq!(scenario_rng.logical_state(), expected_scenario.logical_state());
+        assert_eq!(main_rng.logical_state(), main_before);
+
+        // A registry with neither role publishes native reset sentinels only
+        // after its own Fill, for use by the following load.
+        cache.complete_theater_registry_load(None, None);
+        assert_eq!(cache.cached_clear_tile_base(), -1);
+        assert_eq!(cache.cached_water_set_base(), -1);
+    }
+
+    #[test]
+    fn gsi_04_02_clear_and_unknown_use_prior_cached_clear_and_equal_scenario_bounds() {
+        for fill in ["Clear", "unknown"] {
+            let mut map = make_map(Vec::new(), Vec::new(), Vec::new());
+            map.header.width = 3;
+            map.header.height = 2;
+            map.header.fill = fill.to_string();
+
+            let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+            // The already parsed current theater may resolve ClearTile=0, but
+            // Fill snapshots the prior process-global value (37).
+            cache.complete_theater_registry_load(Some(37), Some(50));
+            let mut forbidden_main = || panic!("Fill must not draw Main");
+            let mut selector = cache.begin_load(&mut forbidden_main);
+            let mut scenario_rng = SimRng::new(0x1234_5678);
+            let scenario_before = scenario_rng.logical_state();
+            let mut scenario_calls = 0usize;
+            let mut scenario_fill_ranged = |low, high| {
+                scenario_calls += 1;
+                assert_eq!((low, high), (0, 0));
+                scenario_rng.next_range_u32_inclusive(low, high)
+            };
+            let cells = materialize_map_load_cells(
+                &map,
+                &mut selector,
+                &mut scenario_fill_ranged,
+            );
+            drop(scenario_fill_ranged);
+
+            assert_eq!(cells.len(), 10);
+            assert!(
+                cells
+                    .iter()
+                    .all(|cell| { cell.tile_index == 37 && cell.sub_tile == 0 && cell.z == 0 })
+            );
+            assert_eq!(scenario_calls, 10);
+            assert_eq!(scenario_rng.logical_state(), scenario_before);
+            assert_eq!(selector.map_fill_scenario_advance_count(), 0);
+            assert_eq!(selector.raw_draw_count(), 0);
+        }
+    }
+
+    #[test]
+    fn gsi_04_02_production_build_prefills_before_selector_and_skips_outside_slots() {
+        let mut map = make_map(
+            vec![MapCell {
+                rx: 2,
+                ry: 2,
+                tile_index: theater::NO_TILE,
+                sub_tile: 9,
+                z: 4,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.header.width = 3;
+        map.header.height = 2;
+        map.header.fill = "Water".to_string();
+        let mut theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=64\nFileName=ground\nSetName=Ground\n",
+        );
+        theater.rmg_tiles.clear_tile = Some(0);
+        // Preview A published 50, while this already-parsed ordinary theater B
+        // resolves 1. B's Fill must retain A until B publishes afterward.
+        theater.rmg_tiles.water_set = Some(1);
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        cache.complete_theater_registry_load(Some(37), Some(50));
+        let seed = 0xCAFE_BABE;
+        let mut scenario_rng = SimRng::new(seed);
+        let mut expected_scenario = scenario_rng.clone();
+        let expected_first = 50 + expected_scenario.next_range_u32_inclusive(0, 3) as i32;
+        for _ in 1..10 {
+            let _ = expected_scenario.next_range_u32_inclusive(0, 3);
+        }
+        let mut scenario_fill_ranged = |low, high| {
+            scenario_rng.next_range_u32_inclusive(low, high)
+        };
+        let mut main_rng = SimRng::new(seed);
+        let main_before = main_rng.logical_state();
+        let mut main_draw = || main_rng.next_u32();
+        let main_draw_count;
+        {
+            let mut selector = cache.begin_load(&mut main_draw);
+            let grid = ResolvedTerrainGrid::build_with_variant_selector(
+                &map,
+                Some(&theater),
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut scenario_fill_ranged,
+                &mut selector,
+            );
+
+            let first = grid.cell(1, 3).expect("allocated first diamond cell");
+            assert_eq!(first.source_tile_index, expected_first);
+            assert_eq!(first.final_tile_index, expected_first);
+            assert!(!first.filled_clear);
+
+            let explicit = grid.cell(2, 2).expect("explicit overwrite cell");
+            assert_eq!(explicit.source_tile_index, theater::NO_TILE);
+            assert_eq!(explicit.final_sub_tile, 9);
+            assert_eq!(explicit.level, 4);
+            assert_eq!(grid.presentation_tile(explicit), (0, 0));
+
+            assert_eq!(grid.iter().count(), 10);
+            assert!(grid.cell(0, 0).is_none());
+            assert_eq!(
+                crate::sim::cell_rect::get_cellclass_fallback(Some(&grid), 0, 0),
+                crate::sim::cell_rect::CellRef::Dummy { coord: (0, 0) }
+            );
+            let path_grid = crate::sim::pathfinding::PathGrid::from_resolved_terrain(&grid);
+            assert!(!path_grid.is_walkable(0, 0));
+            let terrain_cost =
+                crate::sim::pathfinding::terrain_cost::TerrainCostGrid::from_resolved_terrain(
+                    &grid,
+                    crate::rules::locomotor_type::SpeedType::Track,
+                );
+            assert_eq!(terrain_cost.cost_at(0, 0), 0);
+            assert_eq!(selector.map_fill_scenario_advance_count(), 10);
+            assert!(selector.generated_table());
+            assert!(selector.raw_draw_count() > 0);
+            main_draw_count = selector.raw_draw_count();
+        }
+        drop(main_draw);
+        drop(scenario_fill_ranged);
+        assert_eq!(scenario_rng.logical_state(), expected_scenario.logical_state());
+        let mut expected_main = SimRng::new(seed);
+        for _ in 0..main_draw_count {
+            let _ = expected_main.next_u32();
+        }
+        assert_eq!(main_rng.logical_state(), expected_main.logical_state());
+        assert_ne!(main_rng.logical_state(), main_before);
+
+        // The production orchestrator publishes the current theater only
+        // after Fill and variant resolution have released their snapshots.
+        cache.complete_theater_registry_load(
+            theater.rmg_tiles.clear_tile,
+            theater.rmg_tiles.water_set,
+        );
+        assert_eq!(cache.cached_clear_tile_base(), 0);
+        assert_eq!(cache.cached_water_set_base(), 1);
+    }
+
+    #[test]
     fn direction_8_steps_through_cell_tube() {
         let mut cells = vec![
             make_test_cell(0, 0),
@@ -1996,8 +2353,8 @@ mod tests {
     fn gsi_02_11_clear_fallback_calls_selector_even_with_pristine_only() {
         let map = make_map(
             vec![MapCell {
-                rx: 0,
-                ry: 0,
+                rx: 1,
+                ry: 4,
                 tile_index: theater::NO_TILE,
                 sub_tile: 7,
                 z: 0,
@@ -2017,6 +2374,7 @@ mod tests {
             draws = draws.wrapping_add(1);
             value
         };
+        let mut scenario_fill_ranged = |_low, _high| 0;
         {
             let mut selector = cache.begin_load(&mut raw_draw);
             let grid = ResolvedTerrainGrid::build_with_variant_selector(
@@ -2027,9 +2385,10 @@ mod tests {
                 None,
                 false,
                 0,
+                &mut scenario_fill_ranged,
                 &mut selector,
             );
-            assert_eq!(grid.cell(0, 0).expect("fallback cell").variant, 0);
+            assert_eq!(grid.cell(1, 4).expect("fallback cell").variant, 0);
             assert!(selector.generated_table());
             assert!(selector.raw_draw_count() > 0);
         }
@@ -2041,8 +2400,8 @@ mod tests {
     fn gsi_02_11_positive_registry_oor_uses_clear_and_invokes_selector() {
         let map = make_map(
             vec![MapCell {
-                rx: 0,
-                ry: 0,
+                rx: 1,
+                ry: 4,
                 tile_index: 1,
                 sub_tile: 7,
                 z: 2,
@@ -2063,6 +2422,7 @@ mod tests {
             draws = draws.wrapping_add(1);
             value
         };
+        let mut scenario_fill_ranged = |_low, _high| 0;
         {
             let mut selector = cache.begin_load(&mut raw_draw);
             let grid = ResolvedTerrainGrid::build_with_variant_selector(
@@ -2073,9 +2433,10 @@ mod tests {
                 None,
                 false,
                 0,
+                &mut scenario_fill_ranged,
                 &mut selector,
             );
-            let cell = grid.cell(0, 0).expect("positive out-of-range cell");
+            let cell = grid.cell(1, 4).expect("positive out-of-range cell");
             assert_eq!(cell.final_tile_index, 1);
             assert_eq!(cell.final_sub_tile, 7);
             assert_eq!(grid.presentation_tile(cell), (0, 0));

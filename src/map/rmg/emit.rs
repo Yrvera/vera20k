@@ -49,6 +49,7 @@ pub fn theater_name(theater: i32) -> &'static str {
 pub fn empty_map_file(options: &RmgOptions, gen_w: u32, gen_h: u32) -> MapFile {
     let header = MapHeader {
         theater: theater_name(options.theater).to_string(),
+        fill: "Clear".to_string(),
         width: gen_w + SIZE_PAD_X,
         height: gen_h + SIZE_PAD_Y,
         local_left: LOCAL_LEFT,

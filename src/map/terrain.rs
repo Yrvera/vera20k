@@ -1017,6 +1017,7 @@ mod tests {
         // Dustbowl: Size=70x76, LocalSize=2,8,65,62
         let header = MapHeader {
             theater: "TEMPERATE".to_string(),
+            fill: "Clear".to_string(),
             width: 70,
             height: 76,
             local_left: 2,
@@ -1083,6 +1084,7 @@ mod tests {
             crate::map::tile_variant_selector::TileVariantSelectorCache::default();
         let mut main_rng = crate::sim::rng::SimRng::new(0);
         let mut raw_draw = || main_rng.next_u32();
+        let mut scenario_fill_ranged = |_low, _high| 0;
         let resolved = {
             let mut selector = selector_cache.begin_load(&mut raw_draw);
             let resolved =
@@ -1094,6 +1096,7 @@ mod tests {
                     None,
                     true,
                     0,
+                    &mut scenario_fill_ranged,
                     &mut selector,
                 );
             assert!(selector.generated_table());

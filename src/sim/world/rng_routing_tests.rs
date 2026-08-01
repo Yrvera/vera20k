@@ -124,6 +124,31 @@ fn drawing_main_leaves_scenario_untouched() {
 // sequence (verified vs the binary scenario RNG; pinned in rng.rs by
 // test_gamemd_raw_sequence_seed_one). Proves the dual seeding is an exact clone.
 #[test]
+fn gsi_04_02_terrain_load_handoffs_install_scenario_and_main_independently() {
+    let seed = 0x1234_5678u64;
+    let mut sim = Simulation::with_seed(seed);
+    let fresh = SimRng::new(seed).logical_state();
+
+    let mut fill_scenario = SimRng::new(seed);
+    for _ in 0..10 {
+        let _ = fill_scenario.next_range_u32_inclusive(0, 3);
+    }
+    let expected_scenario = fill_scenario.logical_state();
+    sim.install_terrain_load_advanced_scenario_rng(fill_scenario);
+    assert_eq!(sim.scenario_rng.logical_state(), expected_scenario);
+    assert_eq!(sim.main_rng.logical_state(), fresh);
+
+    let mut selector_main = SimRng::new(seed);
+    for _ in 0..128 {
+        let _ = selector_main.next_u32();
+    }
+    let expected_main = selector_main.logical_state();
+    sim.install_variant_advanced_main_rng(selector_main);
+    assert_eq!(sim.scenario_rng.logical_state(), expected_scenario);
+    assert_eq!(sim.main_rng.logical_state(), expected_main);
+}
+
+#[test]
 fn each_stream_reproduces_gamemd_raw_sequence_seed_one() {
     let mut sim = Simulation::with_seed(1);
     assert_eq!(sim.scenario_rng.next_u32(), 0x78B7_6ED5);

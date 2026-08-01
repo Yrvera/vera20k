@@ -30,6 +30,11 @@ const MOORE_NEIGHBORS: [(i32, i32); 8] = [
 #[derive(Debug, Default)]
 pub struct TileVariantSelectorCache {
     table8: Option<[u8; TABLE_LEN]>,
+    /// `g_ClearTile`/`g_WaterSet` survive scenario loads. Both executable BSS
+    /// values start at zero; each completed theater registry load publishes
+    /// values for a later map's pre-IsoMapPack Fill pass.
+    cached_clear_tile_base: i32,
+    cached_water_set_base: i32,
 }
 
 impl TileVariantSelectorCache {
@@ -38,12 +43,38 @@ impl TileVariantSelectorCache {
         &'cache mut self,
         raw_draw: &'draw mut dyn FnMut() -> u32,
     ) -> TileVariantSelectionContext<'cache, 'draw> {
+        let clear_fill_tile_base = self.cached_clear_tile_base;
+        let water_fill_tile_base = self.cached_water_set_base;
         TileVariantSelectionContext {
             cache: self,
             raw_draw,
+            clear_fill_tile_base,
+            water_fill_tile_base,
             generated_table: false,
+            map_fill_scenario_advance_count: 0,
             raw_draw_count: 0,
         }
+    }
+
+    /// Publish the current theater registry after this map's Fill pass. `None`
+    /// maps to the native unresolved/reset sentinel `-1`.
+    pub(crate) fn complete_theater_registry_load(
+        &mut self,
+        clear_tile: Option<u16>,
+        water_set: Option<u16>,
+    ) {
+        self.cached_clear_tile_base = clear_tile.map_or(-1, i32::from);
+        self.cached_water_set_base = water_set.map_or(-1, i32::from);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_clear_tile_base(&self) -> i32 {
+        self.cached_clear_tile_base
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_water_set_base(&self) -> i32 {
+        self.cached_water_set_base
     }
 
     pub fn is_initialized(&self) -> bool {
@@ -51,16 +82,37 @@ impl TileVariantSelectorCache {
     }
 }
 
-/// Per-load selector state. The supplied callback must draw from the temporary
-/// Main cursor seeded for this match; Scenario randomness never enters here.
+/// Per-load selector state. The supplied callback draws from the Main cursor
+/// that owns this load (front-end Main for RMG preview, reseeded Main for an
+/// ordinary match); Scenario randomness never enters here.
 pub struct TileVariantSelectionContext<'cache, 'draw> {
     cache: &'cache mut TileVariantSelectorCache,
     raw_draw: &'draw mut dyn FnMut() -> u32,
+    clear_fill_tile_base: i32,
+    water_fill_tile_base: i32,
     generated_table: bool,
+    map_fill_scenario_advance_count: usize,
     raw_draw_count: usize,
 }
 
 impl TileVariantSelectionContext<'_, '_> {
+    /// Resolve one pre-IsoMapPack Fill cell. The callback owns Scenario RNG:
+    /// Water calls `RandomRanged(0,3)` and advances once; every other value
+    /// calls equal-bound `RandomRanged(0,0)` and leaves the cursor unchanged.
+    pub(crate) fn draw_fill_tile_index(
+        &mut self,
+        is_water: bool,
+        scenario_ranged_draw: &mut dyn FnMut(u32, u32) -> u32,
+    ) -> i32 {
+        let (base, high) = if is_water {
+            self.map_fill_scenario_advance_count += 1;
+            (self.water_fill_tile_base, 3)
+        } else {
+            (self.clear_fill_tile_base, 0)
+        };
+        base + scenario_ranged_draw(0, high) as i32
+    }
+
     /// Select the final file index (`0` pristine, `1..` suffix siblings).
     ///
     /// Table generation happens before inspecting `total_file_count`, including
@@ -115,6 +167,12 @@ impl TileVariantSelectionContext<'_, '_> {
         self.generated_table
     }
 
+    /// Scenario cursor advances caused by `[Map] Fill=Water` before variant
+    /// selection. Equal-bound non-Water calls deliberately do not count.
+    pub fn map_fill_scenario_advance_count(&self) -> usize {
+        self.map_fill_scenario_advance_count
+    }
+
     /// Number of raw Main draws consumed by this load's table construction.
     pub fn raw_draw_count(&self) -> usize {
         self.raw_draw_count
@@ -165,6 +223,7 @@ mod tests {
         }
         TileVariantSelectorCache {
             table8: Some(table),
+            ..TileVariantSelectorCache::default()
         }
     }
 
@@ -198,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_02_11_first_call_builds_before_fixed_branch_and_reseed_reuses_cache() {
+    fn gsi_04_02_preview_warms_cache_and_fresh_match_reuses_it_without_draws() {
         let mut cache = TileVariantSelectorCache::default();
         let mut first_rng = SimRng::new(0);
         let mut first_draw = || first_rng.next_u32();
@@ -209,6 +268,8 @@ mod tests {
             assert_eq!(selector.raw_draw_count(), 128);
         }
         drop(first_draw);
+        let first_cursor = first_rng.logical_state();
+        assert_eq!((first_cursor.index_a, first_cursor.index_b), (128, 231));
 
         let expected = [
             3, 6, 5, 3, 7, 5, 6, 4, //
@@ -221,7 +282,13 @@ mod tests {
             4, 7, 2, 6, 2, 3, 7, 5,
         ];
         assert_eq!(cache.table8, Some(expected));
+        assert!(
+            cache.is_initialized(),
+            "closing or discarding the preview owner must not clear it"
+        );
 
+        // A later match creates a fresh Main cursor, but the process-owned
+        // selector cache survives the preview/dialog lifetime.
         let mut second_rng = SimRng::new(0xA55A_1234);
         let untouched = second_rng.state();
         let mut second_draw = || second_rng.next_u32();
@@ -233,5 +300,34 @@ mod tests {
         }
         drop(second_draw);
         assert_eq!(second_rng.state(), untouched);
+
+        // A later Water fill advances Scenario once while reuse of the warm
+        // selector table leaves the separately seeded Main cursor untouched.
+        let mut water_scenario_rng = SimRng::new(0xCAFE_BABE);
+        let mut expected_scenario_rng = water_scenario_rng.clone();
+        let expected_tile = expected_scenario_rng.next_range_u32_inclusive(0, 3) as i32;
+        let mut scenario_ranged = |low, high| {
+            water_scenario_rng.next_range_u32_inclusive(low, high)
+        };
+        let mut water_main_rng = SimRng::new(0xCAFE_BABE);
+        let main_before = water_main_rng.logical_state();
+        let mut main_draw = || water_main_rng.next_u32();
+        {
+            let mut selector = cache.begin_load(&mut main_draw);
+            assert_eq!(
+                selector.draw_fill_tile_index(true, &mut scenario_ranged),
+                expected_tile
+            );
+            let _ = selector.select_variant(0, 0, 0, 1, 1, 8);
+            assert_eq!(selector.map_fill_scenario_advance_count(), 1);
+            assert_eq!(selector.raw_draw_count(), 0);
+        }
+        drop(main_draw);
+        drop(scenario_ranged);
+        assert_eq!(
+            water_scenario_rng.logical_state(),
+            expected_scenario_rng.logical_state()
+        );
+        assert_eq!(water_main_rng.logical_state(), main_before);
     }
 }

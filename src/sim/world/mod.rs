@@ -602,9 +602,16 @@ impl Simulation {
         self.mapgen_rng = live.mapgen_rng.clone();
     }
 
+    /// Install the Scenario cursor advanced by the pre-IsoMapPack Fill pass.
+    /// Called only at the app/simulation construction boundary; Main remains
+    /// independently owned by the terrain variant selector.
+    pub(crate) fn install_terrain_load_advanced_scenario_rng(&mut self, scenario_rng: SimRng) {
+        self.scenario_rng = scenario_rng;
+    }
+
     /// Install the Main cursor advanced by one-time terrain variant-table
     /// generation. Called only at the app/simulation construction boundary;
-    /// Scenario remains freshly seeded and independent.
+    /// Scenario remains independently owned by the Fill pass.
     pub(crate) fn install_variant_advanced_main_rng(&mut self, main_rng: SimRng) {
         self.main_rng = main_rng;
     }

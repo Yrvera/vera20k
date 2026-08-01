@@ -466,6 +466,7 @@ pub(crate) fn spawn_entities(
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
+    terrain_load_advanced_scenario_rng: Option<crate::sim::rng::SimRng>,
     variant_advanced_main_rng: Option<crate::sim::rng::SimRng>,
 ) -> (
     Option<Simulation>,
@@ -474,6 +475,9 @@ pub(crate) fn spawn_entities(
     Option<crate::render::palette_textures::PaletteSet>,
 ) {
     let mut sim: Simulation = Simulation::from_descriptor(descriptor);
+    if let Some(scenario_rng) = terrain_load_advanced_scenario_rng {
+        sim.install_terrain_load_advanced_scenario_rng(scenario_rng);
+    }
     if let Some(main_rng) = variant_advanced_main_rng {
         sim.install_variant_advanced_main_rng(main_rng);
     }

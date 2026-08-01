@@ -628,6 +628,7 @@ mod tests {
     ) -> crate::map::map_file::MapHeader {
         crate::map::map_file::MapHeader {
             theater: "TEMPERATE".to_string(),
+            fill: "Clear".to_string(),
             width,
             height: 0,
             local_left,

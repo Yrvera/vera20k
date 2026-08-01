@@ -850,12 +850,13 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     let dirt_tunnels = parse_general_int(&ini_text, "DirtTunnels");
     let dirt_track_tunnels = parse_general_int(&ini_text, "DirtTrackTunnels");
     let mut cliff_ranges = resolve_cliff_ranges(&lookup, &ini_text, bridge_set, wood_bridge_set);
-    let rmg_tiles = resolve_rmg_tile_keys(&lookup, &ini_text);
-    apply_lunar_cliff_zeroing(
+    let mut rmg_tiles = resolve_rmg_tile_keys(&lookup, &ini_text);
+    apply_lunar_global_zeroing(
         theater_name,
         &mut bridge_set,
         &mut wood_bridge_set,
         &mut cliff_ranges,
+        &mut rmg_tiles,
     );
     if bridge_set.is_some() || wood_bridge_set.is_some() {
         log::info!(
@@ -1032,11 +1033,12 @@ fn resolve_cliff_ranges(
     }
 }
 
-fn apply_lunar_cliff_zeroing(
+fn apply_lunar_global_zeroing(
     theater_name: &str,
     bridge_set: &mut Option<u16>,
     wood_bridge_set: &mut Option<u16>,
     cliff_ranges: &mut TheaterCliffRanges,
+    rmg_tiles: &mut RmgTileKeys,
 ) {
     if !theater_name.eq_ignore_ascii_case("LUNAR") {
         return;
@@ -1044,6 +1046,7 @@ fn apply_lunar_cliff_zeroing(
     *bridge_set = None;
     *wood_bridge_set = None;
     *cliff_ranges = TheaterCliffRanges::default();
+    rmg_tiles.water_set = None;
 }
 
 /// Parse a key=value integer from the `[General]` section of a theater INI file.

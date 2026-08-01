@@ -641,7 +641,11 @@ pub(crate) fn load_map_from_initial(
         .as_ref()
         .map(|r| r.general.cliff_back_impassability)
         .unwrap_or(2);
+    let mut terrain_scenario_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
     let mut variant_main_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
+    let mut scenario_fill_ranged = |low, high| {
+        terrain_scenario_rng.next_range_u32_inclusive(low, high)
+    };
     let mut variant_draw = || variant_main_rng.next_u32();
     let mut variant_selector = tile_variant_selector_cache.begin_load(&mut variant_draw);
     let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector(
@@ -652,15 +656,30 @@ pub(crate) fn load_map_from_initial(
         Some(&overlay_registry),
         lat_enabled,
         cliff_back,
+        &mut scenario_fill_ranged,
         &mut variant_selector,
     );
     let variant_table_generated = variant_selector.generated_table();
+    let map_fill_scenario_advances = variant_selector.map_fill_scenario_advance_count();
     let variant_table_draws = variant_selector.raw_draw_count();
     drop(variant_selector);
     drop(variant_draw);
+    drop(scenario_fill_ranged);
+    // Native Fill snapshots prior process-global ClearTile/WaterSet values
+    // before the current theater registry reload. Rust loads assets earlier,
+    // so defer publishing current results until materialization is complete.
+    if let Some(theater) = theater_result.as_ref() {
+        tile_variant_selector_cache.complete_theater_registry_load(
+            theater.rmg_tiles.clear_tile,
+            theater.rmg_tiles.water_set,
+        );
+    }
+    let terrain_load_advanced_scenario_rng =
+        (map_fill_scenario_advances != 0).then_some(terrain_scenario_rng);
     let variant_advanced_main_rng = variant_table_generated.then_some(variant_main_rng);
     log::info!(
-        "TMP variant selector: table {} this load, {} raw Main draws",
+        "Map terrain load: {} Scenario Fill cursor advances; TMP variant table {} this load, {} raw Main draws",
+        map_fill_scenario_advances,
         if variant_table_generated {
             "generated"
         } else if tile_variant_selector_cache.is_initialized() {
@@ -803,6 +822,7 @@ pub(crate) fn load_map_from_initial(
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
         &scenario_descriptor,
+        terrain_load_advanced_scenario_rng,
         variant_advanced_main_rng,
     );
     // Terrain/tiberium + units/infantry/buildings created from the map
