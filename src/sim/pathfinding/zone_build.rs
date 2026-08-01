@@ -16,6 +16,7 @@ use super::zone_hierarchy::{ZoneEdgeRecord, ZoneHierarchy, ZoneLevelGraph, ZoneR
 use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneId, ZoneInfo, ZoneMap};
 use crate::map::resolved_terrain::{ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::MovementZone;
+use crate::rules::terrain_rules::LandType;
 use crate::sim::bridge_state::BridgeEndpointRecord;
 use crate::sim::movement::locomotor::MovementLayer;
 
@@ -1331,62 +1332,103 @@ pub(crate) fn inject_bridge_adjacency(
     }
 }
 
-/// Build per-cell bridge redirect table.
-///
-/// For each bridge cell (walkable on bridge layer), find the nearest active
-/// bridge endpoint and store its ground cell coordinates.
+/// Starting at `start_index`, return the first high-bridge record whose axis
+/// covers `query` within the requested perpendicular tolerance. Record
+/// activity is deliberately ignored.
+pub(crate) fn find_high_bridge_record(
+    bridge_records: &[BridgeEndpointRecord],
+    start_index: usize,
+    query: (u16, u16),
+    tolerance: u16,
+) -> Option<&BridgeEndpointRecord> {
+    bridge_records.iter().skip(start_index).find(|record| {
+        if !record.is_high() {
+            return false;
+        }
+        let (ax, ay) = record.endpoint_a;
+        let (bx, by) = record.endpoint_b;
+        if ax == bx {
+            query.1 >= ay.min(by) && query.1 <= ay.max(by) && query.0.abs_diff(ax) <= tolerance
+        } else {
+            query.0 >= ax.min(bx) && query.0 <= ax.max(bx) && query.1.abs_diff(ay) <= tolerance
+        }
+    })
+}
+
+/// Build the exact per-cell bridge redirect used by bridge-aware zone lookup.
+/// Nonstructural cells resolve to themselves. Structural cells require the
+/// first matching high record at tolerance one.
 pub(crate) fn build_bridge_redirect(
-    path_grid: &PathGrid,
+    _path_grid: &PathGrid,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
     bridge_records: &[BridgeEndpointRecord],
     width: u16,
     height: u16,
-    filter: BridgeRecordFilter,
 ) -> Option<Vec<Option<(u16, u16)>>> {
-    if bridge_records.is_empty() {
+    let Some(terrain) = resolved_terrain else {
         return None;
-    }
+    };
 
     let total = width as usize * height as usize;
     let mut redirect: Vec<Option<(u16, u16)>> = vec![None; total];
-    let mut any = false;
+    let mut has_structural_cell = false;
 
     for ry in 0..height {
         for rx in 0..width {
-            if !path_grid.is_walkable_on_layer(rx, ry, MovementLayer::Bridge) {
+            let Some(cell) = terrain.cell(rx, ry) else {
+                continue;
+            };
+            let idx = ry as usize * width as usize + rx as usize;
+            if !cell.bridge_facts.has_structural_bridge() {
+                redirect[idx] = Some((rx, ry));
                 continue;
             }
+            has_structural_cell = true;
 
-            let mut best_endpoint: Option<(u16, u16)> = None;
-            let mut best_dist = u32::MAX;
-
-            for record in bridge_records {
-                if !bridge_record_matches(record, filter) {
-                    continue;
-                }
-                let da = (rx as i32 - record.endpoint_a.0 as i32).unsigned_abs()
-                    + (ry as i32 - record.endpoint_a.1 as i32).unsigned_abs();
-                let db = (rx as i32 - record.endpoint_b.0 as i32).unsigned_abs()
-                    + (ry as i32 - record.endpoint_b.1 as i32).unsigned_abs();
-                let closer = if da <= db {
-                    (record.endpoint_a, da)
-                } else {
-                    (record.endpoint_b, db)
-                };
-                if closer.1 < best_dist {
-                    best_dist = closer.1;
-                    best_endpoint = Some(closer.0);
-                }
-            }
-
-            if let Some(ep) = best_endpoint {
-                let idx = ry as usize * width as usize + rx as usize;
-                redirect[idx] = Some(ep);
-                any = true;
-            }
+            redirect[idx] = bridge_redirect_for_structural_cell(terrain, bridge_records, (rx, ry));
         }
     }
 
-    if any { Some(redirect) } else { None }
+    has_structural_cell.then_some(redirect)
+}
+
+fn bridge_redirect_for_structural_cell(
+    terrain: &ResolvedTerrainGrid,
+    bridge_records: &[BridgeEndpointRecord],
+    query: (u16, u16),
+) -> Option<(u16, u16)> {
+    let record = find_high_bridge_record(bridge_records, 0, query, 1)?;
+    if record.active {
+        return Some(record.endpoint_a);
+    }
+
+    let direction = if record.endpoint_a.0 == record.endpoint_b.0 {
+        4
+    } else {
+        2
+    };
+    let mut cursor = query;
+    loop {
+        let Some(next) = terrain.step_coord_by_direction(cursor, direction) else {
+            return Some(record.endpoint_a);
+        };
+        let Some(cell) = terrain.cell(next.0, next.1) else {
+            return Some(record.endpoint_a);
+        };
+        cursor = next;
+        if cell.bridge_facts.has_structural_bridge() {
+            continue;
+        }
+        return Some(
+            if terrain.high_bridge_tile_offset(cell).is_some()
+                && cell.yr_cell_land_type != LandType::Rock.as_index()
+            {
+                record.endpoint_b
+            } else {
+                record.endpoint_a
+            },
+        );
+    }
 }
 
 /// Add a bidirectional adjacency edge, preserving first discovery order.
@@ -1402,7 +1444,83 @@ pub(crate) fn add_adjacency(adj: &mut [Vec<ZoneId>], a: ZoneId, b: ZoneId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::resolved_terrain::ResolvedTerrainCell;
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind};
+
+    fn redirect_terrain(
+        width: u16,
+        height: u16,
+        bridge_set_start: Option<u16>,
+        wood_bridge_set_start: Option<u16>,
+        mut configure: impl FnMut(&mut ResolvedTerrainCell),
+    ) -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for ry in 0..height {
+            for rx in 0..width {
+                let mut cell = ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    is_wood_bridge_repair_tile: false,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: None,
+                    land_type: LandType::Clear.as_index(),
+                    yr_cell_land_type: LandType::Clear.as_index(),
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: SpeedCostProfile::default(),
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    allows_tiberium: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    terrain_object_occupation: None,
+                    overlay_blocks: false,
+                    overlay_zone_type: None,
+                    outside_playfield: false,
+                    zone_type: zone_class::GROUND,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    base_land_type: LandType::Clear.as_index(),
+                    base_yr_cell_land_type: LandType::Clear.as_index(),
+                    base_terrain_class: TerrainClass::Clear,
+                    base_speed_costs: SpeedCostProfile::default(),
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    bridge_facts: Default::default(),
+                    tube_index: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
+                };
+                configure(&mut cell);
+                cells.push(cell);
+            }
+        }
+        let mut terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
+        terrain.test_set_high_bridge_set_starts(bridge_set_start, wood_bridge_set_start);
+        terrain
+    }
 
     fn hierarchy_base(movement_classes: Vec<u8>, zone_ids: Vec<ZoneId>) -> BaseZoneTopology {
         assert_eq!(movement_classes.len(), zone_ids.len());
@@ -1429,6 +1547,104 @@ mod tests {
             active: true,
             bridge_kind: kind,
         }
+    }
+
+    #[test]
+    fn gsi_04_12_topology_find_record_uses_tolerance_first_order_and_ignores_active() {
+        let records = [
+            BridgeEndpointRecord {
+                endpoint_a: (2, 0),
+                endpoint_b: (2, 4),
+                group_id: 1,
+                active: false,
+                bridge_kind: BridgeRecordKind::High,
+            },
+            BridgeEndpointRecord {
+                endpoint_a: (1, 0),
+                endpoint_b: (1, 4),
+                group_id: 2,
+                active: true,
+                bridge_kind: BridgeRecordKind::High,
+            },
+        ];
+
+        assert_eq!(
+            find_high_bridge_record(&records, 0, (1, 2), 1).map(|record| record.group_id),
+            Some(1)
+        );
+        assert_eq!(
+            find_high_bridge_record(&records, 0, (1, 2), 0).map(|record| record.group_id),
+            Some(2)
+        );
+        assert_eq!(
+            find_high_bridge_record(&records, 1, (1, 2), 1).map(|record| record.group_id),
+            Some(2)
+        );
+        assert!(find_high_bridge_record(&records, 2, (1, 2), 1).is_none());
+        assert!(find_high_bridge_record(&records, 0, (1, 5), 1).is_none());
+    }
+
+    #[test]
+    fn gsi_04_12_topology_intact_redirect_uses_a_nonstructural_self_missing_invalid() {
+        let terrain = redirect_terrain(6, 1, None, None, |cell| {
+            if (1..=3).contains(&cell.rx) || cell.rx == 5 {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            }
+        });
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let records = [BridgeEndpointRecord {
+            endpoint_a: (0, 0),
+            endpoint_b: (4, 0),
+            group_id: 1,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        }];
+        let redirect = build_bridge_redirect(&path_grid, Some(&terrain), &records, 6, 1).unwrap();
+
+        assert_eq!(redirect[3], Some((0, 0)));
+        assert_eq!(redirect[4], Some((4, 0)));
+        assert_eq!(redirect[5], None);
+
+        let zone_map = ZoneMap::new(vec![9, 1, 1, 1, 7, 5], Some(redirect), 6, 1, 9, vec![]);
+        assert_eq!(zone_map.zone_at(3, 0, MovementLayer::Bridge), 9);
+        assert_eq!(zone_map.zone_at(4, 0, MovementLayer::Bridge), 7);
+        assert_eq!(zone_map.zone_at(5, 0, MovementLayer::Bridge), ZONE_INVALID);
+    }
+
+    #[test]
+    fn gsi_04_12_topology_destroyed_redirect_chooses_b_only_for_nonrock_bridge_exit() {
+        let mut terrain = redirect_terrain(7, 1, Some(100), Some(200), |cell| {
+            if (1..=2).contains(&cell.rx) {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            }
+            if cell.rx == 3 {
+                cell.final_tile_index = 206;
+                cell.final_sub_tile = 4;
+            }
+        });
+        let records = [BridgeEndpointRecord {
+            endpoint_a: (0, 0),
+            endpoint_b: (5, 0),
+            group_id: 1,
+            active: false,
+            bridge_kind: BridgeRecordKind::High,
+        }];
+
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let redirect = build_bridge_redirect(&path_grid, Some(&terrain), &records, 7, 1).unwrap();
+        assert_eq!(redirect[1], Some((5, 0)));
+
+        terrain.cell_mut(3, 0).unwrap().yr_cell_land_type = LandType::Rock.as_index();
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let redirect = build_bridge_redirect(&path_grid, Some(&terrain), &records, 7, 1).unwrap();
+        assert_eq!(redirect[1], Some((0, 0)));
+
+        let exit = terrain.cell_mut(3, 0).unwrap();
+        exit.yr_cell_land_type = LandType::Clear.as_index();
+        exit.final_tile_index = 50;
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let redirect = build_bridge_redirect(&path_grid, Some(&terrain), &records, 7, 1).unwrap();
+        assert_eq!(redirect[1], Some((0, 0)));
     }
 
     #[test]
@@ -1681,8 +1897,7 @@ mod tests {
         }
 
         let records = [bridge_record(BridgeRecordKind::Low)];
-        let redirect =
-            build_bridge_redirect(&grid, &records, 5, 1, BridgeRecordFilter::HighActiveOnly);
+        let redirect = build_bridge_redirect(&grid, None, &records, 5, 1);
 
         assert!(redirect.is_none());
     }

@@ -82,9 +82,9 @@ impl ZoneMap {
 
     /// Look up the zone ID for a cell at the given layer.
     ///
-    /// For bridge-layer queries, returns the ground zone of the nearest bridge
-    /// endpoint. This mirrors gamemd.exe GetZoneID bridge redirect (0x0056d230).
-    /// If no bridge endpoint record covers this cell, returns ZONE_INVALID.
+    /// For bridge-layer queries on a structural cell, returns the ground zone
+    /// selected by the matching high-bridge record. Nonstructural cells keep
+    /// their own ground zone. A structural cell with no record is invalid.
     pub fn zone_at(&self, x: u16, y: u16, layer: MovementLayer) -> ZoneId {
         if x >= self.width || y >= self.height {
             return ZONE_INVALID;
@@ -97,8 +97,9 @@ impl ZoneMap {
                         let e_idx = *ey as usize * self.width as usize + *ex as usize;
                         return self.zone_ids.get(e_idx).copied().unwrap_or(ZONE_INVALID);
                     }
+                    return ZONE_INVALID;
                 }
-                ZONE_INVALID
+                self.zone_ids[idx]
             }
             _ => self.zone_ids[idx],
         }
@@ -254,10 +255,10 @@ impl ZoneGrid {
                 }
                 zone_map.set_bridge_redirect(zone_build::build_bridge_redirect(
                     path_grid,
+                    resolved_terrain,
                     bridge_records,
                     width,
                     height,
-                    zone_build::BridgeRecordFilter::HighActiveOnly,
                 ));
             }
 

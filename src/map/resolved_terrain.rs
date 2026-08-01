@@ -371,6 +371,10 @@ pub struct ResolvedTerrainGrid {
     /// Active theater tile registry length. Positive out-of-range ids present
     /// as ClearTile while their stored semantic id remains untouched.
     tile_registry_len: Option<usize>,
+    /// First flat tile id of the active theater's concrete high-bridge set.
+    bridge_set_start: Option<u16>,
+    /// First flat tile id of the active theater's wooden high-bridge set.
+    wood_bridge_set_start: Option<u16>,
 }
 
 impl ResolvedTerrainGrid {
@@ -392,6 +396,8 @@ impl ResolvedTerrainGrid {
             tube_facts,
             clear_tile_id: 0,
             tile_registry_len: None,
+            bridge_set_start: None,
+            wood_bridge_set_start: None,
         }
     }
 
@@ -458,6 +464,30 @@ impl ResolvedTerrainGrid {
                 .is_none_or(|mask| mask.get(index).copied().unwrap_or(false))
                 .then_some(cell)
         })
+    }
+
+    /// Return the cell's zero-based slot in the first sixteen tiles of either
+    /// active high-bridge set. Concrete wins if malformed theater data makes
+    /// the two ranges overlap, matching the engine's predicate order.
+    pub(crate) fn high_bridge_tile_offset(&self, cell: &ResolvedTerrainCell) -> Option<usize> {
+        let tile_id = u16::try_from(cell.final_tile_index).ok()?;
+        [self.bridge_set_start, self.wood_bridge_set_start]
+            .into_iter()
+            .flatten()
+            .find_map(|start| {
+                let offset = u32::from(tile_id).checked_sub(u32::from(start))?;
+                (offset < 16).then_some(offset as usize)
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_high_bridge_set_starts(
+        &mut self,
+        bridge_set_start: Option<u16>,
+        wood_bridge_set_start: Option<u16>,
+    ) {
+        self.bridge_set_start = bridge_set_start;
+        self.wood_bridge_set_start = wood_bridge_set_start;
     }
 
     pub fn tube_facts(&self) -> &[TubeFact] {
@@ -603,6 +633,16 @@ impl ResolvedTerrainGrid {
                 tube_facts: Vec::new(),
                 clear_tile_id,
                 tile_registry_len: theater_data.map(|td| td.lookup.len()),
+                bridge_set_start: theater_data.and_then(|td| {
+                    td.bridge_set
+                        .and_then(|set| td.lookup.bounds().get(set as usize))
+                        .map(|bounds| bounds.start)
+                }),
+                wood_bridge_set_start: theater_data.and_then(|td| {
+                    td.wood_bridge_set
+                        .and_then(|set| td.lookup.bounds().get(set as usize))
+                        .map(|bounds| bounds.start)
+                }),
             };
         }
 
@@ -1240,6 +1280,16 @@ impl ResolvedTerrainGrid {
             tube_facts,
             clear_tile_id,
             tile_registry_len: theater_data.map(|td| td.lookup.len()),
+            bridge_set_start: theater_data.and_then(|td| {
+                td.bridge_set
+                    .and_then(|set| td.lookup.bounds().get(set as usize))
+                    .map(|bounds| bounds.start)
+            }),
+            wood_bridge_set_start: theater_data.and_then(|td| {
+                td.wood_bridge_set
+                    .and_then(|set| td.lookup.bounds().get(set as usize))
+                    .map(|bounds| bounds.start)
+            }),
         }
     }
 

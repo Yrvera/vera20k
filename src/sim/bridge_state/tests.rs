@@ -9,16 +9,23 @@ use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 
 /// 5x1 grid: ground at (0,0), bridge at (1,0)-(3,0), ground at (4,0).
 fn make_bridge_terrain() -> ResolvedTerrainGrid {
+    const BRIDGE_SET_START: u16 = 100;
+    const EAST_WALK_SLOT: i32 = 6;
     let mut cells = Vec::new();
     for rx in 0..5u16 {
         let on_bridge = (1..=3).contains(&rx);
+        let is_record_tile = rx == 0 || rx == 3;
         cells.push(ResolvedTerrainCell {
             rx,
             ry: 0,
             source_tile_index: 0,
             source_sub_tile: 0,
-            final_tile_index: 0,
-            final_sub_tile: 0,
+            final_tile_index: if is_record_tile {
+                i32::from(BRIDGE_SET_START) + EAST_WALK_SLOT
+            } else {
+                0
+            },
+            final_sub_tile: if is_record_tile { 4 } else { 0 },
             is_wood_bridge_repair_tile: false,
             level: 0,
             filled_clear: false,
@@ -60,7 +67,14 @@ fn make_bridge_terrain() -> ResolvedTerrainGrid {
             bridge_transition: rx == 1 || rx == 3,
             bridge_deck_level: if on_bridge { 4 } else { 0 },
             bridge_layer: None,
-            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts {
+                raw_flags: if on_bridge {
+                    crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL
+                } else {
+                    0
+                },
+                ..Default::default()
+            },
             tube_index: None,
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
@@ -68,7 +82,9 @@ fn make_bridge_terrain() -> ResolvedTerrainGrid {
             bridgehead_anchor_class_at_load: None,
         });
     }
-    ResolvedTerrainGrid::from_cells(5, 1, cells)
+    let mut terrain = ResolvedTerrainGrid::from_cells(5, 1, cells);
+    terrain.test_set_high_bridge_set_starts(Some(BRIDGE_SET_START), None);
+    terrain
 }
 
 fn make_low_bridge_terrain() -> ResolvedTerrainGrid {
@@ -162,6 +178,37 @@ fn make_bridge_with_bridgeheads_terrain() -> ResolvedTerrainGrid {
         });
     }
     ResolvedTerrainGrid::from_cells(5, 1, cells)
+}
+
+fn high_record_fixture(
+    width: u16,
+    height: u16,
+    bridge_set_start: Option<u16>,
+    wood_bridge_set_start: Option<u16>,
+    mut configure: impl FnMut(&mut ResolvedTerrainCell),
+) -> ResolvedTerrainGrid {
+    let mut template = make_bridge_terrain().cell(4, 0).unwrap().clone();
+    template.final_tile_index = 0;
+    template.final_sub_tile = 0;
+    template.has_bridge_deck = false;
+    template.bridge_walkable = false;
+    template.bridge_transition = false;
+    template.bridge_deck_level = 0;
+    template.bridge_facts = Default::default();
+
+    let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+    for ry in 0..height {
+        for rx in 0..width {
+            let mut cell = template.clone();
+            cell.rx = rx;
+            cell.ry = ry;
+            configure(&mut cell);
+            cells.push(cell);
+        }
+    }
+    let mut terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
+    terrain.test_set_high_bridge_set_starts(bridge_set_start, wood_bridge_set_start);
+    terrain
 }
 
 #[test]
@@ -418,15 +465,142 @@ fn bridge_endpoints_detected() {
     assert!(rec.active);
     assert_eq!(rec.group_id, 1);
     assert_eq!(rec.bridge_kind, BridgeRecordKind::High);
-    let endpoints = [rec.endpoint_a, rec.endpoint_b];
-    assert!(
-        endpoints.contains(&(0, 0)),
-        "endpoint_a or _b should be (0,0)"
+    assert_eq!(rec.endpoint_a, (0, 0));
+    assert_eq!(rec.endpoint_b, (3, 0));
+}
+
+#[test]
+fn gsi_04_12_topology_concrete_and_wood_membership_build_records() {
+    let terrain = high_record_fixture(4, 2, Some(100), Some(200), |cell| {
+        let base = if cell.ry == 0 { 100 } else { 200 };
+        if cell.rx == 0 || cell.rx == 2 {
+            cell.final_tile_index = base + 6;
+            cell.final_sub_tile = 4;
+        }
+        if cell.rx == 1 {
+            cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+        }
+    });
+
+    let state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 300);
+    let records = state.endpoint_records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        (records[0].endpoint_a, records[0].endpoint_b),
+        ((0, 0), (2, 0))
     );
-    assert!(
-        endpoints.contains(&(4, 0)),
-        "endpoint_a or _b should be (4,0)"
+    assert_eq!(
+        (records[1].endpoint_a, records[1].endpoint_b),
+        ((0, 1), (2, 1))
     );
+    assert!(records.iter().all(|record| record.active));
+}
+
+#[test]
+fn gsi_04_12_topology_uses_final_subtile_and_requires_active_set_base() {
+    let exact = high_record_fixture(4, 1, Some(100), None, |cell| {
+        cell.source_sub_tile = 1;
+        cell.template_height = 9;
+        if cell.rx == 0 || cell.rx == 2 {
+            cell.final_tile_index = 106;
+            cell.final_sub_tile = 4;
+        }
+    });
+    assert_eq!(
+        BridgeRuntimeState::from_resolved_terrain(&exact, true, 300)
+            .endpoint_records()
+            .len(),
+        1
+    );
+
+    let wrong_subtile = high_record_fixture(4, 1, Some(100), None, |cell| {
+        if cell.rx == 0 || cell.rx == 2 {
+            cell.final_tile_index = 106;
+            cell.final_sub_tile = if cell.rx == 0 { 3 } else { 4 };
+        }
+    });
+    assert!(
+        BridgeRuntimeState::from_resolved_terrain(&wrong_subtile, true, 300)
+            .endpoint_records()
+            .is_empty()
+    );
+
+    let no_base = high_record_fixture(4, 1, None, None, |cell| {
+        if cell.rx == 0 || cell.rx == 2 {
+            cell.final_tile_index = 106;
+            cell.final_sub_tile = 4;
+        }
+    });
+    assert!(
+        BridgeRuntimeState::from_resolved_terrain(&no_base, true, 300)
+            .endpoint_records()
+            .is_empty()
+    );
+}
+
+#[test]
+fn gsi_04_12_topology_structural_gap_preserves_intact_plain_gap_clears_it() {
+    let make = |structural: bool| {
+        high_record_fixture(4, 1, Some(100), None, |cell| {
+            if cell.rx == 0 || cell.rx == 2 {
+                cell.final_tile_index = 106;
+                cell.final_sub_tile = 4;
+            }
+            if structural && cell.rx == 1 {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            }
+        })
+    };
+
+    let intact = BridgeRuntimeState::from_resolved_terrain(&make(true), true, 300);
+    assert!(intact.endpoint_records()[0].active);
+    assert_ne!(intact.endpoint_records()[0].group_id, 0);
+
+    let mut broken = BridgeRuntimeState::from_resolved_terrain(&make(false), true, 300);
+    assert!(!broken.endpoint_records()[0].active);
+    assert_eq!(broken.endpoint_records()[0].group_id, 0);
+    broken.refresh_endpoint_active_flags();
+    assert!(!broken.endpoint_records()[0].active);
+
+    let mixed_gap = high_record_fixture(5, 1, Some(100), None, |cell| {
+        if cell.rx == 0 || cell.rx == 3 {
+            cell.final_tile_index = 106;
+            cell.final_sub_tile = 4;
+        }
+        if cell.rx == 2 {
+            cell.bridge_facts.raw_flags =
+                crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+        }
+    });
+    let mut mixed = BridgeRuntimeState::from_resolved_terrain(&mixed_gap, true, 300);
+    assert!(!mixed.endpoint_records()[0].active);
+    assert_eq!(mixed.endpoint_records()[0].group_id, 0);
+    assert!(mixed.cell(2, 0).unwrap().bridge_group_id.is_some());
+    mixed.refresh_endpoint_active_flags();
+    assert!(!mixed.endpoint_records()[0].active);
+}
+
+#[test]
+fn gsi_04_12_topology_native_diagonal_scan_order_keeps_each_start() {
+    let terrain = high_record_fixture(4, 4, Some(100), None, |cell| match (cell.rx, cell.ry) {
+        (0, 2) => {
+            cell.final_tile_index = 106;
+            cell.final_sub_tile = 4;
+        }
+        (2, 0) | (2, 2) => {
+            cell.final_tile_index = 111;
+            cell.final_sub_tile = 2;
+        }
+        _ => {}
+    });
+
+    let state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 300);
+    let endpoints: Vec<_> = state
+        .endpoint_records()
+        .iter()
+        .map(|record| (record.endpoint_a, record.endpoint_b))
+        .collect();
+    assert_eq!(endpoints, vec![((0, 2), (2, 2)), ((2, 0), (2, 2))]);
 }
 
 #[test]
