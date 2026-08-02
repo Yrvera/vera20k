@@ -30,7 +30,9 @@ use crate::sim::ore_growth::OreGrowthState;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
-use crate::sim::terrain_object::{TerrainObjectState, next_terrain_object_id};
+use crate::sim::terrain_object::{
+    TerrainObjectState, mark_terrain_raw_occupation, next_terrain_object_id,
+};
 use crate::sim::tiberium::{
     NewTiberiumAdmission, TiberiumPlacementObjectContext, can_place_new_tiberium,
     live_cell_rejects_tiberium, resolved_cell_accepts_tiberium,
@@ -676,10 +678,11 @@ pub fn seed_terrain_spawners(
         let stable_id = next_terrain_object_id(&mut sim.production);
         let terrain_state =
             TerrainObjectState::new(stable_id, type_ref, obj.rx, obj.ry, t, snow_theater);
-        if terrain_state.occupation_bits != 0 {
+        let occupation_bits = terrain_state.occupation_bits;
+        if occupation_bits != 0 {
             sim.production
                 .terrain_occupation_bits
-                .insert((obj.rx, obj.ry), terrain_state.occupation_bits);
+                .insert((obj.rx, obj.ry), occupation_bits);
         }
         sim.production
             .terrain_object_cells
@@ -687,6 +690,11 @@ pub fn seed_terrain_spawners(
         sim.production
             .terrain_objects
             .insert(stable_id, terrain_state);
+        mark_terrain_raw_occupation(
+            &mut sim.substrate.raw_cell_occupation,
+            (obj.rx, obj.ry),
+            occupation_bits,
+        );
         if !t.spawns_tiberium {
             continue;
         }
@@ -1451,5 +1459,135 @@ SpreadPercentage=.06
             BTreeSet::from([(5, 6), (1, 2)])
         );
         assert_eq!(sim.production.default_ore_overlay_id, Some(2));
+    }
+
+    #[test]
+    fn gsi_04_12_terrain_raw_occupation_seed_maps_theater_masks_at_source_cell() {
+        use crate::map::overlay::TerrainObject;
+        use crate::sim::terrain_object::TerrainObjectLifecycle;
+        use crate::sim::world::Simulation;
+
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [TerrainTypes]\n0=TERR0\n1=TERR1\n2=TERR2\n3=TERR4\n4=TERR7\n\
+             [TERR0]\nTemperateOccupationBits=0\nSnowOccupationBits=7\n\
+             [TERR1]\nTemperateOccupationBits=1\nSnowOccupationBits=4\n\
+             [TERR2]\nTemperateOccupationBits=2\nSnowOccupationBits=2\n\
+             [TERR4]\nTemperateOccupationBits=4\nSnowOccupationBits=1\n\
+             [TERR7]\nTemperateOccupationBits=7\nSnowOccupationBits=0\n",
+        );
+        let mut rules = RuleSet::from_ini(&ini).expect("terrain raw rules");
+        rules
+            .terrain_object_types
+            .get_mut("TERR7")
+            .expect("TERR7")
+            .merge_art_foundation("2x2");
+        let objects = [
+            TerrainObject {
+                rx: 2,
+                ry: 2,
+                name: "TERR0".to_string(),
+            },
+            TerrainObject {
+                rx: 6,
+                ry: 2,
+                name: "TERR1".to_string(),
+            },
+            TerrainObject {
+                rx: 10,
+                ry: 2,
+                name: "TERR2".to_string(),
+            },
+            TerrainObject {
+                rx: 14,
+                ry: 2,
+                name: "TERR4".to_string(),
+            },
+            TerrainObject {
+                rx: 18,
+                ry: 2,
+                name: "TERR7".to_string(),
+            },
+        ];
+        let source_masks = [[0u8, 1, 2, 4, 7], [7u8, 4, 2, 1, 0]];
+
+        for (snow_theater, selected_masks) in
+            [(false, source_masks[0]), (true, source_masks[1])]
+        {
+            let mut sim = Simulation::new();
+            for object in &objects {
+                sim.substrate
+                    .raw_cell_occupation
+                    .mark_deck(object.rx, object.ry, 0x5A);
+            }
+
+            let seeded = seed_terrain_spawners(
+                &mut sim,
+                &objects,
+                &rules,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                snow_theater,
+            );
+
+            assert_eq!(seeded, 0, "all fixtures are recognized non-spawners");
+            assert!(sim.production.terrain_spawners.is_empty());
+            assert_eq!(sim.production.terrain_objects.len(), objects.len());
+            for (object, source_mask) in objects.iter().zip(selected_masks) {
+                let expected_raw = match source_mask {
+                    0 => 0x00,
+                    1 => 0x04,
+                    2 => 0x08,
+                    4 => 0x10,
+                    7 => 0x1C,
+                    other => panic!("unexpected fixture source mask {other}"),
+                };
+                assert_eq!(
+                    sim.substrate
+                        .raw_cell_occupation
+                        .ground_bits(object.rx, object.ry),
+                    expected_raw,
+                    "snow={snow_theater} type={} source={source_mask}",
+                    object.name
+                );
+                assert_eq!(
+                    sim.substrate
+                        .raw_cell_occupation
+                        .deck_bits(object.rx, object.ry),
+                    0x5A,
+                    "terrain raw producer is ground-only"
+                );
+                let stable_id = sim.production.terrain_object_cells[&(object.rx, object.ry)];
+                let terrain = &sim.production.terrain_objects[&stable_id];
+                assert_eq!(terrain.occupation_bits, source_mask);
+                assert_eq!(terrain.lifecycle, TerrainObjectLifecycle::Live);
+                if source_mask != 0 {
+                    assert_eq!(
+                        sim.production.terrain_occupation_bits[&(object.rx, object.ry)],
+                        source_mask,
+                        "zone/passability authority retains the unshifted source mask"
+                    );
+                }
+            }
+
+            for foundation_only_cell in [(19, 2), (18, 3), (19, 3)] {
+                assert_eq!(
+                    sim.substrate
+                        .raw_cell_occupation
+                        .ground_bits(foundation_only_cell.0, foundation_only_cell.1),
+                    0,
+                    "2x2 TERR7 foundation must repeatedly target only its source cell"
+                );
+                assert_eq!(
+                    sim.substrate
+                        .raw_cell_occupation
+                        .deck_bits(foundation_only_cell.0, foundation_only_cell.1),
+                    0
+                );
+            }
+        }
     }
 }

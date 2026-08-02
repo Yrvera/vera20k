@@ -3203,6 +3203,7 @@ impl Simulation {
                 };
                 let result = crate::sim::terrain_object::damage_terrain_object_at_cell(
                     &mut self.production,
+                    &mut self.substrate.raw_cell_occupation,
                     rules,
                     &self.interner,
                     (event.rx, event.ry),

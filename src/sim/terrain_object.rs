@@ -12,7 +12,10 @@ use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::warhead_type::WarheadType;
 use crate::sim::combat::armor_index;
 use crate::sim::intern::{InternedId, StringInterner};
+use crate::sim::occupancy::RawCellOccupationGrid;
 use crate::sim::production::ProductionState;
+
+const TERRAIN_LIMBO_CLEAR_BIT: u8 = 0x40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TerrainObjectLifecycle {
@@ -78,6 +81,34 @@ pub fn occupation_bits_for(terrain_type: &TerrainObjectType, snow_theater: bool)
     }) & 0x07
 }
 
+pub(crate) fn terrain_raw_occupation_mask(source_mask: u8) -> u8 {
+    (source_mask & 0x07) << 2
+}
+
+pub(crate) fn mark_terrain_raw_occupation(
+    raw_occupation: &mut RawCellOccupationGrid,
+    cell: (u16, u16),
+    source_mask: u8,
+) {
+    raw_occupation.mark_ground(
+        cell.0,
+        cell.1,
+        terrain_raw_occupation_mask(source_mask),
+    );
+}
+
+fn unmark_terrain_raw_occupation(
+    raw_occupation: &mut RawCellOccupationGrid,
+    cell: (u16, u16),
+    source_mask: u8,
+) {
+    raw_occupation.clear_ground(
+        cell.0,
+        cell.1,
+        terrain_raw_occupation_mask(source_mask),
+    );
+}
+
 pub fn sync_spawner_indices_from_live_terrain(production: &mut ProductionState) {
     let live_spawning_cells: BTreeSet<(u16, u16)> = production
         .terrain_objects
@@ -127,12 +158,13 @@ pub fn unmark_terrain_occupation(
     }
 }
 
-pub fn limbo_terrain_object_at_cell(
+pub(crate) fn limbo_terrain_object_at_cell(
     production: &mut ProductionState,
     cell: (u16, u16),
+    raw_occupation: &mut RawCellOccupationGrid,
     resolved_terrain: Option<&mut ResolvedTerrainGrid>,
 ) -> bool {
-    let Some(stable_id) = production.terrain_object_cells.remove(&cell) else {
+    let Some(&stable_id) = production.terrain_object_cells.get(&cell) else {
         return false;
     };
     let Some(snapshot) = production.terrain_objects.get(&stable_id).cloned() else {
@@ -142,17 +174,28 @@ pub fn limbo_terrain_object_at_cell(
         return false;
     }
 
+    let source_cell = snapshot.cell();
+    raw_occupation.clear_ground(
+        source_cell.0,
+        source_cell.1,
+        TERRAIN_LIMBO_CLEAR_BIT,
+    );
+    production.terrain_object_cells.remove(&cell);
+    unmark_terrain_raw_occupation(raw_occupation, source_cell, snapshot.occupation_bits);
     unmark_terrain_occupation(production, &snapshot, resolved_terrain);
     if let Some(terrain) = production.terrain_objects.get_mut(&stable_id) {
         terrain.lifecycle = TerrainObjectLifecycle::Limbo;
     }
-    production.terrain_spawners.remove(&cell);
-    production.tiberium_spawning_terrain_cells.remove(&cell);
+    production.terrain_spawners.remove(&source_cell);
+    production
+        .tiberium_spawning_terrain_cells
+        .remove(&source_cell);
     true
 }
 
-pub fn damage_terrain_object_at_cell(
+pub(crate) fn damage_terrain_object_at_cell(
     production: &mut ProductionState,
+    raw_occupation: &mut RawCellOccupationGrid,
     rules: &RuleSet,
     interner: &StringInterner,
     cell: (u16, u16),
@@ -196,7 +239,8 @@ pub fn damage_terrain_object_at_cell(
         };
 
     if destroyed {
-        let did_limbo = limbo_terrain_object_at_cell(production, cell, resolved_terrain);
+        let did_limbo =
+            limbo_terrain_object_at_cell(production, cell, raw_occupation, resolved_terrain);
         if did_limbo {
             if let Some(terrain) = production.terrain_objects.get_mut(&stable_id) {
                 terrain.lifecycle = TerrainObjectLifecycle::Destroyed;
@@ -426,6 +470,7 @@ mod tests {
 
         let result = damage_terrain_object_at_cell(
             &mut sim.production,
+            &mut sim.substrate.raw_cell_occupation,
             &rules,
             &sim.interner,
             (10, 11),
@@ -451,6 +496,7 @@ mod tests {
 
         let result = damage_terrain_object_at_cell(
             &mut sim.production,
+            &mut sim.substrate.raw_cell_occupation,
             &rules,
             &sim.interner,
             (10, 11),
@@ -493,6 +539,7 @@ mod tests {
 
             let result = damage_terrain_object_at_cell(
                 &mut sim.production,
+                &mut sim.substrate.raw_cell_occupation,
                 &rules,
                 &sim.interner,
                 (0, 0),
@@ -526,6 +573,7 @@ mod tests {
 
         let result = damage_terrain_object_at_cell(
             &mut sim.production,
+            &mut sim.substrate.raw_cell_occupation,
             &rules,
             &sim.interner,
             (0, 0),
@@ -557,6 +605,7 @@ mod tests {
 
         let result = damage_terrain_object_at_cell(
             &mut sim.production,
+            &mut sim.substrate.raw_cell_occupation,
             &rules,
             &sim.interner,
             (0, 0),
@@ -584,5 +633,91 @@ mod tests {
         assert!(!cell.ground_walk_blocked);
         assert!(!cell.build_blocked);
         assert_eq!(cell.zone_type, zone_class::GROUND);
+    }
+
+    #[test]
+    fn gsi_04_12_terrain_raw_occupation_live_limbo_clears_native_bits_only() {
+        let rules = terrain_rules("TREE01", true, "TemperateOccupationBits=7\n");
+        let mut sim = Simulation::new();
+        sim.substrate.raw_cell_occupation.mark_ground(0, 0, 0xE0);
+        sim.substrate.raw_cell_occupation.mark_deck(0, 0, 0xA5);
+        seed_one_at(&mut sim, &rules, "TREE01", (0, 0));
+        let stable_id = sim.production.terrain_object_cells[&(0, 0)];
+
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(0, 0), 0xFC);
+        let did_limbo = limbo_terrain_object_at_cell(
+            &mut sim.production,
+            (0, 0),
+            &mut sim.substrate.raw_cell_occupation,
+            None,
+        );
+
+        assert!(did_limbo);
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(0, 0), 0xA0);
+        assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(0, 0), 0xA5);
+        assert!(!sim.production.terrain_object_cells.contains_key(&(0, 0)));
+        assert!(!sim.production.terrain_occupation_bits.contains_key(&(0, 0)));
+        assert_eq!(
+            sim.production.terrain_objects[&stable_id].lifecycle,
+            TerrainObjectLifecycle::Limbo
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_terrain_raw_occupation_damage_preserves_until_lethal_limbo() {
+        let rules = terrain_rules("TREE01", true, "TemperateOccupationBits=7\n");
+        let mut sim = Simulation::new();
+        sim.substrate.raw_cell_occupation.mark_ground(0, 0, 0xE0);
+        sim.substrate.raw_cell_occupation.mark_deck(0, 0, 0x5A);
+        seed_one_at(&mut sim, &rules, "TREE01", (0, 0));
+        let stable_id = sim.production.terrain_object_cells[&(0, 0)];
+        let warhead = rules.warhead("WH").expect("warhead");
+
+        let ignored = damage_terrain_object_at_cell(
+            &mut sim.production,
+            &mut sim.substrate.raw_cell_occupation,
+            &rules,
+            &sim.interner,
+            (0, 0),
+            0,
+            warhead,
+            None,
+        );
+        assert_eq!(ignored, TerrainDamageResult::Ignored);
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(0, 0), 0xFC);
+        assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(0, 0), 0x5A);
+
+        let damaged = damage_terrain_object_at_cell(
+            &mut sim.production,
+            &mut sim.substrate.raw_cell_occupation,
+            &rules,
+            &sim.interner,
+            (0, 0),
+            4,
+            warhead,
+            None,
+        );
+        assert_eq!(damaged, TerrainDamageResult::Damaged { remaining: 6 });
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(0, 0), 0xFC);
+        assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(0, 0), 0x5A);
+        assert_eq!(sim.production.terrain_occupation_bits[&(0, 0)], 7);
+
+        let destroyed = damage_terrain_object_at_cell(
+            &mut sim.production,
+            &mut sim.substrate.raw_cell_occupation,
+            &rules,
+            &sim.interner,
+            (0, 0),
+            6,
+            warhead,
+            None,
+        );
+        assert_eq!(destroyed, TerrainDamageResult::Destroyed);
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(0, 0), 0xA0);
+        assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(0, 0), 0x5A);
+        assert_eq!(
+            sim.production.terrain_objects[&stable_id].lifecycle,
+            TerrainObjectLifecycle::Destroyed
+        );
     }
 }
