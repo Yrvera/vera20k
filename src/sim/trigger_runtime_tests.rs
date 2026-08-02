@@ -8,7 +8,14 @@ use crate::map::trigger_graph::build_trigger_graph;
 use crate::map::triggers::{MapTrigger, TriggerDifficulty};
 use crate::map::variable_names::{LocalVariable, LocalVariableMap};
 use crate::sim::game_entity::GameEntity;
-use crate::sim::world::Simulation;
+use crate::sim::projectile::{
+    ProjectileCollisionPolicy, ProjectileCoord, ProjectilePayload, ProjectileSpawn,
+    ProjectileTarget, TargetExpiryPolicy,
+};
+use crate::sim::replay::{ReplayHeader, ReplayLog, ReplayRunner};
+use crate::sim::snapshot::GameSnapshot;
+use crate::sim::world::{MasterFrameTestRung, Simulation, TickLane, TriggerInputs};
+use std::collections::BTreeMap;
 
 fn make_trigger(
     id: &str,
@@ -42,7 +49,7 @@ fn make_trigger(
     }
 }
 
-fn spawn_type(sim: &mut Simulation, type_id: &str) {
+fn spawn_type(sim: &mut Simulation, type_id: &str) -> u64 {
     let sid = sim.allocate_stable_id();
     let owner_id = sim.interner.intern("Neutral");
     let type_id_interned = sim.interner.intern(type_id);
@@ -64,6 +71,7 @@ fn spawn_type(sim: &mut Simulation, type_id: &str) {
         false,
     );
     sim.substrate.entities.insert(ge);
+    sid
 }
 
 #[test]
@@ -149,6 +157,252 @@ fn time_trigger_can_center_camera_at_waypoint() {
             .advance_at_frame(46, &graph, &triggers, &events, &actions, None)
             .is_empty()
     );
+}
+
+#[test]
+fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
+    let triggers: TriggerMap = [(
+        "TRIG_A".to_string(),
+        make_trigger("TRIG_A", None, "Frame Zero", true, false),
+    )]
+    .into_iter()
+    .collect();
+    let events: EventMap = [(
+        "TRIG_A".to_string(),
+        MapEvent {
+            id: "TRIG_A".to_string(),
+            fields: vec![],
+            conditions: vec![EventCondition {
+                kind: 47,
+                params: vec!["0".to_string(), "0".to_string()],
+            }],
+        },
+    )]
+    .into_iter()
+    .collect();
+    let actions: ActionMap = [(
+        "TRIG_A".to_string(),
+        MapAction {
+            id: "TRIG_A".to_string(),
+            fields: vec![],
+            entries: vec![ActionEntry {
+                kind: 112,
+                params: vec![
+                    "0".to_string(),
+                    "0".to_string(),
+                    "0".to_string(),
+                    "0".to_string(),
+                    "0".to_string(),
+                    "0".to_string(),
+                    "9".to_string(),
+                ],
+            }],
+        },
+    )]
+    .into_iter()
+    .collect();
+    let graph = build_trigger_graph(
+        &HashMap::new(),
+        &HashMap::new(),
+        &triggers,
+        &events,
+        &actions,
+    );
+    let mut sim = Simulation::new();
+    sim.trigger_runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
+
+    let tick = sim.advance_master_frame(
+        &[],
+        None,
+        &BTreeMap::new(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+        Some(TriggerInputs {
+            graph: &graph,
+            triggers: &triggers,
+            events: &events,
+            actions: &actions,
+        }),
+    );
+
+    assert!(tick.frame_committed);
+    assert_eq!(
+        sim.take_master_frame_test_trace(),
+        vec![
+            MasterFrameTestRung::Triggers,
+            MasterFrameTestRung::LogicVector,
+            MasterFrameTestRung::Houses,
+            MasterFrameTestRung::FrameCommit,
+            MasterFrameTestRung::PendingDelete,
+        ]
+    );
+    assert_eq!(
+        sim.drain_trigger_effects(),
+        vec![TriggerEffect::CenterCameraAtWaypoint {
+            waypoint: 9,
+            immediate: true,
+        }]
+    );
+}
+
+#[test]
+fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
+    let triggers: TriggerMap = [(
+        "TRIG_A".to_string(),
+        make_trigger("TRIG_A", None, "Set Global", true, false),
+    )]
+    .into_iter()
+    .collect();
+    let events: EventMap = [(
+        "TRIG_A".to_string(),
+        MapEvent {
+            id: "TRIG_A".to_string(),
+            fields: vec![],
+            conditions: vec![EventCondition {
+                kind: 47,
+                params: vec!["0".to_string(), "0".to_string()],
+            }],
+        },
+    )]
+    .into_iter()
+    .collect();
+    let actions: ActionMap = [(
+        "TRIG_A".to_string(),
+        MapAction {
+            id: "TRIG_A".to_string(),
+            fields: vec![],
+            entries: vec![ActionEntry {
+                kind: 28,
+                params: vec!["13".to_string()],
+            }],
+        },
+    )]
+    .into_iter()
+    .collect();
+    let graph = build_trigger_graph(
+        &HashMap::new(),
+        &HashMap::new(),
+        &triggers,
+        &events,
+        &actions,
+    );
+    let height_map = BTreeMap::new();
+    let trigger_inputs = TriggerInputs {
+        graph: &graph,
+        triggers: &triggers,
+        events: &events,
+        actions: &actions,
+    };
+
+    let mut original = Simulation::new();
+    original.trigger_runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
+    original.advance_master_frame(
+        &[],
+        None,
+        &height_map,
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+        Some(trigger_inputs),
+    );
+    assert!(original.trigger_runtime.globals_set.contains(&13));
+
+    original.projectiles.spawn(ProjectileSpawn {
+        source_id: 99,
+        origin: ProjectileCoord::new(0, 0, 0),
+        target: ProjectileTarget::Cell(ProjectileCoord::new(1024, 0, 0)),
+        initial_target_position: ProjectileCoord::new(1024, 0, 0),
+        payload: ProjectilePayload {
+            base_damage: 40,
+            warhead: crate::sim::intern::InternedId::from_index(0),
+            weapon: crate::sim::intern::InternedId::from_index(0),
+            owner: crate::sim::intern::InternedId::from_index(0),
+        },
+        speed_leptons_per_frame: 64,
+        arm_frames: 0,
+        fuse_frames: None,
+        tracks_target: false,
+        target_expiry: TargetExpiryPolicy::Expire,
+        collision: ProjectileCollisionPolicy::NONE,
+    });
+    let deleted_id = spawn_type(&mut original, "GAPOWR");
+    original.uninit(deleted_id);
+    assert_eq!(original.projectiles.len(), 1);
+    assert!(original.substrate.pending_delete.contains(&deleted_id));
+
+    let hash_before_save = original.state_hash();
+    let bytes = GameSnapshot::save(&original, 0, 0, "test_map", 0);
+    let mut restored = GameSnapshot::load(&bytes).expect("snapshot loads").sim;
+    assert_eq!(restored.state_hash(), hash_before_save);
+    assert!(restored.trigger_runtime.globals_set.contains(&13));
+    assert_eq!(restored.projectiles.len(), 1);
+    assert!(restored.substrate.pending_delete.contains(&deleted_id));
+
+    let original_tick = original.advance_master_frame(
+        &[],
+        None,
+        &height_map,
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+        Some(trigger_inputs),
+    );
+    let mut replay_log = ReplayLog::new(ReplayHeader {
+        version: 1,
+        tick_hz: 15,
+        seed: original.session.seed,
+        map_name: original.session.map_name.clone(),
+        rules_hash: 0,
+    });
+    replay_log.record_tick(original_tick.tick, Vec::new(), original_tick.state_hash);
+    let restored_tick = restored.advance_master_frame(
+        &[],
+        None,
+        &height_map,
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+        Some(trigger_inputs),
+    );
+
+    assert!(original_tick.frame_committed);
+    assert!(restored_tick.frame_committed);
+    assert_eq!(original.state_hash(), restored.state_hash());
+    assert_eq!(original.projectiles.len(), 1);
+    assert!(original.substrate.pending_delete.is_empty());
+
+    let mut replayed = GameSnapshot::load(&bytes).expect("snapshot reloads").sim;
+    assert_eq!(
+        ReplayRunner::run_master_frame(
+            &mut replayed,
+            &replay_log,
+            None,
+            &height_map,
+            None,
+            67,
+            Some(trigger_inputs),
+        ),
+        vec![original_tick.state_hash],
+    );
+}
+
+#[test]
+fn trigger_runtime_latches_participate_in_state_hash() {
+    let mut sim = Simulation::new();
+    let before = sim.state_hash();
+
+    sim.trigger_runtime.globals_set.insert(13);
+
+    assert_ne!(sim.state_hash(), before);
 }
 
 #[test]

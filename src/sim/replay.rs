@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{COMMAND_RECORD_LEN, CommandEnvelope, CommandRecord};
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::world::Simulation;
+use crate::sim::world::{Simulation, TickLane, TriggerInputs};
 
 /// Value written by the retail executable at the start of every recording.
 pub const NATIVE_REPLAY_VERSION: u32 = 10;
@@ -537,6 +537,24 @@ impl ReplayRunner {
         path_grid: Option<&PathGrid>,
         tick_ms: u32,
     ) -> Vec<u64> {
+        Self::run_master_frame(sim, replay, rules, height_map, path_grid, tick_ms, None)
+    }
+
+    /// Replay through the same master-frame admission used by gameplay.
+    ///
+    /// Diagnostic logs own commands and hashes, while the caller owns static
+    /// map trigger definitions. This keeps presentation-free replay faithful
+    /// to the YR LogicClass trigger rung without serializing map data twice.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_master_frame(
+        sim: &mut Simulation,
+        replay: &ReplayLog,
+        rules: Option<&RuleSet>,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        path_grid: Option<&PathGrid>,
+        tick_ms: u32,
+        trigger_inputs: Option<TriggerInputs<'_>>,
+    ) -> Vec<u64> {
         // The diagnostic playback must be constructed from the recorded seed.
         // A sim seeded
         // differently than the header it replays is a guaranteed silent
@@ -562,8 +580,19 @@ impl ReplayRunner {
         }
         let mut hashes: Vec<u64> = Vec::with_capacity(replay.ticks.len());
         for entry in &replay.ticks {
-            let result =
-                sim.advance_tick(&entry.commands, rules, height_map, path_grid, None, tick_ms);
+            let result = sim.advance_master_frame(
+                &entry.commands,
+                rules,
+                height_map,
+                path_grid,
+                None,
+                tick_ms,
+                TickLane::Ordinary,
+                None,
+                trigger_inputs,
+            );
+            // Replay has no app layer to consume presentation-only trigger effects.
+            let _ = sim.drain_trigger_effects();
             hashes.push(result.state_hash);
         }
         hashes

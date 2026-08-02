@@ -14,6 +14,7 @@
 //! committing to a full mission-script system yet.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::hash::{Hash, Hasher};
 
 use crate::map::actions::{ActionEntry, ActionMap};
 use crate::map::events::{EventCondition, EventMap};
@@ -69,6 +70,38 @@ pub struct TriggerRuntime {
 }
 
 impl TriggerRuntime {
+    /// Fold mutable trigger state into the simulation's lockstep hash.
+    ///
+    /// The map definitions are static input, but these latches decide which
+    /// later YR LogicClass trigger actions may run after a save or replay.
+    pub(crate) fn hash_state(&self, hasher: &mut impl Hasher) {
+        self.globals_set.len().hash(hasher);
+        for value in &self.globals_set {
+            value.hash(hasher);
+        }
+
+        self.locals_set.len().hash(hasher);
+        for value in &self.locals_set {
+            value.hash(hasher);
+        }
+
+        self.disabled_triggers.len().hash(hasher);
+        for value in &self.disabled_triggers {
+            value.hash(hasher);
+        }
+
+        self.fired_one_shot_triggers.len().hash(hasher);
+        for value in &self.fired_one_shot_triggers {
+            value.hash(hasher);
+        }
+
+        match self.last_announcement {
+            None => 0u8.hash(hasher),
+            Some(MissionAnnouncementKind::Victory) => 1u8.hash(hasher),
+            Some(MissionAnnouncementKind::Defeat) => 2u8.hash(hasher),
+        }
+    }
+
     pub fn from_map(triggers: &TriggerMap, local_variables: &LocalVariableMap) -> Self {
         let mut runtime = TriggerRuntime::default();
         for trigger in triggers.values() {

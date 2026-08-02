@@ -240,7 +240,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC2B8_BAEF_E6C7_9CB6;
 /// wired in this slice (deploy-begin off, undeploy-complete on, destination-
 /// accepted on) changed no other hashed state in these fixtures. The absolute
 /// per-stream RNG pins held throughout.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xDFA8_E30E_93BC_FEEF;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xD900_CD22_0276_1CD9;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

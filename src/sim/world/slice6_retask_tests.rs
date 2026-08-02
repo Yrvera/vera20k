@@ -177,7 +177,7 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8477_F4BD_F3D8_B12B;
 // wired in this slice (deploy-begin off, undeploy-complete on, destination-
 // accepted on) changed no other hashed state in these fixtures. The absolute
 // per-stream RNG pins held throughout.
-const SLICE6_BASELINE_HASH: u64 = 0x64E3_D8E5_D202_8D5C;
+const SLICE6_BASELINE_HASH: u64 = 0x6818_979C_3D5A_113D;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
