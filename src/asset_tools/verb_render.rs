@@ -121,6 +121,16 @@ pub struct RenderOptions {
     pub out: PathBuf,
     /// Cap on frames rendered in one call, to bound a 600-frame SHP.
     pub limit: usize,
+
+    // --- Phase 2: format-specific knobs, ignored by the SHP path ---
+    /// TMP only: compose the template as an isometric diamond rather than a grid.
+    pub isometric: bool,
+    /// VXL only: facing bytes to render. Empty means the default single facing.
+    pub facings: Vec<u8>,
+    /// VXL only: explicit .vpl for voxel lighting. None uses `voxels.vpl`.
+    pub vpl: Option<String>,
+    /// PCX only: palette index to treat as transparent.
+    pub transparent_index: Option<u8>,
 }
 
 impl Default for RenderOptions {
@@ -133,6 +143,10 @@ impl Default for RenderOptions {
             scale: None,
             out: PathBuf::from(DEFAULT_OUT_ROOT),
             limit: DEFAULT_FRAME_LIMIT,
+            isometric: false,
+            facings: Vec::new(),
+            vpl: None,
+            transparent_index: None,
         }
     }
 }
@@ -446,6 +460,7 @@ pub fn run(
     };
 
     Ok(RenderReport {
+        kind: FORMAT_SHP.to_string(),
         asset: name.to_string(),
         source_archive,
         palette: Some(choice),

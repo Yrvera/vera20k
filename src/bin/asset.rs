@@ -10,7 +10,8 @@ use vera20k::asset_tools::args::{self, Cli, Verb};
 use vera20k::asset_tools::names::NameDict;
 use vera20k::asset_tools::report::{ErrorReport, to_json};
 use vera20k::asset_tools::{
-    palette, root, verb_find, verb_info, verb_ls, verb_palette, verb_render,
+    palette, render_dispatch, root, verb_art, verb_csf, verb_extract, verb_find, verb_info,
+    verb_ls, verb_palette, verb_sound,
 };
 
 const EXIT_FAILED: i32 = 1;
@@ -93,10 +94,11 @@ fn run(cli: Cli) -> Result<(), ErrorReport> {
             println!("{}", to_json(&report));
         }
 
+        // `render` sniffs the bytes and routes to the matching renderer.
         Verb::Render { name } => {
             let dict = NameDict::build_offline();
             let art_registry = palette::load_art_registry(&manager);
-            let report = verb_render::run(&manager, &dict, &art_registry, &name, &cli.render)?;
+            let report = render_dispatch::run(&manager, &dict, &art_registry, &name, &cli.render)?;
             println!("{}", to_json(&report));
         }
 
@@ -104,6 +106,40 @@ fn run(cli: Cli) -> Result<(), ErrorReport> {
             let dict = NameDict::build_offline();
             let art_registry = palette::load_art_registry(&manager);
             let report = verb_palette::run(&manager, &dict, &art_registry, &name, &cli.palette)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::Extract { name } => {
+            let report = verb_extract::run(&manager, &name, &cli.extract)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::CsfGet { key } => {
+            let report = verb_csf::get(&manager, &key, &cli.csf)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::CsfGrep { text } => {
+            let report = verb_csf::grep(&manager, &text, &cli.csf)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::Sound { name } => {
+            let report = verb_sound::sound(&manager, &name, &cli.sound)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::BagLs => {
+            let report = verb_sound::bag_ls(&manager, &cli.sound)?;
+            println!("{}", to_json(&report));
+        }
+
+        // `art-for` is the one verb that needs the art registry for its answer
+        // rather than for a palette guess.
+        Verb::ArtFor { type_id } => {
+            let art_registry = palette::load_art_registry(&manager);
+            let report =
+                verb_art::run(&manager, &art_registry, &cli.art_image, &type_id, &cli.art)?;
             println!("{}", to_json(&report));
         }
     }

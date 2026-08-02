@@ -224,6 +224,14 @@ impl AudioIndex {
         self.entries.len()
     }
 
+    /// All indexed entries, in index order.
+    ///
+    /// `names_with_prefix` yields only names; anything reporting on the bag
+    /// needs the offsets, rates and flags too.
+    pub fn entries(&self) -> &[AudioBagEntry] {
+        &self.entries
+    }
+
     /// Return entry names matching a prefix (case-insensitive). For debugging.
     pub fn names_with_prefix(&self, prefix: &str) -> Vec<&str> {
         let upper = prefix.to_ascii_uppercase();

@@ -311,8 +311,13 @@ pub struct RenderOutputs {
 
 /// `asset render` — always emitted, so the verb answers its question even
 /// when the caller cannot look at an image.
+///
+/// One shape covers every renderable format; `kind` says how to read the
+/// count fields. For `shp` they are frames, for `tmp` tiles, for `vxl` facings,
+/// and for `pal` the 256 palette entries.
 #[derive(Debug, Serialize)]
 pub struct RenderReport {
+    pub kind: String,
     pub asset: String,
     pub source_archive: String,
     pub palette: Option<PaletteChoice>,
@@ -329,6 +334,111 @@ pub struct RenderReport {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     pub outputs: RenderOutputs,
+}
+
+/// `asset extract` — raw bytes written to disk, with their provenance.
+#[derive(Debug, Serialize)]
+pub struct ExtractReport {
+    pub asset: String,
+    pub source_archive: String,
+    pub entry_id: String,
+    pub size: usize,
+    pub format: String,
+    pub detail: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// One string-table entry.
+#[derive(Debug, Serialize)]
+pub struct CsfEntry {
+    pub key: String,
+    /// The value after the parser's load-time normalisation — what the game shows.
+    pub value: String,
+    /// Present only when normalisation changed the stored bytes. Retail carries
+    /// hundreds of such strings, so a lookup that hid this would misreport them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+    pub changed_by_normalization: bool,
+}
+
+/// `asset csf-get` / `asset csf-grep`.
+#[derive(Debug, Serialize)]
+pub struct CsfReport {
+    pub source: String,
+    pub source_archive: String,
+    pub version: u32,
+    pub language: u32,
+    pub entry_count: usize,
+    pub query: String,
+    pub matched: usize,
+    pub shown: usize,
+    pub entries: Vec<CsfEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// One sound entry from the audio bag index.
+#[derive(Debug, Serialize)]
+pub struct SoundEntry {
+    pub name: String,
+    pub offset: u32,
+    pub size: u32,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub is_16bit: bool,
+    pub is_ima_adpcm: bool,
+    pub chunk_size: u32,
+    /// Filled only when the entry was decoded, which `bag-ls` does not do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decoded_samples: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Path to a written .wav, when `--wav` was passed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wav: Option<String>,
+}
+
+/// `asset sound` / `asset bag-ls`.
+#[derive(Debug, Serialize)]
+pub struct SoundReport {
+    pub bag: String,
+    pub entry_count: usize,
+    pub matched: usize,
+    pub shown: usize,
+    pub entries: Vec<SoundEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// One candidate art filename and whether it resolves.
+#[derive(Debug, Serialize)]
+pub struct ArtCandidate {
+    pub name: String,
+    pub exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_archive: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// `asset art-for` — rules/art id to the files that actually back it.
+#[derive(Debug, Serialize)]
+pub struct ArtForReport {
+    pub type_id: String,
+    pub theater: String,
+    /// `Image=` as declared, before theater substitution.
+    pub declared_image: String,
+    pub effective_image_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared_palette: Option<String>,
+    pub cameo_id: String,
+    pub shp_candidates: Vec<ArtCandidate>,
+    pub cameo_candidates: Vec<ArtCandidate>,
+    pub voxel_candidates: Vec<ArtCandidate>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Failure shape. Written to stdout so a caller parsing JSON always gets JSON.

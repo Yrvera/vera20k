@@ -10,11 +10,15 @@
 
 use std::path::PathBuf;
 
+use crate::asset_tools::verb_art::ArtForOptions;
+use crate::asset_tools::verb_csf::CsfOptions;
+use crate::asset_tools::verb_extract::ExtractOptions;
 use crate::asset_tools::verb_find::FindOptions;
 use crate::asset_tools::verb_info::InfoOptions;
 use crate::asset_tools::verb_ls::{LsOptions, SortKey};
 use crate::asset_tools::verb_palette::PaletteForOptions;
 use crate::asset_tools::verb_render::RenderOptions;
+use crate::asset_tools::verb_sound::SoundOptions;
 
 /// Where rendered PNGs land by default. Under `target/` because that is
 /// gitignored, so nothing this tool writes can be committed by accident.
@@ -27,6 +31,12 @@ pub enum Verb {
     Render { name: String },
     PaletteFor { name: String },
     Archives,
+    Extract { name: String },
+    CsfGet { key: String },
+    CsfGrep { text: String },
+    Sound { name: String },
+    BagLs,
+    ArtFor { type_id: String },
     Help,
 }
 
@@ -39,6 +49,12 @@ pub struct Cli {
     pub info: InfoOptions,
     pub render: RenderOptions,
     pub palette: PaletteForOptions,
+    pub extract: ExtractOptions,
+    pub csf: CsfOptions,
+    pub sound: SoundOptions,
+    pub art: ArtForOptions,
+    /// `art-for --image`: the rules `Image=` value, when the caller knows it.
+    pub art_image: String,
 }
 
 pub fn usage() -> &'static str {
@@ -54,9 +70,15 @@ VERBS
   ls <ARCHIVE>         Paged listing of one archive's entries.
   info <NAME>          Parsed structure: SHP frame tables, TMP tiles, VXL limbs,
                        palettes, CSF/AUD/PCX/FNT/VPL headers.
-  render <NAME>        Write PNGs of an SHP. Phase 1 renders SHP only.
+  render <NAME>        Write PNGs. Handles SHP, TMP, PCX, PAL and VXL.
   palette-for <NAME>   Which palette applies, and the full reasoning chain.
   archives             Every mounted archive, with lookup reachability marked.
+  extract <NAME>       Write an asset's raw bytes to disk.
+  csf-get <KEY>        One string-table entry, with its normalisation flagged.
+  csf-grep <TEXT>      Search keys and values of the string table.
+  sound <NAME>         One audio-bag entry; --wav decodes it.
+  bag-ls               List the audio bag, filtered by --prefix.
+  art-for <TYPE>       Rules type id to the art files that back it, resolved.
 
 GLOBAL OPTIONS
   --ra2-dir <PATH>     Retail install root. Overrides $RA2_DIR and config.toml.
@@ -83,7 +105,7 @@ info
   --limit <N>          Max frames/tiles listed. Default 64.
 
 render
-  --frame <N>          Render one frame. Default: every frame, up to --limit.
+  --frame <N>          Render one frame (or one TMP tile). Default: all.
   --palette <NAME>     Force a palette, e.g. sidebar.pal.
   --house <N>          Apply the [Colors] scheme N to the [16,32) remap band.
   --crop               Draw the bare frame sub-rect instead of the full canvas.
@@ -91,9 +113,31 @@ render
   --scale <N>          Integer upscale. Default: fit the long edge to 256-1024.
   --limit <N>          Max frames rendered. Default 64.
   --out <DIR>          Output root. Default target/asset.
+  --isometric          TMP: compose the template as it appears in game.
+  --grid               TMP: lay tiles out in a labelled grid (default).
+  --facing <0-255>     VXL: render this facing. Repeatable. Default: 8 compass
+                       facings (0x00 N, 0x40 E, 0x80 S, 0xC0 W).
+  --vpl <NAME>         VXL: voxel lighting table. Default voxels.vpl.
+  --transparent-index <N>
+                       PCX: palette index to treat as transparent.
 
 palette-for
   --palette <NAME>     Test a specific palette against the inference chain.
+
+csf-get / csf-grep
+  --source <NAME>      Which .csf to read. Default: ra2md.csf then ra2.csf.
+  --raw                Also report the stored text before normalisation.
+  --limit/--offset     Paging. Default limit 50.
+
+sound / bag-ls
+  --bag <NAME>         Bag pair to open, without extension.
+  --prefix <P>         bag-ls: name prefix filter.
+  --wav                sound: decode and write a .wav.
+  --limit/--offset     Paging. Default limit 100.
+
+art-for
+  --theater <T>        tem (default) | sno | urb | lun | des | ubn
+  --image <ID>         The rules Image= value, when you already know it.
 "
 }
 
@@ -108,6 +152,11 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
         info: InfoOptions::default(),
         render: RenderOptions::default(),
         palette: PaletteForOptions::default(),
+        extract: ExtractOptions::default(),
+        csf: CsfOptions::default(),
+        sound: SoundOptions::default(),
+        art: ArtForOptions::default(),
+        art_image: String::new(),
     };
 
     let mut args = argv.into_iter().peekable();
@@ -118,8 +167,8 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
         return Ok(cli);
     }
 
-    // Every verb but `archives` takes exactly one positional target.
-    let needs_target = !matches!(verb_word.as_str(), "archives");
+    // Every verb but the two corpus-wide ones takes exactly one positional target.
+    let needs_target = !matches!(verb_word.as_str(), "archives" | "bag-ls");
     let target = if needs_target {
         match args.peek() {
             Some(word) if !word.starts_with('-') => args.next(),
@@ -146,6 +195,22 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
             name: require_target(target, "palette-for", "<NAME>")?,
         },
         "archives" => Verb::Archives,
+        "extract" => Verb::Extract {
+            name: require_target(target, "extract", "<NAME>")?,
+        },
+        "csf-get" => Verb::CsfGet {
+            key: require_target(target, "csf-get", "<KEY>")?,
+        },
+        "csf-grep" => Verb::CsfGrep {
+            text: require_target(target, "csf-grep", "<TEXT>")?,
+        },
+        "sound" => Verb::Sound {
+            name: require_target(target, "sound", "<NAME>")?,
+        },
+        "bag-ls" => Verb::BagLs,
+        "art-for" => Verb::ArtFor {
+            type_id: require_target(target, "art-for", "<TYPE>")?,
+        },
         other => return Err(format!("unknown verb \"{other}\"")),
     };
 
@@ -157,7 +222,13 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
             }
             "--ra2-dir" => cli.ra2_dir = Some(PathBuf::from(value(&mut args, "--ra2-dir")?)),
             "--all-mixes" => cli.all_mixes = true,
-            "--out" => cli.render.out = PathBuf::from(value(&mut args, "--out")?),
+            // One output root serves every verb that writes files.
+            "--out" => {
+                let dir = PathBuf::from(value(&mut args, "--out")?);
+                cli.render.out = dir.clone();
+                cli.extract.out = dir.clone();
+                cli.sound.out = dir;
+            }
 
             "--all" => match cli.verb {
                 Verb::Find { .. } => cli.find.all = true,
@@ -183,10 +254,36 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
                     }
                 }
             }
-            "--offset" => cli.ls.offset = number(&mut args, "--offset")?,
+            "--offset" => {
+                let n = number::<usize>(&mut args, "--offset")?;
+                match cli.verb {
+                    Verb::CsfGet { .. } | Verb::CsfGrep { .. } => cli.csf.offset = n,
+                    Verb::Sound { .. } | Verb::BagLs => cli.sound.offset = n,
+                    _ => cli.ls.offset = n,
+                }
+            }
 
             "--ascii" => cli.info.ascii = true,
             "--crop" => cli.render.crop = true,
+
+            // --- Phase 2 flags ---
+            "--isometric" => cli.render.isometric = true,
+            "--grid" => cli.render.isometric = false,
+            "--facing" => cli
+                .render
+                .facings
+                .push(number::<u8>(&mut args, "--facing")?),
+            "--vpl" => cli.render.vpl = Some(value(&mut args, "--vpl")?),
+            "--transparent-index" => {
+                cli.render.transparent_index = Some(number::<u8>(&mut args, "--transparent-index")?)
+            }
+            "--theater" => cli.art.theater = value(&mut args, "--theater")?,
+            "--image" => cli.art_image = value(&mut args, "--image")?,
+            "--prefix" => cli.sound.prefix = Some(value(&mut args, "--prefix")?),
+            "--wav" => cli.sound.wav = true,
+            "--bag" => cli.sound.bag = Some(value(&mut args, "--bag")?),
+            "--source" => cli.csf.source = Some(value(&mut args, "--source")?),
+            "--raw" => cli.csf.raw = true,
             "--scale" => cli.render.scale = Some(number::<u32>(&mut args, "--scale")?),
             "--house" => cli.render.house = Some(number::<u8>(&mut args, "--house")?),
             "--palette" => {
@@ -210,6 +307,8 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
                     Verb::Ls { .. } => cli.ls.limit = n,
                     Verb::Info { .. } => cli.info.limit = n,
                     Verb::Render { .. } => cli.render.limit = n,
+                    Verb::CsfGet { .. } | Verb::CsfGrep { .. } => cli.csf.limit = n,
+                    Verb::Sound { .. } | Verb::BagLs => cli.sound.limit = n,
                     _ => return Err(flag_not_valid(&flag, &cli.verb)),
                 }
             }
@@ -254,6 +353,12 @@ fn flag_not_valid(flag: &str, verb: &Verb) -> String {
         Verb::Render { .. } => "render",
         Verb::PaletteFor { .. } => "palette-for",
         Verb::Archives => "archives",
+        Verb::Extract { .. } => "extract",
+        Verb::CsfGet { .. } => "csf-get",
+        Verb::CsfGrep { .. } => "csf-grep",
+        Verb::Sound { .. } => "sound",
+        Verb::BagLs => "bag-ls",
+        Verb::ArtFor { .. } => "art-for",
         Verb::Help => "help",
     };
     format!("{flag} is not valid for `{verb_name}`")
