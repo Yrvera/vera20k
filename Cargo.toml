@@ -18,6 +18,11 @@ path = "src/bin/parity-digest.rs"
 name = "mix-browser"
 path = "src/bin/mix-browser.rs"
 
+# Headless, JSON-emitting asset browser for automated callers.
+[[bin]]
+name = "asset"
+path = "src/bin/asset.rs"
+
 [[bin]]
 name = "extract-ini"
 path = "src/bin/extract-ini.rs"
