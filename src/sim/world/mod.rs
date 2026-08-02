@@ -2438,9 +2438,11 @@ impl Simulation {
                     {
                         continue;
                     }
-                    let Some(coord_z) = self.resolved_terrain.as_ref().and_then(|terrain| {
-                        combat::in_range::effective_z_leptons(entity, terrain)
-                    }) else {
+                    let Some(coord_z) = self
+                        .resolved_terrain
+                        .as_ref()
+                        .and_then(|terrain| combat::in_range::effective_z_leptons(entity, terrain))
+                    else {
                         continue;
                     };
                     members.push(group_destination::GroupDestinationMember {
@@ -2534,14 +2536,13 @@ impl Simulation {
                     && command.owner == owner
                     && !Self::command_uses_megamission(&command.payload)
             }) {
-                let (spawned, destroyed) =
-                    self.apply_one_due_command(
-                        command,
-                        rules,
-                        path_grid,
-                        height_map,
-                        overlay_registry,
-                    );
+                let (spawned, destroyed) = self.apply_one_due_command(
+                    command,
+                    rules,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
+                );
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
                 executed_commands += 1;
@@ -2558,14 +2559,13 @@ impl Simulation {
                 .collect::<Vec<_>>();
             self.adjust_staged_megamission_destinations(&mut staged, path_grid);
             for command in &staged {
-                let (spawned, destroyed) =
-                    self.apply_one_due_command(
-                        command,
-                        rules,
-                        path_grid,
-                        height_map,
-                        overlay_registry,
-                    );
+                let (spawned, destroyed) = self.apply_one_due_command(
+                    command,
+                    rules,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
+                );
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
                 executed_commands += 1;
@@ -2683,15 +2683,14 @@ impl Simulation {
         // EventClass dispatch is a Main_Tick tail rung: the complete live
         // Logic walk observes frame N's pre-command state, so an accepted
         // command first changes that object's AI behavior on frame N+1.
-        let (executed, spawned, destroyed) =
-            self.apply_due_commands(
-                commands,
-                rules,
-                path_grid,
-                height_map,
-                execute_tick,
-                overlay_registry,
-            );
+        let (executed, spawned, destroyed) = self.apply_due_commands(
+            commands,
+            rules,
+            path_grid,
+            height_map,
+            execute_tick,
+            overlay_registry,
+        );
         *executed_commands += executed;
         *spawned_entities |= spawned;
         *destroyed_structure |= destroyed;
@@ -2842,12 +2841,14 @@ impl Simulation {
                 &sim.house_alliances,
                 &mut sim.substrate.occupancy,
                 &mut sim.substrate.cell_occupation,
+                &mut sim.substrate.raw_cell_occupation,
                 &mut sim.substrate.next_occupancy_enter_order,
                 &mut sim.scenario_rng,
                 sim.session.tick,
                 sim.session.binary_frame,
                 sim.zone_grid.as_ref(),
                 sim.resolved_terrain.as_ref(),
+                sim.playfield_bounds,
                 &sim.terrain_speed_config,
                 sim.close_enough,
                 sim.path_delay_ticks,
@@ -3320,9 +3321,7 @@ impl Simulation {
                     ore_growth_state: &mut self.production.ore_growth_state,
                     overlay_registry,
                     tiberium_types: Some(&rules.tiberium_types),
-                    source_object_cells: Some(
-                        &self.production.tiberium_spawning_terrain_cells,
-                    ),
+                    source_object_cells: Some(&self.production.tiberium_spawning_terrain_cells),
                     binary_frame: self.session.binary_frame,
                     spread_enabled: self.production.ore_growth_config.spreads,
                     radar_dirty_cells: &mut self.radar_terrain_dirty_cells,

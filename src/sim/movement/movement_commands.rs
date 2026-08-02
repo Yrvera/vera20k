@@ -13,20 +13,17 @@ use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::GeneralRules;
-use crate::sim::components::{DriveOccupationFootprint, MovementTarget};
+use crate::sim::components::{DriveCoord, DriveOccupationFootprint, MovementTarget};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::pathfinding::{BlockerNeighborCounts, LayeredEntityBlockMap};
-use crate::util::direction::{DIRECTION_DELTAS, TUBE_STEP_DIRECTION};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 use super::movement_path::{
-    find_move_path_with_marker, merge_path_blocks, resolve_requested_move_goal,
-    supports_layered_bridge_pathing,
+    find_move_path, merge_path_blocks, resolve_requested_move_goal, supports_layered_bridge_pathing,
 };
-use super::path_markers::build_peer_search_marker_overlay;
 use super::{PathfindingContext, facing_from_delta};
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::components::OrderIntent;
@@ -35,22 +32,16 @@ use crate::sim::game_entity::GameEntity;
 use super::drive_track;
 use super::teleport_movement;
 
-fn drive_direction_from_step(from: (u16, u16), to: (u16, u16)) -> Option<u8> {
-    let dx = to.0 as i32 - from.0 as i32;
-    let dy = to.1 as i32 - from.1 as i32;
-    if dx.abs() > 1 || dy.abs() > 1 {
-        return Some(TUBE_STEP_DIRECTION);
-    }
-    DIRECTION_DELTAS
-        .iter()
-        .position(|&delta| delta == (dx, dy))
-        .map(|idx| idx as u8)
-}
-
-fn drive_directions_from_path(path: &[(u16, u16)]) -> Vec<u8> {
-    path.windows(2)
-        .filter_map(|step| drive_direction_from_step(step[0], step[1]))
-        .collect()
+fn resolved_track_endpoint(
+    grid: &PathGrid,
+    cell: (u16, u16),
+    layer: crate::sim::movement::locomotor::MovementLayer,
+    fallback_z: u8,
+) -> DriveCoord {
+    let z = grid.cell(cell.0, cell.1).map_or(fallback_z, |path_cell| {
+        path_cell.effective_cell_z_for_layer(layer)
+    });
+    DriveCoord::cell(cell.0, cell.1, i32::from(z as i8))
 }
 
 /// Check if an entity can accept a new movement destination.
@@ -308,10 +299,10 @@ pub(crate) fn issue_move_command_with_layered(
     let start_rx: u16 = entity.position.rx;
     let start_ry: u16 = entity.position.ry;
     let current_layer = entity.movement_layer_or_ground();
-    let uses_drive_locomotor = entity
-        .locomotor
-        .as_ref()
-        .is_some_and(|l| matches!(l.kind, LocomotorKind::Drive));
+    let locomotor_kind = entity.locomotor.as_ref().map(|locomotor| locomotor.kind);
+    let uses_drive_locomotor = locomotor_kind == Some(LocomotorKind::Drive);
+    let uses_ship_locomotor = locomotor_kind == Some(LocomotorKind::Ship);
+    let uses_shared_tracks = uses_drive_locomotor || uses_ship_locomotor;
     // Derive movement_zone from the entity's locomotor — no parameter needed.
     let movement_zone: Option<MovementZone> = entity.locomotor.as_ref().map(|l| l.movement_zone);
     let too_big_to_fit_under_bridge = entity.too_big_to_fit_under_bridge;
@@ -329,19 +320,6 @@ pub(crate) fn issue_move_command_with_layered(
     {
         loco.power_on();
     }
-    let Some(entity) = entities.get(entity_id) else {
-        return false;
-    };
-
-    let marker_request_start = if queue && !uses_drive_locomotor {
-        entity
-            .movement_target
-            .as_ref()
-            .and_then(|movement| movement.path.last().copied())
-            .unwrap_or((start_rx, start_ry))
-    } else {
-        (start_rx, start_ry)
-    };
     let mut merged_entity_blocks = merge_path_blocks(
         entity_blocks,
         resolved_terrain,
@@ -381,11 +359,7 @@ pub(crate) fn issue_move_command_with_layered(
         );
     }
 
-    let marker_overlay =
-        build_peer_search_marker_overlay(entities, entity_id, marker_request_start);
-    let marker_overlay_ref = (!marker_overlay.is_empty()).then_some(&marker_overlay);
-
-    if queue && !uses_drive_locomotor {
+    if queue && !uses_shared_tracks {
         // Check if entity already has a movement target to append to. Drive
         // commands reissue the destination instead; standard YR player/team/
         // trigger paths do not append to Foot NavQueue.
@@ -403,7 +377,7 @@ pub(crate) fn issue_move_command_with_layered(
                     .copied()
                     .unwrap_or(current_layer);
                 let zone_mz = movement_zone.unwrap_or(MovementZone::Normal);
-                let Some((appended, appended_layers)) = find_move_path_with_marker(
+                let Some((appended, appended_layers)) = find_move_path(
                     PathfindingContext {
                         path_grid: Some(grid),
                         zone_grid,
@@ -425,7 +399,6 @@ pub(crate) fn issue_move_command_with_layered(
                     movement_zone,
                     too_big_to_fit_under_bridge,
                     entity_block_map,
-                    marker_overlay_ref,
                     0, // urgency=0: initial move command
                     mover_is_crusher,
                 ) else {
@@ -450,7 +423,7 @@ pub(crate) fn issue_move_command_with_layered(
         }
     }
     let zone_mz = movement_zone.unwrap_or(MovementZone::Normal);
-    let Some((path, path_layers)) = find_move_path_with_marker(
+    let Some((path, path_layers)) = find_move_path(
         PathfindingContext {
             path_grid: Some(grid),
             zone_grid,
@@ -472,7 +445,6 @@ pub(crate) fn issue_move_command_with_layered(
         movement_zone,
         too_big_to_fit_under_bridge,
         entity_block_map,
-        marker_overlay_ref,
         0, // urgency=0: initial move command
         mover_is_crusher,
     ) else {
@@ -560,25 +532,32 @@ pub(crate) fn issue_move_command_with_layered(
         movement.path_layers.len(),
         "path/path_layers desync in initial MovementTarget"
     );
-    let drive_path_directions = drive_directions_from_path(&movement.path);
-
     if let Some(entity_mut) = entities.get_mut(entity_id) {
-        let uses_drive_locomotor = entity_mut
+        let locomotor_kind = entity_mut
             .locomotor
             .as_ref()
-            .is_some_and(|l| matches!(l.kind, LocomotorKind::Drive));
-        if uses_drive_locomotor {
+            .map(|locomotor| locomotor.kind);
+        let uses_drive_locomotor = locomotor_kind == Some(LocomotorKind::Drive);
+        let uses_ship_locomotor = locomotor_kind == Some(LocomotorKind::Ship);
+        let uses_shared_tracks = uses_drive_locomotor || uses_ship_locomotor;
+        if uses_shared_tracks {
             super::navcom::set_destination_internal_cell(
                 entity_mut,
                 effective_target,
                 resolved_terrain,
             );
             entity_mut.navigation.nav_queue.clear();
+        }
+        if uses_drive_locomotor {
             let drive = entity_mut
                 .drive_locomotion
                 .get_or_insert_with(Default::default);
-            drive.path.directions = drive_path_directions;
-            drive.path.cursor = 0;
+            super::path_markers::install_path_replay(
+                &mut drive.path,
+                (start_rx, start_ry),
+                &movement.path,
+                1,
+            );
             drive.turn.target_direction = drive.path.directions.first().copied();
             drive.turn.target_facing_16 = initial_step_delta
                 .map(|(dx, dy)| crate::util::fixed_math::facing_from_delta_int_u16(dx, dy));
@@ -594,15 +573,30 @@ pub(crate) fn issue_move_command_with_layered(
                 SIM_ZERO,
                 SIM_ZERO,
             );
+        } else if uses_ship_locomotor {
+            let ship = entity_mut
+                .ship_locomotion
+                .get_or_insert_with(Default::default);
+            super::path_markers::install_path_replay(
+                &mut ship.path,
+                (start_rx, start_ry),
+                &movement.path,
+                1,
+            );
         }
         let mut drive_track_started = false;
         let mut track_occupation_target: Option<DriveOccupationFootprint> = None;
+        let mut accepted_path_reference: Option<(i16, i16)> = None;
         if let Some(f) = new_facing {
             if entity_mut.category != EntityCategory::Infantry
-                && uses_drive_locomotor
+                && uses_shared_tracks
                 && let Some((dx, dy)) = initial_step_delta
             {
-                if let Some(sel) = drive_track::select_drive_track(entity_mut.facing, f, false) {
+                if let Some(sel) = drive_track::select_shared_ordinary_track(
+                    entity_mut.facing,
+                    f,
+                    uses_ship_locomotor,
+                ) {
                     entity_mut.drive_track = drive_track::begin_drive_track(
                         sel.raw_track_index,
                         sel.flags,
@@ -622,7 +616,14 @@ pub(crate) fn issue_move_command_with_layered(
                             layer: crate::sim::movement::locomotor::MovementLayer::Ground,
                         });
                     }
-                } else if let Some(fb) = drive_track::build_sharp_turn_fallback(entity_mut.facing) {
+                    if drive_track_started {
+                        accepted_path_reference =
+                            movement.path.get(1).map(|&(rx, ry)| (rx as i16, ry as i16));
+                    }
+                } else if let Some(fb) = drive_track::build_shared_sharp_turn_fallback(
+                    entity_mut.facing,
+                    uses_ship_locomotor,
+                ) {
                     let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity_mut.facing);
                     entity_mut.drive_track = drive_track::begin_drive_track(
                         fb.raw_track_index,
@@ -652,15 +653,22 @@ pub(crate) fn issue_move_command_with_layered(
                                 });
                             }
                         }
+                        accepted_path_reference = Some((
+                            (i32::from(entity_mut.position.rx) + cdx) as i16,
+                            (i32::from(entity_mut.position.ry) + cdy) as i16,
+                        ));
                     }
                 }
             }
 
             if drive_track_started {
                 entity_mut.facing_target = None;
-            } else if uses_drive_locomotor {
+            } else if uses_shared_tracks {
                 entity_mut.drive_track = None;
                 entity_mut.facing_target = None;
+                if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
+                    ship.head_to = None;
+                }
             } else {
                 entity_mut.drive_track = None;
                 // Infantry always turn instantly (RA2 behavior).
@@ -679,6 +687,9 @@ pub(crate) fn issue_move_command_with_layered(
                 .occupancy_list_layer()
                 .unwrap_or(crate::sim::movement::locomotor::MovementLayer::Ground);
             if let Some(drive) = entity_mut.drive_locomotion.as_mut() {
+                if let Some(reference) = accepted_path_reference {
+                    super::path_markers::accept_path_replay(&mut drive.path, reference, 1);
+                }
                 match (track_occupation_target, cell_occupation.as_deref_mut()) {
                     (Some(next), Some(occupation)) => {
                         crate::sim::occupancy::replace_drive_head_to_occupation(
@@ -701,6 +712,22 @@ pub(crate) fn issue_move_command_with_layered(
                         );
                     }
                     (None, None) => drive.occupation_head_to = None,
+                }
+            }
+        } else if uses_ship_locomotor {
+            let fallback_z = entity_mut.position.z;
+            if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
+                if let Some(reference) = accepted_path_reference {
+                    super::path_markers::accept_path_replay(&mut ship.path, reference, 1);
+                    let endpoint = (reference.0 as u16, reference.1 as u16);
+                    let layer = movement
+                        .path
+                        .iter()
+                        .position(|&cell| cell == endpoint)
+                        .map_or(current_layer, |index| movement.layer_at(index));
+                    ship.head_to = Some(resolved_track_endpoint(grid, endpoint, layer, fallback_z));
+                } else {
+                    ship.head_to = None;
                 }
             }
         }

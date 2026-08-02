@@ -385,6 +385,7 @@ pub(crate) fn tick_movement_with_grid(
     let mut sound_events: Vec<crate::sim::world::SimSoundEvent> = Vec::new();
     let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     let mut cell_occupation = crate::sim::occupancy::CellOccupationGrid::rebuild(entities);
+    let mut raw_cell_occupation = crate::sim::occupancy::RawCellOccupationGrid::new();
     tick_movement_with_grids(
         entities,
         None,
@@ -393,12 +394,14 @@ pub(crate) fn tick_movement_with_grid(
         alliances,
         occupancy,
         &mut cell_occupation,
+        &mut raw_cell_occupation,
         &mut next_occupancy_enter_order,
         rng,
         sim_tick,
         sim_tick as u32, // native-frame proxy (test-only wrapper: 1 frame/tick)
         None,            // No zone grid in legacy wrapper
         None,            // No resolved terrain in legacy wrapper
+        None,            // No playfield bounds in legacy wrapper
         &TerrainSpeedConfig::default(),
         SIM_ZERO, // No CloseEnough in legacy wrapper
         9,        // Default PathDelay

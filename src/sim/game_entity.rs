@@ -22,7 +22,7 @@ use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
     DriveLocomotionRuntime, HarvestOverlay, Health, MovementTarget, NavigationState, OrderIntent,
-    PendingC4Detonation, Position, RockingState, VoxelAnimation,
+    PendingC4Detonation, Position, RockingState, ShipLocomotionRuntime, VoxelAnimation,
 };
 use crate::sim::debug_event_log::{DebugEventKind, DebugEventLog};
 use crate::sim::deploy::DeployPhase;
@@ -383,6 +383,9 @@ pub struct GameEntity {
     /// DriveLocomotion destination/head-to state separate from curve stepping.
     #[serde(default)]
     pub drive_locomotion: Option<DriveLocomotionRuntime>,
+    /// ShipLocomotion committed ordinary-track head and Pathfinder replay.
+    #[serde(default)]
+    pub ship_locomotion: Option<ShipLocomotionRuntime>,
     /// One-shot forced drive track, independent of normal path movement.
     #[serde(default)]
     pub forced_drive_track: Option<ForcedDriveTrackState>,
@@ -700,6 +703,7 @@ impl GameEntity {
             mind_controlled: false,
             drive_track: None,
             drive_locomotion: None,
+            ship_locomotion: None,
             forced_drive_track: None,
             dock_state: None,
             aircraft_ammo: None,

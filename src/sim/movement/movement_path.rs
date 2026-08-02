@@ -399,6 +399,7 @@ pub(super) fn try_repath_after_block(
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    marker_search: Option<&super::path_markers::BridgeMarkerSearch>,
 ) -> bool {
     let goal = target
         .final_goal
@@ -444,7 +445,11 @@ pub(super) fn try_repath_after_block(
     // for per-layer hard blocking. Pass the merged set as both ground_blocks and
     // bridge_blocks so the layered search sees structure footprints / stationary
     // obstacles on either layer the same way the flat search does.
-    let path_result = find_move_path(
+    let marker_overlay = marker_search
+        .map(|search| &search.overlay)
+        .filter(|overlay| !overlay.is_empty());
+    let effective_urgency = marker_search.map_or(urgency, |search| search.effective_urgency);
+    let path_result = find_move_path_with_marker(
         ctx,
         layered_pathing,
         current,
@@ -458,7 +463,8 @@ pub(super) fn try_repath_after_block(
         movement_zone,
         too_big_to_fit_under_bridge,
         entity_block_map,
-        urgency,
+        marker_overlay,
+        effective_urgency,
         mover_is_crusher,
     );
     let Some((new_path, new_layers)) = path_result else {
@@ -696,6 +702,62 @@ mod tests {
             path
         );
         assert_eq!(path.len(), layers.len());
+    }
+
+    #[test]
+    fn gsi_04_12_marker_blocked_repath_consumes_overlay() {
+        let grid = PathGrid::test_all_passable(5, 3);
+        let mut marker_search = super::super::path_markers::BridgeMarkerSearch::default();
+        marker_search.effective_urgency = 1;
+        for x in 1..=3 {
+            marker_search.overlay.toggle((x, 1));
+        }
+        let mut target = MovementTarget {
+            path: vec![(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)],
+            path_layers: vec![MovementLayer::Ground; 5],
+            next_index: 1,
+            final_goal: Some((4, 1)),
+            ..MovementTarget::default()
+        };
+        let mut facing = 0;
+        let mut rng = crate::sim::rng::SimRng::new(0);
+
+        assert!(try_repath_after_block(
+            &mut target,
+            &mut facing,
+            (0, 1),
+            MovementLayer::Ground,
+            false,
+            PathfindingContext {
+                path_grid: Some(&grid),
+                zone_grid: None,
+                resolved_terrain: None,
+                blocker_neighbor_counts: None,
+            },
+            None,
+            None,
+            &mut rng,
+            Some(MovementZone::Normal),
+            false,
+            MovementConfig {
+                close_enough: crate::util::fixed_math::SIM_ZERO,
+                path_delay_ticks: 9,
+                blockage_path_delay_ticks: 60,
+            },
+            None,
+            1,
+            false,
+            false,
+            Some(&marker_search),
+        ));
+        assert!(
+            !target
+                .path
+                .iter()
+                .any(|cell| matches!(cell, (1, 1) | (2, 1) | (3, 1))),
+            "blocked repath must route around the search-scoped marker: {:?}",
+            target.path
+        );
     }
 
     #[test]

@@ -3445,6 +3445,45 @@ pub fn raw_track_meta(index: u8) -> Option<&'static RawTrack> {
     RAW_TRACKS.get(index as usize)
 }
 
+/// Cells tested by retail DriveLocomotion slot 40 (`Is_At_Coord`).
+///
+/// The ordinary head cell is always the fallback candidate.  Before the
+/// track's occupation handoff point is consumed, retail first transforms that
+/// raw point around the stored head and tests its cell instead.  Rust rebases
+/// `current_cell` at curve crossings, so `cell_offset_*` is required to recover
+/// the same absolute head that native stores directly.
+pub(super) fn is_at_coord_track_cells(
+    state: &DriveTrackState,
+    current_cell: (u16, u16),
+    include_handoff: bool,
+) -> (Option<(i16, i16)>, (i16, i16)) {
+    let head_abs_x = i32::from(current_cell.0) * 256 + state.head_offset_x + state.cell_offset_x;
+    let head_abs_y = i32::from(current_cell.1) * 256 + state.head_offset_y + state.cell_offset_y;
+    // Native's `(value + ((value >> 31) & 255)) >> 8` truncates signed
+    // lepton coordinates toward zero.
+    let head_cell = ((head_abs_x / 256) as i16, (head_abs_y / 256) as i16);
+
+    let Some(meta) = RAW_TRACKS.get(state.raw_track_index as usize) else {
+        return (None, head_cell);
+    };
+    let handoff_index = meta.occupation_handoff_point_index;
+    if !include_handoff
+        || handoff_index < 0
+        || usize::from(state.point_index) >= handoff_index as usize
+    {
+        return (None, head_cell);
+    }
+    let Some(point) = raw_track_points(state.raw_track_index).get(handoff_index as usize) else {
+        return (None, head_cell);
+    };
+    let (tx, ty, _) = transform_track_point(point.x, point.y, point.facing, state.transform_flags);
+    let handoff_cell = (
+        ((head_abs_x + i32::from(tx)) / 256) as i16,
+        ((head_abs_y + i32::from(ty)) / 256) as i16,
+    );
+    (Some(handoff_cell), head_cell)
+}
+
 // ---------------------------------------------------------------------------
 // Track selection — facing delta to TurnTrack
 // ---------------------------------------------------------------------------
@@ -3508,6 +3547,20 @@ pub fn select_drive_track(
     })
 }
 
+/// Select an ordinary shared Drive/Ship curve. ShipLocomotion consumes only
+/// TurnTrack 0..63 backed by the byte-identical ordinary RawTrack 0..13 set.
+pub fn select_shared_ordinary_track(
+    current_facing: u8,
+    next_facing: u8,
+    is_ship: bool,
+) -> Option<DriveTrackSelection> {
+    let selection = select_drive_track(current_facing, next_facing, false)?;
+    if selection.turn_track_index >= 64 || (is_ship && selection.raw_track_index > 13) {
+        return None;
+    }
+    Some(selection)
+}
+
 /// Synthesize the substitute selection used when pathfinding produces a turn
 /// too sharp for any precomputed curve (`select_drive_track` returned `None`).
 /// Returns the `cur_dir * 9` TurnTrack entry — RawTrack 1 (cardinals) or 2
@@ -3539,6 +3592,19 @@ pub fn build_sharp_turn_fallback(current_facing: u8) -> Option<DriveTrackSelecti
         target_facing: turn_track.target_facing,
         flags: turn_track.flags,
     })
+}
+
+/// Ship-safe ordinary sharp-turn substitute. The synthesized selector remains
+/// in 0..63 and its raw curve must remain in Ship's shared 0..13 range.
+pub fn build_shared_sharp_turn_fallback(
+    current_facing: u8,
+    is_ship: bool,
+) -> Option<DriveTrackSelection> {
+    let selection = build_sharp_turn_fallback(current_facing)?;
+    if selection.turn_track_index >= 64 || (is_ship && selection.raw_track_index > 13) {
+        return None;
+    }
+    Some(selection)
 }
 
 /// Quantize a 0-255 facing to a direction index 0-7 (N, NE, E, SE, S, SW, W, NW).

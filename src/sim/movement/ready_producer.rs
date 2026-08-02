@@ -156,15 +156,24 @@ fn drive_family(
         .is_some_and(|facing| facing.is_rotating(binary_frame));
 
     let drive = entity.drive_locomotion.as_ref();
-    let head_to = drive.and_then(|drive| drive.head_to);
+    let head_to = match family {
+        DriveFamily::Drive => drive.and_then(|drive| drive.head_to),
+        DriveFamily::Ship => entity
+            .ship_locomotion
+            .as_ref()
+            .and_then(|ship| ship.head_to),
+    };
     let head_to_nonnull = head_to.is_some();
 
     // Native compares the head-to point against the owner's world coordinate in
     // leptons, and deliberately ignores Z.
     let current_x = i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>();
     let current_y = i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>();
-    let slot_moving = drive.and_then(|drive| drive.destination).is_some()
-        || head_to.is_some_and(|point| (point.x, point.y) != (current_x, current_y));
+    let slot_moving = match family {
+        DriveFamily::Drive => drive.and_then(|drive| drive.destination).is_some(),
+        DriveFamily::Ship => entity.drive_track.is_some() || entity.movement_target.is_some(),
+    } || head_to
+        .is_some_and(|point| (point.x, point.y) != (current_x, current_y));
 
     // Native reads the owner's applied speed, which its locomotor drives to
     // exactly zero once the unit comes fully to rest. We have no separate

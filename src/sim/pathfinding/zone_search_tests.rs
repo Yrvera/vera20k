@@ -1151,6 +1151,7 @@ fn gsi_04_12_drive_pending_continuation_keeps_hierarchy_context_and_raw_route() 
     let mut interner = test_interner();
     let mut occupancy = OccupancyGrid::new();
     let mut cell_occupation = CellOccupationGrid::new();
+    let mut raw_cell_occupation = crate::sim::occupancy::RawCellOccupationGrid::new();
     let mut enter_order = crate::sim::world::EnterOrderCounter::new();
     let mut rng = SimRng::new(0);
     let terrain_speed_config = TerrainSpeedConfig::default();
@@ -1168,12 +1169,14 @@ fn gsi_04_12_drive_pending_continuation_keeps_hierarchy_context_and_raw_route() 
         &alliances,
         &mut occupancy,
         &mut cell_occupation,
+        &mut raw_cell_occupation,
         &mut enter_order,
         &mut rng,
         1,
         1,
         Some(&zone_grid),
         Some(&terrain),
+        None,
         &terrain_speed_config,
         SimFixed::from_num(0),
         9,

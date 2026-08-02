@@ -238,10 +238,12 @@ fn gsi_04_05_tick_production_movement(
         &Default::default(),
         &mut sim.substrate.occupancy,
         &mut sim.substrate.cell_occupation,
+        &mut sim.substrate.raw_cell_occupation,
         &mut sim.substrate.next_occupancy_enter_order,
         &mut sim.scenario_rng,
         u64::from(native_frame),
         native_frame,
+        None,
         None,
         None,
         &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -1102,7 +1104,8 @@ fn test_issue_move_command_starts_drive_track_for_drive_locomotor() {
     let drive = entity.drive_locomotion.as_ref().expect("drive state");
     assert_eq!(drive.head_to, Some(DriveCoord::cell(7, 3, 0)));
     assert_eq!(drive.path.directions, vec![2, 2, 2, 2, 2]);
-    assert_eq!(drive.path.cursor, 0);
+    assert_eq!(drive.path.cursor, 1);
+    assert_eq!(drive.path.reference_cell, Some((3, 3)));
     assert_eq!(drive.turn.target_direction, Some(2));
     assert_eq!(
         drive.turn.target_facing_16,
@@ -1402,10 +1405,12 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
             &Default::default(),
             &mut stable_order.substrate.occupancy,
             &mut stable_order.substrate.cell_occupation,
+            &mut stable_order.substrate.raw_cell_occupation,
             &mut stable_order.substrate.next_occupancy_enter_order,
             &mut stable_order.scenario_rng,
             u64::from(native_frame),
             native_frame,
+            None,
             None,
             None,
             &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -1431,10 +1436,12 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
             &Default::default(),
             &mut live_order.substrate.occupancy,
             &mut live_order.substrate.cell_occupation,
+            &mut live_order.substrate.raw_cell_occupation,
             &mut live_order.substrate.next_occupancy_enter_order,
             &mut live_order.scenario_rng,
             u64::from(native_frame),
             native_frame,
+            None,
             None,
             None,
             &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -1507,10 +1514,12 @@ fn lifecycle_authority_empty_logic_order_does_not_fall_back_to_entity_store() {
         &Default::default(),
         &mut sim.substrate.occupancy,
         &mut sim.substrate.cell_occupation,
+        &mut sim.substrate.raw_cell_occupation,
         &mut sim.substrate.next_occupancy_enter_order,
         &mut sim.scenario_rng,
         0,
         0,
+        None,
         None,
         None,
         &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -2631,12 +2640,14 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
         &Default::default(),
         &mut occupancy,
         &mut crate::sim::occupancy::CellOccupationGrid::new(),
+        &mut crate::sim::occupancy::RawCellOccupationGrid::new(),
         &mut next_occupancy_enter_order,
         &mut rng,
         0,
         0, // native_frame (test)
         None,
         Some(&terrain),
+        None,
         &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
         SIM_ZERO,
         9,
@@ -2710,10 +2721,12 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
         &Default::default(),
         &mut occupancy,
         &mut crate::sim::occupancy::CellOccupationGrid::new(),
+        &mut crate::sim::occupancy::RawCellOccupationGrid::new(),
         &mut next_occupancy_enter_order,
         &mut rng,
         0,
         0, // native_frame (test)
+        None,
         None,
         None,
         &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -3590,10 +3603,12 @@ fn tick_hover_world(
         &Default::default(),
         &mut occupancy,
         &mut crate::sim::occupancy::CellOccupationGrid::new(),
+        &mut crate::sim::occupancy::RawCellOccupationGrid::new(),
         &mut next_occupancy_enter_order,
         &mut rng,
         0,
         native_frame,
+        None,
         None,
         None,
         &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -3824,6 +3839,8 @@ fn sharp_turn_preserves_path_node_count() {
     };
     let locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
     let mut drive_track_state = None;
+    let mut drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime::default());
+    let mut ship_locomotion = None;
     let mut facing: u8 = 0; // north
     let mut facing_target = None;
 
@@ -3831,12 +3848,16 @@ fn sharp_turn_preserves_path_node_count() {
         &mut target,
         &locomotor,
         &mut drive_track_state,
+        &mut drive_locomotion,
+        &mut ship_locomotion,
         &mut facing,
         &mut facing_target,
         EntityCategory::Unit,
         0,
         (10, 10),
         (SIM_ZERO, SIM_ZERO),
+        None,
+        0,
     );
 
     assert!(

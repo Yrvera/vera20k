@@ -315,6 +315,23 @@ pub struct DrivePathQueue {
     pub directions: Vec<u8>,
     #[serde(default)]
     pub cursor: u16,
+    /// Native FootClass path-reference cell (`+0x558`). Drive advances this
+    /// when it accepts a path direction, before the curve physically crosses
+    /// into the destination cell.
+    #[serde(default)]
+    pub reference_cell: Option<(i16, i16)>,
+}
+
+/// ShipLocomotion-owned committed head and path replay state.
+///
+/// Ships share the ordinary TurnTrack/RawTrack curves with Drive, but do not
+/// own Drive's speed, tube, forced-track, or raw-occupation state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ShipLocomotionRuntime {
+    #[serde(default)]
+    pub head_to: Option<DriveCoord>,
+    #[serde(default)]
+    pub path: DrivePathQueue,
 }
 
 /// Drive-owned 16-bit facing target and first-movement gate.

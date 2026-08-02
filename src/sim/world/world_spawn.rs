@@ -375,6 +375,11 @@ impl Simulation {
                 obj,
                 rules.general.flight_level,
             ));
+            if ge.locomotor.as_ref().is_some_and(|locomotor| {
+                locomotor.kind == crate::rules::locomotor_type::LocomotorKind::Ship
+            }) {
+                ge.ship_locomotion = Some(Default::default());
+            }
         }
         // Aircraft ammo: set up ammo tracking for aircraft with finite Ammo=.
         if obj.ammo >= 0 && category == EntityCategory::Aircraft {
@@ -512,6 +517,11 @@ impl Simulation {
                 obj,
                 rules.general.flight_level,
             ));
+            if ge.locomotor.as_ref().is_some_and(|locomotor| {
+                locomotor.kind == crate::rules::locomotor_type::LocomotorKind::Ship
+            }) {
+                ge.ship_locomotion = Some(Default::default());
+            }
         }
         if obj.ammo >= 0 && category == EntityCategory::Aircraft {
             ge.aircraft_ammo = Some(crate::sim::docking::aircraft_dock::AircraftAmmo::new(
