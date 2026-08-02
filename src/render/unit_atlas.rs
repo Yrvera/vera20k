@@ -774,28 +774,7 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
         // CPU fallback path.
         match key.layer {
             VxlLayer::Composite => {
-                let body_sprite: VxlSprite =
-                    vxl_raster::render_vxl(&vxl, hva.as_ref(), &params, vpl);
-                let mut layers: Vec<VxlSprite> = vec![body_sprite];
-                if let Some(turret) =
-                    render_optional_layer(asset_manager, &format!("{}TUR", image), &params, vpl)
-                {
-                    layers.push(turret);
-                }
-                if let Some(barrel) =
-                    render_optional_layer(asset_manager, &format!("{}BARL", image), &params, vpl)
-                        .or_else(|| {
-                            render_optional_layer(
-                                asset_manager,
-                                &format!("{}BARREL", image),
-                                &params,
-                                vpl,
-                            )
-                        })
-                {
-                    layers.push(barrel);
-                }
-                composite_vxl_layers(&layers)
+                composite_unit_vxl_cpu(asset_manager, &vxl, hva.as_ref(), &image, &params, vpl)
             }
             VxlLayer::Body | VxlLayer::Turret | VxlLayer::Barrel => {
                 let body_sprite: VxlSprite =
@@ -943,6 +922,40 @@ fn detect_hva_frame_count(
     }
 
     frame_count.max(1)
+}
+
+/// Body plus optional turret and barrel, depth-composited on the CPU.
+///
+/// Split out of the atlas bake path so headless callers can produce the same
+/// composited sprite the game does. The bake path's own CPU branch calls this,
+/// so the two cannot drift apart.
+///
+/// Pure CPU: no `GpuContext`, no atlas state, no wgpu. The turret and barrel are
+/// found by the conventional `TUR` / `BARL` / `BARREL` suffixes on the effective
+/// image id; a model without them composites to just its body.
+pub fn composite_unit_vxl_cpu(
+    asset_manager: &AssetManager,
+    body: &VxlFile,
+    body_hva: Option<&HvaFile>,
+    image: &str,
+    params: &VxlRenderParams,
+    vpl: Option<&VplFile>,
+) -> VxlSprite {
+    let body_sprite: VxlSprite = vxl_raster::render_vxl(body, body_hva, params, vpl);
+    let mut layers: Vec<VxlSprite> = vec![body_sprite];
+
+    if let Some(turret) = render_optional_layer(asset_manager, &format!("{image}TUR"), params, vpl)
+    {
+        layers.push(turret);
+    }
+    // BARL is the common spelling; a handful of models use BARREL.
+    if let Some(barrel) = render_optional_layer(asset_manager, &format!("{image}BARL"), params, vpl)
+        .or_else(|| render_optional_layer(asset_manager, &format!("{image}BARREL"), params, vpl))
+    {
+        layers.push(barrel);
+    }
+
+    composite_vxl_layers(&layers)
 }
 
 fn render_optional_layer(

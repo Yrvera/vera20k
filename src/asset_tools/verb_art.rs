@@ -27,9 +27,11 @@
 //!   ordering is *mirrored* from the render-side resolver, not imported.
 
 use crate::asset_tools::identify;
-use crate::asset_tools::report::{ArtCandidate, ArtForReport, ErrorReport};
+use crate::asset_tools::report::{AnimSlot, ArtCandidate, ArtForReport, ErrorReport};
 use crate::assets::asset_manager::AssetManager;
-use crate::rules::art_data::{ArtRegistry, object_shp_candidates, voxel_asset_names};
+use crate::rules::art_data::{
+    ArtRegistry, anim_shp_candidates, object_shp_candidates, voxel_asset_names,
+};
 
 /// Theater assumed when the caller does not pass `--theater`. Temperate is the
 /// theater every stock skirmish map uses unless it says otherwise.
@@ -228,6 +230,68 @@ fn assemble(
         ));
     }
 
+    // Building art: footprint, ground pad, and the overlay anim slots. These
+    // answer "what should be playing while it builds / runs / burns", which the
+    // object SHP alone cannot.
+    let entry = art_registry.get(&effective_image_id.to_ascii_uppercase());
+    let foundation = entry.and_then(|e| e.foundation.clone());
+    let bib_shape = entry.and_then(|e| e.bib_shape.clone()).map(|bib| {
+        let (row, note) = resolve(&format!("{}.SHP", bib.to_ascii_uppercase()));
+        if let Some(note) = note {
+            warnings.push(note);
+        }
+        row
+    });
+
+    let building_anims = entry
+        .map(|e| {
+            e.building_anims
+                .iter()
+                .map(|anim| {
+                    // Each slot is its own art section with its own image id and
+                    // theater convention, so it resolves independently.
+                    let slot_upper = anim.anim_type.to_ascii_uppercase();
+                    let slot_image = art_registry.resolve_effective_image_id(&slot_upper, "");
+                    let names = anim_shp_candidates(
+                        Some(art_registry),
+                        &slot_upper,
+                        &slot_image,
+                        theater_ext,
+                        theater_name,
+                    );
+                    AnimSlot {
+                        slot: slot_upper,
+                        kind: format!("{:?}", anim.kind),
+                        is_primary: anim.is_primary,
+                        offset: [anim.x, anim.y],
+                        rate: anim.rate,
+                        damaged_variant: anim.damaged_variant.as_ref().map(|v| v.anim_type.clone()),
+                        garrisoned_variant: anim
+                            .garrisoned_variant
+                            .as_ref()
+                            .map(|v| v.anim_type.clone()),
+                        candidates: resolve_all(&names, resolve, &mut warnings),
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    // An anim slot naming art that does not resolve is a real missing-overlay
+    // bug, and it is invisible unless called out separately from the object SHP.
+    let dead_slots: Vec<&str> = building_anims
+        .iter()
+        .filter(|slot| !slot.candidates.iter().any(|row| row.exists))
+        .map(|slot| slot.slot.as_str())
+        .collect();
+    if !dead_slots.is_empty() {
+        warnings.push(format!(
+            "{} building anim slot(s) resolve to no art in theater {theater_name}: {}",
+            dead_slots.len(),
+            dead_slots.join(", ")
+        ));
+    }
+
     ArtForReport {
         type_id: type_upper,
         theater: theater_name.to_string(),
@@ -235,9 +299,12 @@ fn assemble(
         effective_image_id,
         declared_palette,
         cameo_id,
+        foundation,
+        bib_shape,
         shp_candidates,
         cameo_candidates,
         voxel_candidates,
+        building_anims,
         warnings,
     }
 }
