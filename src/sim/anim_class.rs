@@ -15,8 +15,11 @@ use crate::rules::art_data::AnimTypeRuntimeConfig;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::AnimClassSpawnDescriptor;
 use crate::sim::intern::InternedId;
+use crate::sim::occupancy::{RawCellOccupationGrid, infantry_raw_occupation_mask};
 use crate::sim::timer::CdTimer;
 use crate::sim::world::{LifecycleOutput, SimSoundEvent, Simulation};
+use crate::util::fixed_math::SimFixed;
+use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, ground_height_leptons};
 
 pub type AnimId = u64;
 
@@ -124,7 +127,40 @@ pub enum AnimSpawnError {
 enum VisitAction {
     None,
     Destroy,
+    DestroyAfterMakeInfantryClear,
     Next(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimOccupationOperation {
+    Mark,
+    Clear,
+}
+
+fn apply_anim_raw_occupation(
+    grid: &mut RawCellOccupationGrid,
+    rx: u16,
+    ry: u16,
+    mask: u8,
+    world_z: i32,
+    ground_z: i32,
+    live_structural_bridge: bool,
+    operation: AnimOccupationOperation,
+) {
+    let reaches_deck = world_z >= ground_z.wrapping_add(BRIDGE_HEIGHT_DELTA_LEPTONS as i32);
+    let use_deck = match operation {
+        AnimOccupationOperation::Mark => reaches_deck && live_structural_bridge,
+        // AnimClass::ClearCellOccupancy deliberately ignores Cell+0x140 bit
+        // 0x100. This can leave a ground bit stale when a high animation was
+        // marked after structural bridge state disappeared.
+        AnimOccupationOperation::Clear => reaches_deck,
+    };
+    match (operation, use_deck) {
+        (AnimOccupationOperation::Mark, false) => grid.mark_ground(rx, ry, mask),
+        (AnimOccupationOperation::Mark, true) => grid.mark_deck(rx, ry, mask),
+        (AnimOccupationOperation::Clear, false) => grid.clear_ground(rx, ry, mask),
+        (AnimOccupationOperation::Clear, true) => grid.clear_deck(rx, ry, mask),
+    }
 }
 
 impl Simulation {
@@ -156,6 +192,51 @@ impl Simulation {
 
     fn is_multiplayer_feedback_anim(&self, id: AnimId) -> bool {
         self.substrate.multiplayer_feedback_anims.contains_key(id)
+    }
+
+    fn apply_make_infantry_raw_occupation(
+        &mut self,
+        world: AnimWorldCoord,
+        operation: AnimOccupationOperation,
+    ) {
+        let cell_x = world.x >> 8;
+        let cell_y = world.y >> 8;
+        let (Ok(rx), Ok(ry)) = (u16::try_from(cell_x), u16::try_from(cell_y)) else {
+            // Native writes its shared dummy cell for out-of-map coordinates;
+            // that dummy is not part of Rust's serialized map substrate.
+            return;
+        };
+        let mask = infantry_raw_occupation_mask(
+            SimFixed::from_num(world.x & 0xff),
+            SimFixed::from_num(world.y & 0xff),
+        );
+        let (ground_z, live_structural_bridge) = self
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(rx, ry))
+            .and_then(|cell| {
+                ground_height_leptons(cell.level, cell.slope_type, world.x, world.y)
+                    .ok()
+                    .map(|ground_z| {
+                        let live_structural_bridge = cell.bridge_facts.has_structural_bridge()
+                            && self
+                                .bridge_state
+                                .as_ref()
+                                .is_some_and(|state| state.is_bridge_walkable(rx, ry));
+                        (ground_z, live_structural_bridge)
+                    })
+            })
+            .unwrap_or((0, false));
+        apply_anim_raw_occupation(
+            &mut self.substrate.raw_cell_occupation,
+            rx,
+            ry,
+            mask,
+            world.z,
+            ground_z,
+            live_structural_bridge,
+            operation,
+        );
     }
 
     pub(crate) fn spawn_anim_object(
@@ -339,15 +420,22 @@ impl Simulation {
         }) else {
             return;
         };
-        if inactive {
-            self.destroy_anim(id);
-            return;
-        }
         let type_name = self.interner.resolve(type_id).to_ascii_uppercase();
         let Some(config) = rules.art_registry.anim_runtime_config(&type_name).cloned() else {
             self.destroy_anim(id);
             return;
         };
+
+        // AnimClass::AI performs this before its first-AI, inactive, delay,
+        // visibility, and frame-timer gates. Repeated visits OR the same raw
+        // bit; there is deliberately no contributor count.
+        if config.make_infantry != -1 {
+            self.apply_make_infantry_raw_occupation(world_coord, AnimOccupationOperation::Mark);
+        }
+        if inactive {
+            self.destroy_anim(id);
+            return;
+        }
 
         if let Some(trailer_name) = config.trailer_anim.as_deref() {
             if trailer_cadence_matches(
@@ -421,6 +509,8 @@ impl Simulation {
                 random_loop_delay = config.random_loop_delay;
             } else if let Some(next) = config.next.clone() {
                 action = VisitAction::Next(next);
+            } else if config.make_infantry != -1 {
+                action = VisitAction::DestroyAfterMakeInfantryClear;
             } else {
                 action = VisitAction::Destroy;
             }
@@ -438,6 +528,18 @@ impl Simulation {
         match action {
             VisitAction::None => {}
             VisitAction::Destroy => self.destroy_anim(id),
+            VisitAction::DestroyAfterMakeInfantryClear => {
+                // Native clears before validating AnimToInfantry, resolving an
+                // owner, allocating the infantry, or attempting Unlimbo. The
+                // downstream factory/retry path belongs to the entity-runtime
+                // implementation item; this Phase-3 slice owns its preceding
+                // authoritative cell-byte transition.
+                self.apply_make_infantry_raw_occupation(
+                    world_coord,
+                    AnimOccupationOperation::Clear,
+                );
+                self.destroy_anim(id);
+            }
             VisitAction::Next(next) => self.switch_anim_type(id, &next, rules),
         }
     }
@@ -910,6 +1012,155 @@ mod tests {
             z_adjust: 0,
             reverse: false,
         }
+    }
+
+    #[test]
+    fn gsi_04_12_anim_make_infantry_ini_preserves_native_default_and_signed_value() {
+        let rules = runtime_rules(
+            "[DEFAULT]\nRate=900\nEnd=1\n\n[EXPLICIT]\nRate=900\nEnd=1\nMakeInfantry=-2\n",
+            &[("DEFAULT", 1), ("EXPLICIT", 1)],
+        );
+
+        assert_eq!(
+            rules
+                .art_registry
+                .anim_runtime_config("DEFAULT")
+                .unwrap()
+                .make_infantry,
+            -1
+        );
+        assert_eq!(
+            rules
+                .art_registry
+                .anim_runtime_config("EXPLICIT")
+                .unwrap()
+                .make_infantry,
+            -2
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_anim_make_infantry_marks_before_first_ai_and_clears_on_natural_end() {
+        let rules = runtime_rules(
+            "[GENDEATH]\nRate=900\nEnd=1\nLoopCount=1\nMakeInfantry=0\n",
+            &[("GENDEATH", 1)],
+        );
+        let mut sim = Simulation::new();
+        let type_id = sim.interner.intern("GENDEATH");
+        let mut descriptor = runtime_descriptor(type_id, 0);
+        descriptor.rx = 3;
+        descriptor.ry = 4;
+        descriptor.sub_x = SimFixed::from_num(192);
+        descriptor.sub_y = SimFixed::from_num(64);
+        let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
+
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+        sim.visit_anim(id, &rules);
+        assert_eq!(
+            sim.substrate.raw_cell_occupation.ground_bits(3, 4),
+            0x04,
+            "the first AI guard runs after MakeInfantry raw marking"
+        );
+        assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
+
+        sim.session.binary_frame = 1;
+        sim.visit_anim(id, &rules);
+
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+        assert!(sim.substrate.pending_delete.contains(&id));
+    }
+
+    #[test]
+    fn gsi_04_12_anim_make_infantry_next_and_early_destroy_leave_destructive_mark_stale() {
+        let rules = runtime_rules(
+            "[GENDEATH]\nRate=900\nEnd=1\nLoopCount=1\nMakeInfantry=0\nNext=PLAIN\n\n\
+             [PLAIN]\nRate=900\nEnd=1\nLoopCount=1\n",
+            &[("GENDEATH", 1), ("PLAIN", 1)],
+        );
+        let mut sim = Simulation::new();
+        let gen_type = sim.interner.intern("GENDEATH");
+        let plain = sim.interner.intern("PLAIN");
+        let mut descriptor = runtime_descriptor(gen_type, 0);
+        descriptor.rx = 5;
+        descriptor.ry = 6;
+        descriptor.sub_x = SimFixed::from_num(64);
+        descriptor.sub_y = SimFixed::from_num(192);
+        let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
+
+        sim.visit_anim(id, &rules);
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(5, 6), 0x08);
+        sim.session.binary_frame = 1;
+        sim.visit_anim(id, &rules);
+
+        assert_eq!(sim.anim(id).unwrap().type_id, plain);
+        assert_eq!(
+            sim.substrate.raw_cell_occupation.ground_bits(5, 6),
+            0x08,
+            "Next takes priority and performs no MakeInfantry clear"
+        );
+        sim.destroy_anim(id);
+        assert_eq!(
+            sim.substrate.raw_cell_occupation.ground_bits(5, 6),
+            0x08,
+            "generic Anim destruction does not repair the raw byte"
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_anim_make_infantry_mark_and_clear_keep_native_bridge_asymmetry() {
+        let mut grid = RawCellOccupationGrid::new();
+
+        apply_anim_raw_occupation(
+            &mut grid,
+            7,
+            8,
+            0x10,
+            416,
+            0,
+            true,
+            AnimOccupationOperation::Mark,
+        );
+        assert_eq!(grid.ground_bits(7, 8), 0);
+        assert_eq!(grid.deck_bits(7, 8), 0x10);
+        apply_anim_raw_occupation(
+            &mut grid,
+            7,
+            8,
+            0x10,
+            416,
+            0,
+            false,
+            AnimOccupationOperation::Clear,
+        );
+        assert_eq!(grid.deck_bits(7, 8), 0);
+
+        apply_anim_raw_occupation(
+            &mut grid,
+            7,
+            8,
+            0x10,
+            416,
+            0,
+            false,
+            AnimOccupationOperation::Mark,
+        );
+        assert_eq!(grid.ground_bits(7, 8), 0x10);
+        apply_anim_raw_occupation(
+            &mut grid,
+            7,
+            8,
+            0x10,
+            416,
+            0,
+            false,
+            AnimOccupationOperation::Clear,
+        );
+        assert_eq!(
+            grid.ground_bits(7, 8),
+            0x10,
+            "height-only clear targets deck after a nonstructural ground mark"
+        );
+        assert_eq!(grid.deck_bits(7, 8), 0);
     }
 
     #[test]
