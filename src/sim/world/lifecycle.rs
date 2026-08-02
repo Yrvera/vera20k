@@ -8,7 +8,10 @@ use crate::map::entities::EntityCategory;
 use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
 use crate::sim::lifecycle_request::LifecycleRequest;
-use crate::sim::occupancy::{CellListInsertion, entity_occupancy_cells};
+use crate::sim::occupancy::{
+    BUILDING_OCCUPATION_BIT, CellListInsertion, VEHICLE_OCCUPATION_BIT, entity_occupancy_cells,
+    infantry_raw_occupation_mask,
+};
 use crate::sim::passenger::PassengerRole;
 use crate::util::fixed_math::SimFixed;
 
@@ -83,11 +86,15 @@ pub(crate) enum LifecycleTestEvent {
     RevealLimboCleared,
     RevealCoordinatesCommitted,
     MarkPut,
+    RawOccupationListLinked,
+    RawOccupationMarked,
     CellMarked,
     RevealDisplayBoundary,
     LogicAppended,
     LogicMembershipSet,
     ConcealDeselected,
+    RawOccupationListUnlinked,
+    RawOccupationCleared,
     ConcealUnmarked,
     ConcealDisplayBoundary,
     ConcealAnimBoundary,
@@ -154,6 +161,119 @@ impl Simulation {
                 sub_x: entity.position.sub_x,
                 sub_y: entity.position.sub_y,
             })
+    }
+
+    fn raw_occupation_cell_facts(&self, rx: u16, ry: u16) -> (i16, bool) {
+        let Some(terrain_cell) = self
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(rx, ry))
+        else {
+            return (0, false);
+        };
+        let ground_level = i16::from(terrain_cell.level as i8);
+        let live_structural_bridge = terrain_cell.bridge_facts.has_structural_bridge()
+            && self
+                .bridge_state
+                .as_ref()
+                .is_some_and(|state| state.is_bridge_walkable(rx, ry));
+        (ground_level, live_structural_bridge)
+    }
+
+    fn mark_common_raw_occupation(
+        &mut self,
+        category: EntityCategory,
+        cells: &[(u16, u16)],
+        position: RevealPosition,
+    ) -> bool {
+        match category {
+            EntityCategory::Unit => {
+                let (ground_level, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position.rx, position.ry);
+                if i16::from(position.z as i8) >= ground_level + 4 && live_structural_bridge {
+                    self.substrate.raw_cell_occupation.mark_deck(
+                        position.rx,
+                        position.ry,
+                        VEHICLE_OCCUPATION_BIT,
+                    );
+                } else {
+                    self.substrate.raw_cell_occupation.mark_ground(
+                        position.rx,
+                        position.ry,
+                        VEHICLE_OCCUPATION_BIT,
+                    );
+                }
+                true
+            }
+            EntityCategory::Infantry => {
+                let (ground_level, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position.rx, position.ry);
+                let z = i16::from(position.z as i8);
+                if z > ground_level + 4 {
+                    return false;
+                }
+                let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
+                if z >= ground_level + 4 && live_structural_bridge {
+                    self.substrate
+                        .raw_cell_occupation
+                        .mark_deck(position.rx, position.ry, mask);
+                } else {
+                    self.substrate
+                        .raw_cell_occupation
+                        .mark_ground(position.rx, position.ry, mask);
+                }
+                true
+            }
+            EntityCategory::Structure => {
+                for &(rx, ry) in cells {
+                    self.substrate
+                        .raw_cell_occupation
+                        .mark_ground(rx, ry, BUILDING_OCCUPATION_BIT);
+                }
+                !cells.is_empty()
+            }
+            EntityCategory::Aircraft => false,
+        }
+    }
+
+    fn clear_common_raw_occupation(
+        &mut self,
+        category: EntityCategory,
+        cells: &[(u16, u16)],
+        position: RevealPosition,
+    ) -> bool {
+        match category {
+            EntityCategory::Unit => {
+                let (ground_level, _) = self.raw_occupation_cell_facts(position.rx, position.ry);
+                if i16::from(position.z as i8) >= ground_level + 4 {
+                    self.substrate.raw_cell_occupation.clear_deck(
+                        position.rx,
+                        position.ry,
+                        VEHICLE_OCCUPATION_BIT,
+                    );
+                } else {
+                    self.substrate.raw_cell_occupation.clear_ground(
+                        position.rx,
+                        position.ry,
+                        VEHICLE_OCCUPATION_BIT,
+                    );
+                }
+                true
+            }
+            EntityCategory::Structure => {
+                for &(rx, ry) in cells {
+                    self.substrate.raw_cell_occupation.clear_ground(
+                        rx,
+                        ry,
+                        BUILDING_OCCUPATION_BIT,
+                    );
+                }
+                !cells.is_empty()
+            }
+            // Generic Infantry removal intentionally leaves the destructive raw
+            // bit stale; movement/sub-cell transitions own explicit clears.
+            EntityCategory::Infantry | EntityCategory::Aircraft => false,
+        }
     }
 
     /// Compatibility convenience for already-admitted current-position callers.
@@ -267,15 +387,33 @@ impl Simulation {
         let insertion = CellListInsertion::from_category(entity.category);
         let category = entity.category;
         let current_cell = (entity.position.rx, entity.position.ry);
+        let raw_position = RevealPosition {
+            rx: entity.position.rx,
+            ry: entity.position.ry,
+            z: entity.position.z,
+            sub_x: entity.position.sub_x,
+            sub_y: entity.position.sub_y,
+        };
         let inside_transport = entity.passenger_role.is_inside_transport();
         let order = self.substrate.next_occupancy_enter_order.next();
 
         if !inside_transport {
             if let Some(layer) = layer {
-                for (rx, ry) in cells {
+                for &(rx, ry) in &cells {
                     self.substrate
                         .occupancy
                         .add(rx, ry, stable_id, layer, sub_cell, insertion);
+                }
+                if matches!(
+                    category,
+                    EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Structure
+                ) {
+                    #[cfg(test)]
+                    self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationListLinked);
+                    if self.mark_common_raw_occupation(category, &cells, raw_position) {
+                        #[cfg(test)]
+                        self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationMarked);
+                    }
                 }
                 if category == EntityCategory::Unit {
                     self.substrate.cell_occupation.mark_vehicle_on_layer(
@@ -309,6 +447,14 @@ impl Simulation {
         let layer = entity.occupancy_list_layer();
         let category = entity.category;
         let current_cell = (entity.position.rx, entity.position.ry);
+        let raw_position = RevealPosition {
+            rx: entity.position.rx,
+            ry: entity.position.ry,
+            z: entity.position.z,
+            sub_x: entity.position.sub_x,
+            sub_y: entity.position.sub_y,
+        };
+        let inside_transport = entity.passenger_role.is_inside_transport();
         if category == EntityCategory::Unit {
             let (entities, occupation) = (
                 &mut self.substrate.entities,
@@ -324,10 +470,23 @@ impl Simulation {
             }
         }
         if let Some(layer) = layer {
-            for (rx, ry) in cells {
+            for &(rx, ry) in &cells {
                 self.substrate
                     .occupancy
                     .remove_on_layer(rx, ry, stable_id, layer);
+            }
+            if !inside_transport
+                && matches!(
+                    category,
+                    EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Structure
+                )
+            {
+                #[cfg(test)]
+                self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationListUnlinked);
+                if self.clear_common_raw_occupation(category, &cells, raw_position) {
+                    #[cfg(test)]
+                    self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationCleared);
+                }
             }
             if category == EntityCategory::Unit {
                 self.substrate.cell_occupation.clear_vehicle_on_layer(

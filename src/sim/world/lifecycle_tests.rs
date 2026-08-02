@@ -2,10 +2,16 @@
 
 use std::collections::BTreeMap;
 
+use crate::map::bridge_facts::{
+    BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts, BridgeStampFamily,
+};
 use crate::map::entities::EntityCategory;
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::rules::locomotor_type::LocomotorKind;
+use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::anim_class::{AnimObject, AnimRuntime, AnimWorldCoord};
 use crate::sim::animation::{Animation, SequenceKind};
+use crate::sim::bridge_state::StateOutcome;
 use crate::sim::combat::{AttackTarget, PendingInfantryFire, TargetKind};
 use crate::sim::components::{
     C4PlantState, DriveLocomotionRuntime, DriveOccupationFootprint, Health, NavTargetRef,
@@ -63,6 +69,406 @@ fn request(rx: u16, ry: u16, placement: PlacementEvidence) -> RevealRequest {
         placement,
         logic_eligible: true,
     }
+}
+
+fn common_raw_request(rx: u16, ry: u16, z: u8, sub_x: i32, sub_y: i32) -> RevealRequest {
+    RevealRequest {
+        position: RevealPosition {
+            rx,
+            ry,
+            z,
+            sub_x: SimFixed::from_num(sub_x),
+            sub_y: SimFixed::from_num(sub_y),
+        },
+        placement: PlacementEvidence::MarkSucceeded,
+        logic_eligible: true,
+    }
+}
+
+fn common_raw_terrain_cell(
+    rx: u16,
+    ry: u16,
+    level: u8,
+    has_bridge_deck: bool,
+) -> ResolvedTerrainCell {
+    let bridge_facts = if has_bridge_deck {
+        BridgeCellFacts {
+            raw_flags: BRIDGE_FLAG_ANCHOR_SELF | BRIDGE_FLAG_STRUCTURAL,
+            family: BridgeStampFamily::Nesw,
+            direction: Some(0),
+            ..BridgeCellFacts::default()
+        }
+    } else {
+        BridgeCellFacts::default()
+    };
+    ResolvedTerrainCell {
+        rx,
+        ry,
+        source_tile_index: 0,
+        source_sub_tile: 0,
+        final_tile_index: 0,
+        final_sub_tile: 0,
+        is_wood_bridge_repair_tile: false,
+        level,
+        filled_clear: false,
+        tileset_index: Some(0),
+        land_type: 0,
+        yr_cell_land_type: 0,
+        slope_type: 0,
+        template_height: level,
+        render_offset_x: 0,
+        render_offset_y: 0,
+        terrain_class: TerrainClass::Clear,
+        speed_costs: SpeedCostProfile::default(),
+        is_water: false,
+        is_cliff_like: false,
+        is_rough: false,
+        is_road: false,
+        accepts_smudge: false,
+        allows_tiberium: false,
+        is_cliff_redraw: false,
+        variant: 0,
+        has_ramp: false,
+        canonical_ramp: None,
+        ground_walk_blocked: false,
+        terrain_object_blocks: false,
+        terrain_object_occupation: None,
+        overlay_blocks: false,
+        overlay_zone_type: None,
+        outside_playfield: false,
+        zone_type: 0,
+        base_ground_walk_blocked: false,
+        base_build_blocked: false,
+        base_land_type: 0,
+        base_yr_cell_land_type: 0,
+        base_terrain_class: TerrainClass::Clear,
+        base_speed_costs: SpeedCostProfile::default(),
+        build_blocked: false,
+        has_bridge_deck,
+        bridge_walkable: has_bridge_deck,
+        bridge_transition: false,
+        bridge_deck_level: if has_bridge_deck {
+            level.saturating_add(4)
+        } else {
+            level
+        },
+        bridge_layer: None,
+        bridge_facts,
+        tube_index: None,
+        radar_left: [0, 0, 0],
+        radar_right: [0, 0, 0],
+        has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
+    }
+}
+
+fn install_common_raw_terrain(
+    sim: &mut Simulation,
+    width: u16,
+    height: u16,
+    level: u8,
+    bridge_cell: Option<(u16, u16)>,
+) {
+    let cells = (0..height)
+        .flat_map(|ry| {
+            (0..width).map(move |rx| {
+                common_raw_terrain_cell(rx, ry, level, bridge_cell == Some((rx, ry)))
+            })
+        })
+        .collect();
+    let terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
+    sim.bridge_state = Some(
+        crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1500),
+    );
+    sim.resolved_terrain = Some(terrain);
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_ground_unit_links_marks_then_unlinks_clears() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 0, 128, 128));
+
+    assert!(sim.substrate.occupancy.contains_entity(3, 4, 1));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x20);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+    let linked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListLinked)
+        .expect("object list link event");
+    let marked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationMarked)
+        .expect("raw mark event");
+    assert!(
+        linked < marked,
+        "selected object list must link before raw mark"
+    );
+
+    sim.lifecycle_test_events.clear();
+    let _ = sim.object_conceal(1);
+
+    assert!(!sim.substrate.occupancy.contains_entity(3, 4, 1));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    let unlinked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListUnlinked)
+        .expect("object list unlink event");
+    let cleared = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationCleared)
+        .expect("raw clear event");
+    assert!(
+        unlinked < cleared,
+        "selected object list must unlink before raw clear"
+    );
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_structural_deck_unit_tracks_production_collapse() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 2, Some((3, 4)));
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 6, 128, 128));
+
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x20);
+    assert_eq!(
+        sim.substrate
+            .occupancy
+            .count_on_layer(3, 4, MovementLayer::Ground),
+        1,
+        "raw deck selection must not reuse the OnBridge object-list selector"
+    );
+
+    let _ = sim.object_conceal(1);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+
+    {
+        let terrain = sim.resolved_terrain.as_ref().expect("resolved terrain");
+        let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
+        assert!(matches!(
+            bridge_state.body_cell_advance_state(3, 4, true, terrain),
+            StateOutcome::Absorbed
+        ));
+        assert!(matches!(
+            bridge_state.body_cell_advance_state(3, 4, true, terrain),
+            StateOutcome::Collapsed { .. }
+        ));
+        assert!(
+            bridge_state.cell(3, 4).expect("collapsed bridge cell").deck_present,
+            "collapse leaves the structural deck record present"
+        );
+        assert!(!bridge_state.is_bridge_walkable(3, 4));
+    }
+
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    let _ = sim.try_reveal_entity(2, common_raw_request(3, 4, 6, 128, 128));
+
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x20);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+
+    let _ = sim.object_conceal(2);
+
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.ground_bits(3, 4),
+        0x20,
+        "height-only clear still targets deck after the collapsed mark used ground"
+    );
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_signed_z_marks_ground_on_live_bridge() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 0, Some((3, 4)));
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 0x80, 128, 128));
+
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x20);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+
+    let _ = sim.object_conceal(1);
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+
+    insert_entity(&mut sim, 2, EntityCategory::Infantry);
+    let _ = sim.try_reveal_entity(2, common_raw_request(3, 4, 0x80, 192, 64));
+
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x04);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_signed_ground_pins_mark_and_height_clear() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 0xFE, Some((3, 4)));
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 2, 128, 128));
+
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x20);
+
+    let _ = sim.object_conceal(1);
+
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_high_nonstructural_unit_keeps_native_stale_ground_bit() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 2, None);
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 6, 128, 128));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x20);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+
+    let _ = sim.object_conceal(1);
+
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.ground_bits(3, 4),
+        0x20,
+        "height-only clear targets deck even though nonstructural mark used ground"
+    );
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_infantry_masks_follow_coordinates_and_never_bit_02() {
+    let mut sim = Simulation::new();
+    let cases = [
+        (1, 1, 1, 128, 128, 0x01),
+        (2, 2, 1, 64, 64, 0x01),
+        (3, 3, 1, 192, 64, 0x04),
+        (4, 4, 1, 64, 192, 0x08),
+        (5, 5, 1, 192, 192, 0x10),
+        (6, 6, 1, 128, 64, 0x01),
+        (7, 7, 1, 192, 128, 0x04),
+        (8, 8, 1, 128, 192, 0x08),
+        (9, 9, 1, 64, 128, 0x01),
+    ];
+
+    for &(stable_id, rx, ry, sub_x, sub_y, expected_mask) in &cases {
+        insert_entity(&mut sim, stable_id, EntityCategory::Infantry);
+        let _ = sim.try_reveal_entity(stable_id, common_raw_request(rx, ry, 0, sub_x, sub_y));
+        let bits = sim.substrate.raw_cell_occupation.ground_bits(rx, ry);
+        assert_eq!(bits, expected_mask, "coordinate ({sub_x},{sub_y})");
+        assert_eq!(bits & 0x02, 0, "GetSubCell never produces raw bit 0x02");
+    }
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_infantry_marks_after_link_but_conceal_leaves_stale_bit() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 0, 192, 64));
+    let linked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListLinked)
+        .expect("Infantry list link");
+    let marked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationMarked)
+        .expect("Infantry raw mark");
+    assert!(linked < marked);
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x04);
+
+    sim.lifecycle_test_events.clear();
+    let _ = sim.object_conceal(1);
+
+    assert!(!sim.substrate.occupancy.contains_entity(3, 4, 1));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x04);
+    assert!(
+        sim.lifecycle_test_events
+            .contains(&LifecycleTestEvent::RawOccupationListUnlinked)
+    );
+    assert!(
+        !sim.lifecycle_test_events
+            .contains(&LifecycleTestEvent::RawOccupationCleared)
+    );
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_infantry_above_deck_height_links_without_marking() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 1, Some((3, 4)));
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 6, 192, 64));
+
+    assert!(sim.substrate.occupancy.contains_entity(3, 4, 1));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+    assert!(
+        sim.lifecycle_test_events
+            .contains(&LifecycleTestEvent::RawOccupationListLinked)
+    );
+    assert!(
+        !sim.lifecycle_test_events
+            .contains(&LifecycleTestEvent::RawOccupationMarked)
+    );
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_building_foundation_is_ground_only() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Structure);
+    {
+        let building = sim.substrate.entities.get_mut(1).expect("building");
+        building.foundation = "2x2".to_string();
+        building.on_bridge = true;
+    }
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 9, 128, 128));
+
+    for (rx, ry) in [(3, 4), (3, 5), (4, 4), (4, 5)] {
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(rx, ry), 0x80);
+        assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(rx, ry), 0);
+        assert_eq!(
+            sim.substrate
+                .occupancy
+                .count_on_layer(rx, ry, MovementLayer::Bridge),
+            1
+        );
+    }
+
+    let _ = sim.object_conceal(1);
+    for (rx, ry) in [(3, 4), (3, 5), (4, 4), (4, 5)] {
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(rx, ry), 0);
+        assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(rx, ry), 0);
+    }
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_skips_transport_and_airborne_entities() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    sim.substrate.entities.get_mut(1).unwrap().passenger_role =
+        PassengerRole::Inside { transport_id: 99 };
+    let _ = sim.try_reveal_entity(1, common_raw_request(2, 3, 0, 128, 128));
+    assert!(!sim.substrate.occupancy.contains_entity(2, 3, 1));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(2, 3), 0);
+
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Drive);
+    locomotor.layer = MovementLayer::Air;
+    sim.substrate.entities.get_mut(2).unwrap().locomotor = Some(locomotor);
+    let _ = sim.try_reveal_entity(2, common_raw_request(5, 6, 0, 128, 128));
+    assert!(!sim.substrate.occupancy.contains_entity(5, 6, 2));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(5, 6), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(5, 6), 0);
 }
 
 fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
@@ -145,6 +551,8 @@ fn lifecycle_authority_reveal_commits_coords_then_marks_then_registers() {
         LifecycleTestEvent::RevealLimboCleared,
         LifecycleTestEvent::RevealCoordinatesCommitted,
         LifecycleTestEvent::MarkPut,
+        LifecycleTestEvent::RawOccupationListLinked,
+        LifecycleTestEvent::RawOccupationMarked,
         LifecycleTestEvent::CellMarked,
         LifecycleTestEvent::RevealDisplayBoundary,
         LifecycleTestEvent::LogicAppended,
@@ -502,6 +910,8 @@ fn lifecycle_authority_conceal_deselects_unmarks_unregisters_then_sets_limbo() {
         sim.lifecycle_test_events,
         vec![
             LifecycleTestEvent::ConcealDeselected,
+            LifecycleTestEvent::RawOccupationListUnlinked,
+            LifecycleTestEvent::RawOccupationCleared,
             LifecycleTestEvent::ConcealUnmarked,
             LifecycleTestEvent::ConcealDisplayBoundary,
             LifecycleTestEvent::ConcealAnimBoundary,
@@ -709,6 +1119,8 @@ fn lifecycle_authority_techno_limbo_breaks_contacts_before_common_conceal() {
             LifecycleTestEvent::BreakReceiverClassEffect { target: 2 },
             LifecycleTestEvent::BreakReceiverCleared { target: 2 },
             LifecycleTestEvent::ConcealDeselected,
+            LifecycleTestEvent::RawOccupationListUnlinked,
+            LifecycleTestEvent::RawOccupationCleared,
             LifecycleTestEvent::ConcealUnmarked,
             LifecycleTestEvent::ConcealDisplayBoundary,
             LifecycleTestEvent::ConcealAnimBoundary,

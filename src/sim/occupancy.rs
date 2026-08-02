@@ -17,9 +17,39 @@ use crate::map::entities::EntityCategory;
 use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
+use crate::util::fixed_math::SimFixed;
+use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 /// UnitClass vehicle-occupation bit in both CellClass occupation planes.
 pub(crate) const VEHICLE_OCCUPATION_BIT: u8 = 0x20;
+pub(crate) const BUILDING_OCCUPATION_BIT: u8 = 0x80;
+
+/// Convert a coordinate's exact intra-cell position into the raw Infantry
+/// occupation mask. The native selector has no sub-cell-1 result: center and
+/// the northwest quadrant both select bit 0, while the other quadrants select
+/// bits 2, 3, and 4.
+pub(crate) fn infantry_raw_occupation_mask(sub_x: SimFixed, sub_y: SimFixed) -> u8 {
+    const CELL_LEPTON_MASK: i32 = 0xff;
+    const CELL_CENTER: i32 = 128;
+    const CENTER_RADIUS: i64 = 60;
+
+    let dx = (sub_x.to_num::<i32>() & CELL_LEPTON_MASK) - CELL_CENTER;
+    let dy = (sub_y.to_num::<i32>() & CELL_LEPTON_MASK) - CELL_CENTER;
+    let squared = X87Chop53::load_i32(dx * dx + dy * dy);
+    let root_bits = sqrt_approx_f32(squared)
+        .expect("intra-cell squared distance is finite and representable as f32");
+    let root = X87Chop53::load_f32(root_bits)
+        .expect("intra-cell approximate distance is finite and normal or zero");
+    let radius =
+        X87Chop53::ftol_i64(root).expect("intra-cell approximate distance fits a signed integer");
+    let sub_cell = if radius < CENTER_RADIUS {
+        0
+    } else {
+        let quadrant = u8::from(dx > 0) | (u8::from(dy > 0) << 1);
+        if quadrant == 0 { 0 } else { quadrant + 1 }
+    };
+    1 << sub_cell
+}
 
 /// One cell's two independent raw occupation bytes.
 ///
