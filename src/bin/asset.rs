@@ -11,7 +11,7 @@ use vera20k::asset_tools::names::NameDict;
 use vera20k::asset_tools::report::{ErrorReport, to_json};
 use vera20k::asset_tools::{
     palette, render_dispatch, root, verb_art, verb_csf, verb_extract, verb_find, verb_info,
-    verb_ls, verb_palette, verb_sound,
+    verb_ls, verb_palette, verb_parse_check, verb_scan, verb_sound,
 };
 
 const EXIT_FAILED: i32 = 1;
@@ -131,6 +131,20 @@ fn run(cli: Cli) -> Result<(), ErrorReport> {
 
         Verb::BagLs => {
             let report = verb_sound::bag_ls(&manager, &cli.sound)?;
+            println!("{}", to_json(&report));
+        }
+
+        // The two corpus-wide verbs both reverse hashes for every hit they
+        // report, so they pay for the full dictionary like `ls` does.
+        Verb::Scan => {
+            let dict = NameDict::build(&manager);
+            let report = verb_scan::run(&manager, &dict, &cli.scan)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::ParseCheck => {
+            let dict = NameDict::build(&manager);
+            let report = verb_parse_check::run(&manager, &dict, &cli.parse_check)?;
             println!("{}", to_json(&report));
         }
 

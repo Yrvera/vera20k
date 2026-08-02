@@ -441,6 +441,75 @@ pub struct ArtForReport {
     pub warnings: Vec<String>,
 }
 
+/// One corpus-wide `asset scan` hit.
+#[derive(Debug, Serialize)]
+pub struct ScanRow {
+    pub name: String,
+    pub identified: bool,
+    pub archive: String,
+    pub entry_id: String,
+    pub size: u32,
+    pub format: String,
+    pub detail: String,
+    /// The queryable fields this row exposed, so a caller can see what a
+    /// predicate would have matched against.
+    pub fields: std::collections::BTreeMap<String, String>,
+}
+
+/// `asset scan` — search every mounted archive by format and field predicates.
+#[derive(Debug, Serialize)]
+pub struct ScanReport {
+    pub scanned_archives: usize,
+    pub scanned_entries: usize,
+    pub matched: usize,
+    pub shown: usize,
+    pub offset: usize,
+    pub limit: usize,
+    /// The predicates as parsed, echoed so a silent typo is visible.
+    pub predicates: Vec<String>,
+    pub name_db: NameDb,
+    pub rows: Vec<ScanRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// One entry whose parser rejected it.
+#[derive(Debug, Serialize)]
+pub struct ParseFailure {
+    pub archive: String,
+    pub entry_id: String,
+    pub name: String,
+    pub size: usize,
+    pub error: String,
+}
+
+/// Per-format tally from `asset parse-check`.
+#[derive(Debug, Serialize)]
+pub struct ParseCheckFormat {
+    pub format: String,
+    pub ok: u32,
+    pub failed: u32,
+    pub total_bytes: u64,
+    /// A capped sample, not the full list — the count above is authoritative.
+    pub failures: Vec<ParseFailure>,
+}
+
+/// `asset parse-check` — does every retail entry still parse?
+///
+/// "ok" means the parser returned Ok: structural validity only, never a
+/// statement about matching gamemd semantics.
+#[derive(Debug, Serialize)]
+pub struct ParseCheckReport {
+    pub scanned_archives: usize,
+    pub scanned_entries: usize,
+    /// Entries the sniffer declined to name; not a failure, just uncovered.
+    pub unsniffed: usize,
+    pub unsniffed_bytes: u64,
+    pub formats: Vec<ParseCheckFormat>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
 /// Failure shape. Written to stdout so a caller parsing JSON always gets JSON.
 #[derive(Debug, Serialize)]
 pub struct ErrorReport {

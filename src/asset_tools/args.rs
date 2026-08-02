@@ -17,7 +17,9 @@ use crate::asset_tools::verb_find::FindOptions;
 use crate::asset_tools::verb_info::InfoOptions;
 use crate::asset_tools::verb_ls::{LsOptions, SortKey};
 use crate::asset_tools::verb_palette::PaletteForOptions;
+use crate::asset_tools::verb_parse_check::ParseCheckOptions;
 use crate::asset_tools::verb_render::RenderOptions;
+use crate::asset_tools::verb_scan::{self, ScanOptions};
 use crate::asset_tools::verb_sound::SoundOptions;
 
 /// Where rendered PNGs land by default. Under `target/` because that is
@@ -37,6 +39,8 @@ pub enum Verb {
     Sound { name: String },
     BagLs,
     ArtFor { type_id: String },
+    Scan,
+    ParseCheck,
     Help,
 }
 
@@ -55,6 +59,8 @@ pub struct Cli {
     pub art: ArtForOptions,
     /// `art-for --image`: the rules `Image=` value, when the caller knows it.
     pub art_image: String,
+    pub scan: ScanOptions,
+    pub parse_check: ParseCheckOptions,
 }
 
 pub fn usage() -> &'static str {
@@ -79,6 +85,8 @@ VERBS
   sound <NAME>         One audio-bag entry; --wav decodes it.
   bag-ls               List the audio bag, filtered by --prefix.
   art-for <TYPE>       Rules type id to the art files that back it, resolved.
+  scan                 Search every archive by format and field predicates.
+  parse-check          Run every parser over the whole corpus; report failures.
 
 GLOBAL OPTIONS
   --ra2-dir <PATH>     Retail install root. Overrides $RA2_DIR and config.toml.
@@ -138,6 +146,22 @@ sound / bag-ls
 art-for
   --theater <T>        tem (default) | sno | urb | lun | des | ubn
   --image <ID>         The rules Image= value, when you already know it.
+
+scan
+  --format <TAG>       Restrict to one format. Strongly recommended: without it
+                       every entry in the corpus is sniffed and parsed.
+  --archive <SUBSTR>   Restrict to archives whose name contains this.
+  --where <K=V,...>    AND-only field predicates. Operators = >= <= > <.
+                       Fields vary by format: shp has w, h, frames; tmp has
+                       tw, th, tiles; vxl has limbs, voxels. An unknown field
+                       is an error, never an empty result.
+                       Example: --format shp --where w=60,frames>100
+  --limit <N>          Page size. Default 200.
+  --offset <N>         Rows to skip.
+
+parse-check
+  --format <TAG>       Restrict to one format.
+  --limit <N>          Max sampled failures reported per format. Default 8.
 "
 }
 
@@ -157,6 +181,8 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
         sound: SoundOptions::default(),
         art: ArtForOptions::default(),
         art_image: String::new(),
+        scan: ScanOptions::default(),
+        parse_check: ParseCheckOptions::default(),
     };
 
     let mut args = argv.into_iter().peekable();
@@ -167,8 +193,11 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
         return Ok(cli);
     }
 
-    // Every verb but the two corpus-wide ones takes exactly one positional target.
-    let needs_target = !matches!(verb_word.as_str(), "archives" | "bag-ls");
+    // The corpus-wide verbs sweep everything and so take no positional target.
+    let needs_target = !matches!(
+        verb_word.as_str(),
+        "archives" | "bag-ls" | "scan" | "parse-check"
+    );
     let target = if needs_target {
         match args.peek() {
             Some(word) if !word.starts_with('-') => args.next(),
@@ -211,6 +240,8 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
         "art-for" => Verb::ArtFor {
             type_id: require_target(target, "art-for", "<TYPE>")?,
         },
+        "scan" => Verb::Scan,
+        "parse-check" => Verb::ParseCheck,
         other => return Err(format!("unknown verb \"{other}\"")),
     };
 
@@ -240,7 +271,18 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
             "--winner-only" => cli.find.all = false,
 
             "--filter" => cli.ls.filter = Some(value(&mut args, "--filter")?),
-            "--format" => cli.ls.format = Some(value(&mut args, "--format")?),
+            "--format" => {
+                let tag = value(&mut args, "--format")?;
+                match cli.verb {
+                    Verb::Scan => cli.scan.format = Some(tag),
+                    Verb::ParseCheck => cli.parse_check.format = Some(tag),
+                    _ => cli.ls.format = Some(tag),
+                }
+            }
+            "--where" => {
+                cli.scan.predicates = verb_scan::parse_predicates(&value(&mut args, "--where")?)?
+            }
+            "--archive" => cli.scan.archive = Some(value(&mut args, "--archive")?),
             "--sort" => {
                 cli.ls.sort = match value(&mut args, "--sort")?.as_str() {
                     "index" => SortKey::Index,
@@ -259,6 +301,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
                 match cli.verb {
                     Verb::CsfGet { .. } | Verb::CsfGrep { .. } => cli.csf.offset = n,
                     Verb::Sound { .. } | Verb::BagLs => cli.sound.offset = n,
+                    Verb::Scan => cli.scan.offset = n,
                     _ => cli.ls.offset = n,
                 }
             }
@@ -309,6 +352,9 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
                     Verb::Render { .. } => cli.render.limit = n,
                     Verb::CsfGet { .. } | Verb::CsfGrep { .. } => cli.csf.limit = n,
                     Verb::Sound { .. } | Verb::BagLs => cli.sound.limit = n,
+                    Verb::Scan => cli.scan.limit = n,
+                    // parse-check's limit caps sampled failures per format.
+                    Verb::ParseCheck => cli.parse_check.failure_cap = n,
                     _ => return Err(flag_not_valid(&flag, &cli.verb)),
                 }
             }
@@ -359,6 +405,8 @@ fn flag_not_valid(flag: &str, verb: &Verb) -> String {
         Verb::Sound { .. } => "sound",
         Verb::BagLs => "bag-ls",
         Verb::ArtFor { .. } => "art-for",
+        Verb::Scan => "scan",
+        Verb::ParseCheck => "parse-check",
         Verb::Help => "help",
     };
     format!("{flag} is not valid for `{verb_name}`")

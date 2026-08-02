@@ -36,5 +36,7 @@ pub mod verb_find;
 pub mod verb_info;
 pub mod verb_ls;
 pub mod verb_palette;
+pub mod verb_parse_check;
 pub mod verb_render;
+pub mod verb_scan;
 pub mod verb_sound;
