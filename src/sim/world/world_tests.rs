@@ -899,6 +899,141 @@ fn short_game_base_unit_survivor_prevents_enemy_victory() {
     assert!(!sim.houses[&enemy].has_won);
 }
 
+/// Insert a `MultiplayPassive=true` house — the stock `Neutral` (Civilian) and
+/// `Special` (JP) shape, which every skirmish creates and which owns civilian
+/// map objects for the whole match.
+fn insert_passive_house_with_counts(
+    sim: &mut Simulation,
+    name: &str,
+    buildings: u32,
+    units: u32,
+) -> crate::sim::intern::InternedId {
+    let owner = insert_house_with_counts(sim, name, buildings, units);
+    let house = sim.houses.get_mut(&owner).expect("house just inserted");
+    house.multiplay_passive = true;
+    // Stock Civilian/JP are never player-controlled.
+    house.is_human = false;
+    owner
+}
+
+/// Build an alliance graph with exactly the edges given — no symmetrization, so
+/// a single `(a, b)` pair models a one-way alliance.
+fn directed_alliances(edges: &[(&str, &str)]) -> HouseAllianceMap {
+    let mut map = HouseAllianceMap::new();
+    for (from, to) in edges {
+        map.entry(from.to_ascii_uppercase())
+            .or_default()
+            .insert(to.to_ascii_uppercase());
+        map.entry(to.to_ascii_uppercase()).or_default();
+    }
+    map
+}
+
+#[test]
+fn passive_house_owning_buildings_does_not_block_last_player_victory() {
+    // The player-visible bug: Neutral/Special own civilian structures on most
+    // stock maps, so before the passive filter the alive set never reached 1 and
+    // the victory screen never appeared after the last opponent died.
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_options.short_game = false;
+    let survivor = insert_house_with_counts(&mut sim, "Americans", 3, 4);
+    let loser = insert_house_with_counts(&mut sim, "Russians", 0, 0);
+    insert_passive_house_with_counts(&mut sim, "Neutral", 7, 0);
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(sim.houses[&loser].is_defeated);
+    assert!(
+        sim.houses[&survivor].has_won,
+        "last non-passive house standing must win despite the Civilian house owning buildings"
+    );
+}
+
+#[test]
+fn passive_house_is_never_defeated_even_with_nothing_left() {
+    // gamemd skips the whole defeat block for a MultiplayPassive house, so it is
+    // never flagged defeated no matter how empty it gets.
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_options.short_game = true;
+    let passive = insert_passive_house_with_counts(&mut sim, "Neutral", 0, 0);
+    let player = insert_house_with_counts(&mut sim, "Americans", 2, 1);
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(!sim.houses[&passive].is_defeated);
+    assert!(!sim.houses[&passive].has_lost);
+    assert!(!sim.houses[&passive].has_won);
+    assert!(sim.houses[&player].has_won);
+}
+
+#[test]
+fn passive_houses_do_not_make_a_solo_board_look_contested() {
+    // The "a real opponent exists" guard behind the victory screen and the
+    // termination frame. A one-player dev map whose [Houses] is the player plus
+    // Neutral/Special reaches alive.len() == 1 on tick 1, so counting the
+    // passive houses here would announce instant victory.
+    let mut sim = Simulation::new();
+    insert_house_with_counts(&mut sim, "Americans", 1, 1);
+    insert_passive_house_with_counts(&mut sim, "Neutral", 4, 0);
+    insert_passive_house_with_counts(&mut sim, "Special", 2, 0);
+
+    assert_eq!(sim.houses.len(), 3);
+    assert_eq!(sim.contending_house_count(), 1);
+
+    insert_house_with_counts(&mut sim, "Russians", 1, 1);
+    assert_eq!(sim.contending_house_count(), 2);
+}
+
+#[test]
+fn passive_houses_do_not_arm_the_termination_frame_for_a_tick_zero_win() {
+    // The sim-side consumer of the same guard. On a one-player dev map the
+    // human is flagged `has_won` immediately, and counting Neutral/Special as
+    // opponents would end the match on tick 1.
+    let mut sim = Simulation::new();
+    let player = insert_house_with_counts(&mut sim, "Americans", 1, 1);
+    insert_passive_house_with_counts(&mut sim, "Neutral", 4, 0);
+    insert_passive_house_with_counts(&mut sim, "Special", 2, 0);
+    sim.houses.get_mut(&player).expect("player house").has_won = true;
+
+    assert!(
+        !sim.termination_frame_requested(),
+        "a win against only passive houses must not terminate the match"
+    );
+
+    // Add a real opponent and the same win now ends the game.
+    insert_house_with_counts(&mut sim, "Russians", 1, 1);
+    assert!(
+        sim.termination_frame_requested(),
+        "a win with a contending opponent present must terminate the match"
+    );
+}
+
+#[test]
+fn one_way_alliance_does_not_end_the_game() {
+    // Native alliance is directional; the game-over scan requires both houses of
+    // a pair to name the other. A unilateral "I ally you" must not hand out wins.
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_options.short_game = false;
+    let a = insert_house_with_counts(&mut sim, "Americans", 1, 1);
+    let b = insert_house_with_counts(&mut sim, "Russians", 1, 1);
+    sim.house_alliances = directed_alliances(&[("Americans", "Russians")]);
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(!sim.houses[&a].has_won, "one-way alliance must not win");
+    assert!(!sim.houses[&b].has_won, "one-way alliance must not win");
+
+    // Control: once the alliance is mutual the same board is a shared victory.
+    sim.house_alliances =
+        directed_alliances(&[("Americans", "Russians"), ("Russians", "Americans")]);
+    sim.check_defeat(Some(&rules));
+    assert!(sim.houses[&a].has_won);
+    assert!(sim.houses[&b].has_won);
+}
+
 #[test]
 fn test_spawn_vehicle_has_voxel_marker() {
     let mut sim: Simulation = Simulation::new();

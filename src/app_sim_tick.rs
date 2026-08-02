@@ -208,8 +208,10 @@ fn check_local_player_match_end(state: &mut AppState) {
         };
         // `check_defeat` flags the last house standing as the winner, which in a
         // single-house sandbox is true from tick 0 — require a real opponent
-        // (>=2 houses) before announcing victory. Loss needs no such guard.
-        if house.has_won && sim.houses.len() > 1 {
+        // (>=2 contending houses) before announcing victory. Passive
+        // Civilian/JP houses do not count: they exist on nearly every roster and
+        // would make a one-player dev map look contested. Loss needs no guard.
+        if house.has_won && sim.contending_house_count() > 1 {
             Some((
                 "You are Victorious!",
                 "All enemy forces have been defeated.",

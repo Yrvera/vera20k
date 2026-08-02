@@ -390,17 +390,22 @@ fn populate_special_houses(sim: &mut Simulation, house_roster: &HouseRoster, rul
             declared_side,
             crate::sim::house_state::side_index_from_name(declared_side),
         );
-        sim.houses.insert(
+        let mut house = HouseState::new(
             name_id,
-            HouseState::new(
-                name_id,
-                side_idx,
-                country_id,
-                false,
-                sim.session.game_options.starting_credits,
-                sim.session.game_options.tech_level,
-            ),
+            side_idx,
+            country_id,
+            false,
+            sim.session.game_options.starting_credits,
+            sim.session.game_options.tech_level,
         );
+        // Stock Neutral/Special are MultiplayPassive, which keeps them out of
+        // defeat evaluation and out of the game-over alive scan. `country_name`
+        // is always concrete here — the roster's `Country=` when the map named
+        // one, otherwise the special house's own `[Countries]` entry, which is
+        // what this house is being built as.
+        house.multiplay_passive =
+            crate::sim::house_state::resolve_multiplay_passive(Some(rules), Some(country_name));
+        sim.houses.insert(name_id, house);
         sim.session.house_order.push(name_id);
     }
 }
@@ -425,6 +430,8 @@ fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot]
             sim.session.game_options.tech_level,
         );
         house.difficulty = slot.difficulty;
+        house.multiplay_passive =
+            crate::sim::house_state::resolve_multiplay_passive(Some(rules), Some(country_name));
         sim.houses.insert(name_id, house);
         sim.session.house_order.push(name_id);
         if !slot.is_human {

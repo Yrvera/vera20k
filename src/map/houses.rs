@@ -101,6 +101,31 @@ pub fn are_houses_friendly(alliances: &HouseAllianceMap, a: &str, b: &str) -> bo
             .is_some_and(|set| set.contains(&a_norm))
 }
 
+/// Directional alliance test: does `asker` consider `other` an ally?
+///
+/// gamemd's `HouseClass::IsAlliedWith` reads only the *asker's* own ally
+/// bitfield, so alliance is one-way until both sides set their bit; a house is
+/// always allied with itself. [`are_houses_friendly`] deliberately keeps its
+/// symmetric OR for the many "don't shoot / don't crush / don't block" call
+/// sites; use this one where the native code needs the asymmetric answer.
+pub fn is_allied_with(alliances: &HouseAllianceMap, asker: &str, other: &str) -> bool {
+    if asker.eq_ignore_ascii_case(other) {
+        return true;
+    }
+    alliances
+        .get(&normalize_house_name(asker))
+        .is_some_and(|set| set.contains(&normalize_house_name(other)))
+}
+
+/// Mutual-alliance test — both houses must name each other.
+///
+/// This is the pairwise predicate the native game-over scan applies to every
+/// surviving house pair, and it is strictly stronger than
+/// [`are_houses_friendly`]: a one-way alliance does not end the match.
+pub fn are_houses_mutually_allied(alliances: &HouseAllianceMap, a: &str, b: &str) -> bool {
+    is_allied_with(alliances, a, b) && is_allied_with(alliances, b, a)
+}
+
 fn normalize_house_name(name: &str) -> String {
     name.trim().to_ascii_uppercase()
 }
@@ -227,6 +252,38 @@ mod tests {
         assert!(are_houses_friendly(&alliances, "Russians", "Confederation"));
         assert!(are_houses_friendly(&alliances, "YuriCountry", "Russians"));
         assert!(!are_houses_friendly(&alliances, "Americans", "Russians"));
+    }
+
+    #[test]
+    fn test_alliance_direction_is_asymmetric() {
+        // Built by hand rather than via `alliance_map()`, which symmetrizes.
+        let mut alliances = HouseAllianceMap::new();
+        alliances
+            .entry("AMERICANS".to_string())
+            .or_default()
+            .insert("RUSSIANS".to_string());
+        alliances.entry("RUSSIANS".to_string()).or_default();
+
+        assert!(is_allied_with(&alliances, "Americans", "Russians"));
+        assert!(!is_allied_with(&alliances, "Russians", "Americans"));
+        assert!(is_allied_with(&alliances, "Russians", "Russians"));
+        assert!(!are_houses_mutually_allied(
+            &alliances,
+            "Americans",
+            "Russians"
+        ));
+        // The symmetric helper still answers "friendly" for the same pair.
+        assert!(are_houses_friendly(&alliances, "Russians", "Americans"));
+
+        alliances
+            .entry("RUSSIANS".to_string())
+            .or_default()
+            .insert("AMERICANS".to_string());
+        assert!(are_houses_mutually_allied(
+            &alliances,
+            "Americans",
+            "Russians"
+        ));
     }
 
     #[test]

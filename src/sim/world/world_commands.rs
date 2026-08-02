@@ -998,7 +998,6 @@ impl Simulation {
                         &cargo,
                         rules,
                         &self.houses,
-                        &self.interner,
                         path_grid,
                     ) {
                         Some(())
