@@ -38,7 +38,6 @@ pub(super) struct WorldInstances {
     pub bridge_body: Vec<SpriteInstance>,
     pub bridge_body_shadow: Vec<SpriteInstance>,
     pub bridge_railing: Vec<SpriteInstance>,
-    pub wall: Vec<SpriteInstance>,
     pub unit: Vec<SpriteInstance>,
     pub unit_pages: Vec<usize>,
     pub bridge_unit: Vec<SpriteInstance>,
@@ -190,13 +189,13 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         }
     };
 
-    // Overlays: map overlays, walls — each sorted by depth descending. Low
-    // bridges (LOBRDG*) ride in `overlay`; high-bridge bodies are emitted by
-    // `app_instances::bridges` instead.
+    // Map overlays and walls are lowered through the fixed per-cell draw plan.
+    // Terrain objects remain an explicit fallback until they carry LayerClass
+    // registration metadata. Low bridges (LOBRDG*) ride in `overlay`; high
+    // bridge bodies are emitted by `app_instances::bridges` instead.
     let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.cached_overlay_instances);
     overlay.clear();
-    let mut wall: Vec<SpriteInstance> = Vec::new();
-    app_instances::build_overlay_instances(state, sw, sh, &mut overlay, &mut wall);
+    app_instances::build_overlay_instances(state, sw, sh, &mut overlay);
     // Bridge body, shadow, and railing emission live in app_instances::bridges
     // (Phase D). Read from BridgeRuntimeCell post-tick (NOT OverlayGrid).
     let mut bridge_body: Vec<SpriteInstance> = Vec::new();
@@ -205,11 +204,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     app_instances::bridges::build_bridge_body_instances(state, sw, sh, &mut bridge_body);
     app_instances::bridges::build_bridge_shadow_instances(state, sw, sh, &mut bridge_body_shadow);
     app_instances::bridges::build_bridge_railing_instances(state, sw, sh, &mut bridge_railing);
-    sort_by_depth_desc(&mut overlay);
     sort_by_depth_desc(&mut bridge_body);
     sort_by_depth_desc(&mut bridge_body_shadow);
     sort_by_depth_desc(&mut bridge_railing);
-    sort_by_depth_desc(&mut wall);
 
     // Smudges: static crater/scorch decals on top of terrain, under entities.
     // Atlas registration for SmudgeType SHPs is a deferred follow-up; until it
@@ -300,6 +297,14 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         sort_by_depth_desc(page);
     }
 
+    // `LayerClass` needs integer ObjectClass::GetYSort and registration order.
+    // Existing atlas vectors retain neither, so publish the typed fallback once.
+    super::draw_plan_lowering::report_object_buffer_fallbacks(
+        !unit.is_empty(),
+        unit_transition_paged.iter().any(|page| !page.is_empty()),
+        shp_paged.iter().any(|page| !page.is_empty()),
+    );
+
     // PixelFX water/ore sparkles — per-frame 1-pixel cell dots.
     let cell_sparkles: Vec<SpriteInstance> = build_pixel_fx_sparkle_instances(state, sw, sh);
 
@@ -325,7 +330,6 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         bridge_body,
         bridge_body_shadow,
         bridge_railing,
-        wall,
         unit,
         unit_pages,
         bridge_unit,

@@ -10,6 +10,24 @@ use std::hash::{Hash, Hasher};
 
 use super::Simulation;
 
+fn hash_projectile_target(
+    target: crate::sim::projectile::ProjectileTarget,
+    hasher: &mut impl Hasher,
+) {
+    match target {
+        crate::sim::projectile::ProjectileTarget::Entity(id) => {
+            0u8.hash(hasher);
+            id.hash(hasher);
+        }
+        crate::sim::projectile::ProjectileTarget::Cell(position) => {
+            1u8.hash(hasher);
+            position.x.hash(hasher);
+            position.y.hash(hasher);
+            position.z.hash(hasher);
+        }
+    }
+}
+
 fn hash_drive_track_state(
     state: &crate::sim::movement::drive_track::DriveTrackState,
     hasher: &mut impl Hasher,
@@ -126,7 +144,7 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true)
+        self.state_hash_with_schema(true, true, true)
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -135,7 +153,7 @@ impl Simulation {
     /// Mission/hash layout from representable final state.
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(true, false)
+        self.state_hash_with_schema(true, false, false)
     }
 
     /// Test-only provenance probe for the historical pre-v28 baseline.
@@ -144,13 +162,14 @@ impl Simulation {
     /// schema changes do not invalidate that earlier proof.
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(false, false)
+        self.state_hash_with_schema(false, false, false)
     }
 
     fn state_hash_with_schema(
         &self,
         include_lifecycle_v28: bool,
         include_mission_v29: bool,
+        include_master_frame_v43: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -161,6 +180,11 @@ impl Simulation {
         self.scenario_rng.hash_state(&mut hasher);
         self.substrate.next_stable_object_id.hash(&mut hasher);
         self.substrate.next_occupancy_enter_order.hash(&mut hasher);
+        // YR LogicClass trigger latches are save/lockstep state, even though
+        // their camera/message outcomes stay app-owned and are not hashed.
+        if include_master_frame_v43 {
+            self.trigger_runtime.hash_state(&mut hasher);
+        }
 
         // LogicClass active-object order — authoritative (drives reconciliation order).
         let order = self.substrate.logic.as_slice();
@@ -190,6 +214,9 @@ impl Simulation {
         self.hash_overlay_grid(&mut hasher);
         self.hash_smudge_grid(&mut hasher);
         self.hash_radiation(&mut hasher);
+        if include_master_frame_v43 {
+            self.hash_projectiles(&mut hasher);
+        }
         self.hash_super_weapons(&mut hasher);
         self.hash_entities(&mut hasher, include_lifecycle_v28, include_mission_v29);
         self.hash_anims(&mut hasher);
@@ -197,6 +224,33 @@ impl Simulation {
         self.hash_session_identity(&mut hasher);
 
         hasher.finish()
+    }
+
+    fn hash_projectiles(&self, hasher: &mut impl Hasher) {
+        self.projectiles.next_id().hash(hasher);
+        self.projectiles.len().hash(hasher);
+        for (&id, projectile) in self.projectiles.iter() {
+            id.hash(hasher);
+            projectile.source_id.hash(hasher);
+            projectile.position.x.hash(hasher);
+            projectile.position.y.hash(hasher);
+            projectile.position.z.hash(hasher);
+            hash_projectile_target(projectile.target, hasher);
+            projectile.last_target_position.x.hash(hasher);
+            projectile.last_target_position.y.hash(hasher);
+            projectile.last_target_position.z.hash(hasher);
+            projectile.payload.base_damage.hash(hasher);
+            projectile.payload.warhead.index().hash(hasher);
+            projectile.payload.weapon.index().hash(hasher);
+            projectile.payload.owner.index().hash(hasher);
+            projectile.speed_leptons_per_frame.hash(hasher);
+            projectile.arm_frames_remaining.hash(hasher);
+            projectile.fuse_frames_remaining.hash(hasher);
+            projectile.tracks_target.hash(hasher);
+            projectile.target_expiry.hash(hasher);
+            projectile.collision.level_non_water.hash(hasher);
+            projectile.collision.subject_to_walls.hash(hasher);
+        }
     }
 
     /// Fold the authoritative sparse raw occupation bytes without conflating

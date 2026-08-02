@@ -1,7 +1,7 @@
 //! Y-sorted multi-way merge passes for interleaving draw calls across atlas textures.
 //!
 //! The original engine renders all ground objects in a single Y-sorted pass (Layer 2).
-//! Our engine has multiple atlas textures (VXL units, SHP pages 0-3, wall overlays),
+//! Our engine has multiple atlas textures (VXL units and SHP pages),
 //! so we interleave draw calls by walking cursors through each Y-sorted buffer and
 //! emitting sub-range draws in depth-descending order (back-to-front).
 //!
@@ -9,7 +9,6 @@
 //! - Internal to app_render — only called from draw_passes.rs.
 
 use crate::render::batch::{BatchRenderer, BatchTexture, InstanceBufferPool, SpriteInstance};
-use crate::render::overlay_atlas::OverlayAtlas;
 use crate::render::palette_textures::PaletteSet;
 use crate::render::sprite_atlas::SpriteAtlas;
 use crate::render::unit_atlas::UnitAtlas;
@@ -35,8 +34,8 @@ enum DrawTexture<'tex, 'inst> {
 
 /// Tracks a single draw group during the multi-way merge.
 ///
-/// Each group represents one GPU buffer + texture pair (e.g., VXL units, one SHP page,
-/// wall overlays). The `cursor` advances through the buffer as sub-ranges are drawn.
+/// Each group represents one GPU buffer + texture pair (e.g., VXL units or one SHP page).
+/// The `cursor` advances through the buffer as sub-ranges are drawn.
 /// `kind` determines which pipeline is used to dispatch the draw.
 struct DrawGroup<'tex, 'inst> {
     texture: DrawTexture<'tex, 'inst>,
@@ -221,12 +220,10 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
     }
 }
 
-/// Unified Y-sorted object pass: multi-way merge of VXL units, SHP entities, and walls.
+/// Unified Y-sorted object pass: multi-way merge of VXL units and SHP entities.
 ///
-/// All ground objects (buildings, infantry, vehicles, walls) are rendered in a
-/// single Y-sorted pass (Layer 2). Walls render in both the terrain overlay pass AND
-/// here -- the second rendering provides correct Y-sorted priority (walls in front of
-/// units at closer iso rows). Our engine has multiple atlas textures, so we interleave
+/// Ground objects (buildings, infantry, vehicles) are rendered in a single
+/// Y-sorted pass (Layer 2). Our engine has multiple atlas textures, so we interleave
 /// draw calls by walking cursors through each Y-sorted buffer and emitting sub-range draws.
 pub(super) fn draw_merged_object_pass<'a>(
     pass: &mut wgpu::RenderPass<'a>,
@@ -236,11 +233,9 @@ pub(super) fn draw_merged_object_pass<'a>(
     unit_pages: &[usize],
     unit_transition_paged: &[Vec<SpriteInstance>],
     shp_paged: &[Vec<SpriteInstance>],
-    wall_instances: &[SpriteInstance],
     unit_atlas: Option<&'a UnitAtlas>,
     transition_cache: &'a VxlSlopeTransitionCache,
     sprite_atlas: Option<&'a SpriteAtlas>,
-    overlay_atlas: Option<&'a OverlayAtlas>,
     palette_set: Option<&'a PaletteSet>,
 ) {
     // Each draw group has a bind group, pool buffer, extracted depth values, and cursor.
@@ -298,16 +293,6 @@ pub(super) fn draw_merged_object_pass<'a>(
         }
     }
 
-    // Wall overlay draw group -- uses passthrough (no depth test).
-    // Walls render in both terrain pass (overlays) and object pass (Layer 2).
-    // The object pass rendering provides Y-sorted priority so walls appear
-    // in front of units at closer iso rows.
-    if let (Some(oa), Some((buf, count))) = (overlay_atlas, pool.get("overlay_wall")) {
-        if count > 0 {
-            groups.push(DrawGroup::new_shp(&oa.texture, buf, wall_instances, count));
-        }
-    }
-
     if groups.is_empty() {
         return;
     }
@@ -361,7 +346,7 @@ pub(super) fn draw_merged_object_pass<'a>(
         }
 
         // Draw the contiguous run. Voxel groups go through the voxel sprite
-        // pipeline (R8Uint atlas + PaletteSet bind group); SHP / wall groups
+        // pipeline (R8Uint atlas + PaletteSet bind group); SHP groups
         // go through passthrough (RGBA atlas, no depth test).
         let count = run_end - run_start;
         let g = &groups[gi];

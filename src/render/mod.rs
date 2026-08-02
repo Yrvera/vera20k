@@ -49,6 +49,7 @@ pub mod skirmish_shell_chrome;
 pub mod smudge;
 pub mod sprite_atlas;
 pub mod tactical_compat;
+pub mod tactical_draw_plan;
 pub mod tile_atlas;
 pub mod unit_atlas;
 pub mod unit_slope_transition_cache;

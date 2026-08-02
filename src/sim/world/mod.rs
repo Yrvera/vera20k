@@ -79,6 +79,7 @@ use crate::sim::pathfinding::terrain_speed;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
+use crate::sim::projectile::{Projectile, ProjectileCoord};
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
 use crate::sim::replay::ReplayLog;
 use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
@@ -91,6 +92,44 @@ use crate::util::fixed_math::SimFixed;
 /// Dev/test fallback seed. Real launches negotiate a per-match seed through
 /// `ScenarioDescriptor`; nothing on the launch path may rely on this value.
 const DEFAULT_SIM_SEED: u64 = 0x5EED_CAFE_D15E_A5E5;
+
+/// Bounded `BulletClass::AI` terrain collision admission.
+///
+/// The verified `Level` path uses the current canonical cell's water identity;
+/// this engine's resolved terrain owns that identity directly. Cliff and
+/// elevation trajectory kernels remain explicitly outside this straight-flight
+/// port rather than being guessed from cell levels.
+fn projectile_collides_at(
+    terrain: Option<&ResolvedTerrainGrid>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    projectile: &Projectile,
+    candidate: ProjectileCoord,
+) -> bool {
+    let policy = projectile.collision;
+    if !policy.level_non_water && !policy.subject_to_walls {
+        return false;
+    }
+    let Ok(rx) = u16::try_from(candidate.x.div_euclid(256)) else {
+        return policy.level_non_water;
+    };
+    let Ok(ry) = u16::try_from(candidate.y.div_euclid(256)) else {
+        return policy.level_non_water;
+    };
+
+    if policy.level_non_water
+        && !terrain
+            .and_then(|grid| grid.cell(rx, ry))
+            .is_some_and(|cell| cell.is_water)
+    {
+        return true;
+    }
+    policy.subject_to_walls
+        && overlay_grid
+            .and_then(|grid| grid.cell(rx, ry).overlay_id)
+            .and_then(|overlay_id| overlay_registry.and_then(|registry| registry.flags(overlay_id)))
+            .is_some_and(|flags| flags.wall)
+}
 
 /// Result of one deterministic simulation tick.
 #[derive(Debug, Clone, Copy)]
@@ -123,6 +162,28 @@ pub(crate) enum TickLane {
     Ordinary,
     /// LAN/WOL modal pump: service PerTickUpdate and the late tail only.
     NetworkModal,
+}
+
+/// Static map trigger definitions borrowed for one authoritative frame.
+///
+/// The definitions remain map data; `Simulation` owns the mutable runtime
+/// state and evaluates it in the master-frame spine.
+#[derive(Clone, Copy)]
+pub(crate) struct TriggerInputs<'a> {
+    pub graph: &'a TriggerGraph,
+    pub triggers: &'a TriggerMap,
+    pub events: &'a EventMap,
+    pub actions: &'a ActionMap,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MasterFrameTestRung {
+    Triggers,
+    LogicVector,
+    Houses,
+    FrameCommit,
+    PendingDelete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,6 +470,14 @@ pub struct Simulation {
     #[cfg(test)]
     #[serde(skip)]
     lifecycle_test_events: Vec<LifecycleTestEvent>,
+    /// App-visible outcomes produced by the authoritative trigger rung.
+    /// Trigger actions mutate `trigger_runtime` during the frame; only their
+    /// presentation outcomes are drained by the app after the tick.
+    #[serde(skip)]
+    trigger_effects: Vec<TriggerEffect>,
+    #[cfg(test)]
+    #[serde(skip)]
+    master_frame_test_trace: Vec<MasterFrameTestRung>,
     /// Sound events produced during the current tick — drained by the app layer.
     #[serde(skip)]
     pub sound_events: Vec<SimSoundEvent>,
@@ -416,6 +485,10 @@ pub struct Simulation {
     /// muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
     pub fire_events: Vec<SimFireEvent>,
+    /// Persistent ordinary shots. This is authoritative save/hash state, not
+    /// the render-side fire-event approximation.
+    #[serde(default)]
+    pub projectiles: crate::sim::projectile::ProjectileStore,
     /// Smudge spawn requests emitted by callsites that don't return through
     /// `CombatTickResult` (superweapons, etc.). Drained alongside combat-emitted
     /// smudge requests in the post-combat drain block. Ephemeral — never
@@ -684,8 +757,12 @@ impl Simulation {
             pending_lifecycle_requests: Vec::new(),
             #[cfg(test)]
             lifecycle_test_events: Vec::new(),
+            trigger_effects: Vec::new(),
+            #[cfg(test)]
+            master_frame_test_trace: Vec::new(),
             sound_events: Vec::new(),
             fire_events: Vec::new(),
+            projectiles: crate::sim::projectile::ProjectileStore::new(),
             pending_smudge_requests: Vec::new(),
             bale_events: Vec::new(),
             bunker_wall_events: Vec::new(),
@@ -1121,7 +1198,7 @@ impl Simulation {
 
     /// Advance map triggers by one tick. Uses `std::mem::take` to avoid
     /// self-borrow conflict (advance reads entity/interner state via `&Simulation`).
-    pub fn advance_triggers(
+    fn advance_triggers(
         &mut self,
         graph: &TriggerGraph,
         triggers: &TriggerMap,
@@ -1139,6 +1216,28 @@ impl Simulation {
         );
         self.trigger_runtime = rt;
         effects
+    }
+
+    fn poll_triggers_for_master_frame(&mut self, inputs: TriggerInputs<'_>) {
+        // YR LogicClass::Update polls scenario triggers before the live-object walk.
+        let effects =
+            self.advance_triggers(inputs.graph, inputs.triggers, inputs.events, inputs.actions);
+        self.trigger_effects.extend(effects);
+    }
+
+    /// Drain app-owned outcomes after their authoritative trigger actions ran.
+    pub(crate) fn drain_trigger_effects(&mut self) -> Vec<TriggerEffect> {
+        std::mem::take(&mut self.trigger_effects)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_master_frame_test_trace(&mut self) -> Vec<MasterFrameTestRung> {
+        std::mem::take(&mut self.master_frame_test_trace)
+    }
+
+    #[cfg(test)]
+    fn trace_master_frame_rung(&mut self, rung: MasterFrameTestRung) {
+        self.master_frame_test_trace.push(rung);
     }
 
     /// Returns true if the given house name is human-controlled.
@@ -2592,6 +2691,8 @@ impl Simulation {
         spawned_entities: &mut bool,
         destroyed_structure: &mut bool,
     ) -> bool {
+        #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::Houses);
         // --- Phase 8: Defeat detection (runs BEFORE AI) ---
         // gamemd evaluates each house's defeat before its AI manage/produce step,
         // so a house that lost its last building/unit this tick can issue NO AI
@@ -2709,11 +2810,15 @@ impl Simulation {
         self.session.total_sim_ms = self.session.total_sim_ms.saturating_add(tick_ms as u64);
         self.session.binary_frame = self.session.binary_frame.wrapping_add(1);
         #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::FrameCommit);
+        #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::BinaryFrameCommitted);
 
         // The one ordinary ProcessPendingDelete drain follows the native frame
         // commit. Alive queue entries keep their position; ready duplicate IDs
         // collapse and physically finalize exactly once.
+        #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::PendingDelete);
         self.process_pending_delete();
 
         // Debug-mode safety net: rebuild occupancy after the drain so dead
@@ -2739,7 +2844,9 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
     ) -> TickResult {
-        self.advance_tick_in_lane(
+        // Headless callers still enter the complete YR Main_Tick-shaped
+        // transaction; only map-owned trigger definitions are unavailable here.
+        self.advance_master_frame(
             commands,
             rules,
             height_map,
@@ -2748,11 +2855,17 @@ impl Simulation {
             tick_ms,
             TickLane::Ordinary,
             None,
+            None,
         )
     }
 
+    /// Advance exactly one authoritative simulation frame.
+    ///
+    /// This is the sole Main_Tick-shaped entry point. `advance_tick` is the
+    /// ordinary, trigger-definition-free adapter used by headless callers and
+    /// tests; gameplay supplies its map definitions through `trigger_inputs`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn advance_tick_in_lane(
+    pub(crate) fn advance_master_frame(
         &mut self,
         commands: &[CommandEnvelope],
         rules: Option<&RuleSet>,
@@ -2762,6 +2875,7 @@ impl Simulation {
         tick_ms: u32,
         lane: TickLane,
         animation_sequences: Option<&BTreeMap<String, crate::sim::animation::SequenceSet>>,
+        trigger_inputs: Option<TriggerInputs<'_>>,
     ) -> TickResult {
         // The wrapping native frame counter is committed LATE (end of this fn,
         // beside self.session.tick) so every phase sees the same pre-increment
@@ -2780,6 +2894,14 @@ impl Simulation {
         // aircraft, …) are dying-gated, so a corpse is excluded until that drain.
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
+
+        // YR LogicClass::Update establishes trigger state before visiting the
+        // live LogicVector, so object work in this frame observes its actions.
+        #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::Triggers);
+        if let Some(inputs) = trigger_inputs {
+            self.poll_triggers_for_master_frame(inputs);
+        }
 
         // Object-AI stage: the authoritative per-object Mission host, run
         // immediately BEFORE Phase-1 ground movement — gamemd decides each
@@ -2819,6 +2941,8 @@ impl Simulation {
         // --- Phase 1: Ground movement ---
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.
         // PRODUCES: updated entity positions, crush/bump effects, drive track state.
+        #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::LogicVector);
         let mut movement_stats = movement::MovementTickStats::default();
         self.for_each_live_object(|sim, stable_id| {
             sim.object_ai_visit_one(stable_id, rules, object_ctx);
@@ -3089,6 +3213,40 @@ impl Simulation {
             // resolution sequence. Snapshot is owned, so it does not conflict
             // with the &mut self.entities borrow below.
             let logic_order = self.live_object_order_snapshot();
+            let projectile_targets = self
+                .substrate
+                .entities
+                .iter_sorted()
+                .filter(|(_, entity)| entity.is_alive() && !entity.dying)
+                .map(|(id, entity)| {
+                    (
+                        id,
+                        crate::sim::projectile::ProjectileCoord::new(
+                            i32::from(entity.position.rx) * 256
+                                + entity.position.sub_x.to_num::<i32>(),
+                            i32::from(entity.position.ry) * 256
+                                + entity.position.sub_y.to_num::<i32>(),
+                            i32::from(entity.position.z),
+                        ),
+                    )
+                })
+                .collect();
+            // YR BulletClass::AI: existing bullets advance before this frame's
+            // newly accepted weapon fire, so a spawn cannot move recursively.
+            let terrain = self.resolved_terrain.as_ref();
+            let overlay_grid = self.overlay_grid.as_ref();
+            let projectile_detonations = self
+                .projectiles
+                .advance(&projectile_targets, |projectile, candidate| {
+                    projectile_collides_at(
+                        terrain,
+                        overlay_grid,
+                        overlay_registry,
+                        projectile,
+                        candidate,
+                    )
+                })
+                .detonations;
             let combat_result = combat::tick_combat_with_fog_and_main_rng(
                 &mut self.substrate.entities,
                 &mut self.substrate.occupancy,
@@ -3106,10 +3264,14 @@ impl Simulation {
                 tick_ms,
                 self.session.binary_frame,
                 &logic_order,
+                &projectile_detonations,
                 Some(&mut self.radiation),
                 &mut self.scenario_rng,
                 &mut self.main_rng,
             );
+            for projectile in combat_result.projectile_spawns.iter().copied() {
+                self.projectiles.spawn(projectile);
+            }
             turret::tick_turret_rotation(
                 &mut self.substrate.entities,
                 rules,

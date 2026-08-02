@@ -1067,6 +1067,7 @@ fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
         100,
         0,
         &[1, 2],
+        &[],
         None,
         &mut scenario_rng,
         &mut human_rng,
@@ -1271,7 +1272,8 @@ fn deployed_guardian_gi_vs_rhino_at_six_cells_uses_missilelauncher() {
     let ev = &result.fire_events[0];
     assert_eq!(interner.resolve(ev.weapon_id), "MissileLauncher");
     assert_eq!(ev.weapon_slot, WeaponSlot::Secondary);
-    assert_eq!(store.get(2).unwrap().health.current, 360);
+    assert_eq!(store.get(2).unwrap().health.current, 400);
+    assert_eq!(result.projectile_spawns.len(), 1);
 }
 
 #[test]
@@ -2692,6 +2694,99 @@ Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
         anim_list,
     ));
     RuleSet::from_ini(&ini).expect("Inviso test rules should parse")
+}
+
+fn persistent_projectile_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n\n[VehicleTypes]\n0=SHOOTER\n1=TARGET\n\n[AircraftTypes]\n\n[BuildingTypes]\n\n[SHOOTER]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=GUN\n\n[TARGET]\nStrength=500\nArmor=heavy\nSpeed=6\n\n[GUN]\nDamage=10\nROF=20\nRange=10\nSpeed=128\nProjectile=TESTPROJ\nWarhead=TESTWH\n\n[TESTPROJ]\nInviso=no\nImage=TESTBULLET\n\n[TESTWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("persistent projectile rules should parse")
+}
+
+#[test]
+fn persistent_projectile_delays_damage_across_save_load_continuation() {
+    let rules = persistent_projectile_rules();
+    assert!(matches!(
+        classify_projectile_delivery(rules.weapon("GUN").unwrap(), &rules),
+        ProjectileDelivery::Persistent { .. }
+    ));
+    let mut entities = EntityStore::new();
+    entities.insert(make_entity(1, "SHOOTER", 5, 5, 300));
+    entities.insert(make_entity(2, "TARGET", 8, 5, 500));
+    let mut interner = test_interner();
+    issue_attack_command(&mut entities, 1, 2, None, &interner);
+
+    let mut scenario_rng = SimRng::new(1);
+    let fire = tick_combat(
+        &mut entities,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut scenario_rng,
+    );
+    assert_eq!(entities.get(2).unwrap().health.current, 500);
+    assert_eq!(fire.projectile_spawns.len(), 1);
+
+    let mut sim = crate::sim::world::Simulation::new();
+    sim.projectiles.spawn(fire.projectile_spawns[0]);
+    let target_positions =
+        BTreeMap::from([(2, ProjectileCoord::new(8 * 256 + 128, 5 * 256 + 128, 0))]);
+    assert!(
+        sim.projectiles
+            .advance(&target_positions, |_, _| false)
+            .detonations
+            .is_empty()
+    );
+
+    let snapshot = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "projectile-flight", 0);
+    let mut restored = crate::sim::snapshot::GameSnapshot::load(&snapshot)
+        .expect("pending projectile snapshot should load")
+        .sim;
+    let mut detonations = Vec::new();
+    for _ in 0..8 {
+        detonations = restored
+            .projectiles
+            .advance(&target_positions, |_, _| false)
+            .detonations;
+        if !detonations.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(
+        detonations.len(),
+        1,
+        "resumed projectile should reach target"
+    );
+
+    entities.remove(1);
+    let mut main_rng = SimRng::new(1);
+    tick_combat_with_fog_and_main_rng(
+        &mut entities,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        &mut BTreeMap::new(),
+        None,
+        None,
+        None,
+        1,
+        100,
+        1,
+        &[2],
+        &detonations,
+        None,
+        &mut scenario_rng,
+        &mut main_rng,
+    );
+    assert_eq!(entities.get(2).unwrap().health.current, 490);
 }
 
 fn explosion_coord(effect: &ExplosionEffect) -> (u16, u16, SimFixed, SimFixed) {
