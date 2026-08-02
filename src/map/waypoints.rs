@@ -49,29 +49,47 @@ pub fn skirmish_player_capacity(ini: &IniFile) -> i32 {
     }
 }
 
+/// Number of waypoint slots the scenario reader walks: keys `"0"` through
+/// `"701"`. Anything numbered at or above this is never read.
+const WAYPOINT_SLOT_COUNT: u32 = 0x2BE;
+
+/// Packing divisor for a waypoint value: `rx = value % 1000`, `ry = value / 1000`.
+///
+/// The scenario reader applies this unconditionally — there is no
+/// `NewINIFormat` branch and no legacy 128-column packing on this path.
+const WAYPOINT_COORD_FACTOR: u32 = 1000;
+
 /// Parse `[Waypoints]` into a waypoint index -> cell mapping.
 ///
-/// RA2/YR maps typically use `NewINIFormat=5`, which packs coordinates as
-/// `ry * 1000 + rx`. Older formats use `ry * 128 + rx`.
+/// Mirrors the scenario waypoint reader: it walks the fixed slot range
+/// `0..701`, reads each key as an integer defaulting to zero, treats zero as
+/// "unset" rather than as cell `(0, 0)`, and unpacks every other value as
+/// `rx = value % 1000` / `ry = value / 1000`.
 pub fn parse_waypoints(ini: &IniFile) -> HashMap<u32, Waypoint> {
     let Some(section) = ini.section("Waypoints") else {
         return HashMap::new();
     };
 
-    let coord_factor: u32 = waypoint_coord_factor(ini);
     let mut waypoints: HashMap<u32, Waypoint> = HashMap::new();
     for key in section.keys() {
         let Ok(index) = key.parse::<u32>() else {
             continue;
         };
+        if index >= WAYPOINT_SLOT_COUNT {
+            continue;
+        }
         let Some(raw_value) = section.get(key) else {
             continue;
         };
         let Ok(coords) = raw_value.trim().parse::<u32>() else {
             continue;
         };
-        let rx = (coords % coord_factor) as u16;
-        let ry = (coords / coord_factor) as u16;
+        // Zero is the reader's "no waypoint here" value, not the origin cell.
+        if coords == 0 {
+            continue;
+        }
+        let rx = (coords % WAYPOINT_COORD_FACTOR) as u16;
+        let ry = (coords / WAYPOINT_COORD_FACTOR) as u16;
         waypoints.insert(index, Waypoint { index, rx, ry });
     }
 
@@ -95,15 +113,6 @@ pub fn multiplayer_start_waypoints(waypoints: &HashMap<u32, Waypoint>) -> Vec<Wa
 /// Return the first multiplayer/skirmish start waypoint if present.
 pub fn first_multiplayer_start(waypoints: &HashMap<u32, Waypoint>) -> Option<Waypoint> {
     multiplayer_start_waypoints(waypoints).into_iter().next()
-}
-
-fn waypoint_coord_factor(ini: &IniFile) -> u32 {
-    let new_ini_format = ini
-        .section("Basic")
-        .and_then(|section| section.get("NewINIFormat"))
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .unwrap_or(5);
-    if new_ini_format >= 4 { 1000 } else { 128 }
 }
 
 #[cfg(test)]
@@ -134,16 +143,43 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_waypoints_old_format() {
-        let ini = IniFile::from_str("[Basic]\nNewINIFormat=3\n[Waypoints]\n7=261\n");
+    fn waypoint_packing_ignores_new_ini_format() {
+        // The scenario reader has no NewINIFormat branch: the divisor is 1000
+        // whatever the map header claims, so an old-format map decodes the same
+        // way a NewINIFormat=5 one does.
+        let old = IniFile::from_str("[Basic]\nNewINIFormat=3\n[Waypoints]\n7=2005\n");
+        let new = IniFile::from_str("[Basic]\nNewINIFormat=5\n[Waypoints]\n7=2005\n");
+
+        let expected = Waypoint {
+            index: 7,
+            rx: 5,
+            ry: 2,
+        };
+        assert_eq!(parse_waypoints(&old).get(&7), Some(&expected));
+        assert_eq!(parse_waypoints(&new).get(&7), Some(&expected));
+    }
+
+    #[test]
+    fn waypoint_value_zero_is_unset_not_the_origin_cell() {
+        let ini = IniFile::from_str("[Waypoints]\n0=0\n1=100011\n");
         let waypoints = parse_waypoints(&ini);
-        assert_eq!(
-            waypoints.get(&7),
-            Some(&Waypoint {
-                index: 7,
-                rx: 5,
-                ry: 2
-            })
+
+        assert!(
+            !waypoints.contains_key(&0),
+            "value 0 is the reader's unset marker"
+        );
+        assert_eq!(waypoints.len(), 1);
+    }
+
+    #[test]
+    fn waypoint_slots_at_or_above_the_reader_bound_are_ignored() {
+        let ini = IniFile::from_str("[Waypoints]\n701=100011\n702=100012\n");
+        let waypoints = parse_waypoints(&ini);
+
+        assert!(waypoints.contains_key(&701), "701 is the last slot read");
+        assert!(
+            !waypoints.contains_key(&702),
+            "the reader walks 0..701 and never sees 702"
         );
     }
 
