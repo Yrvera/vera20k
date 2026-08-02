@@ -36,7 +36,51 @@ use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::intern::InternedId;
 
 use crate::sim::production::foundation_dimensions;
-use crate::util::lepton::ground_height_leptons;
+use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
+
+/// Object-coordinate Z of one object in leptons: the terrain ground height for
+/// its cell (level plus slope), the bridge deck offset when it stands on a
+/// bridge, and any locomotor altitude.
+///
+/// A missing resolved-terrain grid, a cell outside it, or an unsupported slope
+/// is a Rust-side resource gap rather than a game rule, so this degrades that
+/// one object to its stored level height instead of refusing to answer — the
+/// caller must still be able to reach a distance decision.
+fn object_coordinate_z(
+    sim: &Simulation,
+    entity: &crate::sim::game_entity::GameEntity,
+    x_leptons: i64,
+    y_leptons: i64,
+) -> i64 {
+    let ground = sim
+        .resolved_terrain
+        .as_ref()
+        .and_then(|terrain| terrain.cell(entity.position.rx, entity.position.ry))
+        .and_then(|cell| {
+            ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                x_leptons as i32,
+                y_leptons as i32,
+            )
+            .ok()
+        })
+        .map_or_else(
+            || i64::from(entity.position.z) * LEPTONS_PER_LEVEL,
+            i64::from,
+        );
+    ground
+        + if entity.on_bridge {
+            i64::from(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS)
+        } else {
+            0
+        }
+        + entity
+            .locomotor
+            .as_ref()
+            .map(|locomotor| locomotor.altitude.to_num::<i64>())
+            .unwrap_or(0)
+}
 
 /// Compare object-coordinate distance in leptons against `threshold_cells * 256`.
 /// Strict `>` — a miner exactly at the threshold still uses the close radio path.
@@ -60,43 +104,8 @@ fn return_exceeds_too_far_threshold(
         i64::from(refinery.position.rx) * 256 + refinery.position.sub_x.to_num::<i64>();
     let refinery_y =
         i64::from(refinery.position.ry) * 256 + refinery.position.sub_y.to_num::<i64>();
-    let terrain = sim.resolved_terrain.as_ref()?;
-    let miner_cell = terrain.cell(miner.position.rx, miner.position.ry)?;
-    let refinery_cell = terrain.cell(refinery.position.rx, refinery.position.ry)?;
-    let miner_z = i64::from(
-        ground_height_leptons(
-            miner_cell.level,
-            miner_cell.slope_type,
-            miner_x as i32,
-            miner_y as i32,
-        )
-        .ok()?,
-    ) + if miner.on_bridge {
-        i64::from(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS)
-    } else {
-        0
-    } + miner
-        .locomotor
-        .as_ref()
-        .map(|locomotor| locomotor.altitude.to_num::<i64>())
-        .unwrap_or(0);
-    let refinery_z = i64::from(
-        ground_height_leptons(
-            refinery_cell.level,
-            refinery_cell.slope_type,
-            refinery_x as i32,
-            refinery_y as i32,
-        )
-        .ok()?,
-    ) + if refinery.on_bridge {
-        i64::from(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS)
-    } else {
-        0
-    } + refinery
-        .locomotor
-        .as_ref()
-        .map(|locomotor| locomotor.altitude.to_num::<i64>())
-        .unwrap_or(0);
+    let miner_z = object_coordinate_z(sim, miner, miner_x, miner_y);
+    let refinery_z = object_coordinate_z(sim, refinery, refinery_x, refinery_y);
 
     let dx = miner_x - refinery_x;
     let dy = miner_y - refinery_y;
@@ -209,6 +218,33 @@ mod gsi_04_03b_tests {
             return_exceeds_too_far_threshold(&sim, 1, 2, 1),
             Some(true),
             "locomotor altitude contributes to raw object-coordinate Z"
+        );
+    }
+
+    #[test]
+    fn gsi_04_03b_miner_return_distance_falls_back_to_level_z_without_resolved_terrain() {
+        let mut sim = Simulation::new();
+        let mut miner = GameEntity::test_default(1, "CMIN", "Allies", 0, 0);
+        miner.position.sub_x = SimFixed::from_num(0);
+        miner.position.z = 0;
+        let mut refinery = GameEntity::test_default(2, "GAOREP", "Allies", 0, 0);
+        refinery.position.sub_x = SimFixed::from_num(255);
+        refinery.position.z = 0;
+        sim.substrate.entities.insert(miner);
+        sim.substrate.entities.insert(refinery);
+        assert!(sim.resolved_terrain.is_none());
+
+        // Same pair as the terrain fixture above, which answers Some(true) from
+        // the slope contribution. With no grid to resolve, each object degrades
+        // to level-only Z: dz = 0, so 255 horizontal leptons stay inside one
+        // cell — and the decision is still made rather than refused.
+        assert_eq!(return_exceeds_too_far_threshold(&sim, 1, 2, 1), Some(false));
+
+        sim.substrate.entities.get_mut(2).unwrap().position.z = 3;
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            Some(true),
+            "the fallback Z is position.z * LEPTONS_PER_LEVEL, not a dropped term"
         );
     }
 

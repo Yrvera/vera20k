@@ -1000,14 +1000,9 @@ fn production_harv_navcom_without_movement_target_is_not_reissued() {
     let preferable = (32, 31);
     let mut sim = production_sim(0x0715_D005, &oracle);
     let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
-    install_world(
-        &mut sim,
-        &oracle,
-        &grid,
-        &[original, preferable],
-        &[original],
-        true,
-    );
+    // Only `original` carries ore at acquisition time; the nearer `preferable`
+    // cell is staged mid-test below so it can tempt a scan that must not run.
+    install_world(&mut sim, &oracle, &grid, &[original], &[original], true);
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
     arm_search(&mut sim, entity_id);
 
@@ -1027,6 +1022,12 @@ fn production_harv_navcom_without_movement_target_is_not_reissued() {
         let entity = sim.substrate.entities.get_mut(entity_id).expect("HARV");
         entity.movement_target = None;
     }
+    // A strictly nearer ore cell appears. Retail ore is the overlay, so the
+    // temptation has to be planted there for the scan to be able to see it.
+    sim.overlay_grid
+        .as_mut()
+        .expect("overlay grid")
+        .place_overlay(preferable.0, preferable.1, oracle.tib01, 0);
     sim.production.resource_nodes.insert(
         preferable,
         ResourceNode {
@@ -1068,14 +1069,9 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
     let replacement = (32, 31);
     let mut sim = production_sim(0x0715_D006, &oracle);
     let grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
-    install_world(
-        &mut sim,
-        &oracle,
-        &grid,
-        &[original, replacement],
-        &[original],
-        true,
-    );
+    // Only `original` carries ore at acquisition time; `replacement` takes its
+    // place mid-test below, after the NavCom is already owned.
+    install_world(&mut sim, &oracle, &grid, &[original], &[original], true);
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
     arm_search(&mut sim, entity_id);
 
@@ -1091,6 +1087,13 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
             Some(NavTargetRef::cell(original.0, original.1)),
             "fixture must isolate the native NavCom owner gate",
         );
+    }
+    // The owned target is mined out and a nearer cell takes its place. Retail
+    // ore is the overlay, so depletion and replacement are overlay edits.
+    {
+        let overlay_grid = sim.overlay_grid.as_mut().expect("overlay grid");
+        overlay_grid.clear_overlay(original.0, original.1);
+        overlay_grid.place_overlay(replacement.0, replacement.1, oracle.tib01, 0);
     }
     sim.production.resource_nodes.remove(&original);
     sim.production.resource_nodes.insert(
