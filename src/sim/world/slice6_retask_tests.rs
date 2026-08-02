@@ -110,8 +110,18 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // retail-persisted Scenario RNG, and includes the newly persisted deterministic
 // fields. This is an intentional behavior-bearing retail correction, so both
 // provenance probes move with the current hash.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xACF6_01FA_356B_8F1B;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x4EBD_8C69_48FF_314C;
+// Re-baselined 2026-08-02, same provenance as the global harness constants:
+// the mover is 190490ba "match retail cell occupation lifecycle", found by
+// bisecting dev..HEAD against this very probe (it is this test's FIRST assert,
+// and this fixture has no ore, no resource_nodes, no overlay grid and no
+// RNG-consuming path, which is what makes it a clean isolator).
+//
+// The composition-only hypothesis was tested and REFUTED: with the merge-base
+// (6f78bac7) world_hash.rs swapped in and all branch behaviour kept, this probe
+// read 0xFEEA0679D9429547 — neither the old baseline nor the branch value. So
+// hashed state content changed, not just which fields are folded.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x99F0_E195_4E2F_94C9;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8477_F4BD_F3D8_B12B;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -167,7 +177,7 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x4EBD_8C69_48FF_314C;
 // wired in this slice (deploy-begin off, undeploy-complete on, destination-
 // accepted on) changed no other hashed state in these fixtures. The absolute
 // per-stream RNG pins held throughout.
-const SLICE6_BASELINE_HASH: u64 = 0x47E0_67C9_F1A0_BF5E;
+const SLICE6_BASELINE_HASH: u64 = 0x64E3_D8E5_D202_8D5C;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

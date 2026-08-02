@@ -166,8 +166,19 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// `total_sim_ms`, hashes only the retail-persisted Scenario RNG, and adds the
 /// newly persisted deterministic fields. Therefore both legacy-schema probes
 /// and the live hash move together.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xC022_5D76_A106_57A5;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x6037_0D59_C2A4_488B;
+// Re-baselined 2026-08-02. Provenance: the mover is 190490ba "match retail cell
+// occupation lifecycle", identified by bisecting dev..HEAD against the slice6
+// pre-v28 probe. That commit adds src/sim/occupancy.rs (+771) and rewrites the
+// substrate/snapshot cell-occupation model, so hashed STATE CONTENT changed.
+//
+// Not composition-only, and proven so rather than assumed: swapping in the
+// merge-base (6f78bac7) world_hash.rs while keeping all branch behaviour put
+// this probe at 0x89FC9D5B5BFDC1F2 — a third value, matching neither the old
+// baseline nor the branch. RNG routing is unchanged: FINAL_STREAM_STATES passes
+// untouched, and record/replay cursor consistency plus the per-tick intra-run
+// hash asserts all pass.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x1A00_98C0_61EB_BD56;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC2B8_BAEF_E6C7_9CB6;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -229,7 +240,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x6037_0D59_C2A4_488B;
 /// wired in this slice (deploy-begin off, undeploy-complete on, destination-
 /// accepted on) changed no other hashed state in these fixtures. The absolute
 /// per-stream RNG pins held throughout.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x6099_0C84_56F8_555E;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xDFA8_E30E_93BC_FEEF;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -607,7 +618,14 @@ fn dense_converging_setup() -> (
 /// Re-baselined for the Phase-0 native Main_Tick order: EventClass commands
 /// now dispatch at the tail, after the live object/movement walk, so a move
 /// accepted on frame N first advances its object on frame N+1.
-const POSITION_FINGERPRINT: u64 = 0x9274_026B_3B2A_6277;
+/// Re-baselined 2026-08-02 for the GSI-04.12 bridge-marker slice (c0b688a6),
+/// which moves positions on purpose: `DrivePathQueue::reference_cell` advances
+/// the path-reference cell when Drive accepts a direction, before the curve
+/// physically crosses into the destination cell, and ship locomotion split out
+/// of Drive. Hash composition is not involved — this fingerprint folds entity
+/// positions directly, and its value was byte-identical with the pre-branch
+/// hash schema swapped in.
+const POSITION_FINGERPRINT: u64 = 0xDAB1_2FB8_5CC1_2C93;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {
