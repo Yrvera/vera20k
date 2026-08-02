@@ -503,10 +503,7 @@ fn register_hierarchy_cell_pair(
         }
         let linear_index = i64::from(coord.1) * i64::from(width) + i64::from(coord.0);
         let clamped_index = linear_index.clamp(0, (zone_cell_count - 1) as i64) as usize;
-        zone_ids
-            .get(clamped_index)
-            .copied()
-            .unwrap_or(ZONE_INVALID)
+        zone_ids.get(clamped_index).copied().unwrap_or(ZONE_INVALID)
     };
     edge_buckets.register(zone_at(a), zone_at(b), 0);
 }
@@ -1858,6 +1855,71 @@ mod tests {
         assert_eq!(zone_map.zone_at(3, 0, MovementLayer::Bridge), 9);
         assert_eq!(zone_map.zone_at(4, 0, MovementLayer::Bridge), 7);
         assert_eq!(zone_map.zone_at(5, 0, MovementLayer::Bridge), ZONE_INVALID);
+    }
+
+    /// A map carrying BOTH a high and a low bridge. The high bridge populates
+    /// the redirect table, so the "no table at all" shortcut cannot carry this
+    /// case — only the per-cell corridor gate can. Cells no high record reaches,
+    /// including every cell of the low bridge, must have no bridge layer.
+    ///
+    /// Retail grounding: low bridges are ground movement, not deck movement.
+    /// Every overlay index any low-bridge destruction path writes lies in
+    /// LOBRDG01..LOBRDG26, and retail rulesmd gives all of those `Land=Road`
+    /// with `NoUseTileLandType=true`; a low span never carries a deck.
+    #[test]
+    fn gsi_04_12_topology_low_bridge_cells_have_no_bridge_layer_beside_a_high_bridge() {
+        let terrain = redirect_terrain(9, 1, None, None, |cell| {
+            if (1..=2).contains(&cell.rx) {
+                cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            }
+        });
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        // A high record covering 0..=3, and a Low record covering 6..=8. The Low
+        // record must grant nothing: find_high_bridge_record filters on is_high().
+        let records = [
+            BridgeEndpointRecord {
+                endpoint_a: (0, 0),
+                endpoint_b: (3, 0),
+                group_id: 1,
+                active: true,
+                bridge_kind: BridgeRecordKind::High,
+            },
+            BridgeEndpointRecord {
+                endpoint_a: (6, 0),
+                endpoint_b: (8, 0),
+                group_id: 2,
+                active: true,
+                bridge_kind: BridgeRecordKind::Low,
+            },
+        ];
+        let redirect = build_bridge_redirect(&path_grid, Some(&terrain), &records, 9, 1)
+            .expect("a structural high cell must still produce a table");
+
+        // Inside the high corridor: nonstructural cells self-redirect as before.
+        assert_eq!(redirect[3], Some((3, 0)));
+        // Outside it: no bridge layer, even though a Low record covers these.
+        assert_eq!(redirect[6], None);
+        assert_eq!(redirect[7], None);
+        assert_eq!(redirect[8], None);
+
+        let zone_map = ZoneMap::new(
+            vec![9, 1, 1, 7, 4, 4, 5, 5, 5],
+            Some(redirect),
+            9,
+            1,
+            9,
+            vec![],
+        );
+        assert_eq!(zone_map.zone_at(3, 0, MovementLayer::Bridge), 7);
+        for rx in 6..=8 {
+            assert_eq!(
+                zone_map.zone_at(rx, 0, MovementLayer::Bridge),
+                ZONE_INVALID,
+                "low-bridge cell {rx} must not report a bridge layer"
+            );
+            // The ground layer is unaffected.
+            assert_eq!(zone_map.zone_at(rx, 0, MovementLayer::Ground), 5);
+        }
     }
 
     #[test]
