@@ -23,7 +23,6 @@ use crate::sim::movement::bump_crush;
 use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::teleport_movement;
-use crate::sim::movement::tunnel_movement;
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
@@ -118,6 +117,18 @@ impl Simulation {
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
     ) -> bool {
+        self.apply_command_with_overlays(command_owner, cmd, rules, path_grid, height_map, None)
+    }
+
+    pub(crate) fn apply_command_with_overlays(
+        &mut self,
+        command_owner: &str,
+        cmd: &Command,
+        rules: Option<&RuleSet>,
+        path_grid: Option<&PathGrid>,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> bool {
         match cmd {
             Command::Select { entity_ids, .. } => {
                 let mut snapshot = entity_ids.clone();
@@ -185,23 +196,6 @@ impl Simulation {
                         general_rules.unwrap_or(&default_general),
                         false,
                     )
-                } else if info.loco_kind == Some(LocomotorKind::Tunnel) {
-                    // Tunnel locomotor: short routes use surface, long routes burrow.
-                    let Some(grid) = path_grid else { return false };
-                    let tunnel_speed = rules
-                        .map(|r| r.general.tunnel_speed)
-                        .unwrap_or(SimFixed::from_num(6));
-                    let cost_grid = self.terrain_costs.get(&info.speed_type);
-                    tunnel_movement::issue_tunnel_move_command(
-                        grid,
-                        (*target_rx, *target_ry),
-                        info.speed,
-                        tunnel_speed,
-                        cost_grid,
-                        info.movement_zone,
-                        &mut self.substrate.entities,
-                        *entity_id,
-                    )
                 } else if info.loco_layer == MovementLayer::Air {
                     // Jumpjet infantry walk fallback: ≤3 cells + !HoverAttack → ground walk.
                     if info.loco_kind == Some(LocomotorKind::Jumpjet) && info.is_infantry {
@@ -215,6 +209,14 @@ impl Simulation {
                         ) {
                             let Some(grid) = path_grid else { return false };
                             let cost_grid = self.terrain_costs.get(&info.speed_type);
+                            let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                                &self.substrate.entities,
+                                grid.width(),
+                                grid.height(),
+                                self.resolved_terrain.as_ref(),
+                                &self.interner,
+                                rules,
+                            );
                             return movement::issue_move_command_with_layered(
                                 &mut self.substrate.entities,
                                 grid,
@@ -228,6 +230,8 @@ impl Simulation {
                                 self.zone_grid.as_ref(),
                                 Some(&entity_block_map),
                                 info.mover_is_crusher,
+                                Some(&blocker_neighbor_counts),
+                                Some(&mut self.substrate.cell_occupation),
                             );
                         }
                     }
@@ -254,6 +258,14 @@ impl Simulation {
                 } else {
                     let Some(grid) = path_grid else { return false };
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
+                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        &self.interner,
+                        rules,
+                    );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -267,6 +279,8 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         info.mover_is_crusher,
+                        Some(&blocker_neighbor_counts),
+                        Some(&mut self.substrate.cell_occupation),
                     )
                 };
                 // Stamp acceleration/deceleration parameters onto the newly created
@@ -294,8 +308,46 @@ impl Simulation {
                     DockTeardown::Depot,
                 );
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
+                    let committed_drive_head = e.drive_track.as_ref().and_then(|_| {
+                        e.drive_locomotion
+                            .as_ref()
+                            .and_then(|drive| drive.occupation_head_to)
+                    });
+                    let current_cell = (e.position.rx, e.position.ry);
+                    let current_layer = e.movement_layer_or_ground();
                     movement::clear_navigation_for_entity(e);
-                    e.movement_target = None;
+                    // Stop clears the owner destination immediately, but an
+                    // already committed Drive curve keeps only the current→head
+                    // step. Removing every trailing A* entry prevents chaining
+                    // or segment repath toward the abandoned owner goal.
+                    if let (Some(head), Some(target)) =
+                        (committed_drive_head, e.movement_target.as_mut())
+                    {
+                        let head_cell = (head.rx, head.ry);
+                        if current_cell == head_cell {
+                            target.path = vec![head_cell];
+                            target.path_layers = vec![head.layer];
+                            target.next_index = 1;
+                            target.move_dir_x = SIM_ZERO;
+                            target.move_dir_y = SIM_ZERO;
+                            target.move_dir_len = SIM_ZERO;
+                        } else {
+                            target.path = vec![current_cell, head_cell];
+                            target.path_layers = vec![current_layer, head.layer];
+                            target.next_index = 1;
+                            let (dir_x, dir_y, dir_len) =
+                                crate::util::lepton::cell_delta_to_lepton_dir(
+                                    i32::from(head.rx) - i32::from(current_cell.0),
+                                    i32::from(head.ry) - i32::from(current_cell.1),
+                                );
+                            target.move_dir_x = dir_x;
+                            target.move_dir_y = dir_y;
+                            target.move_dir_len = dir_len;
+                        }
+                        target.final_goal = Some(head_cell);
+                    } else {
+                        e.movement_target = None;
+                    }
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
@@ -304,15 +356,13 @@ impl Simulation {
                 // Cancel any special locomotor states in progress.
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.teleport_state = None;
-                    e.tunnel_state = None;
-                    e.droppod_state = None;
                     // Restore ground layer and base locomotor if overridden.
                     if let Some(ref mut loco) = e.locomotor {
                         if loco.layer == MovementLayer::Underground {
                             loco.layer = MovementLayer::Ground;
                         }
                         if loco.is_overridden() {
-                            loco.end_override();
+                            loco.end_piggyback();
                         }
                     }
                 }
@@ -482,6 +532,14 @@ impl Simulation {
                 } else {
                     let Some(grid) = path_grid else { return false };
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
+                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        &self.interner,
+                        rules,
+                    );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -495,6 +553,8 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         info.mover_is_crusher,
+                        Some(&blocker_neighbor_counts),
+                        Some(&mut self.substrate.cell_occupation),
                     )
                 };
                 if issued {
@@ -596,6 +656,11 @@ impl Simulation {
                             ticks_remaining: deploying_ticks,
                         });
                         emit_deploy_sound = true;
+                        // Deploy begins: the locomotor powers down for the
+                        // duration. Undeploy completing powers it back on.
+                        if let Some(loco) = entity.locomotor.as_mut() {
+                            loco.power_off();
+                        }
                     }
                     Some(crate::sim::deploy::DeployPhase::Deployed) => {
                         new_phase = Some(crate::sim::deploy::DeployPhase::Undeploying {
@@ -673,8 +738,16 @@ impl Simulation {
                 let Some(rules) = rules else { return false };
                 let owner_s = self.interner.resolve(*owner).to_string();
                 let type_s = self.interner.resolve(*type_id).to_string();
-                production::place_ready_building(
-                    self, rules, &owner_s, &type_s, *rx, *ry, path_grid, height_map,
+                production::place_ready_building_with_overlays(
+                    self,
+                    rules,
+                    &owner_s,
+                    &type_s,
+                    *rx,
+                    *ry,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
                 )
             }
             Command::CancelLastProduction { owner } => {
@@ -776,9 +849,8 @@ impl Simulation {
                     now,
                 );
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
-                    e.mission.set_handler_state(
-                        crate::sim::miner::MinerState::ForcedReturn.cursor(),
-                    );
+                    e.mission
+                        .set_handler_state(crate::sim::miner::MinerState::ForcedReturn.cursor());
                 }
                 true
             }
@@ -863,6 +935,14 @@ impl Simulation {
                 );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
+                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        &self.interner,
+                        Some(rules),
+                    );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -876,6 +956,8 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
+                        Some(&blocker_neighbor_counts),
+                        Some(&mut self.substrate.cell_occupation),
                     );
                 }
                 true
@@ -964,6 +1046,14 @@ impl Simulation {
                 );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
+                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        &self.interner,
+                        Some(rules),
+                    );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -977,6 +1067,8 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
+                        Some(&blocker_neighbor_counts),
+                        Some(&mut self.substrate.cell_occupation),
                     );
                 }
                 true
@@ -1083,7 +1175,7 @@ impl Simulation {
                         }
                         if crate::sim::superweapon::invulnerability::is_invulnerable(
                             b.invulnerability.as_ref(),
-                            self.session.tick as u32,
+                            self.session.binary_frame,
                         ) {
                             return None;
                         }
@@ -1138,6 +1230,15 @@ impl Simulation {
                     );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
+                    let blocker_neighbor_counts =
+                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            &self.interner,
+                            Some(rules),
+                        );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -1151,6 +1252,8 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
+                        Some(&blocker_neighbor_counts),
+                        Some(&mut self.substrate.cell_occupation),
                     );
                 }
                 true
@@ -1243,6 +1346,15 @@ impl Simulation {
                     );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
+                    let blocker_neighbor_counts =
+                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            &self.interner,
+                            Some(rules),
+                        );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -1256,6 +1368,8 @@ impl Simulation {
                         self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
+                        Some(&blocker_neighbor_counts),
+                        Some(&mut self.substrate.cell_occupation),
                     );
                 }
                 true
@@ -1359,7 +1473,7 @@ impl Simulation {
                     // Reset the instance — restart charging.
                     if let Some(weapons) = self.super_weapons.get_mut(&owner_iid) {
                         if let Some(inst) = weapons.get_mut(sw_type_id) {
-                            inst.reset_after_fire(recharge, self.session.tick);
+                            inst.reset_after_fire(recharge, self.session.binary_frame);
                         }
                     }
                 }
@@ -1446,6 +1560,14 @@ impl Simulation {
                     );
                     if let Some(grid) = path_grid {
                         let cost_grid = self.terrain_costs.get(&speed_type);
+                        let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            &self.interner,
+                            Some(rules),
+                        );
                         movement::issue_move_command_with_layered(
                             &mut self.substrate.entities,
                             grid,
@@ -1459,6 +1581,8 @@ impl Simulation {
                             self.zone_grid.as_ref(),
                             Some(&entity_block_map),
                             crusher,
+                            Some(&blocker_neighbor_counts),
+                            Some(&mut self.substrate.cell_occupation),
                         );
                     }
                 }

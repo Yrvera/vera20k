@@ -247,10 +247,14 @@ pub(crate) fn acquire_best_target(
             // Standard scan range — 3D check when terrain + attacker entity available.
             match (terrain, entities.get(attacker.stable_id)) {
                 (Some(t), Some(attacker_entity)) => {
+                    let Some(source_z) = super::in_range::effective_z_leptons(attacker_entity, t)
+                    else {
+                        continue;
+                    };
                     let src = (
                         attacker.pos_rx as i64 * 256 + attacker.sub_x.to_num::<i64>(),
                         attacker.pos_ry as i64 * 256 + attacker.sub_y.to_num::<i64>(),
-                        super::in_range::effective_z_leptons(attacker_entity),
+                        source_z,
                     );
                     super::in_range::compute_in_range(
                         attacker_entity,

@@ -175,6 +175,9 @@ pub(crate) struct AppState {
     pub(crate) map_basic: BasicSection,
     /// Exact source whose bytes produced the active parsed map.
     pub(crate) loaded_map_source: Option<crate::app_list_maps::LoadedMapSource>,
+    /// Deterministic digest of the parsed source map INI. `None` only for
+    /// generated/fallback worlds without an authoritative source-map payload.
+    pub(crate) loaded_map_hash: Option<u64>,
     pub(crate) terrain_grid: Option<TerrainGrid>,
     pub(crate) resolved_terrain: Option<ResolvedTerrainGrid>,
     pub(crate) simulation: Option<Simulation>,
@@ -234,6 +237,10 @@ pub(crate) struct AppState {
     pub(crate) cursor_x: f32,
     pub(crate) cursor_y: f32,
     pub(crate) keys_held: HashSet<KeyCode>,
+    /// One-shot Shift+S request, consumed at the next render submission.
+    pub(crate) retail_screenshot_requested: bool,
+    /// Previous complete client surface, retained for input-time screenshot parity.
+    pub(crate) retail_screenshot_frame_cache: crate::render::screenshot::PresentedFrameCache,
     /// egui integration — input handling + GPU rendering.
     egui: EguiIntegration,
     /// Which screen is currently active (MainMenu, Loading, InGame).
@@ -249,6 +256,14 @@ pub(crate) struct AppState {
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     pub(crate) loading_session: Option<crate::app_loading::LoadingSession>,
+    /// Process-persistent terrain-load cache. Scenario teardown, failed loads,
+    /// reseeds, and save transitions must not clear it.
+    pub(crate) tile_variant_selector_cache:
+        crate::map::tile_variant_selector::TileVariantSelectorCache,
+    /// Process-owned front-end Main stream. RMG dialog actions and the first
+    /// preview selector reach share this cursor; accepted matches reseed their
+    /// own Main stream instead of inheriting it.
+    pub(crate) frontend_main_rng: crate::sim::rng::SimRng,
     /// Process-lifetime monotonic identity source; zero is permanently reserved.
     pub(crate) next_match_correlation: u64,
     /// Correlation owned by the currently loading accepted attempt.
@@ -293,9 +308,8 @@ pub(crate) struct AppState {
         Option<crate::app_main_menu_shell_render::Ra2tsMovieSessionIdentity>,
     pub(crate) main_menu_movie_last_step: Instant,
     pub(crate) main_menu_shell_failed: bool,
-    /// Contents of `VERSION.TXT` from the retail install, used by the
-    /// bottom-right version line on the main menu. Falls back to the
-    /// numeric `"1.001TUC"` format when the file is missing.
+    /// Numeric internal-version string used by the bottom-right main-menu line.
+    /// Resolution follows the retail 16-byte/CR-only cached contract.
     pub(crate) version_txt: String,
     pub(crate) main_menu_show_single_player_shell: bool,
     pub(crate) main_menu_show_skirmish_setup: bool,
@@ -419,10 +433,10 @@ pub(crate) struct AppState {
     pub(crate) theater_name: String,
     /// Active map theater extension (e.g., des).
     pub(crate) theater_ext: String,
-    /// Timestamp of the last in-game update for delta time calculation.
-    pub(crate) last_update_time: Instant,
-    /// Accumulated real time waiting to be consumed by fixed simulation ticks.
-    pub(crate) sim_accumulator_ms: u64,
+    /// Monotonic epoch used only by the app-local gameplay-frame pacer.
+    pub(crate) frame_pacer_epoch: Instant,
+    /// Local wall-clock admission state. Never serialized or read by the sim.
+    pub(crate) frame_pacer: crate::app_frame_pacer::LocalFramePacer,
     /// Target/action lines — colored lines from selected units to command destinations.
     pub(crate) target_lines: crate::app_target_lines::TargetLineState,
     /// Config-sourced input delay — copied to each new Simulation instance at game start.
@@ -917,6 +931,14 @@ impl App {
     }
 
     fn enter_native_skirmish_from_single_player(state: &mut AppState) {
+        // Prepare dialog 0x102 from the process-lifetime MIX list before
+        // destroying its 0x100 source. Active YR's FUN_00534E50 registers the
+        // neutral pair on that shared list before the shell SHPs are loaded.
+        if !Self::ensure_skirmish_shell_chrome(state) {
+            log::warn!("Skirmish shell chrome unavailable; retaining the Single Player shell");
+            return;
+        }
+
         // Native destroys dialog 0x100 and its child 0x71A movie handle before
         // constructing 0x102. Drop the hidden Rust session as well so returning
         // to 0x100 cannot continue the pre-Skirmish RA2TS timeline.
@@ -926,7 +948,6 @@ impl App {
         state.skirmish_shell_return_to_single_player_shell = true;
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
-        Self::ensure_skirmish_shell_chrome(state);
         Self::ensure_active_cooperative_shell_selection(state);
         // The skirmish dialog (0x102) slides its controls in on first paint like
         // every shell dialog; the per-frame slide trigger starts that wave once
@@ -1025,26 +1046,31 @@ impl App {
         state.zoom_target = 1.0;
     }
 
-    pub(crate) fn ensure_skirmish_shell_chrome(state: &mut AppState) {
+    pub(crate) fn ensure_skirmish_shell_chrome(state: &mut AppState) -> bool {
         if state.skirmish_shell_chrome.is_some() {
-            return;
+            return true;
         }
 
-        let Ok(config) = GameConfig::load() else {
-            log::warn!("Could not load game config for development Skirmish shell assets");
-            return;
-        };
-        let Ok(assets) = AssetManager::new(&config.paths.ra2_dir) else {
-            log::warn!("Could not load RA2 assets for development Skirmish shell");
-            return;
+        let Some(assets) = state.asset_manager.as_ref() else {
+            log::warn!(
+                "Could not prepare Skirmish shell chrome: process asset manager is unavailable"
+            );
+            return false;
         };
 
         state.skirmish_shell_chrome =
             crate::render::skirmish_shell_chrome::build_skirmish_shell_chrome_atlas(
                 &state.gpu,
                 &state.batch_renderer,
-                &assets,
+                assets,
             );
+        let ready = state.skirmish_shell_chrome.is_some();
+        if !ready {
+            log::warn!(
+                "Could not prepare Skirmish shell chrome from the registered retail archives"
+            );
+        }
+        ready
     }
 
     fn build_startup_asset_manager(config: Option<&GameConfig>) -> Option<AssetManager> {
@@ -1057,22 +1083,8 @@ impl App {
         })
     }
 
-    fn load_version_txt(config: Option<&GameConfig>) -> String {
-        const FALLBACK: &str = "1.001TUC";
-        let Some(cfg) = config else {
-            return FALLBACK.to_string();
-        };
-        let path = cfg.paths.ra2_dir.join("VERSION.TXT");
-        match std::fs::read_to_string(&path) {
-            Ok(s) => s.trim_end_matches(['\r', '\n']).to_string(),
-            Err(err) => {
-                log::info!(
-                    "VERSION.TXT not readable at {}: {err}; using fallback",
-                    path.display()
-                );
-                FALLBACK.to_string()
-            }
-        }
+    fn load_version_txt() -> String {
+        crate::util::version::retail_internal_version().to_owned()
     }
 
     fn draw_skirmish_shell_dev_toggle(ctx: &egui::Context, enabled: &mut bool) -> bool {
@@ -1107,11 +1119,18 @@ impl App {
         let dev_shell_changed =
             Self::draw_skirmish_shell_dev_toggle(&state.egui.ctx, &mut dev_shell_enabled);
         if dev_shell_changed {
-            state.dev_skirmish_shell_enabled = dev_shell_enabled;
             Self::enter_shell_window_mode(state);
-            if state.dev_skirmish_shell_enabled || state.main_menu_show_native_skirmish_shell {
-                Self::ensure_skirmish_shell_chrome(state);
+            if dev_shell_enabled {
+                if Self::ensure_skirmish_shell_chrome(state) {
+                    state.dev_skirmish_shell_enabled = true;
+                } else {
+                    state.dev_skirmish_shell_enabled = false;
+                    log::warn!(
+                        "Development Skirmish shell unavailable; retaining the current shell"
+                    );
+                }
             } else {
+                state.dev_skirmish_shell_enabled = false;
                 state.skirmish_shell_state.pressed_owner_draw_button = None;
             }
         }
@@ -1251,8 +1270,7 @@ impl App {
         state
             .csf
             .as_ref()
-            .and_then(|csf| csf.get(key))
-            .map(ToOwned::to_owned)
+            .map(|csf| csf.text(key).into_owned())
             .unwrap_or_else(|| fallback.to_string())
     }
 
@@ -1494,7 +1512,7 @@ impl App {
                     Some(previous),
                     // Saved-seed browsing (0x6C2/0x6C3/0x6C4) is not implemented.
                     false,
-                    &mut crate::ui::skirmish_shell::DialogRng::from_entropy(),
+                    &mut state.frontend_main_rng,
                 ));
         }
         if close_modal {
@@ -1521,6 +1539,14 @@ impl App {
             log::warn!("random map: theater {theater_name} unavailable");
             return false;
         };
+        // Stock RMG preview publishes its resolved theater registry before the
+        // later ordinary map load, even if generation subsequently fails.
+        state
+            .tile_variant_selector_cache
+            .complete_theater_registry_load(
+                theater.rmg_tiles.clear_tile,
+                theater.rmg_tiles.water_set,
+            );
         let terrain_rules = asset_manager
             .get_ref("rulesmd.ini")
             .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
@@ -1709,7 +1735,7 @@ impl App {
 
     /// Rasterise the finished map and persist it as the chooser's thumbnail.
     fn rasterise_generated_map(
-        state: &AppState,
+        state: &mut AppState,
         job: &RandomMapGenerationJob,
         generated: &crate::map::rmg::GeneratedMap,
     ) -> Option<crate::map::rmg::preview::PreviewImage> {
@@ -1727,7 +1753,7 @@ impl App {
     /// Mid-generation snapshots go through here too, so an in-progress preview
     /// is coloured by exactly the path that colours the finished one.
     fn rasterise_map(
-        state: &AppState,
+        state: &mut AppState,
         job: &RandomMapGenerationJob,
         map_file: &crate::map::map_file::MapFile,
         start_waypoints: &[(u8, u16, u16)],
@@ -1735,15 +1761,31 @@ impl App {
         // LAT defaults off for runtime maps, so resolve the same way the load
         // path will; a different setting here would colour cells the player
         // never sees.
-        let resolved_terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::build(
-            map_file,
-            Some(&job.theater),
-            state.asset_manager.as_ref(),
-            Some(&job.terrain_rules),
-            None,
-            false,
-            RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
-        );
+        let resolved_terrain = {
+            let frontend_main_rng = &mut state.frontend_main_rng;
+            let selector_cache = &mut state.tile_variant_selector_cache;
+            let asset_manager = state.asset_manager.as_ref();
+            let mut raw_draw = || frontend_main_rng.next_u32();
+            let mut selector = selector_cache.begin_load(&mut raw_draw);
+            // RMG InitMap supplies explicit Clear cells. Its preview never
+            // borrows a Scenario cursor; equal-bound Fill remains zero-cost.
+            let mut scenario_fill_ranged = |low, high| {
+                debug_assert_eq!((low, high), (0, 0));
+                0
+            };
+            crate::map::resolved_terrain::ResolvedTerrainGrid::build_with_variant_selector(
+                map_file,
+                Some(&job.theater),
+                asset_manager,
+                Some(&job.terrain_rules),
+                None,
+                None,
+                false,
+                RANDOM_MAP_PREVIEW_CLIFF_BACK_IMPASSABILITY,
+                &mut scenario_fill_ranged,
+                &mut selector,
+            )
+        };
         // Ore and gem cells take their colour from the overlay's own SHP: the
         // growth stage indexes the frame list and the frame header carries the
         // radar triple. The artwork is never sampled for it, so there is no
@@ -2167,8 +2209,7 @@ impl App {
         let description = state
             .csf
             .as_ref()
-            .and_then(|csf| csf.get(RANDOM_MAP_DESCRIPTION_KEY))
-            .map(ToOwned::to_owned)
+            .map(|csf| csf.text(RANDOM_MAP_DESCRIPTION_KEY).into_owned())
             .unwrap_or_else(|| RANDOM_MAP_DESCRIPTION_FALLBACK.to_string());
         let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
             return false;
@@ -2208,11 +2249,12 @@ impl App {
             Control::Randomize0x621 => {
                 modal.randomize_options(
                     &settings,
-                    &mut crate::ui::skirmish_shell::DialogRng::from_entropy(),
+                    &mut state.frontend_main_rng,
                     &description,
                 );
             }
             Control::Generate0x620 => {
+                modal.reroll_derived_for_generate(&settings, &mut state.frontend_main_rng);
                 modal.begin_generate();
                 generate_requested = true;
             }
@@ -2223,6 +2265,7 @@ impl App {
                     modal.accept(),
                     crate::ui::skirmish_shell::AcceptOutcome::NeedsGenerate
                 ) {
+                    modal.reroll_derived_for_generate(&settings, &mut state.frontend_main_rng);
                     modal.begin_generate();
                     generate_requested = true;
                 }
@@ -2319,9 +2362,8 @@ impl App {
         state
             .csf
             .as_ref()
-            .and_then(|csf| csf.get(key))
-            .unwrap_or("")
-            .to_string()
+            .map(|csf| csf.text(key).into_owned())
+            .unwrap_or_default()
     }
 
     fn update_skirmish_shell_status_help(
@@ -3088,7 +3130,7 @@ impl App {
         let modal = crate::ui::main_menu_dialogs::ExitConfirmModalState::open(&csf);
         // The SHP modal sources PUDLGBGN/MNBTTN from the skirmish chrome atlas; load
         // it on demand so the quit-confirm renders straight from the main menu.
-        Self::ensure_skirmish_shell_chrome(state);
+        let _ = Self::ensure_skirmish_shell_chrome(state);
         // Host the modal as a TRUE LIFO push over the active shell (D-B3):
         // teardown pops back to it with focus restored. (ensure_active would
         // reset_to-clobber the stack — the prior "0x120 over 0xE2" comment
@@ -3840,7 +3882,7 @@ impl App {
                 DEV_SKIRMISH_SHELL_ENV
             );
         }
-        let startup_asset_manager = Self::build_startup_asset_manager(game_config.as_ref());
+        let mut startup_asset_manager = Self::build_startup_asset_manager(game_config.as_ref());
         // Native process startup seeds Scenario before the MPModes loader. The
         // Cooperative factory reached by that loader then advances this cursor
         // before the first shell is shown.
@@ -3852,7 +3894,8 @@ impl App {
             .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
         let startup_csf = startup_asset_manager
             .as_ref()
-            .and_then(crate::app_init::load_csf);
+            .map(crate::app_init::load_csf)
+            .transpose()?;
         let startup_sound_registry = startup_asset_manager
             .as_ref()
             .map(crate::app_transitions::load_sound_registry)
@@ -3911,6 +3954,21 @@ impl App {
                 }
             }
         }
+        if let Some(assets) = startup_asset_manager.as_mut() {
+            match assets.register_neutral_archives() {
+                Ok(true) => {
+                    log::info!("Registered retail neutral shell archives");
+                }
+                Ok(false) => {
+                    log::warn!(
+                        "Retail neutral shell archives are unavailable; shell presentation may fall back"
+                    );
+                }
+                Err(err) => {
+                    log::warn!("Could not register retail neutral shell archives: {err:#}");
+                }
+            }
+        }
         let skirmish_shell_chrome = if dev_skirmish_shell_enabled {
             startup_asset_manager.as_ref().and_then(|assets| {
                 crate::render::skirmish_shell_chrome::build_skirmish_shell_chrome_atlas(
@@ -3931,17 +3989,26 @@ impl App {
         });
         let main_menu_shell_failed =
             startup_asset_manager.is_none() || main_menu_shell_chrome.is_none();
-        let version_txt = Self::load_version_txt(game_config.as_ref());
+        let version_txt = Self::load_version_txt();
         let available_maps = app_list_maps::list_available_maps().unwrap_or_else(|err| {
             log::warn!("Could not list maps for menu: {:#}", err);
             Vec::new()
         });
         let skirmish_scenario_records =
-            app_list_maps::list_skirmish_scenario_records_with_csf(startup_csf.as_ref())
-                .unwrap_or_else(|err| {
-                    log::warn!("Could not list Skirmish scenario records: {err:#}");
-                    Vec::new()
-                });
+            match (startup_asset_manager.as_mut(), game_config.as_ref()) {
+                (Some(assets), Some(config)) => {
+                    app_list_maps::list_skirmish_scenario_records_with_assets(
+                        &config.paths.ra2_dir,
+                        assets,
+                        startup_csf.as_ref(),
+                    )
+                }
+                _ => Ok(Vec::new()),
+            }
+            .unwrap_or_else(|err| {
+                log::warn!("Could not list Skirmish scenario records: {err:#}");
+                Vec::new()
+            });
         let skirmish_scenario_records = if skirmish_scenario_records.is_empty() {
             available_maps
                 .iter()
@@ -4083,6 +4150,8 @@ impl App {
             cursor_x: 0.0,
             cursor_y: 0.0,
             keys_held: HashSet::new(),
+            retail_screenshot_requested: false,
+            retail_screenshot_frame_cache: Default::default(),
             egui,
             screen: GameScreen::default(),
             available_maps,
@@ -4091,6 +4160,8 @@ impl App {
             skirmish_scenario_records,
             skirmish_settings,
             loading_session: None,
+            tile_variant_selector_cache: Default::default(),
+            frontend_main_rng: crate::sim::rng::SimRng::new(u64::from(frontend_seed.value)),
             next_match_correlation: 1,
             active_loading_correlation: None,
             loaded_startup: None,
@@ -4150,6 +4221,7 @@ impl App {
             software_cursor: startup_software_cursor,
             selection_state: SelectionState::new(),
             loaded_map_source: None,
+            loaded_map_hash: None,
             path_grid: None,
             animation_sequences: BTreeMap::new(),
             parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
@@ -4178,8 +4250,8 @@ impl App {
             map_lighting_config: LightingConfig::default(),
             theater_name: "TEMPERATE".to_string(),
             theater_ext: "tem".to_string(),
-            last_update_time: Instant::now(),
-            sim_accumulator_ms: 0,
+            frame_pacer_epoch: Instant::now(),
+            frame_pacer: crate::app_frame_pacer::LocalFramePacer::new(),
             target_lines: crate::app_target_lines::TargetLineState::default(),
             configured_input_delay_ticks: input_delay_ticks,
             queued_order_mode: app_render::OrderMode::Move,
@@ -4354,8 +4426,8 @@ impl App {
 
         if tactical_capture.is_none() && matches!(state.screen, GameScreen::InGame) {
             let now = Instant::now();
-            let elapsed_ms = app_sim_tick::update_elapsed_ms(state, now);
-            app_sim_tick::advance_in_game_runtime(state, elapsed_ms);
+            let now_ms = app_sim_tick::monotonic_frame_pacer_ms(state, now);
+            app_sim_tick::advance_in_game_runtime(state, now_ms);
         }
 
         // Native queues/maintains [INTRO] before arming the 0xE2 first-paint
@@ -4580,13 +4652,14 @@ impl App {
                 // frozen battlefield before egui. The egui pause card is retired;
                 // egui below now only carries the sidebar text + dev overlay.
                 if state.paused {
-                    Self::ensure_skirmish_shell_chrome(state);
-                    crate::app_skirmish_shell_render::render_in_game_options_overlay(
-                        state,
-                        &mut encoder,
-                        &view,
-                        sidebar_view,
-                    )?;
+                    if Self::ensure_skirmish_shell_chrome(state) {
+                        crate::app_skirmish_shell_render::render_in_game_options_overlay(
+                            state,
+                            &mut encoder,
+                            &view,
+                            sidebar_view,
+                        )?;
+                    }
                 }
                 // Always run egui in-game for sidebar text overlay (Ready labels, credits).
                 state.egui.begin_frame(&state.window);
@@ -4647,9 +4720,8 @@ impl App {
                     title,
                     detail,
                 ) {
-                    // Persist the replay before the sim is torn down (symmetric
-                    // with return_to_main_menu) so a match that ended in
-                    // victory/defeat still leaves a replayable log on disk.
+                    // Persist the deterministic diagnostic log before the sim
+                    // is torn down, symmetric with return_to_main_menu.
                     crate::app_sim_tick::flush_replay_log(state);
                     Self::capture_returned_skirmish_rng(state);
                     crate::app_loading::clear_match_startup_state(state);
@@ -4721,6 +4793,19 @@ impl App {
         } else {
             None
         };
+        let retail_screenshot_current_frame =
+            std::mem::take(&mut state.retail_screenshot_requested);
+        let pending_retail_screenshot = state
+            .retail_screenshot_frame_cache
+            .capture_previous_and_remember_current(
+                retail_screenshot_current_frame,
+                &state.gpu.device,
+                &mut encoder,
+                &output.texture,
+                state.gpu.config.format,
+                state.gpu.config.width,
+                state.gpu.config.height,
+            )?;
         let capture_timeout = if capture_current_frame {
             Some(if shell_capture_current_frame {
                 shell_capture
@@ -4760,7 +4845,7 @@ impl App {
         if let Some(pending_capture) = pending_capture {
             let pixels = pending_capture.finish(
                 &state.gpu.device,
-                submission,
+                submission.clone(),
                 capture_timeout.expect("capture timeout exists with pending readback"),
             )?;
             let surface_format = state.gpu.config.format;
@@ -4776,6 +4861,24 @@ impl App {
                     .complete_after_readback(state, surface_format, &pixels)?;
             }
             event_loop.exit();
+        }
+        if let Some(pending_screenshot) = pending_retail_screenshot {
+            match pending_screenshot.finish(
+                &state.gpu.device,
+                submission,
+                crate::render::screenshot::READBACK_TIMEOUT,
+            ) {
+                Ok(pixels) => match crate::render::screenshot::write_retail_screenshot(
+                    state.gpu.config.width,
+                    state.gpu.config.height,
+                    state.gpu.config.format,
+                    &pixels,
+                ) {
+                    Ok(path) => log::info!("Saved screenshot {}", path.display()),
+                    Err(error) => log::error!("Screenshot write failed: {error:#}"),
+                },
+                Err(error) => log::error!("Screenshot readback failed: {error}"),
+            }
         }
 
         // Deferred loading: after presenting the Loading screen frame,
@@ -4831,8 +4934,8 @@ impl App {
 
     fn return_to_main_menu(state: &mut AppState) {
         state.paused = false;
-        // Persist the recorded replay before the sim (which owns the log) is
-        // torn down — every finished match leaves a replayable log on disk.
+        // Persist the deterministic diagnostic log before its owning sim is
+        // torn down.
         crate::app_sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         crate::app_loading::clear_match_startup_state(state);
@@ -4867,9 +4970,7 @@ impl App {
         match action {
             PauseMenuAction::Resume => {
                 state.paused = false;
-                // Reset timing to prevent sim accumulator spike from pause duration.
-                state.last_update_time = Instant::now();
-                state.sim_accumulator_ms = 0;
+                state.frame_pacer.reset_for_immediate_frame();
                 // Re-hide OS cursor so the software cursor takes over.
                 if state.software_cursor.is_some() {
                     state.window.set_cursor_visible(false);

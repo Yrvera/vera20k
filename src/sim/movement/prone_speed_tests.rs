@@ -7,12 +7,13 @@ use super::tick_movement_with_grids;
 use crate::map::entities::EntityCategory;
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
-use crate::rules::locomotor_type::SpeedType;
+use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::{Health, MovementTarget};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::{test_intern, test_interner};
+use crate::sim::movement::locomotor::LocomotorState;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
@@ -57,13 +58,13 @@ fn prone_mover() -> GameEntity {
     );
     entity.position.sub_x = SimFixed::from_num(128);
     entity.position.sub_y = SimFixed::from_num(128);
-    entity.position.refresh_screen_coords();
     entity.infantry.as_mut().expect("infantry runtime").is_prone = true;
+    entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
     entity.movement_target = Some(MovementTarget {
         path: vec![(0, 0), (1, 0)],
         path_layers: vec![MovementLayer::Ground; 2],
         next_index: 1,
-        speed: SimFixed::from_num(11),
+        speed: SimFixed::from_num(165),
         move_dir_x: SimFixed::from_num(256),
         move_dir_y: SIM_ZERO,
         move_dir_len: SimFixed::from_num(256),
@@ -92,11 +93,13 @@ fn advance_prone_mover(crawls: bool) -> SimFixed {
         &terrain_costs,
         &Default::default(),
         &mut occupancy,
+        &mut crate::sim::occupancy::CellOccupationGrid::new(),
+        &mut crate::sim::occupancy::RawCellOccupationGrid::new(),
         &mut next_occupancy_enter_order,
         &mut rng,
-        1000,
         0,
         0, // binary_frame (test)
+        None,
         None,
         None,
         &TerrainSpeedConfig::default(),
@@ -114,12 +117,21 @@ fn advance_prone_mover(crawls: bool) -> SimFixed {
     entities.get(1).expect("entity exists").position.sub_x
 }
 
+fn expected_sub_x_after_one_frame(frame_budget: i32) -> SimFixed {
+    SimFixed::from_num(128 + frame_budget)
+}
+
 #[test]
 fn crawls_yes_prone_movement_uses_ceiling_two_thirds_speed() {
-    assert_eq!(advance_prone_mover(true), SimFixed::from_num(136));
+    // ceil(11 * 2/3) = 8 leptons for this frame.
+    assert_eq!(advance_prone_mover(true), expected_sub_x_after_one_frame(8));
 }
 
 #[test]
 fn crawls_no_prone_movement_uses_speed_plus_half() {
-    assert_eq!(advance_prone_mover(false), SimFixed::from_num(144));
+    // 11 + floor(11/2) = 16 leptons for this frame.
+    assert_eq!(
+        advance_prone_mover(false),
+        expected_sub_x_after_one_frame(16)
+    );
 }

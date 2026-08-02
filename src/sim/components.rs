@@ -5,8 +5,9 @@
 //! determine what to draw and where.
 //!
 //! ## Design notes
-//! - Position stores both isometric cell coords AND pre-computed screen coords.
-//!   Screen coords are updated whenever position changes (avoids per-frame math).
+//! - Position stores isometric cell coords only. Where an entity is *drawn* is
+//!   `render::locomotor_visual`'s business, derived on read — sim/ writes no
+//!   screen coordinates.
 //! - Some types here (Facing, VoxelModel, etc.) are legacy wrappers
 //!   kept for any remaining call sites. The canonical data lives in GameEntity fields.
 //!
@@ -24,9 +25,6 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 /// RA2 uses leptons as its spatial unit (256 leptons = 1 cell). We store the
 /// cell coordinate (rx, ry) plus a sub-cell lepton offset (sub_x, sub_y) to
 /// get sub-cell precision without overflowing SimFixed on large maps.
-///
-/// Screen coords are computed via `iso_to_screen(rx, ry, z)` and cached here
-/// so the render loop doesn't need to recompute every frame.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     /// Isometric cell X coordinate.
@@ -40,23 +38,6 @@ pub struct Position {
     pub sub_x: SimFixed,
     /// Sub-cell lepton offset Y (0..256). 128 = cell center.
     pub sub_y: SimFixed,
-    /// Pre-computed screen X position (pixels, world space).
-    #[serde(skip, default)]
-    pub screen_x: f32,
-    /// Pre-computed screen Y position (pixels, world space).
-    #[serde(skip, default)]
-    pub screen_y: f32,
-}
-
-impl Position {
-    /// Shared owner for keeping cached screen coordinates in sync after any
-    /// direct mutation of world position, sub-cell offset, or Z.
-    pub fn refresh_screen_coords(&mut self) {
-        let (sx, sy) =
-            crate::util::lepton::lepton_to_screen(self.rx, self.ry, self.sub_x, self.sub_y, self.z);
-        self.screen_x = sx;
-        self.screen_y = sy;
-    }
 }
 
 /// Facing direction (0â€“255, RA2 convention).
@@ -334,6 +315,23 @@ pub struct DrivePathQueue {
     pub directions: Vec<u8>,
     #[serde(default)]
     pub cursor: u16,
+    /// Native FootClass path-reference cell (`+0x558`). Drive advances this
+    /// when it accepts a path direction, before the curve physically crosses
+    /// into the destination cell.
+    #[serde(default)]
+    pub reference_cell: Option<(i16, i16)>,
+}
+
+/// ShipLocomotion-owned committed head and path replay state.
+///
+/// Ships share the ordinary TurnTrack/RawTrack curves with Drive, but do not
+/// own Drive's speed, tube, forced-track, or raw-occupation state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ShipLocomotionRuntime {
+    #[serde(default)]
+    pub head_to: Option<DriveCoord>,
+    #[serde(default)]
+    pub path: DrivePathQueue,
 }
 
 /// Drive-owned 16-bit facing target and first-movement gate.
@@ -372,6 +370,18 @@ fn default_drive_track_index() -> i16 {
     -1
 }
 
+/// Drive-owned occupation mark installed ahead of the live object-list cell.
+///
+/// The cell list remains tied to the unit's committed coordinates. This record
+/// persists the independent head-to mark so the transient per-cell occupation
+/// index can be rebuilt after loading a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DriveOccupationFootprint {
+    pub rx: u16,
+    pub ry: u16,
+    pub layer: MovementLayer,
+}
+
 /// DriveLocomotion-owned destination/head-to state.
 ///
 /// This is distinct from `DriveTrackState`: gamemd can clear destination,
@@ -401,9 +411,16 @@ pub struct DriveLocomotionRuntime {
     #[serde(default)]
     pub residual_budget: i32,
     #[serde(default)]
-    pub drive_delay: u16,
-    #[serde(default)]
     pub active_tube: Option<DriveTubePayload>,
+    /// Head-to vehicle-occupation mark, independent from CellClass object-list
+    /// membership. Ordinary flat Drive installs one mark for its accepted next
+    /// cell before any paid track point is consumed.
+    #[serde(default)]
+    pub occupation_head_to: Option<DriveOccupationFootprint>,
+    /// A paid within-cell Drive point clears the current-coordinate occupation
+    /// bit before committing coordinates. Entering a new cell marks it again.
+    #[serde(default)]
+    pub current_occupation_cleared: bool,
 }
 
 impl Default for DriveLocomotionRuntime {
@@ -420,8 +437,9 @@ impl Default for DriveLocomotionRuntime {
             target_speed_fraction: SIM_ZERO,
             current_speed_fraction: SIM_ZERO,
             residual_budget: 0,
-            drive_delay: 0,
             active_tube: None,
+            occupation_head_to: None,
+            current_occupation_cleared: false,
         }
     }
 }
@@ -527,22 +545,22 @@ pub struct VoxelAnimation {
     pub frame: u32,
     /// Total number of HVA animation frames.
     pub frame_count: u32,
-    /// Milliseconds accumulated since last frame advance.
-    pub elapsed_ms: u32,
-    /// Milliseconds per frame (animation speed). 0 = no auto-advance.
-    pub tick_ms: u32,
+    /// Reached native frames accumulated since last image advance.
+    pub elapsed_frames: u16,
+    /// Reached native frames per image. 0 = no auto-advance.
+    pub frame_delay: u16,
     /// Whether the animation is currently playing (cycling frames).
     pub playing: bool,
 }
 
 impl VoxelAnimation {
     /// Create a new VoxelAnimation in stopped state.
-    pub fn new(frame_count: u32, tick_ms: u32) -> Self {
+    pub fn new(frame_count: u32, frame_delay: u16) -> Self {
         Self {
             frame: 0,
             frame_count,
-            elapsed_ms: 0,
-            tick_ms,
+            elapsed_frames: 0,
+            frame_delay,
             playing: false,
         }
     }
@@ -559,8 +577,8 @@ pub struct HarvestOverlay {
     pub frame: u16,
     /// Whether the overlay is currently visible and animating.
     pub visible: bool,
-    /// Milliseconds accumulated since last frame advance.
-    pub elapsed_ms: u32,
+    /// Reached native frames accumulated since last image advance.
+    pub elapsed_frames: u16,
 }
 
 /// Visual damage state derived from health ratio.
@@ -804,15 +822,15 @@ pub struct WorldEffect {
     pub frame: u16,
     /// Total frame count in the SHP.
     pub total_frames: u16,
-    /// Milliseconds per frame (from art.ini Rate=, or hardcoded default).
-    pub rate_ms: u32,
-    /// Milliseconds accumulated since last frame advance.
-    pub elapsed_ms: u32,
+    /// Native gameplay frames between image-frame advances.
+    pub frame_delay: u16,
+    /// Reached gameplay frames accumulated toward the next image frame.
+    pub elapsed_frames: u16,
     /// Whether the effect renders with alpha/translucency (art.ini Translucent=yes).
     pub translucent: bool,
-    /// Optional start delay in milliseconds. Counts down before animation begins.
+    /// Optional start delay in native gameplay frames.
     /// Used for staggering multiple explosions on bridge destruction.
-    pub delay_ms: u32,
+    pub delay_frames: u16,
     /// Optional sound ID to play when the effect starts after its delay.
     pub start_sound_id: Option<InternedId>,
     /// One-shot guard for `start_sound_id`.
@@ -829,7 +847,7 @@ impl WorldEffect {
     pub fn from_anim_spawn(
         anim_spawn: AnimClassSpawnDescriptor,
         total_frames: u16,
-        rate_ms: u32,
+        frame_delay: u16,
         translucent: bool,
         start_sound_id: Option<InternedId>,
     ) -> Self {
@@ -842,28 +860,27 @@ impl WorldEffect {
             z: anim_spawn.z,
             frame: 0,
             total_frames,
-            rate_ms,
-            elapsed_ms: 0,
+            frame_delay,
+            elapsed_frames: 0,
             translucent,
-            delay_ms: u32::from(anim_spawn.delay) * 1000 / 15,
+            delay_frames: anim_spawn.delay,
             start_sound_id,
             start_sound_emitted: false,
             anim_spawn: Some(anim_spawn),
         }
     }
 
-    /// Advance the animation by `dt_ms` milliseconds. Returns true when finished.
-    pub fn tick(&mut self, dt_ms: u32) -> bool {
-        self.tick_with_start_sound(dt_ms).finished
+    /// Advance the animation by one native gameplay frame.
+    pub fn tick(&mut self) -> bool {
+        self.tick_with_start_sound().finished
     }
 
     /// Advance the animation and report a delayed-start sound edge.
-    pub fn tick_with_start_sound(&mut self, dt_ms: u32) -> WorldEffectTick {
+    pub fn tick_with_start_sound(&mut self) -> WorldEffectTick {
         let mut started_sound = None;
-        if self.delay_ms > 0 {
-            let before = self.delay_ms;
-            self.delay_ms = self.delay_ms.saturating_sub(dt_ms);
-            if before > 0 && self.delay_ms == 0 && !self.start_sound_emitted {
+        if self.delay_frames > 0 {
+            self.delay_frames -= 1;
+            if self.delay_frames == 0 && !self.start_sound_emitted {
                 started_sound = self.start_sound_id;
                 self.start_sound_emitted = true;
             }
@@ -876,9 +893,21 @@ impl WorldEffect {
             started_sound = self.start_sound_id;
             self.start_sound_emitted = true;
         }
-        self.elapsed_ms += dt_ms;
-        while self.elapsed_ms >= self.rate_ms && self.frame < self.total_frames {
-            self.elapsed_ms -= self.rate_ms;
+        if self.total_frames == 0 {
+            return WorldEffectTick {
+                finished: true,
+                started_sound,
+            };
+        }
+        if self.frame_delay == 0 {
+            return WorldEffectTick {
+                finished: false,
+                started_sound,
+            };
+        }
+        self.elapsed_frames = self.elapsed_frames.saturating_add(1);
+        while self.elapsed_frames >= self.frame_delay && self.frame < self.total_frames {
+            self.elapsed_frames -= self.frame_delay;
             self.frame += 1;
         }
         WorldEffectTick {
@@ -911,10 +940,10 @@ pub struct ParachuteAnim {
     pub loop_start: u16,
     /// Wraparound bound (exclusive). Copied from ParachuteRenderConfig.
     pub end_frame: u16,
-    /// ms per frame. Copied from ParachuteRenderConfig.
-    pub rate_ms: u32,
-    /// Accumulated ms since last frame advance.
-    pub elapsed_ms: u32,
+    /// Gameplay frames per image frame. Copied from ParachuteRenderConfig.
+    pub frame_delay: u16,
+    /// Gameplay frames accumulated since last image-frame advance.
+    pub elapsed_frames: u16,
 }
 
 /// Emitted by the refinery dock state machine each time a harvester deposits
@@ -1005,7 +1034,7 @@ impl RockingState {
 ///
 /// Set by `tick_c4_plants` when an attacker with `c4_plant` arrives on the
 /// building's cell. Once set, the building's update tick fires C4Warhead
-/// damage every tick after `plant_start_tick + rules.c4_delay_ticks`, using
+/// damage every frame after the wrapping native-frame delay has elapsed, using
 /// `damage = current_hp` for guaranteed one-shot kill.
 ///
 /// Normal C4 targets keep the marker until the building dies. IronCurtain on
@@ -1015,6 +1044,7 @@ impl RockingState {
 /// after the bridge-collapse dispatcher returns because the hut survives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PendingC4Detonation {
+    /// Native frame widened to retain the existing snapshot field width.
     pub plant_start_tick: u64,
     /// Original attacker for kill-credit. May refer to a despawned entity
     /// at detonation time; in that case the credit is unattributed (the
@@ -1035,8 +1065,6 @@ mod tests {
             z: 0,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-            screen_x: -300.0,
-            screen_y: 1050.0,
         };
         assert_eq!(pos.rx, 30);
         assert_eq!(pos.ry, 40);
@@ -1105,7 +1133,6 @@ mod tests {
         assert_eq!(drive.target_speed_fraction, SIM_ZERO);
         assert_eq!(drive.current_speed_fraction, SIM_ZERO);
         assert_eq!(drive.residual_budget, 0);
-        assert_eq!(drive.drive_delay, 0);
         assert_eq!(drive.active_tube, None);
     }
 
@@ -1233,21 +1260,21 @@ mod tests {
             z: 0,
             frame: 0,
             total_frames: 3,
-            rate_ms: 100,
-            elapsed_ms: 0,
+            frame_delay: 2,
+            elapsed_frames: 0,
             translucent: true,
-            delay_ms: 0,
+            delay_frames: 0,
             start_sound_id: None,
             start_sound_emitted: false,
         };
-        // Not finished yet.
-        assert!(!fx.tick(50));
+        assert!(!fx.tick());
         assert_eq!(fx.frame, 0);
-        // Advance past first frame boundary.
-        assert!(!fx.tick(60));
+        assert!(!fx.tick());
         assert_eq!(fx.frame, 1);
-        // Two more frames in one big dt.
-        assert!(fx.tick(250));
+        for _ in 0..3 {
+            assert!(!fx.tick());
+        }
+        assert!(fx.tick());
         assert_eq!(fx.frame, 3);
     }
 
@@ -1265,20 +1292,18 @@ mod tests {
             z: 0,
             frame: 0,
             total_frames: 3,
-            rate_ms: 100,
-            elapsed_ms: 0,
+            frame_delay: 2,
+            elapsed_frames: 0,
             translucent: true,
-            delay_ms: 67,
+            delay_frames: 1,
             start_sound_id: Some(sound_id),
             start_sound_emitted: false,
         };
 
-        let first = fx.tick_with_start_sound(30);
-        assert_eq!(first.started_sound, None);
-        let second = fx.tick_with_start_sound(37);
-        assert_eq!(second.started_sound, Some(sound_id));
-        let third = fx.tick_with_start_sound(67);
-        assert_eq!(third.started_sound, None);
+        let first = fx.tick_with_start_sound();
+        assert_eq!(first.started_sound, Some(sound_id));
+        let second = fx.tick_with_start_sound();
+        assert_eq!(second.started_sound, None);
     }
 
     #[test]
@@ -1299,10 +1324,10 @@ mod tests {
         row.z_adjust = -30;
         row.reverse = true;
 
-        let fx = WorldEffect::from_anim_spawn(row.clone(), 20, 67, true, None);
+        let fx = WorldEffect::from_anim_spawn(row.clone(), 20, 1, true, None);
 
         assert_eq!(fx.shp_name, anim_id);
-        assert_eq!(fx.delay_ms, 1000 / 15);
+        assert_eq!(fx.delay_frames, 1);
         assert_eq!(fx.anim_spawn, Some(row));
     }
 }

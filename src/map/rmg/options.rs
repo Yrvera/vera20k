@@ -121,9 +121,9 @@ impl RmgOptions {
 
     /// Apply a `.SED`'s `[RandomMap]` keys over `self`.
     ///
-    /// A missing or unparsable key leaves the existing field alone: the
-    /// original reads each integer with the current value as its default, so
-    /// a partial file inherits rather than zeroing. Does not normalize.
+    /// A missing key leaves the existing field alone because the original
+    /// passes that field as the reader default. A present malformed value uses
+    /// native `atoi` semantics and therefore becomes zero. Does not normalize.
     pub fn apply_sed(&mut self, ini: &IniFile) {
         let Some(section) = ini.section(SECTION) else {
             return;
@@ -274,13 +274,13 @@ mod tests {
     }
 
     #[test]
-    fn malformed_value_leaves_field_untouched() {
+    fn malformed_value_uses_native_atoi_zero() {
         let mut options = RmgOptions {
             tiberium: 55,
             ..Default::default()
         };
         options.apply_sed(&IniFile::from_str("[RandomMap]\nTiberium=abc\n"));
-        assert_eq!(options.tiberium, 55);
+        assert_eq!(options.tiberium, 0);
     }
 
     #[test]

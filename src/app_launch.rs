@@ -100,7 +100,15 @@ pub fn parse_launch_args<I>(args: I) -> Result<AppLaunchMode>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let args: Vec<OsString> = args.into_iter().collect();
+    let mut args: Vec<OsString> = args.into_iter().collect();
+    // Retail scans every command-line argument case-insensitively for its
+    // global `-CD` media switch before normal launch dispatch. AssetManager
+    // reads the original process argv; remove the standalone switch here so
+    // the app's stricter capture/interactive parser does not reject it.
+    args.retain(|arg| {
+        arg.to_str()
+            .is_none_or(|arg| !arg.eq_ignore_ascii_case("-CD"))
+    });
     if args.first() != Some(&OsString::from(TACTICAL_CAPTURE_FLAG)) {
         return match app_shell_capture::parse_launch_args(args)? {
             ShellAppLaunchMode::Interactive => Ok(AppLaunchMode::Interactive),
@@ -235,6 +243,14 @@ mod tests {
     fn no_args_still_delegate_to_interactive_shell_launch() {
         assert!(matches!(
             parse_launch_args(Vec::<OsString>::new()).expect("parse"),
+            AppLaunchMode::Interactive
+        ));
+    }
+
+    #[test]
+    fn retail_cd_switch_is_a_global_interactive_launch_option() {
+        assert!(matches!(
+            parse_launch_args([OsString::from("-cD")]).expect("parse"),
             AppLaunchMode::Interactive
         ));
     }

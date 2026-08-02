@@ -48,7 +48,11 @@ const fn sin_i16f16(facing: u32) -> i32 {
 
     let raw = QUARTER_SIN[q_idx as usize];
 
-    if negate { -raw } else { raw }
+    if negate {
+        -raw
+    } else {
+        raw
+    }
 }
 
 /// Sin values for 256 facings. sin(0)=0, sin(64)=1, sin(128)=0, sin(192)=-1.

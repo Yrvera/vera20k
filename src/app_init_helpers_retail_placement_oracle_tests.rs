@@ -20,8 +20,8 @@ use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::power_system::tick_power_states;
 use crate::sim::production::{
-    foundation_dimensions, placement_preview_for_owner, ready_buildings_for_owner,
-    seed_resource_nodes_from_overlays,
+    foundation_dimensions, placement_preview_for_owner_without_overlays,
+    ready_buildings_for_owner, seed_resource_nodes_from_overlays,
 };
 use crate::sim::world::Simulation;
 
@@ -370,7 +370,7 @@ fn retail_dustbowl_gapowr_blocked_then_valid_placement_oracle() {
             (*cell, (overlay.overlay_id, overlay.overlay_data))
         })
         .collect();
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         OWNER,
@@ -445,7 +445,7 @@ fn retail_dustbowl_gapowr_blocked_then_valid_placement_oracle() {
         overlay_before
     );
 
-    let preview = placement_preview_for_owner(
+    let preview = placement_preview_for_owner_without_overlays(
         &sim,
         &rules,
         OWNER,
@@ -520,7 +520,6 @@ fn retail_dustbowl_gapowr_blocked_then_valid_placement_oracle() {
         &mut sim.power_states,
         &mut sim.substrate.entities,
         &rules,
-        67,
         &sim.interner,
     );
     let power = sim

@@ -167,9 +167,10 @@ pub(crate) fn build_factory_rally_line_instances(
             continue;
         }
 
+        let (start_x, start_y) = crate::render::locomotor_visual::screen_position(entity);
         let start = ScreenPoint {
-            x: entity.position.screen_x,
-            y: entity.position.screen_y,
+            x: start_x,
+            y: start_y,
         };
         let end = project_cell_destination(rx, ry, height_map, None, Some(sim)).into();
         let tint = rally_tint_for_owner(owner, house_color_map, &rules.house_color_ramps);
@@ -211,10 +212,8 @@ fn selected_action_line_for_entity(
 }
 
 fn selected_action_line_source(entity: &GameEntity) -> ScreenPoint {
-    ScreenPoint {
-        x: entity.position.screen_x,
-        y: entity.position.screen_y,
-    }
+    let (x, y) = crate::render::locomotor_visual::screen_position(entity);
+    ScreenPoint { x, y }
 }
 
 fn resolve_attack_target_point(
@@ -224,8 +223,8 @@ fn resolve_attack_target_point(
 ) -> Option<ScreenPoint> {
     match attack.target {
         TargetKind::Entity(target_id) => sim.entities().get(target_id).map(|target| ScreenPoint {
-            x: target.position.screen_x,
-            y: target.position.screen_y,
+            x: crate::render::locomotor_visual::screen_position(target).0,
+            y: crate::render::locomotor_visual::screen_position(target).1,
         }),
         TargetKind::Cell(rx, ry) => {
             Some(project_cell_destination(rx, ry, height_map, None, Some(sim)).into())
@@ -245,8 +244,8 @@ fn resolve_navigation_target_point(
         NavTargetRef::Entity { id }
         | NavTargetRef::Object { id }
         | NavTargetRef::Building { id } => sim.entities().get(id).map(|target| ScreenPoint {
-            x: target.position.screen_x,
-            y: target.position.screen_y,
+            x: crate::render::locomotor_visual::screen_position(target).0,
+            y: crate::render::locomotor_visual::screen_position(target).1,
         }),
     }
 }
@@ -455,7 +454,6 @@ mod tests {
         power.type_ref = power_type;
         power.position.rx = 12;
         power.rally_target = Some((16, 10));
-        power.position.refresh_screen_coords();
         sim.entities_mut().insert(factory);
         sim.entities_mut().insert(power);
         sim
@@ -525,8 +523,12 @@ mod tests {
         assert!(lines.iter().any(|instance| {
             instance.position
                 == [
-                    target.position.screen_x.round(),
-                    target.position.screen_y.round(),
+                    crate::render::locomotor_visual::screen_position(target)
+                        .0
+                        .round(),
+                    crate::render::locomotor_visual::screen_position(target)
+                        .1
+                        .round(),
                 ]
         }));
     }

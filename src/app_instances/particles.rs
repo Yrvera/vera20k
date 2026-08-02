@@ -1,6 +1,6 @@
 //! Particle-system instance builder — Layer 3 (above all ground objects).
 //!
-//! Reads `Simulation.particle_systems` and emits one SpriteInstance per live
+//! Reads `Simulation::particle_systems()` and emits one SpriteInstance per live
 //! particle, dispatched on the per-system BehavesLike for frame-index
 //! calculation. Smoke/Gas use `animation_state` as the frame directly; Fire
 //! uses `facing_band * EndStateAI + animation_state`. Spark/Railgun (Tier 3)
@@ -52,7 +52,7 @@ pub(crate) fn build_particle_instances(state: &AppState, paged: &mut [Vec<Sprite
         state.render_height() as f32 / z,
     );
 
-    for (_sys_id, sys) in sim.particle_systems.iter() {
+    for (_sys_id, sys) in sim.particle_systems().iter() {
         let pst = rules.particle_system_type(sys.type_id);
         match pst.behaves_like {
             ParticleSystemBehavesLike::Spark | ParticleSystemBehavesLike::Railgun => {

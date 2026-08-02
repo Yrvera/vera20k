@@ -12,6 +12,71 @@ fn make_test_ini() -> String {
 }
 
 #[test]
+fn active_theater_names_and_archive_order_match_retail() {
+    let expected = [
+        (
+            "TEMPERATE",
+            "temperatmd.ini",
+            &["temperat.mix", "tem.mix", "isotemmd.mix", "isotemp.mix"][..],
+        ),
+        (
+            "SNOW",
+            "snowmd.ini",
+            &[
+                "snowmd.mix",
+                "snow.mix",
+                "sno.mix",
+                "isosnomd.mix",
+                "isosnow.mix",
+            ][..],
+        ),
+        (
+            "URBAN",
+            "urbanmd.ini",
+            &["urban.mix", "urb.mix", "isourbmd.mix", "isourb.mix"][..],
+        ),
+        (
+            "DESERT",
+            "desertmd.ini",
+            &["desert.mix", "des.mix", "isodesmd.mix", "isodes.mix"][..],
+        ),
+        (
+            "NEWURBAN",
+            "urbannmd.ini",
+            &["urbann.mix", "ubn.mix", "isoubnmd.mix", "isoubn.mix"][..],
+        ),
+        (
+            "LUNAR",
+            "lunarmd.ini",
+            &["lunar.mix", "lun.mix", "isolunmd.mix", "isolun.mix"][..],
+        ),
+    ];
+
+    for (name, ini_name, archives) in expected {
+        let def = theater_def(name).expect("active theater definition");
+        assert_eq!(def.ini_name, ini_name);
+        assert_eq!(def.mix_archives, archives);
+    }
+}
+
+#[test]
+fn missing_theater_palette_uses_native_rgb_ramp() {
+    let palette = native_missing_theater_palette();
+    assert_eq!(
+        palette.colors[0],
+        Color {
+            r: 0,
+            g: 255,
+            b: 0,
+            a: 0,
+        }
+    );
+    assert_eq!(palette.colors[1], Color::rgb(1, 254, 4));
+    assert_eq!(palette.colors[64], Color::rgb(64, 191, 0));
+    assert_eq!(palette.colors[255], Color::rgb(255, 0, 252));
+}
+
+#[test]
 fn test_parse_tileset_ini_basic() {
     let ini: &str = &make_test_ini();
     let lookup: TilesetLookup = parse_tileset_ini(ini.as_bytes(), "tem").expect("Should parse");
@@ -34,6 +99,54 @@ fn test_parse_tileset_ini_basic() {
     assert_eq!(lookup.filename(NO_TILE), None);
     assert_eq!(lookup.filename(-1), None);
     assert_eq!(lookup.filename(999), None);
+}
+
+#[test]
+fn gsi_02_11_actual_chain_count_stops_at_first_missing_sibling() {
+    let present = [
+        "clear01.urb",
+        "clear01a.urb",
+        "clear01b.urb",
+        "clear01c.urb",
+        "clear01d.urb",
+        "clear01e.urb",
+        "clear01f.urb",
+        "clear01g.urb",
+        // A later file must not bridge the missing `h` slot.
+        "clear01i.urb",
+    ];
+    let siblings = contiguous_variant_filenames("clear01.urb", |name| present.contains(&name));
+    assert_eq!(siblings.len(), 7);
+    assert_eq!(siblings.first().map(String::as_str), Some("clear01a.urb"));
+    assert_eq!(siblings.last().map(String::as_str), Some("clear01g.urb"));
+
+    let orphaned = ["clear01a.urb", "clear01b.urb"];
+    assert!(
+        contiguous_variant_filenames("clear01.urb", |name| orphaned.contains(&name)).is_empty()
+    );
+}
+
+#[test]
+fn gsi_02_11_file_index_resolves_the_exact_independent_tmp_owner() {
+    let mut lookup = parse_tileset_ini(
+        b"[TileSet0000]\nSetName=Clear\nFileName=clear\nTilesInSet=1\n",
+        "urb",
+    )
+    .expect("synthetic tileset");
+    lookup.variant_filenames[0] = vec!["clear01a.urb".to_string(), "clear01b.urb".to_string()];
+
+    assert_eq!(lookup.filename_for_variant(0, 0), Some("clear01.urb"));
+    assert_eq!(lookup.filename_for_variant(0, 1), Some("clear01a.urb"));
+    assert_eq!(lookup.filename_for_variant(0, 2), Some("clear01b.urb"));
+    assert_eq!(lookup.filename_for_variant(0, 3), None);
+}
+
+#[test]
+fn gsi_02_11_positive_subtile_wrap_preserves_requested_identity_boundary() {
+    assert_eq!(wrapped_subtile_index(0, 2, 3), Some(0));
+    assert_eq!(wrapped_subtile_index(9, 2, 3), Some(3));
+    assert_eq!(wrapped_subtile_index(u8::MAX, 2, 3), Some(3));
+    assert_eq!(wrapped_subtile_index(7, 0, 3), None);
 }
 
 #[test]
@@ -171,8 +284,8 @@ fn cliff_ranges_resolve_ordinals_to_cumulative_tile_starts() {
 }
 
 #[test]
-fn rmg_tile_keys_resolve_ordinals_and_missing_keys_stay_none() {
-    let ini_bytes = b"[General]\nClearTile = 0\nGreenTile = 2\nWaterSet = 1\n\n\
+fn gsi_04_03a_rmg_tile_keys_parse_ramp_smooth_and_resolve_ordinals() {
+    let ini_bytes = b"[General]\nClearTile = 0\nRampBase = 1\nRampSmooth = 2\nGreenTile = 2\nWaterSet = 1\n\n\
                 [TileSet0000]\nTilesInSet=2\nFileName=clear\nSetName=Clear\n\n\
                 [TileSet0001]\nTilesInSet=3\nFileName=water\nSetName=Water\n\n\
                 [TileSet0002]\nTilesInSet=4\nFileName=green\nSetName=Green\n";
@@ -181,6 +294,8 @@ fn rmg_tile_keys_resolve_ordinals_and_missing_keys_stay_none() {
     let keys = super::resolve_rmg_tile_keys(&lookup, &ini_text);
 
     assert_eq!(keys.clear_tile, Some(0));
+    assert_eq!(keys.ramp_base, Some(2));
+    assert_eq!(keys.ramp_smooth, Some(5));
     assert_eq!(keys.water_set, Some(2), "set 1 starts at cumulative tile 2");
     assert_eq!(
         keys.green_tile,
@@ -192,7 +307,7 @@ fn rmg_tile_keys_resolve_ordinals_and_missing_keys_stay_none() {
 }
 
 #[test]
-fn cliff_ranges_match_half_open_boundaries() {
+fn gsi_04_03a_special_terrain_ranges_match_half_open_boundaries() {
     let ranges = TheaterCliffRanges {
         cliff_set: Some(100),
         cliff_ramps: Some(200),
@@ -202,21 +317,21 @@ fn cliff_ranges_match_half_open_boundaries() {
         ..TheaterCliffRanges::default()
     };
 
-    assert!(ranges.is_cliff_or_impassable_tile(100, 0));
-    assert!(ranges.is_cliff_or_impassable_tile(139, 0));
-    assert!(!ranges.is_cliff_or_impassable_tile(140, 0));
-    assert!(ranges.is_cliff_or_impassable_tile(219, 0));
-    assert!(!ranges.is_cliff_or_impassable_tile(220, 0));
-    assert!(ranges.is_cliff_or_impassable_tile(327, 0));
-    assert!(!ranges.is_cliff_or_impassable_tile(328, 0));
-    assert!(ranges.is_cliff_or_impassable_tile(401, 0));
-    assert!(!ranges.is_cliff_or_impassable_tile(402, 0));
-    assert!(ranges.is_cliff_or_impassable_tile(503, 0));
-    assert!(!ranges.is_cliff_or_impassable_tile(504, 0));
+    assert!(ranges.is_special_terrain_tile(100, 0));
+    assert!(ranges.is_special_terrain_tile(139, 0));
+    assert!(!ranges.is_special_terrain_tile(140, 0));
+    assert!(ranges.is_special_terrain_tile(219, 0));
+    assert!(!ranges.is_special_terrain_tile(220, 0));
+    assert!(ranges.is_special_terrain_tile(327, 0));
+    assert!(!ranges.is_special_terrain_tile(328, 0));
+    assert!(ranges.is_special_terrain_tile(401, 0));
+    assert!(!ranges.is_special_terrain_tile(402, 0));
+    assert!(ranges.is_special_terrain_tile(503, 0));
+    assert!(!ranges.is_special_terrain_tile(504, 0));
 }
 
 #[test]
-fn waterfall_exceptions_follow_tile_and_slope_byte() {
+fn gsi_04_03a_waterfall_endpoints_use_iso_subtile_not_slope() {
     let ranges = TheaterCliffRanges {
         waterfall_east: Some(10),
         waterfall_west: Some(20),
@@ -225,20 +340,21 @@ fn waterfall_exceptions_follow_tile_and_slope_byte() {
         ..TheaterCliffRanges::default()
     };
 
-    assert!(!ranges.is_cliff_or_impassable_tile(10, 0));
-    assert!(!ranges.is_cliff_or_impassable_tile(10, 4));
-    assert!(ranges.is_cliff_or_impassable_tile(10, 1));
-    assert!(ranges.is_cliff_or_impassable_tile(11, 0));
-    assert!(!ranges.is_cliff_or_impassable_tile(23, 3));
-    assert!(ranges.is_cliff_or_impassable_tile(23, 2));
-    assert!(!ranges.is_cliff_or_impassable_tile(30, 1));
-    assert!(ranges.is_cliff_or_impassable_tile(30, 2));
-    assert!(!ranges.is_cliff_or_impassable_tile(43, 2));
-    assert!(ranges.is_cliff_or_impassable_tile(43, 1));
+    assert!(!ranges.is_special_terrain_tile(10, 0));
+    assert!(!ranges.is_special_terrain_tile(10, 4));
+    assert!(ranges.is_special_terrain_tile(10, 1));
+    assert!(ranges.is_special_terrain_tile(11, 0));
+    assert!(ranges.is_special_terrain_tile(12, 4));
+    assert!(!ranges.is_special_terrain_tile(23, 3));
+    assert!(ranges.is_special_terrain_tile(23, 2));
+    assert!(!ranges.is_special_terrain_tile(30, 1));
+    assert!(ranges.is_special_terrain_tile(30, 2));
+    assert!(!ranges.is_special_terrain_tile(43, 2));
+    assert!(ranges.is_special_terrain_tile(43, 1));
 }
 
 #[test]
-fn bridge_ramp_predicate_is_narrower_than_broad_impassable() {
+fn gsi_04_03a_bridge_ramp_predicate_remains_narrower_than_special_terrain() {
     let ranges = TheaterCliffRanges {
         cliff_set: Some(100),
         cliff_ramps: Some(200),
@@ -251,12 +367,12 @@ fn bridge_ramp_predicate_is_narrower_than_broad_impassable() {
         ..TheaterCliffRanges::default()
     };
 
-    assert!(ranges.is_cliff_or_impassable_tile(700, 0));
-    assert!(ranges.is_cliff_or_impassable_tile(715, 0));
-    assert!(!ranges.is_cliff_or_impassable_tile(716, 0));
-    assert!(ranges.is_cliff_or_impassable_tile(800, 0));
-    assert!(ranges.is_cliff_or_impassable_tile(815, 0));
-    assert!(!ranges.is_cliff_or_impassable_tile(816, 0));
+    assert!(ranges.is_special_terrain_tile(700, 0));
+    assert!(ranges.is_special_terrain_tile(715, 0));
+    assert!(!ranges.is_special_terrain_tile(716, 0));
+    assert!(ranges.is_special_terrain_tile(800, 0));
+    assert!(ranges.is_special_terrain_tile(815, 0));
+    assert!(!ranges.is_special_terrain_tile(816, 0));
     assert!(ranges.is_on_bridge_ramp_tile(100, 0));
     assert!(ranges.is_on_bridge_ramp_tile(200, 0));
     assert!(ranges.is_on_bridge_ramp_tile(601, 0));
@@ -269,7 +385,7 @@ fn bridge_ramp_predicate_is_narrower_than_broad_impassable() {
 }
 
 #[test]
-fn lunar_theater_zeroing_clears_numeric_cliff_and_bridge_ranges() {
+fn gsi_04_03a_lunar_theater_zeroing_clears_special_terrain_globals() {
     let mut ini = String::from(
         "[General]\n\
          CliffSet=10\n\
@@ -289,15 +405,26 @@ fn lunar_theater_zeroing_clears_numeric_cliff_and_bridge_ranges() {
     let mut bridge_set = super::parse_general_int(&ini, "BridgeSet");
     let mut wood_bridge_set = super::parse_general_int(&ini, "WoodBridgeSet");
     let mut ranges = super::resolve_cliff_ranges(&lookup, &ini, bridge_set, wood_bridge_set);
+    let mut rmg_tiles = RmgTileKeys {
+        water_set: Some(17),
+        ..RmgTileKeys::default()
+    };
 
-    assert!(ranges.is_cliff_or_impassable_tile(1, 0));
+    assert!(ranges.is_special_terrain_tile(1, 0));
 
-    super::apply_lunar_cliff_zeroing("LUNAR", &mut bridge_set, &mut wood_bridge_set, &mut ranges);
+    super::apply_lunar_global_zeroing(
+        "LUNAR",
+        &mut bridge_set,
+        &mut wood_bridge_set,
+        &mut ranges,
+        &mut rmg_tiles,
+    );
 
     assert_eq!(bridge_set, None);
     assert_eq!(wood_bridge_set, None);
     assert_eq!(ranges, TheaterCliffRanges::default());
-    assert!(!ranges.is_cliff_or_impassable_tile(1, 0));
+    assert_eq!(rmg_tiles.water_set, None);
+    assert!(!ranges.is_special_terrain_tile(1, 0));
 }
 
 #[test]

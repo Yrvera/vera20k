@@ -1,9 +1,9 @@
-//! Two-stream RNG routing + determinism tests.
+//! RNG routing, authority-boundary, and determinism tests.
 //!
-//! Guards the scenario_rng / main_rng split: byte-identical seeding, stream
-//! independence, per-accessor routing (the dominant silent-misroute failure),
-//! hash coverage, snapshot persistence, end-to-end determinism, and a
-//! ground-truth gamemd value-parity pin for both streams.
+//! Guards Scenario/Main/MapGen independence, per-accessor routing (the
+//! dominant silent-misroute failure), authoritative hash/snapshot coverage,
+//! process-global load retention, end-to-end determinism, and ground-truth
+//! gamemd value-parity pins.
 
 use super::{DEFAULT_SIM_SEED, Simulation};
 use crate::sim::rng::SimRng;
@@ -69,6 +69,7 @@ fn drawing_scenario_leaves_main_untouched() {
     let seed = 1234u64;
     let mut sim = Simulation::with_seed(seed);
     let fresh = SimRng::new(seed);
+    let mapgen_before = sim.mapgen_rng.state();
 
     for _ in 0..32 {
         sim.scatter_rng().next_u32();
@@ -83,6 +84,11 @@ fn drawing_scenario_leaves_main_untouched() {
         fresh.state(),
         "scenario stream must have advanced"
     );
+    assert_eq!(
+        sim.mapgen_rng.state(),
+        mapgen_before,
+        "drawing only from the scenario stream must not advance MapGen"
+    );
 }
 
 #[test]
@@ -90,6 +96,7 @@ fn drawing_main_leaves_scenario_untouched() {
     let seed = 1234u64;
     let mut sim = Simulation::with_seed(seed);
     let fresh = SimRng::new(seed);
+    let mapgen_before = sim.mapgen_rng.state();
 
     for _ in 0..32 {
         sim.weapon_spread_rng().next_u32();
@@ -104,6 +111,11 @@ fn drawing_main_leaves_scenario_untouched() {
         fresh.state(),
         "main stream must have advanced"
     );
+    assert_eq!(
+        sim.mapgen_rng.state(),
+        mapgen_before,
+        "drawing only from the main stream must not advance MapGen"
+    );
 }
 
 // --- Test 3: per-stream gamemd raw-sequence pin (design §7.3) ---
@@ -111,6 +123,31 @@ fn drawing_main_leaves_scenario_untouched() {
 // Both streams from seed 1 must independently reproduce the gamemd raw draw
 // sequence (verified vs the binary scenario RNG; pinned in rng.rs by
 // test_gamemd_raw_sequence_seed_one). Proves the dual seeding is an exact clone.
+#[test]
+fn gsi_04_02_terrain_load_handoffs_install_scenario_and_main_independently() {
+    let seed = 0x1234_5678u64;
+    let mut sim = Simulation::with_seed(seed);
+    let fresh = SimRng::new(seed).logical_state();
+
+    let mut fill_scenario = SimRng::new(seed);
+    for _ in 0..10 {
+        let _ = fill_scenario.next_range_u32_inclusive(0, 3);
+    }
+    let expected_scenario = fill_scenario.logical_state();
+    sim.install_terrain_load_advanced_scenario_rng(fill_scenario);
+    assert_eq!(sim.scenario_rng.logical_state(), expected_scenario);
+    assert_eq!(sim.main_rng.logical_state(), fresh);
+
+    let mut selector_main = SimRng::new(seed);
+    for _ in 0..128 {
+        let _ = selector_main.next_u32();
+    }
+    let expected_main = selector_main.logical_state();
+    sim.install_variant_advanced_main_rng(selector_main);
+    assert_eq!(sim.scenario_rng.logical_state(), expected_scenario);
+    assert_eq!(sim.main_rng.logical_state(), expected_main);
+}
+
 #[test]
 fn each_stream_reproduces_gamemd_raw_sequence_seed_one() {
     let mut sim = Simulation::with_seed(1);
@@ -236,16 +273,16 @@ fn main_stream_matches_gamemd_random_ranged_0_7() {
     }
 }
 
-// --- Test 6: hash coverage — neither stream silently excluded (design §7.6) ---
+// --- Test 6: authoritative hash boundary (design §7.6) ---
 #[test]
-fn advancing_main_only_changes_state_hash() {
+fn advancing_main_only_does_not_change_state_hash() {
     let mut sim = Simulation::with_seed(99);
     let before = sim.state_hash();
     sim.weapon_spread_rng().next_u32();
-    assert_ne!(
+    assert_eq!(
         sim.state_hash(),
         before,
-        "advancing the main stream must change the world hash (else a main-stream desync hides)"
+        "process-global Main state is outside the authoritative world hash"
     );
 }
 
@@ -262,7 +299,7 @@ fn advancing_scenario_only_changes_state_hash() {
 }
 
 #[test]
-fn advancing_mapgen_only_changes_state_hash_without_moving_gameplay_streams() {
+fn advancing_mapgen_only_does_not_change_state_hash_or_gameplay_streams() {
     let mut sim = Simulation::with_seed(99);
     let before_rng = sim.rng_state();
     let before_hash = sim.state_hash();
@@ -282,31 +319,34 @@ fn advancing_mapgen_only_changes_state_hash_without_moving_gameplay_streams() {
         after_rng.mapgen, before_rng.mapgen,
         "the MapGen stream must advance"
     );
-    assert_ne!(
+    assert_eq!(
         sim.state_hash(),
         before_hash,
-        "advancing MapGen must change the world hash"
+        "process-global MapGen state is outside the authoritative world hash"
     );
 }
 
-// --- Test 7: snapshot round-trip persists both streams independently (§7.7) ---
+// --- Test 7: snapshot persists Scenario and omits process globals (§7.7) ---
 #[test]
-fn snapshot_round_trip_persists_both_streams() {
+fn snapshot_round_trip_persists_only_scenario_stream() {
     let mut sim = Simulation::with_seed(0xABCD_1234);
-    // Advance the two streams a DIFFERENT number of draws so a swapped or
-    // dropped field would diverge.
     for _ in 0..11 {
         sim.scatter_rng().next_u32();
     }
     for _ in 0..7 {
         sim.weapon_spread_rng().next_u32();
     }
+    sim.mapgen_rng = SimRng::new(99);
+    for _ in 0..3 {
+        sim.mapgen_rng.next_u32();
+    }
+
     let scenario_before = sim.scenario_rng.state();
     let main_before = sim.main_rng.state();
-    assert_ne!(
-        scenario_before, main_before,
-        "streams must have diverged for a meaningful test"
-    );
+    let mapgen_before = sim.mapgen_rng.state();
+    let process_placeholder = SimRng::new(0).state();
+    assert_ne!(main_before, process_placeholder);
+    assert_ne!(mapgen_before, process_placeholder);
 
     let bytes = GameSnapshot::save(&sim, 0, 0, "rng_test", 0);
     let loaded = GameSnapshot::load(&bytes).expect("snapshot load");
@@ -319,8 +359,13 @@ fn snapshot_round_trip_persists_both_streams() {
     );
     assert_eq!(
         restored.main_rng.state(),
-        main_before,
-        "main stream must round-trip"
+        process_placeholder,
+        "Main is process-global and must not be restored from Scenario data"
+    );
+    assert_eq!(
+        restored.mapgen_rng.state(),
+        process_placeholder,
+        "MapGen is process-global and must not be restored from Scenario data"
     );
 }
 
@@ -351,65 +396,55 @@ fn determinism_both_streams_match_across_ticks() {
     }
 }
 
-// --- Test 9: three-stream snapshot round-trip incl. mapgen_rng (§5) ---
-//
-// Mirrors `snapshot_round_trip_persists_both_streams` but advances all THREE
-// streams a DIFFERENT number of draws and proves each restores independently
-// after a save/load cycle. Fresh Seed(0) MapGen is replaced with a distinct
-// seeded stream and drawn so the round-trip is meaningful (a dropped/swapped
-// field would diverge).
-// (`version_mismatch_is_rejected` in snapshot.rs already covers the v13 version
-// guard; not duplicated here.)
+// --- Test 9: production load keeps the live process-global cursors (§5) ---
 #[test]
-fn snapshot_round_trip_persists_all_three_streams() {
-    let mut sim = Simulation::with_seed(0xABCD_1234);
+fn production_load_retains_live_main_and_mapgen_cursors() {
+    let mut live = Simulation::with_seed(0xABCD_1234);
     for _ in 0..11 {
-        sim.scatter_rng().next_u32();
+        live.scatter_rng().next_u32();
     }
     for _ in 0..7 {
-        sim.weapon_spread_rng().next_u32();
+        live.weapon_spread_rng().next_u32();
     }
-    // Replace fresh Seed(0) MapGen with a distinct seeded stream and advance a
-    // distinct draw count.
-    sim.mapgen_rng = SimRng::new(99);
+    live.mapgen_rng = SimRng::new(99);
     for _ in 0..3 {
-        sim.mapgen_rng.next_u32();
+        live.mapgen_rng.next_u32();
     }
 
-    let scenario_before = sim.scenario_rng.state();
-    let main_before = sim.main_rng.state();
-    let mapgen_before = sim.mapgen_rng.state();
-    assert_ne!(
-        scenario_before, main_before,
-        "streams must have diverged for a meaningful test"
-    );
-    assert_ne!(
-        scenario_before, mapgen_before,
-        "mapgen must differ from scenario too"
-    );
-    assert_ne!(
-        main_before, mapgen_before,
-        "mapgen must differ from main too"
-    );
+    let saved_scenario = live.scenario_rng.state();
+    let bytes = GameSnapshot::save(&live, 0, 0, "rng_test", 0);
 
-    let bytes = GameSnapshot::save(&sim, 0, 0, "rng_test", 0);
-    let loaded = GameSnapshot::load(&bytes).expect("snapshot load");
-    let restored = loaded.sim;
+    // Process-global activity after the save is the cursor state that must
+    // survive loading it. Advancing Scenario proves that seam does not copy
+    // the live Scenario cursor over the saved one.
+    live.scatter_rng().next_u32();
+    for _ in 0..5 {
+        live.weapon_spread_rng().next_u32();
+    }
+    for _ in 0..2 {
+        live.mapgen_rng.next_u32();
+    }
+    let live_scenario = live.scenario_rng.state();
+    let live_main = live.main_rng.state();
+    let live_mapgen = live.mapgen_rng.state();
 
+    let mut restored = GameSnapshot::load(&bytes).expect("snapshot load").sim;
+    restored.retain_process_rngs_from(&live);
     assert_eq!(
         restored.scenario_rng.state(),
-        scenario_before,
-        "scenario stream must round-trip"
+        saved_scenario,
+        "Scenario must come from the save"
     );
+    assert_ne!(restored.scenario_rng.state(), live_scenario);
     assert_eq!(
         restored.main_rng.state(),
-        main_before,
-        "main stream must round-trip"
+        live_main,
+        "Main must retain the live pre-load process cursor"
     );
     assert_eq!(
         restored.mapgen_rng.state(),
-        mapgen_before,
-        "mapgen stream must round-trip"
+        live_mapgen,
+        "MapGen must retain the live pre-load process cursor"
     );
 }
 

@@ -42,25 +42,44 @@ pub fn is_non_player_house(owner: &str) -> bool {
 /// Number of shades per house color band (matches palette indices 16–31).
 const RAMP_SIZE: usize = 16;
 
-/// gamemd's per-scheme 16-shade team band (palette indices 16..31): fixed hue H;
-/// S rides a sine 50°→90°, while V rides a cosine 20°→90° with the shade-0
-/// cosine angle overridden to π/16. Each (modS, modV) goes through the
-/// 6-sextant integer HSV→RGB. Shade 0 is the brightest
-/// (the radar/UI/target-line color).
-///
-/// `f64` trig is acceptable here (rules/render, not lockstep sim), but it is an
-/// approximation of gamemd's lookup-table/x87 path. Native live `ftol`
-/// rounding at this constructor call remains unverified, so these bytes are a
-/// regression result rather than an exact-parity claim.
+/// Exact active-YR `f32` samples selected for the 16 saturation shades.
+#[rustfmt::skip]
+const SATURATION_FACTOR_BITS: [u32; RAMP_SIZE] = [
+    0x3F4422AA, 0x3F4B7F08, 0x3F5289B4, 0x3F591E6A,
+    0x3F5F397A, 0x3F64C0EE, 0x3F69E0D7, 0x3F6E7DB7,
+    0x3F7284E4, 0x3F76167A, 0x3F791E30, 0x3F7B9107,
+    0x3F7D8284, 0x3F7EE5F9, 0x3F7FB848, 0x3F800000,
+];
+
+/// Exact active-YR `f32` samples selected for the 16 value shades.
+#[rustfmt::skip]
+const VALUE_FACTOR_BITS: [u32; RAMP_SIZE] = [
+    0x3F7B14BE, 0x3F68AA48, 0x3F5F397A, 0x3F54330F,
+    0x3F47DE65, 0x3F3A37B6, 0x3F2B561A, 0x3F1B52BB,
+    0x3F0A1E5D, 0x3EF050C4, 0x3ECACE62, 0x3EA3F505,
+    0x3E780CBD, 0x3E25C58B, 0x3DA6522F, 0x250D3000,
+];
+
+/// Promote the sampled `f32` exactly to `f64`, multiply by the source byte,
+/// then truncate toward zero like the active constructor.
+fn scale_ramp_byte(source: u8, factor_bits: u32) -> u8 {
+    let factor = f64::from(f32::from_bits(factor_bits));
+    (factor * f64::from(source)).trunc() as u8
+}
+
+fn modulated_sv(hsv: [u8; 3], shade: usize) -> [u8; 2] {
+    [
+        scale_ramp_byte(hsv[1], SATURATION_FACTOR_BITS[shade]),
+        scale_ramp_byte(hsv[2], VALUE_FACTOR_BITS[shade]),
+    ]
+}
+
+/// Active-YR per-scheme 16-shade team band (palette indices 16..31): fixed hue
+/// H with saturation and value scaled by the exact sampled factors. Each
+/// `(modS, modV)` pair goes through the 6-sextant integer HSV→RGB conversion.
+/// Shade 0 is the brightest (the radar/UI/target-line color).
 pub fn build_scheme_ramp(hsv: [u8; 3]) -> [Color; RAMP_SIZE] {
-    use std::f64::consts::PI;
     let h = hsv[0];
-    let s = hsv[1] as f64;
-    let v = hsv[2] as f64;
-    let sin_base = 50.0_f64.to_radians();
-    let sin_step = (40.0_f64 / 15.0).to_radians();
-    let cos_base = 20.0_f64.to_radians();
-    let cos_step = (70.0_f64 / 15.0).to_radians();
     let mut ramp = [Color {
         r: 0,
         g: 0,
@@ -68,16 +87,7 @@ pub fn build_scheme_ramp(hsv: [u8; 3]) -> [Color; RAMP_SIZE] {
         a: 255,
     }; RAMP_SIZE];
     for (i, slot) in ramp.iter_mut().enumerate() {
-        let sin_angle = sin_base + (i as f64) * sin_step;
-        let cos_angle = if i == 0 {
-            PI / 16.0
-        } else {
-            cos_base + (i as f64) * cos_step
-        };
-        // Truncation preserves the current Rust approximation. Native live
-        // `ftol` rounding at this constructor call remains UNCHECKED.
-        let mod_s = (sin_angle.sin() * s).trunc().clamp(0.0, 255.0) as u8;
-        let mod_v = (cos_angle.cos() * v).trunc().clamp(0.0, 255.0) as u8;
+        let [mod_s, mod_v] = modulated_sv(hsv, i);
         let [r, g, b] = hsv_to_rgb([h, mod_s, mod_v]);
         *slot = Color { r, g, b, a: 255 };
     }
@@ -107,7 +117,7 @@ pub struct HouseColorRamps {
 }
 
 impl HouseColorRamps {
-    /// Build one trig ramp per `[Colors]` scheme, in declaration order.
+    /// Build one exact sampled-factor ramp per `[Colors]` scheme, in declaration order.
     pub fn from_schemes(schemes: &[ColorSchemeEntry]) -> Self {
         Self {
             ramps: schemes.iter().map(|s| build_scheme_ramp(s.hsv)).collect(),
@@ -173,20 +183,41 @@ mod tests {
         );
     }
 
-    /// Per-shade RGB for stock schemes — locks the current Rust approximation.
-    ///
-    /// gamemd builds these via an 8192-step `float32` sine/cosine lookup table,
-    /// while Rust uses `f64` libm, so the channel bytes can differ. The exact
-    /// bound is not claimed because the live constructor's x87 `ftol` rounding
-    /// mode remains UNCHECKED. These values are only a Rust regression guard,
-    /// not a gamemd parity oracle. If `build_scheme_ramp` changes intentionally,
-    /// regenerate from the reviewed Rust approximation.
     #[test]
-    fn build_scheme_ramp_matches_golden_stock_values() {
+    fn gsi_02_13_build_scheme_ramp_matches_native_intermediate_modulation() {
+        #[rustfmt::skip]
+        let cases: &[(&str, [u8; 3], [[u8; 2]; RAMP_SIZE])] = &[
+            ("Gold", [43, 239, 255], [
+                [183,250],[189,231],[196,222],[202,211],
+                [208,199],[213,185],[218,170],[222,154],
+                [226,137],[229,119],[232,101],[234,81],
+                [236,61],[237,41],[238,20],[239,0],
+            ]),
+            ("DarkBlue", [153, 214, 212], [
+                [163,207],[170,192],[175,184],[181,175],
+                [186,165],[191,154],[195,141],[199,128],
+                [202,114],[205,99],[208,83],[210,67],
+                [211,51],[213,34],[213,17],[214,0],
+            ]),
+        ];
+        for (name, hsv, expected) in cases {
+            for (shade, expected_pair) in expected.iter().enumerate() {
+                assert_eq!(
+                    modulated_sv(*hsv, shade),
+                    *expected_pair,
+                    "{name} shade {shade}"
+                );
+            }
+        }
+    }
+
+    /// Exact active-YR per-shade RGB oracles for representative stock schemes.
+    #[test]
+    fn gsi_02_13_build_scheme_ramp_matches_golden_stock_values() {
         #[rustfmt::skip]
         let cases: &[(&str, [u8; 3], [[u8; 3]; 16])] = &[
             ("Gold", [43, 239, 255], [
-                [248,250,70],[229,231,58],[220,222,51],[209,211,43],
+                [248,250,70],[229,231,59],[220,222,51],[209,211,43],
                 [197,199,36],[183,185,30],[168,170,24],[152,154,19],
                 [135,137,15],[118,119,12],[100,101,9],[80,81,6],
                 [60,61,4],[40,41,2],[19,20,1],[0,0,0],

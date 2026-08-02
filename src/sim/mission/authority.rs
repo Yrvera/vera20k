@@ -11,10 +11,13 @@
 //!
 //! Readiness inputs: the Unit world lookups (Radio contact slot 0, the
 //! building-under stored-order lookup, `WeaponsFactory=`) are live through
-//! [`LiveReadyInputProvider`]. The exact locomotor family states and the
-//! signed object height have no live producers yet; the host promotion maps
-//! that unavailability to a permissive moving-defer gate (recorded residual)
-//! rather than stalling queued missions forever.
+//! [`LiveReadyInputProvider`]. The locomotor moving state is live for all six
+//! families that can reach this gate, derived per gate evaluation by
+//! [`crate::sim::movement::ready_producer`] — native makes a fresh locomotor
+//! call at each of its own gate sites rather than caching one per frame. The
+//! signed object height still has no live producer; the host promotion maps that
+//! unavailability to a permissive moving-defer gate (recorded residual) rather
+//! than stalling queued missions forever.
 
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
@@ -24,7 +27,7 @@ use crate::sim::world::Simulation;
 
 use super::concrete_effects::{
     AuthorityUnavailable, ConcreteMissionEffects, ConcreteSetterRequest,
-    UnavailableConcreteMissionEffects,
+    RepresentedConcreteMissionEffects, UnavailableConcreteMissionEffects,
 };
 use super::readiness::{
     AircraftReadyView, BuildingReadyView, InfantryReadyView, ReadyLeptonPoint, ReadyResult,
@@ -192,12 +195,25 @@ impl UnitReadyWorld for UnavailableUnitWorld {
     }
 }
 
-/// Degraded moving-gate input: no locomotor family has a live exact producer
-/// for its readiness state yet, so the host promotion substitutes a
-/// "not moving now" input — the moving-defer branch never defers, and every
-/// later exact gate (tracker bytes, Radio slot-0 hold, building-under hold,
-/// Infantry Doing table) still evaluates. Recorded residual; superseded the
-/// moment real producers write `mission_ready_state`.
+/// Fallback moving-gate input for entities whose locomotor has no producer.
+///
+/// All six families that can actually reach this gate — Drive, Ship, Walk, Hover,
+/// Teleport and Jumpjet — are produced live each tick by
+/// `sim::movement::ready_producer`, so none of them land here any more. What
+/// still lands here is the set that producer returns `None` for: Fly, Rocket,
+/// Parachute, Tunnel, DropPod and Mech.
+///
+/// Those do not need a producer. `is_moving_now` has exactly two consumers here,
+/// the Unit and Infantry branches in `sim::mission::readiness`; aircraft
+/// readiness decides from its mission plus two flags and never reads the
+/// locomotor, and Rocket-locomotor objects are aircraft as well. So this is a
+/// floor for state the gate cannot reach, not a stand-in for missing work — and
+/// answering "not moving" is also the safe direction if that ever changes.
+/// See `ready_producer`'s fallthrough arm for what the native slot does for each
+/// of those kinds; they do not agree with each other.
+///
+/// This constant and the `degraded_moving_gate` parameter can retire together
+/// once `evaluate_ready` no longer needs a `None` fallback at all.
 const DEGRADED_NOT_MOVING: crate::sim::movement::locomotor_ready::LocomotorReadyState =
     crate::sim::movement::locomotor_ready::LocomotorReadyState::Drive {
         turning_active: false,
@@ -219,15 +235,18 @@ fn evaluate_ready(
             .entities
             .get(receiver)
             .ok_or(ReadyUnavailable::WorldLookup)?;
-        let locomotor = entity
-            .locomotor
-            .as_ref()
-            .and_then(|locomotor| locomotor.mission_ready_state)
-            .or(if degraded_moving_gate {
-                Some(DEGRADED_NOT_MOVING)
-            } else {
-                None
-            });
+        // Derived here, at the gate, rather than read from a per-tick cache:
+        // native's readiness virtual performs a fresh locomotor call every time
+        // it runs, and it runs twice per object per tick — once either side of
+        // that object's movement step — so a single stored value would answer
+        // the second call with the first call's state.
+        let locomotor =
+            crate::sim::movement::ready_producer::ready_state_for(entity, sim.session.binary_frame)
+                .or(if degraded_moving_gate {
+                    Some(DEGRADED_NOT_MOVING)
+                } else {
+                    None
+                });
         let attack_target_present = entity.attack_target.is_some();
 
         match entity.category {
@@ -254,8 +273,45 @@ fn evaluate_ready(
                         leaf,
                         unload_active,
                         locomotor,
-                        // The current u8 terrain level is not the verified
-                        // signed ObjectClass height dword.
+                        // Deliberately absent, and NOT for want of a producer.
+                        //
+                        // Native's input is `Get_Height`: the object's Z minus
+                        // the ground height at its cell, minus the bridge deck
+                        // when on a bridge — so ground and bridge both read 0,
+                        // airborne reads positive, only below-ground reads
+                        // negative. `LocomotorState::altitude` is exactly that
+                        // quantity, so the producer is a one-liner.
+                        //
+                        // It is not wired up because turning it on stalls
+                        // vehicles. Supplying it makes this branch's
+                        // `signed_height >= 0` true, which arms the moving-defer
+                        // — and measured over the global harness that took gate
+                        // evaluations from 28 (all ready) to 8045, of which 8021
+                        // were deferrals. The count explodes precisely because a
+                        // deferral leaves the mission queued, so the same unit
+                        // re-defers every tick and the queue never drains.
+                        //
+                        // Root cause is upstream of here: the dominant deferral
+                        // reads `effective=Move, current=NONE, queued=Move,
+                        // bypass_latch=0, moving=true` — a unit already moving
+                        // with no commenced mission at all. Our command path
+                        // sets `movement_target` directly AND queues the
+                        // mission, so movement precedes commencement and the
+                        // gate then refuses to commence because the unit is
+                        // moving. Native runs it the other way: the order
+                        // queues, the unit is not yet moving, the gate
+                        // commences, and the mission handler starts the move.
+                        // `set_movement_bypass_after_verified_queue` — native's
+                        // escape hatch for exactly this — is called only by the
+                        // refinery and jumpjet completion paths here, never by
+                        // the general queue an ordinary Move uses.
+                        //
+                        // So this stays `None` until the command path stops
+                        // starting movement ahead of commencement. Until then
+                        // the host maps the resulting error to permissive-ready
+                        // and the Unit moving-defer branch is inert — which is
+                        // why none of the Drive/Ship readiness mapping can
+                        // affect vehicle behaviour yet.
                         signed_height: None,
                         attack_target_present,
                         position,
@@ -500,6 +556,29 @@ impl Simulation {
         receiver: u64,
     ) -> Result<bool, MissionAuthorityError> {
         let mut effects = UnavailableConcreteMissionEffects;
+        self.mission_restore_exact_with_effects(receiver, &mut effects)
+    }
+
+    pub(crate) fn set_archive_target_represented(
+        &mut self,
+        receiver: u64,
+        requested: Option<TargetKind>,
+    ) -> Result<(), MissionAuthorityError> {
+        if !self.substrate.entities.contains(receiver) {
+            return Err(MissionAuthorityError::MissingReceiver(receiver));
+        }
+        let mut effects = RepresentedConcreteMissionEffects;
+        let prepared =
+            effects.preflight(self, receiver, ConcreteSetterRequest::Target { requested })?;
+        effects.apply_target(self, &prepared, requested);
+        Ok(())
+    }
+
+    pub(crate) fn mission_restore_after_target_expiry(
+        &mut self,
+        receiver: u64,
+    ) -> Result<bool, MissionAuthorityError> {
+        let mut effects = RepresentedConcreteMissionEffects;
         self.mission_restore_exact_with_effects(receiver, &mut effects)
     }
 

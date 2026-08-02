@@ -1,8 +1,8 @@
 //! Parser for RA2 .pal palette files.
 //!
 //! A .pal file is exactly 768 bytes: 256 entries of 3 bytes each (R, G, B).
-//! Color values are in the VGA 6-bit range (0–63), NOT the usual 8-bit (0–255).
-//! We scale them to 8-bit on load so the rest of the engine works with standard RGBA.
+//! Color values are in the VGA 6-bit range (0–63). gamemd decodes each component
+//! with `raw << 2`, so the maximum stored RGBA component is 252.
 //!
 //! ## House Color Remapping
 //! Palette indices 16–31 (16 entries) are reserved for "house colors" — the player's
@@ -63,7 +63,7 @@ impl Color {
 
 /// A 256-color palette loaded from a .pal file.
 ///
-/// Colors are already scaled from VGA 6-bit to standard 8-bit.
+/// Colors are decoded from VGA 6-bit components with the native left shift.
 /// Index 0 is always transparent. Indices 16–31 are house colors
 /// that can be remapped per player.
 #[derive(Debug, Clone)]
@@ -76,7 +76,8 @@ impl Palette {
     /// Parse a palette from raw bytes.
     ///
     /// Input must be exactly 768 bytes (256 colors * 3 bytes RGB).
-    /// Each color component is in VGA 6-bit range (0–63) and gets scaled to 8-bit.
+    /// Each color component is in VGA 6-bit range (0–63) and is decoded as
+    /// `raw << 2`.
     pub fn from_bytes(data: &[u8]) -> Result<Self, AssetError> {
         if data.len() != PAL_FILE_SIZE {
             return Err(AssetError::InvalidPalSize {
@@ -90,14 +91,12 @@ impl Palette {
 
         for (i, color) in colors.iter_mut().enumerate() {
             let base: usize = i * 3;
-            let r: u8 = scale_6bit_vga_to_8bit(data[base]);
-            let g: u8 = scale_6bit_vga_to_8bit(data[base + 1]);
-            let b: u8 = scale_6bit_vga_to_8bit(data[base + 2]);
+            let raw = [data[base], data[base + 1], data[base + 2]];
+            let [r, g, b] = decode_gamemd_rgb(raw);
             // Index 0 is transparent by convention in all Westwood games.
-            // Exact magenta (255, 0, 255) is also a chroma key — RA2 SHP sprites
-            // use it as background fill that should be invisible. In isotem.pal this
-            // is palette index 10; other palettes may differ.
-            let is_transparent: bool = i == 0 || (r == 255 && g == 0 && b == 255);
+            // The renderer adapter also treats the exact raw magenta triplet as a
+            // chroma key; checking before conversion preserves that alpha policy.
+            let is_transparent: bool = i == 0 || raw == [63, 0, 63];
             *color = Color {
                 r,
                 g,
@@ -127,11 +126,8 @@ impl Palette {
 
         for (i, color) in colors.iter_mut().enumerate() {
             let base: usize = i * 3;
-            *color = Color::rgb(
-                scale_6bit_gamemd_ui_to_8bit(data[base]),
-                scale_6bit_gamemd_ui_to_8bit(data[base + 1]),
-                scale_6bit_gamemd_ui_to_8bit(data[base + 2]),
-            );
+            let [r, g, b] = decode_gamemd_rgb([data[base], data[base + 1], data[base + 2]]);
+            *color = Color::rgb(r, g, b);
         }
 
         Ok(Palette { colors })
@@ -173,32 +169,13 @@ impl Palette {
     }
 }
 
-/// Scale a VGA 6-bit color component (0–63) to standard 8-bit (0–255).
-///
-/// The original VGA hardware used 6 bits per channel (64 levels).
-/// We need to expand to 8 bits (256 levels) for modern displays.
-/// Formula: output = (input * 255 + 31) / 63
-/// This maps 0→0 and 63→255 with correct rounding.
-fn scale_6bit_vga_to_8bit(value: u8) -> u8 {
-    let v: u16 = value as u16;
-    ((v * 255 + 31) / 63) as u8
-}
-
-fn scale_6bit_gamemd_ui_to_8bit(value: u8) -> u8 {
-    value << 2
+fn decode_gamemd_rgb(raw: [u8; 3]) -> [u8; 3] {
+    [raw[0] << 2, raw[1] << 2, raw[2] << 2]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_scale_6bit_boundaries() {
-        // 0 must map to 0 (full black stays black).
-        assert_eq!(scale_6bit_vga_to_8bit(0), 0);
-        // 63 must map to 255 (full white stays white).
-        assert_eq!(scale_6bit_vga_to_8bit(63), 255);
-    }
 
     #[test]
     fn pal_file_gamemd_shift_left_two_maps_63_to_252() {
@@ -228,29 +205,37 @@ mod tests {
     }
 
     #[test]
-    fn test_scale_6bit_midpoint() {
-        // Midpoint should be approximately half of 255 (~127).
-        let mid: u8 = scale_6bit_vga_to_8bit(31);
-        assert!(mid >= 124 && mid <= 126, "Midpoint was {}", mid);
-    }
-
-    #[test]
-    fn test_parse_palette_basic() {
-        // Create a minimal valid palette: all zeros except color 1 = max red.
+    fn gsi_02_13_general_palette_uses_native_component_shift() {
         let mut data: Vec<u8> = vec![0u8; PAL_FILE_SIZE];
-        data[3] = 63; // Color 1: R = 63 (max VGA red)
-        data[4] = 0; // Color 1: G = 0
-        data[5] = 0; // Color 1: B = 0
+        data[3] = 63;
+        data[4] = 31;
+        data[5] = 1;
 
         let pal: Palette = Palette::from_bytes(&data).expect("Should parse valid palette");
 
-        // Index 0 should be transparent (alpha = 0).
         assert_eq!(pal.colors[0].a, 0);
-        // Index 1 should be fully opaque red.
-        assert_eq!(pal.colors[1].r, 255);
-        assert_eq!(pal.colors[1].g, 0);
-        assert_eq!(pal.colors[1].b, 0);
+        assert_eq!(pal.colors[1].r, 252);
+        assert_eq!(pal.colors[1].g, 124);
+        assert_eq!(pal.colors[1].b, 4);
         assert_eq!(pal.colors[1].a, 255);
+    }
+
+    #[test]
+    fn gsi_02_13_general_palette_preserves_raw_magenta_chroma_alpha() {
+        let mut data: Vec<u8> = vec![0u8; PAL_FILE_SIZE];
+        data[3..6].copy_from_slice(&[63, 0, 63]);
+
+        let pal: Palette = Palette::from_bytes(&data).expect("Should parse valid palette");
+
+        assert_eq!(
+            pal.colors[1],
+            Color {
+                r: 252,
+                g: 0,
+                b: 252,
+                a: 0,
+            }
+        );
     }
 
     #[test]

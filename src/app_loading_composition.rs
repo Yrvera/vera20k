@@ -227,12 +227,12 @@ pub(crate) fn localize_loading_text(
     let keys = loading_country_text_keys(country);
     LocalizedLoadingTextSnapshot {
         keys,
-        country_name: csf.get(keys.country_name).map(str::to_owned),
-        special_unit: csf
-            .get(keys.special_unit)
-            .map(native_uppercase_special_unit),
-        load_brief: csf.get(keys.load_brief).map(str::to_owned),
-        loading: csf.get(LOADING_TEXT_KEY).map(str::to_owned),
+        country_name: Some(csf.text(keys.country_name).into_owned()),
+        special_unit: Some(native_uppercase_special_unit(
+            csf.text(keys.special_unit).as_ref(),
+        )),
+        load_brief: Some(csf.text(keys.load_brief).into_owned()),
+        loading: Some(csf.text(LOADING_TEXT_KEY).into_owned()),
     }
 }
 

@@ -414,6 +414,7 @@ mod tests {
         TileIds {
             clear: 0,
             ramp_base: 600,
+            ramp_smooth: 620,
             rough: -1,
             sand: -1,
             green: 100,

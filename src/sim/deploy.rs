@@ -16,12 +16,12 @@
 
 use crate::sim::entity_store::EntityStore;
 
-/// Default deploy/undeploy duration in sim ticks when the per-type art.ini
+/// Default deploy/undeploy duration in native frames when the per-type art.ini
 /// frame count cannot be resolved from this scope.
 ///
-/// Sized to roughly match stock GI/GGI deploy at the current 22 ms sim tick,
-/// but used only when per-type art sequence frame counts are unavailable.
-pub(crate) const DEPLOY_DEFAULT_TICKS: u16 = 55;
+/// Matches the stock Guardian GI deploy frame count and is used only when
+/// per-type art sequence frame counts are unavailable.
+pub(crate) const DEPLOY_DEFAULT_TICKS: u16 = 15;
 
 /// Sim-authoritative deploy phase for an entity.
 ///
@@ -46,13 +46,9 @@ pub enum DeployPhaseKind {
     Undeploying,
 }
 
-/// Convert SHP animation frames to sim countdown ticks.
-///
-/// This is not exact retail sequencing. It is a coarse bridge from art sequence
-/// length to the current sim-local countdown until deploy completion can be
-/// driven by actual sequence-frame completion.
+/// Convert SHP animation frames to the native-frame deploy countdown.
 pub(crate) fn frames_to_ticks(frames: u16) -> u16 {
-    ((frames as u32) * 80 / 22) as u16
+    frames
 }
 
 /// Resolve the number of sim ticks the deploy or undeploy phase should run.
@@ -75,8 +71,9 @@ pub(crate) fn compute_anim_ticks(
 ///
 /// `Deploying { N }` → `Deploying { N-1 }` until N == 1, then promotes to
 /// `Deployed`. `Undeploying { N }` follows the same shape, ending at `None`.
-/// Because this runs after command dispatch, a freshly-entered phase decrements
-/// on the same `advance_tick` that accepted the deploy command.
+/// Command dispatch is a Main_Tick tail stage, after this object update. A
+/// freshly-entered phase therefore begins decrementing on the next gameplay
+/// frame.
 pub fn tick_deploy_state(entities: &mut EntityStore) {
     let keys = entities.keys_sorted();
     for id in keys {
@@ -100,6 +97,10 @@ pub fn tick_deploy_state(entities: &mut EntityStore) {
                     });
                 } else {
                     entity.deploy_state = None;
+                    // Undeploy complete: the locomotor is powered back on.
+                    if let Some(loco) = entity.locomotor.as_mut() {
+                        loco.power_on();
+                    }
                 }
             }
             Some(DeployPhase::Deployed) | None => {}
@@ -113,14 +114,12 @@ mod tests {
 
     #[test]
     fn frames_to_ticks_ggi_deploy() {
-        // 15-frame deploy -> 54 ticks (15 * 80 / 22, truncating).
-        assert_eq!(frames_to_ticks(15), 54);
+        assert_eq!(frames_to_ticks(15), 15);
     }
 
     #[test]
     fn frames_to_ticks_short_undeploy() {
-        // 2-frame undeploy -> 7 ticks.
-        assert_eq!(frames_to_ticks(2), 7);
+        assert_eq!(frames_to_ticks(2), 2);
     }
 
     #[test]
@@ -154,11 +153,11 @@ mod tests {
         let entry = reg.get("GGI").expect("entry");
         assert_eq!(
             compute_anim_ticks(Some(entry), DeployPhaseKind::Deploying),
-            54
+            15
         );
         assert_eq!(
             compute_anim_ticks(Some(entry), DeployPhaseKind::Undeploying),
-            7
+            2
         );
     }
 
@@ -173,10 +172,10 @@ mod tests {
         );
         let reg = crate::rules::art_data::ArtRegistry::from_ini(&ini);
         let entry = reg.get("E1").expect("entry");
-        // Deploy=8 frames -> 29 ticks; Undeploy missing -> fallback.
+        // Deploy=8 frames; Undeploy missing -> fallback.
         assert_eq!(
             compute_anim_ticks(Some(entry), DeployPhaseKind::Deploying),
-            29
+            8
         );
         assert_eq!(
             compute_anim_ticks(Some(entry), DeployPhaseKind::Undeploying),

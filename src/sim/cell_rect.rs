@@ -15,7 +15,6 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::pathfinding::passability;
 use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneId};
 
 /// Fixed cell-array stride — the engine indexes cells `y*0x200 + x` regardless of
@@ -65,17 +64,18 @@ impl Eq for CellRef<'_> {}
 /// Engine `Get_CellClass`: coord → cell via the fixed stride; an out-of-range or
 /// missing cell returns `CellRef::Dummy { coord }` carrying the *requested* coord
 /// (NOT `(0,0)`, NOT `None`). The width-based `PathGrid`/`ResolvedTerrainGrid`
-/// index stays as the cache; this is the never-null parity lookup.
+/// index stays as the cache; this is the never-null parity lookup. Components are
+/// not checked separately: any valid linear index aliases its canonical 512-wide slot.
 pub fn get_cellclass_fallback<'a>(
     terrain: Option<&'a ResolvedTerrainGrid>,
     x: i32,
     y: i32,
 ) -> CellRef<'a> {
-    if cell_linear_index(x, y).is_some() {
-        if let (Ok(rx), Ok(ry)) = (u16::try_from(x), u16::try_from(y)) {
-            if let Some(cell) = terrain.and_then(|t| t.cell(rx, ry)) {
-                return CellRef::Real(cell);
-            }
+    if let Some(index) = cell_linear_index(x, y) {
+        let rx = (index % CELL_ROW_STRIDE) as u16;
+        let ry = (index / CELL_ROW_STRIDE) as u16;
+        if let Some(cell) = terrain.and_then(|t| t.cell(rx, ry)) {
+            return CellRef::Real(cell);
         }
     }
     CellRef::Dummy { coord: (x, y) }
@@ -383,10 +383,9 @@ fn speed_type_allows_cell(
                 | MovementZone::CrusherAll
         );
     }
-    if let Some(cost) = cell.speed_costs.cost_for_speed_type(speed_type) {
-        return cost > 0;
-    }
-    passability::is_passable_for_speed_type(cell.land_type, speed_type)
+    cell.speed_costs
+        .cost_for_speed_type(speed_type)
+        .is_none_or(|cost| cost > 0)
 }
 
 fn terrain_object_blocks(resolved_terrain: Option<&ResolvedTerrainGrid>, rx: u16, ry: u16) -> bool {
@@ -461,6 +460,25 @@ fn rect_in_playfield(
     corners
         .into_iter()
         .all(|(x, y)| x >= 0 && y >= 0 && x < i32::from(width) && y < i32::from(height))
+}
+
+/// Exact single-cell `MapClass::Is_Cell_In_Playfield(cell, 1)` seam.
+///
+/// Production maps supply `bounds`, selecting the retail isometric-diamond
+/// predicate.  The rectangular fallback is retained only for headless callers
+/// that do not yet carry map-header bounds.
+pub(crate) fn cell_is_in_playfield(
+    cell: (i32, i32),
+    bounds: Option<PlayfieldBounds>,
+    terrain: Option<&ResolvedTerrainGrid>,
+    map_size: Option<(u16, u16)>,
+) -> bool {
+    if let Some(bounds) = bounds {
+        return cell_in_playfield_diamond(cell.0, cell.1, &bounds, terrain);
+    }
+    map_size.is_none_or(|(width, height)| {
+        cell.0 >= 0 && cell.1 >= 0 && cell.0 < i32::from(width) && cell.1 < i32::from(height)
+    })
 }
 
 /// Engine `Is_Cell_In_Playfield` with `height_flag = 1` (the value the sole rect
@@ -567,7 +585,10 @@ mod tests {
             canonical_ramp: None,
             ground_walk_blocked: false,
             terrain_object_blocks: false,
+            terrain_object_occupation: None,
             overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
             zone_type: zone_class::GROUND,
             base_ground_walk_blocked: false,
             base_build_blocked: false,
@@ -819,6 +840,30 @@ mod tests {
         assert_eq!(
             get_cellclass_fallback(Some(&g), -3, 7),
             CellRef::Dummy { coord: (-3, 7) }
+        );
+    }
+
+    #[test]
+    fn gsi_04_01_get_cellclass_fixed_stride_aliases_canonical_slot() {
+        let terrain = flat_terrain(512, 2);
+
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), -1, 1),
+            CellRef::Real(terrain.cell(511, 0).expect("canonical index 511"))
+        );
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), 512, 0),
+            CellRef::Real(terrain.cell(0, 1).expect("canonical index 512"))
+        );
+
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), -1, 0),
+            CellRef::Dummy { coord: (-1, 0) }
+        );
+        let missing_canonical_cell = flat_terrain(2, 1);
+        assert_eq!(
+            get_cellclass_fallback(Some(&missing_canonical_cell), 512, 0),
+            CellRef::Dummy { coord: (512, 0) }
         );
     }
 

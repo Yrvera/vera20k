@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::ruleset::RadiationRules;
-use crate::util::lepton::LEPTONS_PER_LEVEL;
+use crate::util::lepton::{UnsupportedGroundSlope, ground_height_leptons};
 
 /// Leptons per cell edge (cell-center to cell-center step).
 const LEPTONS_PER_CELL: i64 = 256;
@@ -85,13 +85,19 @@ pub struct RadDetonation {
     pub spread: i32,
 }
 
-/// Ground height of a cell center in leptons (level × 104). Flat 0 when no
-/// terrain grid is loaded.
-fn cell_height_leptons(terrain: Option<&ResolvedTerrainGrid>, rx: u16, ry: u16) -> i64 {
-    terrain
-        .and_then(|t| t.cell(rx, ry))
-        .map(|c| c.level as i64 * LEPTONS_PER_LEVEL)
-        .unwrap_or(0)
+/// Ground height of a cell center in leptons. Flat 0 when no terrain grid or
+/// cell is loaded; unsupported raw slope bytes stay explicit.
+fn cell_height_leptons(
+    terrain: Option<&ResolvedTerrainGrid>,
+    rx: u16,
+    ry: u16,
+) -> Result<i64, UnsupportedGroundSlope> {
+    let Some(cell) = terrain.and_then(|t| t.cell(rx, ry)) else {
+        return Ok(0);
+    };
+    let world_x = i32::from(rx).wrapping_mul(256).wrapping_add(128);
+    let world_y = i32::from(ry).wrapping_mul(256).wrapping_add(128);
+    ground_height_leptons(cell.level, cell.slope_type, world_x, world_y).map(i64::from)
 }
 
 /// 3D cell-center distance in whole leptons, truncated toward zero.
@@ -99,23 +105,28 @@ fn cell_distance_leptons(
     terrain: Option<&ResolvedTerrainGrid>,
     a: (u16, u16),
     b: (u16, u16),
-) -> i32 {
+) -> Result<i32, UnsupportedGroundSlope> {
     let dx = (b.0 as i64 - a.0 as i64) * LEPTONS_PER_CELL;
     let dy = (b.1 as i64 - a.1 as i64) * LEPTONS_PER_CELL;
-    let dz = cell_height_leptons(terrain, b.0, b.1) - cell_height_leptons(terrain, a.0, a.1);
+    let dz = cell_height_leptons(terrain, b.0, b.1)?
+        - cell_height_leptons(terrain, a.0, a.1)?;
     let dist_sq = (dx * dx + dy * dy + dz * dz) as f64;
-    dist_sq.sqrt() as i32
+    Ok(dist_sq.sqrt() as i32)
 }
 
 /// Linear falloff contribution of `site` at `cell`:
 /// `(radius − dist) / radius × level` when `dist <= radius`, else 0.
-fn falloff_at(site: &RadSite, terrain: Option<&ResolvedTerrainGrid>, cell: (u16, u16)) -> f64 {
-    let dist = cell_distance_leptons(terrain, site.center, cell);
+fn falloff_at(
+    site: &RadSite,
+    terrain: Option<&ResolvedTerrainGrid>,
+    cell: (u16, u16),
+) -> Result<f64, UnsupportedGroundSlope> {
+    let dist = cell_distance_leptons(terrain, site.center, cell)?;
     let radius = site.radius_leptons;
     if dist <= radius {
-        ((radius - dist) as f64 / radius as f64) * site.level as f64
+        Ok(((radius - dist) as f64 / radius as f64) * site.level as f64)
     } else {
-        0.0
+        Ok(0.0)
     }
 }
 
@@ -211,7 +222,9 @@ impl RadiationState {
             .map(|t| (t.width(), t.height()))
             .unwrap_or(FALLBACK_BOUNDS);
         for_each_square_cell(site.center, site.spread, bounds, |cell| {
-            self.add_cell(cell, falloff_at(&site, terrain, cell));
+            if let Ok(amount) = falloff_at(&site, terrain, cell) {
+                self.add_cell(cell, amount);
+            }
         });
     }
 
@@ -236,7 +249,9 @@ impl RadiationState {
             .unwrap_or(FALLBACK_BOUNDS);
         let steps_ahead = (site.remaining / rules.level_delay + 1) as f64;
         for_each_square_cell(site.center, site.spread, bounds, |cell| {
-            let falloff = falloff_at(&site, terrain, cell);
+            let Ok(falloff) = falloff_at(&site, terrain, cell) else {
+                return;
+            };
             if falloff != 0.0 {
                 self.sub_cell(cell, (falloff / site.level_steps as f64) * steps_ahead);
             }
@@ -352,7 +367,9 @@ impl RadiationState {
             .map(|t| (t.width(), t.height()))
             .unwrap_or(FALLBACK_BOUNDS);
         for_each_square_cell(site.center, site.spread, bounds, |cell| {
-            let falloff = falloff_at(&site, terrain, cell);
+            let Ok(falloff) = falloff_at(&site, terrain, cell) else {
+                return;
+            };
             if falloff != 0.0 {
                 self.sub_cell(cell, falloff / site.level_steps as f64);
             }
@@ -363,6 +380,79 @@ impl RadiationState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn terrain_cell(rx: u16, ry: u16, level: u8, slope_type: u8) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+        crate::map::resolved_terrain::ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level,
+            filled_clear: true,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: Default::default(),
+            speed_costs: Default::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: Default::default(),
+            tube_index: None,
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            accepts_smudge: true,
+            allows_tiberium: false,
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    #[test]
+    fn gsi_04_03b_radiation_uses_signed_sloped_cell_center_heights() {
+        let terrain = ResolvedTerrainGrid::from_cells(
+            2,
+            1,
+            vec![terrain_cell(0, 0, 0xff, 0), terrain_cell(1, 0, 0, 1)],
+        );
+        assert_eq!(cell_height_leptons(Some(&terrain), 0, 0), Ok(-103));
+        assert_eq!(cell_height_leptons(Some(&terrain), 1, 0), Ok(52));
+        assert_eq!(
+            cell_distance_leptons(Some(&terrain), (0, 0), (1, 0)),
+            Ok(299)
+        );
+    }
 
     fn stock_rules() -> RadiationRules {
         RadiationRules {

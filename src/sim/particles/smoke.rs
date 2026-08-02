@@ -29,7 +29,7 @@ use glam::IVec3;
 pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
     let pst = rules.particle_system_type(sys.type_id);
     let cap = pst.particle_cap as usize;
-    let tick = sim.session.tick;
+    let tick = u64::from(sim.session.binary_frame);
 
     // Phase 1 — tick existing particles.
     for p in &mut sys.particles {
@@ -227,6 +227,7 @@ mod tests {
     fn fake_system(type_id: ParticleSystemTypeId) -> ParticleSystem {
         ParticleSystem {
             stable_id: 0,
+            in_logic_vector: false,
             type_id,
             coords: IVec3::ZERO,
             offset: IVec3::ZERO,
@@ -336,7 +337,7 @@ mod tests {
         let mut sys = fake_system(ParticleSystemTypeId(0));
         for _ in 0..50 {
             tick_system(&mut sys, &mut sim, &rules);
-            sim.session.tick += 1;
+            sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
         }
         assert!(
             sys.particles.len() <= 5,
@@ -363,7 +364,7 @@ mod tests {
         // After tick 2: 2+1=3, cutoff (2) < timer (3) is TRUE → done_spawning.
         for _ in 0..2 {
             tick_system(&mut sys, &mut sim, &rules);
-            sim.session.tick += 1;
+            sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
         }
         assert!(
             sys.done_spawning,

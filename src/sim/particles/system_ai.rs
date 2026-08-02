@@ -1,8 +1,9 @@
 //! Per-tick particle-system AI dispatch.
 //!
-//! Drives every `ParticleSystem` in the store forward by one tick: pulls each
-//! system out of the store, runs its per-`BehavesLike` AI, decrements lifetime,
-//! then either drops or reinserts. Smoke (C2), Gas (C3), and Fire (C4) have
+//! Drives each active `ParticleSystem` in shared LogicVector order: temporarily
+//! takes it from storage, runs per-`BehavesLike` AI, decrements lifetime, then
+//! reinserts it. Completed systems enter the common deferred-delete path.
+//! Smoke (C2), Gas (C3), and Fire (C4) have
 //! full bodies; the Tier-3 variants (Spark, Railgun) are still no-ops.
 //!
 //! Pulling each system out before ticking lets the inner AI take `&mut Simulation`
@@ -96,25 +97,36 @@ pub(super) fn advance_state(
     }
 }
 
+/// Dispatch one particle-system object at its current LogicVector slot.
+///
+/// The caller owns live-vector traversal. Keeping the per-object body here
+/// preserves same-pass append and compacting-removal behavior instead of
+/// snapshotting particle systems into a later global phase.
+pub(crate) fn tick_particle_system(sim: &mut Simulation, rules: &RuleSet, id: u64) -> bool {
+    let Some(mut sys) = sim.particle_systems_mut().take_for_tick(id) else {
+        return false;
+    };
+
+    tick_one_system(&mut sys, sim, rules);
+
+    sys.lifetime -= 1;
+    if sys.lifetime == 0 {
+        sys.marked_for_deletion = true;
+    }
+
+    let retires = sys.marked_for_deletion && sys.particles.is_empty();
+    sim.particle_systems_mut().reinsert_after_tick(sys);
+    if retires {
+        sim.retire_particle_system(id);
+    }
+    true
+}
+
+/// Compatibility batch entry for focused particle tests and tools. Production
+/// dispatch uses `tick_particle_system` from the shared live-object walk.
 pub fn tick_particle_systems(sim: &mut Simulation, rules: &RuleSet) {
-    let ids = sim.particle_systems.ids();
-    for id in ids {
-        let Some(mut sys) = sim.particle_systems.remove(id) else {
-            continue;
-        };
-
-        tick_one_system(&mut sys, sim, rules);
-
-        sys.lifetime -= 1;
-        if sys.lifetime == 0 {
-            sys.marked_for_deletion = true;
-        }
-
-        if sys.marked_for_deletion && sys.particles.is_empty() {
-            // Dropped — already removed from store above.
-            continue;
-        }
-        sim.particle_systems.reinsert(sys);
+    for id in sim.live_object_order_snapshot() {
+        tick_particle_system(sim, rules, id);
     }
 }
 
@@ -229,6 +241,7 @@ mod tests {
     fn fake_system(type_id: ParticleSystemTypeId, lifetime: i32) -> ParticleSystem {
         ParticleSystem {
             stable_id: 0,
+            in_logic_vector: false,
             type_id,
             coords: IVec3::ZERO,
             offset: IVec3::ZERO,
@@ -245,6 +258,14 @@ mod tests {
             owner_house: None,
             done_spawning: false,
         }
+    }
+
+    fn insert_live_system(sim: &mut Simulation, mut system: ParticleSystem) -> u64 {
+        let stable_id = sim.allocate_stable_id();
+        system.stable_id = stable_id;
+        sim.particle_systems_mut().insert(system);
+        assert!(sim.reveal_particle_system(stable_id));
+        stable_id
     }
 
     fn spark_rules(gravity: i32) -> RuleSet {
@@ -306,41 +327,69 @@ mod tests {
         let mut sim = Simulation::new();
         let rules = empty_rules();
         tick_particle_systems(&mut sim, &rules);
-        assert_eq!(sim.particle_systems.len(), 0);
+        assert_eq!(sim.particle_systems().len(), 0);
     }
 
     #[test]
-    fn finite_lifetime_drops_when_countdown_hits_zero() {
+    fn finite_lifetime_uses_common_deferred_finalizer() {
         let rules = build_rules("Smoke", 3);
         let mut sim = Simulation::new();
-        sim.particle_systems
-            .insert(fake_system(ParticleSystemTypeId(0), 1));
-        // Tick once: lifetime 1 → 0, marked, particles empty → dropped.
+        let id = insert_live_system(&mut sim, fake_system(ParticleSystemTypeId(0), 1));
+
         tick_particle_systems(&mut sim, &rules);
-        assert_eq!(sim.particle_systems.len(), 0);
+
+        assert!(sim.particle_systems().get(id).is_some());
+        assert!(!sim.live_object_order_snapshot().contains(&id));
+        assert_eq!(sim.substrate.pending_delete, vec![id]);
+
+        sim.process_pending_delete();
+        assert!(sim.particle_systems().get(id).is_none());
+        assert!(sim.substrate.pending_delete.is_empty());
+    }
+
+    #[test]
+    fn live_object_dispatch_ticks_particle_system_at_slot_and_preserves_compaction_skip() {
+        let rules = build_rules("Smoke", 100);
+        let mut sim = Simulation::new();
+        let retiring = insert_live_system(&mut sim, fake_system(ParticleSystemTypeId(0), 1));
+        let successor = insert_live_system(&mut sim, fake_system(ParticleSystemTypeId(0), 3));
+
+        sim.object_ai_stage(Some(&rules));
+
+        assert!(!sim.live_object_order_snapshot().contains(&retiring));
+        assert_eq!(
+            sim.particle_systems().get(successor).unwrap().lifetime,
+            3,
+            "removing the current live-vector slot shifts and skips its successor"
+        );
+
+        sim.object_ai_stage(Some(&rules));
+        assert_eq!(
+            sim.particle_systems().get(successor).unwrap().lifetime,
+            2,
+            "the surviving system runs on the next live-vector pass"
+        );
     }
 
     #[test]
     fn infinite_lifetime_survives_when_empty() {
         let rules = build_rules("Smoke", -1);
         let mut sim = Simulation::new();
-        sim.particle_systems
-            .insert(fake_system(ParticleSystemTypeId(0), -1));
+        insert_live_system(&mut sim, fake_system(ParticleSystemTypeId(0), -1));
         // -1 → -2, never == 0; marked stays false; survives.
         tick_particle_systems(&mut sim, &rules);
-        assert_eq!(sim.particle_systems.len(), 1);
+        assert_eq!(sim.particle_systems().len(), 1);
+        assert_eq!(sim.live_object_order_snapshot().len(), 1);
     }
 
     #[test]
     fn reinsert_preserves_stable_id() {
         let rules = build_rules("Smoke", 100);
         let mut sim = Simulation::new();
-        let id = sim
-            .particle_systems
-            .insert(fake_system(ParticleSystemTypeId(0), 100));
+        let id = insert_live_system(&mut sim, fake_system(ParticleSystemTypeId(0), 100));
         tick_particle_systems(&mut sim, &rules);
-        assert!(sim.particle_systems.get(id).is_some());
-        assert_eq!(sim.particle_systems.get(id).unwrap().lifetime, 99);
+        assert!(sim.particle_systems().get(id).is_some());
+        assert_eq!(sim.particle_systems().get(id).unwrap().lifetime, 99);
     }
 
     #[test]
@@ -348,10 +397,9 @@ mod tests {
         for behaves in ["Spark", "Railgun"] {
             let rules = build_rules(behaves, 100);
             let mut sim = Simulation::new();
-            sim.particle_systems
-                .insert(fake_system(ParticleSystemTypeId(0), 100));
+            insert_live_system(&mut sim, fake_system(ParticleSystemTypeId(0), 100));
             tick_particle_systems(&mut sim, &rules);
-            assert_eq!(sim.particle_systems.len(), 1, "{behaves} should survive");
+            assert_eq!(sim.particle_systems().len(), 1, "{behaves} should survive");
         }
     }
 

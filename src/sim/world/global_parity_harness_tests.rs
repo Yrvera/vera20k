@@ -66,8 +66,12 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// fixture's harvester consumes scenario draws on every non-productive
 /// dispatch. Streams 1 and 2 are unchanged and the total hash moved with
 /// stream 0 — a behavior-bearing shift, not a misroute.
+/// Re-baselined for the Phase-0 native-frame authority: 600 admitted visits now
+/// commit exactly 600 frames. The former 67-ms-derived clock skipped three
+/// frame values, changing frame-anchored Harvest dispatch jitter draws.
+/// Main and MapGen remain unchanged, localizing the intended shift to Scenario.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
-    4301199653360695687,
+    2051724246393896192,
     4175722561206807420,
     2082941527059030371,
 );
@@ -156,8 +160,25 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// Re-baselined with the native Mission_Harvest per-path dispatch delays:
 /// a behavior-bearing shift (dispatch cadence + scenario-stream draws), so
 /// the legacy-schema probes move together with the live hash.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 4844629824678724271;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 2401965642562130820;
+/// Re-baselined for the Phase-0 native-frame and persistence authority changes
+/// documented at `FINAL_STREAM_STATES`: the admitted-frame cadence changes the
+/// harness harvester's behavior, while the common hash composition also drops
+/// `total_sim_ms`, hashes only the retail-persisted Scenario RNG, and adds the
+/// newly persisted deterministic fields. Therefore both legacy-schema probes
+/// and the live hash move together.
+// Re-baselined 2026-08-02. Provenance: the mover is 190490ba "match retail cell
+// occupation lifecycle", identified by bisecting dev..HEAD against the slice6
+// pre-v28 probe. That commit adds src/sim/occupancy.rs (+771) and rewrites the
+// substrate/snapshot cell-occupation model, so hashed STATE CONTENT changed.
+//
+// Not composition-only, and proven so rather than assumed: swapping in the
+// merge-base (6f78bac7) world_hash.rs while keeping all branch behaviour put
+// this probe at 0x89FC9D5B5BFDC1F2 — a third value, matching neither the old
+// baseline nor the branch. RNG routing is unchanged: FINAL_STREAM_STATES passes
+// untouched, and record/replay cursor consistency plus the per-tick intra-run
+// hash asserts all pass.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x1A00_98C0_61EB_BD56;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC2B8_BAEF_E6C7_9CB6;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -172,7 +193,54 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 2401965642562130820;
 /// scenario-stream consumption changed in this fixture, shifting positions
 /// and timers from the first return leg on. Record/replay tick equality
 /// still holds.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xADCD_2D1C_ABFF_D48D;
+/// Re-baselined 2026-07-29 for the locomotion S2 readiness producers (twice:
+/// Drive/Ship/Teleport/Jumpjet, then Walk and Hover) —
+/// **composition-only, proved three ways.** (1) `FINAL_STREAM_STATES` is
+/// UNCHANGED, so RNG routing and draw counts are identical. (2) Both
+/// legacy-schema probes above are unchanged, so only the current-schema hash
+/// moved. (3) Re-running with the readiness gate forced to ignore the produced
+/// state — producers still writing, behaviour identical to before the slice —
+/// yielded exactly this value, so the deferral change contributes nothing in
+/// this fixture. The delta is `mission_ready_state` moving `None → Some` for
+/// Drive/Ship/Teleport/Jumpjet. Record/replay tick equality still holds.
+///
+/// Re-baselined 2026-07-30 when the readiness inputs stopped being stored on the
+/// locomotor and became derived at the Mission gate. gamemd's readiness virtual
+/// makes a fresh locomotor call at every one of its ~two dozen call sites with no
+/// cached per-frame flag on that path, so a per-tick cache served nearly all of
+/// them stale state.
+///
+/// **Composition-only, proved four ways this time.** (1) `FINAL_STREAM_STATES` is
+/// UNCHANGED — RNG routing and draw counts identical, so no unit commenced on a
+/// different tick. (2) `GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH` unchanged.
+/// (3) `GLOBAL_HARNESS_PRE_MISSION_V29_HASH` unchanged — and that probe still
+/// hashes every position, facing and movement field, so a timing change would
+/// have moved it. (4) Record/replay tick equality still holds. Only the
+/// current-schema hash moved, and its delta is exactly the removed readiness
+/// bytes leaving the hash.
+///
+/// This fixture does not cover the paths the change exists for — a same-tick stop
+/// followed by a mid-tick queue-and-commence — so "behaviour-neutral here" is a
+/// statement about this scenario, not about the engine.
+///
+/// Re-baselined 2026-07-30 for S3b: the installed LocomotorSlot joins the hash.
+/// **Composition-only, proved by neutralisation** — the ceremony this file
+/// normally uses cannot decide it, because the locomotor block is hashed
+/// unconditionally, so BOTH schema probes move with the live value. Instead the
+/// new hash line was commented out and the whole suite re-run: all three
+/// constants returned to their previous committed values exactly, so the
+/// primary_kind -> slot retype changed no behaviour and no other hashed state,
+/// and the entire delta is the one new byte. The absolute per-stream RNG pins
+/// and the dense-scenario position fingerprint were unchanged throughout.
+/// Re-baselined 2026-07-30 for S5: the locomotor `powered` flag joins the hash.
+/// Composition-only, proved by neutralisation (the probe ceremony cannot decide
+/// it — the locomotor block is hashed unconditionally, so both probes move with
+/// the live value). With the new hash line commented out, all three constants
+/// returned to their S3b values exactly, which also proves the three power edges
+/// wired in this slice (deploy-begin off, undeploy-complete on, destination-
+/// accepted on) changed no other hashed state in these fixtures. The absolute
+/// per-stream RNG pins held throughout.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xDFA8_E30E_93BC_FEEF;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -184,9 +252,9 @@ fn harness_rules() -> RuleSet {
          [VehicleTypes]\n0=MTNK\n1=HARV\n\n\
          [AircraftTypes]\n\n\
          [BuildingTypes]\n0=GAWEAP\n1=GAREFN\n\n\
-         [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
-         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
-         [HARV]\nStrength=600\nArmor=heavy\nSpeed=5\nHarvester=yes\nStorage=28\nDock=GAREFN\n\n\
+         [E1]\nLocomotor={4A582744-9839-11d1-B709-00A024DDAFD1}\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
+         [MTNK]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+         [HARV]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\nStrength=600\nArmor=heavy\nSpeed=5\nHarvester=yes\nStorage=28\nDock=GAREFN\n\n\
          [GAWEAP]\nStrength=1000\nArmor=wood\nFoundation=4x3\n\n\
          [GAREFN]\nStrength=1000\nArmor=wood\nRefinery=yes\nFoundation=3x3\n\n\
          [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
@@ -442,14 +510,17 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
         );
     }
 
+    let pre_lifecycle_hash = rep.state_hash_before_lifecycle_v28_and_mission_v29();
+    let pre_mission_hash = rep.state_hash_without_mission_v29();
+    println!(
+        "[global parity] probes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X}"
+    );
     assert_eq!(
-        rep.state_hash_before_lifecycle_v28_and_mission_v29(),
-        GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
+        pre_lifecycle_hash, GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH,
         "pre-v28/pre-v29 schema probe must reproduce the historical baseline"
     );
     assert_eq!(
-        rep.state_hash_without_mission_v29(),
-        GLOBAL_HARNESS_PRE_MISSION_V29_HASH,
+        pre_mission_hash, GLOBAL_HARNESS_PRE_MISSION_V29_HASH,
         "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
     );
     assert_eq!(
@@ -544,7 +615,17 @@ fn dense_converging_setup() -> (
 /// off-tube non-adjacent path steps (sharp-turn fallback bumps) are no longer
 /// killed on their issue tick, so movers that previously froze now drive —
 /// an intended movement-behavior change, not dispatch-order drift.
-const POSITION_FINGERPRINT: u64 = 18354164349101625193;
+/// Re-baselined for the Phase-0 native Main_Tick order: EventClass commands
+/// now dispatch at the tail, after the live object/movement walk, so a move
+/// accepted on frame N first advances its object on frame N+1.
+/// Re-baselined 2026-08-02 for the GSI-04.12 bridge-marker slice (c0b688a6),
+/// which moves positions on purpose: `DrivePathQueue::reference_cell` advances
+/// the path-reference cell when Drive accepts a direction, before the curve
+/// physically crosses into the destination cell, and ship locomotion split out
+/// of Drive. Hash composition is not involved — this fingerprint folds entity
+/// positions directly, and its value was byte-identical with the pre-branch
+/// hash schema swapped in.
+const POSITION_FINGERPRINT: u64 = 0xDAB1_2FB8_5CC1_2C93;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

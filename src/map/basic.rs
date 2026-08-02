@@ -39,6 +39,9 @@ pub struct BasicSection {
 pub struct SpecialFlagsSection {
     /// Parsed `MCVDeploy=` bit (0x0100); startup deployment logic is mode-specific elsewhere.
     pub mcv_deploy: Option<bool>,
+    /// Parsed `InitialVeteran=` bit. The live starting-force path promotes
+    /// successfully placed non-MCV units to elite when this bit is set.
+    pub initial_veteran: Option<bool>,
     /// Map-level override: does ore grow denser? (TiberiumGrows=)
     pub tiberium_grows: Option<bool>,
     /// Map-level override: does ore spread to adjacent cells? (TiberiumSpreads=)
@@ -84,6 +87,7 @@ pub fn parse_special_flags_section(ini: &IniFile) -> SpecialFlagsSection {
 
     SpecialFlagsSection {
         mcv_deploy: section.get_bool("MCVDeploy"),
+        initial_veteran: section.get_bool("InitialVeteran"),
         tiberium_grows: section.get_bool("TiberiumGrows"),
         tiberium_spreads: section.get_bool("TiberiumSpreads"),
         destroyable_bridges: section.get_bool("DestroyableBridges"),
@@ -121,10 +125,11 @@ mod tests {
     #[test]
     fn parse_special_flags_bridge_override() {
         let ini = IniFile::from_str(
-            "[SpecialFlags]\nMCVDeploy=yes\nTiberiumGrows=yes\nTiberiumSpreads=no\nDestroyableBridges=no\n",
+            "[SpecialFlags]\nMCVDeploy=yes\nInitialVeteran=yes\nTiberiumGrows=yes\nTiberiumSpreads=no\nDestroyableBridges=no\n",
         );
         let flags = parse_special_flags_section(&ini);
         assert_eq!(flags.mcv_deploy, Some(true));
+        assert_eq!(flags.initial_veteran, Some(true));
         assert_eq!(flags.tiberium_grows, Some(true));
         assert_eq!(flags.tiberium_spreads, Some(false));
         assert_eq!(flags.destroyable_bridges, Some(false));

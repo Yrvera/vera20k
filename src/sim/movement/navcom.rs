@@ -141,7 +141,13 @@ pub(super) fn finish_drive_navigation(
         }
         return;
     }
-    // Non-drive movers (and drive movers with no owner destination) keep the
+    // A soft Stop can clear the owner destination while an already-committed
+    // Drive curve is still consuming. Its ordinary terminal Enter still clears
+    // the head/valid/selector/cursor tuple even though NavCom is already null.
+    if is_drive_locomotor(entity) {
+        reset_drive_track_runtime(entity);
+    }
+    // Non-drive movers (and the remaining Drive owner state) keep the
     // pre-existing immediate cleanup.
     set_destination_internal_null(entity);
     entity.navigation.nav_queue.clear();
@@ -189,7 +195,14 @@ pub(super) fn defer_drive_arrival_clear(entity: &mut GameEntity) -> bool {
 
 pub(super) fn process_pending_empty_drive_arrivals(entities: &mut EntityStore) {
     let ids = entities.keys_sorted();
-    for &id in &ids {
+    process_pending_empty_drive_arrivals_in_order(entities, &ids);
+}
+
+pub(super) fn process_pending_empty_drive_arrivals_in_order(
+    entities: &mut EntityStore,
+    ids: &[u64],
+) {
+    for &id in ids {
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };

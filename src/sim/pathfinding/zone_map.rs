@@ -52,9 +52,11 @@ pub struct ZoneMap {
     bridge_redirect: Option<Vec<Option<(u16, u16)>>>,
     pub width: u16,
     pub height: u16,
-    /// Number of distinct zones (ground + bridge combined).
+    /// Highest assigned zone ID. Native-derived maps reserve label 1, so this
+    /// can be greater than the number of publicly passable components.
     pub zone_count: u16,
-    /// Per-zone centroid and cell count (index = zone_id - 1, since zones are 1-based).
+    /// Per-zone centroid and cell count (index = zone_id - 1). Reserved labels
+    /// retain default metadata.
     pub zone_info: Vec<ZoneInfo>,
 }
 
@@ -80,9 +82,12 @@ impl ZoneMap {
 
     /// Look up the zone ID for a cell at the given layer.
     ///
-    /// For bridge-layer queries, returns the ground zone of the nearest bridge
-    /// endpoint. This mirrors gamemd.exe GetZoneID bridge redirect (0x0056d230).
-    /// If no bridge endpoint record covers this cell, returns ZONE_INVALID.
+    /// For bridge-layer queries on a structural cell, returns the ground zone
+    /// selected by the matching high-bridge record. Nonstructural cells a high
+    /// record reaches keep their own ground zone. Any cell the redirect table
+    /// does not cover — and every cell when the map has no high bridge at all —
+    /// has no bridge layer and is invalid. Answering such a query with the
+    /// ground zone would report every cell as bridge-reachable.
     pub fn zone_at(&self, x: u16, y: u16, layer: MovementLayer) -> ZoneId {
         if x >= self.width || y >= self.height {
             return ZONE_INVALID;
@@ -90,13 +95,14 @@ impl ZoneMap {
         let idx = y as usize * self.width as usize + x as usize;
         match layer {
             MovementLayer::Bridge => {
-                if let Some(redirect) = &self.bridge_redirect {
-                    if let Some(Some((ex, ey))) = redirect.get(idx) {
-                        let e_idx = *ey as usize * self.width as usize + *ex as usize;
-                        return self.zone_ids.get(e_idx).copied().unwrap_or(ZONE_INVALID);
-                    }
-                }
-                ZONE_INVALID
+                let Some(redirect) = &self.bridge_redirect else {
+                    return ZONE_INVALID;
+                };
+                let Some(Some((ex, ey))) = redirect.get(idx) else {
+                    return ZONE_INVALID;
+                };
+                let e_idx = *ey as usize * self.width as usize + *ex as usize;
+                self.zone_ids.get(e_idx).copied().unwrap_or(ZONE_INVALID)
             }
             _ => self.zone_ids[idx],
         }
@@ -184,8 +190,11 @@ pub struct ZoneGrid {
     adjacency: BTreeMap<MovementZone, ZoneAdjacency>,
     /// Connected-component labels for O(1) reachability checks.
     super_zones: BTreeMap<MovementZone, SuperZoneMap>,
-    /// Optional gamemd-style route-selection hierarchy for `Zone_precheck`.
-    hierarchies: BTreeMap<MovementZone, ZoneHierarchy>,
+    /// One optional gamemd-style route-selection hierarchy shared by all rows.
+    hierarchy: Option<ZoneHierarchy>,
+    /// Map-load bridge records paired with the hierarchy snapshot. These are
+    /// consumed only by hierarchy-coordinate projection.
+    bridge_records: Vec<crate::sim::bridge_state::BridgeEndpointRecord>,
     pub width: u16,
     pub height: u16,
 }
@@ -215,34 +224,48 @@ impl ZoneGrid {
         let mut maps = BTreeMap::new();
         let mut adjacency = BTreeMap::new();
         let mut super_zones = BTreeMap::new();
+        let base_topology = resolved_terrain.map(|terrain| {
+            zone_build::build_base_zone_topology(path_grid, terrain, bridge_records, width, height)
+        });
+        let hierarchy = base_topology.as_ref().map(|base| {
+            zone_build::build_zone_hierarchy(
+                base,
+                path_grid,
+                resolved_terrain,
+                bridge_records,
+                width,
+                height,
+            )
+        });
 
         for &mz in MovementZone::all_ground() {
             let speed_type = mz.speed_type();
             let cost_grid = terrain_costs.get(&speed_type);
 
-            let (mut zone_map, mut adj) = zone_build::build_zone_map_with_terrain(
-                path_grid,
-                cost_grid,
-                resolved_terrain,
-                mz,
-                width,
-                height,
-            );
+            let (mut zone_map, mut adj) = if let Some(base) = &base_topology {
+                zone_build::build_zone_map_from_base_topology(base, mz, width, height)
+            } else {
+                zone_build::build_zone_map_with_terrain(
+                    path_grid, cost_grid, None, mz, width, height,
+                )
+            };
 
             if mz.can_use_bridges() {
-                zone_build::inject_bridge_adjacency(
-                    &mut adj,
-                    zone_map.zone_ids_slice(),
-                    bridge_records,
-                    width,
-                    zone_build::BridgeRecordFilter::AllActive,
-                );
+                if base_topology.is_none() {
+                    zone_build::inject_bridge_adjacency(
+                        &mut adj,
+                        zone_map.zone_ids_slice(),
+                        bridge_records,
+                        width,
+                        zone_build::BridgeRecordFilter::AllActive,
+                    );
+                }
                 zone_map.set_bridge_redirect(zone_build::build_bridge_redirect(
                     path_grid,
+                    resolved_terrain,
                     bridge_records,
                     width,
                     height,
-                    zone_build::BridgeRecordFilter::HighActiveOnly,
                 ));
             }
 
@@ -256,7 +279,8 @@ impl ZoneGrid {
             maps,
             adjacency,
             super_zones,
-            hierarchies: BTreeMap::new(),
+            hierarchy,
+            bridge_records: bridge_records.to_vec(),
             width,
             height,
         }
@@ -272,33 +296,40 @@ impl ZoneGrid {
         self.adjacency.get(&mz)
     }
 
-    /// Get the optional route-selection hierarchy for a movement zone.
+    /// Get the shared route-selection hierarchy when this movement row exists.
     pub(crate) fn hierarchy_for(&self, mz: MovementZone) -> Option<&ZoneHierarchy> {
-        self.hierarchies.get(&mz)
+        if !self.maps.contains_key(&mz) {
+            return None;
+        }
+        self.hierarchy.as_ref()
+    }
+
+    pub(crate) fn bridge_records(&self) -> &[crate::sim::bridge_state::BridgeEndpointRecord] {
+        &self.bridge_records
     }
 
     /// Mutable access to the zone map for a movement zone (for incremental updates).
     pub(crate) fn map_mut(&mut self, mz: MovementZone) -> Option<&mut ZoneMap> {
-        self.hierarchies.remove(&mz);
+        self.hierarchy = None;
         self.maps.get_mut(&mz)
     }
 
     /// Mutable access to the adjacency graph for a movement zone (for incremental updates).
     pub(crate) fn adjacency_mut(&mut self, mz: MovementZone) -> Option<&mut ZoneAdjacency> {
-        self.hierarchies.remove(&mz);
+        self.hierarchy = None;
         self.adjacency.get_mut(&mz)
     }
 
     /// Replace the super-zone map for a movement zone (after incremental adjacency update).
     pub(crate) fn set_super_zone(&mut self, mz: MovementZone, sz: SuperZoneMap) {
-        self.hierarchies.remove(&mz);
+        self.hierarchy = None;
         self.super_zones.insert(mz, sz);
     }
 
-    /// Replace the optional route-selection hierarchy for a movement zone.
+    /// Replace the one shared route-selection hierarchy (test fixtures only).
     #[allow(dead_code)]
-    pub(crate) fn set_hierarchy(&mut self, mz: MovementZone, hierarchy: ZoneHierarchy) {
-        self.hierarchies.insert(mz, hierarchy);
+    pub(crate) fn set_hierarchy(&mut self, hierarchy: ZoneHierarchy) {
+        self.hierarchy = Some(hierarchy);
     }
 
     /// O(1) reachability check: can a unit with this movement zone reach `to` from `from`?

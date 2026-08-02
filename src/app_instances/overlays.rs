@@ -31,6 +31,36 @@ enum OverlayRenderBucket {
     Wall,
 }
 
+/// Map terrain entries remain the render metadata source, but once rules-backed
+/// simulation authority exists the live cell index decides whether an instance
+/// still exists. This keeps loading/fallback screens static without letting a
+/// destroyed runtime object remain visible forever.
+fn terrain_object_is_render_visible(
+    object: &crate::map::overlay::TerrainObject,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    authority: Option<&crate::sim::production::ProductionState>,
+) -> bool {
+    let (Some(rules), Some(production)) = (rules, authority) else {
+        return true;
+    };
+    if rules
+        .terrain_object_type_case_insensitive(&object.name)
+        .is_none()
+    {
+        return true;
+    }
+    let Some(stable_id) = production
+        .terrain_object_cells
+        .get(&(object.rx, object.ry))
+    else {
+        return false;
+    };
+    production
+        .terrain_objects
+        .get(stable_id)
+        .is_some_and(|terrain| terrain.is_live() && terrain.cell() == (object.rx, object.ry))
+}
+
 /// Project an AnimClass-like fixed world effect from its exact cell/subcell anchor.
 ///
 /// Native `ObjectClass::DrawIt` passes the effect's CoordStruct directly through
@@ -70,7 +100,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         state.render_height() as f32 / z,
     );
     for fx in &sim.world_effects {
-        if fx.delay_ms > 0 {
+        if fx.delay_frames > 0 {
             continue;
         }
         let (center_x, center_y) =
@@ -314,16 +344,14 @@ pub(crate) fn build_overlay_instances(
             .and_then(|sim| sim.overlay_grid.as_ref())
         {
             let live_cell = overlay_grid.cell(entry.rx, entry.ry);
-            if live_cell.overlay_id.is_none() && is_resource {
-                // Overlay cleared (fully depleted) — skip rendering.
-                continue;
-            }
-            if live_cell.overlay_id.is_some() {
-                // Use live overlay_data for all overlay types.
+            if is_bridge_overlay_index(entry.overlay_id) {
+                // Bridge bytes remain owned by BridgeRuntimeState.
+                entry.frame
+            } else if live_cell.overlay_id == Some(entry.overlay_id) {
                 live_cell.overlay_data
             } else {
-                // No overlay in grid — fall back to static map frame.
-                entry.frame
+                // Live non-bridge state is authoritative over the map pack.
+                continue;
             }
         } else {
             // No OverlayGrid — fall back to old behavior.
@@ -443,7 +471,11 @@ pub(crate) fn build_overlay_instances(
     //   drawy = ... + f_y/2 - 3 - pic.wMaxHeight/2
     const TERRAIN_OBJECT_Y_FUDGE: f32 = -3.0;
 
+    let terrain_authority = state.simulation.as_ref().map(|sim| &sim.production);
     for obj in &state.terrain_objects {
+        if !terrain_object_is_render_visible(obj, state.rules.as_ref(), terrain_authority) {
+            continue;
+        }
         if let Some((owner_id, fog)) = cell_visibility_fog {
             if !fog.is_cell_revealed(owner_id, obj.rx, obj.ry) {
                 continue;
@@ -812,15 +844,9 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
             None => continue,
         };
         let pos = &entity.position;
-        // Match the GI's altitude-lifted draw position so the chute follows
-        // the airborne body, not the ground beneath it. The GI is rendered
-        // at `screen_y - altitude_y_offset` (see app_instances/shp.rs).
-        let altitude_y_offset: f32 = entity
-            .locomotor
-            .as_ref()
-            .map(|l| crate::util::fixed_math::sim_to_f32(l.altitude) * 0.06)
-            .unwrap_or(0.0);
-        let (gx, gy) = (pos.screen_x, pos.screen_y - altitude_y_offset);
+        // Draw the chute exactly where the body is drawn, so it follows the
+        // airborne GI rather than the ground beneath it.
+        let (gx, gy) = crate::render::locomotor_visual::screen_position(entity);
         if !in_view(gx, gy, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
             continue;
         }
@@ -869,11 +895,88 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
 mod tests {
     use super::{
         ANIM_DRAW_DEPTH_BIAS_PX, OverlayRenderBucket, apply_shape_z_adjust,
-        classify_overlay_render_bucket, garrison_flash_depth, weapon_muzzle_flash_key,
-        world_effect_screen_position,
+        classify_overlay_render_bucket, garrison_flash_depth, terrain_object_is_render_visible,
+        weapon_muzzle_flash_key, world_effect_screen_position,
     };
+    use crate::map::overlay::TerrainObject;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
     use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash, WeaponMuzzleFlash};
+    use crate::sim::intern::StringInterner;
+    use crate::sim::production::ProductionState;
+    use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
     use crate::util::fixed_math::SimFixed;
+
+    #[test]
+    fn gsi_04_10_render_visibility_distinguishes_unregistered_live_and_destroyed() {
+        let ini = IniFile::from_str(
+            "[General]\n\
+             [InfantryTypes]\n\
+             [VehicleTypes]\n0=DUMMY\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [TerrainTypes]\n0=TREE01\n\
+             [DUMMY]\nStrength=100\n\
+             [TREE01]\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let registered = TerrainObject {
+            rx: 4,
+            ry: 7,
+            name: "TREE01".to_string(),
+        };
+        let unregistered = TerrainObject {
+            rx: 8,
+            ry: 9,
+            name: "MAPONLY".to_string(),
+        };
+        let mut production = ProductionState::default();
+
+        assert!(terrain_object_is_render_visible(&registered, None, None));
+        assert!(terrain_object_is_render_visible(
+            &unregistered,
+            Some(&rules),
+            Some(&production),
+        ));
+        assert!(!terrain_object_is_render_visible(
+            &registered,
+            Some(&rules),
+            Some(&production),
+        ));
+
+        let mut interner = StringInterner::default();
+        let stable_id = 1;
+        production.terrain_object_cells.insert((4, 7), stable_id);
+        production.terrain_objects.insert(
+            stable_id,
+            TerrainObjectState {
+                stable_id,
+                type_ref: interner.intern("TREE01"),
+                rx: 4,
+                ry: 7,
+                health: 10,
+                max_health: 10,
+                occupation_bits: 7,
+                lifecycle: TerrainObjectLifecycle::Live,
+            },
+        );
+        assert!(terrain_object_is_render_visible(
+            &registered,
+            Some(&rules),
+            Some(&production),
+        ));
+
+        production
+            .terrain_objects
+            .get_mut(&stable_id)
+            .unwrap()
+            .lifecycle = TerrainObjectLifecycle::Destroyed;
+        assert!(!terrain_object_is_render_visible(
+            &registered,
+            Some(&rules),
+            Some(&production),
+        ));
+    }
 
     #[test]
     fn wall_routes_to_wall_bucket() {

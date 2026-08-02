@@ -353,7 +353,7 @@ pub(crate) fn poll_main_menu_first_paint_before_acquire(
             // Active-retail stock leaves ShellButtonSlideSound empty, but the
             // completion hook remains a named lifecycle edge.
             crate::app::App::play_shell_slide_completion_sound(state);
-            let title = crate::app_main_menu_shell_render::main_menu_title_text(state).to_owned();
+            let title = crate::app_main_menu_shell_render::main_menu_title_text(state).into_owned();
             if !ShellLifecycleReducer::from_state(state)
                 .complete_presented_main_menu(generation, &title, now)
             {
@@ -430,8 +430,7 @@ pub(crate) fn render_shell_first_paint_slide(
 
     let rendered = match kind {
         ShellSlideKind::Skirmish => {
-            crate::app::App::ensure_skirmish_shell_chrome(state);
-            if state.skirmish_shell_chrome.is_none() {
+            if !crate::app::App::ensure_skirmish_shell_chrome(state) {
                 log::warn!("Skirmish shell chrome unavailable; cancelling first-paint slide");
                 state.shell_first_paint_slide = None;
                 return Ok(ShellFirstPaintRenderResult::NotRendered);

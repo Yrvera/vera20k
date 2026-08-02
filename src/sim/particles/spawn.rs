@@ -50,8 +50,10 @@ impl Simulation {
             _ => {}
         }
         let directionless = pst.spawn_direction == IVec3::ZERO;
+        let stable_id = self.allocate_stable_id();
         let sys = ParticleSystem {
-            stable_id: 0,
+            stable_id,
+            in_logic_vector: false,
             type_id,
             coords,
             offset: IVec3::ZERO,
@@ -68,7 +70,15 @@ impl Simulation {
             owner_house,
             done_spawning: false,
         };
-        Some(self.particle_systems.insert(sys))
+        debug_assert!(
+            !self.substrate.entities.contains(stable_id)
+                && !self.substrate.anims.contains_key(stable_id)
+                && !self.particle_systems().contains_key(stable_id),
+            "shared object id {stable_id} collided before particle-system insertion"
+        );
+        self.particle_systems_mut().insert(sys);
+        self.reveal_particle_system(stable_id);
+        Some(stable_id)
     }
 }
 
@@ -284,7 +294,7 @@ mod tests {
             &rules,
         );
         assert!(result.is_none());
-        assert_eq!(sim.particle_systems.len(), 0);
+        assert_eq!(sim.particle_systems().len(), 0);
     }
 
     #[test]
@@ -307,18 +317,22 @@ mod tests {
     fn spawn_returns_some_for_smoke() {
         let rules = build_rules("Smoke", 50);
         let mut sim = Simulation::new();
-        let id = sim.spawn_particle_system(
-            ParticleSystemTypeId(0),
-            IVec3::new(100, 100, 0),
-            None,
-            None,
-            IVec3::ZERO,
-            None,
-            &rules,
-        );
-        assert!(id.is_some());
-        assert_eq!(sim.particle_systems.len(), 1);
-        let sys = sim.particle_systems.get(id.unwrap()).unwrap();
+        let prior_object_id = sim.allocate_stable_id();
+        let id = sim
+            .spawn_particle_system(
+                ParticleSystemTypeId(0),
+                IVec3::new(100, 100, 0),
+                None,
+                None,
+                IVec3::ZERO,
+                None,
+                &rules,
+            )
+            .expect("smoke system spawns");
+        assert_eq!(id, prior_object_id + 1);
+        assert_eq!(sim.particle_systems().len(), 1);
+        assert_eq!(sim.live_object_order_snapshot(), vec![id]);
+        let sys = sim.particle_systems().get(id).unwrap();
         assert_eq!(sys.coords, IVec3::new(100, 100, 0));
         assert_eq!(sys.lifetime, 200);
         assert_eq!(sys.facing, 0x1D);
@@ -341,7 +355,7 @@ mod tests {
             )
             .unwrap();
         let mut rng = SimRng::new(1);
-        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+        let sys = sim.particle_systems_mut().get_mut(sys_id).unwrap();
         for _ in 0..10 {
             spawn_particle(sys, IVec3::ZERO, IVec3::ZERO, &rules, &mut rng);
         }
@@ -368,7 +382,7 @@ mod tests {
             )
             .unwrap();
         let mut rng = SimRng::new(1);
-        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+        let sys = sim.particle_systems_mut().get_mut(sys_id).unwrap();
         spawn_particle(sys, IVec3::ZERO, IVec3::ZERO, &rules, &mut rng);
         assert_eq!(sys.particles[0].lifetime_remaining, 11);
 
@@ -394,7 +408,7 @@ mod tests {
             )
             .unwrap();
         let mut rng = SimRng::new(1);
-        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+        let sys = sim.particle_systems_mut().get_mut(sys_id).unwrap();
         for _ in 0..10 {
             spawn_particle_with_insert(sys, IVec3::ZERO, IVec3::ZERO, 3, &rules, &mut rng);
         }
@@ -424,7 +438,7 @@ mod tests {
             )
             .unwrap();
         let mut rng = SimRng::new(1);
-        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+        let sys = sim.particle_systems_mut().get_mut(sys_id).unwrap();
         assert!(!spawn_particle(
             sys,
             IVec3::ZERO,
@@ -469,7 +483,7 @@ mod tests {
             )
             .unwrap();
         let mut rng = SimRng::new(1);
-        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+        let sys = sim.particle_systems_mut().get_mut(sys_id).unwrap();
 
         assert!(spawn_particle(
             sys,
@@ -518,7 +532,7 @@ mod tests {
             )
             .unwrap();
         let mut rng = SimRng::new(1);
-        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+        let sys = sim.particle_systems_mut().get_mut(sys_id).unwrap();
 
         assert!(spawn_particle(
             sys,
@@ -569,7 +583,7 @@ mod tests {
             )
             .unwrap();
         let mut rng = SimRng::new(1);
-        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+        let sys = sim.particle_systems_mut().get_mut(sys_id).unwrap();
 
         assert!(spawn_particle(
             sys,

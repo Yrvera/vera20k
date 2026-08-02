@@ -49,6 +49,8 @@ pub fn theater_name(theater: i32) -> &'static str {
 pub fn empty_map_file(options: &RmgOptions, gen_w: u32, gen_h: u32) -> MapFile {
     let header = MapHeader {
         theater: theater_name(options.theater).to_string(),
+        fill: "Clear".to_string(),
+        level: 0,
         width: gen_w + SIZE_PAD_X,
         height: gen_h + SIZE_PAD_Y,
         local_left: LOCAL_LEFT,
@@ -192,8 +194,9 @@ mod tests {
     }
 
     #[test]
-    fn header_pads_size_and_insets_the_playable_area() {
+    fn gsi_04_03a_header_is_level_zero_and_insets_the_playable_area() {
         let map = empty_map_file(&RmgOptions::default(), 60, 60);
+        assert_eq!(map.header.level, 0);
         assert_eq!(map.header.width, 64, "full width is interior + 4");
         assert_eq!(map.header.height, 72, "full height is interior + 12");
         assert_eq!(map.header.local_left, 2);
@@ -217,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn every_in_band_cell_becomes_a_map_cell() {
+    fn gsi_04_03a_every_in_band_cell_emits_its_generated_level() {
         let g = grid();
         let expected = g.native_cells().count();
         let mut map = empty_map_file(&RmgOptions::default(), 16, 12);
@@ -225,6 +228,7 @@ mod tests {
         assert_eq!(map.cells.len(), expected, "one MapCell per in-band cell");
         // An untouched grid is all unassigned → all no-tile (-1).
         assert!(map.cells.iter().all(|c| c.tile_index == -1));
+        assert!(map.cells.iter().all(|c| c.z == 4));
         assert!(map.overlays.is_empty());
     }
 

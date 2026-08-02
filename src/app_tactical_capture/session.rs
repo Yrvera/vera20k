@@ -236,8 +236,9 @@ impl TacticalCaptureSession {
         });
         state.cursor_x = capture.post_load_cursor.x as f32;
         state.cursor_y = capture.post_load_cursor.y as f32;
-        state.sim_accumulator_ms = 0;
-        state.last_update_time = Instant::now();
+        let now_ms =
+            crate::app_sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
+        state.frame_pacer.reanchor(now_ms);
         self.begin_accepted_loading(state)?;
         self.failure_stage = "loading".to_owned();
         Ok(())
@@ -818,6 +819,7 @@ impl TacticalCaptureSession {
                             .context("placement radius exceeds u16")?,
                         path_grid,
                         &state.height_map,
+                        state.overlay_registry.as_ref(),
                     )
                     .map_err(anyhow::Error::from)
                 })

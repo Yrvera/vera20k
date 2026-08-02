@@ -84,6 +84,10 @@ pub struct ArtEntry {
     pub primary_fire_dual_offset: bool,
     /// SHP vehicle: walk animation frame count per facing (from `WalkFrames=`).
     pub walk_frames: Option<u16>,
+    /// SHP vehicle: native game frames between walk-animation advances.
+    pub walk_rate: u16,
+    /// SHP vehicle: native game frames between idle-animation advances.
+    pub idle_rate: u16,
     /// SHP vehicle: firing animation frame count per facing (from `FiringFrames=`).
     pub firing_frames: Option<u16>,
     /// SHP vehicle: standing animation frame count per facing (from `StandingFrames=`).
@@ -205,6 +209,16 @@ pub struct AnimTypeRuntimeConfig {
     pub raw_shp_frame_count: Option<i32>,
     pub loop_count: i32,
     pub rate_logic_frames: u16,
+    pub normalized: bool,
+    pub tiberium_chain_reaction: bool,
+    pub is_tiberium: bool,
+    pub hide_if_no_ore: bool,
+    pub is_animated_tiberium: bool,
+    pub tiberium_spread_radius: i32,
+    pub tiberium_spawn_type: Option<String>,
+    /// Raw `MakeInfantry=` index. Native defaults to -1 and treats every
+    /// other value as enabling the AnimClass cell-occupation lifecycle.
+    pub make_infantry: i32,
     pub next: Option<String>,
     pub bounce_anim: Option<String>,
     pub expire_anim: Option<String>,
@@ -218,6 +232,10 @@ pub struct AnimTypeRuntimeConfig {
     pub layer: AnimLayer,
     pub flat: bool,
     pub tiled: bool,
+    /// Raw art.ini `Translucency=` value; zero when omitted.
+    pub translucency: i32,
+    /// Raw art.ini `TranslucencyDetailLevel=` value; zero when omitted.
+    pub translucency_detail_level: i32,
     pub translucent: bool,
     pub shadow: bool,
     pub ping_pong: bool,
@@ -317,6 +335,18 @@ pub fn art_rate_to_delay_ms(ini_rate: i32) -> u32 {
     (delay_frames * 1000 / 15).max(1)
 }
 
+/// Return the fixed draw-bit contribution for an art.ini `Translucency=` value.
+///
+/// `Translucent=` is an independent boolean and is not interpreted by this helper.
+pub const fn anim_fixed_translucency_draw_bits(translucency: i32) -> Option<u32> {
+    match translucency {
+        25 => Some(0x2),
+        50 => Some(0x4),
+        75 => Some(0x6),
+        _ => None,
+    }
+}
+
 fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
     let explicit_end = section.get_i32("End");
     let explicit_loop_end = section.get_i32("LoopEnd");
@@ -333,6 +363,14 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
             .get_i32("Rate")
             .map(art_rate_to_logic_frames)
             .unwrap_or(DEFAULT_ART_RATE_LOGIC_FRAMES),
+        normalized: section.get_bool("Normalized").unwrap_or(false),
+        tiberium_chain_reaction: section.get_bool("TiberiumChainReaction").unwrap_or(false),
+        is_tiberium: section.get_bool("IsTiberium").unwrap_or(false),
+        hide_if_no_ore: section.get_bool("HideIfNoOre").unwrap_or(false),
+        is_animated_tiberium: section.get_bool("IsAnimatedTiberium").unwrap_or(false),
+        tiberium_spread_radius: section.get_i32("TiberiumSpreadRadius").unwrap_or(0),
+        tiberium_spawn_type: parse_anim_ref(section, "TiberiumSpawnType"),
+        make_infantry: section.get_i32("MakeInfantry").unwrap_or(-1),
         next: section.get("Next").map(|s| s.trim().to_ascii_uppercase()),
         bounce_anim: parse_anim_ref(section, "BounceAnim"),
         expire_anim: parse_anim_ref(section, "ExpireAnim"),
@@ -346,6 +384,8 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
         layer: AnimLayer::from_ini(section.get("Layer")),
         flat: section.get_bool("Flat").unwrap_or(false),
         tiled: section.get_bool("Tiled").unwrap_or(false),
+        translucency: section.get_i32("Translucency").unwrap_or(0),
+        translucency_detail_level: section.get_i32("TranslucencyDetailLevel").unwrap_or(0),
         translucent: section.get_bool("Translucent").unwrap_or(false),
         shadow: section.get_bool("Shadow").unwrap_or(false),
         ping_pong: section.get_bool("PingPong").unwrap_or(false),
@@ -372,11 +412,13 @@ fn parse_u16_pair(value: &str) -> Option<(u16, u16)> {
 }
 
 fn parse_random_rate_pair(value: &str) -> Option<(u16, u16)> {
-    let (a, b) = parse_u16_pair(value)?;
-    Some((
-        art_rate_to_logic_frames(i32::from(a)),
-        art_rate_to_logic_frames(i32::from(b)),
-    ))
+    let mut parts = value.split(',').map(str::trim);
+    let mut low = art_rate_to_logic_frames(parts.next()?.parse::<i32>().ok()?);
+    let high = art_rate_to_logic_frames(parts.next()?.parse::<i32>().ok()?);
+    if high < low {
+        low = high;
+    }
+    Some((low, high))
 }
 
 /// Default native frame delay when art.ini section has no `Rate=` key.
@@ -583,6 +625,14 @@ impl ArtRegistry {
 
             // SHP vehicle frame tags (only meaningful when Voxel=no for vehicles).
             let walk_frames: Option<u16> = section.get_i32("WalkFrames").map(|v| v.max(0) as u16);
+            let walk_rate: u16 = section
+                .get_i32("WalkRate")
+                .map(|v| v.max(1) as u16)
+                .unwrap_or(1);
+            let idle_rate: u16 = section
+                .get_i32("IdleRate")
+                .map(|v| v.max(1) as u16)
+                .unwrap_or(1);
             let firing_frames: Option<u16> =
                 section.get_i32("FiringFrames").map(|v| v.max(0) as u16);
             let standing_frames: Option<u16> =
@@ -746,6 +796,8 @@ impl ArtRegistry {
                     secondary_fire_pixel_offset,
                     primary_fire_dual_offset,
                     walk_frames,
+                    walk_rate,
+                    idle_rate,
                     firing_frames,
                     standing_frames,
                     shp_facings,
@@ -1490,6 +1542,7 @@ fn push_candidate(candidates: &mut Vec<String>, candidate: String) {
 #[cfg(test)]
 mod anim_runtime_metadata_tests {
     use super::*;
+    use crate::assets::asset_manager::AssetManager;
 
     #[test]
     fn normalizes_anim_spawn_metadata_refs_to_uppercase() {
@@ -1543,6 +1596,7 @@ mod anim_runtime_metadata_tests {
         let ini = IniFile::from_str(
             "[METSTRAL]\n\
              Rate=300\n\
+             Normalized=yes\n\
              Next=smokey\n\
              RandomLoopDelay=2,5\n\
              RandomRate=300,900\n",
@@ -1553,13 +1607,156 @@ mod anim_runtime_metadata_tests {
             .anim_runtime_config("METSTRAL")
             .expect("METSTRAL runtime metadata");
         assert_eq!(config.rate_logic_frames, 3);
+        assert!(config.normalized);
         assert_eq!(config.next.as_deref(), Some("SMOKEY"));
         assert_eq!(config.random_loop_delay, Some((2, 5)));
-        assert_eq!(config.random_rate_logic_frames, Some((3, 1)));
+        assert_eq!(config.random_rate_logic_frames, Some((1, 1)));
         assert_eq!(config.trailer_anim, None);
         assert_eq!(config.trailer_seperation, 0);
         assert_eq!(config.bounce_anim, None);
         assert_eq!(config.expire_anim, None);
+    }
+
+    #[test]
+    fn reversed_random_rate_conversion_collapses_to_the_second_endpoint() {
+        let ini = IniFile::from_str("[DBRIS1LG]\nRandomRate=220,600\n");
+        let reg = ArtRegistry::from_ini(&ini);
+
+        assert_eq!(
+            reg.anim_runtime_config("DBRIS1LG")
+                .unwrap()
+                .random_rate_logic_frames,
+            Some((1, 1))
+        );
+    }
+
+    #[test]
+    fn normalized_defaults_false_and_parses_explicit_values() {
+        let ini = IniFile::from_str(
+            "[DEFAULT]\nRate=900\n\
+             [YES]\nNormalized=yes\n\
+             [NO]\nNormalized=no\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        assert!(!reg.anim_runtime_config("DEFAULT").unwrap().normalized);
+        assert!(reg.anim_runtime_config("YES").unwrap().normalized);
+        assert!(!reg.anim_runtime_config("NO").unwrap().normalized);
+    }
+
+    #[test]
+    fn gsi_02_13_parses_fixed_translucency_metadata_and_omitted_zero_defaults() {
+        let ini = IniFile::from_str(
+            "[TWENTY_FIVE]\n\
+             Translucency=25\n\
+             TranslucencyDetailLevel=-3\n\
+             [FIFTY]\n\
+             Translucency=50\n\
+             [SEVENTY_FIVE]\n\
+             Translucency=75\n\
+             [OMITTED]\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        let twenty_five = reg.anim_runtime_config("TWENTY_FIVE").unwrap();
+        assert_eq!(twenty_five.translucency, 25);
+        assert_eq!(twenty_five.translucency_detail_level, -3);
+        assert!(!twenty_five.translucent);
+        assert_eq!(reg.anim_runtime_config("FIFTY").unwrap().translucency, 50);
+        assert_eq!(
+            reg.anim_runtime_config("SEVENTY_FIVE")
+                .unwrap()
+                .translucency,
+            75
+        );
+
+        let omitted = reg.anim_runtime_config("OMITTED").unwrap();
+        assert_eq!(omitted.translucency, 0);
+        assert_eq!(omitted.translucency_detail_level, 0);
+    }
+
+    #[test]
+    fn gsi_02_13_maps_only_exact_fixed_translucency_values_to_draw_bits() {
+        assert_eq!(anim_fixed_translucency_draw_bits(25), Some(0x2));
+        assert_eq!(anim_fixed_translucency_draw_bits(50), Some(0x4));
+        assert_eq!(anim_fixed_translucency_draw_bits(75), Some(0x6));
+        assert_eq!(anim_fixed_translucency_draw_bits(1), None);
+        assert_eq!(anim_fixed_translucency_draw_bits(26), None);
+        assert_eq!(anim_fixed_translucency_draw_bits(100), None);
+        assert_eq!(anim_fixed_translucency_draw_bits(0), None);
+        assert_eq!(anim_fixed_translucency_draw_bits(-25), None);
+    }
+
+    #[test]
+    fn anim_runtime_metadata_parses_tiberium_declaration_cluster() {
+        let ini = IniFile::from_str(
+            "[TIBERIUM]\n\
+             TiberiumChainReaction=yes\n\
+             IsTiberium=true\n\
+             HideIfNoOre=1\n\
+             IsAnimatedTiberium=Yes\n\
+             TiberiumSpreadRadius=-7\n\
+             TiberiumSpawnType=  tiB2_01  \n\
+             [UNRELATED]\n\
+             Rate=900\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        let tiberium = reg.anim_runtime_config("TIBERIUM").unwrap();
+        assert!(tiberium.tiberium_chain_reaction);
+        assert!(tiberium.is_tiberium);
+        assert!(tiberium.hide_if_no_ore);
+        assert!(tiberium.is_animated_tiberium);
+        assert_eq!(tiberium.tiberium_spread_radius, -7);
+        assert_eq!(tiberium.tiberium_spawn_type.as_deref(), Some("TIB2_01"));
+
+        let unrelated = reg.anim_runtime_config("UNRELATED").unwrap();
+        assert!(!unrelated.tiberium_chain_reaction);
+        assert!(!unrelated.is_tiberium);
+        assert!(!unrelated.hide_if_no_ore);
+        assert!(!unrelated.is_animated_tiberium);
+        assert_eq!(unrelated.tiberium_spread_radius, 0);
+        assert_eq!(unrelated.tiberium_spawn_type, None);
+    }
+
+    #[test]
+    #[ignore = "requires RA2_DIR with installed retail RA2/YR assets"]
+    fn retail_artmd_tiberium_declarations_match_active_yr() {
+        let ra2_dir = std::path::PathBuf::from(
+            std::env::var_os("RA2_DIR")
+                .expect("set RA2_DIR to the installed retail RA2/YR directory"),
+        );
+        let assets = AssetManager::new(&ra2_dir).expect("load retail RA2/YR archive stack");
+        let artmd_bytes = assets.get_ref("ARTMD.INI").expect("load retail ARTMD.INI");
+        let artmd = IniFile::from_bytes(artmd_bytes).expect("parse retail ARTMD.INI");
+        let registry = ArtRegistry::from_ini(&artmd);
+
+        assert!(
+            registry
+                .anim_runtime_config("TWNK1")
+                .expect("stock TWNK1 declaration")
+                .hide_if_no_ore
+        );
+
+        let crystal1 = registry
+            .anim_runtime_config("CRYSTAL1")
+            .expect("stock CRYSTAL1 declaration");
+        assert!(crystal1.is_tiberium);
+        assert_eq!(crystal1.tiberium_spread_radius, 0);
+        assert_eq!(crystal1.tiberium_spawn_type.as_deref(), Some("TIB2_01"));
+
+        assert!(
+            registry
+                .anim_runtime_config("TWLT070T")
+                .expect("stock TWLT070T declaration")
+                .tiberium_chain_reaction
+        );
+        assert!(
+            registry
+                .anim_runtime_config("BIGBLUE")
+                .expect("stock BIGBLUE declaration")
+                .is_animated_tiberium
+        );
     }
 
     #[test]

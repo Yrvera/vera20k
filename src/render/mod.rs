@@ -25,6 +25,7 @@ pub mod egui_integration;
 pub mod frame_readback;
 pub mod gpu;
 pub mod loading_screen_chrome;
+pub mod locomotor_visual;
 pub mod main_menu_shell_chrome;
 pub mod minimap;
 mod minimap_helpers;

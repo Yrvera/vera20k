@@ -6,8 +6,9 @@
 //!   - `Particle` — individual entity with position, velocity, lifetime, animation
 //!     state, optionally dealing damage to cell occupants (gas / fire variants).
 //!
-//! Stored in `Simulation::particle_systems: ParticleSystemStore` (BTreeMap).
-//! Particles never enter `EntityStore` — they're owned by their parent PSC.
+//! Systems live in the shared object substrate and enter its `LogicVector`.
+//! Particles never enter global storage or the active-object vector: they are
+//! owned by their parent system.
 //!
 //! Tier 2 implements Smoke / Gas / Fire via the existing SHP render pipeline.
 //! Spark compatibility state and pure kernels exist, but public Spark/Railgun
@@ -20,6 +21,7 @@
 use crate::rules::particle_system_type::ParticleSystemTypeId;
 use crate::rules::particle_type::ParticleTypeId;
 use crate::sim::intern::InternedId;
+use crate::sim::world::Simulation;
 use crate::util::fixed_math::SimFixed;
 use crate::util::native_x87::{NativeF32Bits, NativeF64Bits};
 use glam::IVec3;
@@ -35,11 +37,17 @@ pub mod spawn;
 pub mod system_ai;
 pub mod wind;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParticleSystem {
     pub stable_id: u64,
+    /// LogicClass active-vector membership. The serialized vector is
+    /// authoritative across load, so this object-local guard is rebuilt.
+    #[serde(skip)]
+    pub in_logic_vector: bool,
     pub type_id: ParticleSystemTypeId,
+    #[serde(with = "ivec3_serde")]
     pub coords: IVec3,
+    #[serde(with = "ivec3_serde")]
     pub offset: IVec3,
     pub particles: Vec<Particle>,
     pub spawn_timer: SimFixed,
@@ -50,6 +58,7 @@ pub struct ParticleSystem {
     pub directionless: bool,
     pub attached_entity: Option<u64>,
     pub owner_entity: Option<u64>,
+    #[serde(with = "ivec3_serde")]
     pub target_coords: IVec3,
     pub owner_house: Option<InternedId>,
     pub done_spawning: bool,
@@ -65,11 +74,14 @@ pub struct SparkRuntimeState {
     pub color_accumulator: NativeF64Bits,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Particle {
     pub type_id: ParticleTypeId,
+    #[serde(with = "ivec3_serde")]
     pub coords: IVec3,
+    #[serde(with = "ivec3_serde")]
     pub previous_coords: IVec3,
+    #[serde(with = "ivec3_serde")]
     pub origin: IVec3,
     pub direction: [SimFixed; 3],
     pub velocity: SimFixed,
@@ -104,6 +116,26 @@ pub struct Particle {
     pub state_advance_counter: u8,
 }
 
+mod ivec3_serde {
+    use glam::IVec3;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S>(value: &IVec3, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        [value.x, value.y, value.z].serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<IVec3, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let [x, y, z] = <[i32; 3]>::deserialize(deserializer)?;
+        Ok(IVec3::new(x, y, z))
+    }
+}
+
 impl ParticleSystem {
     pub fn particle_count(&self) -> usize {
         self.particles.len()
@@ -112,14 +144,12 @@ impl ParticleSystem {
 
 /// Deterministic store for `ParticleSystem` instances.
 ///
-/// Mirrors `EntityStore`: BTreeMap-backed so iteration is always sorted by
-/// `stable_id`. Stable IDs are monotonically increasing and never reused —
-/// `reinsert` re-uses an existing id when a tick borrow-juggle round-trips
-/// a system through ownership.
-#[derive(Debug, Clone, Default)]
+/// Mirrors `EntityStore`: BTreeMap-backed so storage iteration is deterministic.
+/// Identity is assigned by `ObjectSubstrate`; this store deliberately has no
+/// allocator of its own.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParticleSystemStore {
     systems: BTreeMap<u64, ParticleSystem>,
-    next_id: u64,
 }
 
 impl ParticleSystemStore {
@@ -143,24 +173,33 @@ impl ParticleSystemStore {
         self.systems.get_mut(&id)
     }
 
-    /// Inserts a new system; assigns and returns the next stable id.
-    pub fn insert(&mut self, mut sys: ParticleSystem) -> u64 {
-        self.next_id += 1;
-        sys.stable_id = self.next_id;
-        let id = self.next_id;
+    /// Insert a system whose identity was assigned by the object substrate.
+    pub(crate) fn insert(&mut self, sys: ParticleSystem) -> u64 {
+        let id = sys.stable_id;
+        debug_assert_ne!(id, 0, "particle system requires an assigned stable id");
         self.systems.insert(id, sys);
         id
     }
 
-    /// Re-inserts a system at its existing stable id (used by tick borrow-juggle).
-    pub fn reinsert(&mut self, sys: ParticleSystem) {
+    /// Temporarily take a system while its AI owns `&mut Simulation`.
+    pub(crate) fn take_for_tick(&mut self, id: u64) -> Option<ParticleSystem> {
+        self.systems.remove(&id)
+    }
+
+    /// Reinsert a system after the temporary tick ownership round-trip.
+    pub(crate) fn reinsert_after_tick(&mut self, sys: ParticleSystem) {
         let id = sys.stable_id;
         debug_assert!(id > 0, "reinsert requires a previously-assigned stable_id");
         self.systems.insert(id, sys);
     }
 
-    pub fn remove(&mut self, id: u64) -> Option<ParticleSystem> {
+    /// Physical removal boundary used only by the shared pending-delete finalizer.
+    pub(crate) fn finalize_remove(&mut self, id: u64) -> Option<ParticleSystem> {
         self.systems.remove(&id)
+    }
+
+    pub(crate) fn contains_key(&self, id: u64) -> bool {
+        self.systems.contains_key(&id)
     }
 
     pub fn len(&self) -> usize {
@@ -170,11 +209,16 @@ impl ParticleSystemStore {
     pub fn is_empty(&self) -> bool {
         self.systems.is_empty()
     }
+}
 
-    /// Snapshot of stable IDs for tick traversal — collects to a `Vec` so
-    /// the caller can mutate the store while iterating.
-    pub fn ids(&self) -> Vec<u64> {
-        self.systems.keys().copied().collect()
+impl Simulation {
+    /// Read-only access for presentation and deterministic state folding.
+    pub fn particle_systems(&self) -> &ParticleSystemStore {
+        &self.substrate.particle_systems
+    }
+
+    pub(crate) fn particle_systems_mut(&mut self) -> &mut ParticleSystemStore {
+        &mut self.substrate.particle_systems
     }
 }
 
@@ -182,9 +226,10 @@ impl ParticleSystemStore {
 mod tests {
     use super::*;
 
-    fn fake_system() -> ParticleSystem {
+    fn fake_system(stable_id: u64) -> ParticleSystem {
         ParticleSystem {
-            stable_id: 0,
+            stable_id,
+            in_logic_vector: false,
             type_id: ParticleSystemTypeId(0),
             coords: IVec3::ZERO,
             offset: IVec3::ZERO,
@@ -204,19 +249,20 @@ mod tests {
     }
 
     #[test]
-    fn insert_assigns_increasing_ids() {
+    fn store_uses_preassigned_object_ids() {
         let mut store = ParticleSystemStore::new();
-        let a = store.insert(fake_system());
-        let b = store.insert(fake_system());
-        assert!(b > a);
+        assert_eq!(store.insert(fake_system(41)), 41);
+        assert_eq!(store.insert(fake_system(97)), 97);
+        assert!(store.get(41).is_some());
+        assert!(store.get(97).is_some());
     }
 
     #[test]
     fn iteration_is_sorted_by_id() {
         let mut store = ParticleSystemStore::new();
-        let _ = store.insert(fake_system());
-        let _ = store.insert(fake_system());
-        let _ = store.insert(fake_system());
+        let _ = store.insert(fake_system(9));
+        let _ = store.insert(fake_system(2));
+        let _ = store.insert(fake_system(7));
         let ids: Vec<u64> = store.iter().map(|(id, _)| *id).collect();
         let mut sorted = ids.clone();
         sorted.sort();
@@ -224,12 +270,58 @@ mod tests {
     }
 
     #[test]
-    fn reinsert_preserves_id() {
+    fn tick_ownership_round_trip_preserves_id() {
         let mut store = ParticleSystemStore::new();
-        let id = store.insert(fake_system());
-        let sys = store.remove(id).unwrap();
-        store.reinsert(sys);
+        let id = store.insert(fake_system(12));
+        let sys = store.take_for_tick(id).unwrap();
+        store.reinsert_after_tick(sys);
         assert!(store.get(id).is_some());
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn serde_roundtrip_preserves_authoritative_system_state() {
+        let mut store = ParticleSystemStore::new();
+        let mut system = fake_system(23);
+        system.in_logic_vector = true;
+        system.coords = IVec3::new(-17, 29, 43);
+        system.target_coords = IVec3::new(101, -202, 303);
+        system.particles.push(Particle {
+            type_id: ParticleTypeId(4),
+            coords: IVec3::new(1, 2, 3),
+            previous_coords: IVec3::new(4, 5, 6),
+            origin: IVec3::new(7, 8, 9),
+            direction: [SimFixed::from_num(1); 3],
+            velocity: SimFixed::from_num(2),
+            lifetime_remaining: 31,
+            damage_counter: 5,
+            state_ai_advance: 2,
+            animation_state: 3,
+            translucency: 4,
+            hit_ground: true,
+            marked_for_deletion: false,
+            drift_x: -1,
+            drift_y: 2,
+            drift_z: -3,
+            current_color: [10, 20, 30],
+            color_index: 2,
+            color_accumulator: SimFixed::from_num(3),
+            spark: None,
+            prev_delta: [SimFixed::from_num(4); 3],
+            state_advance_counter: 7,
+        });
+        store.insert(system);
+
+        let bytes = bincode::serialize(&store).expect("serialize particle systems");
+        let restored: ParticleSystemStore =
+            bincode::deserialize(&bytes).expect("deserialize particle systems");
+        let restored = restored.get(23).expect("system survives roundtrip");
+
+        assert_eq!(restored.coords, IVec3::new(-17, 29, 43));
+        assert!(!restored.in_logic_vector);
+        assert_eq!(restored.target_coords, IVec3::new(101, -202, 303));
+        assert_eq!(restored.particles.len(), 1);
+        assert_eq!(restored.particles[0].origin, IVec3::new(7, 8, 9));
+        assert_eq!(restored.particles[0].state_advance_counter, 7);
     }
 }

@@ -349,10 +349,17 @@ pub(crate) fn build_software_cursor(
     let palette = asset_manager
         .get_ref("mousepal.pal")
         .and_then(|data| Palette::from_bytes(data).ok())?;
-    let shp_data = asset_manager
-        .get_ref("mouse.sha")
-        .or_else(|| asset_manager.get_ref("mouse.shp"))?;
-    let shp = ShpFile::from_bytes(shp_data).ok()?;
+    let shp = if let Some(load) = asset_manager
+        .load_file_from_mix("mouse.sha")
+        .or_else(|| asset_manager.load_file_from_mix("mouse.shp"))
+    {
+        ShpFile::from_bytes(&load.bytes).ok()?
+    } else {
+        let shp_data = asset_manager
+            .get_ref("mouse.sha")
+            .or_else(|| asset_manager.get_ref("mouse.shp"))?;
+        ShpFile::from_bytes(shp_data).ok()?
+    };
     if shp.frames.is_empty() {
         return None;
     }

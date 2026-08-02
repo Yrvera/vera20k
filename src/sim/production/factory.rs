@@ -24,7 +24,7 @@
 //! dead-code is allowed module-wide.
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
@@ -307,12 +307,11 @@ impl Factory {
     /// `&rules`). Returns the popped `type_id`, or `None` when an object is still held or
     /// the queue is empty.
     ///
-    /// `step_delay` is the initial cadence countdown: `0` when the caller runs AFTER this
-    /// tick's `step_all` (delivery, in `tick_production`) so the new build's first charge
-    /// lands next tick; `1` when the caller runs BEFORE `step_all` (a cancel command, which
-    /// executes in the command phase) so the new build is NOT charged the same tick it is
-    /// promoted — preserving the pre-P5d "first charge one tick after activation" schedule
-    /// (the reconcile-at-tail timing the registry now reproduces directly).
+    /// `step_delay` is the initial cadence countdown: `0` when the caller runs
+    /// after this tick's `step_all` (delivery or EventClass-tail cancellation),
+    /// so the new build's first charge lands next tick; `1` when the caller
+    /// runs before `step_all` (prerequisite revalidation), so the promoted build
+    /// is not charged in that same sweep.
     pub(crate) fn start_next_queued(&mut self, cost: i32, step_delay: u16) -> Option<InternedId> {
         // "Object null required": an in-flight OR completed-held object is never displaced.
         if self.object.is_some() {
@@ -518,6 +517,21 @@ pub(crate) struct RevalAction {
 }
 
 impl FactoryRegistry {
+    /// Apply the save/load swizzle result to the optional produced-object
+    /// pointer. An unmatched saved identity becomes null; the Factory and its
+    /// type/progress state remain intact.
+    pub(crate) fn fixup_object_references(&mut self, object_ids: &BTreeSet<u64>) {
+        for factory in self.factories.values_mut() {
+            if let Some(object) = factory.object.as_mut()
+                && object
+                    .entity_id
+                    .is_some_and(|object_id| !object_ids.contains(&object_id))
+            {
+                object.entity_id = None;
+            }
+        }
+    }
+
     /// Read-only sidebar projection. Never mutates.
     pub fn view(&self, owner: InternedId, category: ProductionCategory) -> Option<FactoryView<'_>> {
         let f = self.factories.get(&(owner, category))?;
@@ -601,9 +615,9 @@ impl FactoryRegistry {
     /// held, progress 0, balance seeded from `cost`). With an active object held, push a
     /// `QueueEntry` to the FIFO tail.
     ///
-    /// `step_timer = 1` on a freshly-armed active build: enqueue runs in the command phase
-    /// (BEFORE this tick's `step_all`), so the build must NOT be charged the same tick — its
-    /// first charge lands next tick, reproducing the pre-P5d reconcile-at-tail schedule.
+    /// `step_timer = 0` on a freshly-armed active build: EventClass dispatch
+    /// runs after this tick's `step_all`, so the first charge lands on the next
+    /// gameplay frame.
     /// `cost` is resolved by the caller (which holds `&rules`) so this stays `&sim`-free.
     pub(crate) fn enqueue(
         &mut self,
@@ -628,7 +642,7 @@ impl FactoryRegistry {
             let seeded = cost.max(0);
             f.progress = 0;
             f.step_rate_frames = 0;
-            f.step_timer = 1;
+            f.step_timer = 0;
             f.balance = seeded;
             f.original_balance = seeded;
             f.active_total_base_frames = total_base_frames;
@@ -652,7 +666,7 @@ impl FactoryRegistry {
                 category,
                 progress: 0,
                 step_rate_frames: 0,
-                step_timer: 1,
+                step_timer: 0,
                 balance: seeded,
                 original_balance: seeded,
                 active_total_base_frames: total_base_frames,
@@ -703,8 +717,9 @@ impl FactoryRegistry {
     }
 
     /// Clear a delivered/abandoned active object and promote the next queued entry into the
-    /// active slot (C7 StartNextQueued), seeding it from `next_cost`. `step_delay` is `0`
-    /// for delivery (runs after this tick's `step_all`) and `1` for a command-phase cancel.
+    /// active slot (C7 StartNextQueued), seeding it from `next_cost`.
+    /// EventClass-tail cancellation and delivery both pass `0`; the pre-step
+    /// revalidation sweep passes `1`.
     /// Returns the popped type, or `None` if the queue was empty (the factory is left idle
     /// for `prune_idle`).
     pub(crate) fn clear_active_and_advance(

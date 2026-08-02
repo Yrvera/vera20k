@@ -9,8 +9,6 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-use std::collections::HashMap;
-
 use crate::app::AppState;
 use crate::app_commands::preferred_local_owner;
 use crate::app_entity_pick::{
@@ -23,7 +21,6 @@ use crate::app_types::{HoverTargetKind, OrderMode};
 use crate::map::entities::EntityCategory;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::intern::InternedId;
-use crate::sim::movement::group_destination;
 
 /// Attempt to issue a context-sensitive order at the given screen point.
 ///
@@ -61,7 +58,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let mut miner_order_voice: Option<&'static str> = None;
 
     if let Some(sim) = &mut state.simulation {
-        let execute_tick = sim.session.tick.saturating_add(sim.input_delay_ticks);
+        let execute_tick = sim.session.tick;
         let selected_ids: Vec<u64> = selected_stable_ids_sorted(sim.entities());
         if selected_ids.is_empty() {
             return false;
@@ -122,11 +119,26 @@ pub(crate) fn try_queue_context_order_at_screen_point(
 
         // Check if the clicked cell has a resource node (ore/gems).
         let clicked_ore = !force_fire
-            && sim
-                .production
-                .resource_nodes
-                .get(&(target_rx, target_ry))
-                .is_some_and(|n| n.remaining > 0);
+            && match (
+                sim.overlay_grid.as_ref(),
+                state.overlay_registry.as_ref(),
+                state.rules.as_ref(),
+            ) {
+                (Some(grid), Some(registry), Some(rules)) if !rules.tiberium_types.is_empty() => {
+                    crate::sim::tiberium::tiberium_cell_view(
+                        grid,
+                        registry,
+                        &rules.tiberium_types,
+                        (target_rx, target_ry),
+                    )
+                    .is_some()
+                }
+                _ => sim
+                    .production
+                    .resource_nodes
+                    .get(&(target_rx, target_ry))
+                    .is_some_and(|node| node.remaining > 0),
+            };
 
         if clicked_friendly_refinery && only_miners_selected {
             for stable_id in selected_miner_ids {
@@ -601,48 +613,6 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     Some(&state.tactical_bridge_inverse_map),
                 )
             };
-            // --- Group destination distribution ---
-            // When multiple units are selected for a Move/AttackMove, distribute
-            // unique destination cells via radial spread (RA2 behavior) instead of
-            // sending all units to the same cell.
-            let group_destinations: HashMap<u64, (u16, u16)> = if selected_units.len() > 1
-                && attack_target.is_none()
-            {
-                if let Some(grid) = state.path_grid.as_ref() {
-                    let mut vehicle_ids: Vec<u64> = Vec::new();
-                    let mut infantry_ids: Vec<u64> = Vec::new();
-                    for &sid in &selected_units {
-                        if let Some(entity) = sim.entities().get(sid) {
-                            if entity.category == EntityCategory::Infantry {
-                                infantry_ids.push(sid);
-                            } else {
-                                vehicle_ids.push(sid);
-                            }
-                        }
-                    }
-                    let center: (u16, u16) = crate::app_sim_tick::nearest_walkable_cell_layered(
-                        grid,
-                        (target_rx, target_ry),
-                        12,
-                    )
-                    .unwrap_or((target_rx, target_ry));
-                    let assignments = group_destination::distribute_group_destinations(
-                        grid,
-                        center,
-                        &vehicle_ids,
-                        &infantry_ids,
-                    );
-                    assignments
-                        .into_iter()
-                        .map(|(id, rx, ry)| (id, (rx, ry)))
-                        .collect()
-                } else {
-                    HashMap::new()
-                }
-            } else {
-                HashMap::new()
-            };
-
             // Assign a shared group_id when multiple units move together.
             // The movement system uses this to sync speed to the slowest member.
             let move_group_id: Option<u32> = if selected_units.len() > 1 && attack_target.is_none()
@@ -688,9 +658,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     // Force-fire on empty terrain: per-unit dispatch matching
                     // gamemd What_Action_OnCell — armed mobile units fire at
                     // the cell, unarmed (Engineer/Harvester/MCV) fall through
-                    // to plain Move. Skips group_destinations spread because
-                    // gamemd's DispatchMultiUnitOrder uses identical cell
-                    // coords for every selected unit.
+                    // to plain Move.
                     let unit_armed = sim
                         .entities()
                         .get(stable_id)
@@ -746,26 +714,21 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 } else {
                     match order_mode {
                         OrderMode::Move | OrderMode::AttackMove => {
-                            let goal: (u16, u16) = group_destinations
-                                .get(&stable_id)
-                                .copied()
-                                .unwrap_or_else(|| {
-                                    let mut g = (target_rx, target_ry);
-                                    if let Some(grid) = state.path_grid.as_ref() {
-                                        if !crate::app_sim_tick::is_any_layer_walkable(
-                                            grid, g.0, g.1,
-                                        ) {
-                                            if let Some(nearest) =
-                                                crate::app_sim_tick::nearest_walkable_cell_layered(
-                                                    grid, g, 12,
-                                                )
-                                            {
-                                                g = nearest;
-                                            }
+                            let goal: (u16, u16) = {
+                                let mut g = (target_rx, target_ry);
+                                if let Some(grid) = state.path_grid.as_ref() {
+                                    if !crate::app_sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
+                                        if let Some(nearest) =
+                                            crate::app_sim_tick::nearest_walkable_cell_layered(
+                                                grid, g, 12,
+                                            )
+                                        {
+                                            g = nearest;
                                         }
                                     }
-                                    g
-                                });
+                                }
+                                g
+                            };
                             if order_mode == OrderMode::AttackMove {
                                 Command::AttackMove {
                                     entity_id: stable_id,

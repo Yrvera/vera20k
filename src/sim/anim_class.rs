@@ -15,7 +15,11 @@ use crate::rules::art_data::AnimTypeRuntimeConfig;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::AnimClassSpawnDescriptor;
 use crate::sim::intern::InternedId;
-use crate::sim::world::{SimSoundEvent, Simulation};
+use crate::sim::occupancy::{RawCellOccupationGrid, infantry_raw_occupation_mask};
+use crate::sim::timer::CdTimer;
+use crate::sim::world::{LifecycleOutput, SimSoundEvent, Simulation};
+use crate::util::fixed_math::SimFixed;
+use crate::util::lepton::{BRIDGE_HEIGHT_DELTA_LEPTONS, ground_height_leptons};
 
 pub type AnimId = u64;
 
@@ -31,6 +35,8 @@ const ANIM_HEIGHT_LEVEL_LEPTONS: i32 = 128;
 const TRAILER_DRAW_FLAGS: u32 = 0x600;
 const BUILDING_RENDER_ORIGIN_LEPTONS: i32 = 128;
 const DAMAGE_FIRE_SLOT_COUNT: usize = 8;
+const MULTIPLAYER_FEEDBACK_Z_ADJUST: i32 = -5000;
+const SYNC_EXEMPT_NATIVE_UNIQUE_ID: i32 = -2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnimRuntime {
@@ -38,7 +44,7 @@ pub struct AnimRuntime {
     pub frame_step: i32,
     pub delay_remaining: u16,
     pub rate_reload: u16,
-    pub rate_elapsed: u16,
+    pub frame_timer: CdTimer,
     pub loop_remaining: u8,
     pub first_ai_guard: bool,
     pub constructor_reverse: bool,
@@ -48,6 +54,7 @@ pub struct AnimRuntime {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnimObject {
     pub stable_id: AnimId,
+    pub native_unique_id: i32,
     pub type_id: InternedId,
     /// Absolute world leptons. Z uses the animation constructor's 128-lepton
     /// height level, not combat's terrain-height conversion.
@@ -57,7 +64,11 @@ pub struct AnimObject {
     pub effective_end: i32,
     pub effective_loop_end: i32,
     pub runtime: AnimRuntime,
+    /// LogicClass membership is reconstructed from the serialized vector.
+    /// ObjectClass::Save does not persist its local membership byte.
+    #[serde(skip)]
     pub in_logic_vector: bool,
+    pub owner_entity: Option<u64>,
     pub start_sound_active: bool,
     pub stop_sound_id: Option<InternedId>,
 }
@@ -93,6 +104,14 @@ impl AnimStore {
     pub fn contains_key(&self, id: AnimId) -> bool {
         self.0.contains_key(&id)
     }
+
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn key_at(&self, index: usize) -> Option<AnimId> {
+        self.0.keys().nth(index).copied()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -108,16 +127,116 @@ pub enum AnimSpawnError {
 enum VisitAction {
     None,
     Destroy,
+    DestroyAfterMakeInfantryClear,
     Next(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimOccupationOperation {
+    Mark,
+    Clear,
+}
+
+fn apply_anim_raw_occupation(
+    grid: &mut RawCellOccupationGrid,
+    rx: u16,
+    ry: u16,
+    mask: u8,
+    world_z: i32,
+    ground_z: i32,
+    live_structural_bridge: bool,
+    operation: AnimOccupationOperation,
+) {
+    let reaches_deck = world_z >= ground_z.wrapping_add(BRIDGE_HEIGHT_DELTA_LEPTONS as i32);
+    let use_deck = match operation {
+        AnimOccupationOperation::Mark => reaches_deck && live_structural_bridge,
+        // AnimClass::ClearCellOccupancy deliberately ignores Cell+0x140 bit
+        // 0x100. This can leave a ground bit stale when a high animation was
+        // marked after structural bridge state disappeared.
+        AnimOccupationOperation::Clear => reaches_deck,
+    };
+    match (operation, use_deck) {
+        (AnimOccupationOperation::Mark, false) => grid.mark_ground(rx, ry, mask),
+        (AnimOccupationOperation::Mark, true) => grid.mark_deck(rx, ry, mask),
+        (AnimOccupationOperation::Clear, false) => grid.clear_ground(rx, ry, mask),
+        (AnimOccupationOperation::Clear, true) => grid.clear_deck(rx, ry, mask),
+    }
 }
 
 impl Simulation {
     pub fn anim(&self, id: AnimId) -> Option<&AnimObject> {
-        self.substrate.anims.get(id)
+        self.substrate
+            .anims
+            .get(id)
+            .or_else(|| self.substrate.multiplayer_feedback_anims.get(id))
     }
 
     pub fn anims(&self) -> impl Iterator<Item = (&AnimId, &AnimObject)> {
-        self.substrate.anims.iter()
+        self.substrate
+            .anims
+            .iter()
+            .chain(self.substrate.multiplayer_feedback_anims.iter())
+    }
+
+    pub fn multiplayer_feedback_anims(&self) -> impl Iterator<Item = (&AnimId, &AnimObject)> {
+        self.substrate.multiplayer_feedback_anims.iter()
+    }
+
+    fn anim_mut_by_id(&mut self, id: AnimId) -> Option<&mut AnimObject> {
+        if self.substrate.anims.contains_key(id) {
+            self.substrate.anims.get_mut(id)
+        } else {
+            self.substrate.multiplayer_feedback_anims.get_mut(id)
+        }
+    }
+
+    fn is_multiplayer_feedback_anim(&self, id: AnimId) -> bool {
+        self.substrate.multiplayer_feedback_anims.contains_key(id)
+    }
+
+    fn apply_make_infantry_raw_occupation(
+        &mut self,
+        world: AnimWorldCoord,
+        operation: AnimOccupationOperation,
+    ) {
+        let cell_x = world.x >> 8;
+        let cell_y = world.y >> 8;
+        let (Ok(rx), Ok(ry)) = (u16::try_from(cell_x), u16::try_from(cell_y)) else {
+            // Native writes its shared dummy cell for out-of-map coordinates;
+            // that dummy is not part of Rust's serialized map substrate.
+            return;
+        };
+        let mask = infantry_raw_occupation_mask(
+            SimFixed::from_num(world.x & 0xff),
+            SimFixed::from_num(world.y & 0xff),
+        );
+        let (ground_z, live_structural_bridge) = self
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(rx, ry))
+            .and_then(|cell| {
+                ground_height_leptons(cell.level, cell.slope_type, world.x, world.y)
+                    .ok()
+                    .map(|ground_z| {
+                        let live_structural_bridge = cell.bridge_facts.has_structural_bridge()
+                            && self
+                                .bridge_state
+                                .as_ref()
+                                .is_some_and(|state| state.is_bridge_walkable(rx, ry));
+                        (ground_z, live_structural_bridge)
+                    })
+            })
+            .unwrap_or((0, false));
+        apply_anim_raw_occupation(
+            &mut self.substrate.raw_cell_occupation,
+            rx,
+            ry,
+            mask,
+            world.z,
+            ground_z,
+            live_structural_bridge,
+            operation,
+        );
     }
 
     pub(crate) fn spawn_anim_object(
@@ -155,6 +274,8 @@ impl Simulation {
         let (effective_end, effective_loop_end) = effective_bounds(&type_name, &config)?;
         let reverse = descriptor.reverse || config.reverse;
         let rate_reload = self.choose_anim_rate(&config);
+        let frame_timer =
+            CdTimer::started(self.session.binary_frame as i32, i32::from(rate_reload));
         let stop_sound_id = config
             .stop_sound
             .as_deref()
@@ -167,6 +288,7 @@ impl Simulation {
         }
         let object = AnimObject {
             stable_id,
+            native_unique_id: stable_id as i32,
             type_id: descriptor.type_name,
             world_coord,
             draw_flags: descriptor.draw_flags,
@@ -182,13 +304,14 @@ impl Simulation {
                 frame_step: if reverse { -1 } else { 1 },
                 delay_remaining: descriptor.delay,
                 rate_reload,
-                rate_elapsed: 0,
+                frame_timer,
                 loop_remaining: native_loop_remaining(config.loop_count, descriptor.loop_count),
                 first_ai_guard: true,
                 constructor_reverse: descriptor.reverse,
                 inactive: false,
             },
             in_logic_vector: false,
+            owner_entity: None,
             start_sound_active: false,
             stop_sound_id,
         };
@@ -202,27 +325,117 @@ impl Simulation {
         Ok(stable_id)
     }
 
+    pub(crate) fn spawn_multiplayer_feedback_anim_at_world(
+        &mut self,
+        rules: &RuleSet,
+        world_coord: AnimWorldCoord,
+    ) -> Result<AnimId, AnimSpawnError> {
+        let type_id = self.interner.intern(&rules.general.move_flash.name);
+        let type_name = self.interner.resolve(type_id).to_ascii_uppercase();
+        let config = rules
+            .art_registry
+            .anim_runtime_config(&type_name)
+            .cloned()
+            .ok_or(AnimSpawnError::MissingType(type_id))?;
+        let (effective_end, effective_loop_end) = effective_bounds(&type_name, &config)?;
+        let reverse = config.reverse;
+        let rate_reload = self.choose_anim_rate(&config);
+        let frame_timer =
+            CdTimer::started(self.session.binary_frame as i32, i32::from(rate_reload));
+        let stop_sound_id = config
+            .stop_sound
+            .as_deref()
+            .map(|sound| self.interner.intern(sound));
+        let stable_id = self.substrate.next_multiplayer_feedback_anim_id;
+        self.substrate.next_multiplayer_feedback_anim_id = stable_id.wrapping_add(1);
+        if self
+            .substrate
+            .multiplayer_feedback_anims
+            .contains_key(stable_id)
+        {
+            return Err(AnimSpawnError::DuplicateId(stable_id));
+        }
+
+        let object = AnimObject {
+            stable_id,
+            native_unique_id: SYNC_EXEMPT_NATIVE_UNIQUE_ID,
+            type_id,
+            world_coord,
+            draw_flags: TRAILER_DRAW_FLAGS,
+            z_adjust: MULTIPLAYER_FEEDBACK_Z_ADJUST,
+            effective_end,
+            effective_loop_end,
+            runtime: AnimRuntime {
+                current_frame: if reverse {
+                    effective_loop_end.wrapping_sub(1)
+                } else {
+                    0
+                },
+                frame_step: if reverse { -1 } else { 1 },
+                delay_remaining: 0,
+                rate_reload,
+                frame_timer,
+                loop_remaining: native_loop_remaining(config.loop_count, 1),
+                first_ai_guard: true,
+                constructor_reverse: false,
+                inactive: false,
+            },
+            in_logic_vector: false,
+            owner_entity: None,
+            start_sound_active: false,
+            stop_sound_id,
+        };
+        debug_assert!(
+            self.substrate
+                .multiplayer_feedback_anims
+                .insert(object)
+                .is_none()
+        );
+        self.anim_middle(stable_id, &config);
+        Ok(stable_id)
+    }
+
+    pub(crate) fn for_each_multiplayer_feedback_anim<F>(&mut self, mut body: F)
+    where
+        F: FnMut(&mut Simulation, AnimId),
+    {
+        let mut index = 0;
+        while index < self.substrate.multiplayer_feedback_anims.len() {
+            let Some(id) = self.substrate.multiplayer_feedback_anims.key_at(index) else {
+                break;
+            };
+            body(self, id);
+            index += 1;
+        }
+    }
+
     pub(crate) fn visit_anim(&mut self, id: AnimId, rules: &RuleSet) {
-        let Some((type_id, world_coord, first_guard, inactive)) =
-            self.substrate.anims.get(id).map(|anim| {
-                (
-                    anim.type_id,
-                    anim.world_coord,
-                    anim.runtime.first_ai_guard,
-                    anim.runtime.inactive,
-                )
-            })
-        else {
+        let Some((type_id, world_coord, first_guard, inactive)) = self.anim(id).map(|anim| {
+            (
+                anim.type_id,
+                anim.world_coord,
+                anim.runtime.first_ai_guard,
+                anim.runtime.inactive,
+            )
+        }) else {
             return;
         };
-        if inactive {
-            return;
-        }
         let type_name = self.interner.resolve(type_id).to_ascii_uppercase();
         let Some(config) = rules.art_registry.anim_runtime_config(&type_name).cloned() else {
             self.destroy_anim(id);
             return;
         };
+
+        // AnimClass::AI performs this before its first-AI, inactive, delay,
+        // visibility, and frame-timer gates. Repeated visits OR the same raw
+        // bit; there is deliberately no contributor count.
+        if config.make_infantry != -1 {
+            self.apply_make_infantry_raw_occupation(world_coord, AnimOccupationOperation::Mark);
+        }
+        if inactive {
+            self.destroy_anim(id);
+            return;
+        }
 
         if let Some(trailer_name) = config.trailer_anim.as_deref() {
             if trailer_cadence_matches(
@@ -250,7 +463,7 @@ impl Simulation {
         }
 
         if first_guard {
-            if let Some(anim) = self.substrate.anims.get_mut(id) {
+            if let Some(anim) = self.anim_mut_by_id(id) {
                 anim.runtime.first_ai_guard = false;
             }
             return;
@@ -258,8 +471,9 @@ impl Simulation {
 
         let mut action = VisitAction::None;
         let mut random_loop_delay = None;
+        let current_frame = self.session.binary_frame as i32;
         {
-            let Some(anim) = self.substrate.anims.get_mut(id) else {
+            let Some(anim) = self.anim_mut_by_id(id) else {
                 return;
             };
             if anim.runtime.delay_remaining > 0 {
@@ -269,11 +483,12 @@ impl Simulation {
             if anim.runtime.rate_reload == 0 {
                 return;
             }
-            anim.runtime.rate_elapsed = anim.runtime.rate_elapsed.saturating_add(1);
-            if anim.runtime.rate_elapsed < anim.runtime.rate_reload {
+            if !anim.runtime.frame_timer.expired(current_frame) {
                 return;
             }
-            anim.runtime.rate_elapsed = 0;
+            anim.runtime
+                .frame_timer
+                .start(current_frame, i32::from(anim.runtime.rate_reload));
             anim.runtime.current_frame = anim
                 .runtime
                 .current_frame
@@ -294,6 +509,8 @@ impl Simulation {
                 random_loop_delay = config.random_loop_delay;
             } else if let Some(next) = config.next.clone() {
                 action = VisitAction::Next(next);
+            } else if config.make_infantry != -1 {
+                action = VisitAction::DestroyAfterMakeInfantryClear;
             } else {
                 action = VisitAction::Destroy;
             }
@@ -304,30 +521,49 @@ impl Simulation {
                 .scenario_rng
                 .next_range_u32_inclusive(u32::from(low), u32::from(high))
                 as u16;
-            if let Some(anim) = self.substrate.anims.get_mut(id) {
+            if let Some(anim) = self.anim_mut_by_id(id) {
                 anim.runtime.delay_remaining = delay;
             }
         }
         match action {
             VisitAction::None => {}
             VisitAction::Destroy => self.destroy_anim(id),
+            VisitAction::DestroyAfterMakeInfantryClear => {
+                // Native clears before validating AnimToInfantry, resolving an
+                // owner, allocating the infantry, or attempting Unlimbo. The
+                // downstream factory/retry path belongs to the entity-runtime
+                // implementation item; this Phase-3 slice owns its preceding
+                // authoritative cell-byte transition.
+                self.apply_make_infantry_raw_occupation(
+                    world_coord,
+                    AnimOccupationOperation::Clear,
+                );
+                self.destroy_anim(id);
+            }
             VisitAction::Next(next) => self.switch_anim_type(id, &next, rules),
         }
     }
 
     pub(crate) fn destroy_anim(&mut self, id: AnimId) {
-        let Some((world, already_inactive, stop_sound)) = self
-            .substrate
-            .anims
-            .get(id)
-            .map(|anim| (anim.world_coord, anim.runtime.inactive, anim.stop_sound_id))
+        let is_feedback = self.is_multiplayer_feedback_anim(id);
+        let already_queued = if is_feedback {
+            self.substrate
+                .multiplayer_feedback_pending_delete
+                .contains(&id)
+        } else {
+            self.substrate.pending_delete.contains(&id)
+        };
+        if already_queued {
+            return;
+        }
+        let Some((world, stop_sound)) = self
+            .anim(id)
+            .map(|anim| (anim.world_coord, anim.stop_sound_id))
         else {
             return;
         };
-        if already_inactive {
-            return;
-        }
-        if let Some(anim) = self.substrate.anims.get_mut(id) {
+        self.detach_anim_from_owner(id);
+        if let Some(anim) = self.anim_mut_by_id(id) {
             anim.runtime.inactive = true;
             anim.start_sound_active = false;
         }
@@ -336,12 +572,44 @@ impl Simulation {
             stop_sound_id: stop_sound,
             world,
         });
-        self.conceal_anim(id);
-        self.substrate.pending_delete.push(id);
+        if is_feedback {
+            self.substrate.multiplayer_feedback_pending_delete.push(id);
+        } else {
+            self.conceal_anim(id);
+            self.substrate.pending_delete.push(id);
+        }
+    }
+
+    pub(crate) fn detach_anim_from_owner(&mut self, id: AnimId) -> Option<u64> {
+        let owner_id = self.anim(id).and_then(|anim| anim.owner_entity)?;
+        if let Some(owner) = self.substrate.entities.get_mut(owner_id) {
+            for slot in &mut owner.damage_fire_anim_ids {
+                if *slot == Some(id) {
+                    *slot = None;
+                }
+            }
+        }
+        if let Some(anim) = self.anim_mut_by_id(id) {
+            anim.owner_entity = None;
+        }
+        Some(owner_id)
+    }
+
+    pub(crate) fn expire_anim_owner_reference(&mut self, id: AnimId, expired_id: u64) -> bool {
+        if self.anim(id).and_then(|anim| anim.owner_entity) != Some(expired_id) {
+            return false;
+        }
+        self.lifecycle_outputs
+            .push(LifecycleOutput::DisplayRemove { stable_id: id });
+        self.detach_anim_from_owner(id);
+        if let Some(anim) = self.anim_mut_by_id(id) {
+            anim.runtime.inactive = true;
+        }
+        true
     }
 
     pub(crate) fn set_anim_frame_and_z_adjust(&mut self, id: AnimId, frame: i32, z_adjust: i32) {
-        if let Some(anim) = self.substrate.anims.get_mut(id) {
+        if let Some(anim) = self.anim_mut_by_id(id) {
             anim.runtime.current_frame = frame;
             anim.z_adjust = z_adjust;
         }
@@ -452,6 +720,9 @@ impl Simulation {
             let anim_id = self
                 .spawn_anim_at_world(rules, descriptor, world)
                 .expect("validated stock damage-fire animation must spawn");
+            if let Some(anim) = self.anim_mut_by_id(anim_id) {
+                anim.owner_entity = Some(building_id);
+            }
             if let Some(entity) = self.substrate.entities.get_mut(building_id) {
                 entity.damage_fire_anim_ids[slot] = Some(anim_id);
             }
@@ -499,12 +770,17 @@ impl Simulation {
     }
 
     fn choose_anim_rate(&mut self, config: &AnimTypeRuntimeConfig) -> u16 {
-        config
+        let delay = config
             .random_rate_logic_frames
             .map_or(config.rate_logic_frames, |(a, b)| {
                 self.scenario_rng
                     .next_range_u32_inclusive(u32::from(a), u32::from(b)) as u16
-            })
+            });
+        if config.normalized {
+            self.session.game_options.normalized_anim_delay(delay)
+        } else {
+            delay
+        }
     }
 
     fn anim_middle(&mut self, id: AnimId, config: &AnimTypeRuntimeConfig) {
@@ -517,10 +793,10 @@ impl Simulation {
             return;
         };
         let sound_id = self.interner.intern(&sound_name);
-        let Some(world) = self.substrate.anims.get(id).map(|anim| anim.world_coord) else {
+        let Some(world) = self.anim(id).map(|anim| anim.world_coord) else {
             return;
         };
-        if let Some(anim) = self.substrate.anims.get_mut(id) {
+        if let Some(anim) = self.anim_mut_by_id(id) {
             anim.start_sound_active = true;
         }
         self.sound_events.push(SimSoundEvent::AnimationStarted {
@@ -544,17 +820,17 @@ impl Simulation {
             return;
         };
         let rate_reload = self.choose_anim_rate(&config);
+        let frame_timer =
+            CdTimer::started(self.session.binary_frame as i32, i32::from(rate_reload));
         let stop_sound_id = config
             .stop_sound
             .as_deref()
             .map(|sound| self.interner.intern(sound));
         let constructor_reverse = self
-            .substrate
-            .anims
-            .get(id)
+            .anim(id)
             .is_some_and(|anim| anim.runtime.constructor_reverse);
         let reverse = constructor_reverse || config.reverse;
-        if let Some(anim) = self.substrate.anims.get_mut(id) {
+        if let Some(anim) = self.anim_mut_by_id(id) {
             anim.type_id = type_id;
             anim.effective_end = effective_end;
             anim.effective_loop_end = effective_loop_end;
@@ -567,7 +843,7 @@ impl Simulation {
             anim.runtime.frame_step = if reverse { -1 } else { 1 };
             anim.runtime.delay_remaining = 0;
             anim.runtime.rate_reload = rate_reload;
-            anim.runtime.rate_elapsed = 0;
+            anim.runtime.frame_timer = frame_timer;
             anim.runtime.loop_remaining = native_loop_remaining(config.loop_count, 1);
             anim.runtime.first_ai_guard = false;
             anim.runtime.inactive = false;
@@ -739,7 +1015,156 @@ mod tests {
     }
 
     #[test]
-    fn delay_rate_and_first_guard_use_logic_visits_only() {
+    fn gsi_04_12_anim_make_infantry_ini_preserves_native_default_and_signed_value() {
+        let rules = runtime_rules(
+            "[DEFAULT]\nRate=900\nEnd=1\n\n[EXPLICIT]\nRate=900\nEnd=1\nMakeInfantry=-2\n",
+            &[("DEFAULT", 1), ("EXPLICIT", 1)],
+        );
+
+        assert_eq!(
+            rules
+                .art_registry
+                .anim_runtime_config("DEFAULT")
+                .unwrap()
+                .make_infantry,
+            -1
+        );
+        assert_eq!(
+            rules
+                .art_registry
+                .anim_runtime_config("EXPLICIT")
+                .unwrap()
+                .make_infantry,
+            -2
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_anim_make_infantry_marks_before_first_ai_and_clears_on_natural_end() {
+        let rules = runtime_rules(
+            "[GENDEATH]\nRate=900\nEnd=1\nLoopCount=1\nMakeInfantry=0\n",
+            &[("GENDEATH", 1)],
+        );
+        let mut sim = Simulation::new();
+        let type_id = sim.interner.intern("GENDEATH");
+        let mut descriptor = runtime_descriptor(type_id, 0);
+        descriptor.rx = 3;
+        descriptor.ry = 4;
+        descriptor.sub_x = SimFixed::from_num(192);
+        descriptor.sub_y = SimFixed::from_num(64);
+        let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
+
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+        sim.visit_anim(id, &rules);
+        assert_eq!(
+            sim.substrate.raw_cell_occupation.ground_bits(3, 4),
+            0x04,
+            "the first AI guard runs after MakeInfantry raw marking"
+        );
+        assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
+
+        sim.session.binary_frame = 1;
+        sim.visit_anim(id, &rules);
+
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+        assert!(sim.substrate.pending_delete.contains(&id));
+    }
+
+    #[test]
+    fn gsi_04_12_anim_make_infantry_next_and_early_destroy_leave_destructive_mark_stale() {
+        let rules = runtime_rules(
+            "[GENDEATH]\nRate=900\nEnd=1\nLoopCount=1\nMakeInfantry=0\nNext=PLAIN\n\n\
+             [PLAIN]\nRate=900\nEnd=1\nLoopCount=1\n",
+            &[("GENDEATH", 1), ("PLAIN", 1)],
+        );
+        let mut sim = Simulation::new();
+        let gen_type = sim.interner.intern("GENDEATH");
+        let plain = sim.interner.intern("PLAIN");
+        let mut descriptor = runtime_descriptor(gen_type, 0);
+        descriptor.rx = 5;
+        descriptor.ry = 6;
+        descriptor.sub_x = SimFixed::from_num(64);
+        descriptor.sub_y = SimFixed::from_num(192);
+        let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
+
+        sim.visit_anim(id, &rules);
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(5, 6), 0x08);
+        sim.session.binary_frame = 1;
+        sim.visit_anim(id, &rules);
+
+        assert_eq!(sim.anim(id).unwrap().type_id, plain);
+        assert_eq!(
+            sim.substrate.raw_cell_occupation.ground_bits(5, 6),
+            0x08,
+            "Next takes priority and performs no MakeInfantry clear"
+        );
+        sim.destroy_anim(id);
+        assert_eq!(
+            sim.substrate.raw_cell_occupation.ground_bits(5, 6),
+            0x08,
+            "generic Anim destruction does not repair the raw byte"
+        );
+    }
+
+    #[test]
+    fn gsi_04_12_anim_make_infantry_mark_and_clear_keep_native_bridge_asymmetry() {
+        let mut grid = RawCellOccupationGrid::new();
+
+        apply_anim_raw_occupation(
+            &mut grid,
+            7,
+            8,
+            0x10,
+            416,
+            0,
+            true,
+            AnimOccupationOperation::Mark,
+        );
+        assert_eq!(grid.ground_bits(7, 8), 0);
+        assert_eq!(grid.deck_bits(7, 8), 0x10);
+        apply_anim_raw_occupation(
+            &mut grid,
+            7,
+            8,
+            0x10,
+            416,
+            0,
+            false,
+            AnimOccupationOperation::Clear,
+        );
+        assert_eq!(grid.deck_bits(7, 8), 0);
+
+        apply_anim_raw_occupation(
+            &mut grid,
+            7,
+            8,
+            0x10,
+            416,
+            0,
+            false,
+            AnimOccupationOperation::Mark,
+        );
+        assert_eq!(grid.ground_bits(7, 8), 0x10);
+        apply_anim_raw_occupation(
+            &mut grid,
+            7,
+            8,
+            0x10,
+            416,
+            0,
+            false,
+            AnimOccupationOperation::Clear,
+        );
+        assert_eq!(
+            grid.ground_bits(7, 8),
+            0x10,
+            "height-only clear targets deck after a nonstructural ground mark"
+        );
+        assert_eq!(grid.deck_bits(7, 8), 0);
+    }
+
+    #[test]
+    fn delay_guard_and_rate_use_passive_frame_anchor() {
         let rules = runtime_rules("[TEST]\nRate=450\nEnd=3\nLoopCount=1\n", &[("TEST", 3)]);
         let mut sim = Simulation::new();
         let type_id = sim.interner.intern("TEST");
@@ -748,14 +1173,66 @@ mod tests {
             .spawn_anim_object(&rules, runtime_descriptor(type_id, 1))
             .unwrap();
 
-        sim.visit_anim(id, &rules); // constructor first-AI guard
+        sim.visit_anim(id, &rules); // constructor first-AI guard at frame 0
+        sim.session.binary_frame = 1;
         sim.visit_anim(id, &rules); // delay 1 -> 0
-        sim.visit_anim(id, &rules); // rate elapsed 1/2
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
-        sim.visit_anim(id, &rules); // rate elapsed 2/2 -> frame 1
+        sim.session.binary_frame = 2;
+        sim.visit_anim(id, &rules); // constructor-anchored timer is already due
 
         assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
+        sim.visit_anim(id, &rules); // a second visit in the same frame cannot advance again
+        assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
         assert_eq!(sim.scenario_rng.logical_state(), rng_before);
+    }
+
+    #[test]
+    fn normalized_rate_uses_live_speed_after_random_rate_selection() {
+        let rules = runtime_rules(
+            "[TEST]\nRate=900\nRandomRate=180,225\nNormalized=yes\nEnd=3\nLoopCount=1\n",
+            &[("TEST", 3)],
+        );
+        let mut sim = Simulation::new();
+        sim.session.game_options.game_speed = 1;
+        let type_id = sim.interner.intern("TEST");
+        let expected_rng = sim.scenario_rng.clone();
+        let expected_rate = sim.session.game_options.normalized_anim_delay(4);
+
+        let id = sim
+            .spawn_anim_object(&rules, runtime_descriptor(type_id, 0))
+            .unwrap();
+        let runtime = &sim.anim(id).unwrap().runtime;
+
+        assert_eq!(runtime.rate_reload, expected_rate);
+        assert_eq!(runtime.frame_timer.start_frame(), 0);
+        assert_eq!(runtime.frame_timer.duration(), i32::from(expected_rate));
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+    }
+
+    #[test]
+    fn stock_naweap_a_rate_normalizes_to_six_frames_at_speed_one() {
+        let rules = runtime_rules(
+            "[NAWEAP_A]\nRate=200\nNormalized=yes\nEnd=12\nLoopCount=-1\n",
+            &[("NAWEAP_A", 12)],
+        );
+        let mut sim = Simulation::new();
+        sim.session.game_options.game_speed = 1;
+        let type_id = sim.interner.intern("NAWEAP_A");
+        let id = sim
+            .spawn_anim_object(&rules, runtime_descriptor(type_id, 0))
+            .unwrap();
+
+        assert_eq!(sim.anim(id).unwrap().runtime.rate_reload, 6);
+        sim.visit_anim(id, &rules);
+        sim.session.binary_frame = 5;
+        sim.visit_anim(id, &rules);
+        assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 0);
+        sim.session.binary_frame = 6;
+        sim.visit_anim(id, &rules);
+        assert_eq!(sim.anim(id).unwrap().runtime.current_frame, 1);
     }
 
     #[test]
@@ -777,7 +1254,9 @@ mod tests {
         ));
 
         sim.visit_anim(id, &rules); // guard
+        sim.session.binary_frame = 1;
         sim.visit_anim(id, &rules); // frame 1
+        sim.session.binary_frame = 2;
         sim.visit_anim(id, &rules); // frame 2 -> SECOND in place + Middle
         let anim = sim.anim(id).unwrap();
         assert_eq!(sim.interner.resolve(anim.type_id), "SECOND");
@@ -790,7 +1269,9 @@ mod tests {
             2,
         );
 
+        sim.session.binary_frame = 3;
         sim.visit_anim(id, &rules); // SECOND frame 1 (Next does not restore guard)
+        sim.session.binary_frame = 4;
         sim.visit_anim(id, &rules); // SECOND frame 2 -> destroy
         sim.destroy_anim(id);
         assert!(sim.anim(id).unwrap().runtime.inactive);
@@ -830,6 +1311,122 @@ mod tests {
     }
 
     #[test]
+    fn multiplayer_feedback_uses_sync_exempt_registry_without_global_id_or_logic_membership() {
+        let rules = runtime_rules("[RING]\nRate=900\nEnd=1\nLoopCount=1\n", &[("RING", 1)]);
+        let mut sim = Simulation::new();
+        let next_global_id = sim.substrate.next_stable_object_id;
+        let id = sim
+            .spawn_multiplayer_feedback_anim_at_world(
+                &rules,
+                AnimWorldCoord {
+                    x: 512,
+                    y: 768,
+                    z: 32,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(sim.substrate.next_stable_object_id, next_global_id);
+        assert!(!sim.substrate.anims.contains_key(id));
+        assert!(sim.live_object_order_snapshot().is_empty());
+        let anim = sim.anim(id).unwrap();
+        assert_eq!(anim.native_unique_id, SYNC_EXEMPT_NATIVE_UNIQUE_ID);
+        assert_eq!(anim.z_adjust, MULTIPLAYER_FEEDBACK_Z_ADJUST);
+        assert!(!anim.in_logic_vector);
+        let hash_with_feedback = sim.state_hash();
+        let feedback = sim.substrate.multiplayer_feedback_anims.remove(id).unwrap();
+        assert_eq!(sim.state_hash(), hash_with_feedback);
+        assert!(
+            sim.substrate
+                .multiplayer_feedback_anims
+                .insert(feedback)
+                .is_none()
+        );
+
+        sim.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, &rules));
+        assert!(!sim.anim(id).unwrap().runtime.first_ai_guard);
+        sim.session.binary_frame = 1;
+        sim.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, &rules));
+        assert!(sim.anim(id).unwrap().runtime.inactive);
+        assert_eq!(sim.substrate.multiplayer_feedback_pending_delete, vec![id]);
+
+        sim.process_pending_delete();
+        assert!(sim.anim(id).is_none());
+        assert!(sim.substrate.multiplayer_feedback_pending_delete.is_empty());
+    }
+
+    #[test]
+    fn owner_expiry_marks_anim_inactive_until_its_next_ai_visit() {
+        let (mut sim, rules, building_id) = damage_fire_fixture(false);
+        sim.substrate
+            .entities
+            .get_mut(building_id)
+            .unwrap()
+            .health
+            .current = 50;
+        sim.update_building_damage_fire(building_id, &rules);
+        let anim_id = sim
+            .substrate
+            .entities
+            .get(building_id)
+            .unwrap()
+            .damage_fire_anim_ids[0]
+            .unwrap();
+        assert_eq!(sim.anim(anim_id).unwrap().owner_entity, Some(building_id));
+
+        assert!(sim.expire_anim_owner_reference(anim_id, building_id));
+        assert!(
+            sim.substrate
+                .entities
+                .get(building_id)
+                .unwrap()
+                .damage_fire_anim_ids[0]
+                .is_none()
+        );
+        assert!(sim.anim(anim_id).unwrap().runtime.inactive);
+        assert!(sim.live_object_order_snapshot().contains(&anim_id));
+        assert!(!sim.substrate.pending_delete.contains(&anim_id));
+
+        sim.visit_anim(anim_id, &rules);
+        assert!(!sim.live_object_order_snapshot().contains(&anim_id));
+        assert_eq!(sim.substrate.pending_delete, vec![anim_id]);
+    }
+
+    #[test]
+    fn finalizer_defensively_clears_remaining_owner_slot() {
+        let (mut sim, rules, building_id) = damage_fire_fixture(false);
+        let fire_type = sim.interner.get("FIRE01").unwrap();
+        let anim_id = sim
+            .spawn_anim_at_world(
+                &rules,
+                runtime_descriptor(fire_type, 0),
+                AnimWorldCoord { x: 0, y: 0, z: 0 },
+            )
+            .unwrap();
+        sim.anim_mut_by_id(anim_id).unwrap().owner_entity = Some(building_id);
+        sim.substrate
+            .entities
+            .get_mut(building_id)
+            .unwrap()
+            .damage_fire_anim_ids[0] = Some(anim_id);
+        sim.anim_mut_by_id(anim_id).unwrap().runtime.inactive = true;
+        sim.substrate.pending_delete.push(anim_id);
+
+        sim.process_pending_delete();
+
+        assert!(sim.anim(anim_id).is_none());
+        assert!(!sim.live_object_order_snapshot().contains(&anim_id));
+        assert!(
+            sim.substrate
+                .entities
+                .get(building_id)
+                .unwrap()
+                .damage_fire_anim_ids[0]
+                .is_none()
+        );
+    }
+
+    #[test]
     fn building_damage_fire_uses_exact_threshold_slots_coords_and_depth() {
         let (mut sim, rules, building_id) = damage_fire_fixture(false);
         sim.substrate
@@ -857,6 +1454,7 @@ mod tests {
                 .all(Option::is_none)
         );
         let first_anim = sim.anim(first).unwrap();
+        assert_eq!(first_anim.owner_entity, Some(building_id));
         assert_eq!(
             sim.interner.resolve(first_anim.type_id),
             type_names[expected_types[0]]
@@ -872,6 +1470,7 @@ mod tests {
         );
         assert_eq!(first_anim.z_adjust, -192);
         let second_anim = sim.anim(second).unwrap();
+        assert_eq!(second_anim.owner_entity, Some(building_id));
         assert_eq!(
             sim.interner.resolve(second_anim.type_id),
             type_names[expected_types[1]]

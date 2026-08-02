@@ -134,7 +134,7 @@ fn recalculate_power_for_owner(
     state.theoretical_total_power = theoretical;
 }
 
-/// Main per-tick power system entry point.
+/// Main per-native-frame power system entry point.
 ///
 /// For each player with structures: recalculates power totals, decrements
 /// spy blackout timer, and returns transition events for EVA voice lines.
@@ -147,7 +147,6 @@ pub fn tick_power_states(
     power_states: &mut BTreeMap<InternedId, PowerState>,
     entities: &mut EntityStore,
     rules: &RuleSet,
-    _tick_ms: u32,
     interner: &crate::sim::intern::StringInterner,
 ) -> Vec<PowerEvent> {
     // Collect unique owners who have a LIVE structure. A Dying corpse must not
@@ -171,7 +170,7 @@ pub fn tick_power_states(
         // Save previous state for transition detection.
         state.was_low_power = state.is_low_power;
 
-        // Decrement spy blackout timer (1 tick = 1 frame at game speed).
+        // Decrement the spy blackout timer once per reached native frame.
         if state.power_blackout_remaining > 0 {
             state.power_blackout_remaining = state.power_blackout_remaining.saturating_sub(1);
         }
@@ -431,7 +430,7 @@ BuildSpeed=0.02
 
         // Tick 5 times — each tick decrements by 1.
         for _ in 0..5 {
-            tick_power_states(&mut states, &mut store, &rules, 16, &interner);
+            tick_power_states(&mut states, &mut store, &rules, &interner);
         }
 
         let state = states.get(&allies).expect("state should exist");
@@ -453,7 +452,7 @@ BuildSpeed=0.02
         let interner = test_interner();
         let mut states: BTreeMap<InternedId, PowerState> = BTreeMap::new();
 
-        let events = tick_power_states(&mut states, &mut store, &rules, 16, &interner);
+        let events = tick_power_states(&mut states, &mut store, &rules, &interner);
         assert!(
             events.contains(&PowerEvent::EnteredLowPower { owner: soviet }),
             "should detect entering low power"
@@ -461,7 +460,7 @@ BuildSpeed=0.02
 
         // Add a power plant → should restore power.
         store.insert(make_building(2, "NAPOWR", "Soviet", 400, 400));
-        let events = tick_power_states(&mut states, &mut store, &rules, 16, &interner);
+        let events = tick_power_states(&mut states, &mut store, &rules, &interner);
         assert!(
             events.contains(&PowerEvent::PowerRestored { owner: soviet }),
             "should detect power restored"
@@ -555,7 +554,7 @@ BuildSpeed=0.02
 
         // Tick well past any prior degradation threshold.
         for _ in 0..3750 {
-            tick_power_states(&mut states, &mut store, &rules, 16, &interner);
+            tick_power_states(&mut states, &mut store, &rules, &interner);
         }
 
         let entity = store.get(1).expect("entity should exist");
@@ -620,7 +619,7 @@ BuildSpeed=0.02
         let interner = test_interner();
         let allies = intern::test_intern("Allies");
         let mut states: BTreeMap<InternedId, PowerState> = BTreeMap::new();
-        tick_power_states(&mut states, &mut store, &rules, 16, &interner);
+        tick_power_states(&mut states, &mut store, &rules, &interner);
 
         assert!(
             has_active_radar(&store, &states, &rules, allies, &interner),
@@ -630,7 +629,7 @@ BuildSpeed=0.02
         // Remove the power plant: aggregate low power disables the same live
         // buildup provider.
         store.remove(2);
-        tick_power_states(&mut states, &mut store, &rules, 16, &interner);
+        tick_power_states(&mut states, &mut store, &rules, &interner);
 
         assert!(
             !has_active_radar(&store, &states, &rules, allies, &interner),
@@ -674,8 +673,7 @@ BuildSpeed=0.02
         let mut e = make_building(id, "YAPOWR", owner, hp, max_hp);
         let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 0);
         for i in 0..passenger_count {
-            cargo.passengers.push(100 + i as u64);
-            cargo.total_size += 1;
+            cargo.board_forced(100 + i as u64, 1);
         }
         e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
         e
@@ -734,8 +732,7 @@ BuildSpeed=0.02
         let mut store = EntityStore::new();
         let mut e = make_building(1, "GAPOWR", "Allies", 600, 600);
         let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 0);
-        cargo.passengers.push(100);
-        cargo.total_size += 1;
+        cargo.board_forced(100, 1);
         e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
         store.insert(e);
 
@@ -769,8 +766,7 @@ BuildSpeed=0.02
         let mut e = make_building(1, "ZEROEX", "Yuri", 750, 750);
         let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 0);
         for i in 0..5 {
-            cargo.passengers.push(100 + i as u64);
-            cargo.total_size += 1;
+            cargo.board_forced(100 + i as u64, 1);
         }
         e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
         store.insert(e);
@@ -808,8 +804,7 @@ BuildSpeed=0.02
         let mut e = make_building(1, "NEGEX", "Yuri", 750, 750);
         let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 0);
         for i in 0..3 {
-            cargo.passengers.push(100 + i as u64);
-            cargo.total_size += 1;
+            cargo.board_forced(100 + i as u64, 1);
         }
         e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
         store.insert(e);
@@ -850,8 +845,7 @@ BuildSpeed=0.02
         let mut e = make_building(1, "UABS", "Yuri", 500, 500);
         let mut cargo = crate::sim::passenger::PassengerCargo::new(3, 0);
         for i in 0..2 {
-            cargo.passengers.push(100 + i as u64);
-            cargo.total_size += 1;
+            cargo.board_forced(100 + i as u64, 1);
         }
         e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
         store.insert(e);

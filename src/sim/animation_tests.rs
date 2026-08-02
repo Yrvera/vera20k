@@ -10,6 +10,7 @@ use crate::sim::combat::{AttackTarget, PendingInfantryFire};
 use crate::sim::components::{Health, MovementTarget};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
+use crate::sim::game_options::GameOptions;
 use crate::sim::intern::StringInterner;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
@@ -19,7 +20,7 @@ fn test_def(
     start_frame: u16,
     frame_count: u16,
     facings: u8,
-    tick_ms: u32,
+    frame_delay: u16,
     loop_mode: LoopMode,
 ) -> SequenceDef {
     SequenceDef {
@@ -27,7 +28,8 @@ fn test_def(
         frame_count,
         facings,
         facing_multiplier: frame_count,
-        tick_ms,
+        frame_delay,
+        normalized: false,
         loop_mode,
         clockwise_facings: false,
     }
@@ -79,7 +81,8 @@ fn test_resolve_facing_multiplier_differs_from_frame_count() {
         frame_count: 4,
         facings: 8,
         facing_multiplier: 8,
-        tick_ms: 100,
+        frame_delay: 1,
+        normalized: false,
         loop_mode: LoopMode::Loop,
         clockwise_facings: false,
     };
@@ -107,58 +110,81 @@ fn test_resolve_all_8_facings() {
 
 #[test]
 fn test_advance_one_frame() {
-    let def = test_def(0, 6, 8, 100, LoopMode::Loop);
+    let def = test_def(0, 6, 8, 1, LoopMode::Loop);
     let mut anim: Animation = Animation::new(SequenceKind::Walk);
-    let result: Option<SequenceKind> = advance_animation(&mut anim, &def, 100);
+    let result = advance_animation(&mut anim, &def, &GameOptions::default());
     assert!(result.is_none());
     assert_eq!(anim.frame_index, 1);
 }
 
 #[test]
 fn test_advance_loop_wraps_to_zero() {
-    let def = test_def(0, 3, 1, 100, LoopMode::Loop);
+    let def = test_def(0, 3, 1, 1, LoopMode::Loop);
     let mut anim: Animation = Animation::new(SequenceKind::Walk);
     anim.frame_index = 2; // Last frame
-    advance_animation(&mut anim, &def, 100);
+    advance_animation(&mut anim, &def, &GameOptions::default());
     assert_eq!(anim.frame_index, 0, "Should wrap to frame 0");
 }
 
 #[test]
 fn test_advance_hold_last_frame() {
-    let def = test_def(86, 15, 1, 80, LoopMode::HoldLast);
+    let def = test_def(86, 15, 1, 1, LoopMode::HoldLast);
     let mut anim: Animation = Animation::new(SequenceKind::Die1);
     anim.frame_index = 14; // Last frame
-    advance_animation(&mut anim, &def, 80);
+    advance_animation(&mut anim, &def, &GameOptions::default());
     assert_eq!(anim.frame_index, 14, "Should hold last frame");
     assert!(anim.finished);
 }
 
 #[test]
 fn test_advance_transition_to() {
-    let def = test_def(56, 3, 1, 100, LoopMode::TransitionTo(SequenceKind::Stand));
+    let def = test_def(56, 3, 1, 1, LoopMode::TransitionTo(SequenceKind::Stand));
     let mut anim: Animation = Animation::new(SequenceKind::Idle1);
     anim.frame_index = 2; // Last frame
-    let result: Option<SequenceKind> = advance_animation(&mut anim, &def, 100);
+    let result = advance_animation(&mut anim, &def, &GameOptions::default());
     assert_eq!(result, Some(SequenceKind::Stand));
 }
 
 #[test]
-fn test_advance_multiple_frames_large_dt() {
-    let def = test_def(0, 6, 1, 100, LoopMode::Loop);
+fn test_advance_accumulates_native_frames() {
+    let def = test_def(0, 6, 1, 2, LoopMode::Loop);
     let mut anim: Animation = Animation::new(SequenceKind::Walk);
-    // 350ms at 100ms/frame = 3 frames advanced, 50ms remainder.
-    advance_animation(&mut anim, &def, 350);
+    for _ in 0..7 {
+        advance_animation(&mut anim, &def, &GameOptions::default());
+    }
     assert_eq!(anim.frame_index, 3);
-    assert_eq!(anim.elapsed_ms, 50);
+    assert_eq!(anim.elapsed_frames, 1);
+}
+
+#[test]
+fn normalized_action_delay_uses_session_game_speed() {
+    let mut def = test_def(0, 6, 1, 3, LoopMode::Loop);
+    def.normalized = true;
+
+    let mut slow = GameOptions::default();
+    slow.game_speed = 0;
+    let mut slow_anim = Animation::new(SequenceKind::Idle1);
+    for _ in 0..4 {
+        advance_animation(&mut slow_anim, &def, &slow);
+    }
+    assert_eq!(slow_anim.frame_index, 0);
+    advance_animation(&mut slow_anim, &def, &slow);
+    assert_eq!(slow_anim.frame_index, 1);
+
+    let mut fast = GameOptions::default();
+    fast.game_speed = 7;
+    let mut fast_anim = Animation::new(SequenceKind::Idle1);
+    advance_animation(&mut fast_anim, &def, &fast);
+    assert_eq!(fast_anim.frame_index, 1);
 }
 
 #[test]
 fn test_advance_finished_does_nothing() {
-    let def = test_def(86, 15, 1, 80, LoopMode::HoldLast);
+    let def = test_def(86, 15, 1, 1, LoopMode::HoldLast);
     let mut anim: Animation = Animation::new(SequenceKind::Die1);
     anim.finished = true;
     anim.frame_index = 14;
-    advance_animation(&mut anim, &def, 1000);
+    advance_animation(&mut anim, &def, &GameOptions::default());
     assert_eq!(anim.frame_index, 14);
 }
 
@@ -168,11 +194,11 @@ fn test_advance_finished_does_nothing() {
 fn test_switch_resets_state() {
     let mut anim: Animation = Animation::new(SequenceKind::Walk);
     anim.frame_index = 3;
-    anim.elapsed_ms = 50;
+    anim.elapsed_frames = 1;
     anim.switch_to(SequenceKind::Stand);
     assert_eq!(anim.sequence, SequenceKind::Stand);
     assert_eq!(anim.frame_index, 0);
-    assert_eq!(anim.elapsed_ms, 0);
+    assert_eq!(anim.elapsed_frames, 0);
     assert!(!anim.finished);
 }
 
@@ -180,10 +206,10 @@ fn test_switch_resets_state() {
 fn test_switch_noop_same_sequence() {
     let mut anim: Animation = Animation::new(SequenceKind::Walk);
     anim.frame_index = 3;
-    anim.elapsed_ms = 50;
+    anim.elapsed_frames = 1;
     anim.switch_to(SequenceKind::Walk);
     assert_eq!(anim.frame_index, 3, "Same sequence should not reset");
-    assert_eq!(anim.elapsed_ms, 50);
+    assert_eq!(anim.elapsed_frames, 1);
 }
 
 #[test]
@@ -288,7 +314,7 @@ fn test_tick_switches_to_walk_with_movement() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    tick_animations(&mut store, &sequences, 16, &interner);
+    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
 
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
     assert_eq!(anim.sequence, SequenceKind::Walk);
@@ -302,7 +328,7 @@ fn test_tick_switches_to_stand_without_movement() {
     e.animation = Some(Animation {
         sequence: SequenceKind::Walk,
         frame_index: 3,
-        elapsed_ms: 0,
+        elapsed_frames: 0,
         finished: false,
     });
     store.insert(e);
@@ -310,7 +336,7 @@ fn test_tick_switches_to_stand_without_movement() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    tick_animations(&mut store, &sequences, 16, &interner);
+    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
 
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
     assert_eq!(anim.sequence, SequenceKind::Stand);
@@ -328,8 +354,10 @@ fn test_tick_advances_walk_frame() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    // Walk tick_ms = 100. Advance by 100ms → frame 0 → 1.
-    tick_animations(&mut store, &sequences, 100, &interner);
+    // Default walk delay is three reached native frames.
+    for _ in 0..3 {
+        tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    }
 
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
     assert_eq!(anim.sequence, SequenceKind::Walk);
@@ -357,7 +385,8 @@ fn test_tick_attack_triggers_fire_animation() {
             frame_count: 6,
             facings: 8,
             facing_multiplier: 6,
-            tick_ms: 80,
+            frame_delay: 1,
+            normalized: false,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
             clockwise_facings: false,
         },
@@ -365,28 +394,38 @@ fn test_tick_attack_triggers_fire_animation() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), set);
 
-    tick_animations(&mut store, &sequences, 16, &interner);
+    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
 
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
     assert_eq!(anim.sequence, SequenceKind::Attack);
 }
 
 fn add_prone_sequences(set: &mut SequenceSet) {
-    for (kind, next) in [
-        (SequenceKind::Prone, None),
-        (SequenceKind::Crawl, None),
-        (SequenceKind::FireProne, Some(SequenceKind::Prone)),
-        (SequenceKind::Down, Some(SequenceKind::Prone)),
-        (SequenceKind::Up, Some(SequenceKind::Stand)),
+    // Active retail [E1Sequence] layout. In particular, FireProne has six
+    // frames and can reach E1's FireUp=2 discharge frame; a synthetic one-frame
+    // transition would complete on this same reached native frame.
+    for (kind, start_frame, frame_count, facing_multiplier, next) in [
+        (SequenceKind::Prone, 86, 1, 6, None),
+        (SequenceKind::Crawl, 86, 6, 6, None),
+        (
+            SequenceKind::FireProne,
+            212,
+            6,
+            6,
+            Some(SequenceKind::Prone),
+        ),
+        (SequenceKind::Down, 260, 2, 2, Some(SequenceKind::Prone)),
+        (SequenceKind::Up, 276, 2, 2, Some(SequenceKind::Stand)),
     ] {
         set.insert(
             kind,
             SequenceDef {
-                start_frame: 200,
-                frame_count: 1,
+                start_frame,
+                frame_count,
                 facings: 8,
-                facing_multiplier: 1,
-                tick_ms: 16,
+                facing_multiplier,
+                frame_delay: 1,
+                normalized: false,
                 loop_mode: next.map_or(LoopMode::Loop, LoopMode::TransitionTo),
                 clockwise_facings: false,
             },
@@ -406,7 +445,7 @@ fn test_runtime_prone_drives_prone_crawl_and_fireprone() {
     let mut idle = make_infantry_entity(1, 0, &mut interner);
     idle.infantry.as_mut().unwrap().is_prone = true;
     store.insert(idle);
-    tick_animations(&mut store, &sequences, 1, &interner);
+    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
     assert_eq!(
         store.get(1).unwrap().animation.as_ref().unwrap().sequence,
         SequenceKind::Prone
@@ -416,7 +455,7 @@ fn test_runtime_prone_drives_prone_crawl_and_fireprone() {
     moving.infantry.as_mut().unwrap().is_prone = true;
     moving.movement_target = Some(make_movement_target());
     store.insert(moving);
-    tick_animations(&mut store, &sequences, 1, &interner);
+    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
     assert_eq!(
         store.get(2).unwrap().animation.as_ref().unwrap().sequence,
         SequenceKind::Crawl
@@ -430,7 +469,7 @@ fn test_runtime_prone_drives_prone_crawl_and_fireprone() {
         fire_frame: 2,
     });
     store.insert(firing);
-    tick_animations(&mut store, &sequences, 1, &interner);
+    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
     assert_eq!(
         store.get(3).unwrap().animation.as_ref().unwrap().sequence,
         SequenceKind::FireProne
@@ -455,7 +494,8 @@ fn test_down_and_up_transitions_are_preserved_until_complete() {
             frame_count: 3,
             facings: 8,
             facing_multiplier: 3,
-            tick_ms: 100,
+            frame_delay: 1,
+            normalized: false,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Prone),
             clockwise_facings: false,
         },
@@ -467,7 +507,8 @@ fn test_down_and_up_transitions_are_preserved_until_complete() {
             frame_count: 1,
             facings: 8,
             facing_multiplier: 1,
-            tick_ms: 100,
+            frame_delay: 1,
+            normalized: false,
             loop_mode: LoopMode::Loop,
             clockwise_facings: false,
         },
@@ -475,12 +516,14 @@ fn test_down_and_up_transitions_are_preserved_until_complete() {
     let mut sequences = BTreeMap::new();
     sequences.insert("E1".to_string(), set);
 
-    tick_animations(&mut store, &sequences, 100, &interner);
+    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
     assert_eq!(
         store.get(1).unwrap().animation.as_ref().unwrap().sequence,
         SequenceKind::Down
     );
-    tick_animations(&mut store, &sequences, 300, &interner);
+    for _ in 0..3 {
+        tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    }
     assert_eq!(
         store.get(1).unwrap().animation.as_ref().unwrap().sequence,
         SequenceKind::Prone
@@ -500,12 +543,12 @@ fn test_tick_dying_entity_skips_transitions() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    let dead = tick_animations(&mut store, &sequences, 16, &interner);
+    let dead = tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
 
     // Dying entity should NOT switch to Walk despite having movement_target.
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
     assert_eq!(anim.sequence, SequenceKind::Die1);
-    // Not finished yet (only 16ms of an 80ms/frame * 15 frame animation).
+    // One reached native frame is not enough to finish the death sequence.
     assert!(dead.is_empty());
 }
 
@@ -518,7 +561,7 @@ fn test_tick_dying_entity_returns_finished_id() {
     e.animation = Some(Animation {
         sequence: SequenceKind::Die1,
         frame_index: 14,
-        elapsed_ms: 0,
+        elapsed_frames: 0,
         finished: true,
     });
     store.insert(e);
@@ -526,8 +569,30 @@ fn test_tick_dying_entity_returns_finished_id() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    let dead = tick_animations(&mut store, &sequences, 16, &interner);
+    let dead = tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
     assert_eq!(dead, vec![1]);
+}
+
+#[test]
+fn test_tick_dying_entity_returns_id_on_finishing_visit() {
+    let mut interner = make_test_interner();
+    let mut store = EntityStore::new();
+    let mut e = make_infantry_entity(1, 0, &mut interner);
+    e.dying = true;
+    e.animation = Some(Animation {
+        sequence: SequenceKind::Die1,
+        frame_index: 14,
+        elapsed_frames: 0,
+        finished: false,
+    });
+    store.insert(e);
+
+    let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
+    sequences.insert("E1".to_string(), default_infantry_sequences());
+
+    let dead = tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    assert_eq!(dead, vec![1]);
+    assert!(store.get(1).unwrap().animation.as_ref().unwrap().finished);
 }
 
 #[test]

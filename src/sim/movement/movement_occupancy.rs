@@ -19,7 +19,7 @@ use crate::sim::movement::bump_crush;
 use crate::sim::movement::drive_track::DriveTrackState;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::movement_blocked::handle_blocked_tick;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid};
 use crate::sim::pathfinding::cell_entry::{
     self, BuildingOccupantEntryDecision, CanEnterLayerContext, CellEntryResult,
     LiveVehicleBuildingEntry, VehicleBuildingEntryBranch,
@@ -219,12 +219,14 @@ pub(super) fn evaluate_runtime_can_enter_cell(
 
 pub(super) fn detect_deferred_cell_check(
     mover_category: EntityCategory,
+    mover_id: u64,
     _mover_bypass_grid: bool,
     layer_context: CanEnterLayerContext,
     next_cell: (u16, u16),
     current_cell: (u16, u16),
     current_object_list_layer: MovementLayer,
     occupancy: &OccupancyGrid,
+    cell_occupation: &CellOccupationGrid,
     live_building_entry_skips: &LiveBuildingEntrySkipMap,
 ) -> Option<DeferredCellCheck> {
     let object_list_layer = layer_context.object_list_layer;
@@ -235,35 +237,42 @@ pub(super) fn detect_deferred_cell_check(
         return None;
     }
 
+    let bit_only_block =
+        cell_occupation.occupied_by_other(next_cell.0, next_cell.1, occupancy_bits_layer, mover_id);
+
     // Static path-grid bypass is not a live-object exception. Only the skip map
     // can suppress specific building occupants such as refinery bib pads and
     // stable-open gates while preserving later blockers in the same cell list.
     let cell_occ = occupancy.get(next_cell.0, next_cell.1);
     if mover_category == EntityCategory::Infantry {
-        if cell_occ.is_some_and(|o| {
+        if bit_only_block
+            || cell_occ.is_some_and(|o| {
+                has_unignored_blocker_on(o, object_list_layer, next_cell, live_building_entry_skips)
+                    || has_unignored_blocker_on(
+                        o,
+                        occupancy_bits_layer,
+                        next_cell,
+                        live_building_entry_skips,
+                    )
+                    || o.infantry(object_list_layer).next().is_some()
+                    || o.infantry(occupancy_bits_layer).next().is_some()
+            })
+        {
+            return Some(DeferredCellCheck::Infantry(next_cell, layer_context));
+        }
+    } else if bit_only_block
+        || cell_occ.is_some_and(|o| {
             has_unignored_blocker_on(o, object_list_layer, next_cell, live_building_entry_skips)
+                || o.infantry(object_list_layer).next().is_some()
                 || has_unignored_blocker_on(
                     o,
                     occupancy_bits_layer,
                     next_cell,
                     live_building_entry_skips,
                 )
-                || o.infantry(object_list_layer).next().is_some()
                 || o.infantry(occupancy_bits_layer).next().is_some()
-        }) {
-            return Some(DeferredCellCheck::Infantry(next_cell, layer_context));
-        }
-    } else if cell_occ.is_some_and(|o| {
-        has_unignored_blocker_on(o, object_list_layer, next_cell, live_building_entry_skips)
-            || o.infantry(object_list_layer).next().is_some()
-            || has_unignored_blocker_on(
-                o,
-                occupancy_bits_layer,
-                next_cell,
-                live_building_entry_skips,
-            )
-            || o.infantry(occupancy_bits_layer).next().is_some()
-    }) {
+        })
+    {
         return Some(DeferredCellCheck::Vehicle(next_cell, layer_context));
     }
 
@@ -477,6 +486,13 @@ pub(super) fn naval_occ_diag(
     }
 }
 
+fn bridge_marker_context_with_peers<'a>(
+    context: crate::sim::movement::path_markers::BridgeMarkerContext<'a>,
+    peers: &'a crate::sim::movement::path_markers::BridgeMarkerPeerSnapshot,
+) -> crate::sim::movement::path_markers::BridgeMarkerContext<'a> {
+    crate::sim::movement::path_markers::BridgeMarkerContext { peers, ..context }
+}
+
 /// Handle the deferred occupancy check — runs outside the mutable entity borrow
 /// so `classify_occupied_cell()` can do immutable EntityStore lookups for blocker
 /// properties. Returns debug events to be pushed onto the entity.
@@ -493,6 +509,7 @@ pub(super) fn handle_deferred_occupancy(
     mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
     occupancy: &mut OccupancyGrid,
+    cell_occupation: &mut CellOccupationGrid,
     live_building_entry_skips: &LiveBuildingEntrySkipMap,
     alliances: &HouseAllianceMap,
     path_grid: Option<&PathGrid>,
@@ -506,6 +523,7 @@ pub(super) fn handle_deferred_occupancy(
     sim_tick: u64,
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
+    marker_context: Option<crate::sim::movement::path_markers::BridgeMarkerContext<'_>>,
 ) -> Vec<(u32, DebugEventKind)> {
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
     let (nx, ny, layer_context) = match check {
@@ -535,7 +553,7 @@ pub(super) fn handle_deferred_occupancy(
             interner,
         );
     }
-    let entry_result = cell_entry::classify_occupied_cell_with_layers_and_ignored(
+    let entry_result = cell_entry::classify_occupied_cell_with_layers_and_ignored_and_occupation(
         (nx, ny),
         layer_context,
         entity_id,
@@ -545,6 +563,7 @@ pub(super) fn handle_deferred_occupancy(
         snap.bypass_grid,
         live_building_entry_skips.get(&(nx, ny)),
         occupancy,
+        cell_occupation,
         entities,
         alliances,
         interner,
@@ -594,12 +613,16 @@ pub(super) fn handle_deferred_occupancy(
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 let cur_pos = (entity.position.rx, entity.position.ry);
+                let body_facing = entity.body_facing;
                 if let Some(ref mut target) = entity.movement_target {
                     let mut aborted_for_stuck = false;
                     let evts = handle_blocked_tick(
                         target,
                         &mut entity.facing,
+                        body_facing,
                         &snap.locomotor,
+                        &mut entity.drive_locomotion,
+                        &mut entity.ship_locomotion,
                         entity_id,
                         cur_pos,
                         active_layer,
@@ -619,6 +642,8 @@ pub(super) fn handle_deferred_occupancy(
                         mover_is_crusher,
                         is_infantry,
                         false,
+                        marker_context,
+                        occupancy,
                     );
                     debug_events.extend(evts);
                 }
@@ -684,7 +709,15 @@ pub(super) fn handle_deferred_occupancy(
                         // UNCHECKED: movement still owns this pre-UnInit unmark
                         // until the unified per-object scheduler can place the
                         // exact native Mark(0) boundary.
+                        if let Some(drive) = victim.drive_locomotion.as_mut() {
+                            crate::sim::occupancy::clear_drive_head_to_occupation_for_remove(
+                                drive,
+                                cell_occupation,
+                                vid,
+                            );
+                        }
                         victim.lifecycle.cell_marked = false;
+                        cell_occupation.reconcile_entity(victim);
                     }
                 }
             }
@@ -726,6 +759,7 @@ pub(super) fn handle_deferred_occupancy(
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 let cur_pos = (entity.position.rx, entity.position.ry);
+                let body_facing = entity.body_facing;
                 if let Some(ref mut target) = entity.movement_target {
                     if scattered {
                         // Blocker is moving — treat as temporary block, start
@@ -739,7 +773,10 @@ pub(super) fn handle_deferred_occupancy(
                         let evts = handle_blocked_tick(
                             target,
                             &mut entity.facing,
+                            body_facing,
                             &snap.locomotor,
+                            &mut entity.drive_locomotion,
+                            &mut entity.ship_locomotion,
                             entity_id,
                             cur_pos,
                             active_layer,
@@ -759,6 +796,8 @@ pub(super) fn handle_deferred_occupancy(
                             mover_is_crusher,
                             is_infantry,
                             false, // friendly stationary: keep code-2 grace
+                            marker_context,
+                            occupancy,
                         );
                         debug_events.extend(evts);
                     }
@@ -773,12 +812,16 @@ pub(super) fn handle_deferred_occupancy(
                     entity.attack_target = Some(AttackTarget::new(blocker_id));
                 }
                 let cur_pos = (entity.position.rx, entity.position.ry);
+                let body_facing = entity.body_facing;
                 if let Some(ref mut target) = entity.movement_target {
                     let mut aborted_for_stuck = false;
                     let evts = handle_blocked_tick(
                         target,
                         &mut entity.facing,
+                        body_facing,
                         &snap.locomotor,
+                        &mut entity.drive_locomotion,
+                        &mut entity.ship_locomotion,
                         entity_id,
                         cur_pos,
                         active_layer,
@@ -798,12 +841,20 @@ pub(super) fn handle_deferred_occupancy(
                         mover_is_crusher,
                         is_infantry,
                         false, // enemy blocker (code-5): keep code-2-style grace
+                        marker_context,
+                        occupancy,
                     );
                     debug_events.extend(evts);
                 }
             }
         }
-        CellEntryResult::TemporaryBlock { blocker_id } => {
+        temporary @ (CellEntryResult::TemporaryBlock { .. }
+        | CellEntryResult::TemporaryOccupation) => {
+            let blocker_id = match temporary {
+                CellEntryResult::TemporaryBlock { blocker_id } => Some(blocker_id),
+                CellEntryResult::TemporaryOccupation => None,
+                _ => unreachable!(),
+            };
             // Moving friendly — wait, then scatter the BLOCKER.
             // Original engine: locomotor calls CellClass::Scatter_Objects with
             // force=1 regardless of whether blocker is moving or stationary.
@@ -819,7 +870,9 @@ pub(super) fn handle_deferred_occupancy(
                         // Still waiting — do nothing this tick.
                     } else {
                         // Wait expired — try scattering the blocker, then repath.
-                        if !already_scattered.contains(&blocker_id) {
+                        if let Some(blocker_id) = blocker_id
+                            && !already_scattered.contains(&blocker_id)
+                        {
                             let scattered = bump_crush::scatter_blocker(
                                 entities,
                                 blocker_id,
@@ -833,16 +886,33 @@ pub(super) fn handle_deferred_occupancy(
                                 stats.scatter_successes = stats.scatter_successes.saturating_add(1);
                             }
                         }
-                        // Whether scatter succeeded or not, repath the mover.
-                        // Re-borrow the mover since scatter_blocker released it.
+                        // Retail reads peer paths immediately before A*. Refresh
+                        // only at this seam because the scatter attempt above is
+                        // the sole mutation between the tick snapshot and this
+                        // immediate blocked repath.
+                        let refreshed_marker_peers = marker_context.map(|_| {
+                            crate::sim::movement::path_markers::snapshot_bridge_marker_peers(
+                                entities, rules, interner,
+                            )
+                        });
+                        let refreshed_marker_context =
+                            marker_context.zip(refreshed_marker_peers.as_ref()).map(
+                                |(context, peers)| bridge_marker_context_with_peers(context, peers),
+                            );
+                        // Re-borrow the mover since scatter_blocker and the live
+                        // marker snapshot both released it.
                         if let Some(entity) = entities.get_mut(entity_id) {
                             let cur_pos = (entity.position.rx, entity.position.ry);
+                            let body_facing = entity.body_facing;
                             if let Some(ref mut target) = entity.movement_target {
                                 let mut aborted_for_stuck = false;
                                 let evts = handle_blocked_tick(
                                     target,
                                     &mut entity.facing,
+                                    body_facing,
                                     &snap.locomotor,
+                                    &mut entity.drive_locomotion,
+                                    &mut entity.ship_locomotion,
                                     entity_id,
                                     cur_pos,
                                     active_layer,
@@ -862,6 +932,8 @@ pub(super) fn handle_deferred_occupancy(
                                     mover_is_crusher,
                                     is_infantry,
                                     false, // temp block (moving friendly): keep grace
+                                    refreshed_marker_context,
+                                    occupancy,
                                 );
                                 debug_events.extend(evts);
                             }
@@ -875,12 +947,16 @@ pub(super) fn handle_deferred_occupancy(
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 let cur_pos = (entity.position.rx, entity.position.ry);
+                let body_facing = entity.body_facing;
                 if let Some(ref mut target) = entity.movement_target {
                     let mut aborted_for_stuck = false;
                     let evts = handle_blocked_tick(
                         target,
                         &mut entity.facing,
+                        body_facing,
                         &snap.locomotor,
+                        &mut entity.drive_locomotion,
+                        &mut entity.ship_locomotion,
                         entity_id,
                         cur_pos,
                         active_layer,
@@ -900,6 +976,8 @@ pub(super) fn handle_deferred_occupancy(
                         mover_is_crusher,
                         is_infantry,
                         true, // wall/impassable (code-7): skip grace
+                        marker_context,
+                        occupancy,
                     );
                     debug_events.extend(evts);
                 }
@@ -913,7 +991,92 @@ pub(super) fn handle_deferred_occupancy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::occupancy::CellListInsertion;
+    use crate::sim::components::MovementTarget;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::intern::test_interner;
+    use crate::sim::occupancy::{CellListInsertion, RawCellOccupationGrid};
+
+    #[test]
+    fn gsi_04_12_marker_deferred_repath_refreshes_same_tick_scatter_path() {
+        let ini = crate::rules::ini_parser::IniFile::from_str(
+            "[VehicleTypes]\n0=MOVER\n1=PEER\n\
+             [MOVER]\nName=Mover\nSpeed=8\n\
+             [PEER]\nName=Peer\nSpeed=4\n",
+        );
+        let rules = crate::rules::ruleset::RuleSet::from_ini(&ini).expect("marker rules");
+        let mut entities = EntityStore::new();
+
+        let mut mover = GameEntity::test_default(1, "MOVER", "Americans", 5, 5);
+        mover.category = EntityCategory::Unit;
+        mover.facing = 0;
+        entities.insert(mover);
+
+        let mut blocker = GameEntity::test_default(2, "PEER", "Americans", 5, 4);
+        blocker.category = EntityCategory::Unit;
+        blocker.movement_target = Some(MovementTarget {
+            path: vec![(5, 4), (6, 4)],
+            path_layers: vec![MovementLayer::Ground; 2],
+            next_index: 1,
+            ..MovementTarget::default()
+        });
+        entities.insert(blocker);
+        let interner = test_interner();
+
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            5,
+            4,
+            2,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let grid = PathGrid::new(12, 12);
+        let raw_occupation = RawCellOccupationGrid::new();
+        let stale_peers = crate::sim::movement::path_markers::snapshot_bridge_marker_peers(
+            &entities,
+            Some(&rules),
+            &interner,
+        );
+        let stale_context = crate::sim::movement::path_markers::BridgeMarkerContext {
+            enabled: true,
+            peers: &stale_peers,
+            raw_occupation: &raw_occupation,
+            grid: &grid,
+            terrain: None,
+            playfield_bounds: None,
+            native_frame: 0,
+        };
+
+        let stale_search = stale_context.build(&occupancy, 1, (5, 5), 0, None, false, 1);
+        assert_eq!(
+            stale_search.effective_urgency, 0,
+            "the old one-direction path cannot satisfy the Unit peer gate"
+        );
+
+        // Model the live path replacement this seam must observe. The current
+        // TemporaryBlock classifier makes a successful scatter mutation
+        // unreachable, so write the same live field directly without changing
+        // scatter semantics just to manufacture the test trigger.
+        entities.get_mut(2).unwrap().movement_target = Some(MovementTarget {
+            path: vec![(5, 4), (4, 4), (3, 4)],
+            path_layers: vec![MovementLayer::Ground; 3],
+            next_index: 1,
+            ..MovementTarget::default()
+        });
+        let refreshed_peers = crate::sim::movement::path_markers::snapshot_bridge_marker_peers(
+            &entities,
+            Some(&rules),
+            &interner,
+        );
+        let refreshed_context = bridge_marker_context_with_peers(stale_context, &refreshed_peers);
+        let refreshed_search = refreshed_context.build(&occupancy, 1, (5, 5), 0, None, false, 1);
+
+        assert_eq!(refreshed_search.effective_urgency, 1);
+        assert!(refreshed_search.overlay.contains((4, 4)));
+        assert!(refreshed_search.overlay.contains((3, 4)));
+        assert!(!refreshed_search.overlay.contains((6, 4)));
+    }
 
     #[test]
     fn runtime_layers_keep_bridge_object_list_with_ground_occupancy_bits() {
@@ -1019,12 +1182,14 @@ mod tests {
         };
         let check = detect_deferred_cell_check(
             EntityCategory::Unit,
+            1,
             false,
             layers,
             (1, 0),
             (0, 0),
             MovementLayer::Ground,
             &occupancy,
+            &CellOccupationGrid::new(),
             &LiveBuildingEntrySkipMap::new(),
         );
 
@@ -1050,12 +1215,14 @@ mod tests {
         };
         let check = detect_deferred_cell_check(
             EntityCategory::Unit,
+            1,
             false,
             layers,
             (5, 5),
             (4, 5),
             MovementLayer::Ground,
             &occupancy,
+            &CellOccupationGrid::new(),
             &LiveBuildingEntrySkipMap::new(),
         );
 
@@ -1079,12 +1246,14 @@ mod tests {
 
         let check = detect_deferred_cell_check(
             EntityCategory::Unit,
+            1,
             false,
             layers,
             (3, 3),
             (2, 3),
             MovementLayer::Ground,
             &occupancy,
+            &CellOccupationGrid::new(),
             &skips,
         );
 
@@ -1108,12 +1277,14 @@ mod tests {
 
         let check = detect_deferred_cell_check(
             EntityCategory::Infantry,
+            1,
             false,
             layers,
             (3, 3),
             (2, 3),
             MovementLayer::Ground,
             &occupancy,
+            &CellOccupationGrid::new(),
             &skips,
         );
 
@@ -1135,12 +1306,14 @@ mod tests {
 
         let check = detect_deferred_cell_check(
             EntityCategory::Unit,
+            1,
             true,
             layers,
             (3, 3),
             (2, 3),
             MovementLayer::Ground,
             &occupancy,
+            &CellOccupationGrid::new(),
             &LiveBuildingEntrySkipMap::new(),
         );
 
@@ -1172,12 +1345,14 @@ mod tests {
 
         let check = detect_deferred_cell_check(
             EntityCategory::Unit,
+            1,
             false,
             layers,
             (3, 3),
             (2, 3),
             MovementLayer::Ground,
             &occupancy,
+            &CellOccupationGrid::new(),
             &skips,
         );
 

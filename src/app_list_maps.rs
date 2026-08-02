@@ -64,7 +64,7 @@ pub fn list_available_maps() -> Result<Vec<MapMenuEntry>> {
             Err(_) => continue,
         };
         let path = entry.path();
-        if !path.is_file() {
+        if !retail_wildcard_file(&path) {
             continue;
         }
         let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
@@ -92,10 +92,30 @@ pub fn list_skirmish_scenario_records_with_csf(
 ) -> Result<Vec<SkirmishScenarioRecord>> {
     let config: GameConfig = GameConfig::load()?;
     let ra2_dir: PathBuf = config.paths.ra2_dir;
-    let assets = AssetManager::new(&ra2_dir).ok();
+    let mut assets = AssetManager::new(&ra2_dir).ok();
+    list_skirmish_scenario_records_from_sources(&ra2_dir, assets.as_mut(), csf)
+}
+
+/// Populate the native Choose Map sources through the retained process VFS.
+///
+/// Loose YRO archives become registered while this scan runs and therefore
+/// remain available when the selected scenario is loaded later.
+pub(crate) fn list_skirmish_scenario_records_with_assets(
+    ra2_dir: &Path,
+    assets: &mut AssetManager,
+    csf: Option<&CsfFile>,
+) -> Result<Vec<SkirmishScenarioRecord>> {
+    list_skirmish_scenario_records_from_sources(ra2_dir, Some(assets), csf)
+}
+
+fn list_skirmish_scenario_records_from_sources(
+    ra2_dir: &Path,
+    mut assets: Option<&mut AssetManager>,
+    csf: Option<&CsfFile>,
+) -> Result<Vec<SkirmishScenarioRecord>> {
     let mut records = Vec::new();
 
-    if let Some(assets) = assets.as_ref() {
+    if let Some(assets) = assets.as_deref() {
         if let Some(pkt) = assets
             .get_ref("MISSIONSMD.PKT")
             .and_then(|bytes| IniFile::from_bytes(bytes).ok())
@@ -114,9 +134,9 @@ pub fn list_skirmish_scenario_records_with_csf(
         }
     }
 
-    append_loose_pkt_records(&mut records, &ra2_dir, assets.as_ref(), csf)?;
-    append_loose_yro_records(&mut records, &ra2_dir, assets.as_ref(), csf)?;
-    append_loose_yrm_records(&mut records, &ra2_dir)?;
+    append_loose_pkt_records(&mut records, ra2_dir, assets.as_deref(), csf)?;
+    append_loose_yro_records(&mut records, ra2_dir, assets.as_deref_mut(), csf)?;
+    append_loose_yrm_records(&mut records, ra2_dir)?;
 
     Ok(records)
 }
@@ -160,13 +180,29 @@ fn append_loose_pkt_records(
 fn append_loose_yro_records(
     records: &mut Vec<SkirmishScenarioRecord>,
     ra2_dir: &Path,
-    assets: Option<&AssetManager>,
+    mut assets: Option<&mut AssetManager>,
     csf: Option<&CsfFile>,
 ) -> Result<()> {
     for (path, file_name) in loose_files_with_extension(ra2_dir, "yro")? {
-        let archive = match MixArchive::load(&path) {
-            Ok(archive) => archive,
-            Err(_) => continue,
+        let owned_archive;
+        let archive: &MixArchive;
+        let fallback_assets: Option<&AssetManager>;
+        if let Some(manager) = assets.as_deref_mut() {
+            if manager.register_loose_yro_archive(&path).is_err() {
+                continue;
+            }
+            let Some(registered) = manager.archive(&file_name) else {
+                continue;
+            };
+            archive = registered;
+            fallback_assets = Some(manager);
+        } else {
+            owned_archive = match MixArchive::load(&path) {
+                Ok(archive) => archive,
+                Err(_) => continue,
+            };
+            archive = &owned_archive;
+            fallback_assets = None;
         };
         let pkt_name = Path::new(&file_name)
             .with_extension("PKT")
@@ -190,7 +226,7 @@ fn append_loose_yro_records(
                     .get_by_name(map_file)
                     .and_then(|bytes| IniFile::from_bytes(bytes).ok())
                     .or_else(|| {
-                        assets
+                        fallback_assets
                             .and_then(|assets| assets.get_ref(map_file))
                             .and_then(|bytes| IniFile::from_bytes(bytes).ok())
                     })
@@ -230,7 +266,7 @@ fn loose_files_with_extension(ra2_dir: &Path, extension: &str) -> Result<Vec<(Pa
             Err(_) => continue,
         };
         let path = entry.path();
-        if !path.is_file() {
+        if !retail_wildcard_file(&path) {
             continue;
         }
         let Some(file_name) = path
@@ -299,9 +335,8 @@ fn pkt_display_name(pkt: &IniFile, map_stem: &str, csf: Option<&CsfFile>) -> Opt
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| {
-            csf.and_then(|csf| csf.get(value))
-                .unwrap_or(value)
-                .to_string()
+            csf.map(|csf| csf.text(value).into_owned())
+                .unwrap_or_else(|| value.to_string())
         })
 }
 
@@ -419,7 +454,7 @@ pub(crate) fn read_map_ini_for_metadata(path: &Path) -> Option<IniFile> {
 
 pub(crate) fn load_map_by_name_or_path(ra2_dir: &Path, map_name: &str) -> Result<LoadedMap> {
     let direct: PathBuf = PathBuf::from(map_name);
-    if direct.exists() {
+    if direct.is_absolute() && direct.exists() {
         return load_map_from_path_with_source(&direct);
     }
 
@@ -436,9 +471,27 @@ pub(crate) fn load_map_by_name_or_path(ra2_dir: &Path, map_name: &str) -> Result
     }
 
     Err(anyhow::anyhow!(
-        "Map '{}' not found (checked cwd, RA2 dir, and .mmx/.yro/.map/.mpr/.yrm variants)",
+        "Map '{}' not found (checked the retail root and .mmx/.yro/.map/.mpr/.yrm variants)",
         map_name
     ))
+}
+
+fn retail_wildcard_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x116 == 0
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
 }
 
 pub(crate) fn load_map_by_name_or_path_with_assets(

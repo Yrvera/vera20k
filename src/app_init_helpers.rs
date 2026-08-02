@@ -22,7 +22,7 @@ use crate::render::sprite_atlas::{self, SpriteAtlas};
 use crate::render::tile_atlas::{self, TileAtlas};
 use crate::render::unit_atlas::{self, UnitAtlas};
 use crate::rules::art_data::ArtRegistry;
-use crate::rules::ini_parser::IniFile;
+use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::world::Simulation;
 
@@ -238,113 +238,113 @@ pub(crate) fn theater_ext_for(theater_name: &str) -> &'static str {
     }
 }
 
-/// Successfully parsed rules and the exact merged INI that produced them.
+/// Successfully parsed rules and the processed compatibility projection.
 ///
 /// This transient pair keeps match-load consumers on one rules source without
 /// making the INI a second persistent rules authority.
 pub(crate) struct LoadedRules {
     rules: RuleSet,
-    merged_ini: IniFile,
+    processed_ini: IniFile,
 }
 
 impl LoadedRules {
-    fn from_merged_ini(merged_ini: IniFile) -> Result<Self, crate::rules::error::RulesError> {
-        let rules = RuleSet::from_ini(&merged_ini)?;
-        debug_assert_eq!(rules.source_ini_hash(), merged_ini.content_hash());
-        Ok(Self { rules, merged_ini })
+    fn from_processed(
+        processed: ProcessedRulesLayers,
+    ) -> Result<Self, crate::rules::error::RulesError> {
+        let rules = RuleSet::from_processed_rules(&processed)?;
+        debug_assert_eq!(rules.source_ini_hash(), processed.content_hash());
+        Ok(Self {
+            rules,
+            processed_ini: processed.into_ini(),
+        })
     }
 
     pub(crate) fn into_parts(self) -> (RuleSet, IniFile) {
-        (self.rules, self.merged_ini)
+        (self.rules, self.processed_ini)
     }
 }
 
-/// Compose the already-parsed rules layers in the current Rust load order.
-///
-/// Full native application of selected-mode payloads remains unverified; this
-/// helper preserves the established Rust order while centralizing it.
+/// Compose the active YR rules passes in retail order.
 fn compose_rules_layers(
-    mut ini: IniFile,
-    rulesmd: Option<&IniFile>,
+    rulesmd: IniFile,
+    langrule: Option<&IniFile>,
     mode: Option<&IniFile>,
     map: Option<&IniFile>,
-) -> (IniFile, usize) {
-    if let Some(rulesmd) = rulesmd {
-        ini.merge(rulesmd);
+) -> ProcessedRulesLayers {
+    let mut layers = RulesLayerStack::new(rulesmd);
+    if let Some(langrule) = langrule {
+        layers.push(RulesLayerKind::LangRule, langrule.clone());
     }
     if let Some(mode) = mode {
-        ini.merge(mode);
+        layers.push(RulesLayerKind::GameMode, mode.clone());
     }
-    let applied = map.map(|map| ini.merge_rules_overrides(map)).unwrap_or(0);
-    (ini, applied)
+    if let Some(map) = map {
+        layers.push(RulesLayerKind::Scenario, map.clone());
+    }
+    layers.process()
 }
 
-/// Load rules.ini from MIX archives and retain its exact merged source.
+fn load_retail_rules_root(asset_manager: &AssetManager) -> Option<(IniFile, Option<IniFile>)> {
+    let (data, source) = asset_manager.get_with_source("rulesmd.ini")?;
+    log::info!("Loading rulesmd.ini ({} bytes) from {}", data.len(), source);
+    let rulesmd = IniFile::from_bytes(&data).ok()?;
+    let langrule = asset_manager
+        .get_with_source("langrule.ini")
+        .and_then(|(bytes, source)| {
+            log::info!(
+                "Loading optional langrule.ini ({} bytes) from {}",
+                bytes.len(),
+                source
+            );
+            IniFile::from_bytes(&bytes).ok()
+        });
+    Some((rulesmd, langrule))
+}
+
+pub(crate) fn load_retail_rules_source(asset_manager: &AssetManager) -> Option<IniFile> {
+    let (rulesmd, langrule) = load_retail_rules_root(asset_manager)?;
+    Some(compose_rules_layers(rulesmd, langrule.as_ref(), None, None).into_ini())
+}
+
+/// Load active YR rules and retain the exact composed source.
 ///
-/// rulesmd.ini patches rules.ini. Current Rust then applies the selected
-/// game-mode payload and finally bounded existing-section map value overrides.
-/// Full native selected-mode rules application remains unverified; the order
-/// here is intentionally preserved rather than certified.
+/// Retail starts from RULESMD.INI, then processes optional LANGRULE.INI, the
+/// selected mode INI, and finally the scenario/map INI. RA2 RULES.INI is not a
+/// base layer in the active Yuri's Revenge path.
 pub(crate) fn load_rules_with_merged_ini(
     asset_manager: &AssetManager,
     mode_rules_override: Option<&IniFile>,
     map_rules_overrides: Option<&IniFile>,
 ) -> Option<LoadedRules> {
-    // Step 1: Load base rules.ini.
-    let ini: IniFile = if let Some((data, source)) = asset_manager.get_with_source("rules.ini") {
-        log::info!(
-            "Loading rules.ini ({} bytes) from {} (base)",
-            data.len(),
-            source
-        );
-        IniFile::from_bytes(&data).ok()?
-    } else {
-        log::warn!("rules.ini not found in MIX archives");
-        return None;
-    };
-
-    // Step 2: Parse an optional rulesmd.ini YR patch.
-    let rulesmd: Option<IniFile> =
-        if let Some((patch_data, patch_source)) = asset_manager.get_with_source("rulesmd.ini") {
-            log::info!(
-                "Loading rulesmd.ini ({} bytes) from {} (YR patch)",
-                patch_data.len(),
-                patch_source
-            );
-            IniFile::from_bytes(&patch_data).ok()
-        } else {
-            None
-        };
-    let rulesmd_sections = rulesmd.as_ref().map(IniFile::section_count);
+    let (ini, langrule) = load_retail_rules_root(asset_manager).or_else(|| {
+        log::warn!("rulesmd.ini not found or could not be parsed");
+        None
+    })?;
+    let langrule_sections = langrule.as_ref().map(IniFile::section_count);
     let mode_sections = mode_rules_override.map(IniFile::section_count);
 
-    // Preserve the current Rust base/YR/mode/map order in one composition.
-    let (ini, applied_map_keys) = compose_rules_layers(
+    let processed = compose_rules_layers(
         ini,
-        rulesmd.as_ref(),
+        langrule.as_ref(),
         mode_rules_override,
         map_rules_overrides,
     );
 
-    if let Some(patch_sections) = rulesmd_sections {
-        log::info!(
-            "Merged {} rulesmd.ini sections on top of rules.ini",
-            patch_sections
-        );
+    if let Some(sections) = langrule_sections {
+        log::info!("Processed {} langrule.ini section(s)", sections);
     }
     if let Some(mode_sections) = mode_sections {
+        log::info!("Processed {} game-mode rules section(s)", mode_sections);
+    }
+
+    if let Some(map) = map_rules_overrides {
         log::info!(
-            "Merged {} game-mode override section(s) into rules",
-            mode_sections
+            "Processed {} scenario rules section(s)",
+            map.section_count()
         );
     }
 
-    // Map registry allocation remains a separate verified residual.
-    if applied_map_keys > 0 {
-        log::info!("Applied {} map rules-override key(s)", applied_map_keys);
-    }
-
-    match LoadedRules::from_merged_ini(ini) {
+    match LoadedRules::from_processed(processed) {
         Ok(loaded) => {
             log::info!("RuleSet: {} objects loaded", loaded.rules.object_count());
             Some(loaded)
@@ -369,81 +369,51 @@ pub(crate) fn load_rules_ini(
 /// Seed dialog 0x102's Credits/Unit Count trackbar bounds from
 /// `[MultiplayerDialogSettings]`, mirroring gamemd reading MinMoney/MaxMoney/
 /// MoneyIncrement and MinUnitCount/MaxUnitCount from the live Rules instance when
-/// it builds the skirmish dialog. rulesmd.ini is a YR patch over rules.ini, so we
-/// merge the same way `load_rules_ini` does, then read the section. Falls back to
-/// the stock-default constants when the rules INI (or a key) is unavailable.
+/// it builds the skirmish dialog. The startup RULESMD/LANGRULE passes are the
+/// authority. Falls back to stock constants only when retail data is unavailable.
 pub(crate) fn load_skirmish_trackbar_bounds(
     asset_manager: &AssetManager,
 ) -> crate::ui::skirmish_shell::SkirmishTrackbarBounds {
     use crate::ui::skirmish_shell::SkirmishTrackbarBounds;
 
-    let Some((data, _)) = asset_manager.get_with_source("rules.ini") else {
+    let Some(ini) = load_retail_rules_source(asset_manager) else {
         return SkirmishTrackbarBounds::default();
     };
-    let Ok(mut ini) = IniFile::from_bytes(&data) else {
-        return SkirmishTrackbarBounds::default();
-    };
-    if let Some((patch_data, _)) = asset_manager.get_with_source("rulesmd.ini") {
-        if let Ok(patch_ini) = IniFile::from_bytes(&patch_data) {
-            ini.merge(&patch_ini);
-        }
-    }
     SkirmishTrackbarBounds::from_multiplayer_dialog_settings(&ini)
 }
 
 /// Seed the per-match option values from `[MultiplayerDialogSettings]`,
 /// mirroring the original reading this section once into the rules data that
-/// both the skirmish setup dialog and the launched match read from. rulesmd.ini
-/// is a YR patch over rules.ini, so we merge the same way `load_rules_ini` does,
-/// then parse the section. Falls back to the stock-default options when the
-/// rules INI (or a key) is unavailable, so stock skirmishes are unchanged.
+/// both the skirmish setup dialog and the launched match read from.
 pub(crate) fn load_skirmish_game_options(
     asset_manager: &AssetManager,
 ) -> crate::sim::game_options::GameOptions {
     use crate::sim::game_options::GameOptions;
 
-    let Some((data, _)) = asset_manager.get_with_source("rules.ini") else {
+    let Some(ini) = load_retail_rules_source(asset_manager) else {
         return GameOptions::default();
     };
-    let Ok(mut ini) = IniFile::from_bytes(&data) else {
-        return GameOptions::default();
-    };
-    if let Some((patch_data, _)) = asset_manager.get_with_source("rulesmd.ini") {
-        if let Ok(patch_ini) = IniFile::from_bytes(&patch_data) {
-            ini.merge(&patch_ini);
-        }
-    }
     GameOptions::from_multiplayer_dialog_settings(&ini)
 }
 
-/// Merge a YR-patched INI pair (`base` then `patch` on top) into one file.
-///
-/// Returns `None` only when the base is missing or unparseable; a missing or
-/// unparseable patch leaves the base as-is, which is how every other loader
-/// here treats an RA2-only installation.
-fn load_patched_ini(asset_manager: &AssetManager, base: &str, patch: &str) -> Option<IniFile> {
-    let (data, _) = asset_manager.get_with_source(base)?;
-    let mut ini = IniFile::from_bytes(&data).ok()?;
-    if let Some((patch_data, _)) = asset_manager.get_with_source(patch) {
-        if let Ok(patch_ini) = IniFile::from_bytes(&patch_data) {
-            ini.merge(&patch_ini);
-        }
-    }
-    Some(ini)
+fn load_retail_ini(asset_manager: &AssetManager, name: &str) -> Option<IniFile> {
+    let (data, source) = asset_manager.get_with_source(name)?;
+    log::info!("Loading {} ({} bytes) from {}", name, data.len(), source);
+    IniFile::from_bytes(&data).ok()
 }
 
 /// Resolve the neutral tech buildings the random map generator may place.
 ///
 /// The type list lives in `[AI] NeutralTechBuildings` and each footprint in
-/// `Foundation=`, so both INI families are needed and both are YR-patched.
+/// `Foundation=`, so RULESMD/LANGRULE and fixed ARTMD are both needed.
 /// An unavailable INI yields an empty catalog, which the placement phase
 /// treats as "place nothing" rather than as an error.
 pub(crate) fn load_neutral_tech_types(
     asset_manager: &AssetManager,
 ) -> Vec<crate::map::rmg::phases::tech_buildings::TechType> {
     let (Some(rules), Some(art)) = (
-        load_patched_ini(asset_manager, "rules.ini", "rulesmd.ini"),
-        load_patched_ini(asset_manager, "art.ini", "artmd.ini"),
+        load_retail_rules_source(asset_manager),
+        load_retail_ini(asset_manager, "artmd.ini"),
     ) else {
         log::warn!("random map: rules/art INI unavailable; placing no neutral tech buildings");
         return Vec::new();
@@ -456,47 +426,12 @@ pub(crate) fn load_neutral_tech_types(
     types
 }
 
-/// Load art.ini from MIX archives and parse into ArtRegistry.
-///
-/// Like rules, artmd.ini is a YR patch on top of art.ini. We load art.ini
-/// first, then merge artmd.ini on top so all base entries are preserved.
+/// Load the fixed active-YR ARTMD.INI into the art registry.
 pub(crate) fn load_art_ini(asset_manager: &AssetManager) -> Option<(ArtRegistry, IniFile)> {
-    // Step 1: Load base art.ini.
-    let mut ini: IniFile = if let Some((data, source)) = asset_manager.get_with_source("art.ini") {
-        log::info!(
-            "Loading art.ini ({} bytes) from {} (base)",
-            data.len(),
-            source
-        );
-        match IniFile::from_bytes(&data) {
-            Ok(i) => i,
-            Err(e) => {
-                log::warn!("Failed to parse art.ini: {}", e);
-                return None;
-            }
-        }
-    } else {
-        log::warn!("art.ini not found in MIX archives");
-        return None;
-    };
-
-    // Step 2: If artmd.ini exists, merge it on top (YR patch).
-    if let Some((patch_data, patch_source)) = asset_manager.get_with_source("artmd.ini") {
-        log::info!(
-            "Loading artmd.ini ({} bytes) from {} (YR patch)",
-            patch_data.len(),
-            patch_source
-        );
-        if let Ok(patch_ini) = IniFile::from_bytes(&patch_data) {
-            let patch_sections: usize = patch_ini.section_count();
-            ini.merge(&patch_ini);
-            log::info!(
-                "Merged {} artmd.ini sections on top of art.ini",
-                patch_sections
-            );
-        }
-    }
-
+    let ini = load_retail_ini(asset_manager, "artmd.ini").or_else(|| {
+        log::warn!("artmd.ini not found or could not be parsed");
+        None
+    })?;
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
     log::info!("ArtRegistry: {} entries loaded", reg.len());
     Some((reg, ini))
@@ -531,6 +466,8 @@ pub(crate) fn spawn_entities(
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
+    terrain_load_advanced_scenario_rng: Option<crate::sim::rng::SimRng>,
+    variant_advanced_main_rng: Option<crate::sim::rng::SimRng>,
 ) -> (
     Option<Simulation>,
     Option<UnitAtlas>,
@@ -538,6 +475,12 @@ pub(crate) fn spawn_entities(
     Option<crate::render::palette_textures::PaletteSet>,
 ) {
     let mut sim: Simulation = Simulation::from_descriptor(descriptor);
+    if let Some(scenario_rng) = terrain_load_advanced_scenario_rng {
+        sim.install_terrain_load_advanced_scenario_rng(scenario_rng);
+    }
+    if let Some(main_rng) = variant_advanced_main_rng {
+        sim.install_variant_advanced_main_rng(main_rng);
+    }
     // Frame tripwire: every MP start waypoint must sit inside the session
     // bounds (= the fog window, cell-array frame). A start outside means the
     // descriptor was fed wrong-frame bounds (e.g. raw [Map] Size=) and the
@@ -566,6 +509,8 @@ pub(crate) fn spawn_entities(
                 rules.general.wheeled_uphill,
                 rules.general.wheeled_downhill,
             );
+        sim.radar_events =
+            crate::sim::radar::RadarEventQueue::from_config(&rules.radar_event_config);
     }
     // The playfield diamond: [Map] Size width + the raw LocalSize rect, stored
     // verbatim — the isometric transform lives in the validator's diamond test.
@@ -759,6 +704,7 @@ mod tests {
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
 
     #[derive(Debug, PartialEq, Eq)]
     struct OverlayRegistryEntrySnapshot {
@@ -777,7 +723,9 @@ mod tests {
         bridge_deck: bool,
         radar_color: Option<[u8; 3]>,
         track: bool,
-        land: Option<String>,
+        land: LandType,
+        no_use_tile_land_type: bool,
+        land_speed_costs: Option<SpeedCostProfile>,
         strength: u16,
         damage_levels: u16,
     }
@@ -806,7 +754,9 @@ mod tests {
                     bridge_deck: flags.bridge_deck,
                     radar_color: flags.radar_color,
                     track: flags.track,
-                    land: flags.land.clone(),
+                    land: flags.land,
+                    no_use_tile_land_type: flags.no_use_tile_land_type,
+                    land_speed_costs: flags.land_speed_costs,
                     strength: flags.strength,
                     damage_levels: flags.damage_levels,
                 }
@@ -866,14 +816,12 @@ mod tests {
         );
     }
 
-    /// AT-10: a key present in both rules.ini and rulesmd.ini resolves to the
-    /// rulesmd value through the same merge `load_rules_ini` performs; a
-    /// rules.ini-only key survives.
     #[test]
-    fn rulesmd_overrides_rules_base() {
-        let mut ini = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
-        let patch = IniFile::from_str("[General]\nBuildSpeed=.58\n");
-        ini.merge(&patch);
+    fn langrule_overlays_standalone_rulesmd() {
+        let rulesmd = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
+        let langrule = IniFile::from_str("[General]\nBuildSpeed=.58\n");
+        let processed = compose_rules_layers(rulesmd, Some(&langrule), None, None);
+        let ini = processed.ini();
         assert_eq!(
             ini.section("General").unwrap().get("BuildSpeed"),
             Some(".58")
@@ -882,38 +830,33 @@ mod tests {
             ini.section("General").unwrap().get("FlightLevel"),
             Some("1500")
         );
-        let rules = RuleSet::from_ini(&ini).expect("merged rules parse");
+        let rules = RuleSet::from_processed_rules(&processed).expect("processed rules parse");
         assert_eq!(rules.production.build_speed_x1000, 580);
     }
 
-    /// Preserve the current Rust mode ordering: after rulesmd and before map
-    /// values. Full native rules application of mode payloads is unverified.
     #[test]
-    fn mode_override_merges_after_rulesmd_before_map() {
-        let mut ini = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
-        let rulesmd = IniFile::from_str("[General]\nBuildSpeed=.58\n");
-        ini.merge(&rulesmd);
+    fn mode_override_processes_after_langrule_before_map() {
+        let rulesmd = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
+        let langrule = IniFile::from_str("[General]\nBuildSpeed=.58\n");
         let mode = IniFile::from_str("[General]\nBuildSpeed=1\nFlightLevel=1200\n");
-        ini.merge(&mode);
         let map = IniFile::from_str("[General]\nFlightLevel=900\n");
-        ini.merge_rules_overrides(&map);
+        let processed = compose_rules_layers(rulesmd, Some(&langrule), Some(&mode), Some(&map));
+        let ini = processed.ini();
 
         let general = ini.section("General").unwrap();
-        // Mode beats rulesmd.
         assert_eq!(general.get("BuildSpeed"), Some("1"));
-        // Map beats mode.
         assert_eq!(general.get("FlightLevel"), Some("900"));
     }
 
     #[test]
-    fn map_overlay_flag_wins_after_rulesmd_and_mode() {
-        let base = IniFile::from_str(
+    fn map_overlay_flag_wins_after_langrule_and_mode() {
+        let rulesmd = IniFile::from_str(
             "[OverlayTypes]\n1=TIB01\n\
              [Tiberiums]\n0=Riparius\n\
              [Riparius]\nImage=1\n\
              [TIB01]\nTiberium=no\n",
         );
-        let rulesmd = IniFile::from_str("[Riparius]\nImage=2\n");
+        let langrule = IniFile::from_str("[Riparius]\nImage=2\n");
         let mode = IniFile::from_str("[Riparius]\nImage=3\n[TIB01]\nTiberium=no\n");
         let map = IniFile::from_str(
             "[OverlayTypes]\n1=GASAND\n\
@@ -922,20 +865,20 @@ mod tests {
              [TIB01]\nTiberium=yes\n",
         );
 
-        let (merged_ini, applied) =
-            compose_rules_layers(base, Some(&rulesmd), Some(&mode), Some(&map));
-        assert_eq!(applied, 2, "only existing per-type map keys apply");
-        let loaded = LoadedRules::from_merged_ini(merged_ini).expect("paired rules");
+        let processed = compose_rules_layers(rulesmd, Some(&langrule), Some(&mode), Some(&map));
+        let expected_hash = processed.content_hash();
+        let loaded = LoadedRules::from_processed(processed).expect("paired rules");
         let (rules, merged_ini) = loaded.into_parts();
         let registry = OverlayTypeRegistry::from_ini(&merged_ini, None);
 
         assert_eq!(rules.tiberium_types.types()[0].section, "Riparius");
         assert_eq!(rules.tiberium_types.types()[0].image, 4);
-        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.len(), 2);
         assert_eq!(registry.id_for_name("TIB01"), Some(0));
         assert_eq!(registry.name(0), Some("TIB01"));
+        assert_eq!(registry.name(1), Some("GASAND"));
         assert!(registry.flags(0).is_some_and(|flags| flags.tiberium));
-        assert_eq!(rules.source_ini_hash(), merged_ini.content_hash());
+        assert_eq!(rules.source_ini_hash(), expected_hash);
     }
 
     #[test]
@@ -944,7 +887,6 @@ mod tests {
         let assets = retail_assets();
         let (raw_bytes, _) = assets
             .get_with_source("rulesmd.ini")
-            .or_else(|| assets.get_with_source("rules.ini"))
             .expect("production raw rules selection");
         let raw_ini = IniFile::from_bytes(&raw_bytes).expect("parse raw retail rules");
         let raw_registry = OverlayTypeRegistry::from_ini(&raw_ini, None);
@@ -961,7 +903,7 @@ mod tests {
         assert_eq!(merged_registry.id_for_name("GASAND"), Some(0));
         assert_eq!(merged_registry.name(0), Some("GASAND"));
         assert!(merged_registry.flags(0).expect("GASAND flags").tiberium);
-        assert_eq!(rules.source_ini_hash(), merged_ini.content_hash());
+        assert_ne!(rules.source_ini_hash(), 0);
     }
 
     #[test]
@@ -996,8 +938,6 @@ mod tests {
             map_rules.object("GAYARD").map(|object| object.tech_level),
             Some(11)
         );
-        assert_eq!(no_map_rules.source_ini_hash(), no_map_ini.content_hash());
-        assert_eq!(map_rules.source_ini_hash(), map_ini.content_hash());
         assert_ne!(no_map_rules.source_ini_hash(), map_rules.source_ini_hash());
 
         let no_map_registry = OverlayTypeRegistry::from_ini(&no_map_ini, None);
@@ -1035,10 +975,10 @@ mod tests {
         assert!(rules.weapon("120mm").is_some(), "forward-referenced weapon");
         assert!(rules.warhead("AP").is_some(), "forward-referenced warhead");
 
-        // Case-duplicate collapses to one record; last definition wins; the
-        // lookup is case-insensitive.
+        // Raw section lookup is exact. Type lookup is case-insensitive, but
+        // only the exact [HTNK] body named by the registry is processed.
         assert!(rules.object("htnk").is_some());
-        assert_eq!(rules.object("HTNK").map(|o| o.strength), Some(200));
+        assert_eq!(rules.object("HTNK").map(|o| o.strength), Some(100));
 
         // Registry entry with no section produced no record.
         assert!(rules.object("GHOST").is_none());
@@ -1092,10 +1032,10 @@ mod tests {
         assert_eq!(rules.c4_delay_ticks, 27, "C4Delay .03 min -> 27 ticks");
     }
 
-    /// The rules hash (RuleSet::source_ini_hash, stamped into replay/snapshot
+    /// The rules hash (RuleSet::source_ini_hash, stamped into diagnostic/snapshot
     /// headers) is sensitive to a map's *value* overrides — closing the gap
     /// where a registry-only hash let a map override [General]/[CombatDamage]
-    /// values without changing the hash, so a replay/snapshot recorded under
+    /// values without changing the hash, so a diagnostic/snapshot recorded under
     /// the map could play back against base rules undetected.
     #[test]
     fn rules_hash_reflects_map_value_overrides() {

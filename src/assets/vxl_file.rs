@@ -11,7 +11,7 @@
 //!   each page = 1 prefix byte + 768 RGB + 1 suffix byte)
 //! - Section headers (28 bytes × limb_count): limb names
 //! - Body data (sparse column voxels for each limb)
-//! - Section tailers (92 bytes × limb_count): bounds, size, scale, normals mode
+//! - Section tailers (92 bytes × tailer_count): bounds, size, scale, normals mode
 //!
 //! See `vxl_decode` for the column-based span decoding logic.
 //!
@@ -70,7 +70,7 @@ pub struct VxlLimb {
     pub size_y: u8,
     /// Grid height in voxels.
     pub size_z: u8,
-    /// Normal table selector (2 = TiberianSun/36, 4 = RedAlert2/256).
+    /// Normal table selector (2 = TiberianSun/36, 4 = RedAlert2/245).
     pub normals_mode: u8,
     /// All non-empty voxels in this limb.
     pub voxels: Vec<VxlVoxel>,
@@ -119,15 +119,6 @@ impl VxlFile {
                 reason: "Limb count is zero".to_string(),
             });
         }
-        if tailer_count != limb_count {
-            return Err(AssetError::InvalidVxlFile {
-                reason: format!(
-                    "Tailer count ({}) != limb count ({})",
-                    tailer_count, limb_count
-                ),
-            });
-        }
-
         // Variable-length palette section: palette_count pages × 770 bytes.
         // Each page: 1 prefix byte + 768 RGB triplet bytes + 1 suffix byte.
         let palette_section_size: usize = (palette_count as usize) * VXL_PALETTE_PAGE_SIZE;
@@ -163,15 +154,16 @@ impl VxlFile {
         // Validate file has enough data for all sections.
         let headers_end: usize = sections_start + SECTION_HEADER_SIZE * limb_count as usize;
         let tailers_start: usize = headers_end + body_size as usize;
-        let tailers_end: usize = tailers_start + SECTION_TAILER_SIZE * limb_count as usize;
+        let tailers_end: usize = tailers_start + SECTION_TAILER_SIZE * tailer_count as usize;
 
         if data.len() < tailers_end {
             return Err(AssetError::InvalidVxlFile {
                 reason: format!(
-                    "File too small: {} bytes (need {} for {} limbs, palette_count={})",
+                    "File too small: {} bytes (need {} for {} limbs, {} tailers, palette_count={})",
                     data.len(),
                     tailers_end,
                     limb_count,
+                    tailer_count,
                     palette_count
                 ),
             });
@@ -183,7 +175,14 @@ impl VxlFile {
         // Parse each limb: header + tailer + voxel data.
         let mut limbs: Vec<VxlLimb> = Vec::with_capacity(limb_count as usize);
         for i in 0..limb_count as usize {
-            let limb: VxlLimb = parse_limb(data, i, sections_start, body_start, tailers_start)?;
+            let limb: VxlLimb = parse_limb(
+                data,
+                i,
+                tailer_count,
+                sections_start,
+                body_start,
+                tailers_start,
+            )?;
             limbs.push(limb);
         }
 
@@ -200,6 +199,7 @@ impl VxlFile {
 fn parse_limb(
     data: &[u8],
     index: usize,
+    tailer_count: u32,
     sections_start: usize,
     body_start: usize,
     tailers_start: usize,
@@ -207,9 +207,18 @@ fn parse_limb(
     // Section header: name (16 bytes) + limb_number(4) + unk1(4) + unk2(4).
     let hdr_off: usize = sections_start + index * SECTION_HEADER_SIZE;
     let name: String = vxl_decode::read_null_string(&data[hdr_off..hdr_off + 16]);
+    let limb_number: u32 = read_u32_le(data, hdr_off + 16);
+    if limb_number >= tailer_count {
+        return Err(AssetError::InvalidVxlFile {
+            reason: format!(
+                "Limb header {} selects tailer {}, but tailer_count is {}",
+                index, limb_number, tailer_count
+            ),
+        });
+    }
 
     // Section tailer: 92 bytes of metadata.
-    let tail_off: usize = tailers_start + index * SECTION_TAILER_SIZE;
+    let tail_off: usize = tailers_start + limb_number as usize * SECTION_TAILER_SIZE;
     let span_start_off: u32 = read_u32_le(data, tail_off);
     let span_end_off: u32 = read_u32_le(data, tail_off + 4);
     let data_span_off: u32 = read_u32_le(data, tail_off + 8);
@@ -337,6 +346,27 @@ mod tests {
         data
     }
 
+    /// Header 0 selects tailer 1 while the file retains one header and two
+    /// independently sized tailers.
+    fn make_test_vxl_with_nonidentity_tailer() -> Vec<u8> {
+        let mut data = make_test_vxl();
+        data[24..28].copy_from_slice(&2u32.to_le_bytes());
+
+        let section_header_start = VXL_FILE_HEADER_SIZE + VXL_PALETTE_PAGE_SIZE;
+        data[section_header_start + 16..section_header_start + 20]
+            .copy_from_slice(&1u32.to_le_bytes());
+
+        let first_tailer_start = data.len() - SECTION_TAILER_SIZE;
+        let second_tailer = data[first_tailer_start..].to_vec();
+        data.extend_from_slice(&second_tailer);
+
+        let second_tailer_start = first_tailer_start + SECTION_TAILER_SIZE;
+        data[second_tailer_start + 12..second_tailer_start + 16]
+            .copy_from_slice(&2.5f32.to_le_bytes());
+        data[second_tailer_start + 91] = 2;
+        data
+    }
+
     #[test]
     fn test_parse_vxl_basic() {
         let vxl: VxlFile = VxlFile::from_bytes(&make_test_vxl()).expect("Should parse");
@@ -349,6 +379,31 @@ mod tests {
         assert_eq!(limb.size_z, 2);
         assert_eq!(limb.normals_mode, 4);
         assert!((limb.scale - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn header_limb_number_selects_independent_tailer_array() {
+        let vxl = VxlFile::from_bytes(&make_test_vxl_with_nonidentity_tailer())
+            .expect("header 0 should select tailer 1 even when the counts differ");
+        assert_eq!(vxl.limbs.len(), 1);
+        assert!((vxl.limbs[0].scale - 2.5).abs() < f32::EPSILON);
+        assert_eq!(vxl.limbs[0].normals_mode, 2);
+        assert_eq!(vxl.limbs[0].voxels.len(), 3);
+    }
+
+    #[test]
+    fn rejects_header_limb_number_outside_tailer_array() {
+        let mut data = make_test_vxl_with_nonidentity_tailer();
+        let section_header_start = VXL_FILE_HEADER_SIZE + VXL_PALETTE_PAGE_SIZE;
+        data[section_header_start + 16..section_header_start + 20]
+            .copy_from_slice(&2u32.to_le_bytes());
+
+        let err = VxlFile::from_bytes(&data).expect_err("tailer index 2 is out of range");
+        assert!(
+            err.to_string()
+                .contains("Limb header 0 selects tailer 2, but tailer_count is 2"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

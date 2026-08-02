@@ -3,13 +3,13 @@
 //! RuleSet is the single source of truth for all game object definitions.
 //! It parses the type registries ([InfantryTypes], [VehicleTypes], etc.),
 //! then loads each referenced object's section into typed structs. Weapons
-//! and warheads referenced by objects are also parsed.
+//! referenced by objects and every explicitly registered warhead are also parsed.
 //!
 //! ## Loading strategy
 //! 1. Parse type registries → collect all object IDs per category
 //! 2. For each ID, look up its [ID] section → parse into ObjectType
 //! 3. Collect weapon/warhead IDs referenced by all objects
-//! 4. Parse each referenced weapon/warhead section
+//! 4. Parse each referenced weapon and every registered/referenced warhead section
 //! 5. Log summary counts
 //!
 //! ## Dependency rules
@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::rules::combat_damage::CombatDamageDefaults;
 use crate::rules::error::RulesError;
-use crate::rules::ini_parser::IniFile;
+use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerStack};
 use crate::rules::object_type::{FactoryType, ObjectCategory, ObjectType};
 use crate::rules::particle_system_type::{
     ParticleSystemType, ParticleSystemTypeId, PendingParticleSystemType,
@@ -78,6 +78,14 @@ impl CountryRules {
         }
     }
 }
+
+/// Stable source-order identity in the `[Countries]` registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CountryIdx(pub u16);
+
+/// Stable source-order identity in the `[Sides]` registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SideIdx(pub u8);
 
 /// Registry section names in rules.ini and their corresponding category.
 const TYPE_REGISTRIES: &[(&str, ObjectCategory)] = &[
@@ -160,8 +168,8 @@ impl Default for ProductionRules {
 pub struct AnimRef {
     /// SHP animation name (uppercase), e.g., "WARPIN".
     pub name: String,
-    /// Milliseconds per frame from art.ini `[ANIM_NAME]` Rate= key.
-    pub rate_ms: u32,
+    /// Native gameplay-frame delay derived from art.ini `[ANIM_NAME]` Rate=.
+    pub frame_delay: u16,
 }
 
 /// Static art.ini metadata for the `[General] Parachute=` SHP.
@@ -172,9 +180,8 @@ pub struct AnimRef {
 pub struct ParachuteRenderConfig {
     /// SHP section name from `[General] Parachute=` (e.g., "PARACH"). Uppercased.
     pub shp_name: String,
-    /// ms per anim frame. Computed via `art_rate_to_delay_ms(Rate=)`.
-    /// For Rate=400 this is 133.
-    pub rate_ms: u32,
+    /// Native gameplay-frame delay derived from art.ini `Rate=`.
+    pub frame_delay: u16,
     /// Frame to wrap to after `frame >= end_frame`. From art.ini `LoopStart=`.
     pub loop_start: u16,
     /// Wraparound bound (exclusive). Set to `LoopEnd + 1` from art.ini.
@@ -305,10 +312,13 @@ pub struct GeneralRules {
     pub chrono_sparkle1: AnimRef,
     /// Wake animation spawned behind ships moving on water (Wake= in [General]).
     pub wake: AnimRef,
+    /// Multiplayer move-command feedback animation (MoveFlash= in [General]).
+    pub move_flash: AnimRef,
     /// Whether the attack cursor appears on a disguised Spy (AttackCursorOnDisguise= in [General]).
     /// Default false (vanilla RA2). When false, a disguised Spy does not show the attack cursor.
     pub attack_cursor_on_disguise: bool,
-    /// Whether the attack cursor appears on trees/terrain (TreeTargeting= in [General]).
+    /// Whether the attack cursor appears on trees/terrain
+    /// (`TreeTargeting=` in `[CombatDamage]`).
     /// Default false in vanilla RA2.
     pub tree_targeting: bool,
     /// Health ratio threshold below which the bar turns yellow (ConditionYellow= in [AudioVisual]).
@@ -609,13 +619,15 @@ pub struct GeneralRules {
     pub force_shield_fade_sound_time: u32,
     /// Animation played on FS target (ForceShieldInvokeAnim= in [General]). Default FORCSHLD.
     pub force_shield_invoke_anim: String,
-    // --- PsychicReveal ([General]) ---
-    /// Cell radius revealed by PsychicReveal (PsychicRevealRadius= in [General]).
+    // --- PsychicReveal ([CombatDamage]) ---
+    /// Cell radius revealed by PsychicReveal
+    /// (`PsychicRevealRadius=` in `[CombatDamage]`).
     pub psychic_reveal_radius: u32,
-    // --- GeneticConverter ([CombatDamage] + [General]) ---
-    /// Warhead used for mutation (MutateWarhead= in [CombatDamage]). Default "Mutate".
+    // --- GeneticConverter ([SpecialWeapons] + [General]) ---
+    /// Warhead used for mutation (`MutateWarhead=` in `[SpecialWeapons]`).
     pub mutate_warhead: String,
-    /// Warhead used for mutate explosion (MutateExplosionWarhead= in [CombatDamage]).
+    /// Warhead used for mutate explosion
+    /// (`MutateExplosionWarhead=` in `[SpecialWeapons]`).
     pub mutate_explosion_warhead: String,
     /// Whether MutateExplosion is enabled (MutateExplosion= in [General]). Default true.
     pub mutate_explosion: bool,
@@ -678,7 +690,7 @@ pub(crate) fn damage_spark_spawn_threshold(band: f64) -> u32 {
 
 /// Default animation rate when art.ini section is missing.
 /// Matches gamemd constructor default: 1 game frame at 60fps ≈ 17ms.
-const DEFAULT_ANIM_RATE_MS: u32 = 17;
+const DEFAULT_ANIM_FRAME_DELAY: u16 = 1;
 
 /// Zip a parallel pair of paradrop INI keys (`Inf` + `Num`) into `(type, count)` pairs.
 /// `skip_count_assert` mirrors gamemd's Soviet branch which lacks the equality check.
@@ -749,23 +761,27 @@ impl Default for GeneralRules {
             growth_rate_minutes: 2.0,
             warp_in: AnimRef {
                 name: "WARPIN".to_string(),
-                rate_ms: 120,
+                frame_delay: 1,
             },
             warp_out: AnimRef {
                 name: "WARPOUT".to_string(),
-                rate_ms: 120,
+                frame_delay: 1,
             },
             warp_away: AnimRef {
                 name: "WARPAWAY".to_string(),
-                rate_ms: 300,
+                frame_delay: 1,
             },
             chrono_sparkle1: AnimRef {
                 name: "CHRONOSK".to_string(),
-                rate_ms: 120,
+                frame_delay: 1,
             },
             wake: AnimRef {
                 name: "WAKE1".to_string(),
-                rate_ms: 120,
+                frame_delay: 1,
+            },
+            move_flash: AnimRef {
+                name: "RING".to_string(),
+                frame_delay: 1,
             },
             attack_cursor_on_disguise: false,
             tree_targeting: false,
@@ -1116,8 +1132,10 @@ impl GeneralRules {
         };
         // ConditionYellow/ConditionRed live in [AudioVisual], not [General].
         let audio_visual = ini.section("AudioVisual");
-        // IronCurtainDuration, MutateWarhead, MutateExplosionWarhead live in [CombatDamage].
+        // Combat-only globals are read in the late [CombatDamage] pass.
         let combat_damage = ini.section("CombatDamage");
+        // Genetic Mutator warhead references are read by [SpecialWeapons].
+        let special_weapons = ini.section("SpecialWeapons");
         // INI parser already strips everything after `;` (Westwood comment
         // marker), so values like `WarpOut=WARPOUT;WAKE2` are read as
         // `WARPOUT` — matching gamemd's behaviour. Rate is filled in later
@@ -1254,7 +1272,9 @@ impl GeneralRules {
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(2.0),
             attack_cursor_on_disguise: general.get_bool("AttackCursorOnDisguise").unwrap_or(false),
-            tree_targeting: general.get_bool("TreeTargeting").unwrap_or(false),
+            tree_targeting: combat_damage
+                .and_then(|section| section.get_bool("TreeTargeting"))
+                .unwrap_or(false),
             condition_yellow: condition_yellow_f32,
             condition_yellow_x1000: (condition_yellow_f32 as f64 * 1000.0) as i64,
             condition_red: condition_red_f32,
@@ -1354,23 +1374,27 @@ impl GeneralRules {
                 .filter(|s| !s.is_empty()),
             warp_in: AnimRef {
                 name: parse_anim_name("WarpIn", "WARPIN"),
-                rate_ms: defaults.warp_in.rate_ms,
+                frame_delay: defaults.warp_in.frame_delay,
             },
             warp_out: AnimRef {
                 name: parse_anim_name("WarpOut", "WARPOUT"),
-                rate_ms: defaults.warp_out.rate_ms,
+                frame_delay: defaults.warp_out.frame_delay,
             },
             warp_away: AnimRef {
                 name: parse_anim_name("WarpAway", "WARPAWAY"),
-                rate_ms: defaults.warp_away.rate_ms,
+                frame_delay: defaults.warp_away.frame_delay,
             },
             chrono_sparkle1: AnimRef {
                 name: parse_anim_name("ChronoSparkle1", "CHRONOSK"),
-                rate_ms: defaults.chrono_sparkle1.rate_ms,
+                frame_delay: defaults.chrono_sparkle1.frame_delay,
             },
             wake: AnimRef {
                 name: parse_anim_name("Wake", "WAKE1"),
-                rate_ms: defaults.wake.rate_ms,
+                frame_delay: defaults.wake.frame_delay,
+            },
+            move_flash: AnimRef {
+                name: parse_anim_name("MoveFlash", "RING"),
+                frame_delay: defaults.move_flash.frame_delay,
             },
             damage_delay_minutes: general.get_f32("DamageDelay").unwrap_or(1.0),
             spy_power_blackout_frames: general.get_i32("SpyPowerBlackout").unwrap_or(1000).max(0)
@@ -1382,7 +1406,7 @@ impl GeneralRules {
                         .filter(|s| !s.is_empty())
                         .map(|s| AnimRef {
                             name: s.to_uppercase(),
-                            rate_ms: DEFAULT_ANIM_RATE_MS,
+                            frame_delay: DEFAULT_ANIM_FRAME_DELAY,
                         })
                         .collect()
                 })
@@ -1539,13 +1563,15 @@ impl GeneralRules {
                 .get("ForceShieldInvokeAnim")
                 .unwrap_or("FORCSHLD")
                 .to_string(),
-            psychic_reveal_radius: general.get_i32("PsychicRevealRadius").unwrap_or(15) as u32,
-            mutate_warhead: combat_damage
-                .and_then(|s| s.get("MutateWarhead"))
+            psychic_reveal_radius: combat_damage
+                .and_then(|section| section.get_i32("PsychicRevealRadius"))
+                .unwrap_or(15) as u32,
+            mutate_warhead: special_weapons
+                .and_then(|section| section.get("MutateWarhead"))
                 .unwrap_or("Mutate")
                 .to_string(),
-            mutate_explosion_warhead: combat_damage
-                .and_then(|s| s.get("MutateExplosionWarhead"))
+            mutate_explosion_warhead: special_weapons
+                .and_then(|section| section.get("MutateExplosionWarhead"))
                 .unwrap_or("MutateExplosion")
                 .to_string(),
             mutate_explosion: general.get_bool("MutateExplosion").unwrap_or(true),
@@ -1565,35 +1591,42 @@ impl GeneralRules {
     /// Resolve animation playback rates from art.ini sections.
     ///
     /// Called after both rules.ini and art.ini are loaded. Looks up each
-    /// anim's own `[ANIM_NAME]` section for `Rate=` (ms per frame).
+    /// anim's own `[ANIM_NAME]` section for its native `Rate=` frame delay.
     pub fn resolve_art_rates(&mut self, art_ini: &IniFile) {
-        fn rate_from_section(ini: &IniFile, name: &str, fallback: u32) -> u32 {
+        fn rate_from_section(ini: &IniFile, name: &str, fallback: u16) -> u16 {
             ini.section(name)
                 .and_then(|s| s.get_i32("Rate"))
-                .map(|r| crate::rules::art_data::art_rate_to_delay_ms(r))
+                .map(crate::rules::art_data::art_rate_to_logic_frames)
                 .unwrap_or(fallback)
         }
-        self.warp_in.rate_ms = rate_from_section(art_ini, &self.warp_in.name, DEFAULT_ANIM_RATE_MS);
-        self.warp_out.rate_ms =
-            rate_from_section(art_ini, &self.warp_out.name, DEFAULT_ANIM_RATE_MS);
-        self.warp_away.rate_ms =
-            rate_from_section(art_ini, &self.warp_away.name, DEFAULT_ANIM_RATE_MS);
-        self.chrono_sparkle1.rate_ms =
-            rate_from_section(art_ini, &self.chrono_sparkle1.name, DEFAULT_ANIM_RATE_MS);
-        self.wake.rate_ms = rate_from_section(art_ini, &self.wake.name, DEFAULT_ANIM_RATE_MS);
+        self.warp_in.frame_delay =
+            rate_from_section(art_ini, &self.warp_in.name, DEFAULT_ANIM_FRAME_DELAY);
+        self.warp_out.frame_delay =
+            rate_from_section(art_ini, &self.warp_out.name, DEFAULT_ANIM_FRAME_DELAY);
+        self.warp_away.frame_delay =
+            rate_from_section(art_ini, &self.warp_away.name, DEFAULT_ANIM_FRAME_DELAY);
+        self.chrono_sparkle1.frame_delay = rate_from_section(
+            art_ini,
+            &self.chrono_sparkle1.name,
+            DEFAULT_ANIM_FRAME_DELAY,
+        );
+        self.wake.frame_delay =
+            rate_from_section(art_ini, &self.wake.name, DEFAULT_ANIM_FRAME_DELAY);
+        self.move_flash.frame_delay =
+            rate_from_section(art_ini, &self.move_flash.name, DEFAULT_ANIM_FRAME_DELAY);
         log::info!(
-            "Warp anim rates: {}={}ms, {}={}ms, {}={}ms, wake: {}={}ms",
+            "Warp anim frame delays: {}={}, {}={}, {}={}, wake: {}={}",
             self.warp_in.name,
-            self.warp_in.rate_ms,
+            self.warp_in.frame_delay,
             self.warp_out.name,
-            self.warp_out.rate_ms,
+            self.warp_out.frame_delay,
             self.warp_away.name,
-            self.warp_away.rate_ms,
+            self.warp_away.frame_delay,
             self.wake.name,
-            self.wake.rate_ms,
+            self.wake.frame_delay,
         );
         for fire in &mut self.damage_fire_types {
-            fire.rate_ms = rate_from_section(art_ini, &fire.name, DEFAULT_ANIM_RATE_MS);
+            fire.frame_delay = rate_from_section(art_ini, &fire.name, DEFAULT_ANIM_FRAME_DELAY);
         }
         if !self.damage_fire_types.is_empty() {
             log::info!(
@@ -1601,7 +1634,7 @@ impl GeneralRules {
                 self.damage_fire_types.len(),
                 self.damage_fire_types
                     .iter()
-                    .map(|f| format!("{}={}ms", f.name, f.rate_ms))
+                    .map(|f| format!("{}={}", f.name, f.frame_delay))
                     .collect::<Vec<_>>()
                     .join(", "),
             );
@@ -1612,7 +1645,7 @@ impl GeneralRules {
         self.parachute_render = self.parachute_shp.as_deref().and_then(|shp_name| {
             let section = art_ini.section(shp_name)?;
             let rate = section.get_i32("Rate").unwrap_or(1);
-            let rate_ms = crate::rules::art_data::art_rate_to_delay_ms(rate);
+            let frame_delay = crate::rules::art_data::art_rate_to_logic_frames(rate);
             let loop_start = section.get_i32("LoopStart").unwrap_or(0).max(0) as u16;
             let loop_end = section.get_i32("LoopEnd").unwrap_or(0).max(0) as u16;
             let end_frame = loop_end.saturating_add(1);
@@ -1620,7 +1653,7 @@ impl GeneralRules {
             let alt_palette = section.get_bool("AltPalette").unwrap_or(false);
             Some(ParachuteRenderConfig {
                 shp_name: shp_name.to_string(),
-                rate_ms,
+                frame_delay,
                 loop_start,
                 end_frame,
                 z_adjust,
@@ -1629,9 +1662,9 @@ impl GeneralRules {
         });
         if let Some(ref pc) = self.parachute_render {
             log::info!(
-                "Parachute render config loaded: shp={} rate_ms={} loop_start={} end_frame={} z_adjust={} alt_palette={}",
+                "Parachute render config loaded: shp={} frame_delay={} loop_start={} end_frame={} z_adjust={} alt_palette={}",
                 pc.shp_name,
-                pc.rate_ms,
+                pc.frame_delay,
                 pc.loop_start,
                 pc.end_frame,
                 pc.z_adjust,
@@ -1709,6 +1742,18 @@ pub struct RuleSet {
     projectiles: HashMap<String, ProjectileType>,
     /// Country-level rules indexed by country/house type ID.
     countries: HashMap<String, CountryRules>,
+    /// Country identities in native `[Countries]` registration order.
+    country_ids: Vec<String>,
+    /// Uppercase country identity -> source-order index.
+    country_indices: HashMap<String, CountryIdx>,
+    /// Side identities in native `[Sides]` registration order, including
+    /// sides allocated later by a per-country `Side=` override.
+    side_ids: Vec<String>,
+    /// Uppercase side identity -> source-order index.
+    side_indices: HashMap<String, SideIdx>,
+    /// Effective side for each country after `[Sides]` membership and the
+    /// per-country `Side=` override have both run.
+    country_sides: Vec<Option<SideIdx>>,
     /// `[Colors]` scheme entries in declaration order. Source of truth for every
     /// house-color producer (loading-bar backing, lobby swatch, map `Color=`,
     /// skirmish slot priority).
@@ -1718,9 +1763,14 @@ pub struct RuleSet {
     /// index). Consumed by unit/building atlas bake, the voxel GPU ramp texture,
     /// radar dots, target lines, and the loading screen.
     pub house_color_ramps: crate::rules::house_colors::HouseColorRamps,
+    /// Fixed source-ordered `[ColorAdd]` slots retained as raw RGB565 magnitudes.
+    pub color_add: crate::rules::color_add::ColorAddTable,
     pub production: ProductionRules,
     /// Global gameplay constants (vision, gap generator, etc.).
     pub general: GeneralRules,
+    /// Reset value of `[SpecialFlags] InitialVeteran=`. The similarly named
+    /// stock `[General]` key is not read by the native SpecialFlags parser.
+    pub initial_veteran: bool,
     /// Infantry IDs in registry order.
     pub infantry_ids: Vec<String>,
     /// Vehicle IDs in registry order.
@@ -1790,15 +1840,30 @@ pub struct RuleSet {
     /// Per-mission behaviour table parsed from the `[<MissionName>]` sections
     /// (Rate/AARate + NoThreat/Zombie/Recruitable/Paralyzed/Retaliate/Scatter).
     pub mission_control: crate::sim::mission::MissionControl,
-    /// Deterministic hash of the merged source INI (rules + rulesmd + the map's
-    /// rules-shaped value overrides) this RuleSet was built from. Unlike a
+    /// Deterministic hash of the processed source INI (RULESMD, optional
+    /// LANGRULE, selected mode, then the map's rules-shaped pass) this RuleSet
+    /// was built from. Unlike a
     /// registry-only hash it is sensitive to scalar value overrides, so it can
-    /// gate replay/snapshot playback against a mismatched rules set. Lives on
+    /// gate diagnostic-log/snapshot playback against a mismatched rules set. Lives on
     /// `RuleSet` (in `rules/`) so `sim/` can read it without an app-layer dep.
     source_ini_hash: u64,
 }
 
 impl RuleSet {
+    /// Build from the active ordered rules sources.
+    pub fn from_rules_layers(layers: &RulesLayerStack) -> Result<Self, RulesError> {
+        let processed = layers.process();
+        Self::from_processed_rules(&processed)
+    }
+
+    pub(crate) fn from_processed_rules(
+        processed: &ProcessedRulesLayers,
+    ) -> Result<Self, RulesError> {
+        let mut rules = Self::from_ini(processed.ini())?;
+        rules.source_ini_hash = processed.content_hash();
+        Ok(rules)
+    }
+
     /// Parse a complete RuleSet from a rules.ini IniFile.
     ///
     /// Loads all type registries, individual object sections, and any
@@ -1814,6 +1879,10 @@ impl RuleSet {
         let mut building_ids: Vec<String> = Vec::new();
         let production: ProductionRules = ProductionRules::from_ini(ini);
         let general: GeneralRules = GeneralRules::from_ini(ini);
+        let initial_veteran = ini
+            .section("SpecialFlags")
+            .and_then(|section| section.get_bool("InitialVeteran"))
+            .unwrap_or(false);
         if general.condition_yellow_native != 0.5 {
             return Err(RulesError::InvalidValue {
                 section: "AudioVisual".to_string(),
@@ -1836,10 +1905,12 @@ impl RuleSet {
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
         let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
-        let countries = parse_country_rules(ini);
+        let country_side_registry = parse_country_side_registry(ini);
+        let countries = country_side_registry.rules;
         let color_schemes = crate::rules::color_scheme::parse_color_schemes(ini);
         let house_color_ramps =
             crate::rules::house_colors::HouseColorRamps::from_schemes(&color_schemes);
+        let color_add = crate::rules::color_add::ColorAddTable::from_ini(ini);
 
         // Step 1: Parse each type registry and load object sections.
         for &(registry_name, category) in TYPE_REGISTRIES {
@@ -1890,7 +1961,13 @@ impl RuleSet {
 
         // Step 3: Parse weapon sections.
         let mut weapons: HashMap<String, WeaponType> = HashMap::new();
-        let mut warhead_ids: HashSet<String> = warhead_refs;
+        // RulesClass allocates every value in [Warheads] before the per-type
+        // ReadINI pass. Keep reference-driven allocations too: later rules
+        // layers and runtime-specific globals can create warheads outside the
+        // explicit registry.
+        let mut warhead_ids: HashSet<String> =
+            parse_registry(ini, "Warheads").into_iter().collect();
+        warhead_ids.extend(warhead_refs);
 
         for weapon_id in &weapon_ids {
             if let Some(section) = ini.section(weapon_id) {
@@ -2096,10 +2173,17 @@ impl RuleSet {
             warheads,
             projectiles,
             countries,
+            country_ids: country_side_registry.country_ids,
+            country_indices: country_side_registry.country_indices,
+            side_ids: country_side_registry.side_ids,
+            side_indices: country_side_registry.side_indices,
+            country_sides: country_side_registry.country_sides,
             color_schemes,
             house_color_ramps,
+            color_add,
             production,
             general,
+            initial_veteran,
             infantry_ids,
             vehicle_ids,
             aircraft_ids,
@@ -2126,8 +2210,9 @@ impl RuleSet {
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
             mission_control,
-            // Captures the whole merged INI (incl. any map value overrides),
-            // so replay/snapshot headers detect a rules mismatch on playback.
+            // Single-source callers hash their one parsed INI. Production
+            // ordered-stack callers replace this with the boundary-sensitive
+            // RulesLayerStack hash in `from_processed_rules`.
             source_ini_hash: ini.content_hash(),
         })
     }
@@ -2240,9 +2325,10 @@ impl RuleSet {
         Self::lookup_ci(&self.projectiles, id)
     }
 
-    /// Deterministic hash of the merged source INI this RuleSet was built from
-    /// (rules + rulesmd + the map's rules-shaped value overrides). Stamped into
-    /// replay/snapshot headers so playback can detect a mismatched rules set —
+    /// Deterministic hash of the processed source INI this RuleSet was built from
+    /// (RULESMD, optional LANGRULE, selected mode, then the map's rules-shaped
+    /// pass). Stamped into
+    /// diagnostic-log/snapshot headers so playback can detect a mismatched rules set —
     /// sensitive to scalar value overrides, not just the type-registry lists.
     pub fn source_ini_hash(&self) -> u64 {
         self.source_ini_hash
@@ -2261,13 +2347,40 @@ impl RuleSet {
             .map_or(INCOME_PPM_SCALE, |country| country.income_ppm)
     }
 
+    /// Resolve a country name to its stable `[Countries]` registration index.
+    pub fn country_index(&self, id: &str) -> Option<CountryIdx> {
+        self.country_indices.get(&id.to_ascii_uppercase()).copied()
+    }
+
+    /// Resolve a country index back to its source spelling.
+    pub fn country_name(&self, index: CountryIdx) -> Option<&str> {
+        self.country_ids.get(index.0 as usize).map(String::as_str)
+    }
+
+    /// Resolve a side name to its stable `[Sides]` registration index.
+    pub fn side_index(&self, id: &str) -> Option<SideIdx> {
+        self.side_indices.get(&id.to_ascii_uppercase()).copied()
+    }
+
+    /// Resolve a side index back to its source spelling.
+    pub fn side_name(&self, index: SideIdx) -> Option<&str> {
+        self.side_ids.get(index.0 as usize).map(String::as_str)
+    }
+
+    /// Return the country's effective side after its optional `Side=`
+    /// override has superseded `[Sides]` membership.
+    pub fn country_side_index(&self, id: &str) -> Option<SideIdx> {
+        let country = self.country_index(id)?;
+        self.country_sides
+            .get(country.0 as usize)
+            .copied()
+            .flatten()
+    }
+
     /// Case-insensitive country lookup (gamemd parity), exact key first.
     fn country_rules(&self, id: &str) -> Option<&CountryRules> {
-        self.countries.get(id).or_else(|| {
-            self.countries
-                .iter()
-                .find_map(|(key, country)| key.eq_ignore_ascii_case(id).then_some(country))
-        })
+        let index = self.country_index(id)?;
+        self.countries.get(self.country_name(index)?)
     }
 
     /// Look up a superweapon type by ID (case-insensitive, gamemd parity).
@@ -2531,13 +2644,12 @@ fn parse_registry(ini: &IniFile, section_name: &str) -> Vec<String> {
     match ini.section(section_name) {
         Some(section) => {
             let raw: Vec<String> = section
-                .get_values()
-                .into_iter()
-                .map(|s| s.to_string())
+                .keys()
+                .map(|key| section.read_string(key, "", 32))
+                .filter(|value| !value.is_empty())
                 .collect();
-            // Deduplicate: rules.ini + rulesmd.ini merge can produce the same
-            // type ID at different numbered keys (e.g., 42=GAAIRC in base and
-            // 150=GAAIRC in YR patch). Keep first occurrence, preserve order.
+            // TypeClass identity is case-insensitive find-or-allocate. Preserve
+            // declaration order while keeping the first spelling of an identity.
             let mut seen: std::collections::HashSet<String> =
                 std::collections::HashSet::with_capacity(raw.len());
             let before = raw.len();
@@ -2562,14 +2674,109 @@ fn parse_registry(ini: &IniFile, section_name: &str) -> Vec<String> {
     }
 }
 
-fn parse_country_rules(ini: &IniFile) -> HashMap<String, CountryRules> {
-    let mut countries = HashMap::new();
-    for id in parse_registry(ini, "Countries") {
-        if let Some(section) = ini.section(&id) {
-            countries.insert(id, CountryRules::from_ini_section(section));
+struct ParsedCountrySideRegistry {
+    rules: HashMap<String, CountryRules>,
+    country_ids: Vec<String>,
+    country_indices: HashMap<String, CountryIdx>,
+    side_ids: Vec<String>,
+    side_indices: HashMap<String, SideIdx>,
+    country_sides: Vec<Option<SideIdx>>,
+}
+
+fn parse_country_side_registry(ini: &IniFile) -> ParsedCountrySideRegistry {
+    let mut country_ids = parse_registry(ini, "Countries");
+    let mut country_indices: HashMap<String, CountryIdx> = country_ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let index = u16::try_from(index).expect("[Countries] exceeds u16 identity space");
+            (id.to_ascii_uppercase(), CountryIdx(index))
+        })
+        .collect();
+    let mut side_ids = Vec::new();
+    let mut side_indices = HashMap::new();
+    let mut country_sides = vec![None; country_ids.len()];
+
+    if let Some(sides) = ini.section("Sides") {
+        for side_name in sides.keys() {
+            let side = find_or_allocate_side(side_name, &mut side_ids, &mut side_indices);
+            if let Some(members) = sides.get_list(side_name) {
+                for member in members {
+                    let country = find_or_allocate_country(
+                        member,
+                        &mut country_ids,
+                        &mut country_indices,
+                        &mut country_sides,
+                    );
+                    country_sides[country.0 as usize] = Some(side);
+                }
+            }
         }
     }
-    countries
+
+    let mut rules = HashMap::with_capacity(country_ids.len());
+    for id in &country_ids {
+        if let Some(section) = ini.section(id) {
+            rules.insert(id.clone(), CountryRules::from_ini_section(section));
+        }
+    }
+
+    // HouseTypeClass::ReadINI runs after the `[Sides]` registration pass. Its
+    // `Side=` value therefore wins and can find-or-allocate a new side.
+    for (country_index, country_id) in country_ids.iter().enumerate() {
+        let Some(section) = ini.section(country_id) else {
+            continue;
+        };
+        let side_name = section.read_string("Side", "", 32);
+        if side_name.is_empty() {
+            continue;
+        }
+        let side = find_or_allocate_side(&side_name, &mut side_ids, &mut side_indices);
+        country_sides[country_index] = Some(side);
+    }
+
+    ParsedCountrySideRegistry {
+        rules,
+        country_ids,
+        country_indices,
+        side_ids,
+        side_indices,
+        country_sides,
+    }
+}
+
+fn find_or_allocate_country(
+    country_name: &str,
+    country_ids: &mut Vec<String>,
+    country_indices: &mut HashMap<String, CountryIdx>,
+    country_sides: &mut Vec<Option<SideIdx>>,
+) -> CountryIdx {
+    let key = country_name.to_ascii_uppercase();
+    if let Some(index) = country_indices.get(&key) {
+        return *index;
+    }
+    let index = u16::try_from(country_ids.len()).expect("[Countries] exceeds u16 identity space");
+    let index = CountryIdx(index);
+    country_ids.push(country_name.to_string());
+    country_indices.insert(key, index);
+    country_sides.push(None);
+    index
+}
+
+fn find_or_allocate_side(
+    side_name: &str,
+    side_ids: &mut Vec<String>,
+    side_indices: &mut HashMap<String, SideIdx>,
+) -> SideIdx {
+    let key = side_name.to_ascii_uppercase();
+    if let Some(index) = side_indices.get(&key) {
+        return *index;
+    }
+    let index = u8::try_from(side_ids.len()).expect("[Sides] exceeds u8 identity space");
+    let index = SideIdx(index);
+    side_ids.push(side_name.to_string());
+    side_indices.insert(key, index);
+    index
 }
 
 /// Collect all weapon and warhead IDs referenced by objects.
@@ -2598,6 +2805,10 @@ fn collect_weapon_refs(objects: &[ObjectType]) -> (HashSet<String>, HashSet<Stri
         if let Some(ref w) = obj.elite_occupy_weapon {
             weapon_ids.insert(w.clone());
         }
+        if let Some(ref w) = obj.death_weapon {
+            weapon_ids.insert(w.clone());
+        }
+        weapon_ids.extend(obj.weapon_list.iter().cloned());
     }
 
     (weapon_ids, warhead_ids)
@@ -2639,21 +2850,6 @@ fn parse_prerequisite_groups(ini: &IniFile) -> HashMap<String, Vec<String>> {
             if !ids.is_empty() {
                 groups.insert(alias.to_string(), ids);
             }
-        }
-    }
-
-    // ProcAlternate entries merge into the PROC group.
-    if let Some(list) = general.get_list("PrerequisiteProcAlternate") {
-        let alt_ids: Vec<String> = list
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_ascii_uppercase())
-            .collect();
-        if !alt_ids.is_empty() {
-            groups
-                .entry("PROC".to_string())
-                .or_default()
-                .extend(alt_ids);
         }
     }
 
@@ -2789,6 +2985,7 @@ fn parse_particle_system_types(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::ini_parser::RulesLayerKind;
 
     /// Build a minimal rules.ini string for testing.
     fn make_test_rules() -> String {
@@ -2911,6 +3108,79 @@ CellSpread=0
     }
 
     #[test]
+    fn ordered_country_side_source_identity_and_case_insensitive_lookup() {
+        let ini = IniFile::from_str(
+            "[Countries]\n9=Zulu\n2=Alpha\n7=Middle\n\
+             [Sides]\nNorth=Alpha,Middle\nSouth=Zulu\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("country/side registries parse");
+
+        assert_eq!(rules.country_index("zulu"), Some(CountryIdx(0)));
+        assert_eq!(rules.country_index("ALPHA"), Some(CountryIdx(1)));
+        assert_eq!(rules.country_index("Middle"), Some(CountryIdx(2)));
+        assert_eq!(rules.country_name(CountryIdx(1)), Some("Alpha"));
+        assert_eq!(rules.side_index("north"), Some(SideIdx(0)));
+        assert_eq!(rules.side_index("SOUTH"), Some(SideIdx(1)));
+        assert_eq!(rules.side_name(SideIdx(0)), Some("North"));
+    }
+
+    #[test]
+    fn gsi_02_13_ruleset_exposes_parsed_color_add_table() {
+        let ini = IniFile::from_str(
+            "[ColorAdd]\n\
+             First=1,2,3\n\
+             StrongGreen=0,63,0\n\
+             BrightWhite=31,63,31\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("ColorAdd rules parse");
+
+        assert_eq!(rules.color_add.slots[0].name.as_deref(), Some("First"));
+        assert_eq!(rules.color_add.slots[0].rgb, [1, 2, 3]);
+        assert_eq!(
+            rules.color_add.slots[1].name.as_deref(),
+            Some("StrongGreen")
+        );
+        assert_eq!(rules.color_add.slots[1].rgb, [0, 63, 0]);
+        assert_eq!(rules.color_add.slots[2].rgb, [31, 63, 31]);
+        assert_eq!(
+            rules.color_add.slots[15],
+            crate::rules::color_add::ColorAddEntry::default()
+        );
+    }
+
+    #[test]
+    fn ordered_country_side_country_override_moves_and_allocates_side() {
+        let ini = IniFile::from_str(
+            "[Countries]\n0=Alpha\n1=Beta\n2=Gamma\n\
+             [Sides]\nGDI=Alpha,Beta\nNod=Gamma\n\
+             [Beta]\nSide=Nod\n\
+             [Gamma]\nSide=FourthSide\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("country side overrides parse");
+
+        assert_eq!(rules.country_side_index("Alpha"), Some(SideIdx(0)));
+        assert_eq!(rules.country_side_index("beta"), Some(SideIdx(1)));
+        assert_eq!(rules.country_side_index("GAMMA"), Some(SideIdx(2)));
+        assert_eq!(rules.side_name(SideIdx(2)), Some("FourthSide"));
+        assert_eq!(rules.side_index("fourthside"), Some(SideIdx(2)));
+    }
+
+    #[test]
+    fn ordered_country_side_members_find_or_allocate_missing_country() {
+        let ini = IniFile::from_str(
+            "[Countries]\n0=Alpha\n\
+             [Sides]\nGDI=Alpha,Beta\n\
+             [Beta]\nSide=NewSide\nMultiplayPassive=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("side-created country parses");
+
+        assert_eq!(rules.country_index("Beta"), Some(CountryIdx(1)));
+        assert_eq!(rules.side_index("NewSide"), Some(SideIdx(1)));
+        assert_eq!(rules.country_side_index("beta"), Some(SideIdx(1)));
+        assert!(rules.country_multiplay_passive("BETA"));
+    }
+
+    #[test]
     fn test_load_ruleset() {
         let ini: IniFile = IniFile::from_str(&make_test_rules());
         let rules: RuleSet = RuleSet::from_ini(&ini).expect("Should parse");
@@ -2934,10 +3204,12 @@ CellSpread=0
         let ini_text = "[General]\n\
 ForceShieldRadius=5\n\
 ForceShieldDuration=600\n\
-PsychicRevealRadius=12\n\
 MutateExplosion=no\n\
 [CombatDamage]\n\
 IronCurtainDuration=900\n\
+PsychicRevealRadius=12\n\
+TreeTargeting=yes\n\
+[SpecialWeapons]\n\
 MutateWarhead=MyMutate\n\
 ";
         let ini = IniFile::from_str(ini_text);
@@ -2947,6 +3219,7 @@ MutateWarhead=MyMutate\n\
         assert_eq!(general.force_shield_duration, 600);
         assert_eq!(general.psychic_reveal_radius, 12);
         assert_eq!(general.mutate_warhead, "MyMutate");
+        assert!(general.tree_targeting);
         assert!(!general.mutate_explosion);
         // Unspecified keys fall back to defaults.
         assert_eq!(general.iron_curtain_invoke_anim, "IRONBLST");
@@ -3056,6 +3329,44 @@ MutateWarhead=MyMutate\n\
 
         let ap: &WarheadType = rules.warhead("AP").expect("AP exists");
         assert_eq!(ap.verses[6], 60); // wood: 60%
+    }
+
+    #[test]
+    fn registry_only_warhead_loads_through_rules_layer_stack() {
+        let mut layers = RulesLayerStack::new(IniFile::from_str("[General]\n"));
+        layers.push(
+            RulesLayerKind::Scenario,
+            IniFile::from_str(
+                "[Warheads]\n\
+                 0=RegistryOnlyWH\n\
+                 [RegistryOnlyWH]\n\
+                 CellSpread=2\n\
+                 PercentAtMax=.5\n\
+                 Verses=100%,90%,80%,70%,60%,50%,40%,30%,20%,10%,0%\n",
+            ),
+        );
+
+        let rules = RuleSet::from_rules_layers(&layers).expect("layered registry-only rules parse");
+        assert_eq!(
+            rules.weapon_count(),
+            0,
+            "the fixture must not smuggle the warhead in through a weapon"
+        );
+        assert_eq!(rules.warhead_count(), 1);
+
+        let lower = rules
+            .warhead("registryonlywh")
+            .expect("scenario-created registry warhead resolves case-insensitively");
+        let mixed = rules
+            .warhead("RegistryOnlyWh")
+            .expect("mixed-case registry warhead lookup resolves");
+        assert!(std::ptr::eq(lower, mixed));
+        assert_eq!(lower.id, "RegistryOnlyWH");
+        assert_eq!(lower.percent_at_max, 50);
+        assert_eq!(
+            lower.verses,
+            vec![100, 90, 80, 70, 60, 50, 40, 30, 20, 10, 0]
+        );
     }
 
     #[test]
@@ -3283,6 +3594,22 @@ MutateWarhead=MyMutate\n\
         );
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
         assert!(rules.bridge_rules.destroyable_by_default);
+    }
+
+    #[test]
+    fn starting_force_initial_veteran_reads_only_specialflags() {
+        let general_only = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [General]\nInitialVeteran=yes\n",
+        );
+        assert!(!RuleSet::from_ini(&general_only).unwrap().initial_veteran);
+
+        let special_flags = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [General]\nInitialVeteran=no\n\
+             [SpecialFlags]\nInitialVeteran=yes\n",
+        );
+        assert!(RuleSet::from_ini(&special_flags).unwrap().initial_veteran);
     }
 
     #[test]
@@ -3794,8 +4121,8 @@ DefaultSparkSystem=SparkSys
             "ConditionRedSparkingProbability=0.05\n\
              ConditionYellowSparkingProbability=0.03",
         ));
-        assert_eq!(g.condition_red_sparking_probability, 0.05);
-        assert_eq!(g.condition_yellow_sparking_probability, 0.03);
+        assert_eq!(g.condition_red_sparking_probability, f64::from(0.05_f32));
+        assert_eq!(g.condition_yellow_sparking_probability, f64::from(0.03_f32));
     }
 
     #[test]
@@ -3942,8 +4269,8 @@ ZAdjust=-10
             .as_ref()
             .expect("parachute_render must be loaded");
         assert_eq!(pc.shp_name, "PARACH");
-        // Rate=400 → (900/400) * 1000/15 = 2 * 1000/15 = 133.
-        assert_eq!(pc.rate_ms, 133);
+        // Rate=400 → floor(900/400) = 2 native frames.
+        assert_eq!(pc.frame_delay, 2);
         assert_eq!(pc.loop_start, 20);
         assert_eq!(pc.end_frame, 40); // LoopEnd + 1
         assert_eq!(pc.z_adjust, -10);
@@ -3964,12 +4291,12 @@ ZAdjust=-10
 
     #[test]
     fn merge_art_propagates_add_remove_occupy() {
-        let rules_text = format!(
-            "{}\n[BuildingTypes]\n0=GAREFN\n[GAREFN]\nName=Refinery\nCost=2000\nFoundation=4x3\n",
-            make_test_rules()
-        );
+        let mut rules_ini = IniFile::from_str(&make_test_rules());
+        rules_ini.merge_rules_layer(&IniFile::from_str(
+            "[BuildingTypes]\n0=GAREFN\n\
+             [GAREFN]\nName=Refinery\nCost=2000\nFoundation=4x3\n",
+        ));
         let art_text = "[GAREFN]\nFoundation=4x3\nCanHideThings=no\nOccupyHeight=4\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
-        let rules_ini: IniFile = IniFile::from_str(&rules_text);
         let mut rules: RuleSet = RuleSet::from_ini(&rules_ini).expect("rules parse");
         let art_ini: IniFile = IniFile::from_str(art_text);
         let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
@@ -3983,11 +4310,11 @@ ZAdjust=-10
 
     #[test]
     fn merge_art_propagates_infantry_crawls_without_building_side_effects() {
-        let rules_text = format!(
-            "{}\n[InfantryTypes]\n0=E1\n\n[BuildingTypes]\n0=GAPOWR\n\n[E1]\nName=GI\nImage=GI\nStrength=125\nArmor=flak\nSpeed=4\n\n[GAPOWR]\nName=Power\nStrength=750\nArmor=wood\nFoundation=2x2\n",
-            make_test_rules()
-        );
-        let rules_ini = IniFile::from_str(&rules_text);
+        let mut rules_ini = IniFile::from_str(&make_test_rules());
+        rules_ini.merge_rules_layer(&IniFile::from_str(
+            "[E1]\nName=GI\nImage=GI\nStrength=125\nArmor=flak\nSpeed=4\n\
+             [GAPOWR]\nName=Power\nStrength=750\nArmor=wood\nFoundation=2x2\n",
+        ));
         let mut rules = RuleSet::from_ini(&rules_ini).expect("rules parse");
         let art_ini = IniFile::from_str(
             "[GI]\nCrawls=yes\nFireUp=2\nFireProne=3\nSecondaryFire=4\nSecondaryProne=5\n\n[GAPOWR]\nCrawls=yes\nFireUp=9\n",

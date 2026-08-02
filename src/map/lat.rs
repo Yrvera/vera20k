@@ -1,18 +1,13 @@
-//! LAT (Lateral Terrain) automatic terrain transitions.
+//! Native load-time LAT (Lateral Terrain) transition fixup.
 //!
-//! RA2 theaters define "ground types" (rough, sand, pavement, green) in the
-//! theater INI [General] section. Each ground type has a base tileset and a
-//! 16-tile transition tileset. At map load time, tiles belonging to a ground
-//! type are checked against their 4 diamond neighbors. If a neighbor belongs
-//! to a different ground type, the tile is replaced with the appropriate
-//! transition variant.
-//!
-//! The 16 transition patterns correspond to all possible combinations of
-//! the 4 isometric neighbors (NE, NW, SE, SW) being the same or different
-//! ground type. This is encoded as a 4-bit mask.
+//! Theater `[General]` tileset ordinals are resolved to absolute first tile
+//! ids. Every cell then runs the Rough, Sand, Green, and Pave groups in that
+//! fixed order, using direct N/E/S/W mask bits, followed by ramp smoothing.
+//! Authored maps make two in-place recalc sweeps so a cell's slope-neighbour
+//! reads observe the same progressively populated state as the native loader.
 //!
 //! ## Dependency rules
-//! - Part of map/ — depends on rules/ (ini_parser), map/theater (TilesetLookup).
+//! - Part of map/ -- depends on rules/ (ini_parser) and map/theater.
 
 use std::collections::HashMap;
 
@@ -20,600 +15,813 @@ use crate::map::map_file::MapCell;
 use crate::map::theater::TilesetLookup;
 use crate::rules::ini_parser::IniFile;
 
-/// Maps a 4-bit neighbor mask to the LAT transition tile offset (0-15).
-///
-/// Bit layout: bit 3 = NE is different, bit 2 = NW is different,
-/// bit 1 = SE is different, bit 0 = SW is different.
-///
-/// Mask 0 (all neighbors same) means no transition needed.
-const MASK_TO_LAT_INDEX: [u8; 16] = [
-    0xFF, // 0b0000: all same → no transition (keep ground tile)
-    4,    // 0b0001: SW different
-    2,    // 0b0010: SE different
-    6,    // 0b0011: SE+SW different
-    8,    // 0b0100: NW different
-    12,   // 0b0101: NW+SW different
-    10,   // 0b0110: NW+SE different
-    14,   // 0b0111: NW+SE+SW different
-    1,    // 0b1000: NE different
-    5,    // 0b1001: NE+SW different
-    3,    // 0b1010: NE+SE different
-    7,    // 0b1011: NE+SE+SW different
-    9,    // 0b1100: NE+NW different
-    13,   // 0b1101: NE+NW+SW different
-    11,   // 0b1110: NE+NW+SE different
-    15,   // 0b1111: all different → island
+const LAT_LAST_OFFSET: i32 = 0xF;
+const EDGE_SENTINEL: i32 = 0;
+const NO_TILE: i32 = 0xFFFF;
+/// Direct bit order: N, E, S, W.
+const CARDINAL_OFFSETS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+const RAMP_BASE_LAST_OFFSET: i32 = 19;
+const RAMP_SMOOTH_LAST_OFFSET: i32 = 11;
+
+const GREEN_EXEMPTIONS: [(&str, i32); 2] = [("ShorePieces", 0x29), ("WaterBridge", 1)];
+const PAVE_EXEMPTIONS: [(&str, i32); 3] = [
+    ("MiscPaveTile", 0xD),
+    ("Medians", 0xD),
+    ("PavedRoads", 0x14),
 ];
 
-/// One LAT ground type definition parsed from the theater INI [General] section.
-#[derive(Debug, Clone)]
-pub struct LatGroundType {
-    /// Display name (e.g., "Rough", "Sand").
-    pub name: String,
-    /// Tileset index for the base ground tiles (e.g., RoughTile=13).
-    pub ground_tileset: u16,
-    /// Tileset index for the 16 transition tiles (e.g., ClearToRoughLat=14).
-    pub transition_tileset: u16,
-    /// Start tile_id of the transition tileset (for direct tile_id replacement).
-    pub transition_start_tile: u16,
-    /// Tileset indices that "connect" seamlessly (no transition applied).
-    pub connect_to: Vec<u16>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TileRange {
+    first: i32,
+    last: i32,
 }
 
-/// LAT configuration for a theater, parsed from the [General] section.
+impl TileRange {
+    fn new(first: i32, last_offset: i32) -> Self {
+        Self {
+            first,
+            last: first + last_offset,
+        }
+    }
+
+    fn contains(self, tile: i32) -> bool {
+        self.first <= tile && tile <= self.last
+    }
+}
+
+/// One LAT group expressed entirely as absolute tile ids.
+#[derive(Debug, Clone)]
+pub struct LatGroundType {
+    pub name: String,
+    pub base_tile: i32,
+    pub lat_base: i32,
+    exemptions: Vec<TileRange>,
+    enable_guard: LatEnableGuard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LatEnableGuard {
+    Always,
+    LatBaseDefined,
+}
+
+impl LatGroundType {
+    fn is_enabled(&self) -> bool {
+        self.enable_guard == LatEnableGuard::Always || self.lat_base != -1
+    }
+
+    fn contains(&self, tile: i32) -> bool {
+        tile == self.base_tile
+            || (self.lat_base != -1
+                && (self.lat_base..=self.lat_base + LAT_LAST_OFFSET).contains(&tile))
+    }
+
+    fn exempts(&self, tile: i32) -> bool {
+        self.exemptions.iter().any(|range| range.contains(tile))
+    }
+}
+
+/// LAT groups in fixed Rough -> Sand -> Green -> Pave order.
 #[derive(Debug, Clone)]
 pub struct LatConfig {
-    /// All ground types defined in this theater.
     pub grounds: Vec<LatGroundType>,
 }
 
-/// Parse LAT ground type definitions from a theater INI's [General] section.
+/// Absolute theater tile bases consumed by the slope half of recalc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlopeFixupConfig {
+    pub ramp_base: i32,
+    pub ramp_smooth: i32,
+}
+
+fn tileset_bounds(
+    lookup: &TilesetLookup,
+    ordinal: Option<i32>,
+) -> Option<&crate::map::theater::TilesetBounds> {
+    let ordinal = ordinal?;
+    (ordinal >= 0)
+        .then(|| lookup.bounds().get(ordinal as usize))
+        .flatten()
+}
+
+/// Parse and resolve the theater's load-time LAT configuration.
 ///
-/// Standard RA2 ground types: Rough, Sand, Pave, Green.
-/// Each has a base tile key, transition tile key, and optional ConnectTo list.
+/// Missing group keys retain the native `-1` globals. Rough always executes;
+/// Sand, Green, and Pave are gated only by their LAT global. Missing exemption
+/// keys disable only that range. `*ConnectTo` keys are intentionally ignored.
 pub fn parse_lat_config(ini_data: &[u8], lookup: &TilesetLookup) -> LatConfig {
-    let ini: IniFile = match IniFile::from_bytes(ini_data) {
-        Ok(i) => i,
-        Err(_) => {
-            return LatConfig {
-                grounds: Vec::new(),
-            };
-        }
+    let Ok(ini) = IniFile::from_bytes(ini_data) else {
+        return LatConfig {
+            grounds: Vec::new(),
+        };
     };
-
-    let general = match ini.section("General") {
-        Some(s) => s,
-        None => {
-            log::info!("LAT: no [General] section in theater INI");
-            return LatConfig {
-                grounds: Vec::new(),
-            };
-        }
-    };
-
-    let bounds = lookup.bounds();
-
-    /// Helper: parse a comma-separated list of tileset indices.
-    fn parse_connect_to(s: Option<&str>) -> Vec<u16> {
-        match s {
-            Some(val) => val
-                .split(',')
-                .filter_map(|v| v.trim().parse::<u16>().ok())
-                .collect(),
-            None => Vec::new(),
-        }
+    let general = ini.section("General");
+    if general.is_none() {
+        log::info!("LAT: no [General] section in theater INI");
     }
 
-    // Standard RA2 LAT ground type definitions.
-    let lat_defs: &[(&str, &str, &str, &str)] = &[
-        ("Rough", "RoughTile", "ClearToRoughLat", "RoughConnectTo"),
-        ("Sand", "SandTile", "ClearToSandLat", "SandConnectTo"),
-        ("Pave", "PaveTile", "ClearToPaveLat", "PaveConnectTo"),
-        ("Green", "GreenTile", "ClearToGreenLat", "GreenConnectTo"),
+    // The array type keeps the empty Rough/Sand slices typed without a
+    // speculative shared terrain abstraction.
+    let definitions: [(&str, &str, &str, &[(&str, i32)], LatEnableGuard); 4] = [
+        (
+            "Rough",
+            "RoughTile",
+            "ClearToRoughLat",
+            &[],
+            LatEnableGuard::Always,
+        ),
+        (
+            "Sand",
+            "SandTile",
+            "ClearToSandLat",
+            &[],
+            LatEnableGuard::LatBaseDefined,
+        ),
+        (
+            "Green",
+            "GreenTile",
+            "ClearToGreenLat",
+            &GREEN_EXEMPTIONS,
+            LatEnableGuard::LatBaseDefined,
+        ),
+        (
+            "Pave",
+            "PaveTile",
+            "ClearToPaveLat",
+            &PAVE_EXEMPTIONS,
+            LatEnableGuard::LatBaseDefined,
+        ),
     ];
 
-    let mut grounds: Vec<LatGroundType> = Vec::new();
-
-    for &(name, ground_key, transition_key, connect_key) in lat_defs {
-        let ground_ts: i32 = match general.get_i32(ground_key) {
-            Some(v) => v,
-            None => continue,
-        };
-        let transition_ts: i32 = match general.get_i32(transition_key) {
-            Some(v) => v,
-            None => continue,
-        };
-
-        // Look up the start tile_id for the transition tileset.
-        let trans_start: u16 = match bounds.get(transition_ts as usize) {
-            Some(b) => b.start,
-            None => {
-                log::warn!(
-                    "LAT {}: transition tileset {} out of range",
-                    name,
-                    transition_ts
-                );
-                continue;
-            }
-        };
-
-        let connect_to: Vec<u16> = parse_connect_to(general.get(connect_key));
-
-        log::info!(
-            "LAT {}: ground tileset={}, transition tileset={} (start_tile={}), connect_to={:?}",
-            name,
-            ground_ts,
-            transition_ts,
-            trans_start,
-            connect_to
-        );
+    let mut grounds = Vec::with_capacity(definitions.len());
+    for (name, base_key, lat_key, exemption_defs, enable_guard) in definitions {
+        let base_tile = tileset_bounds(
+            lookup,
+            general.and_then(|section| section.get_i32(base_key)),
+        )
+            .map_or(-1, |bounds| i32::from(bounds.start));
+        let lat_base = tileset_bounds(
+            lookup,
+            general.and_then(|section| section.get_i32(lat_key)),
+        )
+            .map_or(-1, |bounds| i32::from(bounds.start));
+        let exemptions = exemption_defs
+            .iter()
+            .filter_map(|&(key, last_offset)| {
+                let bounds = tileset_bounds(
+                    lookup,
+                    general.and_then(|section| section.get_i32(key)),
+                )?;
+                // Retail Lunar leaves these two ordinal sections present with
+                // zero tiles, while native theater init clears their effective
+                // LAT globals. Do not expand their shared next-tile start into
+                // bogus Green exemption spans.
+                if name == "Green" && bounds.count == 0 {
+                    return None;
+                }
+                Some(TileRange::new(i32::from(bounds.start), last_offset))
+            })
+            .collect::<Vec<_>>();
 
         grounds.push(LatGroundType {
             name: name.to_string(),
-            ground_tileset: ground_ts as u16,
-            transition_tileset: transition_ts as u16,
-            transition_start_tile: trans_start,
-            connect_to,
+            base_tile,
+            lat_base,
+            exemptions,
+            enable_guard,
         });
     }
 
-    // LAT exemption pairs (ra2_yr_map_terrain.md §2.5):
-    // Certain tileset pairs never generate transitions between each other.
-    // Adding exempt tilesets to connect_to makes tile_matches_ground() treat
-    // them as "same ground", preventing spurious transition tiles.
-    let exemptions: &[(&str, &str)] = &[
-        ("Pave", "MiscPaveTile"),
-        ("Pave", "Medians"),
-        ("Pave", "PavedRoads"),
-        ("Green", "ShorePieces"),
-        ("Green", "WaterBridge"),
-    ];
-    for &(ground_name, ini_key) in exemptions {
-        if let Some(ts_idx) = general.get_i32(ini_key) {
-            if let Some(ground) = grounds.iter_mut().find(|g| g.name == ground_name) {
-                let ts: u16 = ts_idx as u16;
-                if !ground.connect_to.contains(&ts) {
-                    ground.connect_to.push(ts);
-                    log::info!(
-                        "LAT exemption: {} ↔ {} (tileset {})",
-                        ground_name,
-                        ini_key,
-                        ts
-                    );
-                }
-            }
-        }
-    }
-
-    log::info!("LAT: {} ground types configured", grounds.len());
+    log::info!("LAT: {} ground groups configured", grounds.len());
     LatConfig { grounds }
 }
 
-/// Check if a tile belongs to a LAT ground type (base tile, transition, or connected).
-fn tile_matches_ground(tile_id: u16, ground: &LatGroundType, lookup: &TilesetLookup) -> bool {
-    let ts: Option<u16> = lookup.tileset_index(tile_id);
-    match ts {
-        Some(idx) => {
-            idx == ground.ground_tileset
-                || idx == ground.transition_tileset
-                || ground.connect_to.contains(&idx)
-        }
-        None => false,
+fn neighbor_tile(cells: &[MapCell], by_coord: &HashMap<(u16, u16), usize>, x: i32, y: i32) -> i32 {
+    if x < 0 || y < 0 || x > i32::from(u16::MAX) || y > i32::from(u16::MAX) {
+        return EDGE_SENTINEL;
     }
+    by_coord
+        .get(&(x as u16, y as u16))
+        .map_or(EDGE_SENTINEL, |&index| {
+            let tile = cells[index].tile_index;
+            if tile < 0 || tile == NO_TILE {
+                EDGE_SENTINEL
+            } else {
+                tile
+            }
+        })
 }
 
-/// Apply LAT transitions to map cells in-place.
+/// Apply the load-time LAT half in place, preserving cell and group order.
 ///
-/// For each cell that belongs to a LAT ground type's base tileset:
-/// 1. Check 4 diamond neighbors (NE, NW, SE, SW)
-/// 2. Build a 4-bit mask of which neighbors are NOT the same ground type
-/// 3. If mask != 0, replace tile_id with the transition tile at the
-///    appropriate offset
-///
-/// Cells are modified in-place. Only cells whose tile belongs to a
-/// LAT base tileset are candidates for replacement.
-// TODO: extract per-cell variant when a runtime terrain-tile rewriter
-// lands (bridge destruction, crater tiles, destructible cliffs).
-pub fn apply_lat(cells: &mut [MapCell], lat_config: &LatConfig, lookup: &TilesetLookup) {
+/// The third parameter remains for the existing map-build API; all lookup
+/// data needed by the pass has already been resolved into `lat_config`.
+pub fn apply_lat(cells: &mut [MapCell], lat_config: &LatConfig, _lookup: &TilesetLookup) {
     if lat_config.grounds.is_empty() {
         return;
     }
 
-    // Build spatial lookup: (rx, ry) → tile_index for neighbor checking.
-    let mut tile_map: HashMap<(u16, u16), i32> = HashMap::with_capacity(cells.len());
-    for cell in cells.iter() {
-        tile_map.insert((cell.rx, cell.ry), cell.tile_index);
-    }
+    let by_coord = cells
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| ((cell.rx, cell.ry), index))
+        .collect::<HashMap<_, _>>();
+    let mut changes = 0u32;
 
-    let mut changes: u32 = 0;
-
-    for cell in cells.iter_mut() {
-        // Skip empty/no-tile cells.
-        if cell.tile_index < 0 || cell.tile_index == 0xFFFF {
-            continue;
-        }
-
-        let tile_id: u16 = cell.tile_index as u16;
-        let ts_idx: Option<u16> = lookup.tileset_index(tile_id);
-
-        // Find which ground type this tile's base tileset belongs to.
-        let ground: Option<&LatGroundType> = lat_config
-            .grounds
-            .iter()
-            .find(|g| ts_idx == Some(g.ground_tileset));
-        let ground: &LatGroundType = match ground {
-            Some(g) => g,
-            None => continue, // Not a LAT ground tile — skip.
-        };
-
-        // Check 4 diamond neighbors.
-        // NE = (rx, ry-1), NW = (rx-1, ry), SE = (rx+1, ry), SW = (rx, ry+1)
-        let neighbors: [(i32, i32); 4] = [
-            (cell.rx as i32, cell.ry as i32 - 1), // NE (bit 3)
-            (cell.rx as i32 - 1, cell.ry as i32), // NW (bit 2)
-            (cell.rx as i32 + 1, cell.ry as i32), // SE (bit 1)
-            (cell.rx as i32, cell.ry as i32 + 1), // SW (bit 0)
-        ];
-
-        let mut mask: u8 = 0;
-        for (bit_pos, &(nx, ny)) in [3u8, 2, 1, 0].iter().zip(neighbors.iter()) {
-            // Out-of-bounds or negative coords treated as "same" (no transition at edges).
-            if nx < 0 || ny < 0 {
-                continue; // Same ground → bit stays 0.
-            }
-            let neighbor_tile: i32 = tile_map.get(&(nx as u16, ny as u16)).copied().unwrap_or(-1);
-
-            if neighbor_tile < 0 || neighbor_tile == 0xFFFF {
-                // No tile / empty → treat as different ground type.
-                mask |= 1 << bit_pos;
-                continue;
-            }
-
-            // Preserve map-authored shoreline tiles: do not force LAT transitions
-            // against water neighbors, which otherwise creates harsh beach seams.
-            if lookup.is_water(neighbor_tile as u16) {
-                continue;
-            }
-
-            if !tile_matches_ground(neighbor_tile as u16, ground, lookup) {
-                mask |= 1 << bit_pos;
-            }
-        }
-
-        // Apply transition if any neighbor differs.
-        if mask != 0 {
-            let lat_idx: u8 = MASK_TO_LAT_INDEX[mask as usize];
-            if lat_idx != 0xFF {
-                let new_tile: u16 = ground.transition_start_tile + lat_idx as u16;
-                cell.tile_index = new_tile as i32;
-                cell.sub_tile = 0;
-                changes += 1;
-            }
-        }
+    for cell_index in 0..cells.len() {
+        changes += apply_lat_cell(cells, &by_coord, cell_index, lat_config);
     }
 
     log::info!(
-        "LAT: applied {} tile transitions across {} cells",
+        "LAT: rewrote {} group/cell transitions across {} cells",
         changes,
-        cells.len(),
+        cells.len()
     );
+}
+
+fn apply_lat_cell(
+    cells: &mut [MapCell],
+    by_coord: &HashMap<(u16, u16), usize>,
+    cell_index: usize,
+    lat_config: &LatConfig,
+) -> u32 {
+    let x = i32::from(cells[cell_index].rx);
+    let y = i32::from(cells[cell_index].ry);
+    let mut changes = 0;
+    for ground in &lat_config.grounds {
+        if !ground.is_enabled() || !ground.contains(cells[cell_index].tile_index) {
+            continue;
+        }
+
+        let mut mask = 0u8;
+        for (bit, (dx, dy)) in CARDINAL_OFFSETS.iter().copied().enumerate() {
+            let neighbor = neighbor_tile(cells, by_coord, x + dx, y + dy);
+            if !ground.contains(neighbor) && !ground.exempts(neighbor) {
+                mask |= 1u8 << bit;
+            }
+        }
+
+        let new_tile = if mask == 0 {
+            ground.base_tile
+        } else {
+            ground.lat_base + i32::from(mask)
+        };
+        if cells[cell_index].tile_index != new_tile {
+            changes += 1;
+        }
+        cells[cell_index].tile_index = new_tile;
+        // Native changes tile identity only; preserve sub_tile.
+    }
+    changes
+}
+
+fn ramp_range_contains(tile: i32, base: i32, last_offset: i32) -> bool {
+    let end = if base == -1 {
+        -1
+    } else {
+        base + last_offset
+    };
+    base <= tile && tile <= end
+}
+
+/// Resolve the slope half for one cell from stored cardinal-neighbour slope
+/// bytes in `[N, E, S, W]` order. A tile outside both ramp ranges is retained.
+pub(crate) fn slope_fixed_tile(
+    tile: i32,
+    slope: u8,
+    cardinal_slopes: [u8; 4],
+    config: SlopeFixupConfig,
+) -> i32 {
+    if !ramp_range_contains(tile, config.ramp_base, RAMP_BASE_LAST_OFFSET)
+        && !ramp_range_contains(tile, config.ramp_smooth, RAMP_SMOOTH_LAST_OFFSET)
+    {
+        return tile;
+    }
+
+    let neighbor_pair = match slope {
+        1 => Some((3, 1)), // W, E
+        2 => Some((0, 2)), // N, S
+        3 => Some((1, 3)), // E, W
+        4 => Some((2, 0)), // S, N
+        _ => None,
+    };
+    let mask = neighbor_pair.map_or(0, |(first, second)| {
+        u8::from(cardinal_slopes[first] == 0)
+            | (u8::from(cardinal_slopes[second] == 0) << 1)
+    });
+
+    if mask != 0 {
+        let block_offset = match slope {
+            1 => mask - 1,
+            2 => mask + 2,
+            3 => mask + 5,
+            4 => mask + 8,
+            _ => unreachable!("only slopes 1..=4 can produce a smoothing mask"),
+        };
+        config.ramp_smooth + i32::from(block_offset)
+    } else {
+        config.ramp_base + i32::from(slope.wrapping_sub(1))
+    }
+}
+
+fn neighbor_slope(
+    slopes: &[u8],
+    by_coord: &HashMap<(u16, u16), usize>,
+    x: i32,
+    y: i32,
+) -> u8 {
+    if x < 0 || y < 0 || x > i32::from(u16::MAX) || y > i32::from(u16::MAX) {
+        return 0;
+    }
+    by_coord
+        .get(&(x as u16, y as u16))
+        .map_or(0, |&index| slopes[index])
+}
+
+/// Run the two authored-map recalc sweeps and return the final stored slope
+/// byte for each cell. `pristine_slope` must read variant-zero TMP metadata.
+pub fn apply_load_recalc_sweeps(
+    cells: &mut [MapCell],
+    lat_config: &LatConfig,
+    slope_config: SlopeFixupConfig,
+    pristine_slope: &mut dyn FnMut(i32, u8) -> u8,
+) -> Vec<u8> {
+    apply_recalc_sweeps(cells, lat_config, slope_config, 2, pristine_slope)
+}
+
+fn apply_recalc_sweeps(
+    cells: &mut [MapCell],
+    lat_config: &LatConfig,
+    slope_config: SlopeFixupConfig,
+    sweep_count: usize,
+    pristine_slope: &mut dyn FnMut(i32, u8) -> u8,
+) -> Vec<u8> {
+    let by_coord = cells
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| ((cell.rx, cell.ry), index))
+        .collect::<HashMap<_, _>>();
+    let mut slopes = vec![0u8; cells.len()];
+
+    for _ in 0..sweep_count {
+        for cell_index in 0..cells.len() {
+            let x = i32::from(cells[cell_index].rx);
+            let y = i32::from(cells[cell_index].ry);
+            slopes[cell_index] =
+                pristine_slope(cells[cell_index].tile_index, cells[cell_index].sub_tile);
+            apply_lat_cell(cells, &by_coord, cell_index, lat_config);
+            let cardinal = CARDINAL_OFFSETS.map(|(dx, dy)| {
+                neighbor_slope(&slopes, &by_coord, x + dx, y + dy)
+            });
+            cells[cell_index].tile_index = slope_fixed_tile(
+                cells[cell_index].tile_index,
+                slopes[cell_index],
+                cardinal,
+                slope_config,
+            );
+        }
+    }
+
+    slopes
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write;
+
     use super::*;
 
-    #[test]
-    fn test_mask_to_lat_index() {
-        assert_eq!(MASK_TO_LAT_INDEX[0b0000], 0xFF); // All same → no transition.
-        assert_eq!(MASK_TO_LAT_INDEX[0b1000], 1); // NE different → index 1.
-        assert_eq!(MASK_TO_LAT_INDEX[0b0001], 4); // SW different → index 4.
-        assert_eq!(MASK_TO_LAT_INDEX[0b0011], 6); // SE+SW → index 6.
-        assert_eq!(MASK_TO_LAT_INDEX[0b1111], 15); // All different → island.
-    }
-
-    #[test]
-    fn test_parse_lat_config_empty() {
-        let ini_data: &[u8] = b"[General]\nKey=Value\n";
-        let lookup_data: &[u8] = b"[TileSet0000]\nSetName=Clear\nFileName=clear\nTilesInSet=1\n";
-        let lookup = crate::map::theater::parse_tileset_ini(lookup_data, "tem").unwrap();
-        let config: LatConfig = parse_lat_config(ini_data, &lookup);
-        assert!(config.grounds.is_empty());
-    }
-
-    #[test]
-    fn test_parse_lat_config_with_ground_types() {
-        // Minimal theater INI with tileset definitions + LAT config.
-        let ini_text: &str = "\
-[General]
-RoughTile=2
-ClearToRoughLat=3
-SandTile=4
-ClearToSandLat=5
-
-[TileSet0000]
-SetName=Clear
-FileName=clear
-TilesInSet=10
-
-[TileSet0001]
-SetName=Blank
-FileName=
-TilesInSet=1
-
-[TileSet0002]
-SetName=Rough
-FileName=rough
-TilesInSet=5
-
-[TileSet0003]
-SetName=ClearToRough
-FileName=crgh
-TilesInSet=16
-
-[TileSet0004]
-SetName=Sand
-FileName=sand
-TilesInSet=5
-
-[TileSet0005]
-SetName=ClearToSand
-FileName=csnd
-TilesInSet=16
-";
-        let lookup = crate::map::theater::parse_tileset_ini(ini_text.as_bytes(), "tem").unwrap();
-        let config: LatConfig = parse_lat_config(ini_text.as_bytes(), &lookup);
-
-        assert_eq!(config.grounds.len(), 2); // Rough + Sand (no Pave/Green).
-        assert_eq!(config.grounds[0].name, "Rough");
-        assert_eq!(config.grounds[0].ground_tileset, 2);
-        assert_eq!(config.grounds[0].transition_tileset, 3);
-        // TileSet0: 10 tiles, TileSet1: 1 tile, TileSet2: 5 tiles → start of TileSet3 = 16.
-        assert_eq!(config.grounds[0].transition_start_tile, 16);
-
-        assert_eq!(config.grounds[1].name, "Sand");
-        assert_eq!(config.grounds[1].ground_tileset, 4);
-        // TileSet0..3 = 10+1+5+16 = 32 tiles → start of TileSet4 = 32.
-        // But Sand uses TileSet5 for transitions → start of TileSet5 = 32+5 = 37.
-        assert_eq!(config.grounds[1].transition_start_tile, 37);
-    }
-
-    #[test]
-    fn test_apply_lat_simple() {
-        // Build a minimal scenario: 3x3 grid where center cell is "rough" ground,
-        // and some neighbors are "clear" (tileset 0).
-        let ini_text: &str = "\
-[General]
-RoughTile=1
-ClearToRoughLat=2
-
-[TileSet0000]
-SetName=Clear
-FileName=clear
-TilesInSet=5
-
-[TileSet0001]
-SetName=Rough
-FileName=rough
-TilesInSet=5
-
-[TileSet0002]
-SetName=ClearToRough
-FileName=crgh
-TilesInSet=16
-";
-        let lookup = crate::map::theater::parse_tileset_ini(ini_text.as_bytes(), "tem").unwrap();
-        let config: LatConfig = parse_lat_config(ini_text.as_bytes(), &lookup);
-
-        // Center cell (5,5) is rough (tile_id=5, tileset 1).
-        // Neighbor NE (5,4) is clear (tile_id=0, tileset 0).
-        // Neighbor NW (4,5) is rough (tile_id=6, tileset 1).
-        // Neighbor SE (6,5) is clear (tile_id=1, tileset 0).
-        // Neighbor SW (5,6) is rough (tile_id=7, tileset 1).
-        let mut cells: Vec<MapCell> = vec![
-            MapCell {
-                rx: 5,
-                ry: 5,
-                tile_index: 5,
-                sub_tile: 0,
-                z: 0,
-            }, // center: rough
-            MapCell {
-                rx: 5,
-                ry: 4,
-                tile_index: 0,
-                sub_tile: 0,
-                z: 0,
-            }, // NE: clear
-            MapCell {
-                rx: 4,
-                ry: 5,
-                tile_index: 6,
-                sub_tile: 0,
-                z: 0,
-            }, // NW: rough
-            MapCell {
-                rx: 6,
-                ry: 5,
-                tile_index: 1,
-                sub_tile: 0,
-                z: 0,
-            }, // SE: clear
-            MapCell {
-                rx: 5,
-                ry: 6,
-                tile_index: 7,
-                sub_tile: 0,
-                z: 0,
-            }, // SW: rough
-        ];
-
-        apply_lat(&mut cells, &config, &lookup);
-
-        // Center cell should now be a transition tile.
-        // NE different (bit 3) + SE different (bit 1) → mask = 0b1010 = 10 → LAT index 3.
-        // Transition start = tileset2.start = 5+5 = 10. New tile = 10 + 3 = 13.
-        assert_eq!(cells[0].tile_index, 13);
-        // Non-ground cells should be unchanged.
-        assert_eq!(cells[1].tile_index, 0);
-        assert_eq!(cells[3].tile_index, 1);
-    }
-
-    #[test]
-    fn test_lat_exemption_pairs_parsed() {
-        // Verify that MiscPaveTile is added to Pave's connect_to when present in INI.
-        let ini_text: &str = "\
-[General]
-PaveTile=1
-ClearToPaveLat=2
-MiscPaveTile=3
-ShorePieces=4
+    const COUNTS: [u16; 16] = [1, 1, 16, 1, 16, 1, 16, 1, 16, 42, 2, 14, 14, 21, 1, 10];
+    const FULL_GENERAL: &str = r#"
+PaveTile=7
+ClearToPaveLat=8
 GreenTile=5
 ClearToGreenLat=6
-WaterBridge=7
+SandTile=3
+ClearToSandLat=4
+RoughTile=1
+ClearToRoughLat=2
+ShorePieces=9
+WaterBridge=10
+MiscPaveTile=11
+Medians=12
+PavedRoads=13
+RoughConnectTo=14
+"#;
 
-[TileSet0000]
-SetName=Clear
-FileName=clear
-TilesInSet=5
+    fn fixture(general: &str, counts: &[u16]) -> (TilesetLookup, LatConfig) {
+        let mut text = format!("[General]\n{general}");
+        for (index, count) in counts.iter().copied().enumerate() {
+            let name = if index == 15 { "Water" } else { "Synthetic" };
+            writeln!(
+                text,
+                "\n[TileSet{index:04}]\nSetName={name}\nFileName=t{index}\nTilesInSet={count}"
+            )
+            .unwrap();
+        }
+        let lookup = crate::map::theater::parse_tileset_ini(text.as_bytes(), "tem").unwrap();
+        let config = parse_lat_config(text.as_bytes(), &lookup);
+        (lookup, config)
+    }
 
-[TileSet0001]
-SetName=Pave
-FileName=pave
-TilesInSet=5
+    fn dummy_lookup() -> TilesetLookup {
+        fixture("", &[1]).0
+    }
 
-[TileSet0002]
-SetName=ClearToPave
-FileName=cpav
-TilesInSet=16
+    fn ground(name: &str, base: i32, lat: i32, ranges: &[(i32, i32)]) -> LatGroundType {
+        LatGroundType {
+            name: name.to_string(),
+            base_tile: base,
+            lat_base: lat,
+            exemptions: ranges
+                .iter()
+                .map(|&(first, last_offset)| TileRange::new(first, last_offset))
+                .collect(),
+            enable_guard: LatEnableGuard::Always,
+        }
+    }
 
-[TileSet0003]
-SetName=MiscPave
-FileName=mpav
-TilesInSet=5
+    fn cell(rx: u16, ry: u16, tile_index: i32) -> MapCell {
+        MapCell {
+            rx,
+            ry,
+            tile_index,
+            sub_tile: 0,
+            z: 0,
+        }
+    }
 
-[TileSet0004]
-SetName=Shore
-FileName=shore
-TilesInSet=5
+    fn center_cells(center: i32, neighbors: [i32; 4]) -> Vec<MapCell> {
+        vec![
+            cell(10, 10, center),
+            cell(10, 9, neighbors[0]),
+            cell(11, 10, neighbors[1]),
+            cell(10, 11, neighbors[2]),
+            cell(9, 10, neighbors[3]),
+        ]
+    }
 
-[TileSet0005]
-SetName=Green
-FileName=green
-TilesInSet=5
+    fn center_result(center: i32, neighbors: [i32; 4], ground: LatGroundType) -> i32 {
+        let mut cells = center_cells(center, neighbors);
+        apply_lat(
+            &mut cells,
+            &LatConfig {
+                grounds: vec![ground],
+            },
+            &dummy_lookup(),
+        );
+        cells[0].tile_index
+    }
 
-[TileSet0006]
-SetName=ClearToGreen
-FileName=cgrn
-TilesInSet=16
-
-[TileSet0007]
-SetName=WaterBridge
-FileName=wbrd
-TilesInSet=5
-";
-        let lookup = crate::map::theater::parse_tileset_ini(ini_text.as_bytes(), "tem").unwrap();
-        let config: LatConfig = parse_lat_config(ini_text.as_bytes(), &lookup);
-
-        // Should have Pave and Green ground types.
-        assert_eq!(config.grounds.len(), 2);
-
-        let pave: &LatGroundType = config.grounds.iter().find(|g| g.name == "Pave").unwrap();
-        assert!(
-            pave.connect_to.contains(&3),
-            "MiscPaveTile (3) should be in Pave connect_to"
+    #[test]
+    fn gsi_04_03a_config_uses_absolute_ids_fixed_order_and_exact_ranges() {
+        let (_, config) = fixture(FULL_GENERAL, &COUNTS);
+        assert_eq!(
+            config
+                .grounds
+                .iter()
+                .map(|ground| (ground.name.as_str(), ground.base_tile, ground.lat_base))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Rough", 1, 2),
+                ("Sand", 18, 19),
+                ("Green", 35, 36),
+                ("Pave", 52, 53)
+            ]
+        );
+        assert!(config.grounds[0].exemptions.is_empty());
+        assert!(config.grounds[1].exemptions.is_empty());
+        assert_eq!(
+            config.grounds[2].exemptions,
+            vec![TileRange::new(69, 0x29), TileRange::new(111, 1)]
+        );
+        assert_eq!(
+            config.grounds[3].exemptions,
+            vec![
+                TileRange::new(113, 0xD),
+                TileRange::new(127, 0xD),
+                TileRange::new(141, 0x14)
+            ]
         );
 
-        let green: &LatGroundType = config.grounds.iter().find(|g| g.name == "Green").unwrap();
-        assert!(
-            green.connect_to.contains(&4),
-            "ShorePieces (4) should be in Green connect_to"
-        );
-        assert!(
-            green.connect_to.contains(&7),
-            "WaterBridge (7) should be in Green connect_to"
+        let only_shore = "GreenTile=5\nClearToGreenLat=6\nShorePieces=9\n";
+        let (_, missing_key) = fixture(only_shore, &COUNTS);
+        assert_eq!(
+            missing_key.grounds[2].exemptions,
+            vec![TileRange::new(69, 0x29)],
+            "missing WaterBridge disables only that exemption"
         );
     }
 
     #[test]
-    fn test_lat_exemption_prevents_transition() {
-        // Pave tile next to MiscPaveTile should NOT generate a transition.
-        let ini_text: &str = "\
-[General]
-PaveTile=1
-ClearToPaveLat=2
-MiscPaveTile=3
+    fn gsi_04_03a_zero_length_lunar_green_exemptions_are_disabled() {
+        let mut counts = COUNTS;
+        counts[9] = 0;
+        counts[10] = 0;
+        let general = "GreenTile=5\nClearToGreenLat=6\nShorePieces=9\nWaterBridge=10\n";
+        let (lookup, config) = fixture(general, &counts);
+        assert!(config.grounds[2].exemptions.is_empty());
 
-[TileSet0000]
-SetName=Clear
-FileName=clear
-TilesInSet=5
-
-[TileSet0001]
-SetName=Pave
-FileName=pave
-TilesInSet=5
-
-[TileSet0002]
-SetName=ClearToPave
-FileName=cpav
-TilesInSet=16
-
-[TileSet0003]
-SetName=MiscPave
-FileName=mpav
-TilesInSet=5
-";
-        let lookup = crate::map::theater::parse_tileset_ini(ini_text.as_bytes(), "tem").unwrap();
-        let config: LatConfig = parse_lat_config(ini_text.as_bytes(), &lookup);
-
-        // Center (5,5) is Pave (tile_id=5, tileset 1).
-        // All 4 neighbors are MiscPave (tileset 3, tile_ids 26-29).
-        // With exemption, no transition should occur.
-        let mut cells: Vec<MapCell> = vec![
-            MapCell {
-                rx: 5,
-                ry: 5,
-                tile_index: 5,
-                sub_tile: 0,
-                z: 0,
-            },
-            MapCell {
-                rx: 5,
-                ry: 4,
-                tile_index: 26,
-                sub_tile: 0,
-                z: 0,
-            }, // NE: MiscPave
-            MapCell {
-                rx: 4,
-                ry: 5,
-                tile_index: 27,
-                sub_tile: 0,
-                z: 0,
-            }, // NW: MiscPave
-            MapCell {
-                rx: 6,
-                ry: 5,
-                tile_index: 28,
-                sub_tile: 0,
-                z: 0,
-            }, // SE: MiscPave
-            MapCell {
-                rx: 5,
-                ry: 6,
-                tile_index: 29,
-                sub_tile: 0,
-                z: 0,
-            }, // SW: MiscPave
-        ];
-
+        // Both zero-length sections resolve to the next real tile's start.
+        // It must differ from Green rather than becoming a bogus exemption.
+        let shared_start = i32::from(lookup.bounds()[9].start);
+        let mut cells = center_cells(35, [shared_start, 35, 35, 35]);
         apply_lat(&mut cells, &config, &lookup);
+        assert_eq!(cells[0].tile_index, 37);
+    }
 
-        // Center tile should remain unchanged — exemption prevents transition.
+    #[test]
+    fn gsi_04_03a_rough_runs_with_missing_lat_global_and_uses_minus_one_arithmetic() {
+        let (lookup, config) = fixture("RoughTile=1\n", &COUNTS);
         assert_eq!(
-            cells[0].tile_index, 5,
-            "Pave adjacent to MiscPave should not transition"
+            config
+                .grounds
+                .iter()
+                .map(|ground| (
+                    ground.name.as_str(),
+                    ground.base_tile,
+                    ground.lat_base,
+                    ground.is_enabled(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Rough", 1, -1, true),
+                ("Sand", -1, -1, false),
+                ("Green", -1, -1, false),
+                ("Pave", -1, -1, false),
+            ]
         );
+        let mut cells = center_cells(1, [0, 1, 1, 1]);
+        apply_lat(&mut cells, &config, &lookup);
+        assert_eq!(cells[0].tile_index, 0, "missing LAT base writes -1 + mask 1");
+    }
+
+    #[test]
+    fn gsi_04_03a_nonrough_groups_gate_only_on_lat_global() {
+        let (_, missing_ground) = fixture("ClearToSandLat=2\n", &COUNTS);
+        let sand = missing_ground.grounds[1].clone();
+        assert_eq!((sand.base_tile, sand.lat_base, sand.is_enabled()), (-1, 2, true));
+        assert_eq!(
+            center_result(2, [0, 2, 2, 2], sand),
+            3,
+            "defined LAT range remains active when the ground base is missing"
+        );
+
+        for name in ["Sand", "Green", "Pave"] {
+            let guarded = LatGroundType {
+                name: name.to_string(),
+                base_tile: 100,
+                lat_base: -1,
+                exemptions: Vec::new(),
+                enable_guard: LatEnableGuard::LatBaseDefined,
+            };
+            assert!(!guarded.is_enabled());
+            assert_eq!(center_result(100, [0, 100, 100, 100], guarded), 100);
+        }
+    }
+
+    #[test]
+    fn native_load_lat_contract() {
+        let rough = || ground("Rough", 700, 710, &[]);
+        for (different, expected) in [(0, 711), (1, 712), (2, 714), (3, 718)] {
+            let mut neighbors = [700; 4];
+            neighbors[different] = 0;
+            assert_eq!(center_result(700, neighbors, rough()), expected);
+        }
+        assert_eq!(center_result(715, [700; 4], rough()), 700);
+        assert_eq!(
+            center_result(700, [-1, NO_TILE, 700, 700], rough()),
+            713,
+            "no-tile N+E set direct bits 0+1"
+        );
+
+        let green = ground("Green", 900, 910, &[(400, 0x29), (450, 1)]);
+        assert_eq!(center_result(900, [441, 451, 900, 0], green.clone()), 918);
+        assert_eq!(center_result(900, [442, 452, 900, 900], green), 913);
+        let pave = ground(
+            "Pave",
+            1000,
+            1010,
+            &[(1100, 0xD), (1300, 0xD), (1200, 0x14)],
+        );
+        assert_eq!(
+            center_result(1000, [1113, 1313, 1220, 0], pave.clone()),
+            1018
+        );
+        assert_eq!(center_result(1000, [1114, 1314, 1221, 1000], pave), 1017);
+
+        let (lookup, config) = fixture(FULL_GENERAL, &COUNTS);
+        assert!(lookup.is_water(163));
+        let mut water = center_cells(35, [163, 35, 35, 35]);
+        apply_lat(&mut water, &config, &lookup);
+        assert_eq!(water[0].tile_index, 37, "generic water is not exempt");
+        let mut connect_to = center_cells(1, [162, 1, 1, 1]);
+        apply_lat(&mut connect_to, &config, &lookup);
+        assert_eq!(connect_to[0].tile_index, 3, "RoughConnectTo is ignored");
+
+        let mut edge = vec![cell(0, 0, 700), cell(1, 0, 700), cell(0, 1, 700)];
+        apply_lat(
+            &mut edge,
+            &LatConfig {
+                grounds: vec![rough()],
+            },
+            &lookup,
+        );
+        assert_eq!(edge[0].tile_index, 719, "off-map N+W set bits 0+3");
+
+        let mut preserved = center_cells(700, [0, 700, 700, 700]);
+        preserved[0].sub_tile = 7;
+        let rough_config = LatConfig {
+            grounds: vec![rough()],
+        };
+        apply_lat(&mut preserved, &rough_config, &lookup);
+        assert_eq!((preserved[0].tile_index, preserved[0].sub_tile), (711, 7));
+        let after_first = preserved
+            .iter()
+            .map(|cell| cell.tile_index)
+            .collect::<Vec<_>>();
+        apply_lat(&mut preserved, &rough_config, &lookup);
+        assert_eq!(
+            preserved
+                .iter()
+                .map(|cell| cell.tile_index)
+                .collect::<Vec<_>>(),
+            after_first,
+            "second application is idempotent"
+        );
+    }
+
+    fn cardinal_slopes_for_mask(slope: u8, mask: u8) -> [u8; 4] {
+        let (first, second) = match slope {
+            1 => (3, 1),
+            2 => (0, 2),
+            3 => (1, 3),
+            4 => (2, 0),
+            _ => panic!("mask helper requires a directional slope"),
+        };
+        let mut neighbors = [9; 4];
+        if mask & 1 != 0 {
+            neighbors[first] = 0;
+        }
+        if mask & 2 != 0 {
+            neighbors[second] = 0;
+        }
+        neighbors
+    }
+
+    #[test]
+    fn gsi_04_03a_slopes_one_through_four_cover_all_flat_neighbor_masks() {
+        let config = SlopeFixupConfig {
+            ramp_base: 100,
+            ramp_smooth: 500,
+        };
+        for slope in 1..=4 {
+            for mask in 0..=3 {
+                let expected = if mask == 0 {
+                    100 + i32::from(slope - 1)
+                } else {
+                    let block = match slope {
+                        1 => mask - 1,
+                        2 => mask + 2,
+                        3 => mask + 5,
+                        4 => mask + 8,
+                        _ => unreachable!(),
+                    };
+                    500 + i32::from(block)
+                };
+                assert_eq!(
+                    slope_fixed_tile(
+                        100,
+                        slope,
+                        cardinal_slopes_for_mask(slope, mask),
+                        config,
+                    ),
+                    expected,
+                    "slope {slope}, mask {mask}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gsi_04_03a_zero_and_unsigned_high_slopes_use_wrapping_fallback() {
+        let config = SlopeFixupConfig {
+            ramp_base: 100,
+            ramp_smooth: 500,
+        };
+        for slope in [0, 5, 16, 127, 128, 255] {
+            assert_eq!(
+                slope_fixed_tile(100, slope, [0; 4], config),
+                100 + i32::from(slope.wrapping_sub(1)),
+                "slope {slope}",
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_04_03a_ramp_guards_are_inclusive_and_reject_adjacent_tiles() {
+        let config = SlopeFixupConfig {
+            ramp_base: 100,
+            ramp_smooth: 500,
+        };
+        for (tile, expected) in [
+            (99, 99),
+            (100, 355),
+            (119, 355),
+            (120, 120),
+            (499, 499),
+            (500, 355),
+            (511, 355),
+            (512, 512),
+        ] {
+            assert_eq!(slope_fixed_tile(tile, 0, [9; 4], config), expected);
+        }
+    }
+
+    #[test]
+    fn gsi_04_03a_missing_ramp_bases_retain_native_minus_one_arithmetic() {
+        assert_eq!(
+            slope_fixed_tile(
+                500,
+                0,
+                [9; 4],
+                SlopeFixupConfig {
+                    ramp_base: -1,
+                    ramp_smooth: 500,
+                },
+            ),
+            254,
+            "missing RampBase still owns fallback arithmetic",
+        );
+        assert_eq!(
+            slope_fixed_tile(
+                100,
+                1,
+                [0; 4],
+                SlopeFixupConfig {
+                    ramp_base: 100,
+                    ramp_smooth: -1,
+                },
+            ),
+            1,
+            "missing RampSmooth still owns smoothing arithmetic",
+        );
+        assert_eq!(
+            slope_fixed_tile(
+                -1,
+                1,
+                [0; 4],
+                SlopeFixupConfig {
+                    ramp_base: -1,
+                    ramp_smooth: -1,
+                },
+            ),
+            1,
+            "the missing-key sentinel is not protected by an extra guard",
+        );
+    }
+
+    #[test]
+    fn gsi_04_03a_off_map_neighbors_are_flat_for_slope_smoothing() {
+        let config = SlopeFixupConfig {
+            ramp_base: 100,
+            ramp_smooth: 500,
+        };
+        assert_eq!(slope_fixed_tile(100, 1, [0; 4], config), 502);
+    }
+
+    #[test]
+    fn gsi_04_03a_second_sweep_converges_after_future_neighbor_state_arrives() {
+        let cells = vec![cell(9, 10, 100), cell(10, 10, 100), cell(11, 10, 100)];
+        let lat_config = LatConfig {
+            grounds: Vec::new(),
+        };
+        let slope_config = SlopeFixupConfig {
+            ramp_base: 100,
+            ramp_smooth: 500,
+        };
+        let mut slope_from_pristine = |tile: i32, _sub_tile: u8| {
+            u8::from((100..=119).contains(&tile) || (500..=511).contains(&tile))
+        };
+
+        let mut one_sweep = cells.clone();
+        apply_recalc_sweeps(
+            &mut one_sweep,
+            &lat_config,
+            slope_config,
+            1,
+            &mut slope_from_pristine,
+        );
+        assert_eq!(one_sweep[1].tile_index, 501);
+
+        let mut two_sweeps = cells;
+        let slopes = apply_load_recalc_sweeps(
+            &mut two_sweeps,
+            &lat_config,
+            slope_config,
+            &mut slope_from_pristine,
+        );
+        assert_eq!(two_sweeps[1].tile_index, 100);
+        assert_eq!(slopes, vec![1, 1, 1]);
     }
 }

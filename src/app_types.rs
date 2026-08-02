@@ -30,9 +30,8 @@ pub(crate) const SIM_TICK_MS: u32 = 1000 / SIM_TICK_HZ;
 pub(crate) const DEFAULT_YR_SKIRMISH_GAME_SPEED: u32 = 1;
 const GAME_SPEED_BUCKET_MS: u32 = 16;
 
-/// Approximate GameMD's single-player/skirmish throttle for the app-level
-/// fixed-step scheduler. The stored speed byte is inverted relative to the
-/// UI slider: `0=fastest`, `6=slowest`.
+/// Convert the stored speed byte to a UI/debug rate readout. Gameplay frame
+/// admission uses the native 16 ms bucket comparison directly.
 pub(crate) fn tps_for_game_speed(stored_speed: u32) -> u32 {
     if stored_speed == 0 {
         return 60;

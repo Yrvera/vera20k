@@ -22,6 +22,7 @@ pub mod psychic_reveal;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::superweapon_type::SuperWeaponKind;
 use crate::sim::intern::InternedId;
+use crate::sim::timer::CdTimer;
 use crate::sim::world::Simulation;
 
 /// Per-house, per-superweapon-type runtime state.
@@ -39,18 +40,29 @@ pub struct SuperWeaponInstance {
     pub is_ready: bool,
     /// Whether charging is paused due to low power.
     pub is_suspended: bool,
-    /// Tick when charging began. -1 = timer stopped.
-    pub charge_start_tick: i64,
-    /// Total charge duration in ticks (may be adjusted on suspend/resume).
+    /// Native frame when charging began. -1 = timer stopped.
+    pub charge_start_tick: i32,
+    /// Total charge duration in native frames (may be adjusted on suspend/resume).
     pub charge_duration: i32,
     /// Charge/drain state: -1=N/A, 0=empty, 1=charged, 2=draining.
     /// Only used when UseChargeDrain=yes (Force Shield). -1 for all others.
     pub charge_drain_state: i32,
-    /// Tick when the SW became ready. -1 = not ready yet.
-    pub ready_tick: i64,
+    /// Native frame when the SW became ready. -1 = not ready yet.
+    pub ready_tick: i32,
 }
 
 impl SuperWeaponInstance {
+    #[inline]
+    fn charge_timer(&self) -> CdTimer {
+        CdTimer::from_raw(self.charge_start_tick, self.charge_duration)
+    }
+
+    #[inline]
+    fn store_charge_timer(&mut self, timer: CdTimer) {
+        self.charge_start_tick = timer.start_frame();
+        self.charge_duration = timer.duration();
+    }
+
     /// Create a new inactive instance.
     pub fn new(type_id: InternedId, owner: InternedId) -> Self {
         Self {
@@ -67,11 +79,11 @@ impl SuperWeaponInstance {
     }
 
     /// Activate (grant) this SW and start charging.
-    pub fn activate(&mut self, recharge_frames: i32, current_tick: u64) {
+    pub fn activate(&mut self, recharge_frames: i32, current_frame: u32) {
         self.is_active = true;
         self.is_ready = false;
         self.is_suspended = false;
-        self.charge_start_tick = current_tick as i64;
+        self.charge_start_tick = current_frame as i32;
         self.charge_duration = recharge_frames;
         self.charge_drain_state = -1;
         self.ready_tick = -1;
@@ -87,45 +99,48 @@ impl SuperWeaponInstance {
     }
 
     /// Suspend charging (low power). Saves remaining time.
-    pub fn suspend(&mut self, current_tick: u64) {
-        if self.charge_start_tick < 0 || self.is_suspended {
+    pub fn suspend(&mut self, current_frame: u32) {
+        if self.charge_start_tick == -1 || self.is_suspended {
             return;
         }
-        let elapsed = (current_tick as i64 - self.charge_start_tick) as i32;
-        let remaining = (self.charge_duration - elapsed).max(0);
-        self.charge_duration = remaining;
-        self.charge_start_tick = -1;
+        let mut timer = self.charge_timer();
+        timer.pause(current_frame as i32);
+        self.store_charge_timer(timer);
         self.is_suspended = true;
     }
 
     /// Resume charging (power restored). Restarts timer with saved remaining.
-    pub fn resume(&mut self, current_tick: u64) {
+    pub fn resume(&mut self, current_frame: u32) {
         if !self.is_suspended {
             return;
         }
-        self.charge_start_tick = current_tick as i64;
-        // charge_duration already holds the remaining frames from suspend()
+        let mut timer = self.charge_timer();
+        timer.resume(current_frame as i32);
+        self.store_charge_timer(timer);
         self.is_suspended = false;
     }
 
     /// Reset after firing — restart charge from full duration.
-    pub fn reset_after_fire(&mut self, recharge_frames: i32, current_tick: u64) {
+    pub fn reset_after_fire(&mut self, recharge_frames: i32, current_frame: u32) {
         self.is_ready = false;
         self.ready_tick = -1;
-        self.charge_start_tick = current_tick as i64;
+        self.charge_start_tick = current_frame as i32;
         self.charge_duration = recharge_frames;
     }
 
     /// Compute charge progress as 0.0–1.0 for sidebar display.
     /// Only valid when is_active and not is_ready.
-    pub fn charge_progress(&self, current_tick: u64) -> f32 {
+    pub fn charge_progress(&self, current_frame: u32) -> f32 {
         if self.is_ready {
             return 1.0;
         }
-        if self.charge_start_tick < 0 || self.charge_duration <= 0 {
+        if self.charge_start_tick == -1 || self.charge_duration <= 0 {
             return 0.0;
         }
-        let elapsed = (current_tick as i64 - self.charge_start_tick) as f32;
+        let elapsed = self
+            .charge_duration
+            .wrapping_sub(self.charge_timer().remaining(current_frame as i32))
+            as f32;
         (elapsed / self.charge_duration as f32).clamp(0.0, 1.0)
     }
 }
@@ -163,7 +178,7 @@ pub fn superweapon_views_for_owner(
         views.push(SuperWeaponView {
             type_id: inst.type_id,
             display_name: type_id_str.to_string(),
-            progress: inst.charge_progress(sim.session.tick),
+            progress: inst.charge_progress(sim.session.binary_frame),
             is_ready: inst.is_ready,
             is_online: !inst.is_suspended,
             sidebar_image: sw_type.sidebar_image.clone(),
@@ -173,10 +188,10 @@ pub fn superweapon_views_for_owner(
     views
 }
 
-/// Tick all superweapon instances: advance charge timers, handle power
-/// suspend/resume, and process active lightning storm.
-pub fn tick_superweapons(sim: &mut Simulation, rules: &RuleSet) {
-    let current_tick = sim.session.tick;
+/// Tick the per-house superweapon instances: initialize grants, advance charge
+/// timers, and handle power suspend/resume.
+pub fn tick_superweapon_instances(sim: &mut Simulation, rules: &RuleSet) {
+    let current_frame = sim.session.binary_frame;
 
     // One-time initialization: scan all owners' buildings for SW grants.
     // Handles map-pre-placed buildings that bypass production placement hooks.
@@ -220,25 +235,33 @@ pub fn tick_superweapons(sim: &mut Simulation, rules: &RuleSet) {
             // Power suspend/resume
             if sw_powered {
                 if is_low_power && !inst.is_suspended {
-                    inst.suspend(current_tick);
+                    inst.suspend(current_frame);
                 } else if !is_low_power && inst.is_suspended {
-                    inst.resume(current_tick);
+                    inst.resume(current_frame);
                 }
             }
 
             // Charge advancement
-            if inst.charge_start_tick >= 0 && !inst.is_suspended {
-                let elapsed = current_tick as i64 - inst.charge_start_tick;
-                if elapsed >= inst.charge_duration as i64 {
+            if inst.charge_start_tick != -1 && !inst.is_suspended {
+                if inst.charge_timer().expired(current_frame as i32) {
                     inst.is_ready = true;
-                    inst.ready_tick = current_tick as i64;
+                    inst.ready_tick = current_frame as i32;
                 }
             }
         }
     }
+}
 
-    // Phase 2: Process active lightning storm.
+/// Tick already-active global superweapon effects in their native pre-object
+/// scheduler slot.
+pub fn tick_active_superweapon_effects(sim: &mut Simulation, rules: &RuleSet) {
     lightning_storm::process(sim, rules);
+}
+
+/// Compatibility entry point for focused subsystem tests.
+pub fn tick_superweapons(sim: &mut Simulation, rules: &RuleSet) {
+    tick_superweapon_instances(sim, rules);
+    tick_active_superweapon_effects(sim, rules);
 }
 
 /// Refresh superweapon grants for a specific owner by scanning their buildings.
@@ -295,7 +318,7 @@ pub fn refresh_super_weapons_for_owner(sim: &mut Simulation, rules: &RuleSet, ow
                 .super_weapon(&sw_str)
                 .map_or(4500, |sw| sw.recharge_time_frames);
             let mut inst = SuperWeaponInstance::new(sw_iid, owner);
-            inst.activate(recharge, sim.session.tick);
+            inst.activate(recharge, sim.session.binary_frame);
             log::info!("SuperWeapon '{}' granted to '{}'", sw_str, owner_str);
             weapons.insert(sw_iid, inst);
         }
@@ -313,5 +336,25 @@ pub fn refresh_super_weapons_for_owner(sim: &mut Simulation, rules: &RuleSet, ow
         if let Some(inst) = weapons.get_mut(&sw_iid) {
             inst.deactivate();
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn charge_timer_uses_wrapping_native_frames() {
+        let id = InternedId::from_index(1);
+        let mut instance = SuperWeaponInstance::new(id, id);
+        instance.activate(4, u32::MAX - 1);
+
+        assert_eq!(instance.charge_progress(0), 0.5);
+        instance.suspend(0);
+        assert_eq!(instance.charge_duration, 2);
+
+        instance.resume(0);
+        assert_eq!(instance.charge_progress(1), 0.5);
+        assert_eq!(instance.charge_progress(2), 1.0);
     }
 }

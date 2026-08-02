@@ -14,6 +14,8 @@
 //! Dispatch is `match category` only — no trait object / dyn / vtable
 //! (invariant #2).
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use super::Simulation;
 use crate::map::entities::EntityCategory;
 use crate::map::overlay_types::OverlayTypeRegistry;
@@ -33,6 +35,8 @@ pub(crate) struct ObjectAiCtx<'a> {
     pub(crate) path_grid: Option<&'a PathGrid>,
     pub(crate) overlay_registry: Option<&'a OverlayTypeRegistry>,
     pub(crate) miner_config: Option<&'a MinerConfig>,
+    pub(crate) animation_sequences:
+        Option<&'a std::collections::BTreeMap<String, crate::sim::animation::SequenceSet>>,
 }
 
 // P3 oracle probe import — used only by the `#[cfg(test)]` factory_oracle_step_trace.
@@ -43,12 +47,134 @@ impl Simulation {
     /// Object-AI stage: the authoritative per-object Mission host.
     ///
     /// Walks the live LogicVector order via `for_each_live_object` — the same
-    /// re-read contract the native scheduler uses — and runs each live,
-    /// present, non-dying object through `techno_ai_shell`: `+0xC4` AI-counter
-    /// increment plus the owner-local queued-mission promotion at the verified
+    /// re-read contract the native scheduler uses. Every present slot receives
+    /// its owner-local visit: anims and dying objects run lifecycle work, while
+    /// ordinary Techno objects enter `techno_ai_shell` for the `+0xC4`
+    /// AI-counter increment and queued-mission promotion at the verified
     /// per-category AI position (see `Simulation::mission_host_promote`).
     pub(crate) fn object_ai_stage(&mut self, rules: Option<&RuleSet>) {
         self.object_ai_stage_with(rules, ObjectAiCtx::default());
+    }
+
+    /// The **second** Ready→Commence checkpoint, run after the movement phases.
+    ///
+    /// `InfantryClass::AI` and `UnitClass::AI` each gate twice per tick, once on
+    /// either side of the object's own locomotion, and both checkpoints are the
+    /// same pair of virtuals — the readiness predicate at self-vtable `+0x200`
+    /// followed by `Commence` at `+0x1ec` when it returns true. Our object-AI
+    /// stage is the first checkpoint (it runs immediately before Phase-1 ground
+    /// movement); this is the second.
+    ///
+    /// Without it a unit that came to rest during its own movement step could
+    /// not commence until the next tick, so every mission commencement that
+    /// depends on having stopped was one tick late. That compounds through
+    /// chained handoffs — harvest dock/unload/exit, guard→attack — at one extra
+    /// tick per stage.
+    ///
+    /// Scope, deliberately: **Unit and Infantry only.** Those are the two
+    /// categories verified to gate twice. Aircraft gate exactly once and do it
+    /// *after* their locomotion, so their single checkpoint sits at the wrong
+    /// end in our tick today — recorded, not fixed here, to keep this change's
+    /// hash delta attributable to one mechanism. Buildings gate twice inside
+    /// their own update, which is not a movement bracket; unchanged.
+    ///
+    /// The AI counter is NOT ticked here. Native increments it once per AI pass,
+    /// and the first checkpoint already did.
+    pub(crate) fn object_ai_post_movement_promote(&mut self, rules: Option<&RuleSet>) {
+        let Some(rules) = rules else {
+            return;
+        };
+        let now = self.session.binary_frame;
+        self.for_each_live_object(|sim, id| {
+            if sim.substrate.anims.contains_key(id) {
+                return;
+            }
+            let Some(entity) = sim.substrate.entities.get(id) else {
+                return;
+            };
+            if entity.dying {
+                return;
+            }
+            if !matches!(
+                entity.category,
+                EntityCategory::Unit | EntityCategory::Infantry
+            ) {
+                return;
+            }
+            sim.mission_host_promote(id, now, rules);
+        });
+    }
+
+    /// The second Unit/Infantry Ready-to-Commence checkpoint for one object,
+    /// called immediately after that object's own locomotion.
+    pub(crate) fn object_ai_post_movement_promote_one(&mut self, id: u64, rules: Option<&RuleSet>) {
+        let Some(rules) = rules else {
+            return;
+        };
+        let Some(entity) = self.substrate.entities.get(id) else {
+            return;
+        };
+        if entity.dying
+            || !matches!(
+                entity.category,
+                EntityCategory::Unit | EntityCategory::Infantry
+            )
+        {
+            return;
+        }
+        self.mission_host_promote(id, self.session.binary_frame, rules);
+    }
+
+    /// Dispatch one current LogicVector slot. A finishing death sequence calls
+    /// UnInit synchronously here, so compacting removal is visible before the
+    /// scheduler increments its cursor.
+    pub(crate) fn object_ai_visit_one(
+        &mut self,
+        id: u64,
+        rules: Option<&RuleSet>,
+        ctx: ObjectAiCtx<'_>,
+    ) -> bool {
+        if self.substrate.anims.contains_key(id) {
+            if let Some(rules) = rules {
+                self.visit_anim(id, rules);
+            }
+            return true;
+        }
+        if self.substrate.particle_systems.contains_key(id) {
+            if let Some(rules) = rules {
+                crate::sim::particles::system_ai::tick_particle_system(self, rules, id);
+            }
+            return true;
+        }
+
+        let Some(entity) = self.substrate.entities.get(id) else {
+            return false;
+        };
+        if entity.dying {
+            let Some(sequences) = ctx.animation_sequences else {
+                return true;
+            };
+            let type_ref = entity.type_ref;
+            let type_name = self.interner.resolve(type_ref);
+            let finished = crate::sim::animation::tick_dying_animation(
+                self.substrate
+                    .entities
+                    .get_mut(id)
+                    .expect("dying object remained present"),
+                sequences,
+                &self.session.game_options,
+                type_name,
+            );
+            if finished {
+                self.release_move_sound(id);
+                self.uninit(id);
+            }
+            return true;
+        }
+
+        let category = entity.category;
+        techno_ai_shell(self, id, category, rules, ctx);
+        true
     }
 
     /// [`Simulation::object_ai_stage`] with the world context the dispatched
@@ -124,10 +250,11 @@ impl Simulation {
         eligible
     }
 
-    /// The walk: dispatch every live, present, non-dying object once, in live
-    /// order, through the per-category shell. When `record`, return the
-    /// dispatched ids in order (debug/test observation); otherwise the
-    /// returned `Vec` is empty and unallocated.
+    /// The walk: visit every live, present object slot once in live order.
+    /// Dying objects retain their slot while their death sequence runs but do
+    /// not enter the ordinary per-category shell. When `record`, return the
+    /// visited ids in order (debug/test observation); otherwise the returned
+    /// `Vec` is empty and unallocated.
     fn object_ai_walk(
         &mut self,
         record: bool,
@@ -136,31 +263,9 @@ impl Simulation {
     ) -> Vec<u64> {
         let mut visited: Vec<u64> = Vec::new();
         self.for_each_live_object(|sim, id| {
-            // Tolerate an absent id (the loop's documented contract). The stage
-            // runs AFTER the end-of-tick flush_pending_delete drain, so the order
-            // should not reference a freed slot — but inherit the guard.
-            if sim.substrate.anims.contains_key(id) {
-                if record {
-                    visited.push(id);
-                }
-                if let Some(rules) = rules {
-                    sim.visit_anim(id, rules);
-                }
-                return;
-            }
-            let Some(entity) = sim.substrate.entities.get(id) else {
-                return;
-            };
-            // A dying object is mid death-teardown and is not dispatched (the
-            // closest live `IsActive` analogue today).
-            if entity.dying {
-                return;
-            }
-            let category = entity.category;
-            if record {
+            if sim.object_ai_visit_one(id, rules, ctx) && record {
                 visited.push(id);
             }
-            techno_ai_shell(sim, id, category, rules, ctx);
         });
         visited
     }
@@ -612,9 +717,7 @@ mod tests {
         MissionCom, MissionControl, MissionDispatchTimer, MissionId, MissionType,
     };
     use crate::sim::movement::drive_track::begin_forced_turn_track;
-    use crate::sim::movement::locomotor::{
-        LocomotorState, MovementLayer, OverrideKind, OverrideLocomotor, PiggybackLocomotor,
-    };
+    use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
     use crate::sim::movement::tube_movement::{LowBridgeTubeMovementState, LowBridgeTubePhase};
     use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
     use crate::sim::rng::SimRngLogicalState;
@@ -748,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn object_ai_stage_skips_dying_object() {
+    fn object_ai_stage_visits_dying_object_in_its_live_slot() {
         let mut sim = Simulation::new();
         sim.substrate
             .entities
@@ -765,12 +868,13 @@ mod tests {
         let visited = sim.object_ai_walk(true, None, ObjectAiCtx::default());
         assert_eq!(
             visited,
-            vec![1],
-            "dying object skipped; the live object is still visited"
+            vec![1, 2],
+            "a dying object keeps receiving its live scheduler slot until UnInit"
         );
-        // The internal order-proof assert filters dying members, so the stage
-        // must not panic even with a dying member in the live order.
+        // With no sequence table this fixture cannot finish the death action,
+        // so the second visit must leave the object registered for a later pass.
         sim.object_ai_stage(None);
+        assert_eq!(sim.live_object_order_snapshot(), vec![1, 2]);
     }
 
     #[test]
@@ -1190,10 +1294,8 @@ mod tests {
             return Err(HostTraceError::LifecyclePath);
         }
         if entity.teleport_state.is_some()
-            || entity.tunnel_state.is_some()
             || entity.rocket_state.is_some()
             || entity.homing_state.is_some()
-            || entity.droppod_state.is_some()
             || entity.parachute_state.is_some()
         {
             return Err(HostTraceError::SpecialLocomotorPath);
@@ -1204,7 +1306,7 @@ mod tests {
             .as_ref()
             .ok_or(HostTraceError::SpecialLocomotorPath)?;
         if locomotor.active_kind() != LocomotorKind::Drive
-            || locomotor.primary_kind() != LocomotorKind::Drive
+            || locomotor.effective_kind() != LocomotorKind::Drive
             || locomotor.piggyback.is_some()
             || locomotor.is_overridden()
         {
@@ -2299,7 +2401,7 @@ mod tests {
             .locomotor
             .as_mut()
             .unwrap()
-            .primary_kind = Some(LocomotorKind::Teleport);
+            .slot = LocomotorSlot::from_kind(LocomotorKind::Teleport);
         assert_ordinary_drive_host_error(
             &primary_mismatch,
             &control,
@@ -2317,10 +2419,7 @@ mod tests {
             .locomotor
             .as_mut()
             .unwrap()
-            .piggyback = Some(PiggybackLocomotor {
-            kind: LocomotorKind::Teleport,
-            layer: MovementLayer::Ground,
-        });
+            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground);
         assert_ordinary_drive_host_error(
             &piggyback,
             &control,
@@ -2328,27 +2427,9 @@ mod tests {
             ordinary,
             HostTraceError::SpecialLocomotorPath,
         );
-
-        let mut overridden = ordinary_drive_host_sim(13);
-        overridden
-            .substrate
-            .entities
-            .get_mut(ORDINARY_DRIVE_HOST_ID)
-            .unwrap()
-            .locomotor
-            .as_mut()
-            .unwrap()
-            .override_state = Some(OverrideLocomotor {
-            saved: Box::new(LocomotorState::for_test_kind(LocomotorKind::Drive)),
-            override_kind: OverrideKind::Teleport,
-        });
-        assert_ordinary_drive_host_error(
-            &overridden,
-            &control,
-            120,
-            ordinary,
-            HostTraceError::SpecialLocomotorPath,
-        );
+        // There used to be a second scenario here for the separate "override"
+        // mechanism. The two collapsed into one when the piggyback slot became
+        // single, so the case it covered is the one directly above.
 
         let mut class_special = HostTraceGates::ordinary();
         class_special.class_special_pre_foot_path = true;
@@ -2491,6 +2572,62 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         sim.substrate.entities.insert(e);
     }
 
+    /// An interned Infantry carrying a Walk locomotor, so the readiness producer
+    /// has a real family to map and the moving gate is live.
+    fn insert_interned_walker(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("TEST");
+        let mut e = GameEntity::new_at_frame_zero_for_test(
+            id,
+            rx,
+            ry,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Infantry,
+            0,
+            5,
+            true,
+        );
+        e.locomotor = Some(
+            crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+                crate::rules::locomotor_type::LocomotorKind::Walk,
+            ),
+        );
+        e.mission_leaf = crate::sim::mission::leaf::MissionLeafState::infantry_raw_for_test(0, -1);
+        sim.substrate.entities.insert(e);
+        register_in_logic(sim, id);
+    }
+
+    /// The post-movement checkpoint walks the logic scheduler, not the entity
+    /// store, so a fixture entity has to be a scheduler member or the walk skips
+    /// it and every assertion passes vacuously.
+    fn register_in_logic(sim: &mut Simulation, id: u64) {
+        sim.substrate.logic.try_push(id).expect("logic slot");
+        sim.substrate
+            .entities
+            .get_mut(id)
+            .expect("fixture entity")
+            .in_logic_vector = true;
+    }
+
+    /// Drive the Walk readiness producer's inputs: a live movement target with a
+    /// remaining path step reads as moving, its absence as stopped.
+    fn set_walking(sim: &mut Simulation, id: u64, walking: bool) {
+        let entity = sim.substrate.entities.get_mut(id).expect("fixture entity");
+        entity.movement_target = walking.then(|| crate::sim::components::MovementTarget {
+            path: vec![(5, 5), (6, 5)],
+            next_index: 1,
+            current_speed: crate::util::fixed_math::SimFixed::from_num(4),
+            ..Default::default()
+        });
+    }
+
     #[test]
     fn host_promotes_queued_mission() {
         // Queue(Move, 0) at command time, then the host's Ready→Commence
@@ -2516,6 +2653,119 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         assert_eq!(e.mission.current().known(), Some(MissionType::Move));
         assert_eq!(e.mission.queued(), MissionId::NONE);
         assert_eq!(e.mission.mission_start_frame(), 7);
+    }
+
+    /// An infantry that is still walking when the pre-movement checkpoint runs,
+    /// and has come to rest by the post-movement one, must commence in the SAME
+    /// tick — not the next.
+    ///
+    /// This is the whole point of the second checkpoint. gamemd's
+    /// `InfantryClass::AI` gates either side of the object's own locomotion, so
+    /// stopping mid-tick makes the unit eligible before the tick ends. With only
+    /// the pre-movement gate the promotion slipped a tick, and that lag compounds
+    /// through every chained handoff.
+    ///
+    /// Infantry rather than Unit deliberately: the Unit moving-defer branch is
+    /// inert in production today because `signed_height` has no producer and the
+    /// resulting error maps to permissive-ready, so a Unit fixture would pass for
+    /// the wrong reason. Infantry readiness reads no height.
+    #[test]
+    fn post_movement_checkpoint_commences_a_walker_that_stopped_this_tick() {
+        let rules = promotion_rules();
+        let mut sim = Simulation::new();
+        insert_interned_walker(&mut sim, 1, 5, 5);
+
+        sim.mission_queue_exact(
+            1,
+            MissionId::from_known(MissionType::Move),
+            0,
+            0,
+            &crate::sim::mission::authority::EntityReadyInputProvider,
+        )
+        .unwrap();
+
+        // Still walking: the pre-movement checkpoint must NOT commence it.
+        set_walking(&mut sim, 1, true);
+        sim.object_ai_post_movement_promote(Some(&rules));
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(
+            e.mission.queued().known(),
+            Some(MissionType::Move),
+            "a walking infantry must still be deferred: the moving gate is what \
+             this checkpoint exists to re-evaluate, so if it commences here the \
+             test proves nothing"
+        );
+        assert_eq!(e.mission.current(), MissionId::NONE);
+
+        // Movement ended during the tick's movement phases.
+        set_walking(&mut sim, 1, false);
+        sim.object_ai_post_movement_promote(Some(&rules));
+
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(
+            e.mission.current().known(),
+            Some(MissionType::Move),
+            "coming to rest during the movement phases must let the second \
+             checkpoint commence the queued mission in the same tick"
+        );
+        assert_eq!(e.mission.queued(), MissionId::NONE);
+    }
+
+    /// The second checkpoint must not touch categories gamemd gates only once.
+    /// Aircraft gate a single time, after their locomotion; buildings gate twice
+    /// inside their own update, which is not a movement bracket.
+    #[test]
+    fn post_movement_checkpoint_skips_aircraft_and_structures() {
+        let rules = promotion_rules();
+        let mut sim = Simulation::new();
+        for (id, category) in [
+            (1u64, EntityCategory::Aircraft),
+            (2, EntityCategory::Structure),
+        ] {
+            let owner = sim.interner.intern("Americans");
+            let type_ref = sim.interner.intern("TEST");
+            let e = GameEntity::new_at_frame_zero_for_test(
+                id,
+                5,
+                5,
+                0,
+                0,
+                owner,
+                crate::sim::components::Health {
+                    current: 100,
+                    max: 100,
+                },
+                type_ref,
+                category,
+                0,
+                5,
+                true,
+            );
+            sim.substrate.entities.insert(e);
+            register_in_logic(&mut sim, id);
+            sim.mission_queue_exact(
+                id,
+                MissionId::from_known(MissionType::Move),
+                0,
+                0,
+                &crate::sim::mission::authority::EntityReadyInputProvider,
+            )
+            .ok();
+        }
+        let before: Vec<_> = [1u64, 2]
+            .iter()
+            .map(|id| sim.substrate.entities.get(*id).unwrap().mission)
+            .collect();
+
+        sim.object_ai_post_movement_promote(Some(&rules));
+
+        for (index, id) in [1u64, 2].iter().enumerate() {
+            assert_eq!(
+                sim.substrate.entities.get(*id).unwrap().mission,
+                before[index],
+                "entity {id} is not a twice-gated category and must be untouched"
+            );
+        }
     }
 
     #[test]
@@ -2686,9 +2936,9 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         assert_eq!(e.mission.ai_counter(), 2, "the host counter still ticks");
     }
 
-    /// Post-flip corpse freeze: a dying Unit is skipped by the host walk, so
-    /// its mission state (counter included) freezes at death — the gamemd
-    /// corpse behavior the old per-tick tail projection could not express.
+    /// Post-flip corpse freeze: a dying Unit still owns its live scheduler slot,
+    /// but only its death action runs there. Its ordinary mission state (counter
+    /// included) therefore freezes at death.
     #[test]
     fn dying_unit_mission_state_freezes() {
         let mut sim = Simulation::new();
@@ -2704,7 +2954,7 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         assert_eq!(
             sim.substrate.entities.get(1).unwrap().mission.ai_counter(),
             1,
-            "a dying Unit's mission state freezes (no host visit)"
+            "a dying Unit's mission state freezes while its death slot runs"
         );
     }
 

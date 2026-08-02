@@ -221,11 +221,7 @@ pub fn collect_needed_unit_keys(
             .and_then(|r| r.object(type_str))
             .map(|o| o.has_turret)
             .unwrap_or(false);
-        let layers: &[VxlLayer] = if has_turret {
-            &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
-        } else {
-            &[VxlLayer::Composite]
-        };
+        let layers: &[VxlLayer] = seed_layers_for(asset_manager, type_str, has_turret, rules, art);
         for &layer in layers {
             let fc_key: (String, VxlLayer) = (type_str.to_string(), layer);
             if !frame_counts.contains_key(&fc_key) {
@@ -332,11 +328,7 @@ pub fn build_unit_atlas(
             .and_then(|r| r.object(type_str))
             .map(|o| o.has_turret)
             .unwrap_or(false);
-        let layers: &[VxlLayer] = if has_turret {
-            &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
-        } else {
-            &[VxlLayer::Composite]
-        };
+        let layers: &[VxlLayer] = seed_layers_for(asset_manager, type_str, has_turret, rules, art);
         for &layer in layers {
             let fc_key: (String, VxlLayer) = (type_str.to_string(), layer);
             if !frame_counts.contains_key(&fc_key) {
@@ -435,11 +427,8 @@ pub fn build_unit_atlas(
             }
         };
         let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
-        let layers: &[VxlLayer] = if uc_obj.has_turret {
-            &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
-        } else {
-            &[VxlLayer::Composite]
-        };
+        let layers: &[VxlLayer] =
+            seed_layers_for(asset_manager, &uc_name, uc_obj.has_turret, rules, art);
         for &layer in layers {
             let fc_key: (String, VxlLayer) = (uc_name.clone(), layer);
             if !frame_counts.contains_key(&fc_key) {
@@ -785,28 +774,7 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
         // CPU fallback path.
         match key.layer {
             VxlLayer::Composite => {
-                let body_sprite: VxlSprite =
-                    vxl_raster::render_vxl(&vxl, hva.as_ref(), &params, vpl);
-                let mut layers: Vec<VxlSprite> = vec![body_sprite];
-                if let Some(turret) =
-                    render_optional_layer(asset_manager, &format!("{}TUR", image), &params, vpl)
-                {
-                    layers.push(turret);
-                }
-                if let Some(barrel) =
-                    render_optional_layer(asset_manager, &format!("{}BARL", image), &params, vpl)
-                        .or_else(|| {
-                            render_optional_layer(
-                                asset_manager,
-                                &format!("{}BARREL", image),
-                                &params,
-                                vpl,
-                            )
-                        })
-                {
-                    layers.push(barrel);
-                }
-                composite_vxl_layers(&layers)
+                composite_unit_vxl_cpu(asset_manager, &vxl, hva.as_ref(), &image, &params, vpl)
             }
             VxlLayer::Body | VxlLayer::Turret | VxlLayer::Barrel => {
                 let body_sprite: VxlSprite =
@@ -859,6 +827,56 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
     Some((sprite, use_gpu))
 }
 
+/// The layer set to seed atlas keys for, given a type's turret flag.
+///
+/// A turreted type gets separate Body/Turret layers, and a Barrel layer **only
+/// when a barrel voxel actually exists**. Most turreted units model the gun as
+/// part of the turret and ship no `…BARL.VXL`/`…BARREL.VXL` — the Soviet War
+/// Miner is one. Seeding a Barrel key for those produced a key that could never
+/// be satisfied: the Barrel branch of the renderer rebuilds the body and turret
+/// sprites, finds no barrel, and returns `None`, so nothing is cached and the
+/// whole attempt repeats on the next frame, forever. A single such unit on
+/// screen logged ~135k render failures in four minutes of play and paid for two
+/// discarded voxel rasterisations every frame.
+fn seed_layers_for(
+    asset_manager: &AssetManager,
+    type_id: &str,
+    has_turret: bool,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+) -> &'static [VxlLayer] {
+    if !has_turret {
+        return &[VxlLayer::Composite];
+    }
+    if has_barrel_voxel(asset_manager, type_id, rules, art) {
+        &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
+    } else {
+        &[VxlLayer::Body, VxlLayer::Turret]
+    }
+}
+
+/// Whether this type ships a separate barrel voxel under either suffix the
+/// renderer accepts. Resolves the image id exactly as the render path does, so
+/// the seeding decision and the lookup can never disagree.
+fn has_barrel_voxel(
+    asset_manager: &AssetManager,
+    type_id: &str,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+) -> bool {
+    let rules_image: String = rules
+        .and_then(|r| r.object(type_id))
+        .map(|o| o.image.clone())
+        .unwrap_or_else(|| type_id.to_string());
+    let image: String = art
+        .map(|a| a.resolve_effective_image_id(type_id, &rules_image))
+        .unwrap_or_else(|| rules_image.to_uppercase());
+    asset_manager
+        .get_ref(&format!("{image}BARL.VXL"))
+        .or_else(|| asset_manager.get_ref(&format!("{image}BARREL.VXL")))
+        .is_some()
+}
+
 /// Detect the HVA animation frame count for a given (type_id, layer) combo.
 ///
 /// Loads the HVA file from the asset manager and returns `frame_count`.
@@ -904,6 +922,40 @@ fn detect_hva_frame_count(
     }
 
     frame_count.max(1)
+}
+
+/// Body plus optional turret and barrel, depth-composited on the CPU.
+///
+/// Split out of the atlas bake path so headless callers can produce the same
+/// composited sprite the game does. The bake path's own CPU branch calls this,
+/// so the two cannot drift apart.
+///
+/// Pure CPU: no `GpuContext`, no atlas state, no wgpu. The turret and barrel are
+/// found by the conventional `TUR` / `BARL` / `BARREL` suffixes on the effective
+/// image id; a model without them composites to just its body.
+pub fn composite_unit_vxl_cpu(
+    asset_manager: &AssetManager,
+    body: &VxlFile,
+    body_hva: Option<&HvaFile>,
+    image: &str,
+    params: &VxlRenderParams,
+    vpl: Option<&VplFile>,
+) -> VxlSprite {
+    let body_sprite: VxlSprite = vxl_raster::render_vxl(body, body_hva, params, vpl);
+    let mut layers: Vec<VxlSprite> = vec![body_sprite];
+
+    if let Some(turret) = render_optional_layer(asset_manager, &format!("{image}TUR"), params, vpl)
+    {
+        layers.push(turret);
+    }
+    // BARL is the common spelling; a handful of models use BARREL.
+    if let Some(barrel) = render_optional_layer(asset_manager, &format!("{image}BARL"), params, vpl)
+        .or_else(|| render_optional_layer(asset_manager, &format!("{image}BARREL"), params, vpl))
+    {
+        layers.push(barrel);
+    }
+
+    composite_vxl_layers(&layers)
 }
 
 fn render_optional_layer(

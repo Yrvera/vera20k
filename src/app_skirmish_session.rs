@@ -559,15 +559,17 @@ fn decode_multiplayer_handle(value: &str) -> Option<String> {
         if part.is_empty() {
             continue;
         }
-        bytes.push(u8::from_str_radix(part, 16).ok()?);
+        let unit = u32::from_str_radix(part, 16).ok()? as u16;
+        let byte = unit as u8;
+        if byte == 0 {
+            break;
+        }
+        bytes.push(byte);
     }
     if bytes.is_empty() {
         return None;
     }
-    if let Some(nul) = bytes.iter().position(|byte| *byte == 0) {
-        bytes.truncate(nul);
-    }
-    let decoded = String::from_utf8_lossy(&bytes).into_owned();
+    let decoded = crate::util::native_string::widen_bytes(&bytes);
     (!decoded.is_empty()).then_some(decoded)
 }
 
@@ -617,20 +619,12 @@ fn menu_country_item_data(country: SkirmishCountry) -> i32 {
 fn cooperative_country_roster_from_assets(
     assets: &AssetManager,
 ) -> Vec<CooperativeCountryRosterEntry> {
-    let mut merged = assets
-        .get_with_source("rules.ini")
-        .and_then(|(bytes, _)| IniFile::from_bytes(&bytes).ok());
-    if let Some(base) = merged.as_mut()
-        && let Some((bytes, _)) = assets.get_with_source("rulesmd.ini")
-        && let Ok(patch) = IniFile::from_bytes(&bytes)
-    {
-        base.merge(&patch);
-    }
+    let rules = crate::app_init_helpers::load_retail_rules_source(assets);
     SkirmishCountry::ALL
         .into_iter()
         .map(|country| {
             let id = country.country_name();
-            let name = merged
+            let name = rules
                 .as_ref()
                 .and_then(|ini| ini.section(id))
                 .and_then(|section| section.get("Name"));
@@ -846,6 +840,12 @@ mod tests {
             decode_multiplayer_handle("41,00,42,"),
             Some("A".to_string())
         );
+        assert_eq!(decode_multiplayer_handle("e9,"), Some("\u{e9}".to_string()));
+        assert_eq!(
+            decode_multiplayer_handle("20ac,"),
+            Some("\u{ac}".to_string())
+        );
+        assert_eq!(decode_multiplayer_handle("100,41,"), None);
     }
 
     #[test]

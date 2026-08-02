@@ -187,7 +187,7 @@ pub struct TerrainCell {
     /// FinalAlert2 cliff redraw flag — this tile is drawn a second time after
     /// entities so cliff face pixels occlude units behind them.
     pub is_cliff_redraw: bool,
-    /// Tile visual variant index (FA2 bRNDImage): 0 = main tile, 1-4 = replacement a-d.
+    /// Tile visual variant index: 0 = pristine, positive = suffix sibling.
     pub variant: u8,
     /// RGB color tint from map lighting. [1,1,1] = full brightness (default).
     pub tint: [f32; 3],
@@ -236,8 +236,8 @@ pub struct TerrainGrid {
 ///   Y = 15*(rx+ry) + 15 - z*15
 pub fn iso_to_screen(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     let sx: f32 = (rx as f32 - ry as f32) * TILE_WIDTH / 2.0 - TILE_WIDTH / 2.0;
-    let sy: f32 =
-        (rx as f32 + ry as f32) * TILE_HEIGHT / 2.0 + TILE_HEIGHT / 2.0 - z as f32 * HEIGHT_STEP;
+    let sy: f32 = (rx as f32 + ry as f32) * TILE_HEIGHT / 2.0 + TILE_HEIGHT / 2.0
+        - f32::from(z as i8) * HEIGHT_STEP;
     (sx, sy)
 }
 
@@ -314,7 +314,7 @@ pub fn screen_to_cell_tactical_inverse(
             .get(&(cell_rx, cell_ry))
             .copied()
             .unwrap_or(0);
-        let mut adjusted_scan_y = scan_y - terrain_z as f32 * HEIGHT_STEP;
+        let mut adjusted_scan_y = scan_y - f32::from(terrain_z as i8) * HEIGHT_STEP;
 
         if let Some(bridge_result) = apply_tactical_bridge_inverse(
             input_x,
@@ -384,14 +384,14 @@ fn apply_tactical_bridge_inverse(
 
     let dir2_height = tactical_neighbor_height(context.height_map, cell_rx, cell_ry, DIR_EAST);
     let dir4_height = tactical_neighbor_height(context.height_map, cell_rx, cell_ry, DIR_SOUTH);
-    let terrain_z_i16 = terrain_z as i16;
+    let terrain_z_i16 = i16::from(terrain_z as i8);
     let direct_y = if bridge.direction_zero {
         !dir4_is_bridge
     } else {
-        !dir4_is_bridge && (terrain_z_i16 - dir4_height as i16).abs() <= 1
+        !dir4_is_bridge && (terrain_z_i16 - i16::from(dir4_height as i8)).abs() <= 1
     };
     let direct_x = if bridge.direction_zero {
-        !dir2_is_bridge && (terrain_z_i16 - dir2_height as i16).abs() <= 1
+        !dir2_is_bridge && (terrain_z_i16 - i16::from(dir2_height as i8)).abs() <= 1
     } else {
         !dir2_is_bridge
     };
@@ -422,8 +422,9 @@ fn apply_tactical_bridge_inverse(
         true
     };
     if apply_extra_bridge_lift {
-        *adjusted_scan_y =
-            scan_y - terrain_z as f32 * HEIGHT_STEP - TACTICAL_BRIDGE_EXTRA_HEIGHT_PX;
+        *adjusted_scan_y = scan_y
+            - f32::from(terrain_z as i8) * HEIGHT_STEP
+            - TACTICAL_BRIDGE_EXTRA_HEIGHT_PX;
     }
     None
 }
@@ -502,7 +503,7 @@ pub fn screen_to_iso_with_height_and_bridges(
         if z == 0 {
             break;
         }
-        let corrected_y: f32 = screen_y + z as f32 * HEIGHT_STEP;
+        let corrected_y: f32 = screen_y + f32::from(z as i8) * HEIGHT_STEP;
         let (new_rx, new_ry) = screen_to_iso(screen_x, corrected_y);
         if (new_rx - rx).abs() < 0.01 && (new_ry - ry).abs() < 0.01 {
             break;
@@ -531,7 +532,8 @@ pub fn screen_to_iso_with_height_and_bridges(
                 let bx: u16 = bx_i as u16;
                 let by: u16 = by_i as u16;
                 if let Some(&bridge_z) = bridge_map.get(&(bx, by)) {
-                    let corrected_y: f32 = screen_y + bridge_z as f32 * HEIGHT_STEP;
+                    let corrected_y: f32 =
+                        screen_y + f32::from(bridge_z as i8) * HEIGHT_STEP;
                     let (new_rx, new_ry) = screen_to_iso(screen_x, corrected_y);
                     let dist: f32 = (new_rx - bx as f32).abs() + (new_ry - by as f32).abs();
                     if dist < 0.7 && dist < best_dist {
@@ -565,16 +567,17 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
     let mut clipped: u32 = 0;
 
     for cell in &map.cells {
-        // Skip true "no tile" entries: -1 (0xFFFFFFFF).
-        // Some maps use 0x0000FFFF as "clear ground" (legacy 16-bit sentinel).
-        // Treat that as tile 0 so we don't render black holes in otherwise valid cells.
-        if cell.tile_index < 0 {
-            continue;
-        }
-        let tile_id: u16 = if cell.tile_index == 0xFFFF {
+        // This legacy direct path has no theater context, so retain its tile-0
+        // fallback while still presenting no-tile cells instead of dropping them.
+        let tile_id: u16 = if cell.tile_index == 0xFFFF || cell.tile_index < 0 {
             0
         } else {
             cell.tile_index as u16
+        };
+        let sub_tile = if cell.tile_index == 0xFFFF || cell.tile_index < 0 {
+            0
+        } else {
+            cell.sub_tile
         };
 
         let (sx, sy): (f32, f32) = iso_to_screen(cell.rx, cell.ry, cell.z);
@@ -592,7 +595,7 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
             screen_x: sx,
             screen_y: sy,
             tile_id,
-            sub_tile: cell.sub_tile,
+            sub_tile,
             z: cell.z,
             rx: cell.rx,
             ry: cell.ry,
@@ -654,14 +657,7 @@ pub fn build_terrain_grid_from_resolved(
     let mut clipped: u32 = 0;
 
     for cell in resolved.iter() {
-        if cell.final_tile_index < 0 {
-            continue;
-        }
-        let tile_id = if cell.final_tile_index == 0xFFFF {
-            0
-        } else {
-            cell.final_tile_index as u16
-        };
+        let (tile_id, sub_tile) = resolved.presentation_tile(cell);
         let (sx, sy) = iso_to_screen(cell.rx, cell.ry, cell.level);
         if let Some(ref bounds) = local_bounds {
             if !bounds.contains(sx, sy) {
@@ -673,11 +669,11 @@ pub fn build_terrain_grid_from_resolved(
             screen_x: sx,
             screen_y: sy,
             tile_id,
-            sub_tile: cell.final_sub_tile,
+            sub_tile,
             z: cell.level,
             rx: cell.rx,
             ry: cell.ry,
-            is_water: cell.is_water,
+            is_water: cell.final_tile_index >= 0 && cell.is_water,
             is_cliff_redraw: cell.is_cliff_redraw,
             variant: cell.variant,
             tint: [1.0, 1.0, 1.0],
@@ -790,9 +786,10 @@ pub fn build_visible_instances(
         // Depth: reconstruct elevation-free iso row, then normalize.
         // Lower screen_y → larger depth (drawn behind). Elevation bias ensures
         // elevated tiles draw in front of same-row ground tiles.
-        let iso_row: f32 = cell.screen_y + cell.z as f32 * HEIGHT_STEP;
+        let signed_z = f32::from(cell.z as i8);
+        let iso_row: f32 = cell.screen_y + signed_z * HEIGHT_STEP;
         let normalized: f32 = ((iso_row - grid.origin_y) / grid.world_height).clamp(0.0, 1.0);
-        let z_bias: f32 = cell.z as f32 * 0.0001;
+        let z_bias: f32 = signed_z * 0.0001;
         let depth: f32 = (1.0 - normalized - z_bias).clamp(0.001, 0.999);
 
         // Bridge cells with baked damaged-variant TMP data ignore the FA2
@@ -870,6 +867,8 @@ pub fn build_visible_instances(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
 
     #[test]
     fn test_iso_to_screen_origin() {
@@ -901,6 +900,13 @@ mod tests {
         let (sx, sy): (f32, f32) = iso_to_screen(0, 0, 2);
         assert!((sx - (-30.0)).abs() < f32::EPSILON);
         assert!((sy - (-15.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn gsi_04_03b_iso_to_screen_sign_extends_raw_level() {
+        let (sx, sy) = iso_to_screen(0, 0, 0xff);
+        assert_eq!(sx, -30.0);
+        assert_eq!(sy, 30.0, "raw level 0xFF is signed -1");
     }
 
     #[test]
@@ -1021,6 +1027,8 @@ mod tests {
         // Dustbowl: Size=70x76, LocalSize=2,8,65,62
         let header = MapHeader {
             theater: "TEMPERATE".to_string(),
+            fill: "Clear".to_string(),
+            level: 0,
             width: 70,
             height: 76,
             local_left: 2,
@@ -1052,6 +1060,184 @@ mod tests {
         assert!(!bounds.contains(-1950.0, 1214.0)); // just above
         assert!(!bounds.contains(1950.0, 1215.0)); // at right edge (exclusive)
         assert!(!bounds.contains(-1950.0, 3225.0)); // at bottom edge (exclusive)
+    }
+
+    #[test]
+    #[ignore = "requires RA2_DIR with retail RA2/YR assets"]
+    fn gsi_02_11_xmp29u2_clear_fallback_loads_and_selects_all_retail_variants() {
+        let ra2_dir = PathBuf::from(
+            std::env::var("RA2_DIR").expect("set RA2_DIR to the retail RA2/YR directory"),
+        );
+        let mut assets =
+            crate::assets::asset_manager::AssetManager::new(&ra2_dir).expect("retail assets");
+        let map_bytes = assets.get("XMP29U2.MAP").expect("XMP29U2.MAP asset");
+        let map = crate::map::map_file::MapFile::from_bytes(&map_bytes).expect("retail map");
+        let theater = crate::map::theater::load_theater(&mut assets, &map.header.theater)
+            .expect("urban theater");
+        let clear_tile_id = theater.rmg_tiles.clear_tile.expect("Urban ClearTile");
+        assert_eq!(clear_tile_id, 0);
+        assert_eq!(theater.lookup.variant_count(clear_tile_id), 7);
+        assert_eq!(theater.lookup.total_file_count(clear_tile_id), 8);
+        let suffixes: Vec<_> = theater
+            .lookup
+            .variant_filenames(clear_tile_id)
+            .iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        assert_eq!(
+            suffixes,
+            (b'a'..=b'g')
+                .map(|suffix| format!("clear01{}.urb", char::from(suffix)))
+                .collect::<Vec<_>>()
+        );
+        let bounds = LocalBounds::from_header(&map.header);
+        let mut selector_cache =
+            crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut main_rng = crate::sim::rng::SimRng::new(0);
+        let mut raw_draw = || main_rng.next_u32();
+        let mut scenario_fill_ranged = |_low, _high| 0;
+        let resolved = {
+            let mut selector = selector_cache.begin_load(&mut raw_draw);
+            let resolved =
+                crate::map::resolved_terrain::ResolvedTerrainGrid::build_with_variant_selector(
+                    &map,
+                    Some(&theater),
+                    Some(&assets),
+                    None,
+                    None,
+                    None,
+                    true,
+                    0,
+                    &mut scenario_fill_ranged,
+                    &mut selector,
+                );
+            assert!(selector.generated_table());
+            resolved
+        };
+        let grid = build_terrain_grid_from_resolved(&resolved, Some(bounds), None);
+
+        const XMP29U2_NO_TILE: i32 = 0xFFFF;
+        let in_bounds_sentinels: Vec<_> = map
+            .cells
+            .iter()
+            .filter(|cell| cell.tile_index == XMP29U2_NO_TILE)
+            .filter(|cell| {
+                let (sx, sy) = iso_to_screen(cell.rx, cell.ry, cell.z);
+                bounds.contains(sx, sy)
+            })
+            .collect();
+        assert_eq!(
+            map.cells
+                .iter()
+                .filter(|cell| cell.tile_index == XMP29U2_NO_TILE)
+                .count(),
+            164
+        );
+        assert_eq!(in_bounds_sentinels.len(), 125);
+        assert_eq!(grid.cells.len(), 6_160);
+
+        let needed = HashSet::from([crate::map::theater::TileKey {
+            tile_id: clear_tile_id,
+            sub_tile: 0,
+            variant: 0,
+        }]);
+        let clear_images = crate::map::theater::load_tile_images(
+            &assets,
+            &theater.lookup,
+            &theater.iso_palette,
+            &needed,
+        );
+        assert!(
+            clear_images.contains_key(&crate::map::theater::TileKey {
+                tile_id: clear_tile_id,
+                sub_tile: 0,
+                variant: 0,
+            }),
+            "ClearTile must be available to the tactical atlas"
+        );
+        for variant in 0..=7 {
+            assert!(
+                clear_images.contains_key(&crate::map::theater::TileKey {
+                    tile_id: clear_tile_id,
+                    sub_tile: 0,
+                    variant,
+                }),
+                "Clear01 variant index {variant} must reach the tactical atlas"
+            );
+        }
+
+        let owner_metadata = |variant: u8| {
+            let filename = theater
+                .lookup
+                .filename_for_variant(clear_tile_id, variant)
+                .expect("contiguous Clear01 owner filename");
+            let bytes = assets.get_ref(filename).expect("selected Clear01 TMP");
+            let tmp = crate::assets::tmp_file::TmpFile::from_bytes(bytes)
+                .expect("selected Clear01 TMP parses");
+            let source_sub = crate::map::theater::wrapped_subtile_index(
+                0,
+                tmp.template_width,
+                tmp.template_height,
+            )
+            .expect("Clear01 sub-tile wraps");
+            let tile = tmp.tiles[source_sub]
+                .as_ref()
+                .expect("selected Clear01 owner has sub-tile zero");
+            (
+                tile.radar_left,
+                tile.radar_right,
+                tile.ramp_type,
+                tile.height,
+                tile.offset_x,
+                tile.offset_y,
+                tile.has_damaged_data,
+            )
+        };
+        let pristine_cellclass = owner_metadata(0);
+        let expected_by_variant: HashMap<_, _> = (0u8..=7)
+            .map(|variant| {
+                let owner = owner_metadata(variant);
+                (variant, (owner.0, owner.1, owner.4, owner.5))
+            })
+            .collect();
+
+        let presented: HashMap<_, _> = grid
+            .cells
+            .iter()
+            .map(|cell| ((cell.rx, cell.ry), cell))
+            .collect();
+        let mut high_suffix_sentinels = 0usize;
+        for source in in_bounds_sentinels {
+            let resolved_cell = resolved
+                .cell(source.rx, source.ry)
+                .expect("sentinel remains in resolved terrain");
+            assert_eq!(source.tile_index, XMP29U2_NO_TILE);
+            assert_eq!(resolved_cell.final_tile_index, source.tile_index);
+
+            let rendered = presented
+                .get(&(source.rx, source.ry))
+                .expect("sentinel reaches presentation grid");
+            assert_eq!(rendered.tile_id, clear_tile_id);
+            assert_eq!(rendered.sub_tile, 0);
+            assert_eq!(rendered.z, source.z);
+            let expected = expected_by_variant
+                .get(&resolved_cell.variant)
+                .expect("selected Clear01 owner metadata");
+            assert_eq!(resolved_cell.radar_left, expected.0);
+            assert_eq!(resolved_cell.radar_right, expected.1);
+            assert_eq!(resolved_cell.slope_type, pristine_cellclass.2);
+            assert_eq!(resolved_cell.template_height, pristine_cellclass.3);
+            assert_eq!(resolved_cell.render_offset_x, expected.2);
+            assert_eq!(resolved_cell.render_offset_y, expected.3);
+            assert_eq!(resolved_cell.has_damaged_data, pristine_cellclass.6);
+            assert_eq!(rendered.radar_left, expected.0);
+            assert_eq!(rendered.radar_right, expected.1);
+            high_suffix_sentinels += usize::from(rendered.variant > 4);
+        }
+        assert!(
+            high_suffix_sentinels > 0,
+            "at least one of the 125 visible ClearTile fallbacks must select e/f/g"
+        );
     }
 
     #[test]

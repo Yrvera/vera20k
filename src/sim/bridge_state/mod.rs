@@ -11,7 +11,7 @@
 
 pub mod walker;
 
-use crate::map::resolved_terrain::{BridgeDirection, ResolvedTerrainGrid};
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// 8-neighbor direction offsets used by `apply_damaged_variant_flood_fill`.
@@ -36,6 +36,15 @@ const EIGHT_NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
 /// as non-walkable by `effective_render_state` / `is_bridge_walkable`. Also
 /// written by the orchestrator's `update_adjacent_bridges` stub-reset path.
 const OVERLAY_BYTE_NONE: u8 = 0xFF;
+
+/// High-bridge theater slots used by the map-load bridge-record walk.
+/// A negative entry is a deliberately unused slot.
+const HIGH_BRIDGE_START_SUBTILE: [i32; 16] =
+    [7, 7, -1, 7, 7, -1, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
+const HIGH_BRIDGE_WALK_DIRECTION: [i32; 16] =
+    [2, 2, -1, 4, 4, -1, 2, 2, 2, 2, 2, 4, 4, 4, 4, 4];
+const HIGH_BRIDGE_END_SUBTILE: [i32; 16] =
+    [-1, -1, 4, -1, -1, 2, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
 
 /// Bridge body axis. Body cells are stacked along this axis; ramps face
 /// perpendicular.
@@ -518,14 +527,15 @@ impl Default for BridgeRecordKind {
     }
 }
 
-/// A bridge's ground-level endpoint pair for zone connectivity.
-/// Each record connects two ground cells on opposite sides of a bridge.
+/// A bridge's map-load endpoint pair for zone connectivity.
+/// High records retain the matching theater tiles found by the map-load walk;
+/// low records retain their tube-span endpoints.
 /// Mirrors gamemd.exe BridgeRecord at MapClass+0x54 (16 bytes each).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeEndpointRecord {
-    /// Ground cell on one side of the bridge.
+    /// First endpoint discovered by the record builder.
     pub endpoint_a: (u16, u16),
-    /// Ground cell on the other side of the bridge.
+    /// Matching far endpoint discovered by the record builder.
     pub endpoint_b: (u16, u16),
     /// Which bridge group this record belongs to.
     pub group_id: u16,
@@ -765,8 +775,7 @@ impl BridgeRuntimeState {
             });
         }
 
-        let endpoint_records =
-            compute_bridge_endpoints(&group_cells, terrain, width, height, &cells);
+        let endpoint_records = compute_bridge_endpoints(terrain, width, height, &cells);
 
         Self {
             width,
@@ -1675,7 +1684,11 @@ impl BridgeRuntimeState {
             // Recompute in BOTH directions: active iff no cell of the group is
             // severed. Repair restores the overlay byte (-> `Some`), removing
             // the group from `severed_groups` and flipping the record active.
-            record.active = !severed_groups.contains(&record.group_id);
+            // A map-load record spanning no structural runtime group uses the
+            // Rust-only zero sentinel and retains its load-time inactive state.
+            if record.group_id != 0 {
+                record.active = !severed_groups.contains(&record.group_id);
+            }
         }
     }
 
@@ -1718,71 +1731,13 @@ pub fn cells_in_5x5_scan(center: (u16, u16)) -> impl Iterator<Item = (u16, u16)>
     })
 }
 
-/// For each bridge group, find the two ground cells on opposite sides.
-///
-/// Algorithm: collect all ground cells cardinally adjacent to any bridge cell
-/// in the group, then pick the pair with maximum Manhattan distance.
 fn compute_bridge_endpoints(
-    group_cells: &BTreeMap<u16, Vec<(u16, u16)>>,
     terrain: &ResolvedTerrainGrid,
     width: u16,
     height: u16,
     runtime_cells: &[Option<BridgeRuntimeCell>],
 ) -> Vec<BridgeEndpointRecord> {
-    let mut records = Vec::new();
-
-    for (&group_id, members) in group_cells {
-        if bridge_record_kind_for_group(members, terrain) == BridgeRecordKind::Low {
-            continue;
-        }
-        // Collect ground cells adjacent to this bridge group.
-        let mut ground_neighbors: Vec<(u16, u16)> = Vec::new();
-        for &(bx, by) in members {
-            for (nx, ny) in cardinal_neighbors(bx, by, width, height) {
-                if members.contains(&(nx, ny)) {
-                    continue;
-                }
-                if let Some(cell) = terrain.cell(nx, ny) {
-                    if !cell.ground_walk_blocked
-                        && !cell.is_water
-                        && !ground_neighbors.contains(&(nx, ny))
-                    {
-                        ground_neighbors.push((nx, ny));
-                    }
-                }
-            }
-        }
-
-        if ground_neighbors.len() < 2 {
-            continue;
-        }
-
-        // Pick the pair with maximum Manhattan distance.
-        let mut best_a = ground_neighbors[0];
-        let mut best_b = ground_neighbors[1];
-        let mut best_dist: u32 = 0;
-        for i in 0..ground_neighbors.len() {
-            for j in (i + 1)..ground_neighbors.len() {
-                let (ax, ay) = ground_neighbors[i];
-                let (bx, by) = ground_neighbors[j];
-                let dist =
-                    (ax as i32 - bx as i32).unsigned_abs() + (ay as i32 - by as i32).unsigned_abs();
-                if dist > best_dist {
-                    best_dist = dist;
-                    best_a = ground_neighbors[i];
-                    best_b = ground_neighbors[j];
-                }
-            }
-        }
-
-        records.push(BridgeEndpointRecord {
-            endpoint_a: best_a,
-            endpoint_b: best_b,
-            group_id,
-            active: true,
-            bridge_kind: BridgeRecordKind::High,
-        });
-    }
+    let mut records = compute_high_bridge_endpoints(terrain, width, height, runtime_cells);
 
     records.extend(compute_low_bridge_tube_endpoints(
         terrain,
@@ -1792,6 +1747,103 @@ fn compute_bridge_endpoints(
     ));
 
     records
+}
+
+fn compute_high_bridge_endpoints(
+    terrain: &ResolvedTerrainGrid,
+    width: u16,
+    height: u16,
+    runtime_cells: &[Option<BridgeRuntimeCell>],
+) -> Vec<BridgeEndpointRecord> {
+    // CellClass slots are traversed diagonally, not in the rectangular backing
+    // vector's row-major order.
+    let mut starts: Vec<_> = terrain.iter().collect();
+    starts.sort_by_key(|cell| (u32::from(cell.rx) + u32::from(cell.ry), cell.rx));
+
+    let mut records = Vec::new();
+    for start in starts {
+        let Some(offset) = terrain.high_bridge_tile_offset(start) else {
+            continue;
+        };
+        if HIGH_BRIDGE_START_SUBTILE[offset] != i32::from(start.final_sub_tile) {
+            continue;
+        }
+        let Ok(direction) = u8::try_from(HIGH_BRIDGE_WALK_DIRECTION[offset]) else {
+            continue;
+        };
+
+        let endpoint_a = (start.rx, start.ry);
+        let mut cursor = endpoint_a;
+        let mut far_match_seen = false;
+        let mut intact = true;
+        let mut group_id = bridge_runtime_group_at(
+            runtime_cells,
+            width,
+            height,
+            endpoint_a.0,
+            endpoint_a.1,
+        );
+
+        loop {
+            let previous = cursor;
+            let Some(next) = terrain.step_coord_by_direction(cursor, direction) else {
+                break;
+            };
+            let Some(next_cell) = terrain.cell(next.0, next.1) else {
+                break;
+            };
+            cursor = next;
+
+            // A far match is committed only after the walker successfully
+            // enters the following allocated cell. Endpoint B is the prior one.
+            if far_match_seen {
+                records.push(BridgeEndpointRecord {
+                    endpoint_a,
+                    endpoint_b: previous,
+                    // The Rust-only group link exists to refresh records that
+                    // loaded intact. A record already proven broken by a plain
+                    // gap must retain the zero sentinel so a later refresh of
+                    // an unrelated surviving segment cannot revive it.
+                    group_id: if intact { group_id.unwrap_or(0) } else { 0 },
+                    active: intact,
+                    bridge_kind: BridgeRecordKind::High,
+                });
+                break;
+            }
+
+            group_id = group_id.or_else(|| {
+                bridge_runtime_group_at(
+                    runtime_cells,
+                    width,
+                    height,
+                    cursor.0,
+                    cursor.1,
+                )
+            });
+
+            if let Some(next_offset) = terrain.high_bridge_tile_offset(next_cell) {
+                far_match_seen = HIGH_BRIDGE_END_SUBTILE[next_offset]
+                    == i32::from(next_cell.final_sub_tile);
+            } else if !next_cell.bridge_facts.has_structural_bridge() {
+                intact = false;
+            }
+        }
+    }
+
+    records
+}
+
+fn bridge_runtime_group_at(
+    runtime_cells: &[Option<BridgeRuntimeCell>],
+    width: u16,
+    height: u16,
+    rx: u16,
+    ry: u16,
+) -> Option<u16> {
+    index_of(width, height, rx, ry)
+        .and_then(|index| runtime_cells.get(index))
+        .and_then(|cell| cell.as_ref())
+        .and_then(|cell| cell.bridge_group_id)
 }
 
 fn compute_low_bridge_tube_endpoints(
@@ -1930,25 +1982,6 @@ fn neighbor_is_low_bridge_tube(
 
 fn ordered_endpoint_key(a: (u16, u16), b: (u16, u16)) -> ((u16, u16), (u16, u16)) {
     if a <= b { (a, b) } else { (b, a) }
-}
-
-fn bridge_record_kind_for_group(
-    members: &[(u16, u16)],
-    terrain: &ResolvedTerrainGrid,
-) -> BridgeRecordKind {
-    let has_explicit_low_layer = members.iter().any(|&(rx, ry)| {
-        terrain.cell(rx, ry).is_some_and(|cell| {
-            cell.bridge_layer
-                .as_ref()
-                .is_some_and(|layer| layer.direction == BridgeDirection::Low)
-        })
-    });
-
-    if has_explicit_low_layer {
-        BridgeRecordKind::Low
-    } else {
-        BridgeRecordKind::High
-    }
 }
 
 fn cardinal_neighbors(

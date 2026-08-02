@@ -107,7 +107,7 @@ pub enum AircraftMission {
     /// Kept under the older Rust name for save compatibility; this is not
     /// binary Mission_ParaDropOverfly for stock SW launches.
     /// Dispenses payload at the Mission_Rescue cadence: one Drop_Payload call
-    /// per Rescue execution, then 5 game frames = 15 sim ticks before the next.
+    /// per Rescue execution, then 5 native gameplay frames before the next.
     /// Transitions to silent despawn at the opposite edge once cargo is empty.
     ParaDropOverfly {
         /// Opposite-edge cell to fly to once cargo is empty.
@@ -751,7 +751,7 @@ pub fn tick_aircraft_missions(
         .map(|m| (m.id, m.paradrop_payload_count_pre))
         .collect();
     for (aircraft_id, payload_pre) in drop_attempts {
-        let drop_interval = drop_payload::PARADROP_DROP_INTERVAL_TICKS;
+        let drop_interval = drop_payload::PARADROP_DROP_INTERVAL_FRAMES;
 
         let result = drop_payload::try_drop(sim, rules, aircraft_id, payload_pre, path_grid);
 

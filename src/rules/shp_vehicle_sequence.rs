@@ -16,13 +16,6 @@
 use crate::rules::art_data::ArtEntry;
 use crate::sim::animation::{LoopMode, SequenceDef, SequenceKind, SequenceSet};
 
-/// Default milliseconds per walk frame for SHP vehicles.
-const DEFAULT_VEHICLE_WALK_TICK_MS: u32 = 100;
-/// Default milliseconds per firing frame for SHP vehicles.
-const DEFAULT_VEHICLE_FIRE_TICK_MS: u32 = 80;
-/// Default milliseconds per standing frame for SHP vehicles.
-const DEFAULT_VEHICLE_STAND_TICK_MS: u32 = 200;
-
 /// Build a `SequenceSet` for an SHP vehicle from art.ini frame tags.
 ///
 /// Frame layout is contiguous: Stand frames first, then Walk, then Fire.
@@ -47,7 +40,8 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
             frame_count: standing_frames,
             facings,
             facing_multiplier: standing_frames,
-            tick_ms: DEFAULT_VEHICLE_STAND_TICK_MS,
+            frame_delay: art.idle_rate.max(1),
+            normalized: false,
             loop_mode: LoopMode::Loop,
             clockwise_facings: true,
         },
@@ -63,7 +57,8 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
                 frame_count: walk_frames,
                 facings,
                 facing_multiplier: walk_frames,
-                tick_ms: DEFAULT_VEHICLE_WALK_TICK_MS,
+                frame_delay: art.walk_rate.max(1),
+                normalized: false,
                 loop_mode: LoopMode::Loop,
                 clockwise_facings: true,
             },
@@ -79,7 +74,8 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
                     frame_count: firing_frames,
                     facings,
                     facing_multiplier: firing_frames,
-                    tick_ms: DEFAULT_VEHICLE_FIRE_TICK_MS,
+                    frame_delay: art.walk_rate.max(1),
+                    normalized: false,
                     loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
                     clockwise_facings: true,
                 },
@@ -127,6 +123,8 @@ mod tests {
             firing_frames: firing,
             standing_frames: None,
             shp_facings: 8,
+            walk_rate: 3,
+            idle_rate: 1,
             fire_up: 0,
             fire_prone: 0,
             secondary_fire: 0,
@@ -157,17 +155,20 @@ mod tests {
         assert_eq!(stand.start_frame, 0);
         assert_eq!(stand.frame_count, 1);
         assert_eq!(stand.facings, 8);
+        assert_eq!(stand.frame_delay, 1);
 
         let walk = set.get(&SequenceKind::Walk).expect("Walk");
         // Stand: 1 * 8 = 8 frames → Walk starts at 8
         assert_eq!(walk.start_frame, 8);
         assert_eq!(walk.frame_count, 6);
         assert_eq!(walk.facing_multiplier, 6);
+        assert_eq!(walk.frame_delay, 3);
 
         let attack = set.get(&SequenceKind::Attack).expect("Attack");
         // Walk: 6 * 8 = 48 frames → Attack starts at 8 + 48 = 56
         assert_eq!(attack.start_frame, 56);
         assert_eq!(attack.frame_count, 6);
+        assert_eq!(attack.frame_delay, 3);
     }
 
     #[test]

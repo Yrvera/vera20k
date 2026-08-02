@@ -8,8 +8,6 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-use std::time::Instant;
-
 use crate::app::AppState;
 use crate::app_init_helpers::build_entity_atlases;
 use crate::app_render;
@@ -138,8 +136,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     state.camera_y = sy - sh / (2.0 * zm);
 
     // Reset timing for clean InGame start.
-    state.last_update_time = Instant::now();
-    state.sim_accumulator_ms = 0;
+    state.frame_pacer.reset_for_immediate_frame();
 
     state.screen = GameScreen::InGame;
     log::info!("SpawnPick complete — transitioned to InGame");
@@ -155,6 +152,8 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
     MapFile {
         header: MapHeader {
             theater: state.theater_name.clone(),
+            fill: "Clear".to_string(),
+            level: 0,
             width: 0,
             height: 0,
             local_left: 0,

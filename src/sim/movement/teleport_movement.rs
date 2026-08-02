@@ -1,10 +1,10 @@
 //! Teleport (chrono) locomotor — instant relocation with chrono delay.
 //!
 //! Implements the Teleport state machine for chrono-style movement:
-//! Relocate (instant, one tick) → ChronoDelay (being_warped countdown) → Idle.
+//! Relocate (instant, one frame) → ChronoDelay (being_warped countdown) → Idle.
 //!
-//! Self-teleport relocates the unit in a single tick (Phase 0), then the unit
-//! sits at the destination 50% translucent for `chrono_delay` ticks until fully
+//! Self-teleport relocates the unit in a single frame (Phase 0), then the unit
+//! sits at the destination 50% translucent for `chrono_delay` frames until fully
 //! materialized.
 //!
 //! Units with `Locomotor=Teleport` always use this. Units with `Teleporter=yes`
@@ -26,7 +26,6 @@ use crate::sim::components::{AnimClassSpawnDescriptor, WorldEffect};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::InternedId;
-use crate::sim::movement::locomotor::OverrideKind;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::util::fixed_math::isqrt_i64;
 use crate::util::lepton::CELL_CENTER_LEPTON;
@@ -43,7 +42,7 @@ pub struct TeleportVisuals<'a> {
     pub world_effects: &'a mut Vec<WorldEffect>,
     pub effect_frame_counts: &'a BTreeMap<InternedId, u16>,
     pub warp_out_type: InternedId,
-    pub warp_out_rate_ms: u32,
+    pub warp_out_frame_delay: u16,
 }
 
 impl TeleportVisuals<'_> {
@@ -70,7 +69,7 @@ impl TeleportVisuals<'_> {
         self.world_effects.push(WorldEffect::from_anim_spawn(
             anim_spawn,
             total_frames,
-            self.warp_out_rate_ms,
+            self.warp_out_frame_delay,
             true,
             None,
         ));
@@ -79,15 +78,15 @@ impl TeleportVisuals<'_> {
 
 /// Phase within the teleport state machine.
 ///
-/// Phase 0 relocates instantly in one tick, then the chrono delay timer
+/// Phase 0 relocates instantly in one frame, then the chrono delay timer
 /// counts down while the unit is semi-transparent at the destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TeleportPhase {
     /// Instant relocation: position updated, occupancy swapped. Executes in
-    /// one tick, then transitions to ChronoDelay.
+    /// one frame, then transitions to ChronoDelay.
     Relocate,
     /// Post-warp chrono delay: unit sits at destination 50% translucent,
-    /// `being_warped_ticks` counts down each tick. When it reaches 0 the
+    /// `being_warped_ticks` counts down each frame. When it reaches 0 the
     /// teleport is complete and the base locomotor is restored.
     ChronoDelay,
 }
@@ -104,14 +103,14 @@ pub struct TeleportState {
     /// Destination cell coordinates.
     pub target_rx: u16,
     pub target_ry: u16,
-    /// Chrono delay countdown in game ticks. While > 0 the unit is "being warped"
+    /// Chrono delay countdown in native gameplay frames. While > 0 the unit is "being warped"
     /// and the renderer draws it at 50% alpha. Set from the distance-based formula
     /// in the original engine: `delay = distance_leptons / ChronoDistanceFactor`,
     /// clamped to `ChronoMinimumDelay`.
     pub being_warped_ticks: u32,
 }
 
-/// Compute the chrono warp delay in game ticks from distance.
+/// Compute the chrono warp delay in native gameplay frames from distance.
 ///
 /// When `ChronoTrigger=yes`, delay scales linearly with distance in leptons,
 /// divided by `ChronoDistanceFactor` (default 48), clamped to at least
@@ -145,7 +144,7 @@ pub fn compute_chrono_delay(rules: &GeneralRules, distance_leptons: i32) -> u32 
 ///
 /// `is_harvester` skips the chrono lock entirely for harvester units (e.g.,
 /// the Chrono Miner): `being_warped_ticks` is forced to 0 and the Relocate
-/// phase finishes the teleport in a single tick. Non-harvester teleporters
+/// phase finishes the teleport in a single frame. Non-harvester teleporters
 /// (Chrono Legionnaire and friends) run the full distance-based delay.
 ///
 /// Returns `true` if the teleport was initiated, `false` if the entity
@@ -169,7 +168,10 @@ pub fn issue_teleport_command(
         // primary active locomotor in gamemd.
         if let Some(ref mut loco) = entity.locomotor {
             if loco.kind != LocomotorKind::Teleport {
-                loco.begin_override(OverrideKind::Teleport);
+                loco.begin_piggyback(
+                    crate::rules::locomotor_type::LocomotorKind::Teleport,
+                    crate::sim::movement::locomotor::MovementLayer::Ground,
+                );
             }
         }
     }
@@ -252,21 +254,16 @@ fn start_teleport_state(
 
 /// Advance all in-progress teleport state machines.
 ///
-/// Called once per simulation tick from `advance_tick()`.
-/// Relocate executes instantly (one tick), then ChronoDelay counts down
-/// `being_warped_ticks` each subsequent tick until the teleport completes.
+/// Called once per admitted simulation frame from `advance_tick()`.
+/// Relocate executes instantly (one frame), then ChronoDelay counts down
+/// `being_warped_ticks` each subsequent frame until the teleport completes.
 pub fn tick_teleport_movement(
     entities: &mut EntityStore,
     occupancy: &mut OccupancyGrid,
     live_order: &[u64],
-    tick_ms: u32,
     sim_tick: u64,
     mut visuals: Option<&mut TeleportVisuals<'_>>,
 ) {
-    if tick_ms == 0 {
-        return;
-    }
-
     // Collect entity IDs that need cleanup after ticking.
     let mut finished: Vec<u64> = Vec::new();
 
@@ -291,7 +288,7 @@ pub fn tick_teleport_movement(
 
         match teleport.phase {
             TeleportPhase::Relocate => {
-                // Instant relocation in one tick — matches original Phase 0.
+                // Instant relocation in one frame.
                 let old_rx = entity.position.rx;
                 let old_ry = entity.position.ry;
                 let old_z = entity.position.z;
@@ -302,7 +299,6 @@ pub fn tick_teleport_movement(
                 entity.position.ry = teleport.target_ry;
                 entity.position.sub_x = CELL_CENTER_LEPTON;
                 entity.position.sub_y = CELL_CENTER_LEPTON;
-                entity.position.refresh_screen_coords();
                 if let Some(visuals) = visuals.as_deref_mut() {
                     visuals.spawn_warp_out(
                         entity.position.rx,
@@ -325,7 +321,7 @@ pub fn tick_teleport_movement(
                     CellListInsertion::from_category(entity.category),
                 );
                 // Harvester instant-warp: when chrono delay is 0, finish in one
-                // tick (cleanup runs at end of this tick) — no post-warp lock.
+                // frame (cleanup runs at end of this frame) — no post-warp lock.
                 if teleport.being_warped_ticks == 0 {
                     finished.push(id);
                 } else {
@@ -333,7 +329,7 @@ pub fn tick_teleport_movement(
                 }
             }
             TeleportPhase::ChronoDelay => {
-                // Count down chrono delay ticks. Unit remains 50% translucent until 0.
+                // Count down chrono delay frames. Unit remains 50% translucent until 0.
                 if teleport.being_warped_ticks > 0 {
                     teleport.being_warped_ticks -= 1;
                 }
@@ -362,7 +358,7 @@ pub fn tick_teleport_movement(
             entity.teleport_state = None;
             if let Some(ref mut loco) = entity.locomotor {
                 if loco.is_overridden() {
-                    loco.end_override();
+                    loco.end_piggyback();
                 }
             }
             entity.push_debug_event(sim_tick as u32, DebugEventKind::SpecialMovementEnd);
@@ -435,7 +431,8 @@ mod tests {
             voice_attack: None,
             voice_harvest: None,
             voice_enter: None,
-            die_sound: None,
+            voice_die: Vec::new(),
+            die_sounds: Vec::new(),
             move_sound: None,
             voice_feedback: None,
             voice_special_attack: None,
@@ -637,8 +634,8 @@ mod tests {
             "should have at least minimum delay"
         );
 
-        // One tick relocates instantly (matches original Phase 0).
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
+        // One admitted frame relocates instantly.
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
 
         let entity = entities.get(1).expect("should exist");
         assert_eq!(entity.position.rx, 20, "Should have relocated to target");
@@ -650,10 +647,10 @@ mod tests {
             "should be in chrono delay"
         );
 
-        // Tick through ChronoDelay (being_warped_ticks countdown).
+        // Advance through the ChronoDelay countdown.
         let delay = ts.being_warped_ticks;
         for _ in 0..delay + 5 {
-            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
+            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
         }
 
         // TeleportState should be removed after completion.
@@ -689,13 +686,12 @@ mod tests {
                 world_effects: &mut world_effects,
                 effect_frame_counts: &effect_frame_counts,
                 warp_out_type,
-                warp_out_rate_ms: 42,
+                warp_out_frame_delay: 1,
             };
             tick_teleport_movement(
                 &mut entities,
                 &mut OccupancyGrid::new(),
                 &[],
-                33,
                 0,
                 Some(&mut visuals),
             );
@@ -706,7 +702,7 @@ mod tests {
             assert_eq!(effect.shp_name, warp_out_type);
             assert_eq!((effect.rx, effect.ry, effect.z), (rx, ry, 2));
             assert_eq!(effect.total_frames, 13);
-            assert_eq!(effect.rate_ms, 42);
+            assert_eq!(effect.frame_delay, 1);
             let row = effect.anim_spawn.as_ref().expect("AnimClass row");
             assert_eq!(row.type_name, warp_out_type);
             assert_eq!((row.rx, row.ry, row.z), (rx, ry, 2));
@@ -741,13 +737,12 @@ mod tests {
                 world_effects: &mut world_effects,
                 effect_frame_counts: &effect_frame_counts,
                 warp_out_type,
-                warp_out_rate_ms: 120,
+                warp_out_frame_delay: 2,
             };
             tick_teleport_movement(
                 &mut entities,
                 &mut OccupancyGrid::new(),
                 &[],
-                33,
                 0,
                 Some(&mut visuals),
             );
@@ -755,7 +750,6 @@ mod tests {
                 &mut entities,
                 &mut OccupancyGrid::new(),
                 &[],
-                33,
                 1,
                 Some(&mut visuals),
             );
@@ -785,14 +779,7 @@ mod tests {
         live_entities.insert(teleporter(1, 5, 5, 21));
         live_entities.insert(teleporter(2, 6, 5, 22));
 
-        tick_teleport_movement(
-            &mut live_entities,
-            &mut OccupancyGrid::new(),
-            &[2],
-            33,
-            0,
-            None,
-        );
+        tick_teleport_movement(&mut live_entities, &mut OccupancyGrid::new(), &[2], 0, None);
 
         let first = live_entities.get(1).expect("id 1");
         assert_eq!(
@@ -813,7 +800,6 @@ mod tests {
             &mut fallback_entities,
             &mut OccupancyGrid::new(),
             &[],
-            33,
             0,
             None,
         );
@@ -862,9 +848,9 @@ mod tests {
         assert_eq!(loco.kind, LocomotorKind::Teleport);
         assert!(loco.is_overridden());
 
-        // Complete the whole sequence: 1 tick for Relocate + chrono delay ticks.
+        // Complete the whole sequence: one Relocate frame plus the chrono delay.
         for _ in 0..200 {
-            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
+            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
         }
 
         // Should have restored to Drive.
@@ -908,7 +894,7 @@ mod tests {
         assert!(entity.teleport_state.is_some());
         let loco = entity.locomotor.as_ref().expect("loco");
         assert_eq!(loco.active_kind(), LocomotorKind::Teleport);
-        assert_eq!(loco.primary_kind(), LocomotorKind::Teleport);
+        assert_eq!(loco.effective_kind(), LocomotorKind::Teleport);
         assert!(loco.piggyback.is_none());
         assert!(!loco.is_overridden());
     }
@@ -948,7 +934,7 @@ mod tests {
         assert!(entity.movement_target.is_some());
         let loco = entity.locomotor.as_ref().expect("loco");
         assert_eq!(loco.active_kind(), LocomotorKind::Drive);
-        assert_eq!(loco.primary_kind(), LocomotorKind::Teleport);
+        assert_eq!(loco.effective_kind(), LocomotorKind::Teleport);
         assert!(loco.piggyback.is_some());
 
         entities.get_mut(1).expect("entity").movement_target = None;
@@ -993,7 +979,7 @@ mod tests {
         entities.insert(e);
         let rules = default_rules();
 
-        // Long distance (~80 cells diagonal) — non-harvester would compute ~604 ticks delay.
+        // Long distance (~80 cells diagonal) — non-harvester computes ~604 frames delay.
         assert!(issue_teleport_command(
             &mut entities,
             1,
@@ -1034,15 +1020,15 @@ mod tests {
         let entity = entities.get(1).expect("should exist");
         assert!(entity.locomotor.as_ref().expect("loco").is_overridden());
 
-        // Single tick: position snaps, then cleanup runs because being_warped_ticks==0.
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
+        // Single frame: position snaps, then cleanup runs because being_warped_ticks==0.
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
 
         let entity = entities.get(1).expect("should exist");
         assert_eq!(entity.position.rx, 20);
         assert_eq!(entity.position.ry, 20);
         assert!(
             entity.teleport_state.is_none(),
-            "harvester teleport should clean up in one tick"
+            "harvester teleport should clean up in one frame"
         );
         let loco = entity.locomotor.as_ref().expect("has loco");
         assert_eq!(loco.kind, LocomotorKind::Drive, "base locomotor restored");
@@ -1075,8 +1061,8 @@ mod tests {
             "non-harvester must keep the distance-based chrono lock"
         );
 
-        // Tick 1: Relocate snaps position and transitions to ChronoDelay (NOT cleanup).
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
+        // Frame 1: Relocate snaps position and transitions to ChronoDelay (NOT cleanup).
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
         let ts = entities
             .get(1)
             .and_then(|e| e.teleport_state.as_ref())

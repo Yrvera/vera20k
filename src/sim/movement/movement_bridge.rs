@@ -10,6 +10,8 @@
 //!
 //! See docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use crate::sim::components::{BridgeOccupancy, Position};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::pathfinding::PathGrid;
@@ -69,9 +71,9 @@ pub(super) fn projected_on_bridge(current: bool, update: BridgeStateUpdate) -> b
 }
 
 /// Bridge vertical clearance in leptons.
-/// 360 == 90 * 4 — the Z distance from water surface to bridge deck.
+/// 416 == 104 * 4 — the verified Foot-role Z distance from water surface to bridge deck.
 /// Added to braking distance when a ship passes under a bridge cell.
-pub(super) const BRIDGE_Z_OFFSET: SimFixed = SimFixed::lit("360");
+pub(super) const BRIDGE_Z_OFFSET: SimFixed = SimFixed::lit("416");
 
 /// The on_bridge cell-flag predicate at a cell-boundary crossing.
 ///
@@ -247,6 +249,23 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_03b_water_mover_bridge_clearance_crosses_braking_boundary() {
+        let planar_distance = SimFixed::from_num(100);
+        let slowdown_distance = SimFixed::from_num(500);
+        let distance_under_bridge = planar_distance + BRIDGE_Z_OFFSET;
+
+        assert_eq!(distance_under_bridge, SimFixed::from_num(516));
+        assert!(
+            !(distance_under_bridge < slowdown_distance),
+            "the verified 416-lepton deck offset must keep this mover outside braking range"
+        );
+        assert!(
+            planar_distance + SimFixed::from_num(360) < slowdown_distance,
+            "the stale 360-lepton offset would incorrectly begin braking at this boundary"
+        );
+    }
+
+    #[test]
     fn entry_from_ramp_to_body() {
         // Ramp at height 4 (bridge_walkable, transition=true) → Body at height 0
         // (bridge_walkable, no transition).
@@ -372,8 +391,6 @@ mod tests {
             sub_y: SimFixed::ZERO,
             // screen_x/screen_y are #[serde(skip, default)] but Position has no
             // Default impl, so we must initialize them explicitly in struct literals.
-            screen_x: 0.0,
-            screen_y: 0.0,
         }
     }
 
@@ -514,8 +531,8 @@ mod tests {
     fn make_loco(layer: MovementLayer) -> Option<LocomotorState> {
         Some(LocomotorState {
             kind: LocomotorKind::Drive,
-            mission_ready_state: None,
-            primary_kind: Some(LocomotorKind::Drive),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
+            powered: true,
             piggyback: None,
             layer,
             phase: GroundMovePhase::Idle,
@@ -527,7 +544,6 @@ mod tests {
             target_altitude: SIM_ZERO,
             climb_rate: SIM_ZERO,
             jumpjet_speed: SIM_ZERO,
-            jumpjet_wobbles: 0.0,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: 0,
@@ -538,11 +554,11 @@ mod tests {
             speed_type: SpeedType::Track,
             movement_zone: MovementZone::Normal,
             rot: 0,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_speed_request: crate::util::fixed_math::SIM_ZERO,
             hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         })
     }

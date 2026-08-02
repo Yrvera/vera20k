@@ -13,7 +13,8 @@
 //! - Part of sim/ — depends on map/ (MapCell, TilesetLookup).
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use super::passability;
+use std::collections::BTreeMap;
+
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::SpeedType;
 
@@ -36,15 +37,29 @@ pub struct TerrainCostGrid {
     height: u16,
 }
 
+/// Build every ground/naval terrain-cost row used by the simulation.
+/// Winged movement deliberately has no grid because it ignores terrain.
+pub(crate) fn build_canonical_terrain_cost_grids(
+    terrain: &ResolvedTerrainGrid,
+) -> BTreeMap<SpeedType, TerrainCostGrid> {
+    SpeedType::ALL_WITH_COSTS
+        .iter()
+        .copied()
+        .map(|speed_type| {
+            (
+                speed_type,
+                TerrainCostGrid::from_resolved_terrain(terrain, speed_type),
+            )
+        })
+        .collect()
+}
+
 impl TerrainCostGrid {
     /// Build a terrain cost grid from resolved terrain metadata.
     ///
-    /// Uses INI speed costs as the primary terrain check (from rules.ini land-type
-    /// sections like [Clear], [Tiberium], etc.). Falls back to the passability
-    /// matrix for cells without INI speed data. This ordering is critical because
-    /// the passability matrix marks Tiberium as PASS_BLOCKED for ground zones
-    /// (zone flood-fill semantics), but ore/gem cells are passable per the INI
-    /// speed table ([Tiberium] Track=70%, Foot=90%, etc.).
+    /// Uses the cell's INI-backed speed profile as the terrain substrate. When a
+    /// profile is unavailable, the existing coarse terrain-cost classifier remains
+    /// the weighting fallback; reduced-zone matrix rows are not SpeedType data.
     pub fn from_resolved_terrain(terrain: &ResolvedTerrainGrid, speed_type: SpeedType) -> Self {
         let size: usize = terrain.width() as usize * terrain.height() as usize;
         let mut costs: Vec<u8> = vec![COST_BLOCKED; size];
@@ -70,13 +85,7 @@ impl TerrainCostGrid {
                 // INI speed costs are the primary source — they come from rules.ini
                 // [Clear], [Rough], [Tiberium], etc. sections and encode the actual
                 // speed percentage per SpeedType. 0 = blocked, >0 = passable.
-                // This must be checked BEFORE the passability matrix because the
-                // matrix marks Tiberium as PASS_BLOCKED for ground zones (used for
-                // zone flood-fill), but ore/gem cells ARE passable per the INI table.
                 resolved
-            } else if !passability::is_passable_for_speed_type(cell.land_type, speed_type) {
-                // Fallback: passability matrix for cells without INI speed data.
-                COST_BLOCKED
             } else {
                 classify_terrain_cost(
                     speed_type,
@@ -339,7 +348,10 @@ mod tests {
             canonical_ramp: None,
             ground_walk_blocked: false,
             terrain_object_blocks: false,
+            terrain_object_occupation: None,
             overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
             zone_type: 0,
             base_ground_walk_blocked: false,
             base_build_blocked: false,

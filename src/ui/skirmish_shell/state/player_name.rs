@@ -17,7 +17,7 @@ use super::{
 };
 
 pub const PLAYER_NAME_DEFAULT: &str = "Player";
-pub const PLAYER_NAME_MAX_CHARS: usize = 19;
+pub const PLAYER_NAME_EDIT_LIMIT_BYTES: usize = 19;
 pub const PLAYER_NAME_CARET_MARGIN_PX: i32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,11 +36,13 @@ impl Default for PlayerNameEditState {
 }
 
 impl PlayerNameEditState {
-    /// Build an edit state seeded with a starting name, capped to the field's
-    /// 19-character limit. Used to pre-fill the field from the persistent
-    /// player profile instead of a hardcoded literal.
+    /// Seed the ANSI edit from the persistent player profile. `WM_SETTEXT` is
+    /// programmatic and is not truncated by the edit's later `EM_LIMITTEXT`.
     pub fn with_name(name: &str) -> Self {
-        let text: String = name.chars().take(PLAYER_NAME_MAX_CHARS).collect();
+        let text: String = crate::util::native_string::acp_round_trip(name)
+            .chars()
+            .filter(|ch| !matches!(*ch, '\r' | '\n'))
+            .collect();
         let caret = text.chars().count();
         Self {
             text,
@@ -133,19 +135,32 @@ impl PlayerNameEditState {
     }
 
     pub fn insert_text(&mut self, text: &str) -> bool {
-        let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
+        let filtered: String = crate::util::native_string::acp_round_trip(text)
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .collect();
         if filtered.is_empty() {
             return false;
         }
 
-        self.delete_selection();
-        let capacity = PLAYER_NAME_MAX_CHARS.saturating_sub(self.char_len());
+        let deleted_selection = self.delete_selection();
+        let capacity = PLAYER_NAME_EDIT_LIMIT_BYTES
+            .saturating_sub(crate::util::native_string::acp_encode(&self.text).len());
         if capacity == 0 {
-            return false;
+            return deleted_selection;
         }
-        let inserted: String = filtered.chars().take(capacity).collect();
+        let mut remaining = capacity;
+        let mut inserted = String::new();
+        for character in filtered.chars() {
+            let encoded_len = crate::util::native_string::acp_encode(&character.to_string()).len();
+            if encoded_len > remaining {
+                break;
+            }
+            remaining -= encoded_len;
+            inserted.push(character);
+        }
         if inserted.is_empty() {
-            return false;
+            return deleted_selection;
         }
 
         let byte = self.byte_index(self.caret);

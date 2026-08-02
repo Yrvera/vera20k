@@ -515,15 +515,12 @@ pub(crate) fn toggle_pathgrid_overlay(state: &mut AppState) {
 
 /// Toggle debug pause (J hotkey / dev overlay).
 ///
-/// Beyond flipping `state.paused`, this resets `last_update_time` and
-/// `sim_accumulator_ms` on unpause so the sim does not catch up by
-/// hundreds of ticks after a long pause. Called by both the J hotkey
-/// and the dev overlay button.
+/// On resume, local frame admission is re-anchored so elapsed modal time
+/// cannot cause a catch-up frame.
 pub(crate) fn toggle_debug_pause(state: &mut AppState) {
     state.paused = !state.paused;
     if !state.paused {
-        state.last_update_time = std::time::Instant::now();
-        state.sim_accumulator_ms = 0;
+        state.frame_pacer.reset_for_immediate_frame();
     }
     log::info!("Debug pause: {}", if state.paused { "ON" } else { "OFF" });
 }
@@ -539,6 +536,12 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
         handle_control_group_hotkey(state, group_idx);
         return;
     }
+    if code == KeyCode::KeyS && is_shift_held(state) && !is_ctrl_held(state) && !is_alt_held(state)
+    {
+        state.retail_screenshot_requested = true;
+        state.window.request_redraw();
+        return;
+    }
     if is_ctrl_held(state) && is_shift_held(state) {
         handle_dev_hotkey_pressed(state, code);
         return;
@@ -548,8 +551,7 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             if state.paused {
                 // Unpause — reset timing to prevent sim accumulator spike.
                 state.paused = false;
-                state.last_update_time = std::time::Instant::now();
-                state.sim_accumulator_ms = 0;
+                state.frame_pacer.reset_for_immediate_frame();
                 // Re-hide OS cursor so the software cursor takes over.
                 if state.software_cursor.is_some() {
                     state.window.set_cursor_visible(false);
@@ -728,17 +730,20 @@ fn quicksave(state: &mut AppState) {
         log::warn!("Quicksave: no active simulation");
         return;
     };
-    let rules_h = state
-        .rules
-        .as_ref()
-        .map(crate::app_sim_tick::rules_hash)
-        .unwrap_or(0);
-    let map_name = &state.theater_name;
+    let Some(map_hash) = state.loaded_map_hash else {
+        log::warn!("Quicksave: active world has no authoritative source-map digest");
+        return;
+    };
+    let Some(rules) = state.rules.as_ref() else {
+        log::warn!("Quicksave: active rules are unavailable");
+        return;
+    };
+    let rules_h = crate::app_sim_tick::rules_hash(rules);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let bytes = crate::sim::snapshot::GameSnapshot::save(sim, 0, rules_h, map_name, now);
+    let bytes = crate::sim::snapshot::GameSnapshot::save_validated(sim, map_hash, rules_h, now);
     if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
         log::error!("Quicksave: failed to create saves dir: {e}");
         return;
@@ -773,17 +778,20 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         log::warn!("Save As: no active simulation");
         return;
     };
-    let rules_h = state
-        .rules
-        .as_ref()
-        .map(crate::app_sim_tick::rules_hash)
-        .unwrap_or(0);
-    let map_name = &state.theater_name;
+    let Some(map_hash) = state.loaded_map_hash else {
+        log::warn!("Save As: active world has no authoritative source-map digest");
+        return;
+    };
+    let Some(rules) = state.rules.as_ref() else {
+        log::warn!("Save As: active rules are unavailable");
+        return;
+    };
+    let rules_h = crate::app_sim_tick::rules_hash(rules);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let bytes = crate::sim::snapshot::GameSnapshot::save(sim, 0, rules_h, map_name, now);
+    let bytes = crate::sim::snapshot::GameSnapshot::save_validated(sim, map_hash, rules_h, now);
     if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
         log::error!("Save As: failed to create saves dir: {e}");
         return;
@@ -901,7 +909,26 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
             return;
         }
     };
-    let snapshot = match crate::sim::snapshot::GameSnapshot::load(&bytes) {
+    let Some(current_sim) = &state.simulation else {
+        log::warn!("Load: no active simulation to restore");
+        return;
+    };
+    let Some(map_hash) = state.loaded_map_hash else {
+        log::warn!("Load: active world has no authoritative source-map digest");
+        return;
+    };
+    let Some(rules) = state.rules.as_ref() else {
+        log::warn!("Load: active rules are unavailable");
+        return;
+    };
+    let rules_hash = crate::app_sim_tick::rules_hash(rules);
+    let expected_map_name = current_sim.session.map_name.clone();
+    let snapshot = match crate::sim::snapshot::GameSnapshot::load_validated(
+        &bytes,
+        map_hash,
+        rules_hash,
+        &expected_map_name,
+    ) {
         Ok(s) => s,
         Err(e) => {
             log::error!("Load: {e}");
@@ -909,27 +936,8 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         }
     };
 
-    // Surface a rules mismatch (a different mod, or a map with value overrides,
-    // than the save was made under). Warn rather than reject — the state is
-    // valid to load, but continued play may diverge. 0 = hash not stamped.
-    if let Some(rules) = state.rules.as_ref() {
-        let current = crate::app_sim_tick::rules_hash(rules);
-        if snapshot.rules_hash != 0 && snapshot.rules_hash != current {
-            log::warn!(
-                "Load: rules_hash mismatch (save {:#018x} vs current {:#018x}) — \
-                 save was made with a different rules set; play may diverge",
-                snapshot.rules_hash,
-                current
-            );
-        }
-    }
-
     // Grab cache data from the current sim (these fields are #[serde(skip)]
     // and must be restored after deserialization).
-    let Some(current_sim) = &state.simulation else {
-        log::warn!("Load: no active simulation to restore caches from");
-        return;
-    };
     let terrain_speed_config = current_sim.terrain_speed_config.clone();
     let bridge_explosions = current_sim.bridge_explosions.clone();
     let metallic_debris = current_sim.metallic_debris.clone();
@@ -945,8 +953,16 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         }
     };
 
-    // Replace the simulation with the loaded one.
+    // Resolve every saved stable-ID slot before rebuilding derived runtime
+    // indexes. A malformed object graph never replaces the active simulation.
     let mut sim = snapshot.sim;
+    // Native Main/MapGen RNG objects are process globals, not ScenarioClass
+    // save fields. Loading replaces Scenario state but retains these cursors.
+    sim.retain_process_rngs_from(current_sim);
+    if let Err(error) = sim.restore_after_snapshot_load() {
+        log::error!("Load: restoration validation failed: {error}");
+        return;
+    }
     sim.rebuild_caches_after_load(
         resolved_terrain,
         terrain_speed_config,
@@ -956,6 +972,11 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         effect_frame_counts,
         terrain_costs,
     );
+    sim.resolve_type_handles(rules);
+    if let Err(error) = sim.restore_move_sound_handles_after_load(rules) {
+        log::error!("Load: restoration validation failed: {error}");
+        return;
+    }
     state.simulation = Some(sim);
 
     // Rebuild the app-layer dynamic path grid (building footprints + walls).
@@ -977,8 +998,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     }
 
     // Reset timing to prevent a burst of ticks after the load.
-    state.last_update_time = std::time::Instant::now();
-    state.sim_accumulator_ms = 0;
+    state.frame_pacer.reset_for_immediate_frame();
 
     // Close the save/load panel after loading.
     state.show_save_load_panel = false;

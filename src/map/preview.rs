@@ -250,9 +250,9 @@ mod tests {
     }
 
     #[test]
-    fn preview_pack_text_uses_numeric_key_order() {
+    fn preview_pack_text_preserves_source_order() {
         let ini = IniFile::from_str("[PreviewPack]\n2=BBB\n10=CCC\n1=AAA\n");
-        assert_eq!(preview_pack_text(&ini).as_deref(), Some("AAABBBCCC"));
+        assert_eq!(preview_pack_text(&ini).as_deref(), Some("BBBCCCAAA"));
     }
 
     #[test]

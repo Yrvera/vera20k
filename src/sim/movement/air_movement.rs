@@ -24,6 +24,8 @@
 //! - Part of sim/ — depends on sim/components, sim/locomotor, map/terrain.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::components::MovementTarget;
 use crate::sim::debug_event_log::DebugEventKind;
@@ -31,7 +33,9 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::facing_from_delta;
 use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::{AirMovePhase, LocomotorState, MovementLayer};
-use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, sim_to_f32};
+use crate::util::fixed_math::{
+    SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, native_movement_frame_fraction,
+};
 use crate::util::lepton::CELL_CENTER_LEPTON as CELL_CENTER;
 
 /// Checked SimFixed multiply — logs a warning and saturates on overflow
@@ -56,11 +60,6 @@ fn checked_mul_log(a: SimFixed, b: SimFixed, label: &str, entity_id: u64) -> Sim
         }
     }
 }
-
-/// Visual height offset per lepton of altitude.
-/// Calibrated so that cruise altitude (1500 leptons) produces ~90px vertical
-/// offset. KEPT as f32 — render-only visual scale.
-const ALTITUDE_VISUAL_SCALE: f32 = 0.06;
 
 /// Per-tick speed ramp step for Fly aircraft (0.1 per tick).
 /// Original: _DAT_007e3860 = 0.1 (verified from binary).
@@ -191,14 +190,10 @@ pub struct AirMovementTickStats {
 pub fn tick_air_movement(
     entities: &mut EntityStore,
     live_order: &[u64],
-    tick_ms: u32,
     sim_tick: u64,
 ) -> AirMovementTickStats {
     let mut stats = AirMovementTickStats::default();
-    if tick_ms == 0 {
-        return stats;
-    }
-    let dt: SimFixed = crate::util::fixed_math::dt_from_tick_ms(tick_ms);
+    let dt = native_movement_frame_fraction();
 
     // Collect air entity IDs that need processing.
     let air_entity_ids: Vec<u64> = {
@@ -405,23 +400,6 @@ pub fn tick_air_movement(
                 ramp_fly_speed(loco);
             }
         }
-
-        // Update screen position including altitude visual offset.
-        let alt_f32: f32 = entity
-            .locomotor
-            .as_ref()
-            .map(|l| sim_to_f32(l.altitude))
-            .unwrap_or(0.0);
-        let (sx, sy) = crate::util::lepton::lepton_to_screen(
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.sub_x,
-            entity.position.sub_y,
-            entity.position.z,
-        );
-        entity.position.screen_x = sx;
-        // Altitude lifts the unit visually upward (negative Y in screen space).
-        entity.position.screen_y = sy - alt_f32 * ALTITUDE_VISUAL_SCALE;
     }
 
     // Remove MovementTarget from arrived air units and update air phase.
@@ -505,21 +483,6 @@ pub fn tick_air_movement(
                 );
             }
         }
-        // Update screen position for idle air entities too (altitude may be changing).
-        let alt_f32: f32 = entity
-            .locomotor
-            .as_ref()
-            .map(|l| sim_to_f32(l.altitude))
-            .unwrap_or(0.0);
-        let (sx, sy) = crate::util::lepton::lepton_to_screen(
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.sub_x,
-            entity.position.sub_y,
-            entity.position.z,
-        );
-        entity.position.screen_x = sx;
-        entity.position.screen_y = sy - alt_f32 * ALTITUDE_VISUAL_SCALE;
     }
 
     stats
@@ -692,8 +655,8 @@ mod tests {
         let mut live_entities = build_entities();
         let mut stable_entities = build_entities();
 
-        let live_stats = tick_air_movement(&mut live_entities, &[2], 1000, 0);
-        let stable_stats = tick_air_movement(&mut stable_entities, &[], 1000, 0);
+        let live_stats = tick_air_movement(&mut live_entities, &[2], 0);
+        let stable_stats = tick_air_movement(&mut stable_entities, &[], 0);
 
         assert_eq!(
             live_stats.air_movers, 1,
@@ -741,8 +704,8 @@ mod tests {
     fn make_fly_loco() -> LocomotorState {
         LocomotorState {
             kind: crate::rules::locomotor_type::LocomotorKind::Fly,
-            mission_ready_state: None,
-            primary_kind: Some(crate::rules::locomotor_type::LocomotorKind::Fly),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Fly),
+            powered: true,
             piggyback: None,
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,
@@ -754,7 +717,6 @@ mod tests {
             target_altitude: SimFixed::from_num(1500),
             climb_rate: SimFixed::from_num(300),
             jumpjet_speed: SIM_ZERO,
-            jumpjet_wobbles: 0.0,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: 0,
@@ -765,11 +727,11 @@ mod tests {
             speed_type: crate::rules::locomotor_type::SpeedType::Track,
             movement_zone: crate::rules::locomotor_type::MovementZone::Normal,
             rot: 0,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_speed_request: crate::util::fixed_math::SIM_ZERO,
             hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
     }
@@ -777,8 +739,8 @@ mod tests {
     fn make_jumpjet_loco() -> LocomotorState {
         LocomotorState {
             kind: crate::rules::locomotor_type::LocomotorKind::Jumpjet,
-            mission_ready_state: None,
-            primary_kind: Some(crate::rules::locomotor_type::LocomotorKind::Jumpjet),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Jumpjet),
+            powered: true,
             piggyback: None,
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,
@@ -790,7 +752,6 @@ mod tests {
             target_altitude: SimFixed::from_num(500),
             climb_rate: sim_from_f32(75.0),
             jumpjet_speed: SimFixed::from_num(14),
-            jumpjet_wobbles: 0.15,
             jumpjet_accel: SimFixed::from_num(2),
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: 40,
@@ -801,11 +762,11 @@ mod tests {
             speed_type: crate::rules::locomotor_type::SpeedType::Track,
             movement_zone: crate::rules::locomotor_type::MovementZone::Normal,
             rot: 0,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_speed_request: crate::util::fixed_math::SIM_ZERO,
             hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
     }

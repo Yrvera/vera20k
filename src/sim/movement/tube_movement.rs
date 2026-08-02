@@ -35,11 +35,18 @@ pub enum TubeBeginError {
     ZeroLengthTube,
 }
 
+/// Outcome of testing whether the pending path node is a tube traversal.
+///
+/// There is deliberately no failure variant. Native tube entry is a positive
+/// test — a sentinel path node plus a tube index on the current cell — and
+/// anything that is not that is simply not a tube step, which leaves ordinary
+/// movement to handle the node. A "this looked like a tube step but wasn't
+/// valid" outcome has no native counterpart, and the abort it used to drive
+/// stranded units outright.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TubePathStepResult {
     NotTubeStep,
     Began,
-    Blocked,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,7 +166,6 @@ pub fn finish_unit_tube_movement(
     entity.position.sub_x = CELL_CENTER_LEPTON;
     entity.position.sub_y = CELL_CENTER_LEPTON;
     entity.position.z = z;
-    entity.position.refresh_screen_coords();
     drive.active_tube = None;
     UnitTubeAdvance::ReachedFinal
 }
@@ -171,7 +177,6 @@ fn set_position_from_drive_coord(position: &mut Position, x: i32, y: i32) {
     position.ry = ry;
     position.sub_x = crate::util::fixed_math::SimFixed::from_num(x.rem_euclid(256));
     position.sub_y = crate::util::fixed_math::SimFixed::from_num(y.rem_euclid(256));
-    position.refresh_screen_coords();
 }
 
 pub fn try_begin_path_tube_step(
@@ -221,8 +226,11 @@ pub fn try_begin_path_tube_step(
     let Some(tube) = terrain.tube(tube_id) else {
         return TubePathStepResult::NotTubeStep;
     };
+    // Standing on a portal whose exit is not the pending node means this node
+    // is not this tube's traversal — ordinary movement owns it. Aborting the
+    // move here has no native counterpart.
     if tube.exit != next {
-        return TubePathStepResult::Blocked;
+        return TubePathStepResult::NotTubeStep;
     }
 
     match begin_low_bridge_tube_movement(tube_id, tube) {
@@ -230,7 +238,9 @@ pub fn try_begin_path_tube_step(
             *tube_state = Some(state);
             TubePathStepResult::Began
         }
-        Err(TubeBeginError::ZeroLengthTube) => TubePathStepResult::Blocked,
+        // A degenerate tube is map data we cannot traverse, not a reason to
+        // cancel the unit's order; fall through to ordinary movement.
+        Err(TubeBeginError::ZeroLengthTube) => TubePathStepResult::NotTubeStep,
     }
 }
 
@@ -240,6 +250,15 @@ pub fn tick_low_bridge_tube_movement(
     terrain: &ResolvedTerrainGrid,
 ) {
     let keys = entities.keys_sorted();
+    tick_low_bridge_tube_movement_in_order(entities, occupancy, terrain, &keys);
+}
+
+pub(crate) fn tick_low_bridge_tube_movement_in_order(
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    terrain: &ResolvedTerrainGrid,
+    keys: &[u64],
+) {
     if !keys.iter().any(|&id| {
         entities
             .get(id)
@@ -248,7 +267,7 @@ pub fn tick_low_bridge_tube_movement(
         return;
     }
     let path_grid = PathGrid::from_resolved_terrain(terrain);
-    for &id in &keys {
+    for &id in keys {
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
@@ -359,7 +378,6 @@ fn move_entity_to_cell(
         bridge_update,
         id,
     );
-    entity.position.refresh_screen_coords();
 }
 
 fn infer_tube_landing_layer(on_bridge: bool, dst_cell: Option<&PathCell>) -> MovementLayer {
@@ -461,7 +479,10 @@ mod tests {
             canonical_ramp: None,
             ground_walk_blocked: false,
             terrain_object_blocks: false,
+            terrain_object_occupation: None,
             overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
             zone_type: 0,
             base_ground_walk_blocked: false,
             base_build_blocked: false,
@@ -644,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn path_tube_step_blocks_zero_step_shell_state() {
+    fn path_tube_step_declines_zero_step_shell_state_without_aborting() {
         let mut cells = vec![cell(0, 0)];
         cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
         cells[0].tube_index = Some(TubeId(0));
@@ -660,8 +681,6 @@ mod tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
         let mut target = MovementTarget {
             path: vec![(0, 0), (0, 0)],
@@ -673,7 +692,10 @@ mod tests {
 
         let result = try_begin_path_tube_step(&mut state, &mut target, &position, Some(&terrain));
 
-        assert_eq!(result, TubePathStepResult::Blocked);
+        // A degenerate tube declines the step rather than aborting the order.
+        // The abort this used to assert had no native counterpart and is what
+        // stranded units mid-route.
+        assert_eq!(result, TubePathStepResult::NotTubeStep);
         assert!(state.is_none());
     }
 
@@ -694,8 +716,6 @@ mod tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
         let mut target = MovementTarget {
             path: vec![(0, 0), (2, 0)],
@@ -709,6 +729,53 @@ mod tests {
 
         assert_eq!(result, TubePathStepResult::Began);
         assert_eq!(state.unwrap().tube_id, TubeId(0));
+    }
+
+    /// Standing on a tube portal whose exit is NOT the pending path node must
+    /// decline the step and leave the node to ordinary movement — never cancel
+    /// the order.
+    ///
+    /// This was the live abort: the mover sat on a portal, the pending node
+    /// belonged to its ordinary route rather than to the tube, and the resulting
+    /// "blocked" verdict pushed the entity into `finished_entities`, dropping the
+    /// move order outright with no way to resume. Native tube entry is a positive
+    /// test — sentinel node plus current-cell tube index — with no failure branch,
+    /// so nothing here may end the order. The abort variant no longer exists, so
+    /// this is now enforced by the type as well as asserted here.
+    ///
+    /// Parity status: UNCHECKED. Derived from the native contract, not from a
+    /// gamemd-derived executable check.
+    #[test]
+    fn path_tube_step_on_portal_declines_foreign_node_without_aborting() {
+        let mut cells = vec![cell(0, 0), cell(1, 0), cell(2, 0), cell(3, 0), cell(4, 0)];
+        cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        cells[0].tube_index = Some(TubeId(0));
+        let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+            5,
+            1,
+            cells,
+            vec![TubeFact::explicit((0, 0), (2, 0), 2, vec![2, 2])],
+        );
+        let position = Position {
+            rx: 0,
+            ry: 0,
+            z: 0,
+            sub_x: CELL_CENTER_LEPTON,
+            sub_y: CELL_CENTER_LEPTON,
+        };
+        // Pending node (4,0) is non-adjacent and is NOT this tube's exit (2,0).
+        let mut target = MovementTarget {
+            path: vec![(0, 0), (4, 0)],
+            path_layers: vec![MovementLayer::Ground, MovementLayer::Ground],
+            next_index: 1,
+            ..MovementTarget::default()
+        };
+        let mut state = None;
+
+        let result = try_begin_path_tube_step(&mut state, &mut target, &position, Some(&terrain));
+
+        assert_eq!(result, TubePathStepResult::NotTubeStep);
+        assert!(state.is_none(), "no tube traversal should have started");
     }
 
     #[test]
@@ -732,8 +799,6 @@ mod tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
 
         let result = tick_unit_tube_payload(&mut payload, &mut position, 4, &tube);
@@ -752,8 +817,6 @@ mod tests {
             z: 0,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
-            screen_x: 0.0,
-            screen_y: 0.0,
         };
 
         let result = tick_unit_tube_payload(&mut payload, &mut position, 512, &tube);

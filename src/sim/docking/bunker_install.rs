@@ -10,6 +10,7 @@
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::game_entity::BunkerLink;
+use crate::sim::movement;
 use crate::sim::movement::bump_crush::scatter_blocker;
 use crate::sim::movement::drive_track::begin_forced_turn_track;
 use crate::sim::movement::facing_from_delta;
@@ -312,11 +313,15 @@ fn start_install_force_track(
     building_id: u64,
     unit_id: u64,
 ) -> bool {
-    let Some((bx, by)) = sim
-        .substrate
-        .entities
-        .get(building_id)
-        .map(|b| (b.position.rx, b.position.ry))
+    let Some((bx, by, building_sub_x, building_sub_y)) =
+        sim.substrate.entities.get(building_id).map(|b| {
+            (
+                b.position.rx,
+                b.position.ry,
+                b.position.sub_x.to_num::<i32>(),
+                b.position.sub_y.to_num::<i32>(),
+            )
+        })
     else {
         return false;
     };
@@ -337,16 +342,25 @@ fn start_install_force_track(
     let track = octant_install_track(facing);
     let speed_raw = sim.object_type(tref, rules).map(|o| o.speed).unwrap_or(4);
     let speed = crate::util::fixed_math::ra2_speed_to_leptons_per_second(speed_raw.max(1));
-    // Head offset is the cell delta in leptons (256 leptons per cell).
-    let Some(forced) = begin_forced_turn_track(track, dcx * 256, dcy * 256, speed, false) else {
+    // Native passes the building's exact GetCoords result, not merely its cell
+    // origin. Express that absolute head relative to the unit's current origin.
+    let Some(forced) = begin_forced_turn_track(
+        track,
+        dcx * 256 + building_sub_x,
+        dcy * 256 + building_sub_y,
+        speed,
+        false,
+    ) else {
         return false;
     };
-    if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
-        u.drive_track = None;
-        u.forced_drive_track = Some(forced);
-        u.facing_target = None;
-    }
-    true
+    let (entities, cell_occupation) = (
+        &mut sim.substrate.entities,
+        &mut sim.substrate.cell_occupation,
+    );
+    let Some(unit) = entities.get_mut(unit_id) else {
+        return false;
+    };
+    movement::install_forced_drive_track(unit, cell_occupation, forced)
 }
 
 #[cfg(test)]
@@ -428,6 +442,60 @@ mod tests {
         assert_eq!(octant_install_track(0x40), 0x44);
         assert_eq!(octant_install_track(0x80), 0x45);
         assert_eq!(octant_install_track(0xC0), 0x46);
+    }
+
+    #[test]
+    fn gsi_04_05_bunker_force_track_stores_exact_building_head_and_premark() {
+        let mut sim = Simulation::new();
+        let rules = rules();
+        spawn_bunker(&mut sim, 2);
+        spawn_tank_on(&mut sim, 1, 9, 10);
+        {
+            let building = sim.substrate.entities.get_mut(2).unwrap();
+            building.position.sub_x = crate::util::fixed_math::SimFixed::from_num(96);
+            building.position.sub_y = crate::util::fixed_math::SimFixed::from_num(160);
+        }
+        assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
+
+        assert!(start_install_force_track(&mut sim, &rules, 2, 1));
+        let unit = sim.substrate.entities.get(1).unwrap();
+        let forced = unit
+            .forced_drive_track
+            .as_ref()
+            .expect("bunker Force_Track installed");
+        assert_eq!(forced.track.head_offset_x, 256 + 96);
+        assert_eq!(forced.track.head_offset_y, 160);
+        let exact_head = crate::sim::components::DriveCoord {
+            x: 10 * 256 + 96,
+            y: 10 * 256 + 160,
+            z: 0,
+        };
+        let drive = unit.drive_locomotion.as_ref().expect("Drive runtime");
+        assert_eq!(drive.destination, Some(exact_head));
+        assert_eq!(drive.head_to, Some(exact_head));
+        assert_eq!(
+            drive.occupation_head_to,
+            Some(crate::sim::components::DriveOccupationFootprint {
+                rx: 10,
+                ry: 10,
+                layer: MovementLayer::Ground,
+            })
+        );
+        assert!(sim.substrate.occupancy.contains_entity(9, 10, 1));
+        assert!(!sim.substrate.occupancy.contains_entity(10, 10, 1));
+        assert_eq!(
+            sim.substrate
+                .cell_occupation
+                .vehicle_bits(9, 10, MovementLayer::Ground),
+            crate::sim::occupancy::VEHICLE_OCCUPATION_BIT
+        );
+        assert_eq!(
+            sim.substrate
+                .cell_occupation
+                .vehicle_bits(10, 10, MovementLayer::Ground),
+            crate::sim::occupancy::VEHICLE_OCCUPATION_BIT,
+            "assignment premarks the exact building-head cell without moving the object list"
+        );
     }
 
     #[test]

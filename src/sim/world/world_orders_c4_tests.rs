@@ -155,8 +155,13 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
         },
     ));
 
-    // First advance: command dispatch sets c4_plant; tick_c4_plants Phase 1
-    // sees adjacency and claims.
+    // First advance: the EventClass tail sets c4_plant after the object walk.
+    step(&mut sim, &rules, &heights);
+    assert!(
+        sim.substrate.entities.get(seal).unwrap().c4_plant.is_some(),
+        "the command tail must arm the plant intent"
+    );
+    // The next object walk sees adjacency and claims the plant.
     step(&mut sim, &rules, &heights);
     let pending = sim
         .substrate

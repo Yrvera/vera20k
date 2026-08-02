@@ -142,11 +142,26 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         return Some(kind);
     }
     // Check for ore/gem under cursor — show attack cursor when miners are selected.
-    let has_ore = sim
-        .production
-        .resource_nodes
-        .get(&(hover_rx, hover_ry))
-        .is_some_and(|n| n.remaining > 0);
+    let has_ore = match (
+        sim.overlay_grid.as_ref(),
+        state.overlay_registry.as_ref(),
+        state.rules.as_ref(),
+    ) {
+        (Some(grid), Some(registry), Some(rules)) if !rules.tiberium_types.is_empty() => {
+            crate::sim::tiberium::tiberium_cell_view(
+                grid,
+                registry,
+                &rules.tiberium_types,
+                (hover_rx, hover_ry),
+            )
+            .is_some()
+        }
+        _ => sim
+            .production
+            .resource_nodes
+            .get(&(hover_rx, hover_ry))
+            .is_some_and(|node| node.remaining > 0),
+    };
     if has_ore {
         let any_miner = selected
             .iter()
@@ -465,10 +480,13 @@ fn any_selected_unit_in_range(
             continue;
         }
         let in_range = if let Some(t) = terrain {
+            let Some(source_z) = combat::in_range::effective_z_leptons(entity, t) else {
+                continue;
+            };
             let src = (
                 entity.position.rx as i64 * 256 + entity.position.sub_x.to_num::<i64>(),
                 entity.position.ry as i64 * 256 + entity.position.sub_y.to_num::<i64>(),
-                combat::in_range::effective_z_leptons(entity),
+                source_z,
             );
             combat::in_range::compute_in_range(
                 entity,

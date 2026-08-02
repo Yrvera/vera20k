@@ -22,9 +22,7 @@ fn main() -> Result<()> {
         }
     };
 
-    if let Some(path) = &log_path {
-        vera20k::util::logging::install_panic_hook(path);
-    }
+    vera20k::util::logging::install_panic_hook(log_path.as_deref());
 
     log::info!("RA2 Engine starting");
     if let Some(path) = &log_path {

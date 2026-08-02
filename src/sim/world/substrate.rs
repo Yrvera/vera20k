@@ -16,7 +16,14 @@ use serde::{Deserialize, Serialize};
 use super::LogicVector;
 use crate::sim::anim_class::AnimStore;
 use crate::sim::entity_store::EntityStore;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid, RawCellOccupationGrid};
+use crate::sim::particles::ParticleSystemStore;
+
+const FIRST_MULTIPLAYER_FEEDBACK_ANIM_ID: u64 = 1 << 63;
+
+const fn first_multiplayer_feedback_anim_id() -> u64 {
+    FIRST_MULTIPLAYER_FEEDBACK_ANIM_ID
+}
 
 /// Monotonic source for rebuilt CellClass-style object-list (enter) order. Each
 /// entity stores the last value assigned when it entered a cell list; this counter
@@ -41,6 +48,12 @@ impl EnterOrderCounter {
         self.0 = self.0.saturating_add(1);
         order
     }
+
+    /// Next value that will be handed out. Snapshot restoration uses this to
+    /// reject a counter that could reuse an already-restored cell-entry order.
+    pub(crate) const fn current(self) -> u64 {
+        self.0
+    }
 }
 
 /// Owns the active-object order and the substrate's monotonic counters. Field
@@ -64,6 +77,15 @@ pub(crate) struct ObjectSubstrate {
     /// appears in the serialized snapshot and does not enter the state hash directly.
     #[serde(skip)]
     pub(crate) occupancy: OccupancyGrid,
+    /// Independent ground/deck vehicle-occupation bit planes. Rebuilt from
+    /// entity lifecycle and serialized Drive footprint state after load.
+    #[serde(skip)]
+    pub(crate) cell_occupation: CellOccupationGrid,
+    /// Authoritative raw CellClass occupation bytes. Unlike the owner-aware
+    /// Drive compatibility cache above, these destructive OR/AND-not bytes are
+    /// serialized verbatim and are never rebuilt from entity lists.
+    #[serde(default)]
+    pub(crate) raw_cell_occupation: RawCellOccupationGrid,
     /// Plain-struct entity storage (`BTreeMap<u64, GameEntity>` + by_owner index).
     /// The authoritative object store — serialized verbatim (NOT skipped).
     pub(crate) entities: EntityStore,
@@ -71,6 +93,18 @@ pub(crate) struct ObjectSubstrate {
     /// LogicVector with entities.
     #[serde(default)]
     pub(crate) anims: AnimStore,
+    /// Multiplayer click-feedback animations use a separate, sync-exempt
+    /// registry and never enter the ordinary LogicVector.
+    #[serde(skip)]
+    pub(crate) multiplayer_feedback_anims: AnimStore,
+    #[serde(skip, default = "first_multiplayer_feedback_anim_id")]
+    pub(crate) next_multiplayer_feedback_anim_id: u64,
+    #[serde(skip)]
+    pub(crate) multiplayer_feedback_pending_delete: Vec<u64>,
+    /// ParticleSystemClass registry. Systems share the global object-ID
+    /// namespace and LogicVector; individual particles remain container-owned.
+    #[serde(default)]
+    pub(crate) particle_systems: ParticleSystemStore,
     /// Deferred-delete queue (the native `PendingDeleteList`). Ordered IDs may
     /// survive a Rust snapshot boundary: between enqueue and the ordinary late
     /// drain an entity remains resolvable in storage while its independent
@@ -89,8 +123,14 @@ impl ObjectSubstrate {
             next_occupancy_enter_order: EnterOrderCounter::new(),
             logic: LogicVector::new(),
             occupancy: OccupancyGrid::new(),
+            cell_occupation: CellOccupationGrid::new(),
+            raw_cell_occupation: RawCellOccupationGrid::new(),
             entities: EntityStore::new(),
             anims: AnimStore::default(),
+            multiplayer_feedback_anims: AnimStore::default(),
+            next_multiplayer_feedback_anim_id: FIRST_MULTIPLAYER_FEEDBACK_ANIM_ID,
+            multiplayer_feedback_pending_delete: Vec::new(),
+            particle_systems: ParticleSystemStore::default(),
             pending_delete: Vec::new(),
         }
     }

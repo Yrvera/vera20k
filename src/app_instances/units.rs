@@ -165,7 +165,11 @@ pub(crate) fn build_unit_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.art_registry.as_ref();
 
-    for entity in sim.entities().values().filter(|e| e.is_voxel) {
+    for entity in sim
+        .entities()
+        .values()
+        .filter(|e| e.is_voxel && !e.lifecycle.in_limbo)
+    {
         // Skip entities inside a transport — they are hidden from the map.
         if entity.passenger_role.is_inside_transport() {
             continue;
@@ -193,16 +197,8 @@ pub(crate) fn build_unit_instances(
         // slope during gamemd's 3-frame transition, then falls back to the
         // stable terrain slope path.
         let slope_state = unit_render_slope_state(state, entity);
-        // Screen position is computed by the sim layer (lepton_to_screen) every
-        // tick with the correct z. No renderer-side interpolation needed.
-        // Aircraft altitude: offset screen Y upward so flying units appear above ground.
-        // 0.06 px per lepton → cruise altitude (600) ≈ 36px up (~2.4 elevation levels).
-        let altitude_y_offset: f32 = entity
-            .locomotor
-            .as_ref()
-            .map(|l| crate::util::fixed_math::sim_to_f32(l.altitude) * 0.06)
-            .unwrap_or(0.0);
-        let (sx, sy, interp_z) = (pos.screen_x, pos.screen_y - altitude_y_offset, pos.z);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
+        let interp_z = pos.z;
         if !in_view(sx, sy, TILE_WIDTH, TILE_HEIGHT, cam_x, cam_y, sw, sh, 120.0) {
             continue;
         }

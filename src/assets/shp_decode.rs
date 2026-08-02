@@ -1,131 +1,99 @@
-//! RLE-Zero decompression and scanline decoding for SHP(TS) sprite frames.
+//! Row-framed RLE-Zero decompression for SHP(TS) sprite frames.
 //!
-//! RA2's SHP files can compress frame data using "RLE-Zero" encoding,
-//! which efficiently handles sprites with large transparent areas.
-//! Since most game sprites have transparent backgrounds, this typically
-//! achieves 2-5x compression on sprite data.
+//! Frame-header byte 8 is a bitfield. When bit 1 is set, the active YR draw
+//! path uses this row-framed RLE-Zero grammar; when it is clear, the frame is
+//! contiguous raw pixels and is handled by `shp_file`.
 //!
-//! ## Frame format types (set in the per-frame header byte 8):
-//! - Format 0/1: raw uncompressed pixel data, width bytes per scanline.
-//! - Format 2: length-prefixed uncompressed scanlines.
-//! - Format 3: length-prefixed RLE-Zero compressed scanlines.
-//!
-//! ## Scanline format (formats 2 and 3):
-//! 1. u16: total scanline length in bytes **including these 2 bytes**.
-//!    Actual data bytes = length - 2.
-//! 2. For format 3 (RLE-Zero): each byte in the data region:
-//!    - If byte != 0: literal palette index, copy it directly.
-//!    - If byte == 0: next byte is a repeat count, write that many zeros.
-//! 3. For format 2 (uncompressed): raw palette indices, (length - 2) bytes.
+//! Each row starts with a self-inclusive little-endian `u16` byte count. The
+//! payload is width-driven: a nonzero byte emits that palette index, while
+//! `0, count` advances by `count` transparent pixels. Payload tail remaining
+//! after the visible width is ignored before advancing to the next row.
 //!
 //! ## Dependency rules
-//! - Part of assets/ — no dependencies on game modules.
+//! - Part of assets/ - no dependencies on game modules.
 
 use crate::assets::error::AssetError;
 
-/// Decode RLE-Zero compressed frame data (format 3) from an SHP(TS) file.
-///
-/// Each scanline is independently compressed with a u16 length prefix
-/// (which includes itself, so actual data = length - 2 bytes) followed
-/// by RLE-Zero encoded bytes.
-///
-/// Returns a Vec of `width * height` palette indices.
-/// Index 0 means transparent, other values are palette lookups.
-pub fn decode_rle_frame(data: &[u8], width: usize, height: usize) -> Result<Vec<u8>, AssetError> {
-    let mut pixels: Vec<u8> = Vec::with_capacity(width * height);
-    let mut offset: usize = 0;
-
-    for row in 0..height {
-        // Each scanline starts with u16: total byte count INCLUDING these 2 bytes.
-        if offset + 2 > data.len() {
-            return Err(AssetError::ParseError {
-                format: "SHP".to_string(),
-                detail: format!("RLE data truncated at scanline {} (offset {})", row, offset),
-            });
-        }
-
-        let raw_length: u16 = u16::from_le_bytes([data[offset], data[offset + 1]]);
-        offset += 2;
-
-        // Subtract the 2-byte length field itself to get the actual data size.
-        let data_length: usize = (raw_length as usize).saturating_sub(2);
-        let line_end: usize = offset + data_length;
-        let mut row_pixels: usize = 0;
-
-        while offset < line_end && row_pixels < width {
-            let byte: u8 = data[offset];
-            offset += 1;
-
-            if byte != 0 {
-                // Literal pixel — copy the palette index directly.
-                pixels.push(byte);
-                row_pixels += 1;
-            } else {
-                // Zero run — next byte is the count of transparent pixels.
-                if offset >= line_end {
-                    break;
-                }
-                let count: u8 = data[offset];
-                offset += 1;
-                let fill_count: usize = (count as usize).min(width - row_pixels);
-                pixels.extend(std::iter::repeat_n(0u8, fill_count));
-                row_pixels += fill_count;
-            }
-        }
-
-        // Pad with transparent (0) if the scanline didn't fill the full width.
-        while row_pixels < width {
-            pixels.push(0);
-            row_pixels += 1;
-        }
-
-        // Advance to end of this scanline's data (in case we stopped early).
-        offset = line_end;
+fn parse_error(detail: impl Into<String>) -> AssetError {
+    AssetError::ParseError {
+        format: "SHP".to_string(),
+        detail: detail.into(),
     }
-
-    Ok(pixels)
 }
 
-/// Decode length-prefixed uncompressed frame data (format 2) from an SHP(TS) file.
+/// Decode a bit-1-set SHP frame using the active row/RLE-Zero mechanism.
 ///
-/// Each scanline has a u16 length prefix (includes itself), followed by
-/// (length - 2) bytes of raw palette indices. No RLE compression.
-pub fn decode_length_prefixed_frame(
-    data: &[u8],
-    width: usize,
-    height: usize,
-) -> Result<Vec<u8>, AssetError> {
-    let mut pixels: Vec<u8> = Vec::with_capacity(width * height);
-    let mut offset: usize = 0;
+/// Returns exactly `width * height` palette indices for well-formed data.
+pub fn decode_rle_frame(data: &[u8], width: usize, height: usize) -> Result<Vec<u8>, AssetError> {
+    let pixel_count = width
+        .checked_mul(height)
+        .ok_or_else(|| parse_error("RLE frame dimensions overflow addressable memory"))?;
+    let mut pixels = Vec::with_capacity(pixel_count);
+    let mut offset = 0usize;
 
     for row in 0..height {
-        if offset + 2 > data.len() {
-            return Err(AssetError::ParseError {
-                format: "SHP".to_string(),
-                detail: format!(
-                    "Length-prefixed data truncated at scanline {} (offset {})",
-                    row, offset
-                ),
-            });
+        let row_start = offset;
+        let prefix_end = row_start
+            .checked_add(2)
+            .ok_or_else(|| parse_error(format!("RLE scanline {row} prefix offset overflow")))?;
+        if prefix_end > data.len() {
+            return Err(parse_error(format!(
+                "RLE data truncated at scanline {row} (offset {row_start})"
+            )));
         }
 
-        let raw_length: u16 = u16::from_le_bytes([data[offset], data[offset + 1]]);
-        offset += 2;
-
-        let data_length: usize = (raw_length as usize).saturating_sub(2);
-        let copy_count: usize = data_length.min(width);
-
-        // Copy available raw bytes (up to frame width).
-        let end: usize = (offset + copy_count).min(data.len());
-        let available: usize = end - offset;
-        pixels.extend_from_slice(&data[offset..end]);
-
-        // Pad if fewer bytes than width.
-        for _ in available..width {
-            pixels.push(0);
+        let raw_length = u16::from_le_bytes([data[row_start], data[row_start + 1]]) as usize;
+        if raw_length < 2 {
+            return Err(parse_error(format!(
+                "RLE scanline {row} length {raw_length} is smaller than its 2-byte prefix"
+            )));
         }
 
-        offset += data_length;
+        let line_end = row_start.checked_add(raw_length).ok_or_else(|| {
+            parse_error(format!(
+                "RLE scanline {row} declared end overflows address space"
+            ))
+        })?;
+        if line_end > data.len() {
+            return Err(parse_error(format!(
+                "RLE scanline {row} extends past frame data ({line_end} > {})",
+                data.len()
+            )));
+        }
+
+        offset = prefix_end;
+        let mut row_pixels = 0usize;
+
+        // The native row consumer is width-driven. The prefix still owns the
+        // next-row address, so declared payload tail is ignored.
+        while row_pixels < width {
+            if offset >= line_end {
+                return Err(parse_error(format!(
+                    "RLE scanline {row} under-runs: produced {row_pixels} of {width} pixels"
+                )));
+            }
+
+            let byte = data[offset];
+            offset += 1;
+            if byte != 0 {
+                pixels.push(byte);
+                row_pixels += 1;
+                continue;
+            }
+
+            if offset >= line_end {
+                return Err(parse_error(format!(
+                    "RLE scanline {row} ends inside a zero run"
+                )));
+            }
+            let count = data[offset] as usize;
+            offset += 1;
+            let visible_count = count.min(width - row_pixels);
+            pixels.extend(std::iter::repeat_n(0u8, visible_count));
+            row_pixels += visible_count;
+        }
+
+        offset = line_end;
     }
 
     Ok(pixels)
@@ -137,45 +105,56 @@ mod tests {
 
     #[test]
     fn test_rle_decode_basic() {
-        // Scanline: 3 pixels wide, 1 row.
-        // u16 length = 6 (includes itself: 2 + 4 data bytes)
-        // RLE data: 0x00 0x01 (1 zero), 0x05 (literal), 0x03 (literal)
-        let mut data: Vec<u8> = Vec::new();
-        data.extend_from_slice(&6u16.to_le_bytes()); // total length including u16
-        data.extend_from_slice(&[0x00, 0x01, 0x05, 0x03]);
-
-        let pixels: Vec<u8> = decode_rle_frame(&data, 3, 1).expect("Should decode");
+        let data = [6, 0, 0, 1, 5, 3];
+        let pixels = decode_rle_frame(&data, 3, 1).expect("decode");
         assert_eq!(pixels, vec![0, 5, 3]);
     }
 
     #[test]
     fn test_rle_decode_all_transparent() {
-        // A fully transparent 4-pixel scanline: one zero-run of 4.
-        // u16 length = 4 (includes itself: 2 + 2 data bytes)
-        let mut data: Vec<u8> = Vec::new();
-        data.extend_from_slice(&4u16.to_le_bytes());
-        data.extend_from_slice(&[0x00, 0x04]); // zero-run of 4
-
-        let pixels: Vec<u8> = decode_rle_frame(&data, 4, 1).expect("Should decode");
+        let data = [4, 0, 0, 4];
+        let pixels = decode_rle_frame(&data, 4, 1).expect("decode");
         assert_eq!(pixels, vec![0, 0, 0, 0]);
     }
 
     #[test]
-    fn test_rle_decode_truncated_error() {
-        // Empty data — should error on first scanline's length prefix.
-        let data: Vec<u8> = Vec::new();
-        assert!(decode_rle_frame(&data, 2, 1).is_err());
+    fn truncated_prefix_errors() {
+        assert!(decode_rle_frame(&[], 2, 1).is_err());
     }
 
     #[test]
-    fn test_length_prefixed_decode() {
-        // 3-pixel wide scanline, format 2 (uncompressed with length prefix).
-        // u16 length = 5 (includes itself: 2 + 3 raw bytes)
-        let mut data: Vec<u8> = Vec::new();
-        data.extend_from_slice(&5u16.to_le_bytes());
-        data.extend_from_slice(&[10, 20, 30]);
+    fn prefix_smaller_than_two_errors() {
+        assert!(decode_rle_frame(&[1, 0], 1, 1).is_err());
+    }
 
-        let pixels: Vec<u8> = decode_length_prefixed_frame(&data, 3, 1).expect("Should decode");
-        assert_eq!(pixels, vec![10, 20, 30]);
+    #[test]
+    fn prefix_past_slice_errors() {
+        assert!(decode_rle_frame(&[5, 0, 7], 1, 1).is_err());
+    }
+
+    #[test]
+    fn zero_opcode_without_count_errors() {
+        assert!(decode_rle_frame(&[3, 0, 0], 1, 1).is_err());
+    }
+
+    #[test]
+    fn declared_row_under_run_errors_instead_of_padding() {
+        assert!(decode_rle_frame(&[3, 0, 7], 2, 1).is_err());
+    }
+
+    #[test]
+    fn final_zero_run_overshoot_is_clamped_to_visible_width() {
+        let pixels = decode_rle_frame(&[4, 0, 0, 8], 3, 1).expect("overshoot is safe");
+        assert_eq!(pixels, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn payload_tail_is_ignored_before_the_next_declared_row() {
+        let data = [
+            6, 0, 9, 8, 0xAA, 0xBB, // row 0: two literals plus ignored tail
+            4, 0, 0, 2, // row 1: two transparent pixels
+        ];
+        let pixels = decode_rle_frame(&data, 2, 2).expect("tail stays inside its row");
+        assert_eq!(pixels, vec![9, 8, 0, 0]);
     }
 }

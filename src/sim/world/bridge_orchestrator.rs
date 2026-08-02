@@ -13,6 +13,8 @@
 //! Same as sim/world: depends on sim/bridge_state, sim/rng, rules/, map/;
 //! never render / ui / audio / net.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::bridge_facts::{
@@ -402,7 +404,7 @@ const BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE: u32 = 2_040_109_464;
 const BRIDGE_METALLIC_GATE_EXCLUSIVE: u32 = 0x3FFF_FFFF;
 const BRIDGE_JITTER_SPAN_LEPTONS: u64 = 50;
 const BRIDGE_JITTER_HALF_LEPTONS: i32 = 25;
-const BRIDGE_EFFECT_FRAME_MS: u32 = 67;
+const BRIDGE_EFFECT_FRAME_DELAY: u16 = 1;
 // Safety cap on the extent-measurement walk (Phase 1 of the bounded
 // walker). gamemd has no explicit cap — the off-bridge band check
 // terminates the walk — but a runaway count would only happen if the
@@ -1249,10 +1251,10 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
                 z: deck_level,
                 frame: 0,
                 total_frames: frames,
-                rate_ms: BRIDGE_EFFECT_FRAME_MS,
-                elapsed_ms: 0,
+                frame_delay: BRIDGE_EFFECT_FRAME_DELAY,
+                elapsed_frames: 0,
                 translucent: true,
-                delay_ms: 0,
+                delay_frames: 0,
                 start_sound_id: None,
                 start_sound_emitted: false,
             });
@@ -1274,10 +1276,10 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
                 z: deck_level,
                 frame: 0,
                 total_frames: frames,
-                rate_ms: BRIDGE_EFFECT_FRAME_MS,
-                elapsed_ms: 0,
+                frame_delay: BRIDGE_EFFECT_FRAME_DELAY,
+                elapsed_frames: 0,
                 translucent: true,
-                delay_ms: delay_frames * BRIDGE_EFFECT_FRAME_MS,
+                delay_frames: delay_frames as u16,
                 start_sound_id: sim.bridge_anim_sounds.get(&anim_id).copied(),
                 start_sound_emitted: false,
             });
@@ -1317,10 +1319,10 @@ fn spawn_bridge_explosion_effect(
             z,
             frame: 0,
             total_frames: frames,
-            rate_ms: BRIDGE_EFFECT_FRAME_MS,
-            elapsed_ms: 0,
+            frame_delay: BRIDGE_EFFECT_FRAME_DELAY,
+            elapsed_frames: 0,
             translucent: true,
-            delay_ms: delay_frames * BRIDGE_EFFECT_FRAME_MS,
+            delay_frames: delay_frames as u16,
             start_sound_id: presentation.bridge_anim_sounds.get(&anim_id).copied(),
             start_sound_emitted: false,
         });
@@ -1376,7 +1378,6 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
             entity.bridge_occupancy = None;
             entity.on_bridge = false;
             entity.position.z = ground_level;
-            entity.position.refresh_screen_coords();
             entity.movement_target = None;
             if let Some(ref mut loco) = entity.locomotor {
                 loco.layer = MovementLayer::Ground;
@@ -1584,7 +1585,10 @@ mod tests {
                     canonical_ramp: None,
                     ground_walk_blocked: is_bridge,
                     terrain_object_blocks: false,
+                    terrain_object_occupation: None,
                     overlay_blocks: false,
+                    overlay_zone_type: None,
+                    outside_playfield: false,
                     zone_type: 0,
                     base_ground_walk_blocked: false,
                     base_build_blocked: false,
@@ -1614,8 +1618,8 @@ mod tests {
     fn drive_loco_on_bridge() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Drive,
-            mission_ready_state: None,
-            primary_kind: Some(LocomotorKind::Drive),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
+            powered: true,
             piggyback: None,
             layer: MovementLayer::Bridge,
             phase: GroundMovePhase::Cruising,
@@ -1627,7 +1631,6 @@ mod tests {
             target_altitude: SIM_ZERO,
             climb_rate: SIM_ZERO,
             jumpjet_speed: SIM_ZERO,
-            jumpjet_wobbles: 0.0,
             jumpjet_accel: SIM_ZERO,
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: 0,
@@ -1638,11 +1641,11 @@ mod tests {
             speed_type: SpeedType::Track,
             movement_zone: MovementZone::Normal,
             rot: 0,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_speed_request: crate::util::fixed_math::SIM_ZERO,
             hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
     }

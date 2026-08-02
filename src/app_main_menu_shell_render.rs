@@ -150,15 +150,15 @@ fn main_menu_paint_buttons(
         .collect()
 }
 
-fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
+fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> std::borrow::Cow<'a, str> {
     state
         .csf
         .as_ref()
-        .and_then(|csf| csf.get(key))
-        .unwrap_or(key)
+        .map(|csf| csf.text(key))
+        .unwrap_or(std::borrow::Cow::Borrowed(key))
 }
 
-pub(crate) fn main_menu_title_text(state: &AppState) -> &str {
+pub(crate) fn main_menu_title_text(state: &AppState) -> std::borrow::Cow<'_, str> {
     resolve_csf(state, "GUI:MainMenu")
 }
 
@@ -211,7 +211,7 @@ fn main_menu_paint_labels<'a>(
         });
     }
     out.push(PaintLabel {
-        text: version_text,
+        text: version_text.into(),
         rect: layout.version_line,
         align: ShellAlign::H_CENTER,
         rgb: SHELL_TEXT_RGB_ENABLED,
@@ -810,21 +810,21 @@ fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::Mod
     // press sink — same conventions as the skirmish validation modal.
     let labels = [
         PaintLabel {
-            text: &modal_state.title,
+            text: (&modal_state.title).into(),
             rect: layout.body,
             align: ShellAlign::NONE,
             rgb: SHELL_TEXT_RGB_ENABLED,
             path_a_reveal: None,
         },
         PaintLabel {
-            text: &modal_state.confirm,
+            text: (&modal_state.confirm).into(),
             rect: owner_draw_button_label_rect(layout.ok, ok_pressed),
             align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,
             path_a_reveal: None,
         },
         PaintLabel {
-            text: &modal_state.cancel,
+            text: (&modal_state.cancel).into(),
             rect: owner_draw_button_label_rect(layout.cancel, cancel_pressed),
             align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,

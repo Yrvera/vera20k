@@ -1,8 +1,8 @@
 //! RA2 voxel normal vectors and diffuse lighting.
 //!
 //! RA2 voxel models store a per-voxel `normal_index` (0–255) used for
-//! directional lighting. The game ships 256 pre-computed unit normal
-//! vectors (normals_mode=4). Tiberian Sun uses a 36-entry table (mode=2).
+//! directional lighting. The game ships 245 pre-computed unit normal
+//! vectors for normals_mode=4. Tiberian Sun uses a 36-entry table (mode=2).
 //!
 //! Source: Sleipnir's Stuff forum.
 //! Normal coordinates are in VXL model space.
@@ -13,7 +13,7 @@
 use glam::Vec3;
 
 /// Number of normals in RA2 mode (normals_mode = 4).
-const RA2_NORMAL_COUNT: usize = 256;
+const RA2_NORMAL_COUNT: usize = 245;
 
 /// Number of normals in Tiberian Sun mode (normals_mode = 2).
 const TS_NORMAL_COUNT: usize = 36;
@@ -23,9 +23,9 @@ const TS_NORMAL_COUNT: usize = 36;
 /// normal index 255 — present in 8 retail models — render with this page.
 const AMBIENT_PAGE: u8 = 16;
 
-/// 256 RA2 normal vectors. The original engine's table has exactly 245
-/// entries and simply ends there (no duplicate tail in the binary; rows
-/// 245–255 here are our own padding). Retail VXL data DOES reference index
+/// 245 RA2 normal vectors, matching the original engine's mode-4 table exactly.
+/// Index 240 is the final new vector; indices 241–244 repeat it byte-for-byte,
+/// and there is no native entry 245. Retail VXL data DOES reference index
 /// 255 — but only inside limbs named DUMMY01/DUMMY02 (1,931 voxels across 8
 /// retail files, incl. the slave-miner refinery turret; verified by
 /// tests/retail_goldens certify_vxl_structural). Indices 245–254 never occur
@@ -161,17 +161,10 @@ static RA2_NORMALS: [[f32; 3]; RA2_NORMAL_COUNT] = [
     [-0.603512, -0.286615,  0.744060], [-0.188676, -0.547059,  0.815554],
     [-0.026045, -0.397820,  0.917094], [ 0.267897, -0.649041,  0.712023],
     [ 0.518246, -0.284891,  0.806386], [ 0.493451, -0.066533,  0.867225],
-    // Entry 244 = last distinct vector from the original engine data.
-    // Entries 245–249 = byte-duplicates of 244 (matching the binary).
+    // Entry 240 is the final new vector; entries 241–244 repeat it byte-for-byte.
     [-0.328188,  0.140251,  0.934143], [-0.328188,  0.140251,  0.934143],
     [-0.328188,  0.140251,  0.934143], [-0.328188,  0.140251,  0.934143],
-    [-0.328188,  0.140251,  0.934143], [-0.328188,  0.140251,  0.934143],
-    // Entries 250–255: never appear in the binary; padded with +Z fallback.
-    [ 0.0, 0.0, 1.0], [ 0.0, 0.0, 1.0],
-    [ 0.0, 0.0, 1.0], [ 0.0, 0.0, 1.0],
-    [ 0.0, 0.0, 1.0], [ 0.0, 0.0, 1.0],
-    [ 0.0, 0.0, 1.0], [ 0.0, 0.0, 1.0],
-    [ 0.0, 0.0, 1.0], [ 0.0, 0.0, 1.0],
+    [-0.328188,  0.140251,  0.934143],
 ];
 
 /// 36 Tiberian Sun normal vectors (normals_mode = 2).
@@ -199,7 +192,7 @@ static TS_NORMALS: [[f32; 3]; TS_NORMAL_COUNT] = [
 
 /// Look up a unit normal vector by normals mode and index.
 ///
-/// Mode 4 (RA2) uses the 256-entry table. Mode 2 (TS) uses the 36-entry table.
+/// Mode 4 (RA2) uses the 245-entry table. Mode 2 (TS) uses the 36-entry table.
 /// Out-of-range indices return Vec3::Z (pointing up) as a safe fallback.
 pub fn get_normal(normals_mode: u8, index: u8) -> Vec3 {
     let table: &[[f32; 3]] = match normals_mode {
@@ -229,7 +222,7 @@ pub fn diffuse_shade(normal: Vec3, light_dir: Vec3, ambient: f32, diffuse: f32) 
 /// Transform(-UnitX, RotationZ(45°)) = (-cos45, -sin45, 0) = (-0.707, -0.707, 0)
 const YR_LIGHT_BASE: [f32; 3] = [-0.707_107, -0.707_107, 0.0];
 
-/// Pre-calculate VPL page indices for all 256 normals at a given facing.
+/// Build the 256-slot VPL page lookup table for a given facing.
 ///
 /// Uses the Blinn-Phong reflection model matching the original engine's lighting calculation.
 /// Returns a 256-element array mapping normal_index → VPL page (brightness level).
@@ -237,8 +230,10 @@ const YR_LIGHT_BASE: [f32; 3] = [-0.707_107, -0.707_107, 0.0];
 /// the final shaded palette color.
 ///
 /// `facing_rad`: the model's facing rotation in radians (0–2PI).
-/// `normals_mode`: 2 (TS, 36 normals) or 4 (RA2, 256 normals).
+/// `normals_mode`: 2 (TS, 36 normals) or 4 (RA2, 245 normals).
 pub fn blinn_phong_pages(normals_mode: u8, facing_rad: f32) -> [u8; 256] {
+    // Native leaves shared-LUT slots 245–252 stale. Rust deliberately starts
+    // them at a deterministic safe default; retail VXLs never reference them.
     let mut result: [u8; 256] = [0u8; 256];
 
     // Rotate the base YR light direction by the model's facing.
@@ -309,18 +304,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ra2_normal_count() {
-        // All 256 entries should be valid vectors.
-        for i in 0..=255u8 {
-            let n: Vec3 = get_normal(4, i);
-            let len: f32 = n.length();
-            assert!(
-                (len - 1.0).abs() < 0.01,
-                "Normal {} has length {}, expected ~1.0",
-                i,
-                len
-            );
+    fn ra2_normal_table_has_native_boundary_and_tail() {
+        assert_eq!(RA2_NORMALS.len(), 245);
+        assert_eq!(RA2_NORMALS[240], [-0.328188, 0.140251, 0.934143]);
+        for index in 241..=244 {
+            assert_eq!(RA2_NORMALS[index], RA2_NORMALS[240], "index {index}");
         }
+
+        let final_native = Vec3::from_array(RA2_NORMALS[240]);
+        assert_eq!(get_normal(4, 244), final_native);
+        assert_eq!(get_normal(4, 245), Vec3::Z);
+
+        let pages = blinn_phong_pages(4, 0.0);
+        assert_eq!(pages[244], pages[240]);
+        assert_ne!(pages[244], 0, "the final native entry must be processed");
+        assert_eq!(&pages[245..253], &[0; 8]);
+        assert_eq!(&pages[253..=255], &[AMBIENT_PAGE; 3]);
     }
 
     #[test]

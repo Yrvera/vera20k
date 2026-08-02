@@ -174,6 +174,176 @@ fn water_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
     water_terrain_with_land_type(width, height, 4, false)
 }
 
+fn gsi_04_10_clear_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+    use crate::map::resolved_terrain::zone_class;
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
+
+    let speed_costs = SpeedCostProfile {
+        foot: Some(100),
+        track: Some(100),
+        wheel: Some(100),
+        float: Some(100),
+        amphibious: Some(100),
+        float_beach: Some(100),
+        hover: Some(100),
+    };
+    let mut terrain = water_terrain(width, height);
+    for cell in &mut terrain.cells {
+        cell.land_type = LandType::Clear.as_index();
+        cell.yr_cell_land_type = LandType::Clear.as_index();
+        cell.terrain_class = TerrainClass::Clear;
+        cell.speed_costs = speed_costs;
+        cell.is_water = false;
+        cell.ground_walk_blocked = false;
+        cell.zone_type = zone_class::GROUND;
+        cell.base_ground_walk_blocked = false;
+        cell.base_build_blocked = false;
+        cell.base_land_type = LandType::Clear.as_index();
+        cell.base_yr_cell_land_type = LandType::Clear.as_index();
+        cell.base_terrain_class = TerrainClass::Clear;
+        cell.base_speed_costs = speed_costs;
+        cell.build_blocked = false;
+    }
+    terrain
+}
+
+fn gsi_04_10_terrain_object(
+    sim: &mut Simulation,
+    stable_id: u64,
+    cell: (u16, u16),
+    occupation_bits: u8,
+) -> crate::sim::terrain_object::TerrainObjectState {
+    crate::sim::terrain_object::TerrainObjectState {
+        stable_id,
+        type_ref: sim.interner.intern("TREE01"),
+        rx: cell.0,
+        ry: cell.1,
+        health: 10,
+        max_health: 10,
+        occupation_bits,
+        lifecycle: crate::sim::terrain_object::TerrainObjectLifecycle::Live,
+    }
+}
+
+#[test]
+fn gsi_04_10_in_tick_refresh_updates_tail_path_and_cost_before_consumers() {
+    use crate::rules::locomotor_type::SpeedType;
+    use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
+    use crate::sim::terrain_object::{mark_terrain_occupation, unmark_terrain_occupation};
+
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(2, 1));
+    let tree = gsi_04_10_terrain_object(&mut sim, 1, (0, 0), 7);
+    {
+        let (production, terrain) = (&mut sim.production, &mut sim.resolved_terrain);
+        mark_terrain_occupation(production, &tree, terrain.as_mut());
+    }
+    sim.terrain_costs = build_canonical_terrain_cost_grids(
+        sim.resolved_terrain.as_ref().expect("resolved terrain"),
+    );
+    let mut input_path_grid = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().expect("resolved terrain"),
+        sim.bridge_state.as_ref(),
+    );
+    input_path_grid.set_blocked(1, 0, true);
+    assert!(!input_path_grid.is_walkable(0, 0));
+    assert_eq!(sim.terrain_costs[&SpeedType::Track].cost_at(0, 0), 0);
+
+    {
+        let (production, terrain) = (&mut sim.production, &mut sim.resolved_terrain);
+        unmark_terrain_occupation(production, &tree, terrain.as_mut());
+    }
+    let tail_path_grid =
+        sim.refresh_navigation_after_terrain_deaths(Some(&input_path_grid), &[(0, 0)]);
+    let phase_six_consumer_grid = tail_path_grid.as_ref().or(Some(&input_path_grid));
+    let phase_six_consumer_grid = phase_six_consumer_grid.expect("tail grid");
+
+    assert!(phase_six_consumer_grid.is_walkable(0, 0));
+    assert!(
+        !phase_six_consumer_grid.is_walkable(1, 0),
+        "unrelated dynamic blockers from the input grid must survive"
+    );
+    assert_eq!(sim.terrain_costs.len(), SpeedType::ALL_WITH_COSTS.len());
+    assert_eq!(
+        sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
+        100,
+        "Phase 6+ must see the rebuilt cost authority in the lethal-event tick"
+    );
+}
+
+#[test]
+fn gsi_04_10_zero_occupation_removal_forces_ground_zone_with_same_walkability() {
+    use crate::map::resolved_terrain::zone_class;
+    use crate::rules::locomotor_type::{MovementZone, SpeedType};
+    use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
+    use crate::sim::pathfinding::zone_map::ZONE_INVALID;
+    use crate::sim::terrain_object::{mark_terrain_occupation, unmark_terrain_occupation};
+
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(1, 1));
+    let tree = gsi_04_10_terrain_object(&mut sim, 1, (0, 0), 0);
+    {
+        let (production, terrain) = (&mut sim.production, &mut sim.resolved_terrain);
+        mark_terrain_occupation(production, &tree, terrain.as_mut());
+    }
+    assert_eq!(
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .cell(0, 0)
+            .unwrap()
+            .zone_type,
+        zone_class::BUILDING
+    );
+    sim.terrain_costs = build_canonical_terrain_cost_grids(
+        sim.resolved_terrain.as_ref().expect("resolved terrain"),
+    );
+    let input_path_grid = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().expect("resolved terrain"),
+        sim.bridge_state.as_ref(),
+    );
+    assert!(input_path_grid.is_walkable(0, 0));
+    assert_eq!(sim.terrain_costs[&SpeedType::Track].cost_at(0, 0), 100);
+    sim.rebuild_zone_grid_full(&input_path_grid);
+    assert_eq!(
+        sim.zone_grid
+            .as_ref()
+            .and_then(|zones| zones.map_for(MovementZone::Normal))
+            .expect("normal zone map")
+            .zone_at(0, 0, MovementLayer::Ground),
+        ZONE_INVALID,
+        "OccupationBits=0 is a reduced Building zone even though PathGrid is walkable"
+    );
+
+    {
+        let (production, terrain) = (&mut sim.production, &mut sim.resolved_terrain);
+        unmark_terrain_occupation(production, &tree, terrain.as_mut());
+    }
+    let tail_path_grid = sim
+        .refresh_navigation_after_terrain_deaths(Some(&input_path_grid), &[(0, 0)])
+        .expect("tail grid");
+
+    assert_eq!(tail_path_grid, input_path_grid);
+    assert_eq!(
+        sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .cell(0, 0)
+            .unwrap()
+            .zone_type,
+        zone_class::GROUND
+    );
+    assert_ne!(
+        sim.zone_grid
+            .as_ref()
+            .and_then(|zones| zones.map_for(MovementZone::Normal))
+            .expect("normal zone map")
+            .zone_at(0, 0, MovementLayer::Ground),
+        ZONE_INVALID,
+        "forced rebuild must observe the reduced-zone change despite identical PathGrid cells"
+    );
+}
+
 fn water_terrain_with_land_type(
     width: u16,
     height: u16,
@@ -214,7 +384,10 @@ fn water_terrain_with_land_type(
                 canonical_ramp: None,
                 ground_walk_blocked: false,
                 terrain_object_blocks: false,
+                terrain_object_occupation: None,
                 overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
                 zone_type: 4,
                 base_ground_walk_blocked: false,
                 base_build_blocked: false,
@@ -275,7 +448,10 @@ fn single_bridge_cell(rx: u16, ry: u16, deck_level: u8) -> ResolvedTerrainGrid {
                 canonical_ramp: None,
                 ground_walk_blocked: false,
                 terrain_object_blocks: false,
+                terrain_object_occupation: None,
                 overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
                 zone_type: 0,
                 base_ground_walk_blocked: false,
                 base_build_blocked: false,
@@ -381,7 +557,10 @@ fn ew_high_bridge_strip_for_dispatch(
                 canonical_ramp: None,
                 ground_walk_blocked: on_bridge && ground_walk_blocked,
                 terrain_object_blocks: false,
+                terrain_object_occupation: None,
                 overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
                 zone_type: 0,
                 base_ground_walk_blocked: false,
                 base_build_blocked: on_bridge && ground_walk_blocked,
@@ -529,13 +708,10 @@ fn gate_test_rules() -> RuleSet {
 }
 
 #[test]
-fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
-    // Native frame / tick contract: binary_frame is committed LATE (end of
-    // advance_tick), so a Phase-1 consumer sees the pre-increment frame N
-    // during the tick. One 67ms tick crosses the 0->1 binary-frame boundary:
-    // the gate's start_opening must capture frame 0 (pre-increment) while the
-    // committed counter ends at 1. If the counter were advanced at the TOP of
-    // advance_tick, the gate would capture 1 — this test guards that regression.
+fn native_frame_committed_late_gate_captures_pre_increment_frame() {
+    // The native frame is committed LATE, so a Phase-1 consumer sees frame N
+    // during the whole advance. The host duration is deliberately one
+    // millisecond: admission, not elapsed time, advances the frame.
     use crate::sim::game_entity::{BuildingGateMissionState, BuildingGatePhase};
 
     let mut sim = Simulation::new();
@@ -557,12 +733,12 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
     }
     assert_eq!(sim.session.binary_frame, 0, "fresh sim starts at frame 0");
 
-    let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+    let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 1);
 
     // Committed late: post-tick frame advanced to 1.
     assert_eq!(
         sim.session.binary_frame, 1,
-        "binary_frame committed late to 1"
+        "native frame committed late to 1"
     );
     // The consumer captured the PRE-increment frame 0 during the tick.
     let rt = sim
@@ -766,8 +942,9 @@ fn test_spawn_sets_position_and_facing() {
         assert_eq!(e.facing, 64);
         assert_eq!(sim.interner.resolve(e.type_ref), "HTNK");
         // lepton_to_screen = CoordsToClient(cell_center) = (30*(30-40), 15*(30+40)+15) = (-300, 1065)
-        assert!((e.position.screen_x - (-300.0)).abs() < 0.1);
-        assert!((e.position.screen_y - 1065.0).abs() < 0.1);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
+        assert!((sx - (-300.0)).abs() < 0.1);
+        assert!((sy - 1065.0).abs() < 0.1);
     }
 }
 
@@ -845,7 +1022,10 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
                         canonical_ramp: None,
                         ground_walk_blocked: false,
                         terrain_object_blocks: false,
+                        terrain_object_occupation: None,
                         overlay_blocks: false,
+                        overlay_zone_type: None,
+                        outside_playfield: false,
                         zone_type: 0,
                         base_ground_walk_blocked: false,
                         base_build_blocked: false,
@@ -1947,17 +2127,28 @@ fn test_too_big_ship_can_move_under_bridge_route() {
         ..Default::default()
     });
 
-    // Use tick_ms=1000 so the ship crosses the cell boundary in 1 tick
-    // (speed=256 * dt=1.0 = 256 leptons = 1 cell).
+    // TooBigToFitUnderBridge is rendering-only in retail. Advance admitted
+    // native frames until the one-cell route completes; host milliseconds do
+    // not scale locomotor movement.
     let path_grid = PathGrid::new(2, 1);
-    let _ = sim.advance_tick(
-        &[],
-        Some(&rules),
-        &BTreeMap::new(),
-        Some(&path_grid),
-        None,
-        1000,
-    );
+    for _ in 0..16 {
+        let _ = sim.advance_tick(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&path_grid),
+            None,
+            1,
+        );
+        if sim
+            .substrate
+            .entities
+            .get(ship_id)
+            .is_some_and(|ship| ship.movement_target.is_none())
+        {
+            break;
+        }
+    }
 
     let ship = sim
         .substrate
@@ -1966,7 +2157,7 @@ fn test_too_big_ship_can_move_under_bridge_route() {
         .expect("ship still exists");
     assert!(
         ship.movement_target.is_none(),
-        "Naval ships should finish a direct move under bridge structural cells in the experimental behavior"
+        "TooBigToFitUnderBridge must not gate the ship's direct retail route"
     );
     assert_eq!((ship.position.rx, ship.position.ry), (1, 0));
 }
@@ -2604,6 +2795,235 @@ fn test_stop_command_clears_move_and_attack_intent() {
 }
 
 #[test]
+fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
+    let mut sim = Simulation::new();
+    sim.spawn_from_map(
+        &[MapEntity {
+            owner: "Americans".to_string(),
+            type_id: "MTNK".to_string(),
+            health: 256,
+            cell_x: 4,
+            cell_y: 4,
+            facing: 64,
+            category: EntityCategory::Unit,
+            sub_cell: 0,
+            veterancy: 0,
+            high: false,
+        }],
+        None,
+        &empty_heights(),
+    );
+    {
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        entity.locomotor = Some(
+            crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+                crate::rules::locomotor_type::LocomotorKind::Drive,
+            ),
+        );
+        entity.drive_locomotion = Some(Default::default());
+        entity.facing = 64;
+    }
+
+    let grid = PathGrid::new(16, 16);
+    let issued = {
+        let (entities, cell_occupation) = (
+            &mut sim.substrate.entities,
+            &mut sim.substrate.cell_occupation,
+        );
+        crate::sim::movement::issue_move_command_with_layered(
+            entities,
+            &grid,
+            1,
+            (8, 4),
+            SimFixed::from_num(128),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            Some(cell_occupation),
+        )
+    };
+    assert!(issued);
+    {
+        let movement = sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .movement_target
+            .as_mut()
+            .unwrap();
+        movement.accel_factor = SimFixed::lit("0.03");
+        movement.decel_factor = SimFixed::lit("0.002");
+        movement.slowdown_distance = SimFixed::from_num(500);
+    }
+    assert!(sim.substrate.entities.get(1).unwrap().drive_track.is_some());
+    let committed_head = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .drive_locomotion
+        .as_ref()
+        .and_then(|drive| drive.occupation_head_to)
+        .expect("first Drive step has a committed occupation head");
+    assert_eq!((committed_head.rx, committed_head.ry), (5, 4));
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .movement_target
+            .as_ref()
+            .unwrap()
+            .final_goal,
+        Some((8, 4))
+    );
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Stop { entity_id: 1 },
+        None,
+        Some(&grid),
+        &empty_heights(),
+    ));
+    let stopped = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(stopped.navigation.nav_com, None);
+    assert!(stopped.movement_target.is_some());
+    assert!(stopped.drive_track.is_some());
+    let stopped_target = stopped.movement_target.as_ref().unwrap();
+    assert_eq!(
+        stopped_target.path,
+        vec![(4, 4), (committed_head.rx, committed_head.ry)]
+    );
+    assert_eq!(
+        stopped_target.final_goal,
+        Some((committed_head.rx, committed_head.ry))
+    );
+    let drive = stopped.drive_locomotion.as_ref().unwrap();
+    assert!(drive.head_to.is_some());
+    assert!(drive.occupation_head_to.is_some());
+    assert!(sim.substrate.occupancy.contains_entity(4, 4, 1));
+    assert!(
+        !sim.substrate
+            .occupancy
+            .contains_entity(committed_head.rx, committed_head.ry, 1)
+    );
+
+    let heights = empty_heights();
+    let initial_point_index = stopped.drive_track.as_ref().unwrap().point_index;
+    let mut cursor_advanced = false;
+    for _ in 0..32 {
+        let _ = sim.advance_tick(&[], None, &heights, Some(&grid), None, 33);
+        cursor_advanced = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .drive_track
+            .as_ref()
+            .is_some_and(|track| track.point_index > initial_point_index);
+        if cursor_advanced {
+            break;
+        }
+    }
+    assert!(
+        cursor_advanced,
+        "the committed Drive cursor must keep consuming after Stop clears its owner destination"
+    );
+    assert!(sim.substrate.occupancy.contains_entity(4, 4, 1));
+    assert!(
+        !sim.substrate
+            .occupancy
+            .contains_entity(committed_head.rx, committed_head.ry, 1)
+    );
+    assert_eq!(
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(4, 4, MovementLayer::Ground),
+        0,
+        "the first paid post-Stop point clears current occupation without stranding the track"
+    );
+
+    for _ in 0..192 {
+        if sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .movement_target
+            .is_none()
+        {
+            break;
+        }
+        let _ = sim.advance_tick(&[], None, &heights, Some(&grid), None, 33);
+    }
+
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        (entity.position.rx, entity.position.ry),
+        (committed_head.rx, committed_head.ry)
+    );
+    assert!(entity.movement_target.is_none());
+    assert!(entity.drive_track.is_none());
+    let drive = entity.drive_locomotion.as_ref().unwrap();
+    assert_eq!(drive.head_to, None);
+    assert_eq!(drive.occupation_head_to, None);
+    assert!(
+        sim.substrate
+            .occupancy
+            .contains_entity(committed_head.rx, committed_head.ry, 1)
+    );
+    assert_eq!(
+        sim.substrate.cell_occupation.vehicle_bits(
+            committed_head.rx,
+            committed_head.ry,
+            MovementLayer::Ground
+        ),
+        crate::sim::occupancy::VEHICLE_OCCUPATION_BIT
+    );
+    assert!(!sim.substrate.occupancy.contains_entity(6, 4, 1));
+    assert!(!sim.substrate.occupancy.contains_entity(8, 4, 1));
+    assert_eq!(
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(6, 4, MovementLayer::Ground),
+        0
+    );
+    assert_eq!(
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(8, 4, MovementLayer::Ground),
+        0
+    );
+
+    for _ in 0..32 {
+        let _ = sim.advance_tick(&[], None, &heights, Some(&grid), None, 33);
+    }
+    let parked = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        (parked.position.rx, parked.position.ry),
+        (committed_head.rx, committed_head.ry),
+        "Stop must remain parked at the committed head after the old route is gone"
+    );
+    assert!(parked.movement_target.is_none());
+    let drive = parked.drive_locomotion.as_ref().unwrap();
+    assert_eq!(drive.head_to, None);
+    assert_eq!(drive.occupation_head_to, None);
+    assert!(!sim.substrate.occupancy.contains_entity(6, 4, 1));
+    assert_eq!(
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(6, 4, MovementLayer::Ground),
+        0
+    );
+}
+
+#[test]
 fn test_move_command_rejects_non_owned_entity() {
     let mut sim: Simulation = Simulation::new();
     sim.spawn_from_map(
@@ -2889,6 +3309,9 @@ fn test_attack_move_auto_acquires_enemy() {
         None,
         100,
     );
+    // Native EventClass dispatch is in Main_Tick's tail, after the object-AI
+    // walk.  The command arms AttackMove here; acquisition begins next frame.
+    let _ = sim.advance_tick(&[], Some(&rules), &empty_heights(), Some(&grid), None, 100);
     let attack = sim
         .substrate
         .entities
@@ -2970,6 +3393,9 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
         None,
         100,
     );
+    // The tail-dispatched AttackMove cannot participate in the object-AI walk
+    // that preceded it.  Its first acquisition/fire opportunity is frame two.
+    let _ = sim.advance_tick(&[], Some(&rules), &empty_heights(), Some(&grid), None, 100);
     let victim = sim
         .substrate
         .entities
@@ -3035,9 +3461,6 @@ fn test_guard_returns_to_anchor_when_displaced() {
     if let Some(e) = sim.substrate.entities.get_mut(1) {
         e.position.rx = 5;
         e.position.ry = 2;
-        let (sx, sy) = terrain::iso_to_screen(5, 2, e.position.z);
-        e.position.screen_x = sx;
-        e.position.screen_y = sy;
         e.movement_target = None;
         e.attack_target = None;
     }
@@ -3092,9 +3515,6 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
     if let Some(e) = sim.substrate.entities.get_mut(1) {
         e.position.rx = 2;
         e.position.ry = 1;
-        let (nx, ny) = terrain::iso_to_screen(2, 1, 0);
-        e.position.screen_x = nx;
-        e.position.screen_y = ny;
     }
     let _ = sim.advance_tick(&[], None, &empty_heights(), Some(&grid), None, 33);
     assert!(!sim.fog.is_cell_visible(americans, 1, 1));
@@ -3229,7 +3649,10 @@ fn level_has_single_source_of_truth_for_vision_height_derivation() {
                 canonical_ramp: None,
                 ground_walk_blocked: false,
                 terrain_object_blocks: false,
+                terrain_object_occupation: None,
                 overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
                 zone_type: 0,
                 base_ground_walk_blocked: false,
                 base_build_blocked: false,
@@ -3359,7 +3782,10 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
         canonical_ramp: None,
         ground_walk_blocked: false,
         terrain_object_blocks: false,
+        terrain_object_occupation: None,
         overlay_blocks: false,
+        overlay_zone_type: None,
+        outside_playfield: false,
         zone_type: 0,
         base_ground_walk_blocked: false,
         base_build_blocked: false,
@@ -3657,8 +4083,16 @@ fn command_death_is_ignored_before_ordinary_tail_drain() {
     );
     assert_eq!(
         sim.power_states.get(&owner_id).map(|s| s.total_output),
+        Some(200),
+        "power ran before EventClass sold the plant at the native command tail",
+    );
+
+    // The next object/system frame observes the tail-committed deletion.
+    sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 100);
+    assert_eq!(
+        sim.power_states.get(&owner_id).map(|s| s.total_output),
         Some(100),
-        "sold dead-limbo plant must not contribute power before the tail drain",
+        "the surviving plant is the only contributor on the following frame",
     );
 }
 

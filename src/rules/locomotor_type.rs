@@ -29,11 +29,19 @@ pub enum LocomotorKind {
     Drive,
     /// Hovering vehicle (Robot Tank, Hover MLRS). ~35% slower than Drive.
     Hover,
-    /// Burrowing unit (Terror Drone underground). Two-mode: surface + underground.
+    /// Tiberian Sun subterranean burrowing. **Inert — no movement system, and no
+    /// CLSID resolves to it**, so nothing can construct one. The variant is
+    /// retained only because `world_hash` hashes this enum by discriminant
+    /// (`(loco.kind as u8)`), so deleting it would renumber every later variant
+    /// and shift the replay baseline for zero runtime benefit. Fold it into the
+    /// substrate's locomotor class when that migration re-baselines anyway.
+    /// Not to be confused with low-bridge `TubeClass` movement, which is live YR.
     Tunnel,
     /// Infantry ground movement. Distinct arrival threshold from vehicles.
     Walk,
-    /// Falling entry (drop pods). Temporary — restores previous locomotor on landing.
+    /// Tiberian Sun drop-pod entry. **Inert** for the same reason as
+    /// [`LocomotorKind::Tunnel`] — no movement system, no CLSID resolves to it,
+    /// and the variant is kept only to preserve discriminant numbering.
     DropPod,
     /// True aircraft (Harrier, Kirov). Dedicated altitude state machine.
     Fly,
@@ -47,9 +55,11 @@ pub enum LocomotorKind {
     Jumpjet,
     /// Spawned missile (V3, Dreadnought). Scripted missile controller.
     Rocket,
-    /// Falling under a parachute (paradropped infantry). Runtime-only override —
-    /// no CLSID maps to it. Set by `OverrideKind::Parachute`, restores base
-    /// locomotor on landing.
+    /// Falling under a parachute (paradropped infantry). Runtime-only — no
+    /// CLSID maps to it, so it is not installable and cannot reach a locomotor
+    /// slot. Nothing sets it today: the separate "override" mechanism that once
+    /// did was folded into the single piggyback slot, and paradrop descent
+    /// carries its own state rather than displacing the locomotor.
     Parachute,
 }
 
@@ -57,9 +67,7 @@ pub enum LocomotorKind {
 /// Format in rules.ini: `Locomotor={CLSID-GUID}`
 const CLSID_DRIVE: &str = "4A582741-9839-11D1-B709-00A024DDAFD1";
 const CLSID_HOVER: &str = "4A582742-9839-11D1-B709-00A024DDAFD1";
-const CLSID_TUNNEL: &str = "4A582743-9839-11D1-B709-00A024DDAFD1";
 const CLSID_WALK: &str = "4A582744-9839-11D1-B709-00A024DDAFD1";
-const CLSID_DROPPOD: &str = "4A582745-9839-11D1-B709-00A024DDAFD1";
 const CLSID_FLY: &str = "4A582746-9839-11D1-B709-00A024DDAFD1";
 const CLSID_TELEPORT: &str = "4A582747-9839-11D1-B709-00A024DDAFD1";
 const CLSID_MECH: &str = "55D141B8-DB94-11D1-AC98-006008055BB5";
@@ -84,9 +92,7 @@ impl LocomotorKind {
         match normalized.as_str() {
             CLSID_DRIVE => Self::Drive,
             CLSID_HOVER => Self::Hover,
-            CLSID_TUNNEL => Self::Tunnel,
             CLSID_WALK => Self::Walk,
-            CLSID_DROPPOD => Self::DropPod,
             CLSID_FLY => Self::Fly,
             CLSID_TELEPORT => Self::Teleport,
             CLSID_MECH => Self::Mech,
@@ -100,16 +106,6 @@ impl LocomotorKind {
                 );
                 Self::Teleport
             }
-        }
-    }
-
-    /// Default locomotor for a given object category when Locomotor= is absent.
-    pub fn default_for_category(category: ObjectCategory) -> Self {
-        match category {
-            ObjectCategory::Infantry => Self::Walk,
-            ObjectCategory::Vehicle => Self::Drive,
-            ObjectCategory::Aircraft => Self::Fly,
-            ObjectCategory::Building => Self::Drive, // immobile, but safe default
         }
     }
 }
@@ -281,7 +277,7 @@ impl MovementZone {
             "amphibiousdestroyer" => Self::AmphibiousDestroyer,
             "amphibiouscrusher" => Self::AmphibiousCrusher,
             "amphibious" => Self::Amphibious,
-            "subterannean" | "subterranean" | "subterrannean" => Self::Subterranean,
+            "subterannean" => Self::Subterranean,
             "infantry" => Self::Infantry,
             "infantrydestroyer" => Self::InfantryDestroyer,
             "fly" => Self::Fly,
@@ -371,6 +367,51 @@ impl MovementZone {
 mod tests {
     use super::*;
 
+    /// The two locomotor CLSIDs whose movement systems were removed as Tiberian
+    /// Sun legacy. Kept here, not in the production table, precisely because
+    /// nothing in the engine may resolve them any more.
+    const DORMANT_CLSID_TUNNEL: &str = "4A582743-9839-11D1-B709-00A024DDAFD1";
+    const DORMANT_CLSID_DROPPOD: &str = "4A582745-9839-11D1-B709-00A024DDAFD1";
+
+    /// No stock unit selects the Tunnel or DropPod locomotor, which is what
+    /// makes removing those two movement systems safe.
+    ///
+    /// The golden is retail INI bytes — not a hand-written list and not a
+    /// Rust-vs-Rust comparison — so this is a genuine parity check on the
+    /// dormancy claim. If a future INI reintroduces either CLSID this goes red,
+    /// which is the correct signal: the engine would then silently fall back to
+    /// the default locomotor for those units.
+    ///
+    /// Scope of the claim: `rulesmd.ini` and `rules.ini` only. Campaign, mission
+    /// and map INIs are UNCHECKED.
+    #[test]
+    fn dormant_clsids_absent_from_retail_inis() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for name in ["rulesmd.ini", "rules.ini"] {
+            let path = root.join("ini").join(name);
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!(
+                    "cannot read {}: {e}. The gitignored ini/ directory is required; \
+                     a fresh worktree needs it copied in from the main checkout.",
+                    path.display()
+                )
+            });
+            let upper = text.to_ascii_uppercase();
+            for (label, clsid) in [
+                ("Tunnel", DORMANT_CLSID_TUNNEL),
+                ("DropPod", DORMANT_CLSID_DROPPOD),
+            ] {
+                let hits = upper.matches(clsid).count();
+                assert_eq!(
+                    hits, 0,
+                    "{name} references the dormant {label} locomotor CLSID {clsid} {hits} time(s); \
+                     its movement system was removed, so those units would fall back to the \
+                     default locomotor"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_clsid_drive() {
         let kind = LocomotorKind::from_clsid("{4A582741-9839-11d1-B709-00A024DDAFD1}");
@@ -379,7 +420,8 @@ mod tests {
 
     #[test]
     fn test_clsid_all_known() {
-        // All 11 standard RA2/YR locomotor CLSIDs.
+        // The 9 CLSIDs that map to an implemented locomotor. Tunnel and DropPod
+        // are deliberately absent — see dormant_clsids_absent_from_retail_inis.
         let cases: Vec<(&str, LocomotorKind)> = vec![
             (
                 "{4A582741-9839-11d1-B709-00A024DDAFD1}",
@@ -390,16 +432,8 @@ mod tests {
                 LocomotorKind::Hover,
             ),
             (
-                "{4A582743-9839-11d1-B709-00A024DDAFD1}",
-                LocomotorKind::Tunnel,
-            ),
-            (
                 "{4A582744-9839-11d1-B709-00A024DDAFD1}",
                 LocomotorKind::Walk,
-            ),
-            (
-                "{4A582745-9839-11d1-B709-00A024DDAFD1}",
-                LocomotorKind::DropPod,
             ),
             ("{4A582746-9839-11d1-B709-00A024DDAFD1}", LocomotorKind::Fly),
             (
@@ -446,26 +480,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_for_category() {
-        assert_eq!(
-            LocomotorKind::default_for_category(ObjectCategory::Infantry),
-            LocomotorKind::Walk
-        );
-        assert_eq!(
-            LocomotorKind::default_for_category(ObjectCategory::Vehicle),
-            LocomotorKind::Drive
-        );
-        assert_eq!(
-            LocomotorKind::default_for_category(ObjectCategory::Aircraft),
-            LocomotorKind::Fly
-        );
-        assert_eq!(
-            LocomotorKind::default_for_category(ObjectCategory::Building),
-            LocomotorKind::Drive
-        );
-    }
-
-    #[test]
     fn test_speed_type_from_ini() {
         assert_eq!(SpeedType::from_ini("Foot"), SpeedType::Foot);
         assert_eq!(SpeedType::from_ini("Track"), SpeedType::Track);
@@ -483,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn test_movement_zone_from_ini() {
+    fn gsi_04_04_movement_zone_parser_accepts_only_retail_labels() {
         assert_eq!(MovementZone::from_ini("Normal"), MovementZone::Normal);
         assert_eq!(MovementZone::from_ini("crusher"), MovementZone::Crusher);
         assert_eq!(MovementZone::from_ini("DESTROYER"), MovementZone::Destroyer);
@@ -502,16 +516,7 @@ mod tests {
         );
         assert_eq!(MovementZone::from_ini("Fly"), MovementZone::Fly);
         assert_eq!(
-            MovementZone::from_ini("Subterranean"),
-            MovementZone::Subterranean
-        );
-        assert_eq!(
             MovementZone::from_ini("Subterannean"),
-            MovementZone::Subterranean
-        );
-        // Legacy misspelling still works
-        assert_eq!(
-            MovementZone::from_ini("Subterrannean"),
             MovementZone::Subterranean
         );
         assert_eq!(
@@ -526,6 +531,14 @@ mod tests {
         assert_eq!(
             MovementZone::from_ini("CrusherAll"),
             MovementZone::CrusherAll
+        );
+        assert_eq!(
+            MovementZone::from_ini("Subterranean"),
+            MovementZone::Invalid
+        );
+        assert_eq!(
+            MovementZone::from_ini("Subterrannean"),
+            MovementZone::Invalid
         );
     }
 

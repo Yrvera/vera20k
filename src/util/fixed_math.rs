@@ -44,6 +44,16 @@ pub const SIM_1_5: SimFixed = SimFixed::lit("1.5");
 /// Smallest representable positive value (1/65536 ≈ 0.000015).
 pub const SIM_EPSILON: SimFixed = SimFixed::DELTA;
 
+/// Duration of one native movement frame, in seconds.
+///
+/// Retail locomotors integrate their per-second values once for each 15 Hz
+/// game frame. Keeping this fraction here gives every locomotor the same
+/// deterministic fixed-point rounding.
+#[inline]
+pub fn native_movement_frame_fraction() -> SimFixed {
+    SIM_ONE / SimFixed::from_num(15u8)
+}
+
 /// Canonical simulation tick rate in Hz — matches RA2's native 15 fps game
 /// logic rate. At 15 Hz every sim tick equals one RA2 game frame, so INI
 /// timing values (ROF, Speed, Rate, etc.) can be used directly without
@@ -141,13 +151,21 @@ pub fn fixed_lerp(a: SimFixed, b: SimFixed, t: SimFixed) -> SimFixed {
 /// Fixed-point `max(a, b)`.
 #[inline]
 pub fn fixed_max(a: SimFixed, b: SimFixed) -> SimFixed {
-    if a >= b { a } else { b }
+    if a >= b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Fixed-point `min(a, b)`.
 #[inline]
 pub fn fixed_min(a: SimFixed, b: SimFixed) -> SimFixed {
-    if a <= b { a } else { b }
+    if a <= b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Deterministic fixed-point square root via Newton's method.
@@ -261,53 +279,21 @@ pub fn isqrt_i64(val: i64) -> i64 {
     guess
 }
 
-/// Facing calculation from iso-grid cell delta, quantized to u8 (0–255).
+/// Facing calculation from a screen-relative coordinate delta.
 ///
-/// Returns RA2's screen-relative DirStruct byte:
-/// - 0 = north on screen (iso −dx,−dy)
-/// - 64 = east on screen (iso +dx,−dy)
-/// - 128 = south on screen (iso +dx,+dy)
-/// - 192 = west on screen (iso −dx,+dy)
-///
-/// The isometric projection rotates the grid 45° CW relative to the screen,
-/// so `atan2(dx, -dy)` gives the iso-grid angle which is 32 (45°) behind the
-/// screen-relative DirStruct. We add 32 to correct for this rotation.
-///
-/// This uses f32 atan2 internally, which is safe for determinism because the
-/// output is quantized to 256 values. Any cross-platform f32 rounding
-/// differences (at most 1 ULP) map to the same u8 bucket. The inputs are
-/// small integers (cell deltas), so the atan2 result is always well-defined.
+/// Returns the high byte of the active-retail full-word conversion. Computed
+/// east and south are therefore 63 and 127; authored quarter-turn facings
+/// remain the exact table values 64 and 128.
 pub fn facing_from_delta_int(dx: i32, dy: i32) -> u8 {
-    if dx == 0 && dy == 0 {
-        return 0;
-    }
-    // atan2(dx, -dy) gives angle where iso-grid north (-dx,-dy) = 0 radians.
-    // Cell deltas are already in isometric screen-relative space:
-    //   dx=+1,dy=0 → top-right on screen → NE → facing ~32
-    //   dx=0,dy=+1 → bottom-right on screen → SE → facing ~96
-    //   dx=+1,dy=+1 → right on screen → E → facing 64
-    let angle_rad: f32 = (dx as f32).atan2(-dy as f32);
-    // Convert radians (-PI..PI) to 0..255 facing range.
-    let facing_f32: f32 = angle_rad / std::f32::consts::TAU * 256.0;
-    // rem_euclid handles negative angles (west direction).
-    (facing_f32 as i32).rem_euclid(256) as u8
+    crate::sim::substrate::direction_tables::facing8_from_delta(dx, dy)
 }
 
-/// 16-bit facing from iso-grid delta, quantized to u16 (0–65535).
+/// Full-word facing from a screen-relative coordinate delta.
 ///
-/// Same algorithm as `facing_from_delta_int` but produces a 16-bit DirStruct
-/// for full FacingClass precision. Used for turret rotation tracking where
-/// sub-bucket accumulation matters.
-///
-/// Accepts any integer delta — cell deltas, lepton deltas, or mixed.
-/// The atan2 result depends only on the ratio dx/dy, not the scale.
+/// This preserves the native lookup, float-store, quadrant, and 65,534-scale
+/// boundaries used before a value enters `FacingClass`.
 pub fn facing_from_delta_int_u16(dx: i32, dy: i32) -> u16 {
-    if dx == 0 && dy == 0 {
-        return 0;
-    }
-    let angle_rad: f32 = (dx as f32).atan2(-dy as f32);
-    let facing_f32: f32 = angle_rad / std::f32::consts::TAU * 65536.0;
-    (facing_f32 as i32).rem_euclid(65536) as u16
+    crate::sim::substrate::direction_tables::facing16_from_delta(dx, dy)
 }
 
 /// Inverse of `facing_from_delta_int` for quantized 8-direction facings.
@@ -472,15 +458,11 @@ mod tests {
 
     #[test]
     fn test_facing_cardinals() {
-        // RA2 facing: 0=N, 64=E, 128=S, 192=W (screen-relative).
-        // Iso cell deltas: +dx = east on screen, +dy = south on screen.
-        // (0,-1) = north on screen → facing 0
+        // Computed directions use the native 65,534-unit scale before exposing
+        // the high byte. Authored quarter turns remain 64/128/192.
         assert_eq!(facing_from_delta_int(0, -1), 0);
-        // (1,0) = east on screen → facing 64
-        assert_eq!(facing_from_delta_int(1, 0), 64);
-        // (0,1) = south on screen → facing 128
-        assert_eq!(facing_from_delta_int(0, 1), 128);
-        // (-1,0) = west on screen → facing 192
+        assert_eq!(facing_from_delta_int(1, 0), 63);
+        assert_eq!(facing_from_delta_int(0, 1), 127);
         assert_eq!(facing_from_delta_int(-1, 0), 192);
     }
 
@@ -503,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_facing_zero_delta() {
-        assert_eq!(facing_from_delta_int(0, 0), 0);
+        assert_eq!(facing_from_delta_int(0, 0), 63);
     }
 
     /// Verify facing produces sane quadrant values for a grid of deltas.
@@ -546,28 +528,27 @@ mod tests {
 
     #[test]
     fn test_facing_u16_cardinals() {
-        // 0=N, 16384=E, 32768=S, 49152=W in 16-bit DirStruct.
         assert_eq!(facing_from_delta_int_u16(0, -1), 0);
-        assert_eq!(facing_from_delta_int_u16(1, 0), 16384);
-        assert_eq!(facing_from_delta_int_u16(0, 1), 32768);
-        assert_eq!(facing_from_delta_int_u16(-1, 0), 49152);
+        assert_eq!(facing_from_delta_int_u16(1, 0), 0x3fff);
+        assert_eq!(facing_from_delta_int_u16(0, 1), 0x7fff);
+        assert_eq!(facing_from_delta_int_u16(-1, 0), 0xc001);
     }
 
     #[test]
     fn test_facing_u16_diagonals() {
         let ne: u16 = facing_from_delta_int_u16(1, -1);
-        assert!((ne as i32 - 8192).abs() <= 1, "NE facing={ne}");
+        assert_eq!(ne, 8_315);
         let se: u16 = facing_from_delta_int_u16(1, 1);
-        assert!((se as i32 - 24576).abs() <= 1, "SE facing={se}");
+        assert_eq!(se, 24_451);
         let sw: u16 = facing_from_delta_int_u16(-1, 1);
-        assert!((sw as i32 - 40960).abs() <= 1, "SW facing={sw}");
+        assert_eq!(sw, 41_082);
         let nw: u16 = facing_from_delta_int_u16(-1, -1);
-        assert!(nw >= 57343 || nw <= 1, "NW facing={nw}");
+        assert_eq!(nw, 57_221);
     }
 
     #[test]
     fn test_facing_u16_zero_delta() {
-        assert_eq!(facing_from_delta_int_u16(0, 0), 0);
+        assert_eq!(facing_from_delta_int_u16(0, 0), 0x3fff);
     }
 
     #[test]

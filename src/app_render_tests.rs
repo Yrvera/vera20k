@@ -7,7 +7,6 @@ use crate::app_input::CLICK_SELECT_RADIUS;
 use crate::app_sidebar_render::sync_targeting_mode;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
-use crate::map::terrain;
 use crate::sim::components::Health;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -17,11 +16,14 @@ use crate::sim::vision::FogState;
 use crate::sim::world::Simulation;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn spawn_mobile(store: &mut EntityStore, sid: u64, x: f32, y: f32, owner: &str, selected: bool) {
+/// Spawn a mobile unit **at a cell**. Where it lands on screen is derived, so
+/// tests take their click and box coordinates from [`screen_of`] rather than
+/// inventing pixel values that no longer have anywhere to be stored.
+fn spawn_mobile(store: &mut EntityStore, sid: u64, rx: u16, ry: u16, owner: &str, selected: bool) {
     let mut entity = GameEntity::new_at_frame_zero_for_test(
         sid,
-        0,
-        0,
+        rx,
+        ry,
         0,
         0,
         test_intern(owner),
@@ -35,10 +37,13 @@ fn spawn_mobile(store: &mut EntityStore, sid: u64, x: f32, y: f32, owner: &str, 
         5,
         false,
     );
-    entity.position.screen_x = x;
-    entity.position.screen_y = y;
     entity.selected = selected;
     store.insert(entity);
+}
+
+/// Where an entity in `store` is drawn — the same answer the picking code gets.
+fn screen_of(store: &EntityStore, sid: u64) -> (f32, f32) {
+    crate::render::locomotor_visual::screen_position(store.get(sid).expect("entity"))
 }
 
 fn allied_fog_with_visible_cells(
@@ -73,16 +78,19 @@ fn allied_fog_with_visible_cells(
 #[test]
 fn test_click_replace_selects_only_target() {
     let mut store = EntityStore::new();
-    spawn_mobile(&mut store, 1, 100.0, 100.0, "Americans", true);
-    spawn_mobile(&mut store, 2, 140.0, 100.0, "Americans", false);
+    // Two cells apart is 67px, comfortably outside CLICK_SELECT_RADIUS, so a
+    // click on one cannot also catch the other.
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", true);
+    spawn_mobile(&mut store, 2, 12, 10, "Americans", false);
+    let (cx, cy) = screen_of(&store, 2);
 
     let empty_heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let snapshot = compute_click_selection_snapshot(
         &store,
         None,
         None,
-        140.0,
-        100.0,
+        cx,
+        cy,
         CLICK_SELECT_RADIUS,
         false,
         None,
@@ -97,16 +105,18 @@ fn test_click_replace_selects_only_target() {
 #[test]
 fn test_click_additive_toggles_membership() {
     let mut store = EntityStore::new();
-    spawn_mobile(&mut store, 1, 100.0, 100.0, "Americans", true);
-    spawn_mobile(&mut store, 2, 140.0, 100.0, "Americans", false);
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", true);
+    spawn_mobile(&mut store, 2, 12, 10, "Americans", false);
+    let (first_x, first_y) = screen_of(&store, 1);
+    let (second_x, second_y) = screen_of(&store, 2);
 
     let empty_heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let added = compute_click_selection_snapshot(
         &store,
         None,
         None,
-        140.0,
-        100.0,
+        second_x,
+        second_y,
         CLICK_SELECT_RADIUS,
         true,
         None,
@@ -121,8 +131,8 @@ fn test_click_additive_toggles_membership() {
         &store,
         None,
         None,
-        100.0,
-        100.0,
+        first_x,
+        first_y,
         CLICK_SELECT_RADIUS,
         true,
         None,
@@ -137,13 +147,13 @@ fn test_click_additive_toggles_membership() {
 #[test]
 fn test_box_additive_toggles_and_excludes_structures() {
     let mut store = EntityStore::new();
-    spawn_mobile(&mut store, 1, 90.0, 90.0, "Americans", true);
-    spawn_mobile(&mut store, 2, 130.0, 90.0, "Americans", true);
-    spawn_mobile(&mut store, 3, 170.0, 90.0, "Americans", false);
-    let mut building = GameEntity::new_at_frame_zero_for_test(
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", true);
+    spawn_mobile(&mut store, 2, 12, 10, "Americans", true);
+    spawn_mobile(&mut store, 3, 14, 10, "Americans", false);
+    let building = GameEntity::new_at_frame_zero_for_test(
         4,
-        0,
-        0,
+        11,
+        11,
         0,
         0,
         test_intern("Americans"),
@@ -157,12 +167,12 @@ fn test_box_additive_toggles_and_excludes_structures() {
         5,
         false,
     );
-    building.position.screen_x = 100.0;
-    building.position.screen_y = 120.0;
     store.insert(building);
 
+    // The box covers all four: the units span (0,315)..(120,375) and the
+    // building sits at (0,345).
     let snapshot =
-        compute_box_selection_snapshot(&store, None, None, 80.0, 80.0, 180.0, 130.0, true, None)
+        compute_box_selection_snapshot(&store, None, None, -40.0, 300.0, 160.0, 400.0, true, None)
             .expect("snapshot");
     assert_eq!(snapshot, vec![3]);
 }
@@ -170,7 +180,7 @@ fn test_box_additive_toggles_and_excludes_structures() {
 #[test]
 fn test_box_replace_can_clear_selection_when_empty() {
     let mut store = EntityStore::new();
-    spawn_mobile(&mut store, 1, 90.0, 90.0, "Americans", true);
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", true);
 
     let snapshot =
         compute_box_selection_snapshot(&store, None, None, 300.0, 300.0, 340.0, 340.0, false, None)
@@ -181,7 +191,7 @@ fn test_box_replace_can_clear_selection_when_empty() {
 #[test]
 fn test_click_selection_allows_visible_allied_units_for_local_owner() {
     let mut store = EntityStore::new();
-    let mut entity = GameEntity::new_at_frame_zero_for_test(
+    let entity = GameEntity::new_at_frame_zero_for_test(
         7,
         11,
         10,
@@ -198,9 +208,8 @@ fn test_click_selection_allows_visible_allied_units_for_local_owner() {
         5,
         false,
     );
-    entity.position.screen_x = 140.0;
-    entity.position.screen_y = 100.0;
     store.insert(entity);
+    let (cx, cy) = screen_of(&store, 7);
 
     let fog = allied_fog_with_visible_cells("Americans", "British", &[(11, 10)]);
 
@@ -209,8 +218,8 @@ fn test_click_selection_allows_visible_allied_units_for_local_owner() {
         &store,
         Some(&fog),
         Some("Americans"),
-        140.0,
-        100.0,
+        cx,
+        cy,
         CLICK_SELECT_RADIUS,
         false,
         None,
@@ -229,8 +238,7 @@ fn test_pick_enemy_target_ignores_hidden_entities() {
     let soviet_id = sim.interner.intern("Soviet");
     let e1_id = sim.interner.intern("E1");
 
-    let (hx, hy) = terrain::iso_to_screen(10, 10, 0);
-    let mut hidden = GameEntity::new_at_frame_zero_for_test(
+    let hidden = GameEntity::new_at_frame_zero_for_test(
         2,
         10,
         10,
@@ -247,9 +255,9 @@ fn test_pick_enemy_target_ignores_hidden_entities() {
         5,
         false,
     );
-    hidden.position.screen_x = hx;
-    hidden.position.screen_y = hy;
     sim.entities_mut().insert(hidden);
+    let (hx, hy) =
+        crate::render::locomotor_visual::screen_position(sim.entities().get(2).expect("hidden"));
 
     let empty_heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let picked_hidden =
@@ -259,8 +267,7 @@ fn test_pick_enemy_target_ignores_hidden_entities() {
         "Hidden enemy must not be targetable"
     );
 
-    let (vx, vy) = terrain::iso_to_screen(11, 10, 0);
-    let mut visible = GameEntity::new_at_frame_zero_for_test(
+    let visible = GameEntity::new_at_frame_zero_for_test(
         3,
         11,
         10,
@@ -277,9 +284,9 @@ fn test_pick_enemy_target_ignores_hidden_entities() {
         5,
         false,
     );
-    visible.position.screen_x = vx;
-    visible.position.screen_y = vy;
     sim.entities_mut().insert(visible);
+    let (vx, vy) =
+        crate::render::locomotor_visual::screen_position(sim.entities().get(3).expect("visible"));
     sim.fog
         .mark_visible_for_owner(crate::sim::intern::test_intern("Americans"), 11, 10);
 
@@ -300,12 +307,9 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
     let gapowr_id = sim.interner.intern("GAPOWR");
     let e1_id = sim.interner.intern("E1");
 
-    // Compute screen positions using iso_to_screen, offset to cell center so
-    // screen_to_iso round-trip resolves back to the correct cell.
-    let half_tile = terrain::TILE_WIDTH / 2.0;
-    let (fsx, fsy) = terrain::iso_to_screen(5, 5, 0);
-    let (friendly_sx, friendly_sy) = (fsx + half_tile, fsy);
-    let mut friendly = GameEntity::new_at_frame_zero_for_test(
+    // Hover coordinates come from the drawn position, which is the cell
+    // centre — the point `screen_to_iso` resolves back to the right cell.
+    let friendly = GameEntity::new_at_frame_zero_for_test(
         10,
         5,
         5,
@@ -322,13 +326,11 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
         5,
         false,
     );
-    friendly.position.screen_x = friendly_sx;
-    friendly.position.screen_y = friendly_sy;
     sim.entities_mut().insert(friendly);
+    let (friendly_sx, friendly_sy) =
+        crate::render::locomotor_visual::screen_position(sim.entities().get(10).expect("friendly"));
 
-    let (esx, esy) = terrain::iso_to_screen(20, 5, 0);
-    let (enemy_sx, enemy_sy) = (esx + half_tile, esy);
-    let mut enemy = GameEntity::new_at_frame_zero_for_test(
+    let enemy = GameEntity::new_at_frame_zero_for_test(
         11,
         20,
         5,
@@ -345,9 +347,9 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
         5,
         false,
     );
-    enemy.position.screen_x = enemy_sx;
-    enemy.position.screen_y = enemy_sy;
     sim.entities_mut().insert(enemy);
+    let (enemy_sx, enemy_sy) =
+        crate::render::locomotor_visual::screen_position(sim.entities().get(11).expect("enemy"));
     sim.fog
         .mark_visible_for_owner(crate::sim::intern::test_intern("Americans"), 20, 5);
 

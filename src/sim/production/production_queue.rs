@@ -3,10 +3,13 @@
 //! Core queue loop driven by `tick_production()`. Handles credit deduction,
 //! timer advancement with dynamic rate scaling, and completed-item dispatch.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
+#[cfg(test)]
 use crate::sim::miner::{ResourceNode, ResourceType};
 use crate::sim::world::Simulation;
 
@@ -96,9 +99,11 @@ pub(super) fn next_enqueue_order(sim: &mut Simulation) -> u64 {
     order
 }
 
-/// Seed deterministic resource nodes from parsed map overlays.
+/// Legacy fixture adapter for tests that do not construct `OverlayGrid` and
+/// the parsed type registries. Production map load must never call this.
 ///
 /// Returns how many resource cells were added.
+#[cfg(test)]
 pub fn seed_resource_nodes_from_overlays(
     sim: &mut Simulation,
     overlays: &[crate::map::overlay::OverlayEntry],
@@ -393,9 +398,8 @@ pub fn tick_production(
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
-    tick_ms: u32,
 ) -> bool {
-    tick_production_with_overlay_registry(sim, rules, height_map, path_grid, None, tick_ms)
+    tick_production_with_overlay_registry(sim, rules, height_map, path_grid, None)
 }
 
 /// Advance production timers and spawn completed items with optional native
@@ -406,11 +410,7 @@ pub fn tick_production_with_overlay_registry(
     height_map: &BTreeMap<(u16, u16), u8>,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    tick_ms: u32,
 ) -> bool {
-    if tick_ms == 0 {
-        return false;
-    }
     let miner_config = crate::sim::miner::MinerConfig::from_rules(rules);
     tick_resource_economy(sim, rules, &miner_config, path_grid, overlay_registry);
     // P5d: the registry is the queue-of-record + completion authority. Collect the
@@ -558,6 +558,15 @@ pub fn tick_production_with_overlay_registry(
                         .and_then(|e| e.locomotor.as_ref())
                         .map(|l| l.speed_type);
                     let cost_grid = speed_type.and_then(|st| sim.terrain_costs.get(&st));
+                    let blocker_neighbor_counts =
+                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts(
+                            &sim.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            sim.resolved_terrain.as_ref(),
+                            &sim.interner,
+                            Some(rules),
+                        );
                     let _ = crate::sim::movement::issue_move_command_with_layered(
                         &mut sim.substrate.entities,
                         grid,
@@ -571,6 +580,8 @@ pub fn tick_production_with_overlay_registry(
                         sim.zone_grid.as_ref(),
                         None,
                         false, // mover_is_crusher
+                        Some(&blocker_neighbor_counts),
+                        Some(&mut sim.substrate.cell_occupation),
                     );
                 }
             }
@@ -835,9 +846,9 @@ pub fn cancel_by_type_for_owner(
         }
         CancelOutcome::AbandonedActive { .. } => {
             // C7: the active build was abandoned (object cleared, tail intact). Promote the
-            // next queued entry into the active slot, cost-seeded. This runs in the COMMAND
-            // phase (before this tick's `step_all`), so step_delay = 1 keeps the promoted
-            // build's first charge on the next tick (the pre-P5d reconcile-at-tail schedule).
+            // next queued entry into the active slot, cost-seeded. EventClass
+            // dispatch is after this tick's `step_all`, so step_delay = 0
+            // charges the promoted build on the next gameplay frame.
             if let Some(next_type) = sim
                 .production
                 .factory_shadow
@@ -849,7 +860,7 @@ pub fn cancel_by_type_for_owner(
                     .unwrap_or(0);
                 sim.production
                     .factory_shadow
-                    .clear_active_and_advance(owner_id, category, cost, 1);
+                    .clear_active_and_advance(owner_id, category, cost, 0);
             }
             sim.production.factory_shadow.prune_all_idle();
             true

@@ -21,20 +21,13 @@ use std::collections::HashMap;
 use crate::rules::ini_parser::IniFile;
 use crate::sim::animation::{LoopMode, SequenceDef, SequenceKind, SequenceSet};
 
-/// Default milliseconds per frame for standing pose.
-const DEFAULT_STAND_TICK_MS: u32 = 200;
-/// Default milliseconds per frame for walk cycles.
-const DEFAULT_WALK_TICK_MS: u32 = 100;
-/// Default milliseconds per frame for idle fidget animations.
-const DEFAULT_IDLE_TICK_MS: u32 = 120;
-/// Default milliseconds per frame for death animations.
-const DEFAULT_DIE_TICK_MS: u32 = 80;
-/// Default milliseconds per frame for attack/fire animations.
-const DEFAULT_ATTACK_TICK_MS: u32 = 80;
-/// Default milliseconds per frame for transition animations (Down/Up).
-const DEFAULT_TRANSITION_TICK_MS: u32 = 80;
-/// Default milliseconds per frame for cheer/paradrop/panic.
-const DEFAULT_MISC_TICK_MS: u32 = 100;
+/// Native action-record delay byte for all 42 infantry actions.
+const ACTION_FRAME_DELAYS: [u8; 42] = [
+    0, 0, 6, 3, 1, 1, 1, 1, 1, 3, 3, 1, 1, 1, 1, 1, 3, 1, 3, 3, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1,
+    3, 1, 3, 1, 3, 4, 6, 3, 1, 1,
+];
+
+const NORMALIZED_ACTIONS: [u8; 6] = [0x09, 0x0A, 0x12, 0x13, 0x17, 0x20];
 
 /// Compass direction hint for non-directional animations.
 ///
@@ -206,39 +199,50 @@ pub fn sequence_kind_from_ini_key(key: &str) -> Option<SequenceKind> {
     }
 }
 
-/// Get the default tick_ms for a given SequenceKind.
-fn default_tick_ms(kind: SequenceKind) -> u32 {
+fn action_id(kind: SequenceKind) -> u8 {
     match kind {
-        SequenceKind::Stand | SequenceKind::Deployed => DEFAULT_STAND_TICK_MS,
-        SequenceKind::Walk
-        | SequenceKind::Crawl
-        | SequenceKind::Panic
-        | SequenceKind::Swim
-        | SequenceKind::Fly
-        | SequenceKind::Hover
-        | SequenceKind::Tread => DEFAULT_WALK_TICK_MS,
-        SequenceKind::Idle1
-        | SequenceKind::Idle2
-        | SequenceKind::DeployedIdle
-        | SequenceKind::WetIdle1
-        | SequenceKind::WetIdle2 => DEFAULT_IDLE_TICK_MS,
-        SequenceKind::Die1
-        | SequenceKind::Die2
-        | SequenceKind::Die3
-        | SequenceKind::Die4
-        | SequenceKind::Die5 => DEFAULT_DIE_TICK_MS,
-        SequenceKind::Attack
-        | SequenceKind::FireProne
-        | SequenceKind::DeployedFire
-        | SequenceKind::SecondaryFire
-        | SequenceKind::SecondaryProne
-        | SequenceKind::FireFly
-        | SequenceKind::WetAttack => DEFAULT_ATTACK_TICK_MS,
-        SequenceKind::Down | SequenceKind::Up | SequenceKind::Deploy | SequenceKind::Undeploy => {
-            DEFAULT_TRANSITION_TICK_MS
-        }
-        SequenceKind::Cheer | SequenceKind::Paradrop | SequenceKind::Prone => DEFAULT_MISC_TICK_MS,
+        SequenceKind::Stand => 0,
+        SequenceKind::Prone => 2,
+        SequenceKind::Walk => 3,
+        SequenceKind::Attack => 4,
+        SequenceKind::Down => 5,
+        SequenceKind::Crawl => 6,
+        SequenceKind::Up => 7,
+        SequenceKind::FireProne => 8,
+        SequenceKind::Idle1 => 9,
+        SequenceKind::Idle2 => 10,
+        SequenceKind::Die1 => 11,
+        SequenceKind::Die2 => 12,
+        SequenceKind::Die3 => 13,
+        SequenceKind::Die4 => 14,
+        SequenceKind::Die5 => 15,
+        SequenceKind::Tread => 16,
+        SequenceKind::Swim => 17,
+        SequenceKind::WetAttack => 18,
+        SequenceKind::WetIdle1 => 19,
+        SequenceKind::WetIdle2 => 20,
+        SequenceKind::Cheer => 26,
+        SequenceKind::Deploy => 27,
+        SequenceKind::Deployed => 28,
+        SequenceKind::DeployedFire => 29,
+        SequenceKind::DeployedIdle => 30,
+        SequenceKind::Undeploy => 31,
+        SequenceKind::Paradrop => 32,
+        SequenceKind::Fly => 33,
+        SequenceKind::FireFly => 34,
+        SequenceKind::Hover => 35,
+        SequenceKind::Panic => 36,
+        SequenceKind::SecondaryFire => 39,
+        SequenceKind::SecondaryProne => 40,
     }
+}
+
+fn action_timing(kind: SequenceKind) -> (u16, bool) {
+    let id = action_id(kind);
+    (
+        u16::from(ACTION_FRAME_DELAYS[id as usize]),
+        NORMALIZED_ACTIONS.contains(&id),
+    )
 }
 
 /// Get the default LoopMode for a given SequenceKind.
@@ -316,6 +320,7 @@ pub fn build_sequence_set(def: &InfantrySequenceDef) -> SequenceSet {
             (INFANTRY_FACINGS, entry.facings as u16)
         };
 
+        let (frame_delay, normalized) = action_timing(kind);
         set.insert(
             kind,
             SequenceDef {
@@ -323,7 +328,8 @@ pub fn build_sequence_set(def: &InfantrySequenceDef) -> SequenceSet {
                 frame_count: entry.frames_per_facing,
                 facings,
                 facing_multiplier,
-                tick_ms: default_tick_ms(kind),
+                frame_delay,
+                normalized,
                 loop_mode: default_loop_mode(kind),
                 clockwise_facings: false,
             },

@@ -263,8 +263,10 @@ pub struct ObjectType {
     /// Sound ID played when a harvester is manually ordered to return to a
     /// friendly refinery (right-click own refinery).
     pub voice_enter: Option<String>,
-    /// Sound ID played when this entity dies or is destroyed.
-    pub die_sound: Option<String>,
+    /// Ordered voice-sound choices for a human-controlled entity's fatal result.
+    pub voice_die: Vec<String>,
+    /// Ordered sound choices played when this entity dies or is destroyed.
+    pub die_sounds: Vec<String>,
     /// Sound ID played while this entity moves (looping engine/footstep).
     pub move_sound: Option<String>,
     /// Sound ID played when this unit reacts to taking fire (fear cry).
@@ -981,7 +983,8 @@ impl ObjectType {
             voice_attack: section.get("VoiceAttack").map(|s| s.to_string()),
             voice_harvest: section.get("VoiceHarvest").map(|s| s.to_string()),
             voice_enter: section.get("VoiceEnter").map(|s| s.to_string()),
-            die_sound: section.get("DieSound").map(|s| s.to_string()),
+            voice_die: parse_csv_string_list(section.get("VoiceDie")),
+            die_sounds: parse_csv_string_list(section.get("DieSound")),
             move_sound: section.get("MoveSound").map(|s| s.to_string()),
             voice_feedback: section.get("VoiceFeedback").map(|s| s.to_string()),
             voice_special_attack: section.get("VoiceSpecialAttack").map(|s| s.to_string()),
@@ -1064,10 +1067,13 @@ impl ObjectType {
             ore_purifier: section.get_bool("OrePurifier").unwrap_or(false),
 
             // Locomotor / movement fields
-            locomotor: section
-                .get("Locomotor")
-                .map(LocomotorKind::from_clsid)
-                .unwrap_or_else(|| LocomotorKind::default_for_category(category)),
+            // Absent key and unparseable CLSID both resolve to Teleport, which
+            // is the type constructor's seed — see
+            // `sim::movement::locomotion::install` for why there is one rule
+            // here and not a per-category table.
+            locomotor: crate::sim::movement::locomotion::resolve_installed_kind(
+                section.get("Locomotor").as_deref(),
+            ),
             speed_type: section
                 .get("SpeedType")
                 .map(SpeedType::from_ini)
@@ -2302,6 +2308,20 @@ mod tests {
             parse_csv_string_list(Some(" A , B , ,C ")),
             vec!["A".to_string(), "B".to_string(), "C".to_string()]
         );
+    }
+
+    #[test]
+    fn parses_ordered_death_sound_lists() {
+        let ini =
+            IniFile::from_str("[E1]\nVoiceDie= VoiceA,VoiceB, VoiceC \nDieSound= DieA, ,DieB\n");
+        let object = ObjectType::from_ini_section(
+            "E1",
+            ini.section("E1").unwrap(),
+            ObjectCategory::Infantry,
+        );
+
+        assert_eq!(object.voice_die, ["VoiceA", "VoiceB", "VoiceC"]);
+        assert_eq!(object.die_sounds, ["DieA", "DieB"]);
     }
 
     #[test]

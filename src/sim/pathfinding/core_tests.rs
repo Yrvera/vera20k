@@ -931,11 +931,15 @@ fn test_from_resolved_terrain_uses_resolved_blocking_flags() {
             },
             ResolvedTerrainCell {
                 terrain_object_blocks: true,
+                terrain_object_occupation: Some(1),
                 build_blocked: true,
                 ..make_resolved_cell(0, 1)
             },
             ResolvedTerrainCell {
                 overlay_blocks: true,
+                overlay_zone_type: Some(
+                    crate::map::resolved_terrain::zone_class::IMPASSABLE,
+                ),
                 build_blocked: true,
                 ..make_resolved_cell(1, 1)
             },
@@ -1526,7 +1530,10 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         canonical_ramp: None,
         ground_walk_blocked: false,
         terrain_object_blocks: false,
+        terrain_object_occupation: None,
         overlay_blocks: false,
+        overlay_zone_type: None,
+        outside_playfield: false,
         zone_type: 0,
         base_ground_walk_blocked: false,
         base_build_blocked: false,
@@ -3212,6 +3219,57 @@ fn astar_blocks_structural_body_to_body_bad_height_jump() {
 // cliff and blocks too (legitimate bridge entries carry through as diff-0 via
 // compute_neighbor_height Case 3).
 // ============================================================================
+
+#[test]
+fn gsi_04_03a_signed_minus_one_height_uses_lower_raw_slope_in_both_directions() {
+    let lower = bridge_test_cell(0xFF, false, false, 0);
+    let upper = bridge_test_cell(0, false, false, 0xFE);
+    let grid = PathGrid::from_cells(vec![lower, upper], 2, 1);
+
+    assert!(
+        find_path(&grid, (0, 0), (1, 0)).is_none(),
+        "-1 to 0 must test the lower -1 cell's zero raw slope byte"
+    );
+    assert!(
+        find_path(&grid, (1, 0), (0, 0)).is_none(),
+        "0 to -1 must test the lower -1 cell's zero raw slope byte"
+    );
+}
+
+#[test]
+fn gsi_04_10_resolved_zero_occupation_is_walkable_path_input() {
+    let terrain = ResolvedTerrainGrid::from_cells(
+        1,
+        1,
+        vec![ResolvedTerrainCell {
+            terrain_object_occupation: Some(0),
+            terrain_object_blocks: false,
+            ..make_resolved_cell(0, 0)
+        }],
+    );
+
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    assert!(
+        grid.is_walkable(0, 0),
+        "resolved OccupationBits=0 is a walkable PathGrid input"
+    );
+}
+
+#[test]
+fn gsi_04_03a_signed_minus_one_height_accepts_high_nonzero_raw_slope() {
+    let lower = bridge_test_cell(0xFF, false, false, 0xFE);
+    let upper = bridge_test_cell(0, false, false, 0);
+    let grid = PathGrid::from_cells(vec![lower, upper], 2, 1);
+
+    assert!(
+        find_path(&grid, (0, 0), (1, 0)).is_some(),
+        "-1 to 0 must accept any nonzero lower raw slope byte, including 0xFE"
+    );
+    assert!(
+        find_path(&grid, (1, 0), (0, 0)).is_some(),
+        "0 to -1 must accept any nonzero lower raw slope byte, including 0xFE"
+    );
+}
 
 #[test]
 fn diff_1_slope_zero_lower_blocks_going_up() {

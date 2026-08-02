@@ -78,6 +78,11 @@ pub struct SmudgeTiberiumContext<'a> {
     pub resource_nodes: &'a mut BTreeMap<(u16, u16), ResourceNode>,
     pub overlay_grid: &'a mut OverlayGrid,
     pub ore_growth_state: &'a mut OreGrowthState,
+    pub overlay_registry: Option<&'a crate::map::overlay_types::OverlayTypeRegistry>,
+    pub tiberium_types: Option<&'a crate::rules::tiberium_type::TiberiumTypeRegistry>,
+    pub source_object_cells: Option<&'a std::collections::BTreeSet<(u16, u16)>>,
+    pub binary_frame: u32,
+    pub spread_enabled: bool,
     pub radar_dirty_cells: &'a mut Vec<(u16, u16)>,
     pub radar_dirty_generation: &'a mut u64,
     pub tactical_dirty_cells: &'a mut Vec<(u16, u16)>,
@@ -88,23 +93,29 @@ impl SmudgeTiberiumContext<'_> {
         self.overlay_grid
     }
 
-    fn reduce(&mut self, cell: (u16, u16), amount: u16) {
+    fn reduce(
+        &mut self,
+        cell: (u16, u16),
+        amount: u16,
+        terrain: &mut ResolvedTerrainGrid,
+        rng: &mut SimRng,
+    ) {
         let mut ctx = ReduceTiberiumContext {
             resource_nodes: &mut *self.resource_nodes,
             overlay_grid: Some(&mut *self.overlay_grid),
             ore_growth_state: &mut *self.ore_growth_state,
-            overlay_registry: None,
-            tiberium_types: None,
-            resolved_terrain: None,
-            source_object_cells: None,
-            rng: None,
-            binary_frame: 0,
-            spread_enabled: false,
+            overlay_registry: self.overlay_registry,
+            tiberium_types: self.tiberium_types,
+            resolved_terrain: Some(terrain),
+            source_object_cells: self.source_object_cells,
+            rng: Some(rng),
+            binary_frame: self.binary_frame,
+            spread_enabled: self.spread_enabled,
             radar_dirty_cells: Some(&mut *self.radar_dirty_cells),
             radar_dirty_generation: Some(&mut *self.radar_dirty_generation),
             tactical_dirty_cells: Some(&mut *self.tactical_dirty_cells),
         };
-        reduce_tiberium(&mut ctx, cell, amount);
+        reduce_tiberium(&mut ctx, cell, i32::from(amount));
     }
 }
 
@@ -123,7 +134,7 @@ pub fn try_dispatch_anim_smudge(
     ground_z: i32,
     smudge_grid: &mut SmudgeGrid,
     occupancy: &OccupancyGrid,
-    terrain: &ResolvedTerrainGrid,
+    terrain: &mut ResolvedTerrainGrid,
     tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
 ) {
@@ -173,7 +184,7 @@ pub fn try_dispatch_anim_smudge(
     if entry.crater {
         let rx = (coord.x >> 8).clamp(0, smudge_grid.width() as i32 - 1) as u16;
         let ry = (coord.y >> 8).clamp(0, smudge_grid.height() as i32 - 1) as u16;
-        tiberium.reduce((rx, ry), CRATER_ORE_REDUCTION);
+        tiberium.reduce((rx, ry), CRATER_ORE_REDUCTION, terrain, rng);
 
         if entry.force_big_craters {
             smudge_grid.try_place(
@@ -233,7 +244,7 @@ pub fn try_dispatch_building_destruction_smudges(
     smudge_types: &SmudgeTypeRegistry,
     smudge_grid: &mut SmudgeGrid,
     occupancy: &OccupancyGrid,
-    terrain: &ResolvedTerrainGrid,
+    terrain: &mut ResolvedTerrainGrid,
     tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
 ) {
@@ -265,7 +276,7 @@ pub fn try_dispatch_building_destruction_smudges(
             rng,
         );
     } else {
-        tiberium.reduce((rx, ry), CRATER_ORE_REDUCTION);
+        tiberium.reduce((rx, ry), CRATER_ORE_REDUCTION, terrain, rng);
         smudge_grid.try_place(
             SmudgeKind::Crater,
             center,
@@ -291,7 +302,7 @@ pub fn try_dispatch_building_survivor_smudges(
     smudge_types: &SmudgeTypeRegistry,
     smudge_grid: &mut SmudgeGrid,
     occupancy: &OccupancyGrid,
-    terrain: &ResolvedTerrainGrid,
+    terrain: &mut ResolvedTerrainGrid,
     path_grid: &PathGrid,
     tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
@@ -328,7 +339,12 @@ pub fn try_dispatch_building_survivor_smudges(
                 rng,
             );
         } else {
-            tiberium.reduce((snap_rx, snap_ry), CRATER_ORE_REDUCTION);
+            tiberium.reduce(
+                (snap_rx, snap_ry),
+                CRATER_ORE_REDUCTION,
+                terrain,
+                rng,
+            );
             smudge_grid.try_place(
                 SmudgeKind::Crater,
                 coord,
@@ -360,7 +376,7 @@ pub fn drain_smudge_spawn_requests(
     interner: &StringInterner,
     smudge_grid: &mut SmudgeGrid,
     occupancy: &OccupancyGrid,
-    terrain: &ResolvedTerrainGrid,
+    terrain: &mut ResolvedTerrainGrid,
     path_grid: &PathGrid,
     tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
@@ -543,6 +559,11 @@ mod dispatch_tests {
             resource_nodes,
             overlay_grid,
             ore_growth_state,
+            overlay_registry: None,
+            tiberium_types: None,
+            source_object_cells: None,
+            binary_frame: 0,
+            spread_enabled: false,
             radar_dirty_cells,
             radar_dirty_generation,
             tactical_dirty_cells,
@@ -613,7 +634,10 @@ mod dispatch_tests {
             canonical_ramp: None,
             ground_walk_blocked: false,
             terrain_object_blocks: false,
+            terrain_object_occupation: None,
             overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
             zone_type: 0,
             base_ground_walk_blocked: false,
             base_build_blocked: false,
@@ -643,7 +667,7 @@ mod dispatch_tests {
         let art = make_art(false, true, false);
         let smudge_reg = make_smudge_registry();
         let mut grid = SmudgeGrid::new(8, 8);
-        let terrain = flat_terrain(8, 8);
+        let mut terrain = flat_terrain(8, 8);
         let mut overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
@@ -673,7 +697,7 @@ mod dispatch_tests {
             0,
             &mut grid,
             &occupancy,
-            &terrain,
+            &mut terrain,
             &mut tiberium,
             &mut rng,
         );
@@ -685,7 +709,7 @@ mod dispatch_tests {
         let art = make_art(false, true, false);
         let smudge_reg = make_smudge_registry();
         let mut grid = SmudgeGrid::new(8, 8);
-        let terrain = flat_terrain(8, 8);
+        let mut terrain = flat_terrain(8, 8);
         let mut overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
@@ -716,7 +740,7 @@ mod dispatch_tests {
             0,
             &mut grid,
             &occupancy,
-            &terrain,
+            &mut terrain,
             &mut tiberium,
             &mut rng,
         );
@@ -735,7 +759,7 @@ mod dispatch_tests {
             0,
             &mut grid,
             &occupancy,
-            &terrain,
+            &mut terrain,
             &mut tiberium,
             &mut rng,
         );
@@ -752,7 +776,7 @@ mod dispatch_tests {
         let art = make_art(false, true, false);
         let smudge_reg = make_smudge_registry();
         let mut grid = SmudgeGrid::new(8, 8);
-        let terrain = flat_terrain(8, 8);
+        let mut terrain = flat_terrain(8, 8);
         let mut overlay = OverlayGrid::new(8, 8);
         // Block placement by putting an overlay on the impact cell.
         overlay.place_overlay(4, 4, 0, 10);
@@ -792,7 +816,7 @@ mod dispatch_tests {
                 0,
                 &mut grid,
                 &occupancy,
-                &terrain,
+                &mut terrain,
                 &mut tiberium,
                 &mut rng,
             );
@@ -810,7 +834,7 @@ mod dispatch_tests {
         let art = make_art(true, false, false);
         let smudge_reg = make_smudge_registry();
         let mut grid = SmudgeGrid::new(8, 8);
-        let terrain = flat_terrain(8, 8);
+        let mut terrain = flat_terrain(8, 8);
         let mut overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
@@ -840,7 +864,7 @@ mod dispatch_tests {
             0,
             &mut grid,
             &occupancy,
-            &terrain,
+            &mut terrain,
             &mut tiberium,
             &mut rng,
         );
@@ -860,7 +884,7 @@ mod dispatch_tests {
             let smudge_reg = make_smudge_registry();
             let mut grid = SmudgeGrid::new(8, 8);
             let art = ArtRegistry::empty();
-            let terrain = flat_terrain(8, 8);
+            let mut terrain = flat_terrain(8, 8);
             let mut overlay = OverlayGrid::new(8, 8);
             let occupancy = OccupancyGrid::new();
             let mut rng = SimRng::new(1);
@@ -887,7 +911,7 @@ mod dispatch_tests {
                 &smudge_reg,
                 &mut grid,
                 &occupancy,
-                &terrain,
+                &mut terrain,
                 &mut tiberium,
                 &mut rng,
             );
@@ -903,7 +927,7 @@ mod dispatch_tests {
             let smudge_reg = make_smudge_registry();
             let mut grid = SmudgeGrid::new(8, 8);
             let art = ArtRegistry::empty();
-            let terrain = flat_terrain(8, 8);
+            let mut terrain = flat_terrain(8, 8);
             let mut overlay = OverlayGrid::new(8, 8);
             let occupancy = OccupancyGrid::new();
             let mut nodes = BTreeMap::new();
@@ -931,7 +955,7 @@ mod dispatch_tests {
                 &smudge_reg,
                 &mut grid,
                 &occupancy,
-                &terrain,
+                &mut terrain,
                 &mut tiberium,
                 &mut rng_a,
             );

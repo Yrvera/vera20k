@@ -149,8 +149,6 @@ fn test_minimap_entity_visible_for_allied_owner() {
         z: 0,
         sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
         sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-        screen_x: 0.0,
-        screen_y: 0.0,
     };
     assert!(minimap_entity_visible(
         test_intern("Americans"),

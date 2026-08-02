@@ -34,8 +34,7 @@ pub(super) fn localized_label(state: &AppState, key: &str, fallback: &str) -> St
     state
         .csf
         .as_ref()
-        .and_then(|csf| csf.get(key))
-        .map(ToOwned::to_owned)
+        .map(|csf| csf.text(key).into_owned())
         .unwrap_or_else(|| fallback.to_string())
 }
 
@@ -1085,7 +1084,7 @@ pub(super) fn push_validation_modal_text_draws(
         return;
     };
     let body = [PaintLabel {
-        text: &modal.message,
+        text: (&modal.message).into(),
         rect: layout.message,
         rgb: SHELL_LABEL_TEXT_RGB,
         align: validation_modal_body_text_align(),
@@ -1097,7 +1096,7 @@ pub(super) fn push_validation_modal_text_draws(
         SHELL_DROPDOWN_TEXT_DEPTH - 0.00012,
     ));
     let ok = [PaintLabel {
-        text: &modal.ok_button,
+        text: (&modal.ok_button).into(),
         rect: button_label_rect_px(layout.ok_button, pressed),
         rgb: SHELL_LABEL_TEXT_RGB,
         align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,

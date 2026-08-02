@@ -38,15 +38,15 @@ pub const V_PATTERN_RADIUS_LEPTONS: i32 = 128;
 /// Mission_Rescue cadence is still controlled by the mission's 5-frame return.
 pub const LANDING_STATE_RESET: u8 = 5;
 
-/// Drop interval in sim ticks between consecutive drops.
+/// Drop interval in native gameplay frames between consecutive drops.
 ///
 /// Hardcoded in gamemd's `Mission_Rescue` (0x00415960): every code path returns
 /// 5, meaning the rescue mission re-fires every 5 game frames while in range
 /// and drops one passenger per call. This is NOT driven by `[ParaDropWeapon]
 /// ROF=` (that weapon is a dummy — its rules.ini comment says so).
 ///
-/// Our sim runs at 45 Hz vs gamemd's 15 fps, so 5 game frames = 15 sim ticks.
-pub const PARADROP_DROP_INTERVAL_TICKS: u16 = 15;
+/// One admitted simulation advance is one native gameplay frame.
+pub const PARADROP_DROP_INTERVAL_FRAMES: u16 = 5;
 
 /// Compute the V-pattern lateral offset for the next drop, in leptons.
 ///
@@ -84,14 +84,19 @@ pub enum DropResult {
     NoCargo,
 }
 
-fn restore_passenger_to_cargo_head(sim: &mut Simulation, aircraft_id: u64, passenger_id: u64) {
+fn restore_passenger_to_cargo_head(
+    sim: &mut Simulation,
+    aircraft_id: u64,
+    passenger_id: u64,
+    passenger_size: u32,
+) {
     if let Some(cargo) = sim
         .substrate
         .entities
         .get_mut(aircraft_id)
         .and_then(|a| a.passenger_role.cargo_mut())
     {
-        cargo.passengers.insert(0, passenger_id);
+        cargo.restore_front(passenger_id, passenger_size);
     }
 }
 
@@ -103,10 +108,9 @@ fn restore_passenger_to_cargo_head(sim: &mut Simulation, aircraft_id: u64, passe
 ///
 /// `path_grid`: Some when threaded from advance_tick; None in headless tests
 /// (passability defaults to "always passable" in that case).
-/// `rules`: needed to look up passenger ObjectType.size for cargo accounting.
 pub fn try_drop(
     sim: &mut Simulation,
-    rules: &RuleSet,
+    _rules: &RuleSet,
     aircraft_id: u64,
     payload_count_pre_dec: u8,
     path_grid: Option<&PathGrid>,
@@ -127,28 +131,17 @@ pub fn try_drop(
         };
 
     // 2. Pop FIFO passenger from cargo.
-    let passenger_id = match sim
+    let (passenger_id, passenger_size) = match sim
         .substrate
         .entities
         .get_mut(aircraft_id)
         .and_then(|a| a.passenger_role.cargo_mut())
         .and_then(|c| c.unload_first())
     {
-        Some(id) => id,
+        Some(entry) => entry,
         None => return DropResult::NoCargo,
     };
 
-    // Look up passenger size now (needed to correct cargo.total_size on success).
-    // PassengerCargo::unload_first does NOT decrement total_size — caller's job.
-    let pax_size: u32 = sim
-        .substrate
-        .entities
-        .get(passenger_id)
-        .and_then(|p| {
-            let type_str = sim.interner.resolve(p.type_ref);
-            rules.object(type_str).map(|o| o.size)
-        })
-        .unwrap_or(1);
     let (passenger_category, passenger_z, passenger_ready_for_reveal) =
         match sim.substrate.entities.get(passenger_id) {
             Some(passenger) => (
@@ -158,12 +151,12 @@ pub fn try_drop(
             ),
             None => {
                 sim.clear_radio_contacts_for(passenger_id);
-                restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+                restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
                 return DropResult::AttachFailedRetry;
             }
         };
     if !passenger_ready_for_reveal {
-        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
         return DropResult::AttachFailedRetry;
     }
 
@@ -183,7 +176,7 @@ pub fn try_drop(
     // 4. Passability check via threaded path_grid.
     let passable = path_grid.map_or(true, |g| g.is_walkable(drop_rx, drop_ry));
     if !passable {
-        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
         return DropResult::ImpassableRetry;
     }
 
@@ -201,7 +194,7 @@ pub fn try_drop(
         ) {
             Some(sub_cell) => Some(sub_cell),
             None => {
-                restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+                restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
                 return DropResult::ImpassableRetry;
             }
         }
@@ -232,7 +225,7 @@ pub fn try_drop(
                 transport_id: aircraft_id,
             };
         }
-        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
         return DropResult::AttachFailedRetry;
     }
 
@@ -261,7 +254,7 @@ pub fn try_drop(
                 transport_id: aircraft_id,
             };
         }
-        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id, passenger_size);
         return DropResult::AttachFailedRetry;
     }
 
@@ -270,16 +263,6 @@ pub fn try_drop(
         rx: drop_rx,
         ry: drop_ry,
     });
-
-    // 8. Decrement cargo.total_size on success (unload_first left it stale).
-    if let Some(cargo) = sim
-        .substrate
-        .entities
-        .get_mut(aircraft_id)
-        .and_then(|a| a.passenger_role.cargo_mut())
-    {
-        cargo.total_size = cargo.total_size.saturating_sub(pax_size);
-    }
 
     DropResult::Success
 }
@@ -322,8 +305,7 @@ mod tests {
         aircraft.category = EntityCategory::Aircraft;
         aircraft.facing = 128;
         let mut cargo = PassengerCargo::new(8, 0);
-        cargo.passengers.push(passenger_id);
-        cargo.total_size = 1;
+        cargo.board_forced(passenger_id, 1);
         aircraft.passenger_role = PassengerRole::Transport { cargo };
         sim.substrate.entities.insert(aircraft);
 
@@ -510,7 +492,6 @@ mod tests {
             blocker.sub_cell = Some(sub_cell);
             (blocker.position.sub_x, blocker.position.sub_y) =
                 lepton::subcell_lepton_offset(Some(sub_cell));
-            blocker.position.refresh_screen_coords();
             sim.substrate.entities.insert(blocker);
             assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
         }
@@ -566,8 +547,7 @@ mod tests {
         aircraft.owner = sim.interner.intern("Americans");
         aircraft.type_ref = sim.interner.intern("PDPLANE");
         let mut cargo = PassengerCargo::new(8, 0);
-        cargo.passengers.push(missing_passenger_id);
-        cargo.total_size = 1;
+        cargo.board_forced(missing_passenger_id, 1);
         aircraft.passenger_role = PassengerRole::Transport { cargo };
         sim.substrate.entities.insert(aircraft);
 

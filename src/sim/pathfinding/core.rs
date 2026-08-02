@@ -1044,8 +1044,8 @@ pub fn astar_search(
                     rejected_reason: None,
                 };
 
-                // Height-diff legality gate. Diff-1 transitions require the LOWER cell to
-                // be a canonical ramp (slope_type != 0); diff ∈ {±2, ±3, ±4, ±5+} is
+                // Height-diff legality gate. Diff-1 transitions require the LOWER cell's
+                // raw slope byte to be nonzero; diff ∈ {±2, ±3, ±4, ±5+} is
                 // always blocked. Legitimate bridge transitions arrive here as diff-0
                 // because `compute_neighbor_height` already shifts unit Z onto/off the deck.
                 let needs_bridge_traversal =
@@ -1057,7 +1057,7 @@ pub fn astar_search(
                             candidate: neighbor_cell,
                             candidate_coord: (nx, ny),
                             direction: dir_index as i8,
-                            path_height: current.height as i16,
+                            path_height: i16::from(current.height as i8),
                             parent: Some((cur_cell, (cx, cy))),
                         },
                     );
@@ -1098,7 +1098,7 @@ pub fn astar_search(
                         MovementLayer::Ground
                     };
                     layer_context = CanEnterLayerContext::single(layer);
-                    let diff = neighbor_height as i16 - current.height as i16;
+                    let diff = i16::from(neighbor_height as i8) - i16::from(current.height as i8);
                     let lower_slope = if diff < 0 {
                         neighbor_cell.slope_type
                     } else {
@@ -1652,6 +1652,23 @@ impl PathGrid {
             .get(y as usize * self.width as usize + x as usize)
     }
 
+    /// Replace one derived terrain cell while retaining every other dynamic
+    /// blocker already stamped into this grid.
+    pub(crate) fn replace_cell_from(&mut self, source: &PathGrid, x: u16, y: u16) -> bool {
+        let Some(source_cell) = source.cell(x, y).copied() else {
+            return false;
+        };
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        let idx = y as usize * self.width as usize + x as usize;
+        let Some(target_cell) = self.cells.get_mut(idx) else {
+            return false;
+        };
+        *target_cell = source_cell;
+        true
+    }
+
     /// Whether this cell is a bridge transition point (units can switch layers here).
     pub fn is_transition(&self, x: u16, y: u16) -> bool {
         self.cell(x, y)
@@ -1840,76 +1857,78 @@ impl PathGrid {
         terrain: &ResolvedTerrainGrid,
         bridge_state: Option<&BridgeRuntimeState>,
     ) -> Self {
-        let cells = terrain
-            .iter()
-            .map(|cell| {
-                let bridge_structural = cell.bridge_facts.has_structural_bridge()
-                    || (cell.has_bridge_deck
-                        && !cell.bridge_layer.as_ref().is_some_and(|layer| {
-                            layer.direction == crate::map::resolved_terrain::BridgeDirection::Low
-                        })
-                        && cell.bridge_facts.family
-                            == crate::map::bridge_facts::BridgeStampFamily::None);
-                let bridge_intact = !bridge_structural
-                    || bridge_state
-                        .map_or(true, |state| state.is_bridge_walkable(cell.rx, cell.ry));
-                PathCell {
-                    // Walkability rules (matching old PathGrid::from_resolved_terrain):
-                    // - Overlay blocks / terrain object blocks → blocked
-                    // - Intact bridge deck → walkable (overrides underlying terrain)
-                    // - Destroyed bridge deck → revert to underlying terrain
-                    // - Cliff → blocked
-                    // - Water → walkable (SpeedType cost=0 blocks ground in A*)
-                    // - Everything else → use ground_walk_blocked
-                    ground_walkable: if cell.overlay_blocks || cell.terrain_object_blocks {
-                        false
-                    } else if bridge_structural {
-                        if bridge_intact {
-                            true
-                        } else {
-                            // Destroyed bridge: revert to underlying terrain walkability.
-                            !cell.is_cliff_like && !cell.ground_walk_blocked
-                        }
-                    } else if cell.bridge_walkable && cell.bridge_transition {
-                        // Bridgehead ramp: walkable on the ground layer regardless
-                        // of the TMP ramp tile's ground_walk_blocked flag. gamemd
-                        // gates ground entry through the SpeedType/LandType matrix
-                        // (land_type=Clear/Road → passable for vehicles/infantry);
-                        // we don't yet route non-water movers through that matrix,
-                        // so the boolean would otherwise reject a same-height
-                        // plateau→bridgehead step and trap the unit on the wrong
-                        // side. The bridge-layer gate at A* expansion still
-                        // enforces "enter bridge via bridgehead" via the
-                        // bridge_transition flag on the next deck cell.
+        let mut cells =
+            vec![DEFAULT_BLOCKED_CELL; terrain.width() as usize * terrain.height() as usize];
+        for cell in terrain.iter() {
+            let bridge_structural = cell.bridge_facts.has_structural_bridge()
+                || (cell.has_bridge_deck
+                    && !cell.bridge_layer.as_ref().is_some_and(|layer| {
+                        layer.direction == crate::map::resolved_terrain::BridgeDirection::Low
+                    })
+                    && cell.bridge_facts.family
+                        == crate::map::bridge_facts::BridgeStampFamily::None);
+            let bridge_intact = !bridge_structural
+                || bridge_state.map_or(true, |state| state.is_bridge_walkable(cell.rx, cell.ry));
+            let path_cell = PathCell {
+                // Walkability rules (matching old PathGrid::from_resolved_terrain):
+                // - Overlay blocks / terrain object blocks → blocked
+                // - Intact bridge deck → walkable (overrides underlying terrain)
+                // - Destroyed bridge deck → revert to underlying terrain
+                // - Cliff → blocked
+                // - Water → walkable (SpeedType cost=0 blocks ground in A*)
+                // - Everything else → use ground_walk_blocked
+                ground_walkable: if cell.overlay_blocks || cell.terrain_object_blocks {
+                    false
+                } else if bridge_structural {
+                    if bridge_intact {
                         true
-                    } else if cell.is_cliff_like {
-                        false
                     } else {
-                        !cell.ground_walk_blocked || cell.is_water
-                    },
-                    bridge_walkable: if bridge_structural {
-                        cell.bridge_walkable && bridge_intact
-                    } else {
-                        cell.bridge_walkable
-                    },
-                    bridge_structural,
-                    bridge_marker_0x80: cell.bridge_facts.has_flag(BRIDGE_FLAG_ANCHOR_SELF),
-                    transition: if bridge_structural {
-                        cell.bridge_transition && bridge_intact
-                    } else {
-                        cell.bridge_transition
-                    },
-                    ground_level: cell.level,
-                    bridge_deck_level: bridge_state
-                        .and_then(|state| state.cell(cell.rx, cell.ry))
-                        .map(|runtime| runtime.deck_level)
-                        .unwrap_or(cell.bridge_deck_level),
-                    slope_type: cell.slope_type,
-                    tube_index: cell.tube_index,
-                    low_bridge_tube_cell: cell.is_low_bridge_tube_cell(),
-                }
-            })
-            .collect();
+                        // Destroyed bridge: revert to underlying terrain walkability.
+                        !cell.is_cliff_like && !cell.ground_walk_blocked
+                    }
+                } else if cell.bridge_walkable && cell.bridge_transition {
+                    // Bridgehead ramp: walkable on the ground layer regardless
+                    // of the TMP ramp tile's ground_walk_blocked flag. gamemd
+                    // gates ground entry through the SpeedType/LandType matrix
+                    // (land_type=Clear/Road → passable for vehicles/infantry);
+                    // we don't yet route non-water movers through that matrix,
+                    // so the boolean would otherwise reject a same-height
+                    // plateau→bridgehead step and trap the unit on the wrong
+                    // side. The bridge-layer gate at A* expansion still
+                    // enforces "enter bridge via bridgehead" via the
+                    // bridge_transition flag on the next deck cell.
+                    true
+                } else if cell.is_cliff_like {
+                    false
+                } else {
+                    !cell.ground_walk_blocked || cell.is_water
+                },
+                bridge_walkable: if bridge_structural {
+                    cell.bridge_walkable && bridge_intact
+                } else {
+                    cell.bridge_walkable
+                },
+                bridge_structural,
+                bridge_marker_0x80: cell.bridge_facts.has_flag(BRIDGE_FLAG_ANCHOR_SELF),
+                transition: if bridge_structural {
+                    cell.bridge_transition && bridge_intact
+                } else {
+                    cell.bridge_transition
+                },
+                ground_level: cell.level,
+                bridge_deck_level: bridge_state
+                    .and_then(|state| state.cell(cell.rx, cell.ry))
+                    .map(|runtime| runtime.deck_level)
+                    .unwrap_or(cell.bridge_deck_level),
+                slope_type: cell.slope_type,
+                tube_index: cell.tube_index,
+                low_bridge_tube_cell: cell.is_low_bridge_tube_cell(),
+            };
+            let index = cell.ry as usize * terrain.width() as usize + cell.rx as usize;
+            if let Some(slot) = cells.get_mut(index) {
+                *slot = path_cell;
+            }
+        }
         Self {
             cells,
             width: terrain.width(),
@@ -2409,6 +2428,56 @@ pub(crate) fn find_path_with_costs_hierarchy_marker_progress(
         progress_cell: progress.progress_cell(),
         progress_index: progress.progress_index(),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn find_layered_path_hierarchy_marker(
+    grid: &PathGrid,
+    ground_blocks: Option<&BTreeSet<(u16, u16)>>,
+    bridge_blocks: Option<&BTreeSet<(u16, u16)>>,
+    start: (u16, u16),
+    start_layer: MovementLayer,
+    goal: (u16, u16),
+    terrain_costs: Option<&TerrainCostGrid>,
+    level0_zones: &ZoneLevelGraph,
+    marked_level0: &BTreeSet<ZoneId>,
+    blocker_neighbor_counts: &BlockerNeighborCounts,
+    level0_path: &[ZoneId],
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+) -> Option<Vec<LayeredPathStep>> {
+    if !matches!(start_layer, MovementLayer::Ground | MovementLayer::Bridge) {
+        return None;
+    }
+    let progress = HierarchyProgressTracker::new(start, level0_path);
+    astar_search(
+        grid,
+        start,
+        start_layer,
+        goal,
+        &AStarOptions {
+            terrain_costs,
+            resolved_terrain,
+            entity_blocks: ground_blocks,
+            bridge_blocks,
+            hierarchy_gate: Some(HierarchyGate {
+                level0_zones,
+                marked_level0,
+                blocker_neighbor_counts,
+            }),
+            hierarchy_progress: Some(&progress),
+            entity_block_map,
+            marker_overlay,
+            urgency,
+            mover_is_crusher,
+            movement_zone,
+            ..Default::default()
+        },
+    )
 }
 
 /// Resolve a gamemd foundation name into pathfinding footprint dimensions.

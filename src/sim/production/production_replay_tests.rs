@@ -67,6 +67,13 @@ fn scenario() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
         spawn_structure(&mut sim, sid + 1, owner, "GAPILE", *base_x + 2, 10);
         spawn_structure(&mut sim, sid + 2, owner, "GAWEAP", *base_x + 4, 10);
         spawn_structure(&mut sim, sid + 3, owner, "GAAIRC", *base_x + 6, 10);
+        // `spawn_structure` is a raw test helper and intentionally bypasses the
+        // lifecycle-owned count hook.  Keep this replay fixture in a live match
+        // so late defeat handling cannot freeze its command ordinal.
+        sim.houses
+            .get_mut(&oid)
+            .expect("scenario house exists")
+            .owned_building_count = 4;
     }
     (sim, rules, BTreeMap::new())
 }
@@ -188,6 +195,38 @@ fn record(
         log.record_tick(r.tick, due, r.state_hash);
     }
     (hashes, log)
+}
+
+#[test]
+fn event_tail_enqueue_first_charges_on_the_following_frame() {
+    let (mut sim, rules, heights) = scenario();
+    let (owner, _, infantry, _) = ids(&sim);
+    let credits_before = sim.houses[&owner].credits;
+
+    sim.advance_tick(
+        &[queue(owner, infantry, 1)],
+        Some(&rules),
+        &heights,
+        None,
+        None,
+        TICK_MS,
+    );
+    let armed = sim
+        .production
+        .factory_shadow
+        .view(owner, ProductionCategory::Infantry)
+        .expect("the command tail arms the factory");
+    assert_eq!(armed.progress, 0);
+    assert_eq!(sim.houses[&owner].credits, credits_before);
+
+    sim.advance_tick(&[], Some(&rules), &heights, None, None, TICK_MS);
+    let charged = sim
+        .production
+        .factory_shadow
+        .view(owner, ProductionCategory::Infantry)
+        .expect("the active factory remains registered");
+    assert_eq!(charged.progress, 1);
+    assert!(sim.houses[&owner].credits < credits_before);
 }
 
 /// (P5d derived-state) An underfunded mid-build factory (on_hold) renders as Building in
@@ -343,7 +382,11 @@ fn economy_conservation_over_replay() {
 #[test]
 fn economy_conservation_through_cancel_refund() {
     const TICKS: u64 = 300;
-    const CANCEL_TICK: u64 = 8;
+    // EventClass dispatch runs after the production sweep, and a newly armed
+    // factory first charges on the following gameplay frame.  Tick 40 is far
+    // enough into the stock step cadence to guarantee a partial (not zero/full)
+    // MTNK balance when the cancel reaches the command tail.
+    const CANCEL_TICK: u64 = 40;
 
     let (mut sim, rules, heights) = scenario();
     let (am, al, e1, mtnk) = ids(&sim);

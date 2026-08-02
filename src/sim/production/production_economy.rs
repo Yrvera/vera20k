@@ -20,11 +20,17 @@ pub(super) fn tick_resource_economy(
     // War + Chrono miners no longer tick here: the Harvest mission handler is
     // dispatched per-object from the AI host (techno_ai's Unit arm), at the
     // native Mission_Dispatch position before ground movement.
-    let _ = overlay_registry;
     let live_order = sim.live_object_order_snapshot();
 
     // Tick Slave Miner subsystems: slave harvest AI + slave regeneration.
-    super::super::slave_miner::tick_slave_harvesters(sim, &live_order, rules, config, path_grid);
+    super::super::slave_miner::tick_slave_harvesters(
+        sim,
+        &live_order,
+        rules,
+        config,
+        path_grid,
+        overlay_registry,
+    );
     super::super::slave_miner::tick_slave_regen(sim, &live_order, rules);
 }
 

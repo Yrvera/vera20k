@@ -30,8 +30,8 @@ fn slice6_rules() -> RuleSet {
          [VehicleTypes]\n0=MTNK\n\n\
          [AircraftTypes]\n\n\
          [BuildingTypes]\n0=GACNST\n\n\
-         [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
-         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+         [E1]\nLocomotor={4A582744-9839-11d1-B709-00A024DDAFD1}\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
+         [MTNK]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
          [GACNST]\nStrength=1000\nArmor=wood\nFoundation=4x3\n\n\
          [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
          [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\n\
@@ -103,8 +103,25 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// now join the lockstep hash. The current-tree legacy-schema probe below still
 /// reproduces the prior value exactly; this is a Rust regression ratchet, not
 /// gamemd parity evidence.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 14099801084960151601;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 10767158924782362086;
+// Re-baselined for the Phase-0 native-tail and persistence contracts.
+// EventClass now dispatches after the object/global walk, so each scripted
+// retask first affects object AI on the following frame, as Main_Tick does.
+// The common hash also drops diagnostic `total_sim_ms`, hashes only the
+// retail-persisted Scenario RNG, and includes the newly persisted deterministic
+// fields. This is an intentional behavior-bearing retail correction, so both
+// provenance probes move with the current hash.
+// Re-baselined 2026-08-02, same provenance as the global harness constants:
+// the mover is 190490ba "match retail cell occupation lifecycle", found by
+// bisecting dev..HEAD against this very probe (it is this test's FIRST assert,
+// and this fixture has no ore, no resource_nodes, no overlay grid and no
+// RNG-consuming path, which is what makes it a clean isolator).
+//
+// The composition-only hypothesis was tested and REFUTED: with the merge-base
+// (6f78bac7) world_hash.rs swapped in and all branch behaviour kept, this probe
+// read 0xFEEA0679D9429547 — neither the old baseline nor the branch value. So
+// hashed state content changed, not just which fields are folded.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x99F0_E195_4E2F_94C9;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8477_F4BD_F3D8_B12B;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -114,7 +131,53 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 10767158924782362086;
 // legacy per-tick projection is deleted, so every hashed mission value —
 // including the reduced subset the legacy pre-v29 composition folds —
 // changes together. Behavior-bearing Rust ratchet, not gamemd evidence.
-const SLICE6_BASELINE_HASH: u64 = 5165059427831540523;
+//
+// Re-baselined 2026-07-29 for the locomotion S2 readiness producers, twice:
+// first for Drive/Ship/Teleport/Jumpjet, then again when Walk and Hover joined
+// them so all six live families now write `mission_ready_state`. The ceremony this
+// file requires — the two schema probes proving the shift is composition-only —
+// is satisfied: BOTH probes above are unchanged and green, so only the
+// current-schema hash moved, i.e. the delta is the hashed field going
+// `None → Some` and not a behaviour divergence. Independently confirmed by
+// neutralising the behaviour path (making the readiness gate ignore the
+// produced state while the producers still ran): the hash was identical to
+// this new value, so the deferral change contributes nothing here.
+//
+// Re-baselined 2026-07-30 when the readiness inputs stopped being stored on the
+// locomotor and became derived at the Mission gate instead. gamemd's readiness
+// virtual performs a fresh locomotor call at every one of its ~two dozen call
+// sites, with no cached per-frame flag anywhere on that path, so a per-tick
+// cache answered nearly all of them with stale state; verified from the Infantry
+// and Unit readiness overrides and the queue-then-commence caller.
+//
+// Composition-only here, and this file's ceremony proves it: BOTH schema probes
+// above are unchanged and green. The pre-v29 probe still hashes every position,
+// facing and movement field, so if the derivation had changed *when* any unit
+// commenced, that probe would have moved too. It did not — only the
+// current-schema hash did, and its delta is exactly the removed readiness bytes.
+// (Behaviour-neutral in THIS fixture is not behaviour-neutral in general: the
+// paths the change exists for — dock, unlink, unload and deploy handoffs that
+// stop a unit and queue-and-commence in the same tick — are not covered here.)
+// Rust regression ratchet, not gamemd evidence.
+//
+// Re-baselined 2026-07-30 for S3b: the installed LocomotorSlot joins the hash.
+// **Composition-only, proved by neutralisation** — the ceremony this file
+// normally uses cannot decide it, because the locomotor block is hashed
+// unconditionally, so BOTH schema probes move with the live value. Instead the
+// new hash line was commented out and the whole suite re-run: all three
+// constants returned to their previous committed values exactly, so the
+// primary_kind -> slot retype changed no behaviour and no other hashed state,
+// and the entire delta is the one new byte. The absolute per-stream RNG pins
+// and the dense-scenario position fingerprint were unchanged throughout.
+// Re-baselined 2026-07-30 for S5: the locomotor `powered` flag joins the hash.
+// Composition-only, proved by neutralisation (the probe ceremony cannot decide
+// it — the locomotor block is hashed unconditionally, so both probes move with
+// the live value). With the new hash line commented out, all three constants
+// returned to their S3b values exactly, which also proves the three power edges
+// wired in this slice (deploy-begin off, undeploy-complete on, destination-
+// accepted on) changed no other hashed state in these fixtures. The absolute
+// per-stream RNG pins held throughout.
+const SLICE6_BASELINE_HASH: u64 = 0x64E3_D8E5_D202_8D5C;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
@@ -189,17 +252,20 @@ fn replay_hash_stable_through_slice6() {
         let _ = sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, 67);
     }
 
+    let pre_lifecycle_hash = sim.state_hash_before_lifecycle_v28_and_mission_v29();
+    let pre_mission_hash = sim.state_hash_without_mission_v29();
+    let hash = sim.state_hash();
+    println!(
+        "[slice6] hashes=pre-v28:{pre_lifecycle_hash:016X},pre-v29:{pre_mission_hash:016X},current:{hash:016X}"
+    );
     assert_eq!(
-        sim.state_hash_before_lifecycle_v28_and_mission_v29(),
-        SLICE6_PRE_LIFECYCLE_V28_HASH,
+        pre_lifecycle_hash, SLICE6_PRE_LIFECYCLE_V28_HASH,
         "pre-v28/pre-v29 schema probe must reproduce the historical baseline"
     );
     assert_eq!(
-        sim.state_hash_without_mission_v29(),
-        SLICE6_PRE_MISSION_V29_HASH,
+        pre_mission_hash, SLICE6_PRE_MISSION_V29_HASH,
         "v29 provenance probe must reproduce the prior live v28 baseline; otherwise this is behavior drift"
     );
-    let hash = sim.state_hash();
     assert_eq!(
         hash, SLICE6_BASELINE_HASH,
         "Slice 6 scripted-retask state hash drifted. Treat this as behavior drift \

@@ -24,7 +24,6 @@
 use std::collections::BTreeSet;
 
 use super::PathGrid;
-use super::passability;
 use super::terrain_cost::TerrainCostGrid;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{self, HouseAllianceMap};
@@ -33,7 +32,7 @@ use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid};
 
 // ---------------------------------------------------------------------------
 // Result enums
@@ -52,6 +51,9 @@ pub enum CellEntryResult {
     Crushable { victims: Vec<u64> },
     /// Code 2: Blocked by a moving friendly unit. Wait, then repath.
     TemporaryBlock { blocker_id: u64 },
+    /// Code 2: the independent Unit occupation bit is set, but the destination
+    /// object list has no blocker identity. Wait/repath without scattering.
+    TemporaryOccupation,
     /// Code 3: Allied building/scatter-required soft block.
     ScatterRequired { blocker_id: Option<u64> },
     /// Code 4: Friendly wall/overlay soft block.
@@ -69,7 +71,7 @@ impl CellEntryResult {
         match self {
             Self::Clear => 0,
             Self::Crushable { .. } => 1,
-            Self::TemporaryBlock { .. } => 2,
+            Self::TemporaryBlock { .. } | Self::TemporaryOccupation => 2,
             Self::ScatterRequired { .. } => 3,
             Self::FriendlyWall => 4,
             Self::OccupiedEnemy { .. } => 5,
@@ -181,10 +183,9 @@ fn terrain_cost_result(
 }
 
 fn speed_type_allows_cell(cell: &ResolvedTerrainCell, speed_type: SpeedType) -> bool {
-    if let Some(cost) = cell.speed_costs.cost_for_speed_type(speed_type) {
-        return cost > 0;
-    }
-    passability::is_passable_for_speed_type(cell.land_type, speed_type)
+    cell.speed_costs
+        .cost_for_speed_type(speed_type)
+        .is_none_or(|cost| cost > 0)
 }
 
 /// Layer selections used by Can_Enter_Cell-style checks.
@@ -575,6 +576,53 @@ pub fn classify_occupied_cell_with_layers_and_ignored(
     // --- Classify blocker ---
     let result = classify_blocker(bid, mover_owner, entities, alliances, interner);
     apply_overrides(result, mover_locomotor)
+}
+
+/// Phase-2 classification including the independent Unit occupation plane.
+/// A bit-only reservation has no destination-list blocker to attack or scatter,
+/// so it keeps native code 2 without inventing a `CellOccupant`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn classify_occupied_cell_with_layers_and_ignored_and_occupation(
+    target: (u16, u16),
+    layers: CanEnterLayerContext,
+    mover_id: u64,
+    crush_capability: bump_crush::CrushCapability,
+    mover_owner: &str,
+    mover_locomotor: LocomotorKind,
+    mover_bypass_grid: bool,
+    ignored_blockers: Option<&BTreeSet<u64>>,
+    occupancy: &OccupancyGrid,
+    cell_occupation: &CellOccupationGrid,
+    entities: &EntityStore,
+    alliances: &HouseAllianceMap,
+    interner: &crate::sim::intern::StringInterner,
+) -> CellEntryResult {
+    let result = classify_occupied_cell_with_layers_and_ignored(
+        target,
+        layers,
+        mover_id,
+        crush_capability,
+        mover_owner,
+        mover_locomotor,
+        mover_bypass_grid,
+        ignored_blockers,
+        occupancy,
+        entities,
+        alliances,
+        interner,
+    );
+    if matches!(result, CellEntryResult::Clear | CellEntryResult::Impassable)
+        && cell_occupation.occupied_by_other(
+            target.0,
+            target.1,
+            layers.occupancy_bits_layer,
+            mover_id,
+        )
+    {
+        apply_overrides(CellEntryResult::TemporaryOccupation, mover_locomotor)
+    } else {
+        result
+    }
 }
 
 /// Find the primary blocker entity in a cell using the current local

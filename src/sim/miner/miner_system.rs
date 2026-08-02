@@ -36,7 +36,51 @@ use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::intern::InternedId;
 
 use crate::sim::production::foundation_dimensions;
-use crate::util::lepton::LEPTONS_PER_LEVEL;
+use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
+
+/// Object-coordinate Z of one object in leptons: the terrain ground height for
+/// its cell (level plus slope), the bridge deck offset when it stands on a
+/// bridge, and any locomotor altitude.
+///
+/// A missing resolved-terrain grid, a cell outside it, or an unsupported slope
+/// is a Rust-side resource gap rather than a game rule, so this degrades that
+/// one object to its stored level height instead of refusing to answer — the
+/// caller must still be able to reach a distance decision.
+fn object_coordinate_z(
+    sim: &Simulation,
+    entity: &crate::sim::game_entity::GameEntity,
+    x_leptons: i64,
+    y_leptons: i64,
+) -> i64 {
+    let ground = sim
+        .resolved_terrain
+        .as_ref()
+        .and_then(|terrain| terrain.cell(entity.position.rx, entity.position.ry))
+        .and_then(|cell| {
+            ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                x_leptons as i32,
+                y_leptons as i32,
+            )
+            .ok()
+        })
+        .map_or_else(
+            || i64::from(entity.position.z) * LEPTONS_PER_LEVEL,
+            i64::from,
+        );
+    ground
+        + if entity.on_bridge {
+            i64::from(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS)
+        } else {
+            0
+        }
+        + entity
+            .locomotor
+            .as_ref()
+            .map(|locomotor| locomotor.altitude.to_num::<i64>())
+            .unwrap_or(0)
+}
 
 /// Compare object-coordinate distance in leptons against `threshold_cells * 256`.
 /// Strict `>` — a miner exactly at the threshold still uses the close radio path.
@@ -56,12 +100,12 @@ fn return_exceeds_too_far_threshold(
 
     let miner_x = i64::from(miner.position.rx) * 256 + miner.position.sub_x.to_num::<i64>();
     let miner_y = i64::from(miner.position.ry) * 256 + miner.position.sub_y.to_num::<i64>();
-    let miner_z = i64::from(miner.position.z) * LEPTONS_PER_LEVEL;
     let refinery_x =
         i64::from(refinery.position.rx) * 256 + refinery.position.sub_x.to_num::<i64>();
     let refinery_y =
         i64::from(refinery.position.ry) * 256 + refinery.position.sub_y.to_num::<i64>();
-    let refinery_z = i64::from(refinery.position.z) * LEPTONS_PER_LEVEL;
+    let miner_z = object_coordinate_z(sim, miner, miner_x, miner_y);
+    let refinery_z = object_coordinate_z(sim, refinery, refinery_x, refinery_y);
 
     let dx = miner_x - refinery_x;
     let dy = miner_y - refinery_y;
@@ -69,6 +113,212 @@ fn return_exceeds_too_far_threshold(
     let distance_sq = dx * dx + dy * dy + dz * dz;
     let threshold = i64::from(threshold_cells.max(1)) * 256;
     Some(distance_sq > threshold * threshold)
+}
+
+#[cfg(test)]
+mod gsi_04_03b_tests {
+    use super::*;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotor::LocomotorState;
+
+    fn sloped_cell() -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx: 0,
+            ry: 0,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: true,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 1,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: Default::default(),
+            speed_costs: Default::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: true,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: Default::default(),
+            tube_index: None,
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            accepts_smudge: true,
+            allows_tiberium: false,
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    #[test]
+    fn gsi_04_03b_miner_return_distance_uses_terrain_bridge_and_altitude_z() {
+        let mut sim = Simulation::new();
+        let mut miner = GameEntity::test_default(1, "CMIN", "Allies", 0, 0);
+        miner.position.sub_x = SimFixed::from_num(0);
+        let mut refinery = GameEntity::test_default(2, "GAOREP", "Allies", 0, 0);
+        refinery.position.sub_x = SimFixed::from_num(255);
+        sim.substrate.entities.insert(miner);
+        sim.substrate.entities.insert(refinery);
+        sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(1, 1, vec![sloped_cell()]));
+
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            Some(true),
+            "255 horizontal leptons plus the slope Z delta exceeds one cell"
+        );
+
+        sim.substrate.entities.get_mut(1).unwrap().position.sub_x = SimFixed::from_num(0);
+        sim.substrate.entities.get_mut(2).unwrap().position.sub_x = SimFixed::from_num(0);
+        assert_eq!(return_exceeds_too_far_threshold(&sim, 1, 2, 1), Some(false));
+
+        sim.substrate.entities.get_mut(1).unwrap().on_bridge = true;
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            Some(true),
+            "OnBridge coordinate Z contributes the full deck offset"
+        );
+
+        let miner = sim.substrate.entities.get_mut(1).unwrap();
+        miner.on_bridge = false;
+        let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Fly);
+        locomotor.altitude = SimFixed::from_num(300);
+        miner.locomotor = Some(locomotor);
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            Some(true),
+            "locomotor altitude contributes to raw object-coordinate Z"
+        );
+    }
+
+    #[test]
+    fn gsi_04_03b_miner_return_distance_falls_back_to_level_z_without_resolved_terrain() {
+        let mut sim = Simulation::new();
+        let mut miner = GameEntity::test_default(1, "CMIN", "Allies", 0, 0);
+        miner.position.sub_x = SimFixed::from_num(0);
+        miner.position.z = 0;
+        let mut refinery = GameEntity::test_default(2, "GAOREP", "Allies", 0, 0);
+        refinery.position.sub_x = SimFixed::from_num(255);
+        refinery.position.z = 0;
+        sim.substrate.entities.insert(miner);
+        sim.substrate.entities.insert(refinery);
+        assert!(sim.resolved_terrain.is_none());
+
+        // Same pair as the terrain fixture above, which answers Some(true) from
+        // the slope contribution. With no grid to resolve, each object degrades
+        // to level-only Z: dz = 0, so 255 horizontal leptons stay inside one
+        // cell — and the decision is still made rather than refused.
+        assert_eq!(return_exceeds_too_far_threshold(&sim, 1, 2, 1), Some(false));
+
+        sim.substrate.entities.get_mut(2).unwrap().position.z = 3;
+        assert_eq!(
+            return_exceeds_too_far_threshold(&sim, 1, 2, 1),
+            Some(true),
+            "the fallback Z is position.z * LEPTONS_PER_LEVEL, not a dropped term"
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_sequential_miner_helper_reserves_head_without_reconcile() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let type_ref = sim.interner.intern("HARV");
+        for (entity_id, rx, facing) in [(1, 1, 0x40), (2, 3, 0xC0)] {
+            let mut miner = GameEntity::test_default(entity_id, "HARV", "AMERICANS", rx, 2);
+            miner.owner = owner;
+            miner.type_ref = type_ref;
+            miner.facing = facing;
+            miner.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+            miner.drive_locomotion = Some(Default::default());
+            sim.substrate.entities.insert(miner);
+            sim.add_entity_occupancy(entity_id);
+        }
+
+        let grid = PathGrid::new(5, 5);
+        let shared_head = (2, 2);
+        issue_move_if_idle(
+            &mut sim,
+            None,
+            &grid,
+            1,
+            shared_head,
+            SimFixed::from_num(128),
+        );
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .and_then(|entity| entity.drive_locomotion.as_ref())
+                .and_then(|drive| drive.occupation_head_to)
+                .map(|head| (head.rx, head.ry)),
+            Some(shared_head)
+        );
+        assert!(sim.substrate.cell_occupation.occupied_by_other(
+            shared_head.0,
+            shared_head.1,
+            MovementLayer::Ground,
+            2,
+        ));
+
+        issue_move_if_idle(
+            &mut sim,
+            None,
+            &grid,
+            2,
+            shared_head,
+            SimFixed::from_num(128),
+        );
+
+        let second = sim.substrate.entities.get(2).expect("second miner");
+        assert_ne!(
+            second
+                .drive_locomotion
+                .as_ref()
+                .and_then(|drive| drive.occupation_head_to)
+                .map(|head| (head.rx, head.ry)),
+            Some(shared_head),
+            "the second production miner helper must observe the first head mark immediately"
+        );
+        assert_ne!(
+            second
+                .movement_target
+                .as_ref()
+                .and_then(|movement| movement.final_goal),
+            Some(shared_head),
+            "contention must be resolved before any movement-tick reconciliation"
+        );
+    }
 }
 
 /// The per-frame handler return. Native Mission_Harvest returns it from the
@@ -244,18 +494,18 @@ pub(super) fn commit_miner_snapshot(sim: &mut Simulation, snap: &MinerSnapshot, 
         va.playing = is_harvesting;
         if !is_harvesting {
             va.frame = 0;
-            va.elapsed_ms = 0;
+            va.elapsed_frames = 0;
         }
     }
     if let Some(ref mut ho) = entity.harvest_overlay {
         if is_harvesting && !ho.visible {
             ho.visible = true;
             ho.frame = 0;
-            ho.elapsed_ms = 0;
+            ho.elapsed_frames = 0;
         } else if !is_harvesting && ho.visible {
             ho.visible = false;
             ho.frame = 0;
-            ho.elapsed_ms = 0;
+            ho.elapsed_frames = 0;
         }
     }
 }
@@ -324,8 +574,12 @@ pub(super) fn process_miner(
 
     let state_before = format!("{:?}", snap.state);
     match snap.state {
-        MinerState::SearchOre => handle_search_ore(sim, rules, config, path_grid, snap),
-        MinerState::MoveToOre => handle_move_to_ore(sim, rules, config, path_grid, snap),
+        MinerState::SearchOre => {
+            handle_search_ore(sim, rules, config, path_grid, overlay_registry, snap)
+        }
+        MinerState::MoveToOre => {
+            handle_move_to_ore(sim, rules, config, path_grid, overlay_registry, snap)
+        }
         MinerState::Harvest => {
             handle_harvest(sim, rules, config, path_grid, overlay_registry, snap)
         }
@@ -444,6 +698,7 @@ fn handle_search_ore(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     // gamemd's Mission_Harvest state 0 checks full storage before scanning
@@ -487,7 +742,7 @@ fn handle_search_ore(
         // off between the save and the next cycle.
         let mut archive_hit = None;
         if let Some(archive) = snap.miner.last_harvest_cell {
-            let archive_has_ore = sim.production.resource_nodes.contains_key(&archive);
+            let archive_has_ore = resource_cell_present(sim, rules, overlay_registry, archive);
             let archive_reachable = filter_ref.is_none_or(|f| f(archive));
             if archive_has_ore && archive_reachable {
                 archive_hit = Some(ScanOutcome::Archive(archive));
@@ -509,18 +764,21 @@ fn handle_search_ore(
         // Set_Destination resolves to drive. Only the inbound trip
         // (ore → refinery) uses the warp; outbound is a normal drive.
         archive_hit.unwrap_or_else(|| {
-            search_local_ore(
-                &sim.production.resource_nodes,
+            search_local_resource(
+                sim,
+                rules,
+                overlay_registry,
                 (snap.rx, snap.ry),
                 config.long_scan_radius,
                 filter_ref,
-                config.ore_bale_value,
-                config.gem_bale_value,
+                config,
             )
             // Global search — find nearest reachable ore anywhere on the map.
             .or_else(|| {
-                pick_best_resource_node(
-                    &sim.production.resource_nodes,
+                pick_best_resource_cell(
+                    sim,
+                    rules,
+                    overlay_registry,
                     (snap.rx, snap.ry),
                     filter_ref,
                 )
@@ -565,6 +823,7 @@ fn handle_move_to_ore(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     let has_destination_or_movement =
@@ -591,11 +850,7 @@ fn handle_move_to_ore(
     };
 
     // Check if current target has been depleted.
-    let still_has_ore = sim
-        .production
-        .resource_nodes
-        .get(&current_target)
-        .is_some_and(|node| node.remaining > 0);
+    let still_has_ore = resource_cell_present(sim, rules, overlay_registry, current_target);
     if !still_has_ore {
         snap.miner.target_ore_cell = None;
         snap.state = MinerState::SearchOre;
@@ -625,13 +880,14 @@ fn handle_move_to_ore(
     let new_target = {
         let scan_filter = build_scan_filter(sim, path_grid, snap);
         let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-        search_local_ore(
-            &sim.production.resource_nodes,
+        search_local_resource(
+            sim,
+            rules,
+            overlay_registry,
             (snap.rx, snap.ry),
             config.long_scan_radius,
             filter_ref,
-            config.ore_bale_value,
-            config.gem_bale_value,
+            config,
         )
     };
     let target = new_target.unwrap_or(current_target);
@@ -677,7 +933,7 @@ fn handle_harvest(
         // mission dispatch.
         snap.miner.harvest_timer.reset(sim.session.binary_frame);
         snap.state = MinerState::ReturnToRefinery;
-        save_archive_via_short_scan(sim, config, path_grid, snap);
+        save_archive_via_short_scan(sim, rules, config, path_grid, overlay_registry, snap);
         return;
     }
 
@@ -727,13 +983,14 @@ fn handle_harvest(
     let continuation_target = {
         let scan_filter = build_scan_filter(sim, path_grid, snap);
         let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-        search_local_ore(
-            &sim.production.resource_nodes,
+        search_local_resource(
+            sim,
+            rules,
+            overlay_registry,
             (snap.rx, snap.ry),
             config.local_continuation_radius,
             filter_ref,
-            config.ore_bale_value,
-            config.gem_bale_value,
+            config,
         )
     };
     if let Some(next_cell) = continuation_target {
@@ -753,19 +1010,22 @@ fn handle_harvest(
 /// a nearby still-productive patch. On scan miss, clears the archive.
 fn save_archive_via_short_scan(
     sim: &Simulation,
+    rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     let scan_filter = build_scan_filter(sim, path_grid, snap);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-    snap.miner.last_harvest_cell = search_local_ore(
-        &sim.production.resource_nodes,
+    snap.miner.last_harvest_cell = search_local_resource(
+        sim,
+        rules,
+        overlay_registry,
         (snap.rx, snap.ry),
         config.local_continuation_radius,
         filter_ref,
-        config.ore_bale_value,
-        config.gem_bale_value,
+        config,
     );
 }
 
@@ -885,13 +1145,7 @@ fn handle_return(
     }
 
     if let Some(grid) = path_grid {
-        issue_move_if_idle(
-            &mut sim.substrate.entities,
-            grid,
-            snap.entity_id,
-            dock,
-            snap.speed,
-        );
+        issue_move_if_idle(sim, Some(rules), grid, snap.entity_id, dock, snap.speed);
     }
 }
 
@@ -953,10 +1207,13 @@ fn handle_forced_return(
 /// so the visual depletion in the renderer tracks correctly.
 pub(crate) fn extract_bale(
     sim: &mut Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     cell: (u16, u16),
     config: &MinerConfig,
 ) -> Option<CargoBale> {
-    let outcome = sim.reduce_tiberium_at(cell, 1);
+    let outcome =
+        sim.reduce_tiberium_at_with_native_context(cell, 1, Some(rules), overlay_registry);
     if outcome.removed_amount == 0 {
         return None;
     }
@@ -1112,13 +1369,7 @@ fn try_begin_close_return_radio(
             && !is_adjacent_or_at((snap.rx, snap.ry), staging)
             && let Some(grid) = path_grid
         {
-            issue_move_if_idle(
-                &mut sim.substrate.entities,
-                grid,
-                snap.entity_id,
-                staging,
-                snap.speed,
-            );
+            issue_move_if_idle(sim, Some(rules), grid, snap.entity_id, staging, snap.speed);
         }
     }
 
@@ -1364,7 +1615,7 @@ fn chrono_return_staging_cell_for_sid(
             grid,
             None,
             super::miner_dock_sequence::EXIT_SEARCH_MAX_RADIUS,
-            sim.session.tick,
+            u64::from(sim.session.binary_frame),
         );
     }
 
@@ -1449,6 +1700,145 @@ fn ore_reachable(
         }
     }
     false
+}
+
+fn native_tiberium_context<'a>(
+    sim: &'a Simulation,
+    rules: &'a RuleSet,
+    overlay_registry: Option<&'a crate::map::overlay_types::OverlayTypeRegistry>,
+) -> Option<(
+    &'a crate::sim::overlay_grid::OverlayGrid,
+    &'a crate::map::overlay_types::OverlayTypeRegistry,
+    &'a crate::rules::tiberium_type::TiberiumTypeRegistry,
+)> {
+    let grid = sim.overlay_grid.as_ref()?;
+    let registry = overlay_registry?;
+    (!rules.tiberium_types.is_empty()).then_some((grid, registry, &rules.tiberium_types))
+}
+
+pub(crate) fn resource_cell_present(
+    sim: &Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    cell: (u16, u16),
+) -> bool {
+    if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
+        return crate::sim::tiberium::tiberium_cell_view(grid, registry, types, cell).is_some();
+    }
+    sim.production
+        .resource_nodes
+        .get(&cell)
+        .is_some_and(|node| node.remaining > 0)
+}
+
+pub(crate) fn search_local_resource(
+    sim: &Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    center: (u16, u16),
+    radius: u16,
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
+    config: &MinerConfig,
+) -> Option<(u16, u16)> {
+    if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
+        return search_local_tiberium(grid, registry, types, center, radius, filter);
+    }
+    search_local_ore(
+        &sim.production.resource_nodes,
+        center,
+        radius,
+        filter,
+        config.ore_bale_value,
+        config.gem_bale_value,
+    )
+}
+
+fn pick_best_resource_cell(
+    sim: &Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    from: (u16, u16),
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
+) -> Option<(u16, u16)> {
+    let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry)
+    else {
+        return pick_best_resource_node(&sim.production.resource_nodes, from, filter);
+    };
+    let mut best: Option<(i32, u32, u16, u16)> = None;
+    for (rx, ry, _) in grid.iter_occupied() {
+        let cell = (rx, ry);
+        if filter.is_some_and(|candidate_filter| !candidate_filter(cell)) {
+            continue;
+        }
+        let Some(view) = crate::sim::tiberium::tiberium_cell_view(grid, registry, types, cell)
+        else {
+            continue;
+        };
+        let dx = i64::from(rx) - i64::from(from.0);
+        let dy = i64::from(ry) - i64::from(from.1);
+        let distance = (dx * dx + dy * dy) as u32;
+        let candidate = (view.nominal_value, distance, ry, rx);
+        let replace = match best {
+            None => true,
+            Some(current) => {
+                candidate.0 > current.0
+                    || (candidate.0 == current.0 && candidate.1 < current.1)
+                    || (candidate.0 == current.0
+                        && candidate.1 == current.1
+                        && (candidate.2, candidate.3) < (current.2, current.3))
+            }
+        };
+        if replace {
+            best = Some(candidate);
+        }
+    }
+    best.map(|(_, _, ry, rx)| (rx, ry))
+}
+
+fn search_local_tiberium(
+    grid: &crate::sim::overlay_grid::OverlayGrid,
+    registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    types: &crate::rules::tiberium_type::TiberiumTypeRegistry,
+    center: (u16, u16),
+    radius: u16,
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
+) -> Option<(u16, u16)> {
+    if crate::sim::tiberium::tiberium_cell_view(grid, registry, types, center).is_some() {
+        return Some(center);
+    }
+    let cx = i32::from(center.0);
+    let cy = i32::from(center.1);
+    for ring in 1..i32::from(radius) {
+        let mut best_in_ring: Option<(i32, (u16, u16))> = None;
+        for col in -ring..=ring {
+            for (nx, ny) in [
+                (cx + col, cy - ring),
+                (cx + col, cy + ring),
+                (cx - ring, cy + col),
+                (cx + ring, cy + col),
+            ] {
+                if nx < 0 || ny < 0 || nx > i32::from(u16::MAX) || ny > i32::from(u16::MAX) {
+                    continue;
+                }
+                let cell = (nx as u16, ny as u16);
+                if filter.is_some_and(|candidate_filter| !candidate_filter(cell)) {
+                    continue;
+                }
+                let Some(view) =
+                    crate::sim::tiberium::tiberium_cell_view(grid, registry, types, cell)
+                else {
+                    continue;
+                };
+                if best_in_ring.is_none_or(|(value, _)| view.nominal_value > value) {
+                    best_in_ring = Some((view.nominal_value, cell));
+                }
+            }
+        }
+        if let Some((_, cell)) = best_in_ring {
+            return Some(cell);
+        }
+    }
+    None
 }
 
 /// Search for ore within `radius` cells of `center`. Returns best cell.
@@ -1542,7 +1932,7 @@ pub(crate) fn search_local_ore(
 }
 
 /// Hand a selected stock-miner destination to the normal Drive command authority.
-fn issue_stock_miner_drive_move(
+pub(crate) fn issue_stock_miner_drive_move(
     sim: &mut Simulation,
     rules: &RuleSet,
     grid: &PathGrid,
@@ -1564,7 +1954,7 @@ fn issue_stock_miner_drive_move(
             .map(|locomotor| {
                 let snapshot = (
                     locomotor.kind,
-                    locomotor.primary_kind,
+                    locomotor.slot,
                     locomotor.piggyback,
                     locomotor.layer,
                     locomotor.phase,
@@ -1577,6 +1967,14 @@ fn issue_stock_miner_drive_move(
     };
 
     let terrain_costs = sim.terrain_costs.get(&info.speed_type);
+    let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
+        &sim.substrate.entities,
+        grid.width(),
+        grid.height(),
+        sim.resolved_terrain.as_ref(),
+        &sim.interner,
+        Some(rules),
+    );
     let issued = movement::issue_move_command_with_layered(
         &mut sim.substrate.entities,
         grid,
@@ -1590,9 +1988,11 @@ fn issue_stock_miner_drive_move(
         sim.zone_grid.as_ref(),
         None,
         info.mover_is_crusher,
+        Some(&blocker_neighbor_counts),
+        Some(&mut sim.substrate.cell_occupation),
     );
     if !issued {
-        if let Some((kind, primary_kind, piggyback, layer, phase)) = activation_snapshot
+        if let Some((kind, slot, piggyback, layer, phase)) = activation_snapshot
             && let Some(locomotor) = sim
                 .substrate
                 .entities
@@ -1600,7 +2000,7 @@ fn issue_stock_miner_drive_move(
                 .and_then(|entity| entity.locomotor.as_mut())
         {
             locomotor.kind = kind;
-            locomotor.primary_kind = primary_kind;
+            locomotor.slot = slot;
             locomotor.piggyback = piggyback;
             locomotor.layer = layer;
             locomotor.phase = phase;
@@ -1622,8 +2022,9 @@ fn issue_stock_miner_drive_move(
 }
 
 /// Issue a move command only if the entity isn't already pathing to this target.
-fn issue_move_if_idle(
-    entities: &mut crate::sim::entity_store::EntityStore,
+pub(crate) fn issue_move_if_idle(
+    sim: &mut Simulation,
+    rules: Option<&RuleSet>,
     grid: &PathGrid,
     entity_id: u64,
     target: (u16, u16),
@@ -1632,14 +2033,37 @@ fn issue_move_if_idle(
     if target.0 >= grid.width() || target.1 >= grid.height() {
         return;
     }
-    let already = entities
+    let already = sim
+        .substrate
+        .entities
         .get(entity_id)
         .and_then(|e| e.movement_target.as_ref())
         .and_then(|mt| mt.path.last().copied())
         .is_some_and(|goal| goal == target);
     if !already {
-        let _ = movement::issue_move_command(
-            entities, grid, entity_id, target, speed, false, None, None, None, false,
+        let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
+            &sim.substrate.entities,
+            grid.width(),
+            grid.height(),
+            sim.resolved_terrain.as_ref(),
+            &sim.interner,
+            rules,
+        );
+        let _ = movement::issue_move_command_with_layered(
+            &mut sim.substrate.entities,
+            grid,
+            entity_id,
+            target,
+            speed,
+            false,
+            None,
+            None,
+            sim.resolved_terrain.as_ref(),
+            sim.zone_grid.as_ref(),
+            None,
+            false,
+            Some(&blocker_neighbor_counts),
+            Some(&mut sim.substrate.cell_occupation),
         );
     }
 }

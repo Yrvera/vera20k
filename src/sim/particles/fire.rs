@@ -184,7 +184,7 @@ pub(super) fn move_fire(p: &mut Particle, old_ground: i32, new_ground: i32) {
 pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
     let pst = rules.particle_system_type(sys.type_id);
     let cap = pst.particle_cap as usize;
-    let tick = sim.session.tick;
+    let tick = u64::from(sim.session.binary_frame);
 
     // Phase 1 — tick existing particles.
     for p in &mut sys.particles {
@@ -226,6 +226,7 @@ mod tests {
     fn fake_system(type_id: ParticleSystemTypeId) -> ParticleSystem {
         ParticleSystem {
             stable_id: 0,
+            in_logic_vector: false,
             type_id,
             coords: IVec3::ZERO,
             offset: IVec3::ZERO,
@@ -439,7 +440,7 @@ mod tests {
         let mut sys = fake_system(ParticleSystemTypeId(0));
         for _ in 0..50 {
             tick_system(&mut sys, &mut sim, &rules);
-            sim.session.tick += 1;
+            sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
         }
         assert!(
             sys.particles.len() <= 3,

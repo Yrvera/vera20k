@@ -56,6 +56,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::rules::warhead_type::WarheadType;
 use crate::sim::bridge_state::BridgeDamageEvent;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::house_state::HouseState;
 use crate::sim::infantry;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
@@ -72,7 +73,6 @@ use super::occupancy::OccupancyGrid;
 use super::production::foundation_dimensions;
 
 /// RA2 runs at 15 logical frames per second. ROF values are in frames.
-const GAME_FPS: u32 = 15;
 /// Radius in cells that RevealOnFire clears shroud around the fire location.
 const REVEAL_ON_FIRE_RADIUS: u16 = 3;
 /// Step size for selecting explosion anim from a warhead's AnimList: idx = damage / 25.
@@ -133,22 +133,29 @@ pub(crate) fn combat_target_category(
     }
 }
 
-/// True iff the cell at `(rx, ry)` has an overlay whose type is flagged `Wall=yes`.
-/// Used to discriminate wall-damage events from bridge-damage events at warhead
-/// emission sites. Returns false when grid or registry is missing.
-fn cell_has_wall_overlay(
+/// Return the active wall-overlay flags at a cell, if available.
+fn wall_overlay_flags_at<'a>(
     overlay_grid: Option<&OverlayGrid>,
-    overlay_registry: Option<&OverlayTypeRegistry>,
+    overlay_registry: Option<&'a OverlayTypeRegistry>,
     rx: u16,
     ry: u16,
-) -> bool {
+) -> Option<&'a crate::map::overlay_types::OverlayTypeFlags> {
     let (Some(grid), Some(registry)) = (overlay_grid, overlay_registry) else {
-        return false;
+        return None;
     };
     grid.cell(rx, ry)
         .overlay_id
         .and_then(|id| registry.flags(id))
-        .is_some_and(|f| f.wall)
+        .filter(|flags| flags.wall)
+}
+
+fn warhead_damages_wall(
+    warhead: &WarheadType,
+    wall_flags: &crate::map::overlay_types::OverlayTypeFlags,
+) -> bool {
+    warhead.wall
+        || warhead.wall_absolute_destroyer
+        || (warhead.wood && wall_flags.armor_is_wood)
 }
 
 pub(crate) fn apply_prone_damage_modifier(
@@ -840,6 +847,29 @@ struct DeathEffects {
     smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
 }
 
+fn append_selected_death_sounds(
+    object_type: &ObjectType,
+    owner_is_human: bool,
+    main_rng: &mut SimRng,
+    interner: &mut StringInterner,
+    rx: u16,
+    ry: u16,
+    death_sounds: &mut Vec<(InternedId, u16, u16)>,
+) {
+    let mut append_choice = |choices: &[String]| {
+        if choices.is_empty() {
+            return;
+        }
+        let index = (main_rng.next_u32() % choices.len() as u32) as usize;
+        death_sounds.push((interner.intern(&choices[index]), rx, ry));
+    };
+
+    if owner_is_human {
+        append_choice(&object_type.voice_die);
+    }
+    append_choice(&object_type.die_sounds);
+}
+
 /// Process combat-owned death effects and classify the lifecycle handoff.
 ///
 /// Extracts death side-effects into a `DeathEffects` struct so the caller can apply them
@@ -849,6 +879,8 @@ fn handle_entity_deaths(
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
+    houses: &BTreeMap<InternedId, HouseState>,
+    main_rng: &mut SimRng,
     dead_entities: &[u64],
     damage_events: &[(u64, u16, u64, InternedId)],
     _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
@@ -904,9 +936,15 @@ fn handle_entity_deaths(
         {
             let type_id_str = interner.resolve(type_id);
             if let Some(obj) = rules.object(type_id_str) {
-                if let Some(ref die_sound) = obj.die_sound {
-                    death_sounds.push((interner.intern(die_sound), rx, ry));
-                }
+                append_selected_death_sounds(
+                    obj,
+                    houses.get(&owner).is_some_and(|house| house.is_human),
+                    main_rng,
+                    interner,
+                    rx,
+                    ry,
+                    &mut death_sounds,
+                );
                 if let Some((dmg, wh_id)) = death_weapon_aoe(rules, obj, interner) {
                     death_aoe.push((rx, ry, sub_x, sub_y, z, dmg, wh_id, owner));
                 }
@@ -1038,17 +1076,17 @@ fn handle_entity_deaths(
     // Apply death explosion AoE damage.
     for (rx, ry, sub_x, sub_y, z, dmg, wh_id, owner_id) in &death_aoe {
         if let Some(warhead) = rules.warhead(interner.resolve(*wh_id)) {
-            if warhead.wall && *dmg > 0 {
-                // Wall cells produce WallDamageEvent; remaining cells (bridges
-                // or unaffiliated) keep the bridge_damage_events path.
+            if *dmg > 0 {
                 let damage_u16 = (*dmg).max(0) as u16;
-                if cell_has_wall_overlay(overlay_grid, overlay_registry, *rx, *ry) {
+                let wall_flags =
+                    wall_overlay_flags_at(overlay_grid, overlay_registry, *rx, *ry);
+                if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
                     wall_damage_events.push(WallDamageEvent {
                         rx: *rx,
                         ry: *ry,
                         damage: damage_u16,
                     });
-                } else {
+                } else if wall_flags.is_none() && warhead.wall {
                     let wh_iid = *wh_id;
                     bridge_damage_events.push(BridgeDamageEvent {
                         rx: *rx,
@@ -1235,6 +1273,55 @@ pub fn tick_combat_with_fog(
     live_order: &[u64],
     radiation: Option<&mut crate::sim::radiation::RadiationState>,
     scenario_rng: &mut SimRng,
+) -> CombatTickResult {
+    let mut unused_main_rng = SimRng::new(0);
+    tick_combat_with_fog_and_main_rng(
+        entities,
+        occupancy,
+        rules,
+        interner,
+        fog,
+        power_states,
+        &BTreeMap::new(),
+        sound_sink,
+        resource_nodes,
+        overlay_grid,
+        overlay_registry,
+        terrain,
+        current_tick,
+        tick_ms,
+        binary_frame,
+        live_order,
+        radiation,
+        scenario_rng,
+        &mut unused_main_rng,
+    )
+}
+
+/// Advance combat with persistent owner state and both native RNG authorities.
+///
+/// Main-RNG death-sound selection is independent from Scenario-RNG projectile
+/// and impact effects, so both streams are explicit at the production seam.
+pub fn tick_combat_with_fog_and_main_rng(
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    fog: Option<&FogState>,
+    power_states: &BTreeMap<InternedId, PowerState>,
+    houses: &BTreeMap<InternedId, HouseState>,
+    sound_sink: Option<&mut Vec<SimSoundEvent>>,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    overlay_grid: Option<&OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    current_tick: u64,
+    tick_ms: u32,
+    binary_frame: u32,
+    live_order: &[u64],
+    radiation: Option<&mut crate::sim::radiation::RadiationState>,
+    scenario_rng: &mut SimRng,
+    main_rng: &mut SimRng,
 ) -> CombatTickResult {
     if tick_ms == 0 {
         return CombatTickResult {
@@ -1915,6 +2002,8 @@ pub fn tick_combat_with_fog(
         occupancy,
         rules,
         interner,
+        houses,
+        main_rng,
         &dead_entities,
         &damage_events,
         resource_nodes,
@@ -2269,10 +2358,13 @@ pub(crate) fn resolve_attacker_fire(
         // Standard fire: 3D check via compute_in_range when terrain available.
         match (terrain, entities.get(snap.stable_id)) {
             (Some(t), Some(attacker_entity)) => {
+                let Some(source_z) = in_range::effective_z_leptons(attacker_entity, t) else {
+                    return;
+                };
                 let src = (
                     snap.pos_rx as i64 * 256 + snap.sub_x.to_num::<i64>(),
                     snap.pos_ry as i64 * 256 + snap.sub_y.to_num::<i64>(),
-                    in_range::effective_z_leptons(attacker_entity),
+                    source_z,
                 );
                 in_range::compute_in_range(
                     attacker_entity,
@@ -2422,15 +2514,17 @@ pub(crate) fn resolve_attacker_fire(
             out.damage_events
                 .push((target_id, dmg, snap.stable_id, wh_iid));
         }
-        if warhead.wall && weapon.damage > 0 {
-            let damage_u16 = weapon.damage.max(0) as u16;
-            if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
+        if base_damage > 0 {
+            let damage_u16 = base_damage as u16;
+            let wall_flags =
+                wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
+            if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
                 out.wall_damage_events.push(WallDamageEvent {
                     rx: target_rx,
                     ry: target_ry,
                     damage: damage_u16,
                 });
-            } else {
+            } else if wall_flags.is_none() && warhead.wall {
                 let wh_iid = interner.intern(&warhead.id);
                 out.bridge_damage_events.push(BridgeDamageEvent {
                     rx: target_rx,
@@ -2467,15 +2561,17 @@ pub(crate) fn resolve_attacker_fire(
                     .push((target_id, actual_damage, snap.stable_id, wh_iid));
             }
         }
-        if warhead.wall && weapon.damage > 0 {
-            let damage_u16 = weapon.damage.max(0) as u16;
-            if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
+        if base_damage > 0 {
+            let damage_u16 = base_damage as u16;
+            let wall_flags =
+                wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
+            if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
                 out.wall_damage_events.push(WallDamageEvent {
                     rx: target_rx,
                     ry: target_ry,
                     damage: damage_u16,
                 });
-            } else {
+            } else if wall_flags.is_none() && warhead.wall {
                 let wh_iid = interner.intern(&warhead.id);
                 out.bridge_damage_events.push(BridgeDamageEvent {
                     rx: target_rx,
@@ -2613,7 +2709,7 @@ pub(crate) fn resolve_attacker_fire(
         out.burst_updates
             .push((snap.stable_id, current_remaining, BURST_INTER_SHOT_DELAY, 0));
     } else {
-        let mut rof_ticks = rof_to_cooldown_ticks(weapon.rof, tick_ms);
+        let mut rof_ticks = rof_to_cooldown_frames(weapon.rof);
         // Garrison ROF: divide by occupant count, then by multiplier.
         // More occupants = proportionally faster fire (gamemd GetROF 0x006FCFA0).
         if let Some(ref gs) = snap.garrison {
@@ -2701,16 +2797,8 @@ pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixe
     dist_sq_leptons <= range_sq
 }
 
-fn rof_to_cooldown_ticks(rof_frames: i32, tick_ms: u32) -> u16 {
-    let cooldown_ms = if rof_frames <= 0 {
-        500
-    } else {
-        let frames = rof_frames as u32;
-        frames.saturating_mul(1000).div_ceil(GAME_FPS)
-    };
-    let step_ms = tick_ms.max(1);
-    let ticks = cooldown_ms.div_ceil(step_ms);
-    ticks.clamp(1, u16::MAX as u32) as u16
+fn rof_to_cooldown_frames(rof_frames: i32) -> u16 {
+    rof_frames.clamp(1, u16::MAX as i32) as u16
 }
 
 pub use self::combat_targeting::{acquire_best_target_for_entity, tick_retaliation};

@@ -134,11 +134,11 @@ fn time_trigger_can_center_camera_at_waypoint() {
 
     assert!(
         runtime
-            .advance(89, &graph, &triggers, &events, &actions, None)
+            .advance_at_frame(44, &graph, &triggers, &events, &actions, None)
             .is_empty()
     );
     assert_eq!(
-        runtime.advance(1, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(45, &graph, &triggers, &events, &actions, None),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 9,
             immediate: true,
@@ -146,8 +146,29 @@ fn time_trigger_can_center_camera_at_waypoint() {
     );
     assert!(
         runtime
-            .advance(30, &graph, &triggers, &events, &actions, None)
+            .advance_at_frame(46, &graph, &triggers, &events, &actions, None)
             .is_empty()
+    );
+}
+
+#[test]
+fn elapsed_time_uses_signed_current_frame_divided_by_fifteen() {
+    let runtime = TriggerRuntime::default();
+    let one_second = EventCondition {
+        kind: 47,
+        params: vec!["1".to_string(), "0".to_string()],
+    };
+    let zero_seconds = EventCondition {
+        kind: 47,
+        params: vec!["0".to_string(), "0".to_string()],
+    };
+
+    assert!(runtime.evaluate_event(&zero_seconds, 0, None));
+    assert!(!runtime.evaluate_event(&one_second, 14, None));
+    assert!(runtime.evaluate_event(&one_second, 15, None));
+    assert!(
+        !runtime.evaluate_event(&one_second, 0x8000_0000, None),
+        "the native frame counter is divided as a signed 32-bit value"
     );
 }
 
@@ -315,7 +336,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance(30, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 3,
             immediate: true,
@@ -445,7 +466,7 @@ fn linked_trigger_field_queues_followup_trigger() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance(30, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 4,
             immediate: true,
@@ -575,7 +596,7 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance(30, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None),
         Vec::<TriggerEffect>::new()
     );
 }
@@ -669,7 +690,7 @@ fn mission_announce_then_force_end_emits_result_effects() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance(30, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None),
         vec![
             TriggerEffect::MissionAnnouncement {
                 text: "Mission Accomplished".to_string(),
@@ -814,12 +835,12 @@ fn local_variables_seed_and_gate_followup_triggers() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &local_variables);
 
     assert_eq!(
-        runtime.advance(0, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None),
         Vec::<TriggerEffect>::new()
     );
     assert!(runtime.locals_set.contains(&2));
     assert_eq!(
-        runtime.advance(0, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 6,
             immediate: true,
@@ -952,7 +973,7 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
     spawn_type(&mut sim, "GAPOWR");
 
     assert_eq!(
-        runtime.advance(0, &graph, &triggers, &events, &actions, Some(&sim)),
+        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, Some(&sim)),
         vec![
             TriggerEffect::CenterCameraAtWaypoint {
                 waypoint: 11,

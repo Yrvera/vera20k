@@ -80,6 +80,7 @@ pub(crate) fn try_incremental_update(
             changed_cells,
             path_grid,
             terrain_costs,
+            resolved_terrain,
             bridge_records,
             width,
             height,
@@ -99,6 +100,7 @@ fn update_category(
     changed_cells: &[(u16, u16)],
     path_grid: &PathGrid,
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
     bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
     width: u16,
     height: u16,
@@ -222,10 +224,10 @@ fn update_category(
     let bridge_redirect = if mz.can_use_bridges() {
         build_bridge_redirect(
             path_grid,
+            resolved_terrain,
             bridge_records,
             width,
             height,
-            BridgeRecordFilter::HighActiveOnly,
         )
     } else {
         None

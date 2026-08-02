@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::{FactoryType, ObjectCategory};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{Command, CommandEnvelope, QueueMode};
@@ -27,14 +28,14 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::world::Simulation;
 
-/// How often (in ticks) the AI evaluates its build/production decisions (~0.5s).
-const AI_THINK_INTERVAL_TICKS: u64 = 8;
+/// How often (in native frames) the AI evaluates its build/production decisions.
+const AI_THINK_INTERVAL_FRAMES: u32 = 8;
 
-/// How often (in ticks) the AI sends an attack wave (~15s).
-const AI_ATTACK_INTERVAL_TICKS: u64 = 225;
+/// How often (in native frames) the AI sends an attack wave.
+const AI_ATTACK_INTERVAL_FRAMES: u32 = 225;
 
-/// Minimum ticks before the AI sends its first attack (~10s).
-const AI_FIRST_ATTACK_TICK: u64 = 150;
+/// Minimum native frame before the AI sends its first attack.
+const AI_FIRST_ATTACK_FRAME: u32 = 150;
 
 /// Maximum units to send per attack wave.
 const AI_ATTACK_WAVE_SIZE: usize = 8;
@@ -44,8 +45,8 @@ const AI_ATTACK_WAVE_SIZE: usize = 8;
 pub struct AiPlayerState {
     /// House/owner name this AI controls.
     pub owner: InternedId,
-    /// Tick when the last attack wave was sent.
-    pub last_attack_tick: u64,
+    /// Native frame when the last attack wave was sent.
+    pub last_attack_frame: u32,
     /// Whether MCV deploy has been attempted.
     pub mcv_deployed: bool,
 }
@@ -54,7 +55,7 @@ impl AiPlayerState {
     pub fn new(owner: InternedId) -> Self {
         Self {
             owner,
-            last_attack_tick: 0,
+            last_attack_frame: 0,
             mcv_deployed: false,
         }
     }
@@ -67,9 +68,11 @@ pub fn tick_ai(
     rules: &RuleSet,
     path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Vec<CommandEnvelope> {
     let mut commands: Vec<CommandEnvelope> = Vec::new();
     let execute_tick = sim.session.tick.saturating_add(1);
+    let current_frame = sim.session.binary_frame;
 
     for ai in ai_players.iter_mut() {
         // A house defeated this tick issues no commands at all (not even ready-
@@ -83,15 +86,16 @@ pub fn tick_ai(
         }
 
         let owner_str = sim.interner.resolve(ai.owner);
-        // Only think every N ticks to avoid spamming.
-        if !sim.session.tick.is_multiple_of(AI_THINK_INTERVAL_TICKS) {
-            // Still check for building placement every tick.
+        // Only think every N native frames to avoid spamming.
+        if !current_frame.is_multiple_of(AI_THINK_INTERVAL_FRAMES) {
+            // Still check for building placement every frame.
             place_ready_buildings(
                 sim,
                 ai,
                 rules,
                 path_grid,
                 height_map,
+                overlay_registry,
                 execute_tick,
                 &mut commands,
             );
@@ -131,17 +135,18 @@ pub fn tick_ai(
             rules,
             path_grid,
             height_map,
+            overlay_registry,
             execute_tick,
             &mut commands,
         );
 
         // 5. Send attack waves.
-        if sim.session.tick >= AI_FIRST_ATTACK_TICK
-            && sim.session.tick.saturating_sub(ai.last_attack_tick) >= AI_ATTACK_INTERVAL_TICKS
+        if current_frame >= AI_FIRST_ATTACK_FRAME
+            && current_frame.wrapping_sub(ai.last_attack_frame) >= AI_ATTACK_INTERVAL_FRAMES
         {
             let attack_cmds = send_attack_wave(sim, owner_str, rules, execute_tick);
             if !attack_cmds.is_empty() {
-                ai.last_attack_tick = sim.session.tick;
+                ai.last_attack_frame = current_frame;
                 commands.extend(attack_cmds);
             }
         }
@@ -368,6 +373,7 @@ fn place_ready_buildings(
     rules: &RuleSet,
     path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
     execute_tick: u64,
     commands: &mut Vec<CommandEnvelope>,
 ) {
@@ -404,6 +410,7 @@ fn place_ready_buildings(
             fh,
             path_grid,
             height_map,
+            overlay_registry,
         ) {
             if let Some(owner_id) = sim.interner.get(owner) {
                 commands.push(CommandEnvelope::new(
@@ -570,6 +577,7 @@ fn find_placement_cell(
     _fh: u16,
     path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Option<(u16, u16)> {
     // Try placement in a spiral pattern around the base center.
     let max_radius: i32 = 12;
@@ -582,8 +590,16 @@ fn find_placement_cell(
         // Only check the perimeter of this ring.
         for x in min_x..=max_x {
             for y in [min_y, max_y] {
-                let preview = production::placement_preview_for_owner(
-                    sim, rules, owner, type_id, x as u16, y as u16, path_grid, height_map,
+                let preview = production::placement_preview_for_owner_with_overlays(
+                    sim,
+                    rules,
+                    owner,
+                    type_id,
+                    x as u16,
+                    y as u16,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
                 );
                 if preview.as_ref().is_some_and(|p| p.valid) {
                     return Some((x as u16, y as u16));
@@ -592,8 +608,16 @@ fn find_placement_cell(
         }
         for y in (min_y + 1)..max_y {
             for x in [min_x, max_x] {
-                let preview = production::placement_preview_for_owner(
-                    sim, rules, owner, type_id, x as u16, y as u16, path_grid, height_map,
+                let preview = production::placement_preview_for_owner_with_overlays(
+                    sim,
+                    rules,
+                    owner,
+                    type_id,
+                    x as u16,
+                    y as u16,
+                    path_grid,
+                    height_map,
+                    overlay_registry,
                 );
                 if preview.as_ref().is_some_and(|p| p.valid) {
                     return Some((x as u16, y as u16));
@@ -660,9 +684,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::sim::components::Health;
     use crate::sim::miner::{MinerState, RefineryDockPhase, ResourceNode, ResourceType};
+    use crate::sim::overlay_grid::OverlayGrid;
     use crate::sim::pathfinding::PathGrid;
 
     fn modded_ai_rules() -> RuleSet {
@@ -781,7 +807,7 @@ mod tests {
         let owner_id = interner.intern("Russians");
         let state = AiPlayerState::new(owner_id);
         assert_eq!(state.owner, owner_id);
-        assert_eq!(state.last_attack_tick, 0);
+        assert_eq!(state.last_attack_frame, 0);
         assert!(!state.mcv_deployed);
     }
 
@@ -844,7 +870,7 @@ mod tests {
         // No house registered -> not defeated -> the MCV is deployed.
         let (sim, owner_id) = build_sim();
         let mut ai = vec![AiPlayerState::new(owner_id)];
-        let live = tick_ai(&sim, &mut ai, &rules, None, &height_map);
+        let live = tick_ai(&sim, &mut ai, &rules, None, &height_map, None);
         assert_eq!(live.len(), 1, "a live AI house deploys its MCV");
         assert!(matches!(live[0].payload, Command::DeployMcv { .. }));
 
@@ -855,11 +881,105 @@ mod tests {
         house.is_defeated = true;
         sim.houses.insert(owner_id, house);
         let mut ai = vec![AiPlayerState::new(owner_id)];
-        let defeated = tick_ai(&sim, &mut ai, &rules, None, &height_map);
+        let defeated = tick_ai(&sim, &mut ai, &rules, None, &height_map, None);
         assert!(
             defeated.is_empty(),
             "a defeated AI house must issue no command"
         );
+    }
+
+    #[test]
+    fn gsi_04_07_ai_ready_wall_uses_authoritative_overlay_command_path() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GACNST\n\
+             1=GAWALL\n\
+             [OverlayTypes]\n\
+             0=GASAND\n\
+             1=CYCL\n\
+             2=GAWALL\n\
+             [GACNST]\n\
+             Strength=1000\n\
+             Foundation=2x2\n\
+             BaseNormal=yes\n\
+             [GASAND]\n\
+             Wall=yes\n\
+             Armor=wood\n\
+             Strength=100\n\
+             [CYCL]\n\
+             [GAWALL]\n\
+             Wall=yes\n\
+             Armor=concrete\n\
+             Strength=300\n\
+             Foundation=1x1\n\
+             Adjacent=0\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("AI wall rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let path_grid = PathGrid::new(32, 32);
+        let height_map = BTreeMap::new();
+        let mut sim = Simulation::new();
+        sim.session.binary_frame = 1;
+        sim.overlay_grid = Some(OverlayGrid::new(32, 32));
+        spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+        let owner = sim.interner.intern("Americans");
+        let wall_type = sim.interner.intern("GAWALL");
+        sim.production
+            .ready_by_owner
+            .entry(owner)
+            .or_default()
+            .push_back(wall_type);
+
+        let mut ai = vec![AiPlayerState::new(owner)];
+        let commands = tick_ai(
+            &sim,
+            &mut ai,
+            &rules,
+            Some(&path_grid),
+            &height_map,
+            Some(&registry),
+        );
+        let (rx, ry) = match commands.as_slice() {
+            [CommandEnvelope {
+                payload:
+                    Command::PlaceReadyBuilding {
+                        owner: command_owner,
+                        type_id,
+                        rx,
+                        ry,
+                    },
+                ..
+            }] => {
+                assert_eq!(*command_owner, owner);
+                assert_eq!(*type_id, wall_type);
+                (*rx, *ry)
+            }
+            other => panic!("ready wall should emit one placement command, got {other:?}"),
+        };
+
+        let entity_count = sim.substrate.entities.len();
+        let tick = sim.advance_tick(
+            &commands,
+            Some(&rules),
+            &height_map,
+            Some(&path_grid),
+            Some(&registry),
+            67,
+        );
+        assert_eq!(tick.executed_commands, 1);
+        assert!(!tick.spawned_entities);
+        assert_eq!(sim.substrate.entities.len(), entity_count);
+        assert!(!sim.production.ready_by_owner.contains_key(&owner));
+        let wall = sim
+            .overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(rx, ry);
+        assert_eq!(wall.overlay_id, registry.id_for_name("GAWALL"));
+        assert_eq!(wall.wall_owner, Some(owner));
     }
 
     #[test]
@@ -1094,7 +1214,7 @@ mod tests {
             vec![modproc_id]
         );
 
-        assert!(production::place_ready_building(
+        assert!(production::place_ready_building_without_overlays(
             &mut sim,
             &rules,
             "Americans",

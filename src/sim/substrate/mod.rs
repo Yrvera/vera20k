@@ -3,3 +3,4 @@
 //! gamemd-native semantics." No render/ui/audio/net dependency.
 
 pub mod direction_tables;
+pub mod locomotion;

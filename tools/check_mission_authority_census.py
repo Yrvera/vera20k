@@ -435,7 +435,6 @@ TEST_ONLY_WRITER_TOKENS = frozenset(
         "apply_test_fixture",
         "for_test_kind",
         "new_at_frame_zero_for_test",
-        "set_mission_ready_state_for_test",
         "set_object_is_falling_down_for_test",
         "test_default",
         "unit_raw_for_test",

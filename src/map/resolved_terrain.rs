@@ -9,7 +9,7 @@
 /// These index columns of `MOVEMENT_ZONE_PASSABILITY` in pathfinding/passability.rs.
 pub mod zone_class {
     pub const GROUND: u8 = 0;
-    pub const ROAD: u8 = 1;
+    pub const CRUSHABLE: u8 = 1;
     pub const WALL: u8 = 2;
     pub const BEACH: u8 = 3;
     pub const WATER: u8 = 4;
@@ -26,13 +26,62 @@ use crate::map::bridge_facts::{
 use crate::map::lat;
 use crate::map::map_file::{MapCell, MapFile};
 use crate::map::overlay::OverlayEntry;
-use crate::map::overlay_types::OverlayTypeRegistry;
+use crate::map::overlay_types::{
+    OverlayTypeFlags, OverlayTypeRegistry, clears_tiberium_on_slope, retained_overlay_land,
+};
+use crate::map::rmg::preview::Playfield;
 use crate::map::theater::{self, TheaterData, TileKey};
+use crate::map::tile_variant_selector::TileVariantSelectionContext;
 use crate::map::tube_facts::{TubeFact, TubeId};
-use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass, TerrainRules};
+use crate::rules::terrain_object_type::TerrainObjectType;
+use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass, TerrainRules};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
+
+/// Exact overlay portion of RecalcZoneType. `Some(GROUND)` is the terminal
+/// IsRubble result and is intentionally distinct from no overlay result.
+pub(crate) fn overlay_reduced_zone_type(flags: Option<&OverlayTypeFlags>) -> Option<u8> {
+    let flags = flags?;
+    if flags.crushable {
+        Some(zone_class::CRUSHABLE)
+    } else if flags.wall {
+        Some(zone_class::WALL)
+    } else if flags.land_wheel_speed_zero || flags.is_a_rock {
+        Some(zone_class::IMPASSABLE)
+    } else if flags.is_rubble {
+        Some(zone_class::GROUND)
+    } else {
+        None
+    }
+}
+
+/// Shared RecalcZoneType priority writer for load and runtime attribute changes.
+pub(crate) fn recalc_zone_type(
+    outside: bool,
+    overlay_zone_type: Option<u8>,
+    land_type: u8,
+    wheel_speed: Option<u8>,
+    terrain_object_occupation: Option<u8>,
+) -> u8 {
+    if outside {
+        zone_class::OUTSIDE
+    } else if let Some(zone_type) = overlay_zone_type {
+        zone_type
+    } else if land_type == LandType::Water.as_index() {
+        zone_class::WATER
+    } else if land_type == LandType::Beach.as_index() {
+        zone_class::BEACH
+    } else if wheel_speed_at_or_below_one_percent(wheel_speed) {
+        zone_class::IMPASSABLE
+    } else if terrain_object_occupation == Some(7) {
+        zone_class::WALL
+    } else if terrain_object_occupation.is_some() {
+        zone_class::BUILDING
+    } else {
+        zone_class::GROUND
+    }
+}
 
 /// Route-scoped bridge oracle dump for a resolved terrain cell.
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -129,14 +178,16 @@ pub struct ResolvedTerrainCell {
     pub level: u8,
     pub filled_clear: bool,
     pub tileset_index: Option<u16>,
+    /// Canonical effective LandType after TMP and overlay derivation.
     pub land_type: u8,
-    /// Final CellClass LandType value for binary predicates that need the
-    /// original gamemd.exe value. Do not confuse this with `land_type`, which
-    /// is a legacy terrain/speed bucket for compatibility paths; matrix legality
-    /// should use `zone_type`.
+    /// Retained CellClass LandType mirror for binary-derived predicates and
+    /// compatibility consumers. Reduced `zone_type`, not either Land field,
+    /// selects the movement matrix column.
     pub yr_cell_land_type: u8,
     pub slope_type: u8,
+    /// Registered pristine TMP +0x28 height field (CellClass-owned).
     pub template_height: u8,
+    /// Tactical render origin owned by the selected independent TMP.
     pub render_offset_x: i32,
     pub render_offset_y: i32,
     pub terrain_class: TerrainClass,
@@ -157,13 +208,22 @@ pub struct ResolvedTerrainCell {
     /// them. Computed from height differences with back-left neighbor cells
     /// (height diff >= 4). See MapData.cpp:3362-3377 in the EA FA2 source.
     pub is_cliff_redraw: bool,
-    /// Tile visual variant index (FA2 bRNDImage): 0 = main tile, 1-4 = replacement a-d.
+    /// Tile visual variant index: 0 = pristine, positive = suffix sibling.
     pub variant: u8,
     pub has_ramp: bool,
     pub canonical_ramp: Option<RampDirection>,
     pub ground_walk_blocked: bool,
     pub terrain_object_blocks: bool,
+    /// Selected current-theater occupation byte for a present terrain object.
+    /// `Some(0)` preserves presence without physical blockage.
+    pub terrain_object_occupation: Option<u8>,
     pub overlay_blocks: bool,
+    /// Explicit terminal overlay result used by RecalcZoneType. In particular,
+    /// `Some(GROUND)` preserves IsRubble priority across later mutations.
+    pub overlay_zone_type: Option<u8>,
+    /// Production CellClass playfield result. Synthetic `from_cells` grids set
+    /// this false so focused rectangular fixtures remain in-playfield.
+    pub outside_playfield: bool,
     /// Cached zone classification (0-7) matching gamemd.exe RecalcZoneType (0x483C80).
     /// Indexes columns of `MOVEMENT_ZONE_PASSABILITY` in pathfinding/passability.rs.
     ///
@@ -203,12 +263,12 @@ pub struct ResolvedTerrainCell {
     pub bridge_facts: BridgeCellFacts,
     /// CellClass+0x116 equivalent: index into `ResolvedTerrainGrid::tube_facts`.
     pub tube_index: Option<TubeId>,
-    /// Per-tile radar minimap color (left half of isometric diamond), from TMP header.
+    /// Selected tactical owner's radar color for the diamond's left half.
     pub radar_left: [u8; 3],
-    /// Per-tile radar minimap color (right half of isometric diamond), from TMP header.
+    /// Selected tactical owner's radar color for the diamond's right half.
     pub radar_right: [u8; 3],
-    /// True if this cell's underlying TMP sub-tile carries a baked damaged-variant
-    /// pixel set. Drives the kickoff gate of the bridge damage flood-fill (only
+    /// True if this cell's registered pristine TMP sub-tile carries a baked
+    /// damaged-variant pixel set. Drives the kickoff gate of the bridge damage flood-fill (only
     /// cells with baked damage art may initiate propagation) and the render-side
     /// substitution that swaps in variant=1 when the bridge sim flags the cell.
     pub has_damaged_data: bool,
@@ -299,13 +359,22 @@ pub struct ResolvedTerrainGrid {
     width: u16,
     height: u16,
     pub cells: Vec<ResolvedTerrainCell>,
+    /// Production-only membership for native Size-diamond CellClass slots.
+    /// `None` keeps synthetic/from_cells grids rectangular for focused tests.
+    native_allocated: Option<Vec<bool>>,
     tube_facts: Vec<TubeFact>,
-    /// `[Tiberium]` `SpeedCostProfile` cached at map load, looked up via
-    /// `TerrainRules::semantics_by_name("Tiberium")`. Used by
-    /// `recalc_overlay_passability` to apply Tiberium-mode speed costs when
-    /// ore appears on a cell at runtime (spread / TIBTRE spawn / growth).
-    /// None when `terrain_rules` was unavailable at build time (test paths).
-    tiberium_speed_costs: Option<SpeedCostProfile>,
+    /// Theater `[General] ClearTile` resolved to a flat tile id.
+    ///
+    /// Presentation consumers use this for `NO_TILE` cells while
+    /// `ResolvedTerrainCell::final_tile_index` retains the sentinel for sim.
+    clear_tile_id: u16,
+    /// Active theater tile registry length. Positive out-of-range ids present
+    /// as ClearTile while their stored semantic id remains untouched.
+    tile_registry_len: Option<usize>,
+    /// First flat tile id of the active theater's concrete high-bridge set.
+    bridge_set_start: Option<u16>,
+    /// First flat tile id of the active theater's wooden high-bridge set.
+    wood_bridge_set_start: Option<u16>,
 }
 
 impl ResolvedTerrainGrid {
@@ -323,25 +392,13 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
+            native_allocated: None,
             tube_facts,
-            tiberium_speed_costs: None,
+            clear_tile_id: 0,
+            tile_registry_len: None,
+            bridge_set_start: None,
+            wood_bridge_set_start: None,
         }
-    }
-
-    /// Cached `[Tiberium]` `SpeedCostProfile`. Populated at map load when
-    /// `terrain_rules` is available. Used by `recalc_overlay_passability` to
-    /// apply Tiberium-mode speed costs on runtime overlay placement.
-    pub fn tiberium_speed_costs(&self) -> Option<&SpeedCostProfile> {
-        self.tiberium_speed_costs.as_ref()
-    }
-
-    /// Test-only setter for the cached `[Tiberium]` speed profile. Production
-    /// paths populate this via `build()` from rules; tests that drive
-    /// `recalc_overlay_passability` directly use this to install a non-default
-    /// profile so the round-trip on overlay add/remove can be verified end-to-end.
-    #[cfg(test)]
-    pub fn set_tiberium_speed_costs_for_test(&mut self, costs: SpeedCostProfile) {
-        self.tiberium_speed_costs = Some(costs);
     }
 
     pub fn width(&self) -> u16 {
@@ -352,9 +409,39 @@ impl ResolvedTerrainGrid {
         self.height
     }
 
+    /// Resolve a cell's presentation tile without rewriting its semantic tile.
+    ///
+    /// Active YR substitutes the theater ClearTile and sub-tile zero when the
+    /// stored IsoTileTypeIndex is absent, the no-tile sentinel, or outside the
+    /// active theater registry.
+    pub fn presentation_tile(&self, cell: &ResolvedTerrainCell) -> (u16, u8) {
+        let positive_out_of_range = self.tile_registry_len.is_some_and(|len| {
+            cell.final_tile_index >= 0
+                && cell.final_tile_index != 0xFFFF
+                && cell.final_tile_index as usize >= len
+        });
+        if cell.filled_clear || positive_out_of_range {
+            return (self.clear_tile_id, 0);
+        }
+        presentation_tile_parts(
+            cell.final_tile_index,
+            cell.final_sub_tile,
+            self.clear_tile_id,
+        )
+    }
+
     pub fn index(&self, rx: u16, ry: u16) -> Option<usize> {
         if rx < self.width && ry < self.height {
-            Some(ry as usize * self.width as usize + rx as usize)
+            let index = ry as usize * self.width as usize + rx as usize;
+            if self
+                .native_allocated
+                .as_ref()
+                .is_some_and(|mask| !mask.get(index).copied().unwrap_or(false))
+            {
+                None
+            } else {
+                Some(index)
+            }
         } else {
             None
         }
@@ -371,7 +458,36 @@ impl ResolvedTerrainGrid {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &ResolvedTerrainCell> {
-        self.cells.iter()
+        self.cells.iter().enumerate().filter_map(|(index, cell)| {
+            self.native_allocated
+                .as_ref()
+                .is_none_or(|mask| mask.get(index).copied().unwrap_or(false))
+                .then_some(cell)
+        })
+    }
+
+    /// Return the cell's zero-based slot in the first sixteen tiles of either
+    /// active high-bridge set. Concrete wins if malformed theater data makes
+    /// the two ranges overlap, matching the engine's predicate order.
+    pub(crate) fn high_bridge_tile_offset(&self, cell: &ResolvedTerrainCell) -> Option<usize> {
+        let tile_id = u16::try_from(cell.final_tile_index).ok()?;
+        [self.bridge_set_start, self.wood_bridge_set_start]
+            .into_iter()
+            .flatten()
+            .find_map(|start| {
+                let offset = u32::from(tile_id).checked_sub(u32::from(start))?;
+                (offset < 16).then_some(offset as usize)
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_high_bridge_set_starts(
+        &mut self,
+        bridge_set_start: Option<u16>,
+        wood_bridge_set_start: Option<u16>,
+    ) {
+        self.bridge_set_start = bridge_set_start;
+        self.wood_bridge_set_start = wood_bridge_set_start;
     }
 
     pub fn tube_facts(&self) -> &[TubeFact] {
@@ -438,42 +554,180 @@ impl ResolvedTerrainGrid {
         lat_enabled: bool,
         cliff_back_impassability: u8,
     ) -> Self {
-        let (width, height) = grid_dimensions(&map.cells);
+        Self::build_inner(
+            map,
+            theater_data,
+            asset_manager,
+            terrain_rules,
+            overlay_registry,
+            None,
+            lat_enabled,
+            cliff_back_impassability,
+            None,
+            None,
+        )
+    }
+
+    /// Production map-load path with the process-owned native variant selector.
+    pub fn build_with_variant_selector(
+        map: &MapFile,
+        theater_data: Option<&TheaterData>,
+        asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+        terrain_rules: Option<&TerrainRules>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        terrain_object_types: Option<&HashMap<String, TerrainObjectType>>,
+        lat_enabled: bool,
+        cliff_back_impassability: u8,
+        scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
+        variant_selector: &mut TileVariantSelectionContext<'_, '_>,
+    ) -> Self {
+        Self::build_inner(
+            map,
+            theater_data,
+            asset_manager,
+            terrain_rules,
+            overlay_registry,
+            terrain_object_types,
+            lat_enabled,
+            cliff_back_impassability,
+            Some(scenario_fill_ranged),
+            Some(variant_selector),
+        )
+    }
+
+    fn build_inner(
+        map: &MapFile,
+        theater_data: Option<&TheaterData>,
+        asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+        terrain_rules: Option<&TerrainRules>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        terrain_object_types: Option<&HashMap<String, TerrainObjectType>>,
+        lat_enabled: bool,
+        cliff_back_impassability: u8,
+        mut scenario_fill_ranged: Option<&mut dyn FnMut(u32, u32) -> u32>,
+        mut variant_selector: Option<&mut TileVariantSelectionContext<'_, '_>>,
+    ) -> Self {
+        let clear_tile_id = theater_data
+            .and_then(|td| td.rmg_tiles.clear_tile)
+            .unwrap_or(0);
+        let materialized_size_diamond = variant_selector.is_some();
+        let playfield =
+            materialized_size_diamond.then(|| Playfield::from_header(&map.header));
+        let raw_cells = if let (Some(selector), Some(fill_ranged)) = (
+            variant_selector.as_deref_mut(),
+            scenario_fill_ranged.as_deref_mut(),
+        ) {
+            materialize_map_load_cells(map, selector, fill_ranged)
+        } else {
+            // The selector-free constructor is retained for focused tests and
+            // synthetic grids. Production always takes the native load path.
+            map.cells.clone()
+        };
+        let (width, height) = grid_dimensions(&raw_cells);
         if width == 0 || height == 0 {
             return Self {
                 width: 0,
                 height: 0,
                 cells: Vec::new(),
+                native_allocated: materialized_size_diamond.then(Vec::new),
                 tube_facts: Vec::new(),
-                tiberium_speed_costs: None,
+                clear_tile_id,
+                tile_registry_len: theater_data.map(|td| td.lookup.len()),
+                bridge_set_start: theater_data.and_then(|td| {
+                    td.bridge_set
+                        .and_then(|set| td.lookup.bounds().get(set as usize))
+                        .map(|bounds| bounds.start)
+                }),
+                wood_bridge_set_start: theater_data.and_then(|td| {
+                    td.wood_bridge_set
+                        .and_then(|set| td.lookup.bounds().get(set as usize))
+                        .map(|bounds| bounds.start)
+                }),
             };
         }
-        // Cache the `[Tiberium]` SpeedCostProfile once per map load — used at
-        // runtime by `recalc_overlay_passability` when ore appears on a cell
-        // after spread / TIBTRE spawn / growth.
-        let tiberium_speed_costs = terrain_rules
-            .and_then(|tr| tr.semantics_by_name("Tiberium"))
-            .map(|sem| sem.speed_costs);
 
-        let mut final_cells: Vec<MapCell> = map.cells.clone();
-        if lat_enabled {
-            if let Some(td) = theater_data {
-                let lat_config = lat::parse_lat_config(&td.ini_data, &td.lookup);
-                if !lat_config.grounds.is_empty() {
-                    lat::apply_lat(&mut final_cells, &lat_config, &td.lookup);
+        let mut final_cells: Vec<MapCell> = raw_cells.clone();
+        let mut metadata_cache: HashMap<TileKey, TileMetadata> = HashMap::new();
+        let mut warned_unknown_land_types: HashSet<u8> = HashSet::new();
+        let native_allocated = materialized_size_diamond.then(|| {
+            let mut mask = vec![false; width as usize * height as usize];
+            for cell in &raw_cells {
+                let index = cell.ry as usize * width as usize + cell.rx as usize;
+                if let Some(slot) = mask.get_mut(index) {
+                    *slot = true;
                 }
             }
-        }
+            mask
+        });
+        let load_slope_states = if lat_enabled {
+            theater_data.map(|td| {
+                let lat_config = lat::parse_lat_config(&td.ini_data, &td.lookup);
+                let slope_config = lat::SlopeFixupConfig {
+                    ramp_base: td.rmg_tiles.ramp_base.map_or(-1, i32::from),
+                    ramp_smooth: td.rmg_tiles.ramp_smooth.map_or(-1, i32::from),
+                };
+                let mut pristine_slope = |tile_index: i32, sub_tile: u8| {
+                    let Ok(tile_id) = u16::try_from(tile_index) else {
+                        return 0;
+                    };
+                    if tile_index == theater::NO_TILE || usize::from(tile_id) >= td.lookup.len() {
+                        return 0;
+                    }
+                    cached_tile_metadata(
+                        &mut metadata_cache,
+                        theater_data,
+                        asset_manager,
+                        terrain_rules,
+                        TileKey {
+                            tile_id,
+                            sub_tile,
+                            variant: 0,
+                        },
+                        &mut warned_unknown_land_types,
+                    )
+                    .slope_type
+                };
+                lat::apply_load_recalc_sweeps(
+                    &mut final_cells,
+                    &lat_config,
+                    slope_config,
+                    &mut pristine_slope,
+                )
+            })
+        } else {
+            None
+        };
+        let load_slope_lookup = load_slope_states.as_ref().map(|states| {
+            final_cells
+                .iter()
+                .zip(states)
+                .map(|(cell, &slope)| ((cell.rx, cell.ry), slope))
+                .collect::<HashMap<_, _>>()
+        });
 
         let raw_lookup: HashMap<(u16, u16), &MapCell> =
-            map.cells.iter().map(|c| ((c.rx, c.ry), c)).collect();
+            raw_cells.iter().map(|c| ((c.rx, c.ry), c)).collect();
         let final_lookup: HashMap<(u16, u16), &MapCell> =
             final_cells.iter().map(|c| ((c.rx, c.ry), c)).collect();
 
-        let terrain_objects: HashSet<(u16, u16)> = map
+        let snow_theater = map.header.theater.eq_ignore_ascii_case("SNOW");
+        let terrain_objects: HashMap<(u16, u16), u8> = map
             .terrain_objects
             .iter()
-            .map(|obj| (obj.rx, obj.ry))
+            .map(|obj| {
+                let occupation = terrain_object_types
+                    .and_then(|types| types.get(&obj.name.to_ascii_uppercase()))
+                    .map(|terrain_type| {
+                        if snow_theater {
+                            terrain_type.snow_occupation_bits
+                        } else {
+                            terrain_type.temperate_occupation_bits
+                        }
+                    })
+                    .unwrap_or(7)
+                    & 0x07;
+                ((obj.rx, obj.ry), occupation)
+            })
             .collect();
 
         let mut overlays_by_cell: HashMap<(u16, u16), Vec<&OverlayEntry>> = HashMap::new();
@@ -484,10 +738,12 @@ impl ResolvedTerrainGrid {
                 .push(overlay);
         }
 
-        let mut metadata_cache: HashMap<TileKey, TileMetadata> = HashMap::new();
-        let mut warned_unknown_land_types: HashSet<u8> = HashSet::new();
         let mut cells: Vec<ResolvedTerrainCell> =
             Vec::with_capacity(width as usize * height as usize);
+        let mut selector_calls = 0usize;
+        let mut replacement_cells = 0usize;
+        let mut high_suffix_cells = 0usize;
+        let mut max_total_files = 1u8;
 
         for ry in 0..height {
             for rx in 0..width {
@@ -498,106 +754,126 @@ impl ResolvedTerrainGrid {
                     .unwrap_or((0, 0, 0));
                 let is_wood_bridge_repair_tile =
                     is_wood_bridge_repair_tile(theater_data, final_tile_index);
-                let tile_key = TileKey {
-                    tile_id: normalize_tile_id(final_tile_index),
-                    sub_tile: final_sub_tile,
+                let tile_index_out_of_range = theater_data.is_some_and(|td| {
+                    final_tile_index >= 0
+                        && final_tile_index != 0xFFFF
+                        && final_tile_index as usize >= td.lookup.len()
+                });
+                let uses_clear_fallback = raw.is_none()
+                    || final_tile_index < 0
+                    || final_tile_index == 0xFFFF
+                    || tile_index_out_of_range;
+                let (presentation_tile_id, presentation_sub_tile) = if uses_clear_fallback {
+                    (clear_tile_id, 0)
+                } else {
+                    (normalize_tile_id(final_tile_index), final_sub_tile)
+                };
+                let pristine_key = TileKey {
+                    tile_id: presentation_tile_id,
+                    sub_tile: presentation_sub_tile,
                     variant: 0,
                 };
-                let mut metadata = if let Some(metadata) = metadata_cache.get(&tile_key) {
-                    metadata.clone()
-                } else {
-                    let metadata = load_tile_metadata(
+                let pristine_metadata = cached_tile_metadata(
+                    &mut metadata_cache,
+                    theater_data,
+                    asset_manager,
+                    terrain_rules,
+                    pristine_key,
+                    &mut warned_unknown_land_types,
+                );
+                // Retail selects the independent tactical owner early, using
+                // only pristine dimensions and the pristine damaged-data gate.
+                // CellClass attributes remain owned by the registered pristine
+                // head; selected-owner presentation fields are overlaid below.
+                let mut variant = 0u8;
+                if let (Some(td), Some(selector)) = (theater_data, variant_selector.as_mut()) {
+                    let total_file_count = td.lookup.total_file_count(presentation_tile_id);
+                    let outside_size_diamond = materialized_size_diamond && raw.is_none();
+                    if !outside_size_diamond
+                        && ordinary_variant_selection_enabled(
+                            total_file_count,
+                            uses_clear_fallback,
+                            pristine_metadata.has_damaged_data,
+                        )
+                    {
+                        max_total_files = max_total_files.max(total_file_count);
+                        variant = selector.select_variant(
+                            i32::from(rx),
+                            i32::from(ry),
+                            presentation_sub_tile,
+                            pristine_metadata.template_width_cells,
+                            pristine_metadata.template_height_cells,
+                            total_file_count,
+                        );
+                        selector_calls += 1;
+                        replacement_cells += usize::from(variant > 0);
+                        high_suffix_cells += usize::from(variant > 4);
+                    }
+                }
+                let selected_key = TileKey {
+                    variant,
+                    ..pristine_key
+                };
+                let mut metadata = pristine_metadata;
+                if selected_key != pristine_key {
+                    let selected_metadata = cached_tile_metadata(
+                        &mut metadata_cache,
                         theater_data,
                         asset_manager,
                         terrain_rules,
-                        tile_key,
+                        selected_key,
                         &mut warned_unknown_land_types,
                     );
-                    metadata_cache.insert(tile_key, metadata.clone());
-                    metadata
-                };
-                let terrain_object_blocks = terrain_objects.contains(&(rx, ry));
+                    apply_selected_presentation_metadata(&mut metadata, &selected_metadata);
+                }
+                if let Some(slope_type) = load_slope_lookup
+                    .as_ref()
+                    .and_then(|slopes| slopes.get(&(rx, ry)))
+                    .copied()
+                {
+                    metadata.slope_type = slope_type;
+                    metadata.has_ramp = slope_type != 0;
+                }
+                let terrain_object_occupation = terrain_objects.get(&(rx, ry)).copied();
+                let terrain_object_blocks =
+                    terrain_object_occupation.is_some_and(|occupation| occupation != 0);
                 let overlay_effects = classify_overlay_effects(
                     overlays_by_cell.get(&(rx, ry)),
                     overlay_registry,
                     level,
+                    metadata.slope_type,
                 );
                 let canonical_ramp = canonical_ramp_from_slope_type(metadata.slope_type);
-                // Low bridge overlays are visual/damage facts. Movement is
-                // driven by the final YR cell land type plus TubeClass facts,
-                // not by forcing the surface terrain into ordinary road.
-                // Road/pavement overlays override underlying terrain to Road.
-                // Matches original engine: RecalcLandType sets LandType=Road(1)
-                // when overlay.Wall is true.
-                if overlay_effects.is_road && !overlay_effects.is_low_bridge {
-                    metadata.is_road = true;
-                    metadata.terrain_class = TerrainClass::Road;
-                    metadata.land_type =
-                        crate::sim::pathfinding::passability::LandType::Road.as_index();
-                    metadata.yr_cell_land_type = metadata.land_type;
-                }
-                // Tiberium/ore overlays change the effective terrain type for passability.
-                // Matches original engine: RecalcLandType sets cell+0xEC when tiberium present.
-                // Also update speed_costs from [Tiberium] INI section so the terrain
-                // cost grid uses correct speed modifiers (Foot=90%, Track=70%, etc.).
-                //
-                // Capture the underlying (pre-override) values FIRST so
-                // `recalc_overlay_passability` can restore them when the overlay is
-                // later removed at runtime (ore harvested to zero, wall destroyed,
-                // crate picked up). Same pattern as `base_ground_walk_blocked`.
+                // The registered pristine TMP owns the base snapshot. Overlay
+                // land never feeds back into these restoration fields.
                 let base_land_type = metadata.land_type;
                 let base_yr_cell_land_type = metadata.yr_cell_land_type;
                 let base_terrain_class = metadata.terrain_class;
                 let base_speed_costs = metadata.speed_costs;
-                if overlay_effects.has_tiberium {
-                    metadata.land_type =
-                        crate::sim::pathfinding::passability::LandType::Tiberium.as_index();
-                    metadata.yr_cell_land_type = metadata.land_type;
-                    metadata.terrain_class = TerrainClass::Tiberium;
-                    if let Some(tib_semantics) =
-                        terrain_rules.and_then(|tr| tr.semantics_by_name("Tiberium"))
-                    {
-                        metadata.speed_costs = tib_semantics.speed_costs;
-                    }
-                }
                 let base_ground_walk_blocked = canonical_ramp.is_none() && metadata.ground_blocked;
+                let base_build_blocked = metadata.build_blocked || canonical_ramp.is_some();
+
+                if let Some(land) = overlay_effects.effective_land {
+                    apply_canonical_land_to_metadata(
+                        &mut metadata,
+                        land,
+                        overlay_effects.effective_land_speed_costs,
+                    );
+                }
                 let is_cliff_like = metadata.is_cliff_like;
-                // Compute zone_type matching RecalcZoneType (0x483C80) priority chain.
-                // Must be computed BEFORE ground_walk_blocked is OR'd with overlay/terrain
-                // object flags, since we need the base terrain passability.
-                let zone_type = if overlay_effects.is_crushable {
-                    zone_class::ROAD
-                } else if overlay_effects.is_wall {
-                    zone_class::WALL
-                } else if overlay_effects.overlay_land_wheel_speed_zero || overlay_effects.is_a_rock
-                {
-                    zone_class::IMPASSABLE
-                } else if overlay_effects.is_rubble {
-                    zone_class::GROUND
-                } else if overlay_effects.is_gate {
-                    zone_class::IMPASSABLE
-                } else if metadata.is_water {
-                    zone_class::WATER
-                } else if metadata.land_type
-                    == crate::sim::pathfinding::passability::LandType::Beach.as_index()
-                {
-                    zone_class::BEACH
-                } else if wheel_speed_at_or_below_one_percent(metadata.speed_costs.wheel)
-                    || base_ground_walk_blocked
-                {
-                    zone_class::IMPASSABLE
-                } else if terrain_object_blocks {
-                    zone_class::BUILDING
-                } else {
-                    zone_class::GROUND
-                };
+                let outside = playfield.is_some_and(|playfield| {
+                    !playfield.contains_raised(rx, ry, level as i8, metadata.slope_type)
+                });
+                let zone_type = recalc_zone_type(
+                    outside,
+                    overlay_effects.overlay_zone_type,
+                    metadata.land_type,
+                    metadata.speed_costs.wheel,
+                    terrain_object_occupation,
+                );
                 let ground_walk_blocked = base_ground_walk_blocked
                     || terrain_object_blocks
                     || overlay_effects.overlay_blocks;
-                let base_build_blocked = metadata.build_blocked
-                    || terrain_object_blocks
-                    || overlay_effects.overlay_blocks
-                    || canonical_ramp.is_some();
                 let bridge_walkable = overlay_effects.has_bridge_deck
                     && !overlay_effects.is_low_bridge
                     && !terrain_object_blocks
@@ -606,18 +882,18 @@ impl ResolvedTerrainGrid {
                 // Morphable=yes. Cells with no resolved tile (filled_clear) default
                 // to false. Computed once at resolve time so the smudge dispatcher
                 // reads a single bool.
-                let accepts_smudge = if raw.is_none() {
+                let accepts_smudge = if uses_clear_fallback {
                     false
                 } else {
                     theater_data
-                        .map(|td| td.lookup.is_morphable(tile_key.tile_id))
+                        .map(|td| td.lookup.is_morphable(presentation_tile_id))
                         .unwrap_or(false)
                 };
-                let allows_tiberium = if raw.is_none() || final_tile_index < 0 {
+                let allows_tiberium = if uses_clear_fallback {
                     false
                 } else {
                     theater_data
-                        .map(|td| td.lookup.allows_tiberium(tile_key.tile_id))
+                        .map(|td| td.lookup.allows_tiberium(presentation_tile_id))
                         .unwrap_or(false)
                 };
                 // Allow layer transitions on any bridge deck cell. High bridges over
@@ -628,7 +904,10 @@ impl ResolvedTerrainGrid {
                 // the A* can switch Bridge→Ground mid-span and units clip
                 // through the bridge.
                 let bridge_transition = false;
-                let build_blocked = base_build_blocked || overlay_effects.has_bridge_deck;
+                let build_blocked = base_build_blocked
+                    || terrain_object_blocks
+                    || overlay_effects.overlay_blocks
+                    || overlay_effects.has_bridge_deck;
                 cells.push(ResolvedTerrainCell {
                     rx,
                     ry,
@@ -655,12 +934,15 @@ impl ResolvedTerrainGrid {
                     accepts_smudge,
                     allows_tiberium,
                     is_cliff_redraw: false,
-                    variant: 0,
+                    variant,
                     has_ramp: metadata.has_ramp,
                     canonical_ramp,
                     ground_walk_blocked,
                     terrain_object_blocks,
+                    terrain_object_occupation,
                     overlay_blocks: overlay_effects.overlay_blocks,
+                    overlay_zone_type: overlay_effects.overlay_zone_type,
+                    outside_playfield: outside,
                     zone_type,
                     base_ground_walk_blocked,
                     base_build_blocked,
@@ -686,6 +968,15 @@ impl ResolvedTerrainGrid {
                     bridgehead_anchor_class_at_load: None,
                 });
             }
+        }
+        if selector_calls > 0 {
+            log::info!(
+                "ResolvedTerrain variants: {} selector cells, {} replacements, {} e-or-later, max total files {}",
+                selector_calls,
+                replacement_cells,
+                high_suffix_cells,
+                max_total_files,
+            );
         }
 
         let mut bridge_facts = vec![BridgeCellFacts::default(); cells.len()];
@@ -722,7 +1013,10 @@ impl ResolvedTerrainGrid {
                 cell.has_bridge_deck = true;
                 cell.bridge_walkable = !cell.terrain_object_blocks && !cell.overlay_blocks;
                 cell.bridge_deck_level = cell.level.saturating_add(4);
-                cell.build_blocked = cell.base_build_blocked || cell.bridge_walkable;
+                cell.build_blocked = cell.base_build_blocked
+                    || cell.terrain_object_blocks
+                    || cell.overlay_blocks
+                    || cell.bridge_walkable;
             } else if facts.family != crate::map::bridge_facts::BridgeStampFamily::None
                 && cell
                     .bridge_layer
@@ -732,7 +1026,9 @@ impl ResolvedTerrainGrid {
                 cell.has_bridge_deck = false;
                 cell.bridge_walkable = false;
                 cell.bridge_deck_level = cell.level;
-                cell.build_blocked = cell.base_build_blocked;
+                cell.build_blocked = cell.base_build_blocked
+                    || cell.terrain_object_blocks
+                    || cell.overlay_blocks;
             }
 
             if facts.has_transition_flag() {
@@ -860,7 +1156,12 @@ impl ResolvedTerrainGrid {
         // is ≥4 levels above get land_type=Rock and ground_walk_blocked=true.
         // Only overrides Clear(0), Water(4), Beach(3) land types.
         if cliff_back_impassability == 2 {
-            const CLIFF_BACK_HEIGHT_DIFF: u8 = 4;
+            const CLIFF_BACK_HEIGHT_DIFF: i16 = 4;
+            // Ground-blocked wheel cost the Rock reclass carries on its own, so
+            // the zone derivation below never depends on a rules table having
+            // been supplied. A loaded `[Rock]` row replaces the whole profile
+            // and stays authoritative.
+            const CLIFF_BACK_RECLASS_WHEEL_SPEED: u8 = 0;
             // 6 neighbor offsets in (dx, dy) matching gamemd.exe RecalcAttributes:
             // (X, Y-1), (X-1, Y), (X+2, Y+2), (X+1, Y+1), (X-1, Y+1), (X+1, Y-1)
             const NEIGHBOR_OFFSETS: [(i32, i32); 6] =
@@ -876,7 +1177,7 @@ impl ResolvedTerrainGrid {
                 if lt != clear_lt && lt != water_lt && lt != beach_lt {
                     continue;
                 }
-                let cell_level = cells[idx].level;
+                let cell_level = i16::from(cells[idx].level as i8);
                 let rx = cells[idx].rx as i32;
                 let ry = cells[idx].ry as i32;
 
@@ -887,7 +1188,8 @@ impl ResolvedTerrainGrid {
                     if nx >= 0 && ny >= 0 && nx < width as i32 && ny < height as i32 {
                         let nidx = ny as usize * width as usize + nx as usize;
                         if nidx < cells.len()
-                            && cells[nidx].level >= cell_level + CLIFF_BACK_HEIGHT_DIFF
+                            && i16::from(cells[nidx].level as i8)
+                                >= cell_level + CLIFF_BACK_HEIGHT_DIFF
                         {
                             behind_cliff = true;
                             break;
@@ -903,19 +1205,26 @@ impl ResolvedTerrainGrid {
                     // The reclass precedes zone derivation in the engine, so the
                     // reduced zone follows the new Rock land (wheel speed 0 →
                     // Impassable) unless an overlay branch already claimed the
-                    // cell (those branches outrank the land checks).
-                    if matches!(
-                        cell.zone_type,
-                        zone_class::GROUND | zone_class::WATER | zone_class::BEACH
-                    ) {
-                        cell.zone_type = zone_class::IMPASSABLE;
-                    }
-                    if let Some(rock) = terrain_rules.and_then(|tr| tr.semantics_for_land_type(7)) {
+                    // cell (those branches outrank the land checks). The reclass
+                    // supplies that wheel cost itself: a cliff back is impassable
+                    // because it is a cliff back, not because `[Rock]` happened
+                    // to be loaded.
+                    cell.speed_costs.wheel = Some(CLIFF_BACK_RECLASS_WHEEL_SPEED);
+                    if let Some(rock) = terrain_rules
+                        .and_then(|tr| tr.semantics_for_land_type(LandType::Rock.as_index()))
+                    {
                         cell.terrain_class = rock.terrain_class;
                         cell.speed_costs = rock.speed_costs;
                         cell.is_water = rock.water;
                         cell.build_blocked = true;
                     }
+                    cell.zone_type = recalc_zone_type(
+                        cell.outside_playfield,
+                        cell.overlay_zone_type,
+                        cell.land_type,
+                        cell.speed_costs.wheel,
+                        cell.terrain_object_occupation,
+                    );
                     // Bake the reclass into the base (pre-overlay) snapshot too:
                     // it is derived purely from neighbor LEVELS, which never
                     // change at runtime, and the engine re-derives it on every
@@ -935,44 +1244,6 @@ impl ResolvedTerrainGrid {
                 log::info!(
                     "ResolvedTerrain: {} cells marked impassable by CliffBackImpassability",
                     cliff_back_count,
-                );
-            }
-        }
-
-        // Assign random tile visual variants (FA2 bRNDImage, MapData.cpp:3292-3306).
-        // Uses deterministic hash of (rx, ry) for reproducibility across sessions.
-        // Tiles with HasDamagedData (bridges) use variants for damage states, not
-        // visual diversity — those are excluded.
-        if let Some(td) = theater_data {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut variant_total: usize = 0;
-            for cell in &mut cells {
-                let tile_id = normalize_tile_id(cell.final_tile_index);
-                let vc = td.lookup.variant_count(tile_id);
-                if vc == 0 {
-                    continue;
-                }
-                // Bridges with baked damaged variants reserve cell.variant for
-                // the per-frame damaged_variant pick (sim-driven), so the
-                // map-load PRNG must leave it at 0.
-                if cell.has_damaged_data {
-                    continue;
-                }
-                let mut hasher = DefaultHasher::new();
-                (cell.rx, cell.ry).hash(&mut hasher);
-                let hash = hasher.finish();
-                // 0 = main tile, 1..=vc = replacement. Matches FA2's
-                // rand() * (1 + count) / RAND_MAX distribution.
-                cell.variant = (hash % (vc as u64 + 1)) as u8;
-                if cell.variant > 0 {
-                    variant_total += 1;
-                }
-            }
-            if variant_total > 0 {
-                log::info!(
-                    "ResolvedTerrain: {} cells assigned tile variants",
-                    variant_total,
                 );
             }
         }
@@ -1014,8 +1285,20 @@ impl ResolvedTerrainGrid {
             width,
             height,
             cells,
+            native_allocated,
             tube_facts,
-            tiberium_speed_costs,
+            clear_tile_id,
+            tile_registry_len: theater_data.map(|td| td.lookup.len()),
+            bridge_set_start: theater_data.and_then(|td| {
+                td.bridge_set
+                    .and_then(|set| td.lookup.bounds().get(set as usize))
+                    .map(|bounds| bounds.start)
+            }),
+            wood_bridge_set_start: theater_data.and_then(|td| {
+                td.wood_bridge_set
+                    .and_then(|set| td.lookup.bounds().get(set as usize))
+                    .map(|bounds| bounds.start)
+            }),
         }
     }
 
@@ -1080,10 +1363,14 @@ impl ResolvedTerrainGrid {
 struct TileMetadata {
     tileset_index: Option<u16>,
     has_tmp_metadata: bool,
-    /// Mapped land type (0-7) for passability matrix lookups.
+    /// Pristine TMP grid dimensions used by ordinary variant normalization.
+    template_width_cells: u32,
+    template_height_cells: u32,
+    /// Canonical YR LandType used for terrain semantics and CellClass Land
+    /// derivation. Reduced `zone_type` selects the movement matrix column.
     land_type: u8,
-    /// Final gamemd CellClass LandType value where Rust needs the binary
-    /// predicate. This is not the TMP terrain_type byte.
+    /// Retained CellClass LandType mirror for binary-derived predicates and
+    /// compatibility consumers. This is not the raw TMP terrain_type byte.
     yr_cell_land_type: u8,
     /// Raw TMP terrain_type byte (0-15) for rules.ini semantic lookups.
     raw_land_type: u8,
@@ -1114,6 +1401,8 @@ impl Default for TileMetadata {
         Self {
             tileset_index: None,
             has_tmp_metadata: false,
+            template_width_cells: 0,
+            template_height_cells: 0,
             land_type: 0,
             yr_cell_land_type: 0,
             raw_land_type: 0,
@@ -1140,25 +1429,12 @@ impl Default for TileMetadata {
 #[derive(Debug, Clone, Default)]
 struct OverlayEffects {
     overlay_blocks: bool,
-    /// Overlay is Crushable=yes. RecalcZoneType -> reduced ZoneType 1.
-    is_crushable: bool,
-    /// Overlay is a gate (Gate=yes). RecalcZoneType → ZoneType 6 (Impassable).
-    is_gate: bool,
-    /// Overlay is Wall=yes after Crushable failed. RecalcZoneType -> 2.
-    is_wall: bool,
-    overlay_land_wheel_speed_zero: bool,
-    is_a_rock: bool,
-    is_rubble: bool,
+    overlay_zone_type: Option<u8>,
     has_bridge_deck: bool,
     bridge_layer: Option<BridgeLayer>,
-    /// Low bridges override terrain to Road (NoUseTileLandType=true, Land=Road).
-    /// When set, overrides the cell's is_water/is_road/ground_walk_blocked flags.
     is_low_bridge: bool,
-    /// Cell has a Tiberium/ore overlay — changes effective land_type to Tiberium (5).
-    has_tiberium: bool,
-    /// Cell has a road/pavement overlay (Land=Road in rules.ini).
-    /// Original engine: RecalcLandType sets LandType=Road(1) when overlay.Wall is true.
-    is_road: bool,
+    effective_land: Option<LandType>,
+    effective_land_speed_costs: Option<SpeedCostProfile>,
 }
 
 fn grid_dimensions(cells: &[MapCell]) -> (u16, u16) {
@@ -1183,6 +1459,22 @@ fn normalize_tile_id(tile_index: i32) -> u16 {
     } else {
         tile_index as u16
     }
+}
+
+fn presentation_tile_parts(tile_index: i32, sub_tile: u8, clear_tile_id: u16) -> (u16, u8) {
+    if tile_index == 0xFFFF || tile_index < 0 {
+        (clear_tile_id, 0)
+    } else {
+        (tile_index as u16, sub_tile)
+    }
+}
+
+fn ordinary_variant_selection_enabled(
+    total_file_count: u8,
+    uses_clear_fallback: bool,
+    has_damaged_data: bool,
+) -> bool {
+    !has_damaged_data && total_file_count != 0 && (uses_clear_fallback || total_file_count > 1)
 }
 
 fn is_wood_bridge_repair_tile(theater_data: Option<&TheaterData>, final_tile_index: i32) -> bool {
@@ -1308,6 +1600,39 @@ fn auto_tube_direction_for_tile(
     None
 }
 
+fn cached_tile_metadata(
+    cache: &mut HashMap<TileKey, TileMetadata>,
+    theater_data: Option<&TheaterData>,
+    asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
+    terrain_rules: Option<&TerrainRules>,
+    key: TileKey,
+    warned_unknown_land_types: &mut HashSet<u8>,
+) -> TileMetadata {
+    if let Some(metadata) = cache.get(&key) {
+        return metadata.clone();
+    }
+    let metadata = load_tile_metadata(
+        theater_data,
+        asset_manager,
+        terrain_rules,
+        key,
+        warned_unknown_land_types,
+    );
+    cache.insert(key, metadata.clone());
+    metadata
+}
+
+/// Apply only fields owned by the selected independent tactical TMP. Pixel
+/// bounds, Z, and extra planes stay atlas-owned; this resolver carries the
+/// selected cell's radar pair and render-origin offsets. Every CellClass field
+/// remains on `pristine`.
+fn apply_selected_presentation_metadata(pristine: &mut TileMetadata, selected: &TileMetadata) {
+    pristine.radar_left = selected.radar_left;
+    pristine.radar_right = selected.radar_right;
+    pristine.render_offset_x = selected.render_offset_x;
+    pristine.render_offset_y = selected.render_offset_y;
+}
+
 fn load_tile_metadata(
     theater_data: Option<&TheaterData>,
     asset_manager: Option<&crate::assets::asset_manager::AssetManager>,
@@ -1319,53 +1644,57 @@ fn load_tile_metadata(
         return TileMetadata::default();
     };
     let Some(asset_manager) = asset_manager else {
-        let mut metadata = metadata_from_set_name(
+        return metadata_from_set_name(
             td.lookup
                 .tileset_index(key.tile_id)
                 .and_then(|idx| td.lookup.set_name(idx)),
             td.lookup.tileset_index(key.tile_id),
         );
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
-        return metadata;
     };
     let tileset_index = td.lookup.tileset_index(key.tile_id);
     let set_name = tileset_index.and_then(|idx| td.lookup.set_name(idx));
     let mut metadata = metadata_from_set_name(set_name, tileset_index);
 
-    let Some(filename) = td.lookup.filename(key.tile_id as i32) else {
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
+    let Some(filename) = td.lookup.filename_for_variant(key.tile_id, key.variant) else {
         return metadata;
     };
     let Some(bytes) = asset_manager.get(filename) else {
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     let Ok(tmp) = TmpFile::from_bytes(&bytes) else {
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
-    let Some(tile) = tmp
-        .tiles
-        .get(key.sub_tile as usize)
-        .and_then(|t| t.as_ref())
-    else {
-        apply_land_type_semantics(&mut metadata, terrain_rules, warned_unknown_land_types);
-        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
-        return metadata;
-    };
-    // Remember tileset-name road detection before TMP byte overrides it.
-    let tileset_says_road = metadata.is_road;
-    merge_tmp_metadata(&mut metadata, tile);
-    apply_land_type_semantics(&mut metadata, terrain_rules, warned_unknown_land_types);
-    // Some road/pavement tilesets encode terrain_type 0 (Clear) in TMP instead of
-    // 11 (Road). If the tileset name says "road"/"pavement" but the TMP byte mapped
-    // to Clear, trust the tileset name — the visual road should be a road.
-    if tileset_says_road && !metadata.is_road && metadata.terrain_class == TerrainClass::Clear {
-        metadata.is_road = true;
-        metadata.terrain_class = TerrainClass::Road;
-    }
-    apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
+    merge_tmp_file_metadata(
+        &mut metadata,
+        &tmp,
+        key.sub_tile,
+        terrain_rules,
+        warned_unknown_land_types,
+    );
     metadata
+}
+
+fn merge_tmp_file_metadata(
+    metadata: &mut TileMetadata,
+    tmp: &TmpFile,
+    sub_tile: u8,
+    terrain_rules: Option<&TerrainRules>,
+    warned_unknown_land_types: &mut HashSet<u8>,
+) {
+    metadata.template_width_cells = tmp.template_width;
+    metadata.template_height_cells = tmp.template_height;
+    let Some(source_sub) =
+        theater::wrapped_subtile_index(sub_tile, tmp.template_width, tmp.template_height)
+    else {
+        apply_land_type_semantics(metadata, terrain_rules, warned_unknown_land_types);
+        return;
+    };
+    let Some(tile) = tmp.tiles.get(source_sub).and_then(|t| t.as_ref()) else {
+        apply_land_type_semantics(metadata, terrain_rules, warned_unknown_land_types);
+        return;
+    };
+    merge_tmp_metadata(metadata, tile);
+    apply_land_type_semantics(metadata, terrain_rules, warned_unknown_land_types);
 }
 
 fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) -> TileMetadata {
@@ -1413,26 +1742,6 @@ fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) ->
         ground_blocked: is_water || is_cliff_like,
         build_blocked: is_water || is_cliff_like,
         ..TileMetadata::default()
-    }
-}
-
-fn apply_theater_cliff_ranges(
-    metadata: &mut TileMetadata,
-    theater_data: &TheaterData,
-    tile_id: u16,
-) {
-    if !theater_data.is_cliff_or_impassable_tile(tile_id, metadata.slope_type) {
-        return;
-    }
-    metadata.is_cliff_like = true;
-    metadata.ground_blocked = true;
-    metadata.build_blocked = true;
-    if !metadata.is_water && !metadata.has_tmp_metadata {
-        metadata.terrain_class = TerrainClass::Cliff;
-        metadata.land_type = crate::sim::pathfinding::passability::LandType::Rock.as_index();
-        metadata.yr_cell_land_type = metadata.land_type;
-    } else if !metadata.is_water {
-        metadata.terrain_class = TerrainClass::Cliff;
     }
 }
 
@@ -1485,17 +1794,18 @@ fn apply_land_type_semantics(
     if !metadata.has_tmp_metadata {
         return;
     }
-    // Use the raw TMP byte (0-15) for rules.ini section lookup — that's how the
-    // KNOWN_LAND_TYPES table is indexed.  The mapped land_type (0-7) is already
-    // stored on the metadata for passability matrix lookups.
+    // Rules rows use the canonical LandType index. The raw TMP byte remains
+    // diagnostic context only after the fixed TMP-to-land conversion has run.
     let Some(semantics) = terrain_rules
-        .semantics_for_land_type(metadata.raw_land_type)
+        .semantics_for_land_type(metadata.land_type)
         .copied()
     else {
         if warned_unknown_land_types.insert(metadata.raw_land_type) {
             log::warn!(
-                "Unknown TMP LandType byte {}; falling back to tileset-name heuristics",
-                metadata.raw_land_type
+                "No terrain-rules row for canonical LandType {} converted from TMP byte {}; \
+                 falling back to tileset-name heuristics",
+                metadata.land_type,
+                metadata.raw_land_type,
             );
         }
         return;
@@ -1511,10 +1821,26 @@ fn apply_land_type_semantics(
     metadata.build_blocked = !semantics.buildable;
 }
 
+fn apply_canonical_land_to_metadata(
+    metadata: &mut TileMetadata,
+    land: LandType,
+    speed_costs: Option<SpeedCostProfile>,
+) {
+    metadata.land_type = land.as_index();
+    metadata.yr_cell_land_type = land.as_index();
+    metadata.terrain_class = land.terrain_class();
+    metadata.speed_costs = speed_costs.unwrap_or_default();
+    metadata.is_water = land.is_water();
+    metadata.is_cliff_like = land.is_cliff_like();
+    metadata.is_rough = land.is_rough();
+    metadata.is_road = land.is_road();
+}
+
 fn classify_overlay_effects(
     overlays: Option<&Vec<&OverlayEntry>>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     level: u8,
+    slope_type: u8,
 ) -> OverlayEffects {
     let mut result = OverlayEffects::default();
     let Some(entries) = overlays else {
@@ -1528,46 +1854,24 @@ fn classify_overlay_effects(
         let is_bridge = crate::map::overlay_types::is_bridge_overlay_index(overlay.overlay_id);
 
         let flags = overlay_registry.and_then(|reg| reg.flags(overlay.overlay_id));
-        let is_wall = flags.map(|f| f.wall).unwrap_or(false);
-        let is_crushable = flags.map(|f| f.crushable).unwrap_or(false);
-        let is_tiberium = flags.map(|f| f.tiberium).unwrap_or(false);
-        let is_gate = flags.map(|f| f.is_gate).unwrap_or(false);
-        let overlay_land_wheel_speed_zero = flags.map(|f| f.land_wheel_speed_zero).unwrap_or(false);
-        let is_a_rock = flags.map(|f| f.is_a_rock).unwrap_or(false);
-        let is_rubble = flags.map(|f| f.is_rubble).unwrap_or(false);
-
-        // Road/pavement overlays have Land=Road in rules.ini. In the original
-        // engine, Wall=yes overlays with Land=Road act as road surfaces, not
-        // movement blockers. Only walls WITHOUT Land=Road actually block.
-        let is_road_overlay = flags
-            .and_then(|f| f.land.as_deref())
-            .map(|land| land.eq_ignore_ascii_case("Road"))
-            .unwrap_or(false);
-
-        if is_crushable {
-            result.is_crushable = true;
-        } else if is_road_overlay {
-            result.is_road = true;
-        } else if is_wall {
-            result.overlay_blocks = true;
-            result.is_wall = true;
-        } else if overlay_land_wheel_speed_zero || is_a_rock {
-            result.overlay_blocks = true;
-        }
-        if is_tiberium {
-            result.has_tiberium = true;
-        }
-        if is_gate {
-            result.is_gate = true;
-        }
-        if overlay_land_wheel_speed_zero {
-            result.overlay_land_wheel_speed_zero = true;
-        }
-        if is_a_rock {
-            result.is_a_rock = true;
-        }
-        if is_rubble {
-            result.is_rubble = true;
+        if let Some(flags) = flags {
+            // RecalcAttributes can remove resource overlays in its early
+            // authoritative-land branch before land or zone flags take effect.
+            if clears_tiberium_on_slope(flags, slope_type) {
+                continue;
+            }
+            result.overlay_zone_type = merge_overlay_zone_type(
+                result.overlay_zone_type,
+                overlay_reduced_zone_type(Some(flags)),
+            );
+            result.overlay_blocks = matches!(
+                result.overlay_zone_type,
+                Some(zone_class::WALL) | Some(zone_class::IMPASSABLE)
+            );
+            if let Some(land) = retained_overlay_land(flags, slope_type) {
+                result.effective_land = Some(land);
+                result.effective_land_speed_costs = flags.land_speed_costs;
+            }
         }
         if is_bridge && result.bridge_layer.is_none() {
             result.has_bridge_deck = true;
@@ -1597,8 +1901,96 @@ fn classify_overlay_effects(
     result
 }
 
+fn merge_overlay_zone_type(current: Option<u8>, candidate: Option<u8>) -> Option<u8> {
+    fn priority(zone_type: u8) -> u8 {
+        match zone_type {
+            zone_class::CRUSHABLE => 0,
+            zone_class::WALL => 1,
+            zone_class::IMPASSABLE => 2,
+            zone_class::GROUND => 3,
+            _ => u8::MAX,
+        }
+    }
+
+    match (current, candidate) {
+        (None, candidate) => candidate,
+        (current, None) => current,
+        (Some(current), Some(candidate)) => {
+            Some(if priority(candidate) < priority(current) {
+                candidate
+            } else {
+                current
+            })
+        }
+    }
+}
+
 fn wheel_speed_at_or_below_one_percent(wheel: Option<u8>) -> bool {
     wheel.is_some_and(|speed| speed <= 1)
+}
+
+/// Reproduce the active map-load order: initialize every allocated Size-diamond
+/// CellClass, then let IsoMapPack records overwrite those cells in stream order.
+fn materialize_map_load_cells(
+    map: &MapFile,
+    selector: &mut TileVariantSelectionContext<'_, '_>,
+    scenario_fill_ranged: &mut dyn FnMut(u32, u32) -> u32,
+) -> Vec<MapCell> {
+    let n = map.header.width;
+    let m = map.header.height;
+    let Some(max_coord) = n.checked_add(m) else {
+        return Vec::new();
+    };
+    // The native owner is a fixed 512x512 CellClass lookup. Retail maps fit
+    // this boundary; reject malformed dimensions instead of iterating an
+    // unbounded signed-bit-pattern value from the INI.
+    if n == 0 || m == 0 || max_coord > 512 {
+        return Vec::new();
+    }
+
+    let is_water = map
+        .header
+        .fill
+        .trim_matches(|ch: char| ch <= ' ')
+        .eq_ignore_ascii_case("Water");
+    let expected_count = m
+        .checked_mul(n.saturating_mul(2).saturating_sub(1))
+        .and_then(|count| usize::try_from(count).ok())
+        .unwrap_or(0);
+    let mut cells = Vec::with_capacity(expected_count);
+    let mut index_by_coord = HashMap::with_capacity(expected_count);
+    let last_sum = n + m * 2;
+
+    // This sum-major form is the native iterator's anti-diagonal order: each
+    // diagonal advances x and retreats y, beginning at (1, Size.Width).
+    for sum in (n + 1)..=last_sum {
+        for rx in 0..=sum {
+            let ry = sum - rx;
+            if rx.abs_diff(ry) >= n {
+                continue;
+            }
+            let rx = u16::try_from(rx).expect("validated Size diamond x fits u16");
+            let ry = u16::try_from(ry).expect("validated Size diamond y fits u16");
+            let index = cells.len();
+            cells.push(MapCell {
+                rx,
+                ry,
+                tile_index: selector.draw_fill_tile_index(is_water, scenario_fill_ranged),
+                sub_tile: 0,
+                z: 0u8.wrapping_add(map.header.level as u8),
+            });
+            index_by_coord.insert((rx, ry), index);
+        }
+    }
+    debug_assert_eq!(cells.len(), expected_count);
+
+    for explicit in &map.cells {
+        let Some(&index) = index_by_coord.get(&(explicit.rx, explicit.ry)) else {
+            continue;
+        };
+        cells[index] = explicit.clone();
+    }
+    cells
 }
 
 #[cfg(test)]
@@ -1609,7 +2001,9 @@ mod tests {
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::tube_facts::TubeSource;
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
     use crate::rules::terrain_rules::{TerrainClass, TerrainRules};
+    use crate::sim::rng::SimRng;
     use std::collections::HashSet;
 
     fn make_map(
@@ -1620,6 +2014,8 @@ mod tests {
         MapFile {
             header: crate::map::map_file::MapHeader {
                 theater: "TEMPERATE".to_string(),
+                fill: "Clear".to_string(),
+                level: 0,
                 width: 4,
                 height: 4,
                 local_left: 0,
@@ -1744,7 +2140,10 @@ mod tests {
             canonical_ramp: None,
             ground_walk_blocked: false,
             terrain_object_blocks: false,
+            terrain_object_occupation: None,
             overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
             zone_type: 0,
             base_ground_walk_blocked: false,
             base_build_blocked: false,
@@ -1765,6 +2164,258 @@ mod tests {
             has_damaged_data: false,
             bridgehead_anchor_class_at_load: None,
         }
+    }
+
+    #[test]
+    fn gsi_04_03a_level_prefill_wraps_before_absolute_last_isomap_overwrite() {
+        let mut map = make_map(
+            vec![
+                MapCell {
+                    rx: 2,
+                    ry: 2,
+                    tile_index: 98,
+                    sub_tile: 6,
+                    z: 5,
+                },
+                MapCell {
+                    rx: 2,
+                    ry: 2,
+                    tile_index: 99,
+                    sub_tile: 7,
+                    z: 9,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.header.width = 3;
+        map.header.height = 2;
+        map.header.fill = " \twAtEr\r\n".to_string();
+        map.header.level = 260;
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        assert_eq!(cache.cached_clear_tile_base(), 0);
+        assert_eq!(cache.cached_water_set_base(), 0);
+
+        // Stock RMG preview A publishes both resolved bases for the following
+        // ordinary load B. Repeating preview A preserves the same values.
+        cache.complete_theater_registry_load(Some(37), Some(50));
+        assert_eq!(cache.cached_clear_tile_base(), 37);
+        assert_eq!(cache.cached_water_set_base(), 50);
+        cache.complete_theater_registry_load(Some(37), Some(50));
+        assert_eq!(cache.cached_water_set_base(), 50);
+
+        let seed = 0xA55A_1234;
+        let mut expected_scenario = SimRng::new(seed);
+        let expected_tiles: Vec<_> = (0..10)
+            .map(|_| 50 + expected_scenario.next_range_u32_inclusive(0, 3) as i32)
+            .collect();
+        let mut scenario_rng = SimRng::new(seed);
+        let mut scenario_calls = 0usize;
+        let mut scenario_fill_ranged = |low, high| {
+            scenario_calls += 1;
+            scenario_rng.next_range_u32_inclusive(low, high)
+        };
+        let mut main_rng = SimRng::new(seed);
+        let main_before = main_rng.logical_state();
+        let mut main_draw = || main_rng.next_u32();
+        {
+            let mut selector = cache.begin_load(&mut main_draw);
+            let cells = materialize_map_load_cells(
+                &map,
+                &mut selector,
+                &mut scenario_fill_ranged,
+            );
+            let coords: Vec<_> = cells.iter().map(|cell| (cell.rx, cell.ry)).collect();
+            assert_eq!(
+                coords,
+                vec![
+                    (1, 3),
+                    (2, 2),
+                    (3, 1),
+                    (2, 3),
+                    (3, 2),
+                    (2, 4),
+                    (3, 3),
+                    (4, 2),
+                    (3, 4),
+                    (4, 3),
+                ]
+            );
+            assert_eq!(selector.map_fill_scenario_advance_count(), 10);
+            for (index, cell) in cells.iter().enumerate() {
+                if index == 1 {
+                    assert_eq!((cell.tile_index, cell.sub_tile, cell.z), (99, 7, 9));
+                } else {
+                    assert_eq!(
+                        (cell.tile_index, cell.sub_tile, cell.z),
+                        (expected_tiles[index], 0, 4)
+                    );
+                }
+            }
+            assert!(!coords.contains(&(0, 0)));
+            assert!(!coords.contains(&(1, 4)));
+            assert!(!selector.generated_table());
+            assert_eq!(selector.raw_draw_count(), 0);
+        }
+        drop(main_draw);
+        drop(scenario_fill_ranged);
+        assert_eq!(scenario_calls, 10);
+        assert_eq!(scenario_rng.logical_state(), expected_scenario.logical_state());
+        assert_eq!(main_rng.logical_state(), main_before);
+
+        // A registry with neither role publishes native reset sentinels only
+        // after its own Fill, for use by the following load.
+        cache.complete_theater_registry_load(None, None);
+        assert_eq!(cache.cached_clear_tile_base(), -1);
+        assert_eq!(cache.cached_water_set_base(), -1);
+    }
+
+    #[test]
+    fn gsi_04_02_clear_and_unknown_use_prior_cached_clear_and_equal_scenario_bounds() {
+        for fill in ["Clear", "unknown"] {
+            let mut map = make_map(Vec::new(), Vec::new(), Vec::new());
+            map.header.width = 3;
+            map.header.height = 2;
+            map.header.fill = fill.to_string();
+
+            let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+            // The already parsed current theater may resolve ClearTile=0, but
+            // Fill snapshots the prior process-global value (37).
+            cache.complete_theater_registry_load(Some(37), Some(50));
+            let mut forbidden_main = || panic!("Fill must not draw Main");
+            let mut selector = cache.begin_load(&mut forbidden_main);
+            let mut scenario_rng = SimRng::new(0x1234_5678);
+            let scenario_before = scenario_rng.logical_state();
+            let mut scenario_calls = 0usize;
+            let mut scenario_fill_ranged = |low, high| {
+                scenario_calls += 1;
+                assert_eq!((low, high), (0, 0));
+                scenario_rng.next_range_u32_inclusive(low, high)
+            };
+            let cells = materialize_map_load_cells(
+                &map,
+                &mut selector,
+                &mut scenario_fill_ranged,
+            );
+            drop(scenario_fill_ranged);
+
+            assert_eq!(cells.len(), 10);
+            assert!(
+                cells
+                    .iter()
+                    .all(|cell| { cell.tile_index == 37 && cell.sub_tile == 0 && cell.z == 0 })
+            );
+            assert_eq!(scenario_calls, 10);
+            assert_eq!(scenario_rng.logical_state(), scenario_before);
+            assert_eq!(selector.map_fill_scenario_advance_count(), 0);
+            assert_eq!(selector.raw_draw_count(), 0);
+        }
+    }
+
+    #[test]
+    fn gsi_04_02_production_build_prefills_before_selector_and_skips_outside_slots() {
+        let mut map = make_map(
+            vec![MapCell {
+                rx: 2,
+                ry: 2,
+                tile_index: theater::NO_TILE,
+                sub_tile: 9,
+                z: 4,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.header.width = 3;
+        map.header.height = 2;
+        map.header.fill = "Water".to_string();
+        let mut theater = synthetic_theater_from_ini(
+            b"[TileSet0000]\nTilesInSet=64\nFileName=ground\nSetName=Ground\n",
+        );
+        theater.rmg_tiles.clear_tile = Some(0);
+        // Preview A published 50, while this already-parsed ordinary theater B
+        // resolves 1. B's Fill must retain A until B publishes afterward.
+        theater.rmg_tiles.water_set = Some(1);
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        cache.complete_theater_registry_load(Some(37), Some(50));
+        let seed = 0xCAFE_BABE;
+        let mut scenario_rng = SimRng::new(seed);
+        let mut expected_scenario = scenario_rng.clone();
+        let expected_first = 50 + expected_scenario.next_range_u32_inclusive(0, 3) as i32;
+        for _ in 1..10 {
+            let _ = expected_scenario.next_range_u32_inclusive(0, 3);
+        }
+        let mut scenario_fill_ranged = |low, high| {
+            scenario_rng.next_range_u32_inclusive(low, high)
+        };
+        let mut main_rng = SimRng::new(seed);
+        let main_before = main_rng.logical_state();
+        let mut main_draw = || main_rng.next_u32();
+        let main_draw_count;
+        {
+            let mut selector = cache.begin_load(&mut main_draw);
+            let grid = ResolvedTerrainGrid::build_with_variant_selector(
+                &map,
+                Some(&theater),
+                None,
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut scenario_fill_ranged,
+                &mut selector,
+            );
+
+            let first = grid.cell(1, 3).expect("allocated first diamond cell");
+            assert_eq!(first.source_tile_index, expected_first);
+            assert_eq!(first.final_tile_index, expected_first);
+            assert!(!first.filled_clear);
+
+            let explicit = grid.cell(2, 2).expect("explicit overwrite cell");
+            assert_eq!(explicit.source_tile_index, theater::NO_TILE);
+            assert_eq!(explicit.final_sub_tile, 9);
+            assert_eq!(explicit.level, 4);
+            assert_eq!(grid.presentation_tile(explicit), (0, 0));
+
+            assert_eq!(grid.iter().count(), 10);
+            assert!(grid.cell(0, 0).is_none());
+            assert_eq!(
+                crate::sim::cell_rect::get_cellclass_fallback(Some(&grid), 0, 0),
+                crate::sim::cell_rect::CellRef::Dummy { coord: (0, 0) }
+            );
+            let path_grid = crate::sim::pathfinding::PathGrid::from_resolved_terrain(&grid);
+            assert!(!path_grid.is_walkable(0, 0));
+            let terrain_cost =
+                crate::sim::pathfinding::terrain_cost::TerrainCostGrid::from_resolved_terrain(
+                    &grid,
+                    crate::rules::locomotor_type::SpeedType::Track,
+                );
+            assert_eq!(terrain_cost.cost_at(0, 0), 0);
+            assert_eq!(selector.map_fill_scenario_advance_count(), 10);
+            assert!(selector.generated_table());
+            assert!(selector.raw_draw_count() > 0);
+            main_draw_count = selector.raw_draw_count();
+        }
+        drop(main_draw);
+        drop(scenario_fill_ranged);
+        assert_eq!(scenario_rng.logical_state(), expected_scenario.logical_state());
+        let mut expected_main = SimRng::new(seed);
+        for _ in 0..main_draw_count {
+            let _ = expected_main.next_u32();
+        }
+        assert_eq!(main_rng.logical_state(), expected_main.logical_state());
+        assert_ne!(main_rng.logical_state(), main_before);
+
+        // The production orchestrator publishes the current theater only
+        // after Fill and variant resolution have released their snapshots.
+        cache.complete_theater_registry_load(
+            theater.rmg_tiles.clear_tile,
+            theater.rmg_tiles.water_set,
+        );
+        assert_eq!(cache.cached_clear_tile_base(), 0);
+        assert_eq!(cache.cached_water_set_base(), 1);
     }
 
     #[test]
@@ -1805,6 +2456,107 @@ mod tests {
 
         assert_eq!(grid.step_coord_by_direction((1, 1), 9), None);
         assert_eq!(grid.step_coord_by_direction((1, 1), 255), None);
+    }
+
+    #[test]
+    fn gsi_02_11_clear_fallback_calls_selector_even_with_pristine_only() {
+        let map = make_map(
+            vec![MapCell {
+                rx: 1,
+                ry: 4,
+                tile_index: theater::NO_TILE,
+                sub_tile: 7,
+                z: 0,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        let theater = synthetic_theater_from_ini(
+            b"[General]\nClearTile=0\n[TileSet0000]\nTilesInSet=1\nFileName=clear\nSetName=Clear\n",
+        );
+        assert_eq!(theater.lookup.total_file_count(0), 1);
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut draws = 0u32;
+        let mut raw_draw = || {
+            let value = draws;
+            draws = draws.wrapping_add(1);
+            value
+        };
+        let mut scenario_fill_ranged = |_low, _high| 0;
+        {
+            let mut selector = cache.begin_load(&mut raw_draw);
+            let grid = ResolvedTerrainGrid::build_with_variant_selector(
+                &map,
+                Some(&theater),
+                None,
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut scenario_fill_ranged,
+                &mut selector,
+            );
+            assert_eq!(grid.cell(1, 4).expect("fallback cell").variant, 0);
+            assert!(selector.generated_table());
+            assert!(selector.raw_draw_count() > 0);
+        }
+        drop(raw_draw);
+        assert!(draws > 0);
+    }
+
+    #[test]
+    fn gsi_02_11_positive_registry_oor_uses_clear_and_invokes_selector() {
+        let map = make_map(
+            vec![MapCell {
+                rx: 1,
+                ry: 4,
+                tile_index: 1,
+                sub_tile: 7,
+                z: 2,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+        let theater = synthetic_theater_from_ini(
+            b"[General]\nClearTile=0\n[TileSet0000]\nTilesInSet=1\nFileName=clear\nSetName=Clear\n",
+        );
+        assert_eq!(theater.lookup.len(), 1);
+        assert_eq!(theater.lookup.total_file_count(0), 1);
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut draws = 0u32;
+        let mut raw_draw = || {
+            let value = draws;
+            draws = draws.wrapping_add(1);
+            value
+        };
+        let mut scenario_fill_ranged = |_low, _high| 0;
+        {
+            let mut selector = cache.begin_load(&mut raw_draw);
+            let grid = ResolvedTerrainGrid::build_with_variant_selector(
+                &map,
+                Some(&theater),
+                None,
+                None,
+                None,
+                None,
+                false,
+                0,
+                &mut scenario_fill_ranged,
+                &mut selector,
+            );
+            let cell = grid.cell(1, 4).expect("positive out-of-range cell");
+            assert_eq!(cell.final_tile_index, 1);
+            assert_eq!(cell.final_sub_tile, 7);
+            assert_eq!(grid.presentation_tile(cell), (0, 0));
+            assert_eq!(cell.variant, 0);
+            assert!(selector.generated_table());
+            assert!(selector.raw_draw_count() > 0);
+        }
+        drop(raw_draw);
+        assert!(draws > 0);
     }
 
     #[test]
@@ -1879,6 +2631,64 @@ mod tests {
     }
 
     #[test]
+    fn no_tile_presentation_uses_theater_clear_tile_without_rewriting_semantics() {
+        let ini = b"[TileSet0000]\n\
+                    TilesInSet=37\n\
+                    FileName=plain\n\
+                    SetName=Plain\n\
+                    \n\
+                    [TileSet0001]\n\
+                    TilesInSet=1\n\
+                    FileName=clear\n\
+                    SetName=Clear\n";
+        let mut theater_data = synthetic_theater_from_ini(ini);
+        theater_data.rmg_tiles.clear_tile = Some(37);
+        let map = make_map(
+            vec![MapCell {
+                rx: 1,
+                ry: 0,
+                tile_index: theater::NO_TILE,
+                sub_tile: 7,
+                z: 3,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let grid =
+            ResolvedTerrainGrid::build(&map, Some(&theater_data), None, None, None, false, 0);
+        let sentinel = grid.cell(1, 0).expect("sentinel cell");
+
+        assert_eq!(sentinel.final_tile_index, theater::NO_TILE);
+        assert_eq!(sentinel.final_sub_tile, 7);
+        assert_eq!(sentinel.level, 3);
+        assert_eq!(grid.presentation_tile(sentinel), (37, 0));
+
+        let presentation = crate::map::terrain::build_terrain_grid_from_resolved(&grid, None, None);
+        let rendered = presentation
+            .cells
+            .iter()
+            .find(|cell| (cell.rx, cell.ry) == (1, 0))
+            .expect("sentinel reaches presentation grid");
+        assert_eq!(rendered.tile_id, 37);
+        assert_eq!(rendered.sub_tile, 0);
+        assert_eq!(rendered.z, 3);
+
+        let used = crate::map::theater::collect_used_tiles(
+            &presentation
+                .cells
+                .iter()
+                .map(|cell| (cell.tile_id as i32, cell.sub_tile))
+                .collect::<Vec<_>>(),
+        );
+        assert!(used.contains(&TileKey {
+            tile_id: 37,
+            sub_tile: 0,
+            variant: 0,
+        }));
+    }
+
+    #[test]
     fn wood_bridge_repair_tile_uses_first_16_tiles_of_wood_bridge_set() {
         let theater = synthetic_theater_with_wood_bridge_set();
         let map = make_map(
@@ -1925,7 +2735,7 @@ mod tests {
     }
 
     #[test]
-    fn theater_numeric_cliff_range_blocks_plain_named_tiles() {
+    fn gsi_04_03a_special_terrain_identity_is_not_promoted_to_hard_blocking() {
         let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n\n\
                     [TileSet0001]\nTilesInSet=10\nFileName=plain\nSetName=Plain Terrain\n";
         let mut theater = synthetic_theater_from_ini(ini);
@@ -1943,13 +2753,14 @@ mod tests {
         );
 
         let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
-        let cell = grid.cell(0, 0).expect("numeric cliff cell");
+        let cell = grid.cell(0, 0).expect("special-identity cell");
 
-        assert!(cell.is_cliff_like);
-        assert!(cell.base_ground_walk_blocked);
-        assert!(cell.ground_walk_blocked);
-        assert!(cell.build_blocked);
-        assert_eq!(cell.terrain_class, TerrainClass::Cliff);
+        assert!(theater.cliff_ranges.is_special_terrain_tile(10, 0));
+        assert!(!cell.is_cliff_like);
+        assert!(!cell.base_ground_walk_blocked);
+        assert!(!cell.ground_walk_blocked);
+        assert!(!cell.build_blocked);
+        assert_eq!(cell.terrain_class, TerrainClass::Clear);
     }
 
     #[test]
@@ -1975,32 +2786,6 @@ mod tests {
         assert!(!cell.base_ground_walk_blocked);
         assert!(!cell.ground_walk_blocked);
         assert_eq!(cell.terrain_class, TerrainClass::Clear);
-    }
-
-    #[test]
-    fn numeric_cliff_range_preserves_tmp_land_bytes() {
-        let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n";
-        let mut theater = synthetic_theater_from_ini(ini);
-        theater.cliff_ranges.cliff_set = Some(0);
-        let mut metadata = TileMetadata {
-            has_tmp_metadata: true,
-            land_type: crate::sim::pathfinding::passability::LandType::Road.as_index(),
-            yr_cell_land_type: 11,
-            raw_land_type: 11,
-            ..TileMetadata::default()
-        };
-
-        apply_theater_cliff_ranges(&mut metadata, &theater, 0);
-
-        assert!(metadata.is_cliff_like);
-        assert!(metadata.ground_blocked);
-        assert!(metadata.build_blocked);
-        assert_eq!(
-            metadata.land_type,
-            crate::sim::pathfinding::passability::LandType::Road.as_index()
-        );
-        assert_eq!(metadata.yr_cell_land_type, 11);
-        assert_eq!(metadata.terrain_class, TerrainClass::Cliff);
     }
 
     #[test]
@@ -2071,12 +2856,12 @@ mod tests {
         let cell = grid.cell(5, 5).expect("center LAT cell");
 
         assert_eq!(cell.source_tile_index, 5);
-        assert_eq!(cell.final_tile_index, 13);
+        assert_eq!(cell.final_tile_index, 25);
         assert!(cell.allows_tiberium);
     }
 
     #[test]
-    fn test_merge_tmp_metadata_reads_land_and_slope_bytes() {
+    fn gsi_04_04_merge_tmp_metadata_maps_raw_rock_to_canonical_land() {
         let mut metadata = TileMetadata::default();
         let tile = TmpTile {
             height: 4,
@@ -2093,7 +2878,7 @@ mod tests {
             has_damaged_data: false,
         };
         merge_tmp_metadata(&mut metadata, &tile);
-        assert_eq!(metadata.land_type, 7);
+        assert_eq!(metadata.land_type, LandType::Rock.as_index());
         assert_eq!(metadata.slope_type, 2);
         assert_eq!(metadata.template_height, 4);
         assert_eq!(metadata.render_offset_x, -5);
@@ -2102,6 +2887,170 @@ mod tests {
         assert!(metadata.has_tmp_metadata);
         assert_eq!(metadata.radar_left, [100, 120, 80]);
         assert_eq!(metadata.radar_right, [90, 110, 70]);
+    }
+
+    #[test]
+    fn gsi_02_11_pristine_owns_cellclass_selected_owner_owns_presentation() {
+        let pristine = TmpFile {
+            template_width: 1,
+            template_height: 1,
+            tile_width: 60,
+            tile_height: 30,
+            tiles: vec![Some(TmpTile {
+                height: 2,
+                terrain_type: 1,
+                ramp_type: 1,
+                radar_left: [1, 2, 3],
+                radar_right: [4, 5, 6],
+                pixels: Vec::new(),
+                depth: Vec::new(),
+                pixel_width: 60,
+                pixel_height: 30,
+                offset_x: -3,
+                offset_y: -4,
+                has_damaged_data: false,
+            })],
+        };
+        let divergent_selected = TmpFile {
+            template_width: 2,
+            template_height: 1,
+            tile_width: 60,
+            tile_height: 30,
+            tiles: vec![
+                Some(TmpTile {
+                    height: 7,
+                    terrain_type: 7,
+                    ramp_type: 3,
+                    radar_left: [101, 102, 103],
+                    radar_right: [104, 105, 106],
+                    pixels: Vec::new(),
+                    depth: Vec::new(),
+                    pixel_width: 64,
+                    pixel_height: 35,
+                    offset_x: -8,
+                    offset_y: -9,
+                    has_damaged_data: true,
+                }),
+                None,
+            ],
+        };
+        let mut warned = HashSet::new();
+        let mut metadata = TileMetadata::default();
+        merge_tmp_file_metadata(&mut metadata, &pristine, 0, None, &mut warned);
+        let pristine_metadata = metadata.clone();
+        let mut selected_metadata = TileMetadata::default();
+        merge_tmp_file_metadata(
+            &mut selected_metadata,
+            &divergent_selected,
+            0,
+            None,
+            &mut warned,
+        );
+        assert_ne!(
+            selected_metadata.raw_land_type,
+            pristine_metadata.raw_land_type
+        );
+        assert_ne!(selected_metadata.slope_type, pristine_metadata.slope_type);
+        assert_ne!(
+            selected_metadata.template_height,
+            pristine_metadata.template_height
+        );
+        assert_ne!(
+            selected_metadata.has_damaged_data,
+            pristine_metadata.has_damaged_data
+        );
+
+        apply_selected_presentation_metadata(&mut metadata, &selected_metadata);
+
+        assert_eq!(metadata.raw_land_type, pristine_metadata.raw_land_type);
+        assert_eq!(metadata.land_type, pristine_metadata.land_type);
+        assert_eq!(metadata.slope_type, pristine_metadata.slope_type);
+        assert_eq!(metadata.template_height, pristine_metadata.template_height);
+        assert_eq!(
+            metadata.template_width_cells,
+            pristine_metadata.template_width_cells
+        );
+        assert_eq!(
+            metadata.has_damaged_data,
+            pristine_metadata.has_damaged_data
+        );
+        assert_eq!(metadata.radar_left, [101, 102, 103]);
+        assert_eq!(metadata.radar_right, [104, 105, 106]);
+        assert_eq!(metadata.render_offset_x, -8);
+        assert_eq!(metadata.render_offset_y, -9);
+
+        let sparse_suffix = TmpFile {
+            template_width: 2,
+            template_height: 1,
+            tile_width: 60,
+            tile_height: 30,
+            tiles: vec![None, None],
+        };
+        let mut sparse_selected_metadata = TileMetadata::default();
+        merge_tmp_file_metadata(
+            &mut sparse_selected_metadata,
+            &sparse_suffix,
+            0,
+            None,
+            &mut warned,
+        );
+        let mut sparse_result = pristine_metadata.clone();
+        apply_selected_presentation_metadata(&mut sparse_result, &sparse_selected_metadata);
+        assert_eq!(sparse_result.raw_land_type, pristine_metadata.raw_land_type);
+        assert_eq!(sparse_result.slope_type, pristine_metadata.slope_type);
+        assert_eq!(
+            sparse_result.template_height,
+            pristine_metadata.template_height
+        );
+        assert_eq!(
+            sparse_result.has_damaged_data,
+            pristine_metadata.has_damaged_data
+        );
+        assert_eq!(sparse_result.radar_left, [0, 0, 0]);
+        assert_eq!(sparse_result.radar_right, [0, 0, 0]);
+        assert_eq!(sparse_result.render_offset_x, 0);
+        assert_eq!(sparse_result.render_offset_y, 0);
+    }
+
+    #[test]
+    fn gsi_02_11_damaged_tmp_cell_bypasses_selector_without_table_generation() {
+        let mut metadata = TileMetadata::default();
+        let damaged_tile = TmpTile {
+            height: 0,
+            terrain_type: 0,
+            ramp_type: 0,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            pixels: Vec::new(),
+            depth: Vec::new(),
+            pixel_width: 60,
+            pixel_height: 30,
+            offset_x: 0,
+            offset_y: 0,
+            has_damaged_data: true,
+        };
+        merge_tmp_metadata(&mut metadata, &damaged_tile);
+        assert!(metadata.has_damaged_data);
+
+        let mut cache = crate::map::tile_variant_selector::TileVariantSelectorCache::default();
+        let mut draws = 0usize;
+        let mut raw_draw = || {
+            draws += 1;
+            0
+        };
+        let mut variant = 0u8;
+        {
+            let mut selector = cache.begin_load(&mut raw_draw);
+            if ordinary_variant_selection_enabled(8, false, metadata.has_damaged_data) {
+                variant = selector.select_variant(4, 4, 0, 1, 1, 8);
+            }
+            assert!(!selector.generated_table());
+            assert_eq!(selector.raw_draw_count(), 0);
+        }
+        drop(raw_draw);
+        assert_eq!(variant, 0);
+        assert_eq!(draws, 0);
+        assert!(!cache.is_initialized());
     }
 
     #[test]
@@ -2135,6 +3084,7 @@ mod tests {
             }]),
             Some(&reg),
             3,
+            0,
         );
         assert!(effects.has_bridge_deck);
         assert!(!effects.overlay_blocks);
@@ -2190,7 +3140,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_zone_type_priority_matches_recalc_zone_type_on_load() {
+    fn gsi_04_04_overlay_zone_type_priority_matches_recalc_zone_type_on_load() {
         let ini = IniFile::from_str(
             "\
 [OverlayTypes]
@@ -2273,12 +3223,21 @@ IsRubble=yes
                     frame: 0,
                 },
             ],
-            Vec::new(),
+            (0..4)
+                .map(|rx| TerrainObject {
+                    rx,
+                    ry: 0,
+                    name: "DEFAULT_OCCUPATION".to_string(),
+                })
+                .collect(),
         );
 
         let grid = ResolvedTerrainGrid::build(&map, None, None, None, Some(&reg), false, 0);
 
-        assert_eq!(grid.cell(0, 0).unwrap().zone_type, zone_class::ROAD);
+        assert_eq!(
+            grid.cell(0, 0).unwrap().zone_type,
+            zone_class::CRUSHABLE
+        );
         assert!(!grid.cell(0, 0).unwrap().overlay_blocks);
         assert_eq!(grid.cell(1, 0).unwrap().zone_type, zone_class::WALL);
         assert!(grid.cell(1, 0).unwrap().overlay_blocks);
@@ -2289,7 +3248,265 @@ IsRubble=yes
     }
 
     #[test]
-    fn test_rules_backed_land_type_overrides_tileset_heuristics_when_tmp_exists() {
+    fn gsi_04_04_load_selects_current_theater_terrain_occupation() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "\
+[InfantryTypes]
+[VehicleTypes]
+[AircraftTypes]
+[BuildingTypes]
+[TerrainTypes]
+0=TIBTRE03
+1=ZEROTREE
+[TIBTRE03]
+TemperateOccupationBits=4
+SnowOccupationBits=7
+[ZEROTREE]
+TemperateOccupationBits=0
+SnowOccupationBits=0
+",
+        ))
+        .expect("terrain rules");
+        let mut map = make_map(
+            vec![
+                MapCell {
+                    rx: 0,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+            ],
+            Vec::new(),
+            vec![
+                TerrainObject {
+                    rx: 0,
+                    ry: 0,
+                    name: "TIBTRE03".to_string(),
+                },
+                TerrainObject {
+                    rx: 1,
+                    ry: 0,
+                    name: "ZEROTREE".to_string(),
+                },
+            ],
+        );
+
+        let temperate = ResolvedTerrainGrid::build_inner(
+            &map,
+            None,
+            None,
+            None,
+            None,
+            Some(&rules.terrain_object_types),
+            false,
+            0,
+            None,
+            None,
+        );
+        let temperate_tree = temperate.cell(0, 0).unwrap();
+        assert_eq!(temperate_tree.terrain_object_occupation, Some(4));
+        assert!(temperate_tree.terrain_object_blocks);
+        assert_eq!(temperate_tree.zone_type, zone_class::BUILDING);
+        assert!(!temperate_tree.base_build_blocked);
+        let zero_tree = temperate.cell(1, 0).unwrap();
+        assert_eq!(zero_tree.terrain_object_occupation, Some(0));
+        assert!(!zero_tree.terrain_object_blocks);
+        assert_eq!(zero_tree.zone_type, zone_class::BUILDING);
+
+        map.header.theater = "SNOW".to_string();
+        let snow = ResolvedTerrainGrid::build_inner(
+            &map,
+            None,
+            None,
+            None,
+            None,
+            Some(&rules.terrain_object_types),
+            false,
+            0,
+            None,
+            None,
+        );
+        let snow_tree = snow.cell(0, 0).unwrap();
+        assert_eq!(snow_tree.terrain_object_occupation, Some(7));
+        assert!(snow_tree.terrain_object_blocks);
+        assert_eq!(snow_tree.zone_type, zone_class::WALL);
+    }
+
+    #[test]
+    fn gsi_04_04_outside_precedes_overlay_land_and_terrain_occupation() {
+        let playfield = Playfield::from_local_size(34, 0, 0, 34, 42);
+        let outside = !playfield.contains_raised(0, 0, 0, 0);
+        assert!(outside);
+        assert_eq!(
+            recalc_zone_type(
+                outside,
+                Some(zone_class::CRUSHABLE),
+                LandType::Water.as_index(),
+                Some(0),
+                Some(7),
+            ),
+            zone_class::OUTSIDE
+        );
+    }
+
+    #[test]
+    fn gsi_04_04_load_land_writer_retains_arbitrary_profiles_and_pristine_base() {
+        let ini = IniFile::from_str(
+            "\
+[OverlayTypes]
+0=ROADKEEP
+1=ROADRESTORE
+2=WALLLAND
+3=RAILLAND
+4=WATERKEEP
+5=ROUGHKEEP
+[Road]
+Foot=80%
+Wheel=55%
+[Wall]
+Wheel=40%
+[Railroad]
+Wheel=60%
+[Water]
+Float=66%
+Wheel=44%
+[Rough]
+Foot=77%
+Wheel=33%
+[ROADKEEP]
+Land=Road
+NoUseTileLandType=yes
+[ROADRESTORE]
+Land=Road
+NoUseTileLandType=no
+[WALLLAND]
+Land=Wall
+NoUseTileLandType=no
+[RAILLAND]
+Land=Railroad
+NoUseTileLandType=no
+[WATERKEEP]
+Land=Water
+NoUseTileLandType=yes
+[ROUGHKEEP]
+Land=Rough
+NoUseTileLandType=yes
+",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let cells = (0..6)
+            .map(|rx| MapCell {
+                rx,
+                ry: 0,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            })
+            .collect();
+        let overlays = (0..6)
+            .map(|overlay_id| OverlayEntry {
+                rx: u16::from(overlay_id),
+                ry: 0,
+                overlay_id,
+                frame: 0,
+            })
+            .collect();
+        let map = make_map(cells, overlays, Vec::new());
+
+        let grid = ResolvedTerrainGrid::build(&map, None, None, None, Some(&registry), false, 0);
+        for (rx, overlay_id, land, class) in [
+            (0, 0, LandType::Road, TerrainClass::Road),
+            (2, 2, LandType::Wall, TerrainClass::Wall),
+            (3, 3, LandType::Railroad, TerrainClass::Railroad),
+            (4, 4, LandType::Water, TerrainClass::Water),
+            (5, 5, LandType::Rough, TerrainClass::Rough),
+        ] {
+            let cell = grid.cell(rx, 0).expect("retained load cell");
+            assert_eq!(cell.base_land_type, LandType::Clear.as_index());
+            assert_eq!(cell.land_type, land.as_index(), "overlay {overlay_id}");
+            assert_eq!(cell.terrain_class, class, "overlay {overlay_id}");
+            assert_eq!(
+                cell.speed_costs,
+                registry.flags(overlay_id).unwrap().land_speed_costs.unwrap(),
+                "overlay {overlay_id} profile"
+            );
+            assert_eq!(cell.is_water, land == LandType::Water);
+            assert_eq!(cell.is_road, land == LandType::Road);
+            assert_eq!(cell.is_rough, land == LandType::Rough);
+        }
+
+        let restored = grid.cell(1, 0).expect("ordinary restoration cell");
+        assert_eq!(restored.land_type, restored.base_land_type);
+        assert_eq!(restored.terrain_class, restored.base_terrain_class);
+        assert_eq!(restored.speed_costs, restored.base_speed_costs);
+    }
+
+    #[test]
+    fn gsi_04_04_load_tiberium_slope_branches_ignore_cleared_resources() {
+        let ini = IniFile::from_str(
+            "\
+[OverlayTypes]
+0=ORE
+1=STOCKORE
+2=WALLORE
+3=RAILORE
+[Tiberium]
+Wheel=80%
+[ORE]
+Tiberium=yes
+NoUseTileLandType=no
+[STOCKORE]
+Tiberium=yes
+[WALLORE]
+Tiberium=yes
+Land=Wall
+NoUseTileLandType=no
+[RAILORE]
+Tiberium=yes
+Land=Railroad
+NoUseTileLandType=no
+",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+        for (overlay_id, land, retained_slopes) in [
+            (0, LandType::Tiberium, &[0, 1, 4][..]),
+            (1, LandType::Tiberium, &[0][..]),
+            (2, LandType::Wall, &[0][..]),
+            (3, LandType::Railroad, &[0][..]),
+        ] {
+            for slope in [0, 1, 4, 5] {
+                let overlay = OverlayEntry {
+                    rx: 0,
+                    ry: 0,
+                    overlay_id,
+                    frame: 7,
+                };
+                let entries = vec![&overlay];
+                let effects = classify_overlay_effects(Some(&entries), Some(&registry), 0, slope);
+                assert_eq!(
+                    effects.effective_land,
+                    retained_slopes.contains(&slope).then_some(land),
+                    "overlay={overlay_id} slope={slope}"
+                );
+                if !retained_slopes.contains(&slope) {
+                    assert_eq!(effects.overlay_zone_type, None);
+                    assert!(!effects.overlay_blocks);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gsi_04_04_rules_backed_land_type_uses_canonical_tmp_conversion() {
         let terrain_rules =
             TerrainRules::from_ini(&IniFile::from_str("[Rough]\nBuildable=yes\nTrack=75%\n"));
         let mut metadata = metadata_from_set_name(Some("Water"), Some(2));
@@ -2426,7 +3643,10 @@ IsRubble=yes
                 canonical_ramp,
                 ground_walk_blocked: false,
                 terrain_object_blocks: false,
+                terrain_object_occupation: None,
                 overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
                 zone_type: 0,
                 base_ground_walk_blocked: false,
                 base_build_blocked: true,
@@ -2613,6 +3833,50 @@ IsRubble=yes
         assert_eq!(
             cell.yr_cell_land_type,
             crate::sim::pathfinding::passability::LandType::Rock.as_index()
+        );
+    }
+
+    #[test]
+    fn gsi_04_03b_cliff_back_compares_levels_as_signed_bytes() {
+        let map = make_map(
+            vec![
+                MapCell {
+                    rx: 0,
+                    ry: 0,
+                    tile_index: -1,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 0,
+                    tile_index: -1,
+                    sub_tile: 0,
+                    z: 3,
+                },
+                MapCell {
+                    rx: 0,
+                    ry: 1,
+                    tile_index: -1,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 1,
+                    tile_index: -1,
+                    sub_tile: 0,
+                    z: 0xff,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let grid = ResolvedTerrainGrid::build(&map, None, None, None, None, false, 2);
+        let cell = grid.cell(1, 1).expect("signed -1 cell");
+        assert!(
+            cell.ground_walk_blocked,
+            "signed -1 to +3 is the exact four-level CliffBack boundary"
         );
     }
 

@@ -264,12 +264,11 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
     let grid = PathGrid::new(64, 64);
     for _ in 0..n {
         sim.session.total_sim_ms = sim.session.total_sim_ms.saturating_add(67);
-        sim.session.binary_frame = ((sim.session.total_sim_ms * 15) / 1000) as u32;
+        sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
         crate::sim::movement::teleport_movement::tick_teleport_movement(
             &mut sim.substrate.entities,
             &mut OccupancyGrid::new(),
             &[],
-            67,
             sim.session.tick,
             None,
         );
@@ -278,7 +277,6 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
         // (Linked/Departing wait for movement_target to be None).
         crate::sim::movement::tick_movement(
             &mut sim.substrate.entities,
-            67,
             &mut sim.interner,
             &mut sim.pending_lifecycle_requests,
         );
@@ -497,7 +495,9 @@ fn chrono_miner_teleports_to_refinery_on_return() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -520,7 +520,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     );
     let loco = entity.locomotor.as_ref().expect("locomotor");
     assert_eq!(loco.active_kind(), LocomotorKind::Teleport);
-    assert_eq!(loco.primary_kind(), LocomotorKind::Teleport);
+    assert_eq!(loco.effective_kind(), LocomotorKind::Teleport);
     assert!(loco.piggyback.is_none());
     assert!(!loco.is_overridden());
 
@@ -528,7 +528,6 @@ fn chrono_miner_teleports_to_refinery_on_return() {
         &mut sim.substrate.entities,
         &mut OccupancyGrid::new(),
         &[],
-        67,
         sim.session.tick,
         None,
     );
@@ -545,7 +544,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     );
     let loco = entity.locomotor.as_ref().expect("locomotor");
     assert_eq!(loco.active_kind(), LocomotorKind::Teleport);
-    assert_eq!(loco.primary_kind(), LocomotorKind::Teleport);
+    assert_eq!(loco.effective_kind(), LocomotorKind::Teleport);
     assert!(loco.piggyback.is_none());
     assert!(!loco.is_overridden());
 }
@@ -572,7 +571,9 @@ fn chrono_far_return_uses_passable_search_from_queueing_cell() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
@@ -608,7 +609,9 @@ fn war_miner_does_not_teleport() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -651,7 +654,9 @@ fn return_close_enough_to_refinery_enters_dock() {
                 value: 25,
             });
         }
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
         miner.reserved_refinery = Some(99);
     }
 
@@ -686,7 +691,9 @@ fn chrono_return_close_enough_enters_radio_dock_without_can_dock_move() {
                 value: 25,
             });
         }
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
         miner.reserved_refinery = Some(99);
     }
 
@@ -744,7 +751,9 @@ fn chrono_return_exact_dock_cell_enters_dock() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
         miner.reserved_refinery = Some(99);
     }
 
@@ -1297,7 +1306,9 @@ fn local_continuation_after_cell_depletes() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::Harvest.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((20, 20));
         miner.harvest_timer.clear();
     }
@@ -1342,7 +1353,9 @@ fn harvest_continues_to_nearby_ore_when_cell_depletes_partial_cargo() {
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::Harvest.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((20, 20));
         miner.harvest_timer.clear();
     }
@@ -1391,7 +1404,9 @@ fn harvest_returns_when_no_ore_within_short_scan() {
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::Harvest.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((20, 20));
         miner.harvest_timer.clear();
     }
@@ -1431,7 +1446,9 @@ fn empty_cargo_cell_depletion_returns_to_refinery() {
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::Harvest.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((20, 20));
         miner.harvest_timer.clear();
         // Cargo intentionally empty — extract_bale will fail on first tick.
@@ -1566,7 +1583,9 @@ fn forced_return_chrono_teleports() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::ForcedReturn.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ForcedReturn.cursor());
         miner.forced_return = true;
     }
 
@@ -1607,7 +1626,9 @@ fn chrono_return_within_too_far_threshold_uses_close_radio_path() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
@@ -1662,7 +1683,9 @@ fn chrono_return_at_exact_too_far_threshold_uses_close_radio_path() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
@@ -1699,7 +1722,9 @@ fn chrono_return_over_too_far_threshold_uses_queueingcell_teleport() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
@@ -1740,7 +1765,9 @@ fn chrono_close_hello_refused_stages_at_queueingcell_without_receiver_eviction()
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
@@ -1800,7 +1827,9 @@ fn cmin_close_hello_success_defers_can_dock_to_mission_enter() {
                 value: 25,
             });
         }
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
@@ -1874,7 +1903,9 @@ fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_
                 value: 25,
             });
         }
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
@@ -1912,7 +1943,6 @@ fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_
             .expect("waiter entity");
         entity.position.rx = 14;
         entity.position.ry = 11;
-        entity.position.refresh_screen_coords();
         entity.movement_target = None;
     }
 
@@ -1980,7 +2010,9 @@ fn chrono_miner_does_not_warp_outbound() {
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
         miner.cargo.clear();
     }
 
@@ -2024,7 +2056,9 @@ fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     sim.sound_events.clear();
@@ -2286,7 +2320,9 @@ fn chrono_teleport_sound_falls_back_to_rules_general() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     sim.sound_events.clear();
@@ -2325,7 +2361,9 @@ fn chrono_miner_drives_to_ore() {
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.target_ore_cell = Some((12, 10));
-        entity.mission.set_handler_state(MinerState::MoveToOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::MoveToOre.cursor());
     }
 
     // After one tick, chrono miner should NOT have a teleport — it drives.
@@ -2380,7 +2418,9 @@ fn wait_no_ore_rescans_after_cooldown() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::WaitNoOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::WaitNoOre.cursor());
         miner
             .rescan_cooldown
             .arm(now, u32::from(config.rescan_cooldown_ticks));
@@ -2431,7 +2471,9 @@ fn wait_no_ore_retry_gate_is_exactly_105_frames() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
     tick_miners_n(&mut sim, &rules, 1);
 
@@ -2469,7 +2511,9 @@ fn harvester_uses_dock_list_for_refinery_selection() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -2499,7 +2543,9 @@ fn harvester_waits_when_no_dock_compatible_refinery_exists() {
             resource_type: ResourceType::Ore,
             value: 25,
         });
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
     }
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -3115,7 +3161,9 @@ fn unreachable_ore_filtered_out() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
 
     // Tick once — search runs, finds nothing reachable, transitions to WaitNoOre.
@@ -3167,7 +3215,9 @@ fn reachable_ore_picked_over_closer_unreachable() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -3221,7 +3271,9 @@ fn harvester_on_tiberium_falls_back_to_neighbor_zone() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -3311,7 +3363,6 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             &alliances,
             &mut occupancy,
             &mut rng,
-            67,
             sim.session.tick,
             &mut sim.interner,
             &mut sim.pending_lifecycle_requests,
@@ -3359,7 +3410,6 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             &alliances,
             &mut occupancy,
             &mut rng,
-            67,
             sim.session.tick,
             &mut sim.interner,
             &mut sim.pending_lifecycle_requests,
@@ -3381,7 +3431,10 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     // pad cell.
     let escaped = entity.position.ry > 12 || entity.position.rx < 10 || entity.position.rx > 13;
     let targeting = miner.target_ore_cell == Some((11, 14));
-    let returning = matches!(entity.miner_state().unwrap(), MinerState::ReturnToRefinery | MinerState::Dock);
+    let returning = matches!(
+        entity.miner_state().unwrap(),
+        MinerState::ReturnToRefinery | MinerState::Dock
+    );
     assert!(
         escaped || targeting || returning,
         "harvester should have escaped foundation, be targeting ore, or be \
@@ -3484,7 +3537,6 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
             &alliances,
             &mut occupancy,
             &mut rng,
-            67,
             sim.session.tick,
             &mut sim.interner,
             &mut sim.pending_lifecycle_requests,
@@ -3602,7 +3654,7 @@ fn hello_before_mission_enter_then_can_dock_move() {
 
     // G5: the accepted HELLO arms the Enter cadence; advance the frame clock
     // past the ~14-16f window so the next pass's CAN_DOCK dispatch is due.
-    sim.session.total_sim_ms += 1200;
+    sim.session.binary_frame = sim.session.binary_frame.wrapping_add(18);
     tick_miners_n(&mut sim, &rules, 1);
 
     let m = get_miner(&sim, miner_id);
@@ -3739,7 +3791,6 @@ fn waiter_moves_from_queueingcell_to_accepted_cell_before_entered() {
             .expect("waiter entity");
         entity.position.rx = 13;
         entity.position.ry = 11;
-        entity.position.refresh_screen_coords();
         entity.movement_target = None;
     }
 
@@ -5130,7 +5181,10 @@ fn full_dock_cycle_war_miner() {
     // After Departing → SearchOre, with no ore on the map the miner falls
     // through to WaitNoOre. Either is a valid post-dock state.
     assert!(
-        matches!(entity.miner_state().unwrap(), MinerState::SearchOre | MinerState::WaitNoOre),
+        matches!(
+            entity.miner_state().unwrap(),
+            MinerState::SearchOre | MinerState::WaitNoOre
+        ),
         "post-dock state must be SearchOre or WaitNoOre, got {:?}",
         entity.miner_state().unwrap(),
     );
@@ -5313,7 +5367,9 @@ fn harvester_drains_full_cell_in_one_extraction_tick() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::Harvest.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((20, 20));
         miner.harvest_timer.clear();
     }
@@ -5359,7 +5415,9 @@ fn harvester_caps_extraction_at_remaining_capacity() {
                 value: config.ore_bale_value,
             });
         }
-        entity.mission.set_handler_state(MinerState::Harvest.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((20, 20));
         miner.harvest_timer.clear();
     }
@@ -5422,18 +5480,20 @@ fn filling_extraction_waits_for_full_gate_before_war_return() {
                 value: config.ore_bale_value,
             });
         }
-        entity.mission.set_handler_state(MinerState::Harvest.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((30, 30));
         miner.harvest_timer.clear();
-        let mut voxel = VoxelAnimation::new(15, 67);
+        let mut voxel = VoxelAnimation::new(15, 1);
         voxel.frame = 7;
-        voxel.elapsed_ms = 31;
+        voxel.elapsed_frames = 1;
         voxel.playing = true;
         entity.voxel_animation = Some(voxel);
         entity.harvest_overlay = Some(HarvestOverlay {
             frame: 6,
             visible: true,
-            elapsed_ms: 29,
+            elapsed_frames: 0,
         });
     }
 
@@ -5455,10 +5515,10 @@ fn filling_extraction_waits_for_full_gate_before_war_return() {
         assert!(entity.teleport_state.is_none());
         let voxel = entity.voxel_animation.expect("voxel anim");
         assert!(voxel.playing);
-        assert_eq!((voxel.frame, voxel.elapsed_ms), (7, 31));
+        assert_eq!((voxel.frame, voxel.elapsed_frames), (7, 1));
         let overlay = entity.harvest_overlay.expect("harvest overlay");
         assert!(overlay.visible);
-        assert_eq!((overlay.frame, overlay.elapsed_ms), (6, 29));
+        assert_eq!((overlay.frame, overlay.elapsed_frames), (6, 0));
     }
 
     tick_miners_n(&mut sim, &rules, config.harvest_tick_interval as usize);
@@ -5469,22 +5529,26 @@ fn filling_extraction_waits_for_full_gate_before_war_return() {
     {
         let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
         let miner = entity.miner.as_ref().expect("miner component");
-        assert_eq!(entity.miner_state().unwrap(), MinerState::Harvest, "F+18 remains pending");
+        assert_eq!(
+            entity.miner_state().unwrap(),
+            MinerState::Harvest,
+            "F+18 remains pending"
+        );
         assert_eq!(miner.last_harvest_cell, None);
         assert_eq!(miner.reserved_refinery, None);
         assert!(entity.movement_target.is_none());
         let voxel = entity.voxel_animation.expect("voxel anim");
         assert!(voxel.playing);
         assert_eq!(
-            (voxel.frame, voxel.elapsed_ms),
-            (7, 31),
+            (voxel.frame, voxel.elapsed_frames),
+            (7, 1),
             "nonzero visual state remains live through F+18"
         );
         let overlay = entity.harvest_overlay.expect("harvest overlay");
         assert!(overlay.visible);
         assert_eq!(
-            (overlay.frame, overlay.elapsed_ms),
-            (6, 29),
+            (overlay.frame, overlay.elapsed_frames),
+            (6, 0),
             "nonzero overlay state remains live through F+18"
         );
     }
@@ -5508,10 +5572,10 @@ fn filling_extraction_waits_for_full_gate_before_war_return() {
         assert!(entity.teleport_state.is_none());
         let voxel = entity.voxel_animation.expect("voxel anim");
         assert!(!voxel.playing);
-        assert_eq!((voxel.frame, voxel.elapsed_ms), (0, 0));
+        assert_eq!((voxel.frame, voxel.elapsed_frames), (0, 0));
         let overlay = entity.harvest_overlay.expect("harvest overlay");
         assert!(!overlay.visible);
-        assert_eq!((overlay.frame, overlay.elapsed_ms), (0, 0));
+        assert_eq!((overlay.frame, overlay.elapsed_frames), (0, 0));
     }
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -5549,7 +5613,9 @@ fn chrono_filling_extraction_does_not_warp_before_state2_tick() {
                 value: config.ore_bale_value,
             });
         }
-        entity.mission.set_handler_state(MinerState::Harvest.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((63, 63));
         miner.harvest_timer.clear();
     }
@@ -5593,7 +5659,11 @@ fn chrono_filling_extraction_does_not_warp_before_state2_tick() {
             sim.session.binary_frame.wrapping_sub(fill_frame),
             u32::from(config.harvest_tick_interval)
         );
-        assert_eq!(entity.miner_state().unwrap(), MinerState::Harvest, "F+18 remains pending");
+        assert_eq!(
+            entity.miner_state().unwrap(),
+            MinerState::Harvest,
+            "F+18 remains pending"
+        );
         assert_eq!(miner.last_harvest_cell, None);
         assert_eq!(miner.reserved_refinery, None);
         assert!(entity.movement_target.is_none());
@@ -5680,7 +5750,9 @@ fn harvester_continues_to_short_scan_when_partial_then_empty() {
             .get_mut(miner_id)
             .expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
-        entity.mission.set_handler_state(MinerState::Harvest.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::Harvest.cursor());
         miner.target_ore_cell = Some((20, 20));
         miner.harvest_timer.clear();
     }
@@ -6496,7 +6568,9 @@ fn full_miner_losing_dying_refinery_keeps_returning() {
                 value: 25,
             });
         }
-        entity.mission.set_handler_state(MinerState::ReturnToRefinery.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::ReturnToRefinery.cursor());
         miner.reserved_refinery = Some(2);
         miner.target_ore_cell = Some((6, 10));
         miner.dock_queued = true;
@@ -6652,7 +6726,9 @@ fn scan_skips_tree_blocked_ore_cell() {
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
 
     // Use a path_grid that matches the blocked cell so build_scan_filter
@@ -6714,7 +6790,9 @@ fn scan_skips_cell_occupied_by_other_miner() {
 
     {
         let entity = sim.substrate.entities.get_mut(miner_b).expect("miner B");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
 
     let config = MinerConfig::default();
@@ -6763,7 +6841,9 @@ fn scan_ring_0_allows_harvesters_own_cell() {
 
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
 
     let config = MinerConfig::default();
@@ -6803,7 +6883,9 @@ fn move_to_ore_avoids_tree_blocked_cell_from_start() {
 
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
 
     let config = MinerConfig::default();
@@ -6843,7 +6925,9 @@ fn move_to_ore_retargets_when_blocker_appears() {
 
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
 
     let config = MinerConfig::default();
@@ -6892,7 +6976,9 @@ fn move_to_ore_target_stable_when_world_unchanged() {
 
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner");
-        entity.mission.set_handler_state(MinerState::SearchOre.cursor());
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
     }
 
     let config = MinerConfig::default();
@@ -7104,7 +7190,10 @@ fn harvest_seam_dispatch_matches_direct_process_miner() {
     let entity = sim.substrate.entities.get(miner_id).expect("entity");
     let m = entity.miner.as_ref().expect("miner");
     assert!(
-        matches!(entity.miner_state().unwrap(), MinerState::SearchOre | MinerState::WaitNoOre),
+        matches!(
+            entity.miner_state().unwrap(),
+            MinerState::SearchOre | MinerState::WaitNoOre
+        ),
         "seam: post-dock state must be SearchOre or WaitNoOre, got {:?}",
         entity.miner_state().unwrap(),
     );
@@ -7302,7 +7391,7 @@ fn dock_handshake_hello_enter_over_seam() {
     // Next pass: miner 1 advances to the accepted-cell wait, still not entered.
     // G5: the accepted HELLO arms the Enter cadence; advance the frame clock past
     // the ~14-16f window so this pass's CAN_DOCK dispatch is due.
-    sim.session.total_sim_ms += 1200;
+    sim.session.binary_frame = sim.session.binary_frame.wrapping_add(18);
     tick_miners_n(&mut sim, &rules, 1);
     assert_eq!(
         get_miner(&sim, miner_id).dock_phase,
@@ -7612,8 +7701,8 @@ fn coordinate_runtime_trace_miner_arrival_and_extraction_four_directions() {
                     sim.session.tick,
                     entity.position.rx,
                     entity.position.ry,
-                    entity.position.screen_x,
-                    entity.position.screen_y,
+                    crate::render::locomotor_visual::screen_position(entity).0,
+                    crate::render::locomotor_visual::screen_position(entity).1,
                     entity.movement_target.is_some(),
                 );
                 assert_eq!(

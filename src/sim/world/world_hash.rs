@@ -120,70 +120,10 @@ fn hash_mission_leaf(leaf: &crate::sim::mission::MissionLeafState, hasher: &mut 
     }
 }
 
-fn hash_locomotor_ready(
-    state: crate::sim::movement::locomotor_ready::LocomotorReadyState,
-    hasher: &mut impl Hasher,
-) {
-    use crate::sim::movement::locomotor_ready::LocomotorReadyState;
-
-    match state {
-        LocomotorReadyState::Drive {
-            turning_active,
-            slot_moving,
-            head_to_nonnull,
-            owner_speed,
-        } => {
-            0u8.hash(hasher);
-            turning_active.hash(hasher);
-            slot_moving.hash(hasher);
-            head_to_nonnull.hash(hasher);
-            owner_speed.hash(hasher);
-        }
-        LocomotorReadyState::Ship {
-            turning_active,
-            slot_moving,
-            head_to_nonnull,
-            owner_speed,
-        } => {
-            1u8.hash(hasher);
-            turning_active.hash(hasher);
-            slot_moving.hash(hasher);
-            head_to_nonnull.hash(hasher);
-            owner_speed.hash(hasher);
-        }
-        LocomotorReadyState::Hover {
-            slot_moving,
-            speed_bits,
-        } => {
-            2u8.hash(hasher);
-            slot_moving.hash(hasher);
-            speed_bits.hash(hasher);
-        }
-        LocomotorReadyState::Walk {
-            moving_byte,
-            applied_speed_bits,
-            destination_nonnull,
-        } => {
-            3u8.hash(hasher);
-            moving_byte.hash(hasher);
-            applied_speed_bits.hash(hasher);
-            destination_nonnull.hash(hasher);
-        }
-        LocomotorReadyState::Teleport { state } => {
-            4u8.hash(hasher);
-            state.hash(hasher);
-        }
-        LocomotorReadyState::Jumpjet { state } => {
-            5u8.hash(hasher);
-            state.hash(hasher);
-        }
-    }
-}
-
 impl Simulation {
     /// Deterministic state hash over canonicalized simulation state.
     ///
-    /// Hashes clocks, all three RNG streams, production, fog, alliances, and all entity
+    /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         self.state_hash_with_schema(true, true)
@@ -215,17 +155,10 @@ impl Simulation {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
         self.session.tick.hash(&mut hasher);
-        self.session.total_sim_ms.hash(&mut hasher);
         self.session.binary_frame.hash(&mut hasher);
-        // Hash ALL THREE RNG streams in a fixed order. Order is part of the hash
-        // contract and must never change. Hashing only some streams would let a
-        // divergence in another produce identical hashes on two desynced clients
-        // (desync detector goes blind exactly where the RNG-stream split matters).
+        // ScenarioClass owns the sole saved/synchronized RNG. Main and MapGen
+        // are process globals and are deliberately absent from this hash.
         self.scenario_rng.hash_state(&mut hasher);
-        self.main_rng.hash_state(&mut hasher);
-        // mapgen_rng (gamemd g_MapGenRng): appended AFTER the two gameplay streams.
-        // This order is part of the hash contract and must never change.
-        self.mapgen_rng.hash_state(&mut hasher);
         self.substrate.next_stable_object_id.hash(&mut hasher);
         self.substrate.next_occupancy_enter_order.hash(&mut hasher);
 
@@ -246,6 +179,8 @@ impl Simulation {
             }
         }
 
+        self.hash_raw_cell_occupation(&mut hasher);
+
         self.hash_game_options(&mut hasher);
         self.hash_houses(&mut hasher);
         self.hash_production(&mut hasher);
@@ -262,6 +197,29 @@ impl Simulation {
         self.hash_session_identity(&mut hasher);
 
         hasher.finish()
+    }
+
+    /// Fold the authoritative sparse raw occupation bytes without conflating
+    /// coordinates or the ground/deck planes. Empty raw state contributes no
+    /// bytes, preserving established hashes while every modeled zero remains
+    /// represented canonically by the absence of a sparse entry.
+    fn hash_raw_cell_occupation(&self, hasher: &mut impl Hasher) {
+        let entry_count = self.substrate.raw_cell_occupation.entry_count();
+        if entry_count == 0 {
+            return;
+        }
+
+        b"raw-cell-occupation-v1".hash(hasher);
+        entry_count.hash(hasher);
+        for (rx, ry, ground, deck) in self.substrate.raw_cell_occupation.entries() {
+            0xC1u8.hash(hasher); // entry delimiter
+            rx.hash(hasher);
+            ry.hash(hasher);
+            0u8.hash(hasher); // ground-plane tag
+            ground.hash(hasher);
+            1u8.hash(hasher); // deck-plane tag
+            deck.hash(hasher);
+        }
     }
 
     /// Session identity/bounds/waypoints — appended AFTER the legacy folds so
@@ -286,13 +244,14 @@ impl Simulation {
             idx.hash(hasher);
             owner.hash(hasher);
         }
+        s.house_order.hash(hasher);
     }
 
     /// Hash all particle systems in stable-id order (BTreeMap iteration).
     /// Each system contributes its type, position, lifetime, and ordered particle list.
     fn hash_particle_systems(&self, hasher: &mut impl Hasher) {
-        self.particle_systems.len().hash(hasher);
-        for (id, sys) in self.particle_systems.iter() {
+        self.particle_systems().len().hash(hasher);
+        for (id, sys) in self.particle_systems().iter() {
             id.hash(hasher);
             sys.type_id.0.hash(hasher);
             sys.coords.x.hash(hasher);
@@ -369,6 +328,7 @@ impl Simulation {
             house.is_defeated.hash(hasher);
             house.has_won.hash(hasher);
             house.has_lost.hash(hasher);
+            house.map_is_clear.hash(hasher);
             house.owned_building_count.hash(hasher);
             house.owned_unit_count.hash(hasher);
             house.tech_level.hash(hasher);
@@ -414,12 +374,9 @@ impl Simulation {
         self.production.next_enqueue_order.hash(hasher);
         self.hash_factory_registry(hasher); // P5b: the authoritative factory registry
 
-        for (&(rx, ry), node) in &self.production.resource_nodes {
-            rx.hash(hasher);
-            ry.hash(hasher);
-            (node.resource_type as u8).hash(hasher);
-            node.remaining.hash(hasher);
-        }
+        // Live ore/gem identity and quantity are already folded by
+        // `hash_overlay_grid`. `resource_nodes` is a legacy test-fixture seam,
+        // not production authority and therefore must not affect sync state.
         self.production.ore_growth_state.hash_state(hasher);
         // Hash terrain spawners (TIBTRE-style ore generators).
         for (&(rx, ry), spawner) in &self.production.terrain_spawners {
@@ -594,11 +551,17 @@ impl Simulation {
             return;
         };
         1u8.hash(hasher);
-        for (rx, ry, cell) in overlay_grid.iter_occupied() {
-            rx.hash(hasher);
-            ry.hash(hasher);
-            cell.overlay_id.hash(hasher);
-            cell.overlay_data.hash(hasher);
+        overlay_grid.width().hash(hasher);
+        overlay_grid.height().hash(hasher);
+        for ry in 0..overlay_grid.height() {
+            for rx in 0..overlay_grid.width() {
+                let cell = overlay_grid.cell(rx, ry);
+                rx.hash(hasher);
+                ry.hash(hasher);
+                cell.overlay_id.hash(hasher);
+                cell.overlay_data.hash(hasher);
+                cell.wall_owner.hash(hasher);
+            }
         }
     }
 
@@ -701,6 +664,8 @@ impl Simulation {
                 entity.dirty_rect_eligible.hash(hasher);
                 entity.owned_count_released.hash(hasher);
             }
+            entity.move_sound_active.hash(hasher);
+            entity.move_sound_countdown.hash(hasher);
             entity.position.rx.hash(hasher);
             entity.position.ry.hash(hasher);
             entity.position.z.hash(hasher);
@@ -752,6 +717,7 @@ impl Simulation {
             }
 
             entity.drive_locomotion.hash(hasher);
+            entity.ship_locomotion.hash(hasher);
 
             if let Some(ref forced) = entity.forced_drive_track {
                 1u8.hash(hasher);
@@ -765,6 +731,15 @@ impl Simulation {
             if let Some(ref loco) = entity.locomotor {
                 1u8.hash(hasher);
                 (loco.kind as u8).hash(hasher);
+                // The installed slot, distinct from the active kind: the two
+                // differ while a piggyback stash is up, so hashing only the
+                // active class would let a desync in which locomotor a unit was
+                // built with hide behind a matching current one.
+                loco.slot.installed().hash(hasher);
+                // Locomotor power: deterministic state with an observable Hover
+                // effect, and deploy/undeploy flips it, so it must be in the
+                // lockstep hash.
+                loco.powered.hash(hasher);
                 (loco.layer as u8).hash(hasher);
                 (loco.phase as u8).hash(hasher);
                 // Hover throttle is authoritative movement state (persists across
@@ -774,15 +749,11 @@ impl Simulation {
                 loco.hover_throttle.to_bits().hash(hasher);
                 loco.hover_bob_offset.to_bits().hash(hasher);
                 loco.altitude.to_bits().hash(hasher);
-                if include_mission_v29 {
-                    match loco.mission_ready_state {
-                        Some(ready) => {
-                            1u8.hash(hasher);
-                            hash_locomotor_ready(ready, hasher);
-                        }
-                        None => 0u8.hash(hasher),
-                    }
-                }
+                // Mission readiness inputs are NOT hashed: they are derived at
+                // the gate from state already hashed above (and from position,
+                // facing and movement target, likewise hashed). Hashing a
+                // derived predicate would pin a projection of the same state
+                // twice, and it cannot diverge independently of its inputs.
             } else {
                 0u8.hash(hasher);
             }
@@ -917,6 +888,10 @@ impl Simulation {
                     for &pid in &cargo.passengers {
                         pid.hash(hasher);
                     }
+                    debug_assert_eq!(cargo.passenger_sizes.len(), cargo.passengers.len());
+                    for &passenger_size in &cargo.passenger_sizes {
+                        passenger_size.hash(hasher);
+                    }
                     cargo.total_size.hash(hasher);
                 }
                 crate::sim::passenger::PassengerRole::Boarding {
@@ -969,6 +944,8 @@ impl Simulation {
             if include_mission_v29 {
                 hash_mission_com(&entity.mission, hasher);
                 hash_mission_leaf(&entity.mission_leaf, hasher);
+                entity.occupier.hash(hasher);
+                entity.passive_scan_timer.hash(hasher);
                 match entity.suspended_attack_target {
                     Some(target) => {
                         1u8.hash(hasher);
@@ -995,6 +972,93 @@ impl Simulation {
             id.hash(hasher);
             anim.hash(hasher);
         }
+    }
+}
+
+#[cfg(test)]
+mod raw_cell_occupation_hash_tests {
+    use super::Simulation;
+
+    #[test]
+    fn gsi_04_12_raw_occupation_hash_distinguishes_byte_plane_and_coordinate() {
+        let empty = Simulation::new();
+
+        let mut ground = Simulation::new();
+        ground.substrate.raw_cell_occupation.mark_ground(4, 9, 0x20);
+
+        let mut different_byte = Simulation::new();
+        different_byte
+            .substrate
+            .raw_cell_occupation
+            .mark_ground(4, 9, 0x40);
+
+        let mut deck = Simulation::new();
+        deck.substrate.raw_cell_occupation.mark_deck(4, 9, 0x20);
+
+        let mut different_coordinate = Simulation::new();
+        different_coordinate
+            .substrate
+            .raw_cell_occupation
+            .mark_ground(9, 4, 0x20);
+
+        assert_ne!(empty.state_hash(), ground.state_hash());
+        assert_ne!(ground.state_hash(), different_byte.state_hash());
+        assert_ne!(ground.state_hash(), deck.state_hash());
+        assert_ne!(ground.state_hash(), different_coordinate.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_12_raw_occupation_hash_is_insertion_order_independent() {
+        let mut forward = Simulation::new();
+        forward
+            .substrate
+            .raw_cell_occupation
+            .mark_ground(2, 7, 0x04);
+        forward.substrate.raw_cell_occupation.mark_deck(8, 3, 0x80);
+
+        let mut reverse = Simulation::new();
+        reverse.substrate.raw_cell_occupation.mark_deck(8, 3, 0x80);
+        reverse
+            .substrate
+            .raw_cell_occupation
+            .mark_ground(2, 7, 0x04);
+
+        assert_eq!(forward.state_hash(), reverse.state_hash());
+    }
+}
+
+#[cfg(test)]
+mod overlay_grid_hash_tests {
+    use super::Simulation;
+    use crate::map::overlay::OverlayDataPack;
+    use crate::sim::overlay_grid::OverlayGrid;
+
+    #[test]
+    fn gsi_04_09_empty_overlay_raw_data_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        sim_a.overlay_grid = Some(OverlayGrid::from_overlay_packs(
+            &[],
+            &OverlayDataPack::from_cells([]),
+            2,
+            2,
+        ));
+        sim_b.overlay_grid = Some(OverlayGrid::from_overlay_packs(
+            &[],
+            &OverlayDataPack::from_cells([(1, 1, 42)]),
+            2,
+            2,
+        ));
+
+        let a = sim_a.overlay_grid.as_ref().expect("overlay grid A");
+        let b = sim_b.overlay_grid.as_ref().expect("overlay grid B");
+        assert_eq!(a.cell(1, 1).overlay_id, None);
+        assert_eq!(b.cell(1, 1).overlay_id, None);
+        assert_eq!(a.cell(1, 1).overlay_data, 0);
+        assert_eq!(b.cell(1, 1).overlay_data, 42);
+        assert!(a.iter_occupied().next().is_none());
+        assert!(b.iter_occupied().next().is_none());
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
 }
 
@@ -1033,6 +1097,12 @@ mod lifecycle_hash_tests {
         assert_entity_mutation_changes_hash(|entity| {
             entity.owned_count_released = !entity.owned_count_released;
         });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.occupier = !entity.occupier;
+        });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.passive_scan_timer.arm(7, 12);
+        });
     }
 
     #[test]
@@ -1056,14 +1126,11 @@ mod lifecycle_hash_tests {
 #[cfg(test)]
 mod mission_authority_hash_tests {
     use super::Simulation;
-    use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::combat::TargetKind;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::mission::leaf::MissionLeafState;
     use crate::sim::mission::state::MissionTestFixture;
     use crate::sim::mission::{MissionDispatchTimer, MissionId};
-    use crate::sim::movement::locomotor::LocomotorState;
-    use crate::sim::movement::locomotor_ready::LocomotorReadyState;
 
     fn hash_entity(entity: GameEntity) -> u64 {
         let mut sim = Simulation::new();
@@ -1087,61 +1154,6 @@ mod mission_authority_hash_tests {
         let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
         entity.suspended_attack_target = target;
         hash_entity(entity)
-    }
-
-    fn hash_locomotor_ready(state: Option<LocomotorReadyState>) -> u64 {
-        let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
-        let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Drive);
-        locomotor.set_mission_ready_state_for_test(state);
-        entity.locomotor = Some(locomotor);
-        hash_entity(entity)
-    }
-
-    fn drive_ready(
-        turning_active: bool,
-        slot_moving: bool,
-        head_to_nonnull: bool,
-        owner_speed: i32,
-    ) -> LocomotorReadyState {
-        LocomotorReadyState::Drive {
-            turning_active,
-            slot_moving,
-            head_to_nonnull,
-            owner_speed,
-        }
-    }
-
-    fn ship_ready(
-        turning_active: bool,
-        slot_moving: bool,
-        head_to_nonnull: bool,
-        owner_speed: i32,
-    ) -> LocomotorReadyState {
-        LocomotorReadyState::Ship {
-            turning_active,
-            slot_moving,
-            head_to_nonnull,
-            owner_speed,
-        }
-    }
-
-    fn hover_ready(slot_moving: bool, speed_bits: u64) -> LocomotorReadyState {
-        LocomotorReadyState::Hover {
-            slot_moving,
-            speed_bits,
-        }
-    }
-
-    fn walk_ready(
-        moving_byte: u8,
-        applied_speed_bits: u64,
-        destination_nonnull: bool,
-    ) -> LocomotorReadyState {
-        LocomotorReadyState::Walk {
-            moving_byte,
-            applied_speed_bits,
-            destination_nonnull,
-        }
     }
 
     #[test]
@@ -1359,112 +1371,6 @@ mod mission_authority_hash_tests {
             "ObjectClass falling byte must contribute to the state hash"
         );
     }
-
-    #[test]
-    fn locomotor_mission_ready_presence_changes_state_hash() {
-        assert_ne!(
-            hash_locomotor_ready(None),
-            hash_locomotor_ready(Some(LocomotorReadyState::Drive {
-                turning_active: false,
-                slot_moving: false,
-                head_to_nonnull: false,
-                owner_speed: 0,
-            })),
-            "locomotor Mission-ready presence must contribute to the state hash"
-        );
-    }
-
-    #[test]
-    fn every_drive_mission_ready_field_changes_state_hash() {
-        let base = drive_ready(false, false, false, 0);
-        let base_hash = hash_locomotor_ready(Some(base));
-        for (field, variant) in [
-            ("turning active", drive_ready(true, false, false, 0)),
-            ("slot moving", drive_ready(false, true, false, 0)),
-            ("head-to presence", drive_ready(false, false, true, 0)),
-            ("owner speed", drive_ready(false, false, false, 1)),
-        ] {
-            assert_ne!(
-                base_hash,
-                hash_locomotor_ready(Some(variant)),
-                "Drive {field} must contribute to the state hash"
-            );
-        }
-    }
-
-    #[test]
-    fn every_ship_mission_ready_field_changes_state_hash() {
-        let base = ship_ready(false, false, false, 0);
-        let base_hash = hash_locomotor_ready(Some(base));
-        for (field, variant) in [
-            ("turning active", ship_ready(true, false, false, 0)),
-            ("slot moving", ship_ready(false, true, false, 0)),
-            ("head-to presence", ship_ready(false, false, true, 0)),
-            ("owner speed", ship_ready(false, false, false, 1)),
-        ] {
-            assert_ne!(
-                base_hash,
-                hash_locomotor_ready(Some(variant)),
-                "Ship {field} must contribute to the state hash"
-            );
-        }
-
-        assert_ne!(
-            hash_locomotor_ready(Some(drive_ready(false, false, false, 0))),
-            base_hash,
-            "Drive and Ship variant tags must contribute to the state hash"
-        );
-    }
-
-    #[test]
-    fn every_hover_mission_ready_field_changes_state_hash() {
-        let base = hover_ready(false, 0);
-        let base_hash = hash_locomotor_ready(Some(base));
-        for (field, variant) in [
-            ("slot moving", hover_ready(true, 0)),
-            ("raw speed bits", hover_ready(false, 0x8000_0000_0000_0000)),
-        ] {
-            assert_ne!(
-                base_hash,
-                hash_locomotor_ready(Some(variant)),
-                "Hover {field} must contribute to the state hash"
-            );
-        }
-    }
-
-    #[test]
-    fn every_walk_mission_ready_field_changes_state_hash() {
-        let base = walk_ready(0, 0, false);
-        let base_hash = hash_locomotor_ready(Some(base));
-        for (field, variant) in [
-            ("moving byte", walk_ready(0xa5, 0, false)),
-            (
-                "raw applied-speed bits",
-                walk_ready(0, 0x8000_0000_0000_0000, false),
-            ),
-            ("destination presence", walk_ready(0, 0, true)),
-        ] {
-            assert_ne!(
-                base_hash,
-                hash_locomotor_ready(Some(variant)),
-                "Walk {field} must contribute to the state hash"
-            );
-        }
-    }
-
-    #[test]
-    fn teleport_and_jumpjet_mission_ready_fields_change_state_hash() {
-        assert_ne!(
-            hash_locomotor_ready(Some(LocomotorReadyState::Teleport { state: 0 })),
-            hash_locomotor_ready(Some(LocomotorReadyState::Teleport { state: 0xa5 })),
-            "Teleport raw state must contribute to the state hash"
-        );
-        assert_ne!(
-            hash_locomotor_ready(Some(LocomotorReadyState::Jumpjet { state: 0 })),
-            hash_locomotor_ready(Some(LocomotorReadyState::Jumpjet { state: i32::MIN })),
-            "Jumpjet raw state must contribute to the state hash"
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1569,6 +1475,7 @@ mod particle_hash_tests {
     fn fake_system(coords: IVec3) -> ParticleSystem {
         ParticleSystem {
             stable_id: 0,
+            in_logic_vector: false,
             type_id: ParticleSystemTypeId(0),
             coords,
             offset: IVec3::ZERO,
@@ -1587,6 +1494,14 @@ mod particle_hash_tests {
         }
     }
 
+    fn insert_system(sim: &mut Simulation, mut system: ParticleSystem) -> u64 {
+        let id = sim.allocate_stable_id();
+        system.stable_id = id;
+        sim.particle_systems_mut().insert(system);
+        sim.reveal_particle_system(id);
+        id
+    }
+
     #[test]
     fn empty_particle_store_hashes_consistently() {
         let a = Simulation::new();
@@ -1598,8 +1513,7 @@ mod particle_hash_tests {
     fn particle_state_changes_hash() {
         let mut sim = Simulation::new();
         let h1 = sim.state_hash();
-        sim.particle_systems
-            .insert(fake_system(IVec3::new(100, 0, 0)));
+        insert_system(&mut sim, fake_system(IVec3::new(100, 0, 0)));
         let h2 = sim.state_hash();
         assert_ne!(h1, h2);
     }
@@ -1636,8 +1550,8 @@ mod particle_hash_tests {
         };
         sys_a.particles.push(make_p(0));
         sys_b.particles.push(make_p(3));
-        sim_a.particle_systems.insert(sys_a);
-        sim_b.particle_systems.insert(sys_b);
+        insert_system(&mut sim_a, sys_a);
+        insert_system(&mut sim_b, sys_b);
         assert_ne!(
             sim_a.state_hash(),
             sim_b.state_hash(),
@@ -1676,7 +1590,7 @@ mod particle_hash_tests {
         let mut sim = Simulation::new();
         let mut system = fake_system(IVec3::ZERO);
         system.particles.push(particle);
-        sim.particle_systems.insert(system);
+        insert_system(&mut sim, system);
         sim.state_hash()
     }
 
@@ -2166,44 +2080,48 @@ mod bridge_overlay_hash_tests {
 }
 
 #[cfg(test)]
-mod binary_frame_tests {
+mod native_frame_tests {
     use super::Simulation;
     use std::collections::BTreeMap;
 
     #[test]
-    fn binary_frame_drift_free_at_22ms_ticks() {
+    fn one_advance_is_one_native_frame_for_any_host_duration() {
         let mut sim = Simulation::new();
         let height_map = BTreeMap::new();
-        // 45 ticks at 22ms = 990ms ≈ 14.85 binary frames; floor = 14.
-        for _ in 0..45 {
-            sim.advance_tick(&[], None, &height_map, None, None, 22);
+        let host_durations = [0, 1, 22, 67, 1_000, u32::MAX];
+        for (index, tick_ms) in host_durations.into_iter().enumerate() {
+            sim.advance_tick(&[], None, &height_map, None, None, tick_ms);
+            assert_eq!(sim.session.binary_frame, index as u32 + 1);
         }
-        assert_eq!(sim.session.total_sim_ms, 990);
-        assert_eq!(sim.session.binary_frame, 14);
     }
 
     #[test]
-    fn binary_frame_advances_each_66ms_block() {
+    fn native_frame_wraps_after_u32_max() {
         let mut sim = Simulation::new();
         let height_map = BTreeMap::new();
-        // Three 67ms ticks should each advance binary_frame by 1
-        // (67ms * 15 / 1000 = 1.005, floor = 1 per tick).
-        sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.session.binary_frame, 1);
-        sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.session.binary_frame, 2);
-        sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.session.binary_frame, 3);
+        sim.session.binary_frame = u32::MAX;
+
+        sim.advance_tick(&[], None, &height_map, None, None, 22);
+
+        assert_eq!(sim.session.binary_frame, 0);
     }
 
     #[test]
-    fn binary_frame_changes_state_hash() {
+    fn native_frame_changes_state_hash() {
         let mut sim_a = Simulation::new();
         let sim_b = Simulation::new();
         let height_map = BTreeMap::new();
-        sim_a.advance_tick(&[], None, &height_map, None, None, 100);
-        // sim_b stays at frame 0; sim_a is at (100*15/1000)=1.
+        sim_a.advance_tick(&[], None, &height_map, None, None, 22);
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn diagnostic_total_sim_ms_does_not_change_state_hash() {
+        let mut sim_a = Simulation::new();
+        let sim_b = Simulation::new();
+        sim_a.session.total_sim_ms = 123_456;
+
+        assert_eq!(sim_a.state_hash(), sim_b.state_hash());
     }
 }
 
@@ -2348,13 +2266,13 @@ mod c4_hash_tests {
 mod homing_state_hash_tests {
     use super::Simulation;
     use crate::sim::game_entity::GameEntity;
-    use crate::sim::movement::homing_movement::{HomingPhase, HomingState};
+    use crate::sim::movement::homing_movement::{HomingPhase, HomingState, HomingTarget};
     use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 
     fn make_homing(yaw_bam: u16) -> HomingState {
         HomingState {
             phase: HomingPhase::Cruise,
-            target_id: Some(42),
+            target: Some(HomingTarget::Object(42)),
             last_known_rx: 25,
             last_known_ry: 5,
             yaw_bam,
@@ -2424,6 +2342,24 @@ mod homing_state_hash_tests {
     }
 
     #[test]
+    fn homing_object_and_cell_targets_hash_differently() {
+        let mut a = Simulation::new();
+        let mut b = Simulation::new();
+        a.substrate
+            .entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        b.substrate
+            .entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        a.substrate.entities.get_mut(1).unwrap().homing_state = Some(make_homing(0));
+        let mut cell_target = make_homing(0);
+        cell_target.target = Some(HomingTarget::Cell { rx: 42, ry: 0 });
+        b.substrate.entities.get_mut(1).unwrap().homing_state = Some(cell_target);
+
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
     fn homing_state_pitch_excluded_from_hash() {
         // The manual Hash impl on HomingState skips the render-only `pitch`
         // field; mutating it must not change the state hash.
@@ -2452,5 +2388,31 @@ mod homing_state_hash_tests {
             b.state_hash(),
             "render-only pitch must not affect state hash"
         );
+    }
+}
+
+#[cfg(test)]
+mod passenger_cargo_hash_tests {
+    use super::Simulation;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::passenger::{PassengerCargo, PassengerRole};
+
+    fn sim_with_sizes(first_size: u32, second_size: u32) -> Simulation {
+        let mut sim = Simulation::new();
+        let mut carrier = GameEntity::test_default(1, "BFRT", "Allied", 5, 5);
+        let mut cargo = PassengerCargo::new(5, 0);
+        cargo.board_forced(10, first_size);
+        cargo.board_forced(11, second_size);
+        carrier.passenger_role = PassengerRole::Transport { cargo };
+        sim.substrate.entities.insert(carrier);
+        sim
+    }
+
+    #[test]
+    fn per_entry_size_mapping_changes_hash_even_when_total_matches() {
+        let a = sim_with_sizes(1, 3);
+        let b = sim_with_sizes(3, 1);
+
+        assert_ne!(a.state_hash(), b.state_hash());
     }
 }

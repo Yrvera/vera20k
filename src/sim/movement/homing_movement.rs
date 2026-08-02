@@ -23,7 +23,9 @@
 use std::sync::OnceLock;
 
 use crate::sim::entity_store::EntityStore;
-use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed, dt_from_tick_ms, int_distance_to_sim};
+use crate::util::fixed_math::{
+    SIM_ONE, SIM_ZERO, SimFixed, int_distance_to_sim, native_movement_frame_fraction,
+};
 
 /// Phase within the homing missile state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -38,6 +40,18 @@ pub enum HomingPhase {
     Detonation,
 }
 
+/// Native BulletClass target role used by homing projectiles.
+///
+/// Object expiry does not have one universal outcome: a normal ground object
+/// becomes the `CellClass` at its final coordinates, while a high-flying
+/// object becomes null. Keeping the cell variant explicit prevents a later
+/// failed entity lookup from being mistaken for the native fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum HomingTarget {
+    Object(u64),
+    Cell { rx: u16, ry: u16 },
+}
+
 /// State for an in-flight homing missile.
 ///
 /// Sim-critical numeric fields use `SimFixed` for deterministic lockstep.
@@ -48,7 +62,7 @@ pub struct HomingState {
     pub phase: HomingPhase,
 
     // Target tracking
-    pub target_id: Option<u64>,
+    pub target: Option<HomingTarget>,
     pub last_known_rx: u16,
     pub last_known_ry: u16,
 
@@ -274,7 +288,7 @@ fn atan_lut() -> &'static [u16; 65537] {
 impl std::hash::Hash for HomingState {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.phase.hash(state);
-        self.target_id.hash(state);
+        self.target.hash(state);
         self.last_known_rx.hash(state);
         self.last_known_ry.hash(state);
         self.yaw_bam.hash(state);
@@ -294,6 +308,37 @@ impl std::hash::Hash for HomingState {
         self.stall_ema.to_bits().hash(state);
         self.last_distance_to_target.to_bits().hash(state);
         // `pitch: f32` intentionally omitted — render-only.
+    }
+}
+
+impl HomingState {
+    /// Apply BulletClass's pointer-expired target branch.
+    ///
+    /// Normal gameplay has map-editor suppression disabled, and Rust entity
+    /// cells cannot carry the native off-map sentinel. The remaining retail
+    /// split is therefore ground object -> explicit cell, high-flying object
+    /// -> null.
+    pub(crate) fn expire_object_target(
+        &mut self,
+        expired_id: u64,
+        target_cell: (u16, u16),
+        target_is_high_flying: bool,
+    ) -> bool {
+        if self.target != Some(HomingTarget::Object(expired_id)) {
+            return false;
+        }
+
+        self.last_known_rx = target_cell.0;
+        self.last_known_ry = target_cell.1;
+        self.target = if target_is_high_flying {
+            None
+        } else {
+            Some(HomingTarget::Cell {
+                rx: target_cell.0,
+                ry: target_cell.1,
+            })
+        };
+        true
     }
 }
 
@@ -344,7 +389,7 @@ pub fn attach_homing_state(
         } else {
             HomingPhase::Cruise
         },
-        target_id: Some(target_id),
+        target: Some(HomingTarget::Object(target_id)),
         last_known_rx: target_pos.0,
         last_known_ry: target_pos.1,
         yaw_bam: initial_yaw_bam,
@@ -379,15 +424,10 @@ pub fn attach_homing_state(
 pub fn tick_homing_movement(
     entities: &mut EntityStore,
     live_order: &[u64],
-    tick_ms: u32,
     _sim_tick: u64,
 ) -> Vec<u64> {
     let mut detonated: Vec<u64> = Vec::new();
-    if tick_ms == 0 {
-        return detonated;
-    }
-
-    let dt = dt_from_tick_ms(tick_ms);
+    let dt = native_movement_frame_fraction();
     let fallback_order;
     let entity_order: &[u64] = if live_order.is_empty() {
         fallback_order = entities.keys_sorted();
@@ -396,18 +436,25 @@ pub fn tick_homing_movement(
         live_order
     };
     for &id in entity_order {
-        // Read target position (if target still alive) without holding a
-        // mutable borrow on the bullet.
-        let target_pos_opt: Option<(u16, u16)> = {
+        // Read object/cell target position without holding a mutable borrow on
+        // the bullet.
+        let (target_pos_opt, lost_object_target): (Option<(u16, u16)>, bool) = {
             let Some(bullet) = entities.get(id) else {
                 continue;
             };
             let Some(h) = bullet.homing_state.as_ref() else {
                 continue;
             };
-            h.target_id
-                .and_then(|tid| entities.get(tid))
-                .map(|t| (t.position.rx, t.position.ry))
+            match h.target {
+                Some(HomingTarget::Object(target_id)) => (
+                    entities
+                        .get(target_id)
+                        .map(|target| (target.position.rx, target.position.ry)),
+                    !entities.contains(target_id),
+                ),
+                Some(HomingTarget::Cell { rx, ry }) => (Some((rx, ry)), false),
+                None => (None, false),
+            }
         };
 
         let Some(bullet) = entities.get_mut(id) else {
@@ -417,12 +464,14 @@ pub fn tick_homing_movement(
             continue;
         };
 
-        // 1. Refresh last-known target pos if alive, else fly to last-known.
+        // 1. Refresh object/cell target coordinates. A hard-removed object is
+        // only a safety fallback; the ordinary retail path converts it during
+        // the earlier UnInit pointer-expired notification.
         if let Some(pos) = target_pos_opt {
             h.last_known_rx = pos.0;
             h.last_known_ry = pos.1;
-        } else {
-            h.target_id = None;
+        } else if lost_object_target {
+            h.target = None;
         }
 
         // 2. Desired yaw from current cell-precision pos -> last-known.
@@ -472,7 +521,6 @@ pub fn tick_homing_movement(
         let new_ry = h.pos_y_cells.to_num::<i32>().clamp(0, u16::MAX as i32) as u16;
         bullet.position.rx = new_rx;
         bullet.position.ry = new_ry;
-        bullet.position.refresh_screen_coords();
 
         // 9. vz damper: non-Floater missiles decay vertical velocity each
         //    tick toward 0 (`(vz + 3*sgn(vz)) / 4` rounds toward 0 by 1/4).
@@ -554,9 +602,9 @@ pub fn tick_homing_movement(
         //     Non-Floater only — floater projectiles can hover indefinitely.
         //
         //     Distance is measured in leptons (256 leptons per cell), matching
-        //     the original engine's distance scale. A normal closing rate at
-        //     20 cells/sec * 22ms/tick = ~113 leptons/tick, so the 0.5 lepton
-        //     threshold only trips when the missile is truly stalled.
+        //     the original engine's distance scale. A normal native-frame
+        //     closing rate is hundreds of leptons, so the 0.5-lepton threshold
+        //     only trips when the missile is truly stalled.
         if h.phase != HomingPhase::Detonation {
             let delta_dist = h.last_distance_to_target - dist_now_sf;
             h.last_distance_to_target = dist_now_sf;
@@ -715,7 +763,7 @@ mod tests {
 
         let h = entities.get(1).unwrap().homing_state.as_ref().unwrap();
         assert_eq!(h.phase, HomingPhase::Arming);
-        assert_eq!(h.target_id, Some(42));
+        assert_eq!(h.target, Some(HomingTarget::Object(42)));
         assert_eq!(h.last_known_rx, 15);
         assert_eq!(h.last_known_ry, 5);
         assert_eq!(h.arm_ticks_remaining, 2);
@@ -773,7 +821,7 @@ mod tests {
 
         let mut detonated = false;
         for _ in 0..200 {
-            let det = tick_homing_movement(&mut entities, &[], 22, 0);
+            let det = tick_homing_movement(&mut entities, &[], 0);
             if det.contains(&1) {
                 detonated = true;
                 break;
@@ -817,7 +865,7 @@ mod tests {
         // Inside dead-band -> altitude unchanged by the snap step.
         let (mut entities, bullet_id) =
             spawn_test_homing_at_altitude(SimFixed::from_num(5 * 64 + 10));
-        tick_homing_movement(&mut entities, &[], 22, 0);
+        tick_homing_movement(&mut entities, &[], 0);
         let alt_after = entities
             .get(bullet_id)
             .unwrap()
@@ -838,7 +886,7 @@ mod tests {
         // |dz| = 30 -> outside dead-band -> snap by -18 toward target.
         let (mut entities, bullet_id) =
             spawn_test_homing_at_altitude(SimFixed::from_num(5 * 64 + 30));
-        tick_homing_movement(&mut entities, &[], 22, 0);
+        tick_homing_movement(&mut entities, &[], 0);
         let alt_after = entities
             .get(bullet_id)
             .unwrap()
@@ -856,7 +904,7 @@ mod tests {
         // |dz| = 30 below target -> snap up by 18.
         let (mut entities, bullet_id) =
             spawn_test_homing_at_altitude(SimFixed::from_num(5 * 64 - 30));
-        tick_homing_movement(&mut entities, &[], 22, 0);
+        tick_homing_movement(&mut entities, &[], 0);
         let alt_after = entities
             .get(bullet_id)
             .unwrap()
@@ -919,7 +967,7 @@ mod tests {
             h.last_known_ry = 100;
         }
 
-        let det = tick_homing_movement(&mut entities, &[], 22, 1);
+        let det = tick_homing_movement(&mut entities, &[], 1);
         assert!(
             det.contains(&1),
             "missile with EMA<=0.5 and zero closure must self-destruct"
@@ -949,13 +997,36 @@ mod tests {
             SIM_ONE,
         );
 
-        for tick in 0..400 {
-            let det = tick_homing_movement(&mut entities, &[], 22, tick as u64);
-            assert!(
-                !det.contains(&1),
-                "floater missile must never self-destruct from stall"
-            );
+        // Isolate the stall gate exactly as the non-Floater sibling test does.
+        // A long free-flight loop can legitimately reach proximity detonation,
+        // which says nothing about whether the stall failsafe fired.
+        if let Some(h) = entities.get_mut(1).unwrap().homing_state.as_mut() {
+            h.phase = HomingPhase::Cruise;
+            h.stall_ema = SIM_ZERO;
+            h.stall_counter = 60;
+            h.speed = SIM_ZERO;
+            h.last_distance_to_target = SIM_ZERO;
+            h.pos_x_cells = SimFixed::from_num(0);
+            h.pos_y_cells = SimFixed::from_num(0);
+            h.last_known_rx = 100;
+            h.last_known_ry = 100;
         }
+
+        let det = tick_homing_movement(&mut entities, &[], 1);
+        assert!(
+            !det.contains(&1),
+            "Floater must bypass the warmed-up stall self-destruct gate"
+        );
+        assert_eq!(
+            entities
+                .get(1)
+                .unwrap()
+                .homing_state
+                .as_ref()
+                .unwrap()
+                .phase,
+            HomingPhase::Cruise
+        );
     }
 
     #[test]
@@ -1023,8 +1094,8 @@ mod tests {
         let mut live_entities = build_entities();
         let mut stable_entities = build_entities();
 
-        let live = tick_homing_movement(&mut live_entities, &[2, 1], 22, 0);
-        let stable = tick_homing_movement(&mut stable_entities, &[], 22, 0);
+        let live = tick_homing_movement(&mut live_entities, &[2, 1], 0);
+        let stable = tick_homing_movement(&mut stable_entities, &[], 0);
 
         assert_eq!(
             live,
@@ -1071,7 +1142,7 @@ mod tests {
                 t.position.rx = 35;
                 t.position.ry = 10;
             }
-            let det = tick_homing_movement(&mut entities, &[], 22, tick as u64);
+            let det = tick_homing_movement(&mut entities, &[], tick as u64);
             if det.contains(&1) {
                 detonated = true;
                 break;

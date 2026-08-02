@@ -57,11 +57,16 @@ impl HouseDifficulty {
 pub struct HouseState {
     /// Owner name as interned ID (resolve via interner for display).
     pub name: InternedId,
-    /// Side index: 0=Allied, 1=Soviet, 2=Yuri. From HouseDefinition.side.
+    /// Stable rules-owned side index. Stock YR uses 0=Allied, 1=Soviet,
+    /// 2=Yuri, 3=Civilian, and 4=Mutant.
     pub side_index: u8,
     /// Country interned ID from map INI `Country=` key (e.g., "Americans", "Russians").
     pub country: Option<InternedId>,
-    /// True if this house is human-controlled.
+    /// Collapsed player-control fact for the current Rust model.
+    ///
+    /// Native keeps `IsHuman` and `PlayerControl` as separate bytes and admits
+    /// EventClass records when either is set. Current scenario/skirmish
+    /// initialization folds both sources into this one boolean.
     pub is_human: bool,
     /// Per-house native difficulty. Human houses retain Normal unless a map or
     /// game-mode initializer explicitly assigns another native value.
@@ -77,6 +82,12 @@ pub struct HouseState {
     pub has_won: bool,
     /// Defeat flag. Note: Flag_To_Lose clears HasWon first.
     pub has_lost: bool,
+    /// HouseClass map-clear byte folded by the retail multiplayer checksum.
+    ///
+    /// Defeat/reveal paths set this independently of the win/loss flags, and
+    /// shroud restoration can clear it again.
+    #[serde(default)]
+    pub map_is_clear: bool,
     /// Running count of owned buildings. Updated on spawn/despawn.
     pub owned_building_count: u32,
     /// Running count of owned non-building units. Updated on spawn/despawn.
@@ -98,6 +109,11 @@ pub struct HouseState {
 }
 
 impl HouseState {
+    /// Active offline EventClass house-scan eligibility.
+    pub const fn event_dispatch_eligible(&self) -> bool {
+        self.is_human
+    }
+
     pub fn new(
         name: InternedId,
         side_index: u8,
@@ -117,6 +133,7 @@ impl HouseState {
             is_defeated: false,
             has_won: false,
             has_lost: false,
+            map_is_clear: false,
             owned_building_count: 0,
             owned_unit_count: 0,
             base_center: None,
@@ -185,12 +202,35 @@ pub fn income_ppm_for_owner(
 /// Map side name string to numeric index.
 /// "Allies"/"GDI" → 0, "Soviet"/"Nod" → 1, "ThirdSide"/"YuriCountry" → 2.
 pub fn side_index_from_name(side: Option<&str>) -> u8 {
+    side_index_alias(side).unwrap_or(0)
+}
+
+fn side_index_alias(side: Option<&str>) -> Option<u8> {
     match side.map(|s| s.to_ascii_lowercase()).as_deref() {
-        Some("allied" | "allies" | "gdi") => 0,
-        Some("soviet" | "nod" | "russia") => 1,
-        Some("thirdside" | "yuricountry" | "yuri") => 2,
-        _ => 0, // default to Allied
+        Some("allied" | "allies" | "gdi") => Some(0),
+        Some("soviet" | "nod" | "russia") => Some(1),
+        Some("thirdside" | "yuricountry" | "yuri") => Some(2),
+        _ => None,
     }
+}
+
+/// Resolve the side identity used to construct a house.
+///
+/// Rules-owned country membership is authoritative. An explicit side name is
+/// the next-best source for incomplete scenario data, followed by the legacy
+/// stock aliases and finally the caller's bounded fallback.
+pub fn resolve_house_side_index(
+    rules: &crate::rules::ruleset::RuleSet,
+    country: Option<&str>,
+    side: Option<&str>,
+    fallback: u8,
+) -> u8 {
+    country
+        .and_then(|country| rules.country_side_index(country))
+        .or_else(|| side.and_then(|side| rules.side_index(side)))
+        .map(|index| index.0)
+        .or_else(|| side_index_alias(side))
+        .unwrap_or(fallback)
 }
 
 /// Compute the closest map edge to a given anchor cell.

@@ -25,29 +25,26 @@ use crate::map::terrain;
 use crate::render::sprite_atlas;
 use crate::render::unit_atlas;
 use crate::sim::animation::{self, SequenceSet};
-use crate::sim::overlay_grid::{OverlayGrid, recalc_overlay_passability};
+use crate::sim::overlay_grid::recalc_overlay_passability;
 use crate::sim::pathfinding::PathGrid;
+use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
-use crate::sim::world::{LifecycleOutput, SimFireEvent, SimSoundEvent};
+use crate::sim::world::{LifecycleOutput, SimFireEvent, SimSoundEvent, TickLane};
 use crate::ui::game_screen::GameScreen;
 
-/// Prevent runaway catch-up loops after pauses/debugger stops.
-const MAX_SIM_STEPS_PER_FRAME: u32 = 8;
-/// Cap catch-up after lag spikes/breakpoints.
-const MAX_UPDATE_DELTA_MS: u64 = 250;
-
-/// Directory for flushed replay logs (mirrors the `saves/` convention).
+/// Directory for Rust-only deterministic diagnostic logs.
 const REPLAYS_DIR: &str = "replays";
 
-/// Persist the in-memory replay log to disk if one was recorded this match.
+/// Persist the in-memory deterministic diagnostic log.
 ///
 /// The log lives on the sim (`sim.replay_log`) and is appended every tick but
 /// is otherwise dropped when the sim is torn down. Call this on match teardown
-/// (return-to-menu) so every finished match leaves a replayable, deterministic
-/// command+hash log — the prerequisite for diagnosing any future desync. No-op
-/// when there is no active sim or no recorded ticks. Writes
+/// so every finished match leaves a rich command+hash trace for desync
+/// diagnosis. This JSON artifact is separate from the fixed native recording
+/// stream in `sim::replay`. No-op when there is no active sim or no recorded
+/// ticks. Writes
 /// `replays/replay_tick{tick}_{unix_secs}.json`.
 pub(crate) fn flush_replay_log(state: &AppState) {
     let Some(sim) = state.simulation.as_ref() else {
@@ -64,7 +61,7 @@ pub(crate) fn flush_replay_log(state: &AppState) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     if let Err(e) = std::fs::create_dir_all(REPLAYS_DIR) {
-        log::error!("Replay flush: failed to create replays dir: {e}");
+        log::error!("Diagnostic-log flush: failed to create replays dir: {e}");
         return;
     }
     let path = std::path::PathBuf::from(format!(
@@ -73,11 +70,11 @@ pub(crate) fn flush_replay_log(state: &AppState) {
     ));
     match log.save(&path) {
         Ok(()) => log::info!(
-            "Replay flushed: {} ticks -> {}",
+            "Deterministic diagnostic log flushed: {} ticks -> {}",
             log.ticks.len(),
             path.display()
         ),
-        Err(e) => log::error!("Replay flush failed: {e}"),
+        Err(e) => log::error!("Diagnostic-log flush failed: {e}"),
     }
 }
 
@@ -254,40 +251,19 @@ fn anim_world_sound_screen(world: crate::sim::anim_class::AnimWorldCoord) -> (f3
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FixedStepSchedule {
-    steps: u32,
-    remaining_accumulator_ms: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FixedAdvanceMode {
-    WallClock {
-        elapsed_ms: u64,
-        configured_tps: u32,
-    },
-    /// One deterministic production step. `configured_tps` is carried
-    /// deliberately so tests prove every game-speed bucket is ignored.
-    ExactOneStep { configured_tps: u32 },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeAdvanceMode {
-    WallClock { elapsed_ms: u64 },
+    WallClock { now_ms: u64 },
     ExactOneStep,
 }
 
 /// App-local evidence that one tactical diagnostic pump advanced exactly one
-/// production simulation step.
+/// gameplay frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExactStepReceipt {
     pub tick_before: u64,
     pub tick_after: u64,
-    pub total_sim_ms_before: u64,
-    pub total_sim_ms_after: u64,
     pub binary_frame_before: u32,
     pub binary_frame_after: u32,
-    pub accumulator_before_clear_ms: u64,
-    pub accumulator_after_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -300,20 +276,8 @@ pub(crate) enum ExactStepError {
     SimulationMissing,
     #[error("exact tactical step advanced {actual} ticks instead of exactly one")]
     TickDelta { actual: u64 },
-    #[error(
-        "exact tactical step advanced total simulation time from {before} to {after}, expected +{expected_delta} ms"
-    )]
-    TotalSimTimeDelta {
-        before: u64,
-        after: u64,
-        expected_delta: u64,
-    },
-    #[error(
-        "exact tactical step committed binary frame {actual}, expected {expected} from total simulation time"
-    )]
-    BinaryFrameMismatch { expected: u32, actual: u32 },
-    #[error("exact tactical step left {remaining_ms} ms in the wall-clock accumulator")]
-    AccumulatorNotCleared { remaining_ms: u64 },
+    #[error("exact tactical step advanced gameplay frame by {actual} instead of exactly one")]
+    FrameDelta { actual: u32 },
 }
 
 /// Build animation sequences for entity types in the ECS world.
@@ -417,10 +381,8 @@ pub(crate) fn build_animation_sequences(
     sequences
 }
 
-pub(crate) fn update_elapsed_ms(state: &mut AppState, now: Instant) -> u64 {
-    let elapsed_ms: u64 = now.duration_since(state.last_update_time).as_millis() as u64;
-    state.last_update_time = now;
-    elapsed_ms
+pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
+    crate::app_frame_pacer::wall_clock_ms(state.frame_pacer_epoch, now)
 }
 
 /// Front-end session mode, as the modal pump reads it to decide whether the
@@ -464,16 +426,21 @@ impl SessionMode {
     }
 }
 
-/// Pure modal-pump decision: should the fixed simulation advance one step while a
-/// modal dialog is open? Mirrors gamemd's pump body — advance only on the network
-/// branch (LAN/WOL), and only when no fixed tick is already in progress (the native
-/// reentrancy guard). Offline campaign/skirmish freeze the world; message, input,
-/// and repaint still run in the surrounding loop. Pure and total, so it is
-/// unit-tested without an `AppState`. The live app-layer consumer is
-/// `service_tick_should_advance_sim`, which reads the running session mode and
-/// gates `advance_fixed_simulation` inside `advance_in_game_runtime`.
-pub fn modal_pump_should_advance_sim(mode: SessionMode, reentrancy_in_progress: bool) -> bool {
-    mode.is_network() && !reentrancy_in_progress
+/// Pure modal-pump decision: should the simulation advance one frame while a
+/// modal dialog is open? Mirrors the pump body: advance only on the network
+/// branch (LAN/WOL), only when neither service-only blocker is set, and only
+/// when no fixed tick is already in progress. Offline campaign/skirmish freeze
+/// the world; message, input, and repaint still run in the surrounding loop.
+/// Pure and total, so it is unit-tested without an `AppState`. The live
+/// app-layer consumer is `service_tick_should_advance_sim`, which reads the
+/// running session mode and gates the one-frame admission inside
+/// `advance_in_game_runtime`.
+pub fn modal_pump_should_advance_sim(
+    mode: SessionMode,
+    service_only_blocked: bool,
+    reentrancy_in_progress: bool,
+) -> bool {
+    mode.is_network() && !service_only_blocked && !reentrancy_in_progress
 }
 
 /// Live front-end session mode for the running client. This build is offline
@@ -484,21 +451,24 @@ fn current_session_mode(_state: &AppState) -> SessionMode {
     SessionMode::Skirmish
 }
 
-/// App-layer modal-pump service decision: should the fixed simulation advance
+/// App-layer modal-pump service decision: should the simulation advance
 /// this frame? While the in-game Options modal is open (`state.paused` is the
 /// 0xBBB modal in this port), the verified pump contract decides — offline
 /// campaign/skirmish freeze, network LAN/WOL advance. With no modal open the
 /// world always runs. Re-entrancy is always clear here: the single-threaded
-/// frame loop never re-enters a fixed tick mid-advance.
+/// frame loop never re-enters a simulation frame mid-advance.
 fn service_tick_should_advance_sim(state: &AppState) -> bool {
     if state.paused {
-        modal_pump_should_advance_sim(current_session_mode(state), false)
+        // The current build has no network-session owner, so neither native
+        // service-only blocker can be active here. Networking must supply their
+        // combined state when `current_session_mode` becomes live.
+        modal_pump_should_advance_sim(current_session_mode(state), false, false)
     } else {
         true
     }
 }
 
-pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
+pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) {
     if !crate::match_bootstrap::accepted_tick_is_admitted(
         state.loaded_startup.as_ref(),
         state.rust_l0_receipt.as_ref(),
@@ -507,7 +477,7 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
         return;
     }
 
-    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::WallClock { elapsed_ms });
+    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::WallClock { now_ms });
 }
 
 /// Advance exactly one production simulation step for the hidden tactical
@@ -515,8 +485,8 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
 ///
 /// This is stricter than the ordinary app pump: sandbox admission is not
 /// sufficient, the screen must be `InGame`, and the live simulation clock must
-/// move by exactly one fixed step. The wall-clock accumulator is discarded
-/// before and after the step so a prior render remainder cannot leak in.
+/// move by exactly one gameplay frame. The local pacer is re-anchored after
+/// the step so a prior wall-clock interval cannot leak into normal admission.
 pub(crate) fn advance_in_game_runtime_exact_step(
     state: &mut AppState,
 ) -> Result<ExactStepReceipt, ExactStepError> {
@@ -532,45 +502,26 @@ pub(crate) fn advance_in_game_runtime_exact_step(
     if state.screen != GameScreen::InGame {
         return Err(ExactStepError::ScreenNotInGame);
     }
-    let (tick_before, total_sim_ms_before, binary_frame_before) = state
+    let (tick_before, binary_frame_before) = state
         .simulation
         .as_ref()
-        .map(|sim| {
-            (
-                sim.session.tick,
-                sim.session.total_sim_ms,
-                sim.session.binary_frame,
-            )
-        })
+        .map(|sim| (sim.session.tick, sim.session.binary_frame))
         .ok_or(ExactStepError::SimulationMissing)?;
 
-    let accumulator_before_clear_ms = state.sim_accumulator_ms;
-    state.sim_accumulator_ms = 0;
     advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep);
-    // Receipt failure must not leave a remainder that can alter a retry or
-    // ordinary scheduler resume.
-    state.sim_accumulator_ms = 0;
+    let now_ms = monotonic_frame_pacer_ms(state, Instant::now());
+    state.frame_pacer.reanchor(now_ms);
 
-    let (tick_after, total_sim_ms_after, binary_frame_after) = state
+    let (tick_after, binary_frame_after) = state
         .simulation
         .as_ref()
-        .map(|sim| {
-            (
-                sim.session.tick,
-                sim.session.total_sim_ms,
-                sim.session.binary_frame,
-            )
-        })
+        .map(|sim| (sim.session.tick, sim.session.binary_frame))
         .ok_or(ExactStepError::SimulationMissing)?;
     let receipt = ExactStepReceipt {
         tick_before,
         tick_after,
-        total_sim_ms_before,
-        total_sim_ms_after,
         binary_frame_before,
         binary_frame_after,
-        accumulator_before_clear_ms,
-        accumulator_after_ms: state.sim_accumulator_ms,
     };
     validate_exact_step_receipt(receipt)?;
     Ok(receipt)
@@ -581,79 +532,62 @@ fn validate_exact_step_receipt(receipt: ExactStepReceipt) -> Result<(), ExactSte
     if tick_delta != 1 {
         return Err(ExactStepError::TickDelta { actual: tick_delta });
     }
-    let Some(expected_total_sim_ms) = receipt
-        .total_sim_ms_before
-        .checked_add(u64::from(SIM_TICK_MS))
-    else {
-        return Err(ExactStepError::TotalSimTimeDelta {
-            before: receipt.total_sim_ms_before,
-            after: receipt.total_sim_ms_after,
-            expected_delta: u64::from(SIM_TICK_MS),
-        });
-    };
-    if receipt.total_sim_ms_after != expected_total_sim_ms {
-        return Err(ExactStepError::TotalSimTimeDelta {
-            before: receipt.total_sim_ms_before,
-            after: receipt.total_sim_ms_after,
-            expected_delta: u64::from(SIM_TICK_MS),
-        });
-    }
-    let expected_binary_frame = ((receipt.total_sim_ms_after * 15) / 1000) as u32;
-    if receipt.binary_frame_after != expected_binary_frame {
-        return Err(ExactStepError::BinaryFrameMismatch {
-            expected: expected_binary_frame,
-            actual: receipt.binary_frame_after,
-        });
-    }
-    if receipt.accumulator_after_ms != 0 {
-        return Err(ExactStepError::AccumulatorNotCleared {
-            remaining_ms: receipt.accumulator_after_ms,
+    let frame_delta = receipt
+        .binary_frame_after
+        .wrapping_sub(receipt.binary_frame_before);
+    if frame_delta != 1 {
+        return Err(ExactStepError::FrameDelta {
+            actual: frame_delta,
         });
     }
     Ok(())
 }
 
 fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) {
-    // Frame-step: when paused, advance exactly one tick on request.
-    let (run_sim, sim_elapsed) = match mode {
-        RuntimeAdvanceMode::WallClock { elapsed_ms } => {
+    let mut admitted_by_pacer = false;
+    let run_sim = match mode {
+        RuntimeAdvanceMode::WallClock { now_ms } => {
             let frame_stepping = state.debug_frame_step_requested;
-            let run_sim = if frame_stepping {
+            if frame_stepping {
                 state.debug_frame_step_requested = false;
+                state.frame_pacer.reanchor(now_ms);
                 true
             } else {
-                // Modal-pump contract: while the in-game Options modal is open
-                // (`state.paused`), offline freezes and network advances;
-                // otherwise run. Offline-identical to the prior `!state.paused`.
-                service_tick_should_advance_sim(state)
-            };
-            let sim_elapsed = if frame_stepping {
-                u64::from(SIM_TICK_MS)
-            } else {
-                elapsed_ms
-            };
-            (run_sim, sim_elapsed)
+                let paused = !service_tick_should_advance_sim(state);
+                let game_speed = state.simulation.as_ref().map_or_else(
+                    || state.in_game_options.game_speed.min(6) as u8,
+                    |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
+                );
+                let admit = state.frame_pacer.should_admit(now_ms, game_speed, paused);
+                admitted_by_pacer = admit;
+                admit
+            }
         }
-        RuntimeAdvanceMode::ExactOneStep => (true, u64::from(SIM_TICK_MS)),
+        RuntimeAdvanceMode::ExactOneStep => true,
     };
 
     if run_sim {
+        let tick_lane = match mode {
+            RuntimeAdvanceMode::WallClock { .. }
+                if state.paused && current_session_mode(state).is_network() =>
+            {
+                TickLane::NetworkModal
+            }
+            RuntimeAdvanceMode::WallClock { .. } | RuntimeAdvanceMode::ExactOneStep => {
+                TickLane::Ordinary
+            }
+        };
         let garrison_flash_start_tick = state
             .simulation
             .as_ref()
             .map(|sim| sim.session.tick)
             .unwrap_or(0);
-        match mode {
-            RuntimeAdvanceMode::WallClock { .. } => {
-                advance_fixed_simulation(state, sim_elapsed);
-            }
-            RuntimeAdvanceMode::ExactOneStep => {
-                let configured_tps = state.sim_speed_tps;
-                advance_fixed_simulation_mode(
-                    state,
-                    FixedAdvanceMode::ExactOneStep { configured_tps },
-                );
-            }
+        let frame_committed = advance_one_simulation_frame(state, tick_lane);
+        if frame_committed && admitted_by_pacer {
+            let RuntimeAdvanceMode::WallClock { now_ms } = mode else {
+                unreachable!("only wall-clock admission records the frame pacer");
+            };
+            state.frame_pacer.record_admitted_frame(now_ms);
         }
         // After the sim advances, surface a win/loss result screen for the
         // local player — the sim computes the per-house outcome flags but
@@ -677,23 +611,14 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
         // Use real wall-clock delta (capped to prevent jumps after pauses/debugger).
         // Previously this passed SIM_TICK_MS (66ms) per render frame, causing building
         // idle animations to play ~3-4× too fast (60fps × 66ms = 3960ms/sec).
-        crate::app_building_anim::tick_crane_animations(
-            state,
-            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
-        );
+        crate::app_building_anim::tick_crane_animations(state, 16);
         crate::app_building_anim::tick_garrison_muzzle_flashes(
             state,
             garrison_flash_elapsed_ticks.saturating_mul(u64::from(SIM_TICK_MS)) as u32,
         );
         finish_fire_effect_batch(&mut state.pending_fire_effects);
-        crate::app_fire_effects::tick_weapon_muzzle_flashes(
-            state,
-            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
-        );
-        crate::app_chute_anim::tick_parachute_anims(
-            state,
-            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
-        );
+        crate::app_fire_effects::tick_weapon_muzzle_flashes(state, 16);
+        crate::app_chute_anim::tick_parachute_anims(state);
     }
 
     // Refresh the radiation green glow after the sim steps (stepwise; a no-op
@@ -723,33 +648,14 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
 }
 
 /// Tick simulation: advance movement and animation systems.
-pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
-    let configured_tps = state.sim_speed_tps;
-    advance_fixed_simulation_mode(
-        state,
-        FixedAdvanceMode::WallClock {
-            elapsed_ms,
-            configured_tps,
-        },
-    );
-}
-
-fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
-    // Wall-clock mode keeps the speed-scaled schedule; exact mode supplies one
-    // fixed step independently of speed and any accumulated remainder.
-    // Per-tick dt stays constant — speed change comes from more/fewer ticks per wall-clock second.
-    let schedule = fixed_step_schedule_for_mode(state.sim_accumulator_ms, mode);
-    // The chosen schedule is the only input to the common production body.
-    state.sim_accumulator_ms = schedule.remaining_accumulator_ms;
-
+fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bool {
     let mut refresh_after_tick = false;
     let mut crane_owners: Vec<String> = Vec::new();
-    // (rx, ry, type_id) for wall buildings placed this frame — injected into state.overlays.
-    let mut placed_walls: Vec<(u16, u16, String)> = Vec::new();
     let runtime_active = state.simulation.is_some() || !state.trigger_graph.triggers.is_empty();
     if !runtime_active {
-        return;
+        return false;
     }
+    let mut frame_committed = state.simulation.is_none();
 
     if let Some(sim) = &mut state.simulation {
         if sim.replay_log.is_none() {
@@ -767,13 +673,14 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
 
     begin_fire_effect_batch(&mut state.pending_fire_effects);
 
-    for _ in 0..schedule.steps {
+    for _ in 0..1 {
         // Compute local owner before mutable borrow of simulation.
         let local_owner_for_fog = preferred_local_owner_name(state);
 
         // Cache local owner name before mutable sim borrow (avoids borrow conflict).
         let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
+        let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
         if let Some(sim) = &mut state.simulation {
@@ -783,54 +690,47 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
                 sim.ai_players.clear();
             }
             sim.sound_events.clear();
-            let due_commands = sim.take_due_commands();
-            let tick_result = sim.advance_tick(
+            let due_commands = if tick_lane == TickLane::Ordinary {
+                sim.take_due_commands()
+            } else {
+                Vec::new()
+            };
+            let tick_result = sim.advance_tick_in_lane(
                 &due_commands,
                 state.rules.as_ref(),
                 &state.height_map,
                 state.path_grid.as_ref(),
                 state.overlay_registry.as_ref(),
                 SIM_TICK_MS,
+                tick_lane,
+                Some(&state.animation_sequences),
             );
+            frame_committed = tick_result.frame_committed;
             // Parity capture, if requested. Placed directly after the committed tick so
             // it observes the same state the tick hash covers, and before any app-layer
             // animation work that the original engine accounts for elsewhere.
-            if let Some(sink) = state.parity_digest_sink.as_mut() {
-                let digest = sim.parity_digest();
-                if let Err(error) = sink.write(&digest) {
-                    // A failing diagnostic must never take the game down with it.
-                    log::error!("parity digest write failed, disabling capture: {error}");
-                    state.parity_digest_sink = None;
+            if tick_result.frame_committed {
+                if let Some(sink) = state.parity_digest_sink.as_mut() {
+                    let digest = sim.parity_digest();
+                    if let Err(error) = sink.write(&digest) {
+                        // A failing diagnostic must never take the game down with it.
+                        log::error!("parity digest write failed, disabling capture: {error}");
+                        state.parity_digest_sink = None;
+                    }
                 }
             }
-            census_tick = Some(tick_result.tick);
+            census_tick = tick_result.frame_committed.then_some(tick_result.tick);
+            let game_options = sim.session.game_options.clone();
             let (ents, interner) = sim.entities_mut_and_interner();
-            let death_finished =
-                animation::tick_animations(ents, &state.animation_sequences, SIM_TICK_MS, interner);
-            // Despawn entities whose death animation has completed.
-            for dead_id in &death_finished {
-                // Transitional app-owned completion request. Central UnInit owns
-                // occupancy, radio, logic, alive, and pending-delete ordering.
-                sim.uninit(*dead_id);
-            }
-            if !death_finished.is_empty() {
-                refresh_after_tick = true;
-            }
-            // Preserve the release-visible lifecycle order even while the
-            // display/Anim/Voc/redraw consumers remain separately blocked.
-            for output in sim.lifecycle_outputs.drain(..) {
-                match output {
-                    LifecycleOutput::RevealDisplay { .. }
-                    | LifecycleOutput::DisplayRemove { .. }
-                    | LifecycleOutput::DetachAttachedAnims { .. }
-                    | LifecycleOutput::StopVoc { .. }
-                    | LifecycleOutput::DirtyTacticalRect { .. }
-                    | LifecycleOutput::ClearDrawnState { .. }
-                    | LifecycleOutput::ClearRedraw { .. } => {}
-                }
-            }
-            animation::tick_voxel_animations(sim.entities_mut(), SIM_TICK_MS);
-            animation::tick_harvest_overlays(sim.entities_mut(), SIM_TICK_MS);
+            animation::tick_non_dying_animations(
+                ents,
+                &state.animation_sequences,
+                &game_options,
+                interner,
+            );
+            drained_lifecycle_outputs.extend(sim.lifecycle_outputs.drain(..));
+            animation::tick_voxel_animations(sim.entities_mut());
+            animation::tick_harvest_overlays(sim.entities_mut());
             // Pre-merge fog visibility for local owner so render queries are O(1).
             if let Some(owner) = &local_owner_for_fog {
                 if sim.session.tick == 1 {
@@ -1262,16 +1162,12 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
                 );
                 for cmd in &due_commands {
                     if let crate::sim::command::Command::PlaceReadyBuilding {
-                        owner,
-                        type_id,
-                        rx,
-                        ry,
+                        owner, type_id, ..
                     } = &cmd.payload
                     {
                         // Trigger one-shot crane animation on ConYard for each owner that placed a building.
                         let owner_str = sim.interner.resolve(*owner).to_string();
                         let type_str = sim.interner.resolve(*type_id).to_string();
-                        crane_owners.push(owner_str);
                         // Walls are overlays — inject OverlayEntry so the overlay renderer
                         // draws them with auto-tiled connectivity frames.
                         let is_wall = state
@@ -1280,14 +1176,43 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
                             .and_then(|r| r.object(&type_str))
                             .map(|o| o.wall)
                             .unwrap_or(false);
-                        if is_wall {
-                            placed_walls.push((*rx, *ry, type_str));
+                        if !is_wall {
+                            crane_owners.push(owner_str);
                         }
                     }
                 }
             }
-            if let Some(log) = &mut sim.replay_log {
-                log.record_tick(tick_result.tick, due_commands, tick_result.state_hash);
+            if tick_result.frame_committed {
+                if let Some(log) = &mut sim.replay_log {
+                    log.record_tick(tick_result.tick, due_commands, tick_result.state_hash);
+                }
+            }
+        }
+        // Rendering is rebuilt from lifecycle facts every frame. Replay the
+        // app-owned transactions in native emission order for state that has a
+        // direct attachment or retained audio handle.
+        for output in drained_lifecycle_outputs {
+            match output {
+                LifecycleOutput::DetachAttachedAnims { stable_id } => {
+                    state
+                        .garrison_muzzle_flashes
+                        .retain(|flash| flash.building_id != stable_id);
+                    state
+                        .parachute_anims
+                        .retain(|anim| anim.target_id != stable_id);
+                }
+                LifecycleOutput::StopVoc { stable_id } => {
+                    if let Some(sfx) = state.sfx_player.as_mut() {
+                        sfx.stop_animation_sound(stable_id);
+                    }
+                }
+                LifecycleOutput::DisplayRemove { .. } => {
+                    refresh_after_tick = true;
+                }
+                LifecycleOutput::RevealDisplay { .. }
+                | LifecycleOutput::DirtyTacticalRect { .. }
+                | LifecycleOutput::ClearDrawnState { .. }
+                | LifecycleOutput::ClearRedraw { .. } => {}
             }
         }
         crate::app_fire_effects::spawn_non_garrison_fire_effects(state, &drained_fire_events);
@@ -1321,11 +1246,11 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
         // Uses the existing `rebuild_dynamic_path_grid` → `rebuild_zone_grid`
         // path; no new zone-rebuild plumbing.
         //
-        // Also collects info for any cells that gained an overlay this tick
-        // (e.g. TIBTRE-spawned ore, ore_growth-spread ore). The renderer iterates
-        // `state.overlays` (the static map list), so without this sync new cells
-        // are invisible even though their sim state and OverlayGrid entries are
-        // correct. We dedupe against `state.overlays` after the sim borrow drops.
+        // Also collect the authoritative live identity for occupied cells that
+        // changed this tick (e.g. TIBTRE-spawned ore or ore-growth spread). The
+        // renderer iterates `state.overlays` (the static map list), so the render
+        // handoff must both insert new coordinates and replace a stale identity
+        // when a cleared cell is later populated with a different variant.
         let new_render_overlays: Vec<crate::map::overlay::OverlayEntry> = {
             let mut collected: Vec<crate::map::overlay::OverlayEntry> = Vec::new();
             if let (Some(sim), Some(registry)) =
@@ -1334,20 +1259,16 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
                 if let (Some(overlay_grid), Some(terrain)) =
                     (sim.overlay_grid.as_mut(), sim.resolved_terrain.as_mut())
                 {
-                    let dirty = overlay_grid.take_dirty_cells();
+                    let (dirty, mut passability_changed) =
+                        overlay_grid.take_dirty_cells_with_passability_signal();
                     if !dirty.is_empty() {
-                        let overlay_ref: &OverlayGrid = overlay_grid;
-                        let mut passability_changed = false;
                         for &(rx, ry) in &dirty {
-                            if recalc_overlay_passability(overlay_ref, terrain, registry, rx, ry) {
+                            if recalc_overlay_passability(overlay_grid, terrain, registry, rx, ry) {
                                 passability_changed = true;
                             }
                         }
-                        if passability_changed {
-                            refresh_after_tick = true;
-                        }
                         for &(rx, ry) in &dirty {
-                            let cell = overlay_ref.cell(rx, ry);
+                            let cell = overlay_grid.cell(rx, ry);
                             if let Some(overlay_id) = cell.overlay_id {
                                 collected.push(crate::map::overlay::OverlayEntry {
                                     rx,
@@ -1357,6 +1278,9 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
                                 });
                             }
                         }
+                    }
+                    if passability_changed {
+                        refresh_after_tick = true;
                     }
                 }
             }
@@ -1380,14 +1304,11 @@ fn advance_fixed_simulation_mode(state: &mut AppState, mode: FixedAdvanceMode) {
     }
 
     // Inject overlay entries for walls placed this frame, then recompute connectivity.
-    if !placed_walls.is_empty() {
-        inject_placed_wall_overlays(state, &placed_walls);
-    }
-
     if refresh_after_tick {
         rebuild_dynamic_path_grid(state);
         refresh_entity_atlases(state);
     }
+    frame_committed
 }
 
 /// Per-frame radiation-glow refresh. Rebuilds the lighting grid only when the
@@ -1425,54 +1346,6 @@ fn refresh_radiation_glow(state: &mut AppState) {
     };
     state.last_radiation_light_epoch = epoch;
     state.lighting_grid = new_grid;
-}
-
-fn fixed_step_schedule_for_mode(accumulator_ms: u64, mode: FixedAdvanceMode) -> FixedStepSchedule {
-    match mode {
-        FixedAdvanceMode::WallClock {
-            elapsed_ms,
-            configured_tps,
-        } => {
-            // Per-tick dt stays constant; speed changes the number of ticks
-            // scheduled per wall-clock second.
-            let scaled_elapsed = elapsed_ms * u64::from(configured_tps) / u64::from(SIM_TICK_HZ);
-            // Allow more steps per frame at high speeds so the sim can keep up.
-            let max_steps = ((u64::from(configured_tps) * u64::from(MAX_SIM_STEPS_PER_FRAME)
-                / u64::from(SIM_TICK_HZ)) as u32)
-                .max(MAX_SIM_STEPS_PER_FRAME)
-                .min(64);
-            schedule_fixed_steps(accumulator_ms, scaled_elapsed, max_steps)
-        }
-        FixedAdvanceMode::ExactOneStep {
-            configured_tps: _configured_tps,
-        } => FixedStepSchedule {
-            steps: 1,
-            remaining_accumulator_ms: 0,
-        },
-    }
-}
-
-fn schedule_fixed_steps(accumulator_ms: u64, elapsed_ms: u64, max_steps: u32) -> FixedStepSchedule {
-    // Scale the delta cap proportionally to the max steps allowed, so high-speed
-    // modes don't get clamped to the base 250ms cap.
-    let scaled_delta_cap = MAX_UPDATE_DELTA_MS * max_steps as u64 / MAX_SIM_STEPS_PER_FRAME as u64;
-    let mut remaining_accumulator_ms =
-        accumulator_ms.saturating_add(elapsed_ms.min(scaled_delta_cap));
-    let mut steps = 0;
-
-    while remaining_accumulator_ms >= SIM_TICK_MS as u64 && steps < max_steps {
-        remaining_accumulator_ms -= SIM_TICK_MS as u64;
-        steps += 1;
-    }
-
-    if steps == max_steps && remaining_accumulator_ms >= SIM_TICK_MS as u64 {
-        remaining_accumulator_ms = SIM_TICK_MS as u64;
-    }
-
-    FixedStepSchedule {
-        steps,
-        remaining_accumulator_ms,
-    }
 }
 
 fn begin_fire_effect_batch(pending: &mut Vec<SimFireEvent>) {
@@ -1531,6 +1404,16 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
     state.camera_y = sy - sh / (2.0 * z);
 }
 
+/// Rebuild both terrain-derived navigation caches from one resolved-terrain
+/// snapshot. Runtime terrain removal mutates that snapshot, so refreshing only
+/// PathGrid would leave movement's per-SpeedType costs permanently blocked.
+fn rebuild_dynamic_terrain_navigation(sim: &mut crate::sim::world::Simulation) -> Option<PathGrid> {
+    let terrain = sim.resolved_terrain.as_ref()?;
+    let grid = PathGrid::from_resolved_terrain_with_bridges(terrain, sim.bridge_state.as_ref());
+    sim.terrain_costs = build_canonical_terrain_cost_grids(terrain);
+    Some(grid)
+}
+
 pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
     // Build fresh from terrain + current bridge_state every time. Bridge
     // runtime walkability mutates during gameplay (collapse/repair), so a
@@ -1538,15 +1421,12 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
     let Some(rules) = state.rules.as_ref() else {
         return;
     };
-    let Some(ref sim) = state.simulation else {
+    let Some(ref mut sim) = state.simulation else {
         return;
     };
-    let Some(terrain) = sim.resolved_terrain.as_ref() else {
+    let Some(mut grid) = rebuild_dynamic_terrain_navigation(sim) else {
         return;
     };
-
-    let mut grid: PathGrid =
-        PathGrid::from_resolved_terrain_with_bridges(terrain, sim.bridge_state.as_ref());
 
     let mut structures: Vec<(u16, u16, String)> = sim
         .entities()
@@ -1634,7 +1514,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     // The building sprite is anchored to iso_to_screen(rx, ry) — same as the first
     // diamond cell — so the preview and the placed building always align.
     let (rx, ry) = screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
-    state.building_placement_preview = production::placement_preview_for_owner(
+    state.building_placement_preview = production::placement_preview_for_owner_with_overlays(
         sim,
         rules,
         &owner,
@@ -1643,6 +1523,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         ry,
         state.path_grid.as_ref(),
         &state.height_map,
+        state.overlay_registry.as_ref(),
     );
 }
 
@@ -1750,143 +1631,63 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     }
 }
 
-/// Inject newly-spawned ore cells (TIBTRE, ore-spread) into `state.overlays`.
+/// Sync occupied dirty overlay cells (TIBTRE, ore-spread, walls) into
+/// `state.overlays`.
 ///
 /// Background: the overlay renderer iterates `state.overlays`, the static list
 /// loaded from the map's `[OverlayPack]`. Sim-side mutations that create new
 /// overlay cells (TIBTRE ore spawn, ore_growth spread) update `OverlayGrid`
 /// but never touched `state.overlays`, so the new cells were invisible even
-/// though their sim state and pathfinding were correct. This sync closes that
-/// gap by injecting an `OverlayEntry` for each newly-overlaid cell, deduping
-/// against existing entries.
+/// though their sim state and pathfinding were correct. A coordinate can also
+/// be cleared and later receive a different overlay variant; the renderer only
+/// accepts live data when the cached identity matches. This sync therefore
+/// inserts absent coordinates and updates identity plus frame in place for
+/// existing coordinates.
 ///
-/// Cells whose overlay data merely changed (e.g. ore density grew on an
-/// already-overlaid cell, wall took damage) are not handled here — the
-/// renderer reads live frames from `OverlayGrid` for entries already in
-/// `state.overlays`.
+/// Cleared cached entries are render-inert because the renderer treats live
+/// `OverlayGrid` state as authoritative; a later occupied dirty update replaces
+/// their stale identity. Unrelated entries retain their order and fields.
 fn sync_new_overlay_cells_to_render_list(
     state: &mut AppState,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
 ) {
-    let new_entries = filter_new_overlay_entries(&state.overlays, candidates);
-    if !new_entries.is_empty() {
+    let synced = upsert_overlay_entries(&mut state.overlays, candidates);
+    if synced != 0 {
         log::trace!(
-            "Synced {} newly-overlaid cells from OverlayGrid to state.overlays",
-            new_entries.len()
+            "Synced {} occupied dirty cells from OverlayGrid to state.overlays",
+            synced
         );
-        state.overlays.extend(new_entries);
     }
 }
 
-/// Pure helper: filter out candidate `OverlayEntry`s whose `(rx, ry)` is
-/// already represented in `existing`, and dedup within the candidate list.
-///
-/// Pulled out for unit testing — the wrapper above does the `state.overlays`
-/// extend and logging.
-fn filter_new_overlay_entries(
-    existing: &[crate::map::overlay::OverlayEntry],
+/// Upsert authoritative occupied cells by coordinate. Returns the number of
+/// entries inserted or changed.
+fn upsert_overlay_entries(
+    existing: &mut Vec<crate::map::overlay::OverlayEntry>,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
-) -> Vec<crate::map::overlay::OverlayEntry> {
-    let existing_set: std::collections::HashSet<(u16, u16)> =
-        existing.iter().map(|e| (e.rx, e.ry)).collect();
-    let mut seen: std::collections::HashSet<(u16, u16)> = std::collections::HashSet::new();
-    let mut out: Vec<crate::map::overlay::OverlayEntry> = Vec::new();
-    for entry in candidates {
-        let key = (entry.rx, entry.ry);
-        if existing_set.contains(&key) || !seen.insert(key) {
-            continue;
-        }
-        out.push(entry);
-    }
-    out
-}
-
-/// Inject newly placed wall buildings as OverlayEntry items into state.overlays,
-/// then recompute wall connectivity for all walls so frames auto-tile correctly.
-///
-/// In RA2, walls (GAWALL, NAWALL) are both [BuildingTypes] and [OverlayTypes].
-/// The sim spawns them as GameEntity for health/ownership/combat, but the visual
-/// is rendered via the overlay atlas (connectivity bitmask frames 0–15).
-/// Without this step, placed walls appear in state.overlays as isolated pillars
-/// and never connect to adjacent walls from the map or prior placements.
-fn inject_placed_wall_overlays(state: &mut AppState, placed: &[(u16, u16, String)]) {
-    let Some(registry) = &state.overlay_registry else {
-        return;
-    };
-    // Collect new entries — need registry borrow released before mutable borrow of overlays.
-    let new_entries: Vec<crate::map::overlay::OverlayEntry> = placed
+) -> usize {
+    let mut by_coordinate: std::collections::HashMap<(u16, u16), usize> = existing
         .iter()
-        .filter_map(|(rx, ry, type_id)| {
-            let overlay_id = registry.id_for_name(type_id)?;
-            // Don't add duplicate — wall may have been on map already.
-            let already_present = state
-                .overlays
-                .iter()
-                .any(|e| e.rx == *rx && e.ry == *ry && e.overlay_id == overlay_id);
-            if already_present {
-                return None;
-            }
-            Some(crate::map::overlay::OverlayEntry {
-                rx: *rx,
-                ry: *ry,
-                overlay_id,
-                frame: 0,
-            })
-        })
+        .enumerate()
+        .map(|(index, entry)| ((entry.rx, entry.ry), index))
         .collect();
-
-    if new_entries.is_empty() {
-        return;
-    }
-
-    log::info!(
-        "Injecting {} placed wall overlay entries into state.overlays",
-        new_entries.len()
-    );
-    state.overlays.extend(new_entries);
-
-    // Recompute connectivity bitmasks for ALL walls (existing + newly placed).
-    if let Some(registry) = &state.overlay_registry {
-        let updated = crate::map::overlay::compute_wall_connectivity(&mut state.overlays, registry);
-        if updated > 0 {
-            log::info!(
-                "Wall connectivity recomputed: {} entries updated after placement",
-                updated
-            );
-        }
-    }
-
-    // Write placed walls to OverlayGrid and sync connectivity frames.
-    if let Some(registry) = &state.overlay_registry {
-        if let Some(sim) = &mut state.simulation {
-            if let Some(grid) = &mut sim.overlay_grid {
-                // Place new wall overlays.
-                for (rx, ry, type_id) in placed {
-                    if let Some(overlay_id) = registry.id_for_name(type_id) {
-                        grid.place_overlay(*rx, *ry, overlay_id, 0);
-                    }
-                }
-                // Sync connectivity frames from state.overlays to OverlayGrid.
-                for entry in &state.overlays {
-                    if registry.flags(entry.overlay_id).is_some_and(|f| f.wall) {
-                        grid.set_overlay_data(entry.rx, entry.ry, entry.frame);
-                    }
-                }
+    let mut synced = 0;
+    for candidate in candidates {
+        let coordinate = (candidate.rx, candidate.ry);
+        if let Some(&index) = by_coordinate.get(&coordinate) {
+            let entry = &mut existing[index];
+            if entry.overlay_id != candidate.overlay_id || entry.frame != candidate.frame {
+                entry.overlay_id = candidate.overlay_id;
+                entry.frame = candidate.frame;
+                synced += 1;
             }
+        } else {
+            by_coordinate.insert(coordinate, existing.len());
+            existing.push(candidate);
+            synced += 1;
         }
     }
-
-    // Also register the overlay name in overlay_names so the renderer can look it up.
-    if let Some(registry) = &state.overlay_registry {
-        for (_, _, type_id) in placed {
-            if let Some(overlay_id) = registry.id_for_name(type_id) {
-                state
-                    .overlay_names
-                    .entry(overlay_id)
-                    .or_insert_with(|| type_id.clone());
-            }
-        }
-    }
+    synced
 }
 
 fn load_unit_palette(asset_manager: &AssetManager, theater_ext: &str) -> Option<Palette> {
@@ -2017,17 +1818,23 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExactStepError, ExactStepReceipt, FixedAdvanceMode, FixedStepSchedule,
-        MAX_SIM_STEPS_PER_FRAME, append_fire_effect_batch, begin_fire_effect_batch,
-        filter_new_overlay_entries, finish_fire_effect_batch, fixed_step_schedule_for_mode,
-        schedule_fixed_steps, validate_exact_step_receipt, world_point_to_cell,
+        ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
+        finish_fire_effect_batch, rebuild_dynamic_terrain_navigation, upsert_overlay_entries,
+        validate_exact_step_receipt, world_point_to_cell,
     };
-    use crate::app_types::{SIM_TICK_MS, tps_for_game_speed};
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+    use crate::rules::locomotor_type::SpeedType;
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
     use crate::sim::combat::TargetKind;
     use crate::sim::combat::combat_weapon::WeaponSlot;
-    use crate::sim::intern::{InternedId, test_intern};
+    use crate::sim::intern::{InternedId, StringInterner, test_intern};
+    use crate::sim::overlay_grid::OverlayGrid;
+    use crate::sim::terrain_object::{
+        TerrainObjectLifecycle, TerrainObjectState, mark_terrain_occupation,
+        unmark_terrain_occupation,
+    };
     use crate::sim::world::{FireOriginSnapshot, SimFireEvent};
     use crate::util::fixed_math::SimFixed;
     use std::collections::BTreeMap;
@@ -2039,6 +1846,116 @@ mod tests {
             overlay_id,
             frame,
         }
+    }
+
+    #[test]
+    fn gsi_04_10_dynamic_navigation_rebuild_refreshes_path_and_track_costs() {
+        let speed_costs = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+        };
+        let terrain = ResolvedTerrainGrid::from_cells(
+            1,
+            1,
+            vec![ResolvedTerrainCell {
+                rx: 0,
+                ry: 0,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
+                level: 0,
+                filled_clear: false,
+                tileset_index: None,
+                land_type: LandType::Clear.as_index(),
+                yr_cell_land_type: LandType::Clear.as_index(),
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs,
+                is_water: false,
+                is_cliff_like: false,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                allows_tiberium: false,
+                is_cliff_redraw: false,
+                variant: 0,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: false,
+                terrain_object_blocks: false,
+                terrain_object_occupation: None,
+                overlay_blocks: false,
+                overlay_zone_type: None,
+                outside_playfield: false,
+                zone_type: zone_class::GROUND,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                base_land_type: LandType::Clear.as_index(),
+                base_yr_cell_land_type: LandType::Clear.as_index(),
+                base_terrain_class: TerrainClass::Clear,
+                base_speed_costs: speed_costs,
+                build_blocked: false,
+                has_bridge_deck: false,
+                bridge_walkable: false,
+                bridge_transition: false,
+                bridge_deck_level: 0,
+                bridge_layer: None,
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
+                radar_left: [0; 3],
+                radar_right: [0; 3],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
+            }],
+        );
+        let mut sim = crate::sim::world::Simulation::new();
+        sim.resolved_terrain = Some(terrain);
+        let mut interner = StringInterner::default();
+        let tree = TerrainObjectState {
+            stable_id: 1,
+            type_ref: interner.intern("TREE01"),
+            rx: 0,
+            ry: 0,
+            health: 10,
+            max_health: 10,
+            occupation_bits: 7,
+            lifecycle: TerrainObjectLifecycle::Live,
+        };
+        {
+            let (production, resolved) = (&mut sim.production, &mut sim.resolved_terrain);
+            mark_terrain_occupation(production, &tree, resolved.as_mut());
+        }
+
+        let blocked_path = rebuild_dynamic_terrain_navigation(&mut sim).expect("terrain");
+        assert!(!blocked_path.is_walkable(0, 0));
+        assert_eq!(
+            sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
+            0,
+            "terrain object must block both navigation caches before removal"
+        );
+
+        {
+            let (production, resolved) = (&mut sim.production, &mut sim.resolved_terrain);
+            unmark_terrain_occupation(production, &tree, resolved.as_mut());
+        }
+        let rebuilt_path = rebuild_dynamic_terrain_navigation(&mut sim).expect("terrain");
+
+        assert!(rebuilt_path.is_walkable(0, 0));
+        assert_eq!(
+            sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
+            100,
+            "terrain cost authority must be rebuilt from the cleared resolved cell"
+        );
     }
 
     fn fire_event(attacker_id: u64, occupant_anim: Option<InternedId>) -> SimFireEvent {
@@ -2092,282 +2009,108 @@ mod tests {
     }
 
     #[test]
-    fn filter_skips_entries_already_in_existing() {
-        let existing = vec![entry(5, 5, 2, 0)];
+    fn upsert_updates_existing_and_inserts_absent_coordinates() {
+        let mut existing = vec![entry(5, 5, 2, 0)];
         let candidates = vec![entry(5, 5, 2, 3), entry(6, 6, 2, 0)];
-        let new_entries = filter_new_overlay_entries(&existing, candidates);
-        assert_eq!(new_entries.len(), 1);
-        assert_eq!((new_entries[0].rx, new_entries[0].ry), (6, 6));
+        assert_eq!(upsert_overlay_entries(&mut existing, candidates), 2);
+        assert_eq!(existing.len(), 2);
+        assert_eq!(existing[0].frame, 3);
+        assert_eq!((existing[1].rx, existing[1].ry), (6, 6));
     }
 
     #[test]
-    fn filter_dedups_within_candidate_list() {
-        let existing: Vec<OverlayEntry> = Vec::new();
+    fn upsert_reuses_coordinate_within_candidate_list() {
+        let mut existing: Vec<OverlayEntry> = Vec::new();
         let candidates = vec![entry(7, 7, 2, 0), entry(7, 7, 2, 5), entry(8, 8, 2, 0)];
-        let new_entries = filter_new_overlay_entries(&existing, candidates);
-        assert_eq!(new_entries.len(), 2);
-        // Order preserved; first occurrence kept.
-        assert_eq!((new_entries[0].rx, new_entries[0].ry), (7, 7));
-        assert_eq!(new_entries[0].frame, 0);
-        assert_eq!((new_entries[1].rx, new_entries[1].ry), (8, 8));
+        assert_eq!(upsert_overlay_entries(&mut existing, candidates), 3);
+        assert_eq!(existing.len(), 2);
+        assert_eq!((existing[0].rx, existing[0].ry), (7, 7));
+        assert_eq!(existing[0].frame, 5);
+        assert_eq!((existing[1].rx, existing[1].ry), (8, 8));
     }
 
     #[test]
-    fn filter_empty_inputs() {
-        let existing: Vec<OverlayEntry> = Vec::new();
+    fn upsert_empty_inputs() {
+        let mut existing: Vec<OverlayEntry> = Vec::new();
         let candidates: Vec<OverlayEntry> = Vec::new();
-        assert!(filter_new_overlay_entries(&existing, candidates).is_empty());
+        assert_eq!(upsert_overlay_entries(&mut existing, candidates), 0);
+        assert!(existing.is_empty());
     }
 
     #[test]
-    fn filter_all_candidates_already_in_existing() {
-        let existing = vec![entry(1, 1, 2, 0), entry(2, 2, 3, 5)];
-        let candidates = vec![entry(1, 1, 2, 7), entry(2, 2, 3, 0)];
-        assert!(filter_new_overlay_entries(&existing, candidates).is_empty());
+    fn upsert_identical_existing_entries_is_a_noop() {
+        let mut existing = vec![entry(1, 1, 2, 0), entry(2, 2, 3, 5)];
+        let candidates = existing.clone();
+        assert_eq!(upsert_overlay_entries(&mut existing, candidates), 0);
     }
 
     #[test]
-    fn fixed_step_schedule_is_invariant_across_frame_profiles() {
-        let profile_a = [16_u64, 16, 16, 16];
-        let profile_b = [32_u64, 32];
+    fn gsi_04_09_render_handoff_replaces_regerminated_overlay_variant() {
+        let old_variant = entry(4, 4, 2, 7);
+        let untouched = entry(5, 4, 99, 3);
+        let mut render_entries = vec![old_variant.clone(), untouched.clone()];
+        let mut live = OverlayGrid::from_overlay_entries(&[old_variant], 8, 8);
 
-        let mut state_a = FixedStepSchedule {
-            steps: 0,
-            remaining_accumulator_ms: 0,
+        live.clear_overlay(4, 4);
+        let cleared = live.take_dirty_cells();
+        assert_eq!(cleared, vec![(4, 4)]);
+        assert_eq!(live.cell(4, 4).overlay_id, None);
+
+        live.place_overlay(4, 4, 3, 1);
+        let repopulated = live.take_dirty_cells();
+        let authoritative = repopulated
+            .into_iter()
+            .filter_map(|(rx, ry)| {
+                let cell = live.cell(rx, ry);
+                cell.overlay_id.map(|overlay_id| OverlayEntry {
+                    rx,
+                    ry,
+                    overlay_id,
+                    frame: cell.overlay_data,
+                })
+            })
+            .collect();
+
+        assert_eq!(upsert_overlay_entries(&mut render_entries, authoritative), 1);
+        assert_eq!(render_entries.len(), 2);
+        assert_eq!((render_entries[0].rx, render_entries[0].ry), (4, 4));
+        assert_eq!(render_entries[0].overlay_id, 3);
+        assert_eq!(render_entries[0].frame, 1);
+        assert_eq!(render_entries[1].overlay_id, untouched.overlay_id);
+        assert_eq!(render_entries[1].frame, untouched.frame);
+    }
+
+    #[test]
+    fn exact_receipt_accepts_one_wrapping_gameplay_frame() {
+        let receipt = ExactStepReceipt {
+            tick_before: 9,
+            tick_after: 10,
+            binary_frame_before: u32::MAX,
+            binary_frame_after: 0,
         };
-        let mut total_steps_a = 0;
-        for frame_ms in profile_a {
-            state_a = schedule_fixed_steps(
-                state_a.remaining_accumulator_ms,
-                frame_ms,
-                MAX_SIM_STEPS_PER_FRAME,
-            );
-            total_steps_a += state_a.steps;
-        }
-
-        let mut state_b = FixedStepSchedule {
-            steps: 0,
-            remaining_accumulator_ms: 0,
-        };
-        let mut total_steps_b = 0;
-        for frame_ms in profile_b {
-            state_b = schedule_fixed_steps(
-                state_b.remaining_accumulator_ms,
-                frame_ms,
-                MAX_SIM_STEPS_PER_FRAME,
-            );
-            total_steps_b += state_b.steps;
-        }
-
-        assert_eq!(total_steps_a, total_steps_b);
-        assert_eq!(
-            state_a.remaining_accumulator_ms,
-            state_b.remaining_accumulator_ms
-        );
+        assert_eq!(validate_exact_step_receipt(receipt), Ok(()));
     }
 
     #[test]
-    fn fixed_step_schedule_caps_large_catch_up_bursts() {
-        // MAX_UPDATE_DELTA_MS=250 clamps the elapsed time. At SIM_TICK_MS per tick,
-        // 250ms / SIM_TICK_MS gives the number of steps (capped to MAX_SIM_STEPS_PER_FRAME).
-        // If max_steps is hit and remaining >= SIM_TICK_MS, remaining is clamped to
-        // SIM_TICK_MS to prevent accumulator runaway.
-        let state = schedule_fixed_steps(0, 1_000, MAX_SIM_STEPS_PER_FRAME);
-        let expected_steps = (250 / SIM_TICK_MS).min(MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(state.steps, expected_steps);
-        let raw_remaining = 250 - expected_steps as u64 * SIM_TICK_MS as u64;
-        let expected_remaining =
-            if expected_steps == MAX_SIM_STEPS_PER_FRAME && raw_remaining >= SIM_TICK_MS as u64 {
-                SIM_TICK_MS as u64
-            } else {
-                raw_remaining
-            };
-        assert_eq!(state.remaining_accumulator_ms, expected_remaining);
-    }
-
-    #[test]
-    fn fixed_step_schedule_preserves_partial_tick_progress() {
-        // Elapsed less than one tick → accumulates without stepping.
-        let partial = (SIM_TICK_MS as u64) - 1; // 1ms short of a full tick
-        let state = schedule_fixed_steps(0, partial, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(state.steps, 0);
-        assert_eq!(state.remaining_accumulator_ms, partial);
-
-        // Adding 1ms more crosses the threshold → 1 step.
-        let next = schedule_fixed_steps(state.remaining_accumulator_ms, 1, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(next.steps, 1);
-        assert_eq!(next.remaining_accumulator_ms, 0);
-    }
-
-    #[test]
-    fn fixed_step_schedule_reset_prevents_pause_burst_on_resume() {
-        let expected_steps = (250 / SIM_TICK_MS).min(MAX_SIM_STEPS_PER_FRAME);
-        let burst = schedule_fixed_steps(0, 1_000, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(burst.steps, expected_steps);
-
-        let resumed = schedule_fixed_steps(0, 0, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(resumed.steps, 0);
-        assert_eq!(resumed.remaining_accumulator_ms, 0);
-    }
-
-    #[test]
-    fn fixed_step_schedule_reset_prevents_stale_transition_delta() {
-        let expected_steps = (250 / SIM_TICK_MS).min(MAX_SIM_STEPS_PER_FRAME);
-        let stale_menu_time = schedule_fixed_steps(0, 500, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(stale_menu_time.steps, expected_steps);
-
-        let first_ingame_update = schedule_fixed_steps(0, 0, MAX_SIM_STEPS_PER_FRAME);
-        assert_eq!(first_ingame_update.steps, 0);
-        assert_eq!(first_ingame_update.remaining_accumulator_ms, 0);
-    }
-
-    #[test]
-    fn exact_schedule_is_one_step_with_no_remainder_for_every_speed_bucket() {
-        for stored_speed in 0..=6 {
-            let configured_tps = tps_for_game_speed(stored_speed);
-            for accumulator_ms in [0, 1, u64::from(SIM_TICK_MS) - 1, 97, 10_000] {
-                let schedule = fixed_step_schedule_for_mode(
-                    accumulator_ms,
-                    FixedAdvanceMode::ExactOneStep { configured_tps },
-                );
-                assert_eq!(
-                    schedule,
-                    FixedStepSchedule {
-                        steps: 1,
-                        remaining_accumulator_ms: 0,
-                    },
-                    "stored_speed={stored_speed} configured_tps={configured_tps} accumulator={accumulator_ms}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn repeated_exact_schedules_drive_the_real_headless_sim_clock() {
-        let height_map = BTreeMap::new();
-        for stored_speed in 0..=6 {
-            let configured_tps = tps_for_game_speed(stored_speed);
-            let mut sim = crate::sim::world::Simulation::new();
-            for accumulator_before_clear_ms in [9, 17, 21] {
-                let tick_before = sim.session.tick;
-                let total_sim_ms_before = sim.session.total_sim_ms;
-                let binary_frame_before = sim.session.binary_frame;
-                let schedule = fixed_step_schedule_for_mode(
-                    accumulator_before_clear_ms,
-                    FixedAdvanceMode::ExactOneStep { configured_tps },
-                );
-                for _ in 0..schedule.steps {
-                    sim.advance_tick(&[], None, &height_map, None, None, SIM_TICK_MS);
-                }
-                let receipt = ExactStepReceipt {
-                    tick_before,
-                    tick_after: sim.session.tick,
-                    total_sim_ms_before,
-                    total_sim_ms_after: sim.session.total_sim_ms,
-                    binary_frame_before,
-                    binary_frame_after: sim.session.binary_frame,
-                    accumulator_before_clear_ms,
-                    accumulator_after_ms: schedule.remaining_accumulator_ms,
-                };
-                assert_eq!(
-                    validate_exact_step_receipt(receipt),
-                    Ok(()),
-                    "stored_speed={stored_speed} configured_tps={configured_tps}"
-                );
-            }
-            assert_eq!(sim.session.tick, 3);
-            assert_eq!(sim.session.total_sim_ms, 3 * u64::from(SIM_TICK_MS));
-            assert_eq!(
-                sim.session.binary_frame,
-                ((sim.session.total_sim_ms * 15) / 1000) as u32
-            );
-        }
-    }
-
-    #[test]
-    fn three_exact_receipts_advance_tick_time_and_binary_frame_formula() {
-        let mut tick = 0;
-        let mut total_sim_ms = 0;
-        let mut binary_frame = 0;
-        for accumulator_before_clear_ms in [9, 17, 21] {
-            let next_total = total_sim_ms + u64::from(SIM_TICK_MS);
-            let next_binary = ((next_total * 15) / 1000) as u32;
-            let receipt = ExactStepReceipt {
-                tick_before: tick,
-                tick_after: tick + 1,
-                total_sim_ms_before: total_sim_ms,
-                total_sim_ms_after: next_total,
-                binary_frame_before: binary_frame,
-                binary_frame_after: next_binary,
-                accumulator_before_clear_ms,
-                accumulator_after_ms: 0,
-            };
-            assert_eq!(validate_exact_step_receipt(receipt), Ok(()));
-            tick = receipt.tick_after;
-            total_sim_ms = receipt.total_sim_ms_after;
-            binary_frame = receipt.binary_frame_after;
-        }
-
-        assert_eq!(tick, 3);
-        assert_eq!(total_sim_ms, 3 * u64::from(SIM_TICK_MS));
-        assert_eq!(binary_frame, ((total_sim_ms * 15) / 1000) as u32);
-    }
-
-    #[test]
-    fn exact_receipt_rejects_zero_or_multiple_steps() {
-        let receipt = |tick_after| ExactStepReceipt {
+    fn exact_receipt_rejects_zero_or_multiple_frame_advances() {
+        let receipt = |tick_after, binary_frame_after| ExactStepReceipt {
             tick_before: 10,
             tick_after,
-            total_sim_ms_before: 220,
-            total_sim_ms_after: 242,
-            binary_frame_before: 3,
-            binary_frame_after: 3,
-            accumulator_before_clear_ms: 12,
-            accumulator_after_ms: 0,
+            binary_frame_before: 20,
+            binary_frame_after,
         };
 
         assert_eq!(
-            validate_exact_step_receipt(receipt(10)),
+            validate_exact_step_receipt(receipt(10, 21)),
             Err(ExactStepError::TickDelta { actual: 0 })
         );
         assert_eq!(
-            validate_exact_step_receipt(receipt(12)),
-            Err(ExactStepError::TickDelta { actual: 2 })
+            validate_exact_step_receipt(receipt(11, 20)),
+            Err(ExactStepError::FrameDelta { actual: 0 })
         );
-    }
-
-    #[test]
-    fn exact_receipt_rejects_time_frame_and_accumulator_drift() {
-        let valid = ExactStepReceipt {
-            tick_before: 10,
-            tick_after: 11,
-            total_sim_ms_before: 220,
-            total_sim_ms_after: 242,
-            binary_frame_before: 3,
-            binary_frame_after: 3,
-            accumulator_before_clear_ms: 19,
-            accumulator_after_ms: 0,
-        };
-
-        let mut bad_time = valid;
-        bad_time.total_sim_ms_after = 243;
-        assert!(matches!(
-            validate_exact_step_receipt(bad_time),
-            Err(ExactStepError::TotalSimTimeDelta { .. })
-        ));
-
-        let mut bad_frame = valid;
-        bad_frame.binary_frame_after = 4;
-        assert!(matches!(
-            validate_exact_step_receipt(bad_frame),
-            Err(ExactStepError::BinaryFrameMismatch { .. })
-        ));
-
-        let mut bad_accumulator = valid;
-        bad_accumulator.accumulator_after_ms = 1;
         assert_eq!(
-            validate_exact_step_receipt(bad_accumulator),
-            Err(ExactStepError::AccumulatorNotCleared { remaining_ms: 1 })
+            validate_exact_step_receipt(receipt(11, 22)),
+            Err(ExactStepError::FrameDelta { actual: 2 })
         );
     }
 
@@ -2455,19 +2198,61 @@ mod modal_pump_tests {
     #[test]
     fn only_network_modes_advance_behind_a_modal() {
         // {3 LAN, 4 WOL} advance; {0 campaign, 5 skirmish} + Other freeze.
-        assert!(modal_pump_should_advance_sim(SessionMode::Lan, false));
-        assert!(modal_pump_should_advance_sim(SessionMode::Wol, false));
-        assert!(!modal_pump_should_advance_sim(SessionMode::Campaign, false));
-        assert!(!modal_pump_should_advance_sim(SessionMode::Skirmish, false));
-        assert!(!modal_pump_should_advance_sim(SessionMode::Other, false));
+        assert!(modal_pump_should_advance_sim(
+            SessionMode::Lan,
+            false,
+            false
+        ));
+        assert!(modal_pump_should_advance_sim(
+            SessionMode::Wol,
+            false,
+            false
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Campaign,
+            false,
+            false
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Skirmish,
+            false,
+            false
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Other,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn reentrancy_guard_blocks_advance_even_on_network() {
         // The native reentrancy guard: a fixed tick already in progress means the
         // pump skips advancing, even on the network branch.
-        assert!(!modal_pump_should_advance_sim(SessionMode::Lan, true));
-        assert!(!modal_pump_should_advance_sim(SessionMode::Wol, true));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Lan,
+            false,
+            true
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Wol,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn service_only_blockers_prevent_network_modal_advance() {
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Lan,
+            true,
+            false
+        ));
+        assert!(!modal_pump_should_advance_sim(
+            SessionMode::Wol,
+            true,
+            false
+        ));
     }
 
     #[test]
@@ -2480,7 +2265,7 @@ mod modal_pump_tests {
         let pumped = |mode: SessionMode| -> u64 {
             let mut tick = 0u64;
             for _ in 0..FRAMES {
-                if modal_pump_should_advance_sim(mode, false) {
+                if modal_pump_should_advance_sim(mode, false, false) {
                     tick += 1; // one fixed step advanced this pumped frame
                 }
             }
@@ -2508,7 +2293,7 @@ mod modal_pump_tests {
             let start = sim.session.tick;
             let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
             for _ in 0..FRAMES {
-                if modal_pump_should_advance_sim(mode, false) {
+                if modal_pump_should_advance_sim(mode, false, false) {
                     // `tick_ms` does not affect the asserted tick delta; a literal
                     // matches the sim-test style and avoids the const dependency.
                     sim.advance_tick(&[], None, &height_map, None, None, 33);

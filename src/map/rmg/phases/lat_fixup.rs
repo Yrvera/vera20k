@@ -14,15 +14,11 @@
 //! variant that is still inside the same base∪LAT range), so the four passes are
 //! order-independent between cells — the in-place walk matches the original.
 //!
-//! ## Slope fixup is intentionally NOT ported here
-//! The original function has a second half that rewrites ramp tiles from the
-//! per-cell slope-type byte (`+0x11C`, values 0..4). The port's `GridCell.slope`
-//! is a different quantity (the 0..18 ramp-variant index), so the slope-type
-//! source must be established by a separate RE pass before that half can be
-//! reproduced faithfully. It consumes no RNG (deferring it cannot desync the
-//! draw stream) and only affects cliff-ramp tile visuals — tracked as an open
-//! item, not silently dropped.
+//! Each cell then runs the slope half from its raw `GridCell.slope` id. RMG has
+//! populated all slope ids before these recalc passes, so one live-grid walk is
+//! sufficient for each scheduled recalc.
 
+use crate::map::lat::{SlopeFixupConfig, slope_fixed_tile};
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::tiles::TileIds;
 
@@ -105,6 +101,30 @@ fn apply_cell(grid: &mut RmgGrid, ids: &TileIds, x: i32, y: i32) {
         ];
         lat_group(grid, x, y, ids.pave, ids.pave_lat, &exemptions);
     }
+
+    slope_fixup(grid, ids, x, y);
+}
+
+fn slope_fixup(grid: &mut RmgGrid, ids: &TileIds, x: i32, y: i32) {
+    let Some(cell) = grid.get(x, y).copied() else {
+        return;
+    };
+    let cardinal_slopes = CARDINAL_DIRS.map(|dir| {
+        let (nx, ny) = RmgGrid::step(x, y, dir);
+        grid.get(nx, ny).map_or(0, |neighbor| neighbor.slope)
+    });
+    let tile = slope_fixed_tile(
+        cell.tile,
+        cell.slope,
+        cardinal_slopes,
+        SlopeFixupConfig {
+            ramp_base: ids.ramp_base,
+            ramp_smooth: ids.ramp_smooth,
+        },
+    );
+    if let Some(cell) = grid.get_mut(x, y) {
+        cell.tile = tile;
+    }
 }
 
 /// Whether `tile` belongs to a group (its base tile or its LAT variant range).
@@ -153,6 +173,7 @@ mod tests {
         TileIds {
             clear: 0,
             ramp_base: 600,
+            ramp_smooth: 620,
             rough: 700,
             sand: 800,
             green: 900,
@@ -186,6 +207,10 @@ mod tests {
 
     fn set(grid: &mut RmgGrid, x: i32, y: i32, tile: i32) {
         grid.get_mut(x, y).unwrap().tile = tile;
+    }
+
+    fn set_slope(grid: &mut RmgGrid, x: i32, y: i32, slope: u8) {
+        grid.get_mut(x, y).unwrap().slope = slope;
     }
 
     /// Set the cell and its 4 cardinal neighbours, run, return the cell's tile.
@@ -313,5 +338,32 @@ mod tests {
         set(&mut grid, 46, 45, 0); // N clear (would set a bit if Sand ran)
         run(&mut grid, &ids);
         assert_eq!(grid.get(46, 46).unwrap().tile, 800, "sand pass disabled");
+    }
+
+    #[test]
+    fn gsi_04_03a_rmg_recalc_reads_raw_grid_slope_and_flat_border() {
+        let mut grid = world();
+        let (cx, cy) = (46, 46);
+        set(&mut grid, cx, cy, 600);
+        set_slope(&mut grid, cx, cy, 1);
+        set_slope(&mut grid, cx - 1, cy, 9);
+        set_slope(&mut grid, cx + 1, cy, 0);
+        run(&mut grid, &ids());
+        assert_eq!(grid.get(cx, cy).unwrap().tile, 621);
+
+        let mut high_raw = world();
+        set(&mut high_raw, cx, cy, 600);
+        set_slope(&mut high_raw, cx, cy, 16);
+        run(&mut high_raw, &ids());
+        assert_eq!(high_raw.get(cx, cy).unwrap().tile, 615);
+
+        let mut edge = world();
+        let (ex, ey) = (23, 22);
+        assert!(!edge.is_valid(ex - 1, ey));
+        set(&mut edge, ex, ey, 600);
+        set_slope(&mut edge, ex, ey, 1);
+        set_slope(&mut edge, ex + 1, ey, 9);
+        run(&mut edge, &ids());
+        assert_eq!(edge.get(ex, ey).unwrap().tile, 620);
     }
 }

@@ -22,7 +22,7 @@ use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
     DriveLocomotionRuntime, HarvestOverlay, Health, MovementTarget, NavigationState, OrderIntent,
-    PendingC4Detonation, Position, RockingState, VoxelAnimation,
+    PendingC4Detonation, Position, RockingState, ShipLocomotionRuntime, VoxelAnimation,
 };
 use crate::sim::debug_event_log::{DebugEventKind, DebugEventLog};
 use crate::sim::deploy::DeployPhase;
@@ -32,12 +32,10 @@ use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
 use crate::sim::mission::{MissionCom, MissionLeafState, MissionTimer, MissionType};
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
-use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
 use crate::sim::movement::rocket_movement::RocketState;
 use crate::sim::movement::teleport_movement::TeleportState;
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
-use crate::sim::movement::tunnel_movement::TunnelState;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::radio::Contacts;
 use crate::sim::slave_miner::SlaveHarvester;
@@ -265,6 +263,9 @@ pub struct GameEntity {
     /// category or render representation.
     #[serde(default)]
     pub dirty_rect_eligible: bool,
+    /// Parsed InfantryType occupation capability used by capture-target expiry.
+    #[serde(default)]
+    pub occupier: bool,
     /// Rust bookkeeping that makes the represented owner-count decrement
     /// exactly-once. This does not stand in for native-alive or `dying`.
     #[serde(default)]
@@ -350,9 +351,9 @@ pub struct GameEntity {
     pub order_intent: Option<OrderIntent>,
     /// Teleport movement state machine (warp out/in phases).
     pub teleport_state: Option<TeleportState>,
-    /// Tunnel movement state machine (dig in/underground/dig out phases).
-    pub tunnel_state: Option<TunnelState>,
-    /// Active low-bridge TubeClass movement. Separate from subterranean tunnels.
+    /// Active low-bridge TubeClass movement. Active YR behaviour — not to be
+    /// confused with the subterranean tunnel locomotor, which is Tiberian Sun
+    /// legacy and was removed as unreachable in stock YR.
     #[serde(default)]
     pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
     /// Rocket/missile flight state machine (launch/ascend/terminal/detonate).
@@ -363,8 +364,6 @@ pub struct GameEntity {
     /// projectiles attach a `HomingState`.
     #[serde(default)]
     pub homing_state: Option<crate::sim::movement::homing_movement::HomingState>,
-    /// Drop pod descent state machine (falling/landing).
-    pub droppod_state: Option<DropPodState>,
     /// Parachute descent state. `Some` while a paradropped unit is descending
     /// under a parachute, `None` otherwise. Set by
     /// `parachute_descent::begin_parachute_descent`, cleared on landing.
@@ -384,6 +383,9 @@ pub struct GameEntity {
     /// DriveLocomotion destination/head-to state separate from curve stepping.
     #[serde(default)]
     pub drive_locomotion: Option<DriveLocomotionRuntime>,
+    /// ShipLocomotion committed ordinary-track head and Pathfinder replay.
+    #[serde(default)]
+    pub ship_locomotion: Option<ShipLocomotionRuntime>,
     /// One-shot forced drive track, independent of normal path movement.
     #[serde(default)]
     pub forced_drive_track: Option<ForcedDriveTrackState>,
@@ -436,6 +438,14 @@ pub struct GameEntity {
     /// endlessly repathing to the same blocked destination.
     /// Original engine: 30-frame scatter queue interval.
     pub blocked_scatter_timer: u8,
+    /// FootClass movement-sound handle state. Native starts the configured
+    /// MoveSound on the object's own post-locomotor AI tail and keeps it alive
+    /// through brief moving-now dropouts with a three-visit grace countdown.
+    #[serde(default)]
+    pub move_sound_active: bool,
+    /// Remaining stopped AI visits before an active MoveSound is released.
+    #[serde(default)]
+    pub move_sound_countdown: u8,
 
     // --- Passenger/transport system ---
     /// Original owner of a CanBeOccupied building, saved when the first garrison
@@ -474,7 +484,7 @@ pub struct GameEntity {
     /// Active C4 detonation timer on this building. Set by `tick_c4_plants`
     /// when a C4-capable attacker arrives on this building's cell. Once set,
     /// `tick_c4_plants` Phase 2 fires C4Warhead damage every tick after
-    /// `plant_start_tick + rules.c4_delay_ticks` until the building dies.
+    /// the wrapping native-frame delay elapses until the building dies.
     /// Never cleared in the C4 path — matches gamemd marker semantics.
     /// `None` for non-buildings or buildings not currently being C4'd.
     #[serde(default)]
@@ -518,6 +528,9 @@ pub struct GameEntity {
     /// Exact native-width Mission state. All writes pass through a named legacy
     /// compatibility adapter or the dormant exact-authority surface.
     pub mission: MissionCom,
+    /// Techno passive-acquisition delay rearmed when a live target expires.
+    #[serde(default)]
+    pub passive_scan_timer: MissionTimer,
     /// Category-specific bytes read by Mission readiness and Aircraft policy.
     pub(crate) mission_leaf: MissionLeafState,
     /// Target identity archived by the Techno Override wrapper.
@@ -630,8 +643,6 @@ impl GameEntity {
                 crate::util::lepton::CELL_CENTER_LEPTON,
             )
         };
-        let (screen_x, screen_y) =
-            crate::util::lepton::lepton_to_screen(rx, ry, init_sub_x, init_sub_y, z);
         Self {
             stable_id,
             position: Position {
@@ -640,8 +651,6 @@ impl GameEntity {
                 z,
                 sub_x: init_sub_x,
                 sub_y: init_sub_y,
-                screen_x,
-                screen_y,
             },
             facing,
             facing_target: None,
@@ -659,6 +668,7 @@ impl GameEntity {
             in_logic_vector: false,
             lifecycle: ObjectLifecycle::default(),
             dirty_rect_eligible: false,
+            occupier: false,
             owned_count_released: false,
             occupancy_enter_order: stable_id,
             locomotor: None,
@@ -685,16 +695,15 @@ impl GameEntity {
             slave_harvester: None,
             order_intent: None,
             teleport_state: None,
-            tunnel_state: None,
             low_bridge_tube_state: None,
             rocket_state: None,
             homing_state: None,
-            droppod_state: None,
             parachute_state: None,
             invulnerability: None,
             mind_controlled: false,
             drive_track: None,
             drive_locomotion: None,
+            ship_locomotion: None,
             forced_drive_track: None,
             dock_state: None,
             aircraft_ammo: None,
@@ -717,6 +726,8 @@ impl GameEntity {
             too_big_to_fit_under_bridge: false,
             dying: false,
             blocked_scatter_timer: 0,
+            move_sound_active: false,
+            move_sound_countdown: 0,
             garrison_original_owner: None,
             passenger_role: PassengerRole::None,
             weapon_override: None,
@@ -736,6 +747,7 @@ impl GameEntity {
             },
             rocking: None,
             mission: MissionCom::at_frame(construction_frame),
+            passive_scan_timer: MissionTimer::default(),
             mission_leaf: MissionLeafState::for_entity_category(category),
             suspended_attack_target: None,
             object_is_falling_down: 0,
@@ -1128,8 +1140,9 @@ mod tests {
         );
         // lepton_to_screen = CoordsToClient(cell_center) = iso_to_screen + (30, 15)
         let (corner_sx, corner_sy) = terrain::iso_to_screen(30, 40, 2);
-        assert!((e.position.screen_x - (corner_sx + 30.0)).abs() < 0.01);
-        assert!((e.position.screen_y - corner_sy).abs() < 0.01);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(&e);
+        assert!((sx - (corner_sx + 30.0)).abs() < 0.01);
+        assert!((sy - corner_sy).abs() < 0.01);
     }
 }
 

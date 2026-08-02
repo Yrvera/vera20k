@@ -8,6 +8,10 @@
 // No dependencies on game modules. Standalone parser library.
 pub mod assets;
 
+// Headless asset browsing for automated callers — the `asset` binary.
+// Sits above assets/ and rules/; never depends on sim/, ui/, audio/, or net/.
+pub mod asset_tools;
+
 // GPU rendering — wgpu-based sprite, terrain, voxel rendering.
 // Reads from sim/ state but never mutates it.
 pub mod render;
@@ -122,6 +126,7 @@ pub mod app_commands;
 // Simulation tick loop, triggers, atlas refresh, path grid rebuild.
 // Extracted from app_render.rs.
 pub mod app_sim_tick;
+pub mod app_frame_pacer;
 
 // Camera positioning — keyboard scroll, edge scroll, clamping.
 // Extracted from app_sim_tick.rs.

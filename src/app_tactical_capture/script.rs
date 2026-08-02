@@ -855,13 +855,13 @@ impl TacticalScript {
                 ),
             ));
         }
-        let expected_binary_frame = ((observation.total_sim_ms * 15) / 1000) as u32;
+        let expected_binary_frame = observation.tick as u32;
         if observation.binary_frame != expected_binary_frame {
             return Err(violation(
                 TacticalFailureCode::ClockDrift,
                 format!(
-                    "total_sim_ms {} carried binary frame {}, expected {}",
-                    observation.total_sim_ms, observation.binary_frame, expected_binary_frame
+                    "tick {} carried binary frame {}, expected {}",
+                    observation.tick, observation.binary_frame, expected_binary_frame
                 ),
             ));
         }
@@ -2039,7 +2039,7 @@ mod script_tests {
         TacticalObservation {
             tick,
             total_sim_ms,
-            binary_frame: ((total_sim_ms * 15) / 1000) as u32,
+            binary_frame: tick as u32,
             wall_elapsed_ms: tick,
             accepted_rust_l0: true,
             in_game: true,

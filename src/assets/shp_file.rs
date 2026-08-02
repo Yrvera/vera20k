@@ -20,15 +20,15 @@
 //! u16: frame_y      — Y offset within the full sprite bounds
 //! u16: frame_width  — width of this specific frame's pixel data
 //! u16: frame_height — height of this specific frame's pixel data
-//! u08: flags        — bit 1 = has transparency, bit 2 = uses RLE compression
+//! u08: format       — bit 1 selects row-framed RLE-Zero; clear means raw
 //! u24: padding/reserved
 //! u32: zero/reserved
 //! u32: data_offset  — byte offset from file start to this frame's pixel data
 //! ```
 //!
 //! ### Frame pixel data:
-//! - If not RLE compressed: raw palette indices, width * height bytes
-//! - If RLE compressed: see shp_decode.rs for the RLE-Zero format details.
+//! - If format bit 1 is clear: raw palette indices, width * height bytes
+//! - If format bit 1 is set: see shp_decode.rs for row/RLE-Zero details.
 //!
 //! ## Dependency rules
 //! - Part of assets/ — no dependencies on game modules.
@@ -36,18 +36,11 @@
 
 use crate::assets::error::AssetError;
 use crate::assets::pal_file::Palette;
-use crate::assets::shp_decode::{decode_length_prefixed_frame, decode_rle_frame};
+use crate::assets::shp_decode::decode_rle_frame;
 use crate::util::read_helpers::{read_u16_le, read_u32_le};
 
-/// Frame compression format values (byte 8 in the 24-byte frame header).
-/// Combines transparency (bit 0) and RLE (bit 1) flags.
-/// Format 0/1: raw uncompressed pixel data (width bytes per row, no length prefix).
-/// Format 2: length-prefixed uncompressed scanlines (u16 length + raw bytes).
-/// Format 3: length-prefixed RLE-Zero compressed scanlines (u16 length + RLE bytes).
-const FORMAT_RAW: u8 = 0;
-const FORMAT_RAW_TRANSPARENT: u8 = 1;
-const FORMAT_LENGTH_PREFIXED: u8 = 2;
-const FORMAT_RLE_ZERO: u8 = 3;
+/// Byte-8 dispatch bit used by the active YR SHP draw path.
+const FORMAT_RLE_ZERO_BIT: u8 = 0x02;
 
 /// A parsed SHP sprite file containing one or more frames.
 ///
@@ -78,6 +71,8 @@ pub struct ShpFrame {
     pub frame_width: u16,
     /// Height of this frame's pixel data.
     pub frame_height: u16,
+    /// Original byte-8 format bitfield from this frame's header.
+    pub format: u8,
     /// Per-frame radar/minimap colour baked into the frame header.
     ///
     /// Ore and gem overlays carry one of these per growth stage, and the engine
@@ -161,6 +156,7 @@ impl ShpFile {
                     frame_y,
                     frame_width,
                     frame_height,
+                    format,
                     radar_color,
                     pixels: Vec::new(),
                 });
@@ -169,6 +165,13 @@ impl ShpFile {
 
             let pixel_count: usize = frame_width as usize * frame_height as usize;
             let frame_data_start: usize = data_offset as usize;
+
+            if data_offset == 0 {
+                return Err(AssetError::ParseError {
+                    format: "SHP".to_string(),
+                    detail: format!("Frame {} is nonempty but has a zero data offset", i),
+                });
+            }
 
             // Bounds check: make sure data_offset points inside the file.
             if frame_data_start >= data.len() {
@@ -184,37 +187,27 @@ impl ShpFile {
             }
 
             let frame_slice: &[u8] = &data[frame_data_start..];
-            let pixels: Vec<u8> = match format {
-                FORMAT_RLE_ZERO => {
-                    // Format 3: each scanline has u16 length (includes itself),
-                    // followed by (length - 2) bytes of RLE-Zero compressed data.
-                    decode_rle_frame(frame_slice, frame_width as usize, frame_height as usize)?
-                }
-                FORMAT_LENGTH_PREFIXED => {
-                    // Format 2: each scanline has u16 length (includes itself),
-                    // followed by (length - 2) bytes of uncompressed pixel data.
-                    decode_length_prefixed_frame(
-                        frame_slice,
-                        frame_width as usize,
-                        frame_height as usize,
-                    )?
-                }
-                FORMAT_RAW | FORMAT_RAW_TRANSPARENT | _ => {
-                    // Format 0/1: raw uncompressed pixel data, width bytes per row.
-                    let end: usize = frame_data_start + pixel_count;
-                    if end > data.len() {
-                        return Err(AssetError::ParseError {
-                            format: "SHP".to_string(),
-                            detail: format!(
-                                "Frame {} raw data extends past end of file ({} > {})",
-                                i,
-                                end,
-                                data.len()
-                            ),
-                        });
+            let pixels: Vec<u8> = if format & FORMAT_RLE_ZERO_BIT != 0 {
+                decode_rle_frame(frame_slice, frame_width as usize, frame_height as usize)?
+            } else {
+                let end = frame_data_start.checked_add(pixel_count).ok_or_else(|| {
+                    AssetError::ParseError {
+                        format: "SHP".to_string(),
+                        detail: format!("Frame {} raw data extent overflows address space", i),
                     }
-                    data[frame_data_start..end].to_vec()
+                })?;
+                if end > data.len() {
+                    return Err(AssetError::ParseError {
+                        format: "SHP".to_string(),
+                        detail: format!(
+                            "Frame {} raw data extends past end of file ({} > {})",
+                            i,
+                            end,
+                            data.len()
+                        ),
+                    });
                 }
+                data[frame_data_start..end].to_vec()
             };
 
             frames.push(ShpFrame {
@@ -222,6 +215,7 @@ impl ShpFile {
                 frame_y,
                 frame_width,
                 frame_height,
+                format,
                 radar_color,
                 pixels,
             });
@@ -331,6 +325,14 @@ mod tests {
         data
     }
 
+    fn make_test_shp_with_format(format: u8, payload: &[u8]) -> Vec<u8> {
+        let mut data = make_test_shp_raw();
+        data[8 + 8] = format;
+        data.truncate(8 + 24);
+        data.extend_from_slice(payload);
+        data
+    }
+
     #[test]
     fn test_parse_raw_shp() {
         let data: Vec<u8> = make_test_shp_raw();
@@ -339,7 +341,73 @@ mod tests {
         assert_eq!(shp.width, 2);
         assert_eq!(shp.height, 2);
         assert_eq!(shp.frames.len(), 1);
+        assert_eq!(shp.frames[0].format, 0);
         assert_eq!(shp.frames[0].pixels, vec![1, 2, 3, 0]);
+    }
+
+    #[test]
+    fn format_two_and_three_share_the_rle_zero_grammar() {
+        let payload = [
+            4, 0, 0, 2, // row 0: two transparent pixels
+            4, 0, 7, 8, // row 1: two literals
+        ];
+        let format_two =
+            ShpFile::from_bytes(&make_test_shp_with_format(2, &payload)).expect("format 2 row/RLE");
+        let format_three =
+            ShpFile::from_bytes(&make_test_shp_with_format(3, &payload)).expect("format 3 row/RLE");
+
+        assert_eq!(format_two.frames[0].format, 2);
+        assert_eq!(format_three.frames[0].format, 3);
+        assert_eq!(format_two.frames[0].pixels, vec![0, 0, 7, 8]);
+        assert_eq!(format_two.frames[0].pixels, format_three.frames[0].pixels);
+    }
+
+    #[test]
+    fn format_dispatch_uses_bit_one_for_extended_rows() {
+        let extended_payload = [
+            4, 0, 0, 2, // row 0
+            4, 0, 5, 6, // row 1
+        ];
+        let extended = ShpFile::from_bytes(&make_test_shp_with_format(6, &extended_payload))
+            .expect("format 6 has bit 1 set");
+        assert_eq!(extended.frames[0].pixels, vec![0, 0, 5, 6]);
+
+        let raw = ShpFile::from_bytes(&make_test_shp_with_format(4, &[0, 2, 5, 9]))
+            .expect("format 4 has bit 1 clear");
+        assert_eq!(raw.frames[0].format, 4);
+        assert_eq!(raw.frames[0].pixels, vec![0, 2, 5, 9]);
+    }
+
+    #[test]
+    fn empty_bitfield_formats_keep_metadata_with_zero_data_offset() {
+        for format in [4, 204] {
+            let mut data = make_test_shp_raw();
+            data[8 + 4..8 + 8].fill(0); // zero frame width and height
+            data[8 + 8] = format;
+            data[8 + 20..8 + 24].fill(0); // native empty-frame null data
+            data.truncate(8 + 24);
+
+            let shp = ShpFile::from_bytes(&data).expect("empty metadata frame");
+            let frame = &shp.frames[0];
+            assert_eq!(frame.format, format);
+            assert_eq!(frame.radar_color, [0x40, 0x80, 0xC0]);
+            assert_eq!((frame.frame_width, frame.frame_height), (0, 0));
+            assert!(frame.pixels.is_empty());
+        }
+    }
+
+    #[test]
+    fn nonempty_frame_with_zero_data_offset_errors() {
+        let mut data = make_test_shp_raw();
+        data[8 + 20..8 + 24].fill(0);
+        assert!(ShpFile::from_bytes(&data).is_err());
+    }
+
+    #[test]
+    fn raw_frame_requires_its_exact_visible_extent_inside_the_file() {
+        let mut data = make_test_shp_raw();
+        data.pop();
+        assert!(ShpFile::from_bytes(&data).is_err());
     }
 
     #[test]
@@ -349,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_to_rgba() {
+    fn gsi_02_13_frame_to_rgba_uses_native_shifted_palette_channels() {
         let data: Vec<u8> = make_test_shp_raw();
         let shp: ShpFile = ShpFile::from_bytes(&data).expect("Should parse");
 
@@ -364,8 +432,8 @@ mod tests {
 
         // 2x2 * 4 bytes = 16 bytes
         assert_eq!(rgba.len(), 16);
-        // Pixel 0 (index 1): red (255, 0, 0, 255)
-        assert_eq!(rgba[0], 255); // R
+        // Pixel 0 (index 1): native-shifted red (252, 0, 0, 255)
+        assert_eq!(rgba[0], 252); // R
         assert_eq!(rgba[1], 0); // G
         assert_eq!(rgba[3], 255); // A (opaque)
         // Pixel 3 (index 0): transparent

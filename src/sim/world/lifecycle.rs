@@ -5,8 +5,13 @@
 //! this module never depends on render, UI, sidebar, audio, or net.
 
 use crate::map::entities::EntityCategory;
+use crate::sim::combat::TargetKind;
+use crate::sim::components::NavTargetRef;
 use crate::sim::lifecycle_request::LifecycleRequest;
-use crate::sim::occupancy::{CellListInsertion, entity_occupancy_cells};
+use crate::sim::occupancy::{
+    BUILDING_OCCUPATION_BIT, CellListInsertion, OBJECT_OCCUPATION_BIT, VEHICLE_OCCUPATION_BIT,
+    cell_list_layer_for_entity, entity_occupancy_cells, infantry_raw_occupation_mask,
+};
 use crate::sim::passenger::PassengerRole;
 use crate::util::fixed_math::SimFixed;
 
@@ -44,7 +49,6 @@ pub(crate) struct RevealRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RevealFailure {
     MissingObject,
-    NotAlive,
     RejectedEarly,
     MarkFailed,
 }
@@ -82,11 +86,15 @@ pub(crate) enum LifecycleTestEvent {
     RevealLimboCleared,
     RevealCoordinatesCommitted,
     MarkPut,
+    RawOccupationListLinked,
+    RawOccupationMarked,
     CellMarked,
     RevealDisplayBoundary,
     LogicAppended,
     LogicMembershipSet,
     ConcealDeselected,
+    RawOccupationListUnlinked,
+    RawOccupationCleared,
     ConcealUnmarked,
     ConcealDisplayBoundary,
     ConcealAnimBoundary,
@@ -116,6 +124,12 @@ pub(crate) enum LifecycleTestEvent {
         stable_id: u64,
         object_alive: bool,
         cell_marked: bool,
+    },
+    UninitRemovalListenerVisited {
+        expired_id: u64,
+        listener_id: u64,
+        target_alive: bool,
+        target_in_limbo: bool,
     },
     UninitAliveCleared {
         stable_id: u64,
@@ -149,11 +163,165 @@ impl Simulation {
             })
     }
 
+    fn raw_occupation_cell_facts(&self, rx: u16, ry: u16) -> (i16, bool) {
+        let Some(terrain_cell) = self
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(rx, ry))
+        else {
+            return (0, false);
+        };
+        let ground_level = i16::from(terrain_cell.level as i8);
+        let live_structural_bridge = terrain_cell.bridge_facts.has_structural_bridge()
+            && self
+                .bridge_state
+                .as_ref()
+                .is_some_and(|state| state.is_bridge_walkable(rx, ry));
+        (ground_level, live_structural_bridge)
+    }
+
+    fn mark_common_raw_occupation(
+        &mut self,
+        category: EntityCategory,
+        cells: &[(u16, u16)],
+        position: RevealPosition,
+    ) -> bool {
+        match category {
+            EntityCategory::Unit => {
+                let (ground_level, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position.rx, position.ry);
+                if i16::from(position.z as i8) >= ground_level + 4 && live_structural_bridge {
+                    self.substrate.raw_cell_occupation.mark_deck(
+                        position.rx,
+                        position.ry,
+                        VEHICLE_OCCUPATION_BIT,
+                    );
+                } else {
+                    self.substrate.raw_cell_occupation.mark_ground(
+                        position.rx,
+                        position.ry,
+                        VEHICLE_OCCUPATION_BIT,
+                    );
+                }
+                true
+            }
+            EntityCategory::Infantry => {
+                let (ground_level, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position.rx, position.ry);
+                let z = i16::from(position.z as i8);
+                if z > ground_level + 4 {
+                    return false;
+                }
+                let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
+                if z >= ground_level + 4 && live_structural_bridge {
+                    self.substrate
+                        .raw_cell_occupation
+                        .mark_deck(position.rx, position.ry, mask);
+                } else {
+                    self.substrate
+                        .raw_cell_occupation
+                        .mark_ground(position.rx, position.ry, mask);
+                }
+                true
+            }
+            EntityCategory::Structure => {
+                for &(rx, ry) in cells {
+                    self.substrate
+                        .raw_cell_occupation
+                        .mark_ground(rx, ry, BUILDING_OCCUPATION_BIT);
+                }
+                !cells.is_empty()
+            }
+            EntityCategory::Aircraft => {
+                let (ground_level, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position.rx, position.ry);
+                if i16::from(position.z as i8) >= ground_level + 4 && live_structural_bridge {
+                    self.substrate.raw_cell_occupation.mark_deck(
+                        position.rx,
+                        position.ry,
+                        OBJECT_OCCUPATION_BIT,
+                    );
+                } else {
+                    self.substrate.raw_cell_occupation.mark_ground(
+                        position.rx,
+                        position.ry,
+                        OBJECT_OCCUPATION_BIT,
+                    );
+                }
+                true
+            }
+        }
+    }
+
+    fn clear_common_raw_occupation(
+        &mut self,
+        category: EntityCategory,
+        cells: &[(u16, u16)],
+        position: RevealPosition,
+    ) -> bool {
+        match category {
+            EntityCategory::Unit => {
+                let (ground_level, _) = self.raw_occupation_cell_facts(position.rx, position.ry);
+                if i16::from(position.z as i8) >= ground_level + 4 {
+                    self.substrate.raw_cell_occupation.clear_deck(
+                        position.rx,
+                        position.ry,
+                        VEHICLE_OCCUPATION_BIT,
+                    );
+                } else {
+                    self.substrate.raw_cell_occupation.clear_ground(
+                        position.rx,
+                        position.ry,
+                        VEHICLE_OCCUPATION_BIT,
+                    );
+                }
+                true
+            }
+            EntityCategory::Structure => {
+                for &(rx, ry) in cells {
+                    self.substrate.raw_cell_occupation.clear_ground(
+                        rx,
+                        ry,
+                        BUILDING_OCCUPATION_BIT,
+                    );
+                }
+                !cells.is_empty()
+            }
+            EntityCategory::Aircraft => {
+                let (ground_level, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position.rx, position.ry);
+                if i16::from(position.z as i8) >= ground_level + 4 && live_structural_bridge {
+                    self.substrate.raw_cell_occupation.clear_deck(
+                        position.rx,
+                        position.ry,
+                        OBJECT_OCCUPATION_BIT,
+                    );
+                } else {
+                    self.substrate.raw_cell_occupation.clear_ground(
+                        position.rx,
+                        position.ry,
+                        OBJECT_OCCUPATION_BIT,
+                    );
+                }
+                true
+            }
+            // Generic Infantry removal intentionally leaves the destructive raw
+            // bit stale; movement/sub-cell transitions own explicit clears.
+            EntityCategory::Infantry => false,
+        }
+    }
+
     /// Compatibility convenience for already-admitted current-position callers.
     /// It still executes the complete result-bearing Reveal transaction.
     pub(crate) fn reveal(&mut self, stable_id: u64) -> RevealOutcome {
         if self.substrate.anims.contains_key(stable_id) {
             let registered = self.reveal_anim(stable_id);
+            return RevealOutcome::Revealed {
+                logic_registered: registered,
+            };
+        }
+        if self.substrate.particle_systems.contains_key(stable_id) {
+            let registered = self.reveal_particle_system(stable_id);
             return RevealOutcome::Revealed {
                 logic_registered: registered,
             };
@@ -181,13 +349,10 @@ impl Simulation {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return RevealOutcome::Failed(RevealFailure::MissingObject);
         };
-        if !entity.lifecycle.object_alive {
-            return RevealOutcome::Failed(RevealFailure::NotAlive);
-        }
         if !entity.lifecycle.in_limbo {
             return RevealOutcome::AlreadyRevealed;
         }
-        if request.placement == PlacementEvidence::RejectedEarly {
+        if entity.lifecycle.cell_marked || request.placement == PlacementEvidence::RejectedEarly {
             return RevealOutcome::Failed(RevealFailure::RejectedEarly);
         }
 
@@ -203,7 +368,6 @@ impl Simulation {
             entity.position.z = request.position.z;
             entity.position.sub_x = request.position.sub_x;
             entity.position.sub_y = request.position.sub_y;
-            entity.position.refresh_screen_coords();
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::RevealCoordinatesCommitted);
@@ -218,6 +382,16 @@ impl Simulation {
         }
 
         self.mark_entity_put(stable_id);
+        if !self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.lifecycle.object_alive)
+        {
+            return RevealOutcome::Revealed {
+                logic_registered: false,
+            };
+        }
         self.lifecycle_outputs
             .push(LifecycleOutput::RevealDisplay { stable_id });
         #[cfg(test)]
@@ -239,28 +413,62 @@ impl Simulation {
             return;
         }
         let cells = entity_occupancy_cells(entity);
-        let layer = entity.occupancy_list_layer();
+        let layer = cell_list_layer_for_entity(entity);
         let sub_cell = if entity.category == EntityCategory::Infantry {
             entity.sub_cell
         } else {
             None
         };
         let insertion = CellListInsertion::from_category(entity.category);
+        let category = entity.category;
+        let current_cell = (entity.position.rx, entity.position.ry);
+        let raw_position = RevealPosition {
+            rx: entity.position.rx,
+            ry: entity.position.ry,
+            z: entity.position.z,
+            sub_x: entity.position.sub_x,
+            sub_y: entity.position.sub_y,
+        };
         let inside_transport = entity.passenger_role.is_inside_transport();
         let order = self.substrate.next_occupancy_enter_order.next();
 
         if !inside_transport {
             if let Some(layer) = layer {
-                for (rx, ry) in cells {
+                for &(rx, ry) in &cells {
                     self.substrate
                         .occupancy
                         .add(rx, ry, stable_id, layer, sub_cell, insertion);
+                }
+                if matches!(
+                    category,
+                    EntityCategory::Unit
+                        | EntityCategory::Infantry
+                        | EntityCategory::Structure
+                        | EntityCategory::Aircraft
+                ) {
+                    #[cfg(test)]
+                    self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationListLinked);
+                    if self.mark_common_raw_occupation(category, &cells, raw_position) {
+                        #[cfg(test)]
+                        self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationMarked);
+                    }
+                }
+                if category == EntityCategory::Unit {
+                    self.substrate.cell_occupation.mark_vehicle_on_layer(
+                        current_cell.0,
+                        current_cell.1,
+                        stable_id,
+                        layer,
+                    );
                 }
             }
         }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.occupancy_enter_order = order;
             entity.lifecycle.cell_marked = true;
+            if let Some(drive) = entity.drive_locomotion.as_mut() {
+                drive.current_occupation_cleared = false;
+            }
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::CellMarked);
@@ -274,11 +482,67 @@ impl Simulation {
             return false;
         }
         let cells = entity_occupancy_cells(entity);
-        for (rx, ry) in cells {
-            self.substrate.occupancy.remove(rx, ry, stable_id);
+        let layer = cell_list_layer_for_entity(entity);
+        let category = entity.category;
+        let current_cell = (entity.position.rx, entity.position.ry);
+        let raw_position = RevealPosition {
+            rx: entity.position.rx,
+            ry: entity.position.ry,
+            z: entity.position.z,
+            sub_x: entity.position.sub_x,
+            sub_y: entity.position.sub_y,
+        };
+        let inside_transport = entity.passenger_role.is_inside_transport();
+        if category == EntityCategory::Unit {
+            let (entities, occupation) = (
+                &mut self.substrate.entities,
+                &mut self.substrate.cell_occupation,
+            );
+            if let Some(drive) = entities
+                .get_mut(stable_id)
+                .and_then(|entity| entity.drive_locomotion.as_mut())
+            {
+                crate::sim::occupancy::clear_drive_head_to_occupation_for_remove(
+                    drive, occupation, stable_id,
+                );
+            }
+        }
+        if let Some(layer) = layer {
+            for &(rx, ry) in &cells {
+                self.substrate
+                    .occupancy
+                    .remove_on_layer(rx, ry, stable_id, layer);
+            }
+            if !inside_transport
+                && matches!(
+                    category,
+                    EntityCategory::Unit
+                        | EntityCategory::Infantry
+                        | EntityCategory::Structure
+                        | EntityCategory::Aircraft
+                )
+            {
+                #[cfg(test)]
+                self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationListUnlinked);
+                if self.clear_common_raw_occupation(category, &cells, raw_position) {
+                    #[cfg(test)]
+                    self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationCleared);
+                }
+            }
+            if category == EntityCategory::Unit {
+                self.substrate.cell_occupation.clear_vehicle_on_layer(
+                    current_cell.0,
+                    current_cell.1,
+                    stable_id,
+                    layer,
+                );
+            }
         }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.lifecycle.cell_marked = false;
+            if let Some(drive) = entity.drive_locomotion.as_mut() {
+                drive.current_occupation_cleared = true;
+            }
         }
         true
     }
@@ -295,13 +559,56 @@ impl Simulation {
         self.unmark_entity_remove(stable_id);
     }
 
+    /// Run one production air-process visit with the active Fly
+    /// remove-before/process/add-after cell-list transaction around it.
+    pub(crate) fn tick_air_movement_with_cell_lists_one(
+        &mut self,
+        stable_id: u64,
+    ) -> crate::sim::movement::air_movement::AirMovementTickStats {
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::movement::locomotor::MovementLayer;
+
+        let transact_fly = self.substrate.entities.get(stable_id).is_some_and(|entity| {
+            entity.category == EntityCategory::Aircraft
+                && entity.lifecycle.object_alive
+                && !entity.lifecycle.in_limbo
+                && entity.locomotor.as_ref().is_some_and(|locomotor| {
+                    locomotor.kind == LocomotorKind::Fly && locomotor.layer == MovementLayer::Air
+                })
+        });
+        if transact_fly {
+            self.remove_entity_occupancy(stable_id);
+        }
+
+        let stats = crate::sim::movement::air_movement::tick_air_movement(
+            &mut self.substrate.entities,
+            &[stable_id],
+            self.session.tick,
+        );
+
+        if transact_fly
+            && self.substrate.entities.get(stable_id).is_some_and(|entity| {
+                entity.lifecycle.object_alive && !entity.lifecycle.in_limbo
+            })
+        {
+            self.add_entity_occupancy(stable_id);
+        }
+        stats
+    }
+
     fn register_logic_object(&mut self, stable_id: u64) -> bool {
         let is_anim = self.substrate.anims.contains_key(stable_id);
+        let is_particle_system = self.substrate.particle_systems.contains_key(stable_id);
         let already_member = if is_anim {
             self.substrate
                 .anims
                 .get(stable_id)
                 .is_some_and(|anim| anim.in_logic_vector)
+        } else if is_particle_system {
+            self.substrate
+                .particle_systems
+                .get(stable_id)
+                .is_some_and(|system| system.in_logic_vector)
         } else {
             self.substrate
                 .entities
@@ -311,7 +618,7 @@ impl Simulation {
         if already_member {
             return true;
         }
-        if (!is_anim && !self.substrate.entities.contains(stable_id))
+        if (!is_anim && !is_particle_system && !self.substrate.entities.contains(stable_id))
             || self.substrate.logic.try_push(stable_id).is_err()
         {
             return false;
@@ -321,6 +628,10 @@ impl Simulation {
         if is_anim {
             if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
                 anim.in_logic_vector = true;
+            }
+        } else if is_particle_system {
+            if let Some(system) = self.substrate.particle_systems.get_mut(stable_id) {
+                system.in_logic_vector = true;
             }
         } else if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.in_logic_vector = true;
@@ -332,11 +643,17 @@ impl Simulation {
 
     fn unregister_logic_object(&mut self, stable_id: u64) -> bool {
         let is_anim = self.substrate.anims.contains_key(stable_id);
+        let is_particle_system = self.substrate.particle_systems.contains_key(stable_id);
         let flagged = if is_anim {
             self.substrate
                 .anims
                 .get(stable_id)
                 .is_some_and(|anim| anim.in_logic_vector)
+        } else if is_particle_system {
+            self.substrate
+                .particle_systems
+                .get(stable_id)
+                .is_some_and(|system| system.in_logic_vector)
         } else {
             self.substrate
                 .entities
@@ -350,6 +667,10 @@ impl Simulation {
         if is_anim {
             if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
                 anim.in_logic_vector = false;
+            }
+        } else if is_particle_system {
+            if let Some(system) = self.substrate.particle_systems.get_mut(stable_id) {
+                system.in_logic_vector = false;
             }
         } else if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.in_logic_vector = false;
@@ -385,11 +706,39 @@ impl Simulation {
         self.unregister_logic_object(stable_id)
     }
 
+    pub(crate) fn reveal_particle_system(&mut self, stable_id: u64) -> bool {
+        if !self.substrate.particle_systems.contains_key(stable_id) {
+            return false;
+        }
+        self.register_logic_object(stable_id)
+    }
+
+    pub(crate) fn conceal_particle_system(&mut self, stable_id: u64) -> bool {
+        self.unregister_logic_object(stable_id)
+    }
+
+    /// Open-topped cargo entry hides the passenger but then directly restores
+    /// its active membership. This is deliberately not Reveal: the passenger
+    /// remains limbo/unmarked while its AI stays in the live object order.
+    pub(crate) fn register_open_topped_passenger(&mut self, stable_id: u64) -> bool {
+        if !self.substrate.entities.contains(stable_id) {
+            return false;
+        }
+        self.register_logic_object(stable_id)
+    }
+
     /// Compatibility dispatch which keeps AnimClass logic-only and routes every
     /// GameEntity through the complete common Object Conceal transaction.
     pub(crate) fn conceal(&mut self, stable_id: u64) -> ConcealOutcome {
         if self.substrate.anims.contains_key(stable_id) {
             return if self.conceal_anim(stable_id) {
+                ConcealOutcome::Concealed
+            } else {
+                ConcealOutcome::AlreadyConcealed
+            };
+        }
+        if self.substrate.particle_systems.contains_key(stable_id) {
+            return if self.conceal_particle_system(stable_id) {
                 ConcealOutcome::Concealed
             } else {
                 ConcealOutcome::AlreadyConcealed
@@ -483,12 +832,6 @@ impl Simulation {
         self.object_conceal(stable_id)
     }
 
-    /// Transitional app-owned animated-death bridge.  This deliberately changes
-    /// only LogicVector membership and must disappear with Mission/Foot authority.
-    pub(crate) fn legacy_unregister_logic_only_for_app_death(&mut self, stable_id: u64) {
-        let _ = self.unregister_logic_object(stable_id);
-    }
-
     /// Existing Rust owner-count mutation with an explicit exactly-once guard.
     pub(crate) fn release_owned_count_once(&mut self, stable_id: u64) {
         let Some((owner, category, already_released)) = self
@@ -555,44 +898,311 @@ impl Simulation {
         }
     }
 
-    /// ObjectClass::UnInit represented ordering.  Physical removal is deferred.
-    pub(crate) fn uninit(&mut self, stable_id: u64) {
-        let Some(object_alive) = self
-            .substrate
-            .entities
-            .get(stable_id)
-            .map(|entity| entity.lifecycle.object_alive)
+    fn nav_ref_targets_expired(target: &NavTargetRef, expired_id: u64) -> bool {
+        matches!(
+            target,
+            NavTargetRef::Entity { id }
+                | NavTargetRef::Object { id }
+                | NavTargetRef::Building { id }
+                if *id == expired_id
+        )
+    }
+
+    /// Represented entries in global ObjectClass construction order. Stable
+    /// IDs are monotonic and never reused, so merging the separate Rust stores
+    /// by ID reproduces the native registration order without walking holes
+    /// left by already-finalized objects.
+    fn removal_listener_order(&self) -> Vec<u64> {
+        let mut listeners = self.substrate.entities.keys_sorted();
+        listeners.extend(self.substrate.anims.iter().map(|(&stable_id, _)| stable_id));
+        listeners.extend(
+            self.substrate
+                .particle_systems
+                .iter()
+                .map(|(&stable_id, _)| stable_id),
+        );
+        listeners.sort_unstable();
+        debug_assert!(
+            listeners.windows(2).all(|pair| pair[0] != pair[1]),
+            "object stable ID exists in more than one represented store"
+        );
+        listeners
+    }
+
+    fn notify_entity_pointer_expired(
+        &mut self,
+        listener_id: u64,
+        expired_id: u64,
+        expired_cell: (u16, u16),
+        expired_is_high_flying: bool,
+        expired_object_alive: bool,
+        expired_health: u16,
+        expired_is_selling: bool,
+    ) {
+        let Some(listener) = self.substrate.entities.get(listener_id) else {
+            return;
+        };
+        let current_target_matches = listener.attack_target.as_ref().is_some_and(
+            |target| matches!(target.target, TargetKind::Entity(id) if id == expired_id),
+        );
+        let passive_scan_remaining = listener
+            .passive_scan_timer
+            .remaining(self.session.binary_frame);
+        let mission_is_suspended =
+            listener.mission.suspended() != crate::sim::mission::MissionId::NONE;
+
+        let passive_scan_delay = (current_target_matches && passive_scan_remaining > 10)
+            .then(|| self.scenario_rng.next_range_u32_inclusive(4, 8));
+        if let Some(listener) = self.substrate.entities.get_mut(listener_id) {
+            if let Some(delay) = passive_scan_delay {
+                listener
+                    .passive_scan_timer
+                    .arm(self.session.binary_frame, delay);
+            }
+
+            // RadioClass::PointerExpired nulls matching sparse slots in place.
+            listener.clear_live_contact_with(expired_id);
+
+            // TechnoClass removes an expiring passenger from its CargoClass before
+            // clearing its target/archive/manager reference family.
+            if let PassengerRole::Transport { cargo } = &mut listener.passenger_role {
+                let _ = cargo.disembark(expired_id);
+            }
+        }
+
+        if current_target_matches {
+            self.set_archive_target_represented(listener_id, None)
+                .expect("expiry listener remains present");
+            if mission_is_suspended {
+                self.mission_restore_after_target_expiry(listener_id)
+                    .expect("represented expiry restore remains available");
+            }
+        }
+
+        let Some(listener) = self.substrate.entities.get_mut(listener_id) else {
+            return;
+        };
+        if matches!(
+            listener.suspended_attack_target,
+            Some(TargetKind::Entity(id)) if id == expired_id
+        ) {
+            listener.suspended_attack_target = None;
+        }
+
+        // FootClass clears SuspendedNavCom first, then its current/aux target,
+        // and removes every matching queue entry. Cell targets are unaffected.
+        if listener
+            .navigation
+            .suspended_nav_com
+            .as_ref()
+            .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id))
+        {
+            listener.navigation.suspended_nav_com = None;
+        }
+        let current_nav_matches = listener
+            .navigation
+            .nav_com
+            .as_ref()
+            .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id));
+        let retain_capture_nav = current_nav_matches
+            && listener.category == EntityCategory::Infantry
+            && listener.occupier
+            && listener.mission.current().known()
+                == Some(crate::sim::mission::MissionType::Capture)
+            && expired_object_alive
+            && expired_health > 0
+            && !expired_is_selling;
+        if !retain_capture_nav {
+            if listener
+                .navigation
+                .nav_com_aux
+                .as_ref()
+                .is_some_and(|target| Self::nav_ref_targets_expired(target, expired_id))
+            {
+                listener.navigation.nav_com_aux = None;
+            }
+            if current_nav_matches {
+                listener.navigation.nav_com = None;
+            }
+        }
+        listener
+            .navigation
+            .nav_queue
+            .retain(|target| !Self::nav_ref_targets_expired(target, expired_id));
+
+        if listener.capture_target == Some(expired_id) {
+            listener.capture_target = None;
+        }
+        if listener
+            .c4_plant
+            .as_ref()
+            .is_some_and(|plant| plant.target_building_id == expired_id)
+        {
+            listener.c4_plant = None;
+        }
+
+        if listener
+            .dock_state
+            .as_ref()
+            .is_some_and(|dock| dock.dock_building_id == expired_id)
+        {
+            listener.dock_state = None;
+        }
+        if let Some(ammo) = listener.aircraft_ammo.as_mut() {
+            if ammo.target_airfield == Some(expired_id) {
+                ammo.target_airfield = None;
+                ammo.target_pad = None;
+            }
+        }
+        if let Some(miner) = listener.miner.as_mut() {
+            if miner.home_refinery == Some(expired_id) {
+                miner.home_refinery = None;
+            }
+            if miner.reserved_refinery == Some(expired_id) {
+                miner.reserved_refinery = None;
+                miner.dock_queued = false;
+            }
+        }
+
+        let clear_passenger_role = match &listener.passenger_role {
+            PassengerRole::Transport { .. } => false,
+            PassengerRole::Boarding {
+                target_transport_id,
+                ..
+            } => *target_transport_id == expired_id,
+            PassengerRole::Inside { transport_id } => *transport_id == expired_id,
+            PassengerRole::None => false,
+        };
+        if clear_passenger_role {
+            listener.passenger_role = PassengerRole::None;
+        }
+
+        if let Some(homing) = listener.homing_state.as_mut() {
+            homing.expire_object_target(expired_id, expired_cell, expired_is_high_flying);
+        }
+
+        // Deliberately retain last_attacker_id. Native retaliation reads the
+        // dying object through the deferred-delete window; it is not one of
+        // the proactively-cleared target roles above.
+    }
+
+    /// ObjectClass::Detach_From_All_Lists represented listener broadcast.
+    ///
+    /// The callback pass runs while the target remains alive, unconcealed,
+    /// cell-marked, and resolvable. The represented callbacks below do not add
+    /// or erase listener objects, so the native live-vector cursor and this
+    /// monotonic construction-order walk have the same observable result.
+    fn notify_pointer_expired(&mut self, expired_id: u64) {
+        let Some((
+            expired_cell,
+            expired_is_high_flying,
+            expired_object_alive,
+            expired_health,
+            expired_is_selling,
+        )) = self.substrate.entities.get(expired_id).map(|expired| {
+            let high_flying = expired.locomotor.as_ref().is_some_and(|locomotor| {
+                // High-flying objects expire to null; lower objects preserve
+                // GetHeight() >= 2 * LevelHeight (2 * 104 leptons).
+                locomotor.is_airborne() && locomotor.altitude >= SimFixed::from_num(2 * 104)
+            });
+            (
+                (expired.position.rx, expired.position.ry),
+                high_flying,
+                expired.lifecycle.object_alive,
+                expired.health.current,
+                expired.mission.current().known()
+                    == Some(crate::sim::mission::MissionType::Selling),
+            )
+        })
         else {
             return;
         };
 
-        if object_alive {
-            self.run_represented_uninit_pre_hook(stable_id);
-            self.uninit_carried_passengers(stable_id);
+        for listener_id in self.removal_listener_order() {
+            let is_entity = self.substrate.entities.contains(listener_id);
+            let is_anim = self.substrate.anims.contains_key(listener_id);
+            let is_particle = self.substrate.particle_systems.contains_key(listener_id);
+            if !is_entity && !is_anim && !is_particle {
+                continue;
+            }
 
             #[cfg(test)]
             {
-                let (object_alive, cell_marked) = self
+                let (target_alive, target_in_limbo) = self
                     .substrate
                     .entities
-                    .get(stable_id)
-                    .map(|entity| (entity.lifecycle.object_alive, entity.lifecycle.cell_marked))
-                    .unwrap_or((false, false));
-                self.trace_lifecycle_for_test(LifecycleTestEvent::UninitRemovalNotifyBoundary {
-                    stable_id,
-                    object_alive,
-                    cell_marked,
+                    .get(expired_id)
+                    .map(|target| (target.lifecycle.object_alive, target.lifecycle.in_limbo))
+                    .unwrap_or((false, true));
+                self.trace_lifecycle_for_test(LifecycleTestEvent::UninitRemovalListenerVisited {
+                    expired_id,
+                    listener_id,
+                    target_alive,
+                    target_in_limbo,
                 });
             }
 
-            let _ = self.techno_limbo(stable_id);
-            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-                entity.lifecycle.object_alive = false;
-                entity.dying = true;
+            if is_entity {
+                self.notify_entity_pointer_expired(
+                    listener_id,
+                    expired_id,
+                    expired_cell,
+                    expired_is_high_flying,
+                    expired_object_alive,
+                    expired_health,
+                    expired_is_selling,
+                );
+            } else if is_anim {
+                self.expire_anim_owner_reference(listener_id, expired_id);
+            } else if is_particle {
+                let system = self
+                    .substrate
+                    .particle_systems
+                    .get_mut(listener_id)
+                    .expect("particle listener disappeared during expiry callback");
+                if system.owner_entity == Some(expired_id) {
+                    system.owner_entity = None;
+                }
+                if system.attached_entity == Some(expired_id) {
+                    system.attached_entity = None;
+                    system.marked_for_deletion = true;
+                }
             }
-            #[cfg(test)]
-            self.trace_lifecycle_for_test(LifecycleTestEvent::UninitAliveCleared { stable_id });
         }
+    }
+
+    /// ObjectClass::UnInit represented ordering.  Physical removal is deferred.
+    pub(crate) fn uninit(&mut self, stable_id: u64) {
+        if !self.substrate.entities.contains(stable_id) {
+            return;
+        }
+
+        self.run_represented_uninit_pre_hook(stable_id);
+        self.uninit_carried_passengers(stable_id);
+
+        #[cfg(test)]
+        {
+            let (object_alive, cell_marked) = self
+                .substrate
+                .entities
+                .get(stable_id)
+                .map(|entity| (entity.lifecycle.object_alive, entity.lifecycle.cell_marked))
+                .unwrap_or((false, false));
+            self.trace_lifecycle_for_test(LifecycleTestEvent::UninitRemovalNotifyBoundary {
+                stable_id,
+                object_alive,
+                cell_marked,
+            });
+        }
+        self.notify_pointer_expired(stable_id);
+
+        let _ = self.techno_limbo(stable_id);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.lifecycle.object_alive = false;
+            entity.dying = true;
+        }
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::UninitAliveCleared { stable_id });
 
         // Native append has no duplicate suppression.  The drain collapses all
         // occurrences when this dead object becomes the selected ready entry.
@@ -605,6 +1215,24 @@ impl Simulation {
         self.uninit(stable_id);
     }
 
+    /// Particle systems stay resolvable until the ordinary common late drain.
+    /// Their owned particles have already emptied before this transition.
+    pub(crate) fn retire_particle_system(&mut self, stable_id: u64) {
+        let ready = self
+            .substrate
+            .particle_systems
+            .get(stable_id)
+            .is_some_and(|system| system.marked_for_deletion && system.particles.is_empty());
+        if !ready {
+            return;
+        }
+
+        self.conceal_particle_system(stable_id);
+        self.substrate.pending_delete.push(stable_id);
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::PendingDeleteQueued { stable_id });
+    }
+
     fn pending_object_is_ready(&self, stable_id: u64) -> bool {
         if let Some(entity) = self.substrate.entities.get(stable_id) {
             return !entity.lifecycle.object_alive;
@@ -612,16 +1240,34 @@ impl Simulation {
         if let Some(anim) = self.substrate.anims.get(stable_id) {
             return anim.runtime.inactive;
         }
+        if let Some(system) = self.substrate.particle_systems.get(stable_id) {
+            return system.marked_for_deletion && system.particles.is_empty();
+        }
         true
     }
 
     fn finalize_and_remove_common(&mut self, stable_id: u64) {
+        if self.substrate.anims.contains_key(stable_id) {
+            self.conceal_anim(stable_id);
+            self.detach_anim_from_owner(stable_id);
+        }
         let entity = self.substrate.entities.remove(stable_id);
         let anim = self.substrate.anims.remove(stable_id);
+        let particle_system = self.substrate.particle_systems.finalize_remove(stable_id);
         debug_assert!(
-            !(entity.is_some() && anim.is_some()),
-            "object id {stable_id} was removed from both stores"
+            usize::from(entity.is_some())
+                + usize::from(anim.is_some())
+                + usize::from(particle_system.is_some())
+                <= 1,
+            "object id {stable_id} was removed from multiple stores"
         );
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::FinalizedCommon { stable_id });
+    }
+
+    fn finalize_multiplayer_feedback_anim(&mut self, stable_id: u64) {
+        self.detach_anim_from_owner(stable_id);
+        self.substrate.multiplayer_feedback_anims.remove(stable_id);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::FinalizedCommon { stable_id });
     }
@@ -642,6 +1288,13 @@ impl Simulation {
                 .pending_delete
                 .retain(|&queued| queued != stable_id);
             self.finalize_and_remove_common(stable_id);
+        }
+
+        while let Some(&stable_id) = self.substrate.multiplayer_feedback_pending_delete.first() {
+            self.substrate
+                .multiplayer_feedback_pending_delete
+                .retain(|&queued| queued != stable_id);
+            self.finalize_multiplayer_feedback_anim(stable_id);
         }
     }
 

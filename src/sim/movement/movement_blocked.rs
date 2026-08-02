@@ -15,6 +15,7 @@ use crate::sim::rng::SimRng;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 use super::movement_path::{supports_layered_bridge_pathing, try_repath_after_block};
+use super::path_markers::BridgeMarkerContext;
 use super::{MovementConfig, MovementTickStats, PathfindingContext};
 
 /// Shared logic for handling a blocked movement tick.
@@ -33,7 +34,10 @@ use super::{MovementConfig, MovementTickStats, PathfindingContext};
 pub(super) fn handle_blocked_tick(
     target: &mut MovementTarget,
     facing: &mut u8,
+    body_facing: Option<super::FacingClass>,
     locomotor: &Option<LocomotorState>,
+    drive_locomotion: &mut Option<crate::sim::components::DriveLocomotionRuntime>,
+    ship_locomotion: &mut Option<crate::sim::components::ShipLocomotionRuntime>,
     entity_id: u64,
     current_pos: (u16, u16),
     active_layer: MovementLayer,
@@ -53,6 +57,8 @@ pub(super) fn handle_blocked_tick(
     mover_is_crusher: bool,
     is_infantry: bool,
     skip_grace_period: bool,
+    marker_context: Option<BridgeMarkerContext<'_>>,
+    occupancy: &crate::sim::occupancy::OccupancyGrid,
 ) -> Vec<(u32, DebugEventKind)> {
     let mut deferred_events: Vec<(u32, DebugEventKind)> = Vec::new();
     stats.blocked_attempts = stats.blocked_attempts.saturating_add(1);
@@ -120,6 +126,17 @@ pub(super) fn handle_blocked_tick(
         .zip(ctx.path_grid)
         .is_some_and(|(loco, pg)| supports_layered_bridge_pathing(loco, pg, on_bridge));
     let repath_mz: Option<MovementZone> = locomotor.as_ref().map(|l| l.movement_zone);
+    let marker_search = marker_context.map(|context| {
+        context.build(
+            occupancy,
+            entity_id,
+            current_pos,
+            *facing,
+            body_facing,
+            on_bridge,
+            urgency,
+        )
+    });
     let repath_ok = try_repath_after_block(
         target,
         facing,
@@ -137,8 +154,32 @@ pub(super) fn handle_blocked_tick(
         urgency,
         mover_is_crusher,
         is_infantry,
+        marker_search.as_ref(),
     );
     if repath_ok {
+        match locomotor.as_ref().map(|locomotor| locomotor.kind) {
+            Some(crate::rules::locomotor_type::LocomotorKind::Drive) => {
+                if let Some(drive) = drive_locomotion.as_mut() {
+                    super::path_markers::install_path_replay(
+                        &mut drive.path,
+                        current_pos,
+                        &target.path,
+                        target.next_index,
+                    );
+                }
+            }
+            Some(crate::rules::locomotor_type::LocomotorKind::Ship) => {
+                if let Some(ship) = ship_locomotion.as_mut() {
+                    super::path_markers::install_path_replay(
+                        &mut ship.path,
+                        current_pos,
+                        &target.path,
+                        target.next_index,
+                    );
+                }
+            }
+            _ => {}
+        }
         stats.repath_successes = stats.repath_successes.saturating_add(1);
         if is_infantry {
             target.path_blocked = false;
@@ -147,7 +188,13 @@ pub(super) fn handle_blocked_tick(
         deferred_events.push((
             sim_tick as u32,
             DebugEventKind::Repath {
-                reason: format!("blocked repath succeeded (urgency={})", urgency),
+                reason: format!(
+                    "blocked repath succeeded (urgency={} effective={})",
+                    urgency,
+                    marker_search
+                        .as_ref()
+                        .map_or(urgency, |search| search.effective_urgency)
+                ),
                 new_path_len: target.path.len(),
             },
         ));

@@ -35,7 +35,7 @@ pub fn launch(
     let radius_sq = radius_leptons * radius_leptons;
     let blackout = rules.general.force_shield_blackout_duration;
     let anim_name = rules.general.force_shield_invoke_anim.clone();
-    let current_frame = sim.session.tick as u32;
+    let current_frame = sim.session.binary_frame;
 
     // 1. Spawn invoke animation.
     spawn_invoke_anim(sim, &anim_name, target_rx, target_ry);
@@ -120,10 +120,10 @@ fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
         z: 5,
         frame: 0,
         total_frames: frames,
-        rate_ms: 67,
-        elapsed_ms: 0,
+        frame_delay: 1,
+        elapsed_frames: 0,
         translucent: false,
-        delay_ms: 0,
+        delay_frames: 0,
         start_sound_id: None,
         start_sound_emitted: false,
     });

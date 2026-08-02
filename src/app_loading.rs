@@ -444,6 +444,14 @@ pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
     );
     clear_loading_state(state);
     let mut session = LoadingSession::from_request(request);
+    session.job.ra2_dir = state
+        .game_config
+        .as_ref()
+        .map(|config| config.paths.ra2_dir.clone());
+    // Retail has one process-global MIX list and LoadFileFromMIX cache. Move
+    // that same manager through the loading job instead of reconstructing it
+    // at the shell -> scenario boundary.
+    session.job.asset_manager = state.asset_manager.take();
     // Resolve the backing fill from the live rules `[Colors]` schemes now that
     // `state.rules` is reachable (the native ctor only sees the launch session).
     if let (Some(native), Some(rules)) = (session.native.as_mut(), state.rules.as_ref()) {
@@ -461,7 +469,11 @@ pub(crate) fn loading_map_name(state: &AppState) -> Option<&str> {
 }
 
 pub(crate) fn clear_loading_state(state: &mut AppState) {
-    state.loading_session = None;
+    if let Some(mut session) = state.loading_session.take()
+        && state.asset_manager.is_none()
+    {
+        state.asset_manager = session.job.asset_manager.take();
+    }
     state.loading_screen_atlas = None;
     state.loading_progress = LoadingProgressState::standard_skirmish();
 }
@@ -504,6 +516,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
         .as_ref()
         .is_some_and(|native| !native.first_renderer_ready)
     {
+        restore_job_asset_manager(state, &mut session);
         return LoadingPump::Failed(anyhow::anyhow!(
             "native Skirmish loading renderer was not ready before the first loading pump"
         ));
@@ -514,29 +527,41 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
         LoadingJobPhase::InitialMapSelection => {
             let requested_map_file = session.request.selected_map_file().to_string();
             let requested_map = Some(requested_map_file.as_str());
-            let initial = match take_job_assets_for_initial_load(state, &mut session) {
-                Ok((ra2_dir, asset_manager)) => match session.native.as_mut() {
-                    // The map-parse milestone (8) is emitted inside the loader.
-                    Some(native) => {
-                        let cadence = native.progress_cadence;
-                        let mut sink = GatedProgressSink {
-                            progress: &mut native.progress,
-                            cadence,
-                        };
-                        app_init::load_map_initial_with_assets(
+            let initial = match ensure_session_job_asset_manager(state, &mut session) {
+                Ok(()) => {
+                    let ra2_dir = session
+                        .job
+                        .ra2_dir
+                        .clone()
+                        .expect("asset-manager setup stores the RA2 directory");
+                    let asset_manager = session
+                        .job
+                        .asset_manager
+                        .as_mut()
+                        .expect("asset-manager setup stores the manager");
+                    match session.native.as_mut() {
+                        // The map-parse milestone (8) is emitted inside the loader.
+                        Some(native) => {
+                            let cadence = native.progress_cadence;
+                            let mut sink = GatedProgressSink {
+                                progress: &mut native.progress,
+                                cadence,
+                            };
+                            app_init::load_map_initial_with_assets(
+                                ra2_dir,
+                                asset_manager,
+                                requested_map,
+                                &mut sink,
+                            )
+                        }
+                        None => app_init::load_map_initial_with_assets(
                             ra2_dir,
                             asset_manager,
                             requested_map,
-                            &mut sink,
-                        )
+                            &mut NoopProgressSink,
+                        ),
                     }
-                    None => app_init::load_map_initial_with_assets(
-                        ra2_dir,
-                        asset_manager,
-                        requested_map,
-                        &mut NoopProgressSink,
-                    ),
-                },
+                }
                 Err(err) => Err(err),
             };
             match initial {
@@ -549,6 +574,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
         }
         LoadingJobPhase::RemainingLegacyLoad(mut initial) => {
             let Some(initial) = initial.take() else {
+                restore_job_asset_manager(state, &mut session);
                 return LoadingPump::Failed(anyhow::anyhow!(
                     "loading job had no initial map state"
                 ));
@@ -588,6 +614,12 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
             // `session.native` and `session.request` are disjoint fields, so the
             // launch-session/settings borrows below coexist with the native split.
             let startup = session.request.take_startup();
+            let Some(asset_manager) = session.job.asset_manager.as_mut() else {
+                restore_job_asset_manager(state, &mut session);
+                return LoadingPump::Failed(anyhow::anyhow!(
+                    "loading job lost its process asset manager"
+                ));
+            };
             let load_result = match session.native.as_mut() {
                 // Only repaint when the atlas is present; without it the bar
                 // cannot draw, so fall back to the gate-only sink.
@@ -615,12 +647,14 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     app_init::load_map_from_initial(
                         &state.gpu,
                         &state.batch_renderer,
+                        asset_manager,
                         initial,
                         startup,
                         &session.request.fallback_skirmish_settings,
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.vxl_compute.as_mut(),
+                        &mut state.tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
@@ -634,29 +668,33 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     app_init::load_map_from_initial(
                         &state.gpu,
                         &state.batch_renderer,
+                        asset_manager,
                         initial,
                         startup,
                         &session.request.fallback_skirmish_settings,
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.vxl_compute.as_mut(),
+                        &mut state.tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
                 None => app_init::load_map_from_initial(
                     &state.gpu,
                     &state.batch_renderer,
+                    asset_manager,
                     initial,
                     startup,
                     &session.request.fallback_skirmish_settings,
                     false,
                     0,
                     state.vxl_compute.as_mut(),
+                    &mut state.tile_variant_selector_cache,
                     &mut NoopProgressSink,
                 ),
             };
             match load_result {
-                Ok(result) => {
+                Ok(mut result) => {
                     if let Some(native) = session.native.as_mut() {
                         let terminal_raw_percent = native.progress_cadence.terminal_raw_percent();
                         advance_and_present_native_progress(
@@ -669,6 +707,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                             render_width,
                         );
                     }
+                    result.asset_manager = session.job.asset_manager.take();
                     LoadingPump::Finished(result)
                 }
                 Err(err) => LoadingPump::Failed(err),
@@ -678,67 +717,59 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
 
     if matches!(result, LoadingPump::Pending) {
         state.loading_session = Some(session);
+    } else if matches!(result, LoadingPump::Failed(_)) {
+        restore_job_asset_manager(state, &mut session);
     }
     result
 }
 
 fn ensure_job_asset_manager(state: &mut AppState) -> anyhow::Result<()> {
-    let Some(session) = state.loading_session.as_ref() else {
+    let Some(mut session) = state.loading_session.take() else {
         return Ok(());
     };
-    if session.job.asset_manager.is_some() {
-        return Ok(());
-    }
-
-    let ra2_dir = state
-        .game_config
-        .as_ref()
-        .map(|config| config.paths.ra2_dir.clone())
-        .ok_or_else(|| anyhow::anyhow!("missing game config for loading job assets"))?;
-    let asset_manager = AssetManager::new(&ra2_dir)?;
-
-    let Some(session) = state.loading_session.as_mut() else {
-        return Ok(());
-    };
-    session.job.ra2_dir = Some(ra2_dir);
-    session.job.asset_manager = Some(asset_manager);
-    Ok(())
+    let result = ensure_session_job_asset_manager(state, &mut session);
+    state.loading_session = Some(session);
+    result
 }
 
 fn loading_asset_manager(session: &LoadingSession) -> Option<&AssetManager> {
-    if let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase {
-        Some(initial.asset_manager())
-    } else {
-        session.job.asset_manager.as_ref()
-    }
+    session.job.asset_manager.as_ref()
 }
 
-fn take_job_assets_for_initial_load(
-    state: &AppState,
+fn ensure_session_job_asset_manager(
+    state: &mut AppState,
     session: &mut LoadingSession,
-) -> anyhow::Result<(PathBuf, AssetManager)> {
+) -> anyhow::Result<()> {
+    if session.job.ra2_dir.is_none() {
+        session.job.ra2_dir = Some(
+            state
+                .game_config
+                .as_ref()
+                .map(|config| config.paths.ra2_dir.clone())
+                .ok_or_else(|| anyhow::anyhow!("missing game config for loading job assets"))?,
+        );
+    }
     if session.job.asset_manager.is_none() {
-        let ra2_dir = state
-            .game_config
-            .as_ref()
-            .map(|config| config.paths.ra2_dir.clone())
-            .ok_or_else(|| anyhow::anyhow!("missing game config for loading job assets"))?;
-        let asset_manager = AssetManager::new(&ra2_dir)?;
-        session.job.ra2_dir = Some(ra2_dir);
+        let asset_manager = if let Some(asset_manager) = state.asset_manager.take() {
+            asset_manager
+        } else {
+            AssetManager::new(
+                session
+                    .job
+                    .ra2_dir
+                    .as_deref()
+                    .expect("RA2 directory was initialized above"),
+            )?
+        };
         session.job.asset_manager = Some(asset_manager);
     }
+    Ok(())
+}
 
-    let ra2_dir = session
-        .job
-        .ra2_dir
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("loading job missing RA2 directory"))?;
-    let asset_manager = session
-        .job
-        .asset_manager
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("loading job missing asset manager"))?;
-    Ok((ra2_dir, asset_manager))
+fn restore_job_asset_manager(state: &mut AppState, session: &mut LoadingSession) {
+    if state.asset_manager.is_none() {
+        state.asset_manager = session.job.asset_manager.take();
+    }
 }
 
 /// Parse a selected map before constructing its first loading frame.
@@ -768,16 +799,24 @@ fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyh
         return Ok(());
     };
     let requested_map_file = session.request.selected_map_file().to_string();
-    let result = take_job_assets_for_initial_load(state, &mut session).and_then(
-        |(ra2_dir, asset_manager)| {
-            app_init::load_map_initial_with_assets(
-                ra2_dir,
-                asset_manager,
-                Some(requested_map_file.as_str()),
-                &mut NoopProgressSink,
-            )
-        },
-    );
+    let result = ensure_session_job_asset_manager(state, &mut session).and_then(|()| {
+        let ra2_dir = session
+            .job
+            .ra2_dir
+            .clone()
+            .expect("asset-manager setup stores the RA2 directory");
+        let asset_manager = session
+            .job
+            .asset_manager
+            .as_mut()
+            .expect("asset-manager setup stores the manager");
+        app_init::load_map_initial_with_assets(
+            ra2_dir,
+            asset_manager,
+            Some(requested_map_file.as_str()),
+            &mut NoopProgressSink,
+        )
+    });
     match result {
         Ok(initial) => {
             session.job.phase = LoadingJobPhase::RemainingLegacyLoad(Some(initial));
@@ -899,8 +938,6 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
     {
         return Ok(());
     }
-    prepare_selected_map_initial_before_first_frame(state)?;
-    ensure_selected_map_composition_snapshot(state);
     if state
         .loading_session
         .as_ref()
@@ -909,6 +946,21 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
     {
         ensure_job_asset_manager(state)?;
     }
+    let loading_archives_ready = state
+        .loading_session
+        .as_mut()
+        .and_then(|session| session.job.asset_manager.as_mut())
+        .ok_or_else(|| {
+            anyhow::anyhow!("native loading job has no asset manager after initialization")
+        })?
+        .register_loading_archives()?;
+    if !loading_archives_ready {
+        return Err(anyhow::anyhow!(
+            "native loading archives LOADMD.MIX and LOAD.MIX are unavailable"
+        ));
+    }
+    prepare_selected_map_initial_before_first_frame(state)?;
+    ensure_selected_map_composition_snapshot(state);
     let Some(assets) = state
         .loading_session
         .as_ref()

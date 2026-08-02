@@ -84,6 +84,7 @@ pub(crate) fn select_weapon_muzzle_anim<'a>(anims: &'a [String], facing: u8) -> 
 }
 
 pub(crate) fn resolve_fire_origin_from_art(
+    screen_origin: (f32, f32),
     position: &Position,
     art: &ArtEntry,
     slot: WeaponSlot,
@@ -105,8 +106,8 @@ pub(crate) fn resolve_fire_origin_from_art(
         facing,
     );
     FireOrigin {
-        screen_x: position.screen_x + dx,
-        screen_y: position.screen_y + dy,
+        screen_x: screen_origin.0 + dx,
+        screen_y: screen_origin.1 + dy,
         rx: position.rx,
         ry: position.ry,
         sub_x: position.sub_x,
@@ -331,9 +332,10 @@ fn target_fire_destination(sim: &Simulation, target: TargetKind) -> Option<FireO
     match target {
         TargetKind::Entity(id) => {
             let entity = sim.entities().get(id)?;
+            let (screen_x, screen_y) = crate::render::locomotor_visual::screen_position(entity);
             Some(FireOrigin {
-                screen_x: entity.position.screen_x,
-                screen_y: entity.position.screen_y,
+                screen_x,
+                screen_y,
                 rx: entity.position.rx,
                 ry: entity.position.ry,
                 sub_x: entity.position.sub_x,
@@ -531,19 +533,19 @@ mod tests {
             IniFile::from_str("[GI]\nPrimaryFireFLH=80,0,105\nSecondaryFireFLH=80,0,90\n");
         let art = ArtRegistry::from_ini(&art_ini);
         let entry = art.resolve_metadata_entry("GI", "GI").unwrap();
-        let mut position = Position {
+        let position = Position {
             rx: 10,
             ry: 11,
             z: 0,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-            screen_x: 100.0,
-            screen_y: 200.0,
         };
-        position.refresh_screen_coords();
 
-        let primary = resolve_fire_origin_from_art(&position, entry, WeaponSlot::Primary, 0, 0);
-        let secondary = resolve_fire_origin_from_art(&position, entry, WeaponSlot::Secondary, 0, 0);
+        let origin = (100.0, 200.0);
+        let primary =
+            resolve_fire_origin_from_art(origin, &position, entry, WeaponSlot::Primary, 0, 0);
+        let secondary =
+            resolve_fire_origin_from_art(origin, &position, entry, WeaponSlot::Secondary, 0, 0);
         assert_ne!(primary.screen_y, secondary.screen_y);
         assert_eq!((primary.rx, primary.ry, primary.z), (10, 11, 0));
     }

@@ -101,7 +101,7 @@ pub(crate) fn hover_target_at_point(
         let type_str = sim.interner.resolve(entity.type_ref);
         let owner_str = sim.interner.resolve(entity.owner);
         let (sx, sy) = if is_structure {
-            (entity.position.screen_x, entity.position.screen_y)
+            crate::render::locomotor_visual::screen_position(entity)
         } else {
             crate::app_instances::interpolated_screen_position_entity(entity)
         };
@@ -420,7 +420,7 @@ fn pick_entity_at_point(
             ) {
                 continue;
             }
-            let (sx, sy) = (entity.position.screen_x, entity.position.screen_y);
+            let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
             let dx = sx - world_x;
             let dy = sy - world_y;
             let dist_sq = pick_distance_sq(dx, dy);

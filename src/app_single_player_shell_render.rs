@@ -35,12 +35,12 @@ pub(crate) enum SinglePlayerShellRenderResult {
     Fallback,
 }
 
-fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
+fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> std::borrow::Cow<'a, str> {
     state
         .csf
         .as_ref()
-        .and_then(|csf| csf.get(key))
-        .unwrap_or(key)
+        .map(|csf| csf.text(key))
+        .unwrap_or(std::borrow::Cow::Borrowed(key))
 }
 
 /// Map the layout + shell state into the owner-draw button list for the paint

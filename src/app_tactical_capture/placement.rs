@@ -1,11 +1,12 @@
 //! Deterministic tactical-capture building placement search.
 //!
 //! The iterator owns only candidate order. The live simulation remains the
-//! placement authority through `production::placement_preview_for_owner`.
+//! placement authority through `production::placement_preview_for_owner_with_overlays`.
 
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
@@ -121,7 +122,7 @@ pub(crate) fn ordered_square_ring_cells(
 ///
 /// The caller supplies the resolved local construction-yard identity and cell.
 /// This helper does not reserve cells, move blockers, or invoke the placement
-/// mutator; it only observes `placement_preview_for_owner`.
+/// mutator; it only observes `placement_preview_for_owner_with_overlays`.
 pub(crate) fn first_valid_placement(
     sim: &Simulation,
     rules: &RuleSet,
@@ -132,6 +133,7 @@ pub(crate) fn first_valid_placement(
     max_radius: u16,
     path_grid: &PathGrid,
     height_map: &BTreeMap<(u16, u16), u8>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Result<PlacementChoice, PlacementSearchError> {
     if path_grid.width() == 0 || path_grid.height() == 0 {
         return Err(PlacementSearchError::EmptyPathGrid);
@@ -174,7 +176,7 @@ pub(crate) fn first_valid_placement(
         path_grid.height(),
         max_radius,
     ) {
-        let preview = production::placement_preview_for_owner(
+        let preview = production::placement_preview_for_owner_with_overlays(
             sim,
             rules,
             owner,
@@ -183,6 +185,7 @@ pub(crate) fn first_valid_placement(
             candidate.cell.1,
             Some(path_grid),
             height_map,
+            overlay_registry,
         )
         .ok_or_else(|| PlacementSearchError::MissingPlacementType {
             type_id: type_id.to_string(),
@@ -313,7 +316,7 @@ Adjacent=2
         let expected = ordered
             .iter()
             .find(|candidate| {
-                production::placement_preview_for_owner(
+                production::placement_preview_for_owner_without_overlays(
                     &sim,
                     &rules,
                     "Russians",
@@ -338,6 +341,7 @@ Adjacent=2
             16,
             &grid,
             &heights,
+            None,
         )
         .expect("placement");
         let repeat = first_valid_placement(
@@ -350,6 +354,7 @@ Adjacent=2
             16,
             &grid,
             &heights,
+            None,
         )
         .expect("repeat placement");
 
@@ -374,6 +379,7 @@ Adjacent=2
                 16,
                 &grid,
                 &heights,
+                None,
             ),
             Err(PlacementSearchError::TargetNotReady { .. })
         ));
@@ -394,6 +400,7 @@ Adjacent=2
                 16,
                 &grid,
                 &heights,
+                None,
             ),
             Err(PlacementSearchError::AnchorYardMissing { .. })
         ));
@@ -413,6 +420,7 @@ Adjacent=2
                 16,
                 &grid,
                 &heights,
+                None,
             ),
             Err(PlacementSearchError::NoValidCell { .. })
         ));

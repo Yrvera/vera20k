@@ -593,6 +593,7 @@ fn dock_abort_state_from_miner(miner: &super::Miner) -> MinerState {
 
 fn start_refinery_exit_force_track(
     entity: &mut crate::sim::game_entity::GameEntity,
+    cell_occupation: &mut crate::sim::occupancy::CellOccupationGrid,
     speed: SimFixed,
 ) -> bool {
     let Some(forced) = movement::drive_track::begin_forced_turn_track(
@@ -604,10 +605,7 @@ fn start_refinery_exit_force_track(
     ) else {
         return false;
     };
-    entity.drive_track = None;
-    entity.forced_drive_track = Some(forced);
-    entity.facing_target = None;
-    true
+    movement::install_forced_drive_track(entity, cell_occupation, forced)
 }
 
 fn entity_full_speed(sim: &Simulation, rules: &RuleSet, entity_id: u64) -> SimFixed {
@@ -668,7 +666,11 @@ pub(crate) fn interrupt_refinery_docked_miners(
         bus_break(sim, entity_id, ref_sid);
         clear_refinery_contact(sim, entity_id, ref_sid);
         let speed = entity_full_speed(sim, rules, entity_id);
-        let Some(entity) = sim.substrate.entities.get_mut(entity_id) else {
+        let (entities, cell_occupation) = (
+            &mut sim.substrate.entities,
+            &mut sim.substrate.cell_occupation,
+        );
+        let Some(entity) = entities.get_mut(entity_id) else {
             continue;
         };
         let Some(miner) = entity.miner.as_mut() else {
@@ -696,7 +698,7 @@ pub(crate) fn interrupt_refinery_docked_miners(
         entity.display_type_override = None;
         entity.movement_target = None;
         entity.drive_track = None;
-        if was_on_pad && start_refinery_exit_force_track(entity, speed) {
+        if was_on_pad && start_refinery_exit_force_track(entity, cell_occupation, speed) {
             interrupted += 1;
         }
     }
@@ -896,13 +898,7 @@ fn phase_approach(
     {
         if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
             if let Some(grid) = path_grid {
-                issue_move_if_idle(
-                    &mut sim.substrate.entities,
-                    grid,
-                    snap.entity_id,
-                    wait_queue,
-                    snap.speed,
-                );
+                issue_move_if_idle(sim, rules, grid, snap.entity_id, wait_queue, snap.speed);
             }
         }
         return;
@@ -938,13 +934,7 @@ fn phase_approach(
     schedule_approach_hello(sim, rules, snap);
     if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
         if let Some(grid) = path_grid {
-            issue_move_if_idle(
-                &mut sim.substrate.entities,
-                grid,
-                snap.entity_id,
-                wait_queue,
-                snap.speed,
-            );
+            issue_move_if_idle(sim, rules, grid, snap.entity_id, wait_queue, snap.speed);
         }
     }
 }
@@ -990,13 +980,7 @@ fn phase_mission_enter(
         snap.miner.dock_queued = true;
         if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
             if let Some(grid) = path_grid {
-                issue_move_if_idle(
-                    &mut sim.substrate.entities,
-                    grid,
-                    snap.entity_id,
-                    wait_queue,
-                    snap.speed,
-                );
+                issue_move_if_idle(sim, rules, grid, snap.entity_id, wait_queue, snap.speed);
             }
         }
         schedule_enter_retry(sim, rules, snap);
@@ -1449,7 +1433,8 @@ fn is_adjacent_or_at(pos: (u16, u16), target: (u16, u16)) -> bool {
 
 /// Issue a move command only if the entity isn't already pathing to this target.
 fn issue_move_if_idle(
-    entities: &mut crate::sim::entity_store::EntityStore,
+    sim: &mut Simulation,
+    rules: &RuleSet,
     grid: &PathGrid,
     entity_id: u64,
     target: (u16, u16),
@@ -1458,14 +1443,37 @@ fn issue_move_if_idle(
     if target.0 >= grid.width() || target.1 >= grid.height() {
         return;
     }
-    let already = entities
+    let already = sim
+        .substrate
+        .entities
         .get(entity_id)
         .and_then(|e| e.movement_target.as_ref())
         .and_then(|mt| mt.path.last().copied())
         .is_some_and(|goal| goal == target);
     if !already {
-        let _ = movement::issue_move_command(
-            entities, grid, entity_id, target, speed, false, None, None, None, false,
+        let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
+            &sim.substrate.entities,
+            grid.width(),
+            grid.height(),
+            sim.resolved_terrain.as_ref(),
+            &sim.interner,
+            Some(rules),
+        );
+        let _ = movement::issue_move_command_with_layered(
+            &mut sim.substrate.entities,
+            grid,
+            entity_id,
+            target,
+            speed,
+            false,
+            None,
+            None,
+            sim.resolved_terrain.as_ref(),
+            sim.zone_grid.as_ref(),
+            None,
+            false,
+            Some(&blocker_neighbor_counts),
+            Some(&mut sim.substrate.cell_occupation),
         );
     }
 }

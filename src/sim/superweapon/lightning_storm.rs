@@ -231,10 +231,10 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
         z: 0,
         frame: 0,
         total_frames: frames,
-        rate_ms: 67, // ~15 fps
-        elapsed_ms: 0,
+        frame_delay: 1,
+        elapsed_frames: 0,
         translucent: true,
-        delay_ms: 0,
+        delay_frames: 0,
         start_sound_id: None,
         start_sound_emitted: false,
     });
@@ -300,10 +300,10 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
                 z: fx.z,
                 frame: 0,
                 total_frames: frames,
-                rate_ms: 67,
-                elapsed_ms: 0,
+                frame_delay: 1,
+                elapsed_frames: 0,
                 translucent: true,
-                delay_ms: 0,
+                delay_frames: 0,
                 start_sound_id: None,
                 start_sound_emitted: false,
             });
@@ -331,17 +331,17 @@ mod tests {
     use crate::sim::occupancy::CellListInsertion;
     use crate::sim::world::Simulation;
 
-    fn lightning_test_setup() -> (Simulation, RuleSet) {
-        // RuleSet only registers warheads referenced by a weapon, so a dummy
-        // unit + weapon are needed to anchor LWH in the warhead table.
+    fn registry_only_warhead_lightning_test_setup() -> (Simulation, RuleSet) {
+        // LWH is declared only by [Warheads]; no object or ordinary weapon
+        // points to it. This mirrors stock IonWH's Lightning Storm route.
         let rules = RuleSet::from_ini(&IniFile::from_str(
             "[InfantryTypes]\n0=DUMMY\n\n\
              [VehicleTypes]\n\n\
              [AircraftTypes]\n\n\
              [BuildingTypes]\n0=GAPOWR\n\n\
-             [DUMMY]\nStrength=100\nArmor=none\nSpeed=4\nPrimary=DUMMYW\n\n\
+             [Warheads]\n0=LWH\n\n\
+             [DUMMY]\nStrength=100\nArmor=none\nSpeed=4\n\n\
              [GAPOWR]\nStrength=200\nArmor=wood\n\n\
-             [DUMMYW]\nDamage=1\nROF=1\nRange=1\nWarhead=LWH\n\n\
              [General]\nLightningDamage=100\nLightningWarhead=LWH\n\n\
              [LWH]\nCellSpread=1\nPercentAtMax=1\nAnimList=EXPLOSION\n\
              Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
@@ -352,8 +352,8 @@ mod tests {
     }
 
     #[test]
-    fn lightning_strike_emits_anim_smudge_into_pending_requests() {
-        let (mut sim, rules) = lightning_test_setup();
+    fn registry_only_warhead_lightning_strike_emits_anim_smudge_into_pending_requests() {
+        let (mut sim, rules) = registry_only_warhead_lightning_test_setup();
         let owner = sim.interner.intern("Americans");
 
         spawn_bolt(&mut sim, &rules, 5, 5, owner);
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn lightning_bridge_strike_damages_only_bridge_layer() {
-        let (mut sim, rules) = lightning_test_setup();
+        let (mut sim, rules) = registry_only_warhead_lightning_test_setup();
         add_same_cell_bridge_targets(&mut sim, "DUMMY");
         let owner = sim.interner.intern("Americans");
 
@@ -398,8 +398,8 @@ mod tests {
     }
 
     #[test]
-    fn lightning_storm_crossing_condition_yellow_sets_building_damage_state() {
-        let (mut sim, rules) = lightning_test_setup();
+    fn registry_only_warhead_lightning_strike_damages_building_and_sets_damage_state() {
+        let (mut sim, rules) = registry_only_warhead_lightning_test_setup();
         let owner = sim.interner.intern("Americans");
         let type_ref = sim.interner.intern("GAPOWR");
         let mut building = GameEntity::test_default(10, "GAPOWR", "Soviet", 5, 5);
@@ -516,7 +516,10 @@ mod tests {
             canonical_ramp: None,
             ground_walk_blocked: false,
             terrain_object_blocks: false,
+            terrain_object_occupation: None,
             overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
             zone_type: 0,
             base_ground_walk_blocked: false,
             base_build_blocked: false,

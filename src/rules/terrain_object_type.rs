@@ -2,9 +2,9 @@
 //!
 //! Distinct from `terrain_rules` (which parses LAND types like Clear/Rough/Water).
 //! These are per-object-type definitions for terrain decorations — currently
-//! only TIBTRE (Tiberium Tree) is consumed by sim. Other terrain objects
-//! (TREE01, ROCK01, etc.) parse to the same struct but have all-default flags
-//! and are ignored by the spawner system.
+//! all terrain objects contribute their theater-selected occupation byte to
+//! resolved terrain. Only TIBTRE (Tiberium Tree) fields are consumed by the
+//! ore-spawner system.
 
 use crate::rules::foundation;
 use crate::rules::ini_parser::IniSection;

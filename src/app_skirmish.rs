@@ -26,6 +26,8 @@ use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::AiPlayerState;
 use crate::sim::house_state::{HouseDifficulty, HouseState};
+use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::rng::SimRng;
 use crate::sim::world::Simulation;
 use crate::skirmish_launch::{
     LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
@@ -200,14 +202,42 @@ fn apply_resolved_skirmish_launch_session(
         .to_game_options(session.opponents.len() as i32);
 
     sim.houses.clear();
+    sim.session.house_order.clear();
     sim.ai_players.clear();
-    populate_non_player_houses(sim, house_roster);
-    populate_launch_houses(sim, &slots);
-    sim.house_alliances = launch_alliance_map(house_roster, &slots);
+    populate_launch_houses(sim, &slots, rules);
+    populate_special_houses(sim, house_roster, rules);
+    sim.house_alliances = launch_alliance_map(house_roster, &slots, &session.mode);
     recount_house_owned_counts(sim);
 
-    let starts = waypoints::multiplayer_start_waypoints(&map_data.waypoints);
-    let assignments = assign_launch_starts(session, &starts, resolved_terrain);
+    let bounds = NativeStartBounds::from_session(sim, resolved_terrain);
+    let starts = native_gather_start_positions(
+        &map_data.waypoints,
+        slots.len(),
+        resolved_terrain,
+        &sim.substrate.occupancy,
+        bounds,
+        &mut sim.scenario_rng,
+    );
+    let assignments = if session
+        .mode
+        .override_file
+        .eq_ignore_ascii_case("MPCoopMD.ini")
+    {
+        let human_start_spots = map_data
+            .ini
+            .section("Header")
+            .and_then(|header| header.get_i32("NumCoopHumanStartSpots"))
+            .unwrap_or(0)
+            .max(0) as usize;
+        native_assign_cooperative_launch_starts(
+            session,
+            &starts,
+            human_start_spots,
+            &mut sim.scenario_rng,
+        )
+    } else {
+        native_assign_launch_starts(session, &starts, &mut sim.scenario_rng)
+    };
     // Session start-slot -> house table: filled after the random-assignment
     // draws, before tick 0 — lockstep state (hashed + serialized).
     sim.session.start_slot_houses.clear();
@@ -234,6 +264,7 @@ fn apply_resolved_skirmish_launch_session(
                 &slot.owner_name,
                 waypoint.rx,
                 waypoint.ry,
+                bounds,
                 rules,
                 height_map,
                 resolved_terrain,
@@ -271,8 +302,17 @@ fn apply_resolved_skirmish_launch_session(
         rules,
         height_map,
         resolved_terrain,
+        bounds,
         session.options.unit_count,
+        map_data
+            .special_flags
+            .initial_veteran
+            .unwrap_or(rules.initial_veteran),
     );
+
+    // The selected-mode starting-force orchestrator advances Scenario RNG once
+    // after the complete house pass, including zero-budget runs.
+    let _ = sim.scenario_rng.next_range_u32_inclusive(0, 0xffff);
 
     SkirmishLaunchApplyResult {
         local_owner,
@@ -331,14 +371,25 @@ fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<NormalizedSki
     slots
 }
 
-fn populate_non_player_houses(sim: &mut Simulation, house_roster: &HouseRoster) {
-    for house in &house_roster.houses {
-        if is_playable_faction_name(&house.name) {
-            continue;
-        }
-        let name_id = sim.interner.intern(&house.name);
-        let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
-        let side_idx = crate::sim::house_state::side_index_from_name(house.side.as_deref());
+fn populate_special_houses(sim: &mut Simulation, house_roster: &HouseRoster, rules: &RuleSet) {
+    for special_name in ["Neutral", "Special"] {
+        let definition = house_roster
+            .houses
+            .iter()
+            .find(|house| house.name.eq_ignore_ascii_case(special_name));
+        let name = definition.map_or(special_name, |house| house.name.as_str());
+        let name_id = sim.interner.intern(name);
+        let country_name = definition
+            .and_then(|house| house.country.as_deref())
+            .unwrap_or(special_name);
+        let country_id = Some(sim.interner.intern(country_name));
+        let declared_side = definition.and_then(|house| house.side.as_deref());
+        let side_idx = crate::sim::house_state::resolve_house_side_index(
+            rules,
+            Some(country_name),
+            declared_side,
+            crate::sim::house_state::side_index_from_name(declared_side),
+        );
         sim.houses.insert(
             name_id,
             HouseState::new(
@@ -350,16 +401,24 @@ fn populate_non_player_houses(sim: &mut Simulation, house_roster: &HouseRoster) 
                 sim.session.game_options.tech_level,
             ),
         );
+        sim.session.house_order.push(name_id);
     }
 }
 
-fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot]) {
+fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot], rules: &RuleSet) {
     for slot in slots {
         let name_id = sim.interner.intern(&slot.owner_name);
-        let country_id = sim.interner.intern(slot.country.country_name());
+        let country_name = slot.country.country_name();
+        let country_id = sim.interner.intern(country_name);
+        let side_index = crate::sim::house_state::resolve_house_side_index(
+            rules,
+            Some(country_name),
+            None,
+            slot.country.side_index(),
+        );
         let mut house = HouseState::new(
             name_id,
-            slot.country.side_index(),
+            side_index,
             Some(country_id),
             slot.is_human,
             sim.session.game_options.starting_credits,
@@ -367,6 +426,7 @@ fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot]
         );
         house.difficulty = slot.difficulty;
         sim.houses.insert(name_id, house);
+        sim.session.house_order.push(name_id);
         if !slot.is_human {
             sim.ai_players.push(AiPlayerState::new(name_id));
             log::info!("AI player registered: {}", slot.owner_name);
@@ -381,6 +441,7 @@ fn normalize_house_key(name: &str) -> String {
 fn launch_alliance_map(
     house_roster: &HouseRoster,
     slots: &[NormalizedSkirmishSlot],
+    mode: &crate::skirmish_launch::SkirmishLaunchMode,
 ) -> crate::map::houses::HouseAllianceMap {
     let mut alliances = house_roster.alliance_map();
     for slot in slots {
@@ -403,6 +464,22 @@ fn launch_alliance_map(
                 .or_default()
                 .insert(right_key.clone());
             alliances.entry(right_key).or_default().insert(left_key);
+        }
+    }
+    if mode.override_file.eq_ignore_ascii_case("MPCoopMD.ini") {
+        for left in slots {
+            for right in slots {
+                if left.owner_name == right.owner_name || left.is_human != right.is_human {
+                    continue;
+                }
+                let left_key = normalize_house_key(&left.owner_name);
+                let right_key = normalize_house_key(&right.owner_name);
+                alliances
+                    .entry(left_key.clone())
+                    .or_default()
+                    .insert(right_key.clone());
+                alliances.entry(right_key).or_default().insert(left_key);
+            }
         }
     }
     alliances
@@ -485,97 +562,360 @@ pub(crate) fn original_launch_start_assignments(
         .collect()
 }
 
-fn assign_launch_starts(
-    session: &SkirmishLaunchSession,
-    starts: &[Waypoint],
-    resolved_terrain: &ResolvedTerrainGrid,
-) -> Vec<(usize, Waypoint)> {
-    let slot_count = 1 + session.opponents.len();
-    let original_assignments = original_launch_start_assignments(session, starts);
-    let mut assignments: Vec<Option<Waypoint>> = vec![None; slot_count];
-    for (slot_idx, start) in original_assignments {
-        if let Some(assignment) = assignments.get_mut(slot_idx) {
-            *assignment = Some(start);
+#[derive(Debug, Clone, Copy)]
+struct NativeStartBounds {
+    min_rx: u16,
+    min_ry: u16,
+    width: u16,
+    height: u16,
+}
+
+impl NativeStartBounds {
+    fn from_session(sim: &Simulation, terrain: &ResolvedTerrainGrid) -> Self {
+        if sim.session.local_width != 0 && sim.session.local_height != 0 {
+            Self {
+                min_rx: sim.session.local_left,
+                min_ry: sim.session.local_top,
+                width: sim.session.local_width,
+                height: sim.session.local_height,
+            }
+        } else {
+            Self {
+                min_rx: 0,
+                min_ry: 0,
+                width: terrain.width(),
+                height: terrain.height(),
+            }
         }
     }
 
-    let mut reserved_cells: BTreeSet<(u16, u16)> =
-        starts.iter().map(|start| (start.rx, start.ry)).collect();
-    let mut next_fallback_index = u32::MAX;
-    for start in &mut assignments {
-        if start.is_some() {
-            continue;
+    fn max_rx(self) -> u16 {
+        self.min_rx.saturating_add(self.width.saturating_sub(1))
+    }
+
+    fn max_ry(self) -> u16 {
+        self.min_ry.saturating_add(self.height.saturating_sub(1))
+    }
+
+    fn clamp(self, rx: i32, ry: i32) -> (u16, u16) {
+        (
+            rx.clamp(i32::from(self.min_rx), i32::from(self.max_rx())) as u16,
+            ry.clamp(i32::from(self.min_ry), i32::from(self.max_ry())) as u16,
+        )
+    }
+
+    fn contains(self, rx: u16, ry: u16) -> bool {
+        rx >= self.min_rx && rx <= self.max_rx() && ry >= self.min_ry && ry <= self.max_ry()
+    }
+}
+
+/// Build the native multiplayer-start vector before assigning houses.
+///
+/// Only waypoint indices below the computed target count are examined. When
+/// authored starts are deficient, each retry consumes the two asymmetric
+/// ranged draws and runs the 8x8 nearby-passable search; invalid searches do
+/// not advance the vector and have no artificial retry cap.
+fn native_gather_start_positions(
+    waypoints: &HashMap<u32, Waypoint>,
+    participant_count: usize,
+    terrain: &ResolvedTerrainGrid,
+    occupancy: &crate::sim::occupancy::OccupancyGrid,
+    bounds: NativeStartBounds,
+    rng: &mut SimRng,
+) -> Vec<Waypoint> {
+    let authored_prefix = (0..8u32)
+        .take_while(|index| waypoints.contains_key(index))
+        .count();
+    let target_count = authored_prefix.max(participant_count);
+    let mut starts = Vec::with_capacity(target_count);
+
+    for index in 0..target_count as u32 {
+        if let Some(waypoint) = waypoints.get(&index) {
+            starts.push(*waypoint);
         }
-        let Some((rx, ry)) = find_deficient_start_fallback(resolved_terrain, &reserved_cells)
+    }
+
+    while starts.len() < target_count {
+        let x_span = u32::from(bounds.width.saturating_sub(10));
+        let y_high = u32::from(bounds.height.saturating_sub(10));
+        let seed_rx = rng
+            .next_range_u32_inclusive(0, x_span)
+            .wrapping_add(u32::from(bounds.min_rx))
+            .wrapping_add(10) as u16;
+        let seed_ry = rng
+            .next_range_u32_inclusive(10, y_high)
+            .wrapping_add(u32::from(bounds.min_ry)) as u16;
+
+        let Some((rx, ry)) = find_nearby_start_rect(terrain, occupancy, bounds, seed_rx, seed_ry)
         else {
-            log::warn!("No 8x8 Track-passable fallback start candidate found");
             continue;
         };
-        *start = Some(Waypoint {
-            index: next_fallback_index,
+        starts.push(Waypoint {
+            index: starts.len() as u32,
             rx,
             ry,
         });
-        next_fallback_index = next_fallback_index.saturating_sub(1);
-        reserved_cells.insert((rx, ry));
     }
 
-    assignments
-        .into_iter()
-        .enumerate()
-        .filter_map(|(idx, start)| start.map(|start| (idx, start)))
-        .collect()
+    starts
 }
 
-const DEFICIENT_START_RECT_W: u16 = 8;
-const DEFICIENT_START_RECT_H: u16 = 8;
-
-fn find_deficient_start_fallback(
+/// Reduced active call-shape of FootClass::Find_Nearby_Passable_Cell used by
+/// start gathering: scan square rings from the seed, finish the first ring
+/// containing an 8x8 passable candidate, and select its first candidate at
+/// frame zero.
+fn find_nearby_start_rect(
     terrain: &ResolvedTerrainGrid,
-    reserved_cells: &BTreeSet<(u16, u16)>,
+    occupancy: &crate::sim::occupancy::OccupancyGrid,
+    bounds: NativeStartBounds,
+    seed_rx: u16,
+    seed_ry: u16,
 ) -> Option<(u16, u16)> {
-    if terrain.width() < DEFICIENT_START_RECT_W || terrain.height() < DEFICIENT_START_RECT_H {
-        return None;
-    }
-    let max_rx = terrain.width() - DEFICIENT_START_RECT_W;
-    let max_ry = terrain.height() - DEFICIENT_START_RECT_H;
-    for ry in 0..=max_ry {
-        for rx in 0..=max_rx {
-            if reserved_cells.contains(&(rx, ry)) {
+    for radius in 0..32i32 {
+        let mut ring = Vec::new();
+        let r = radius;
+        for dx in -r..=r {
+            ring.push((i32::from(seed_rx) + dx, i32::from(seed_ry) - r));
+            if r != 0 {
+                ring.push((i32::from(seed_rx) + dx, i32::from(seed_ry) + r));
+            }
+        }
+        for dy in (1 - r)..r {
+            ring.push((i32::from(seed_rx) - r, i32::from(seed_ry) + dy));
+            if r != 0 {
+                ring.push((i32::from(seed_rx) + r, i32::from(seed_ry) + dy));
+            }
+        }
+
+        let mut accepted = Vec::new();
+        for (rx, ry) in ring {
+            if rx < i32::from(bounds.min_rx)
+                || ry < i32::from(bounds.min_ry)
+                || rx + i32::from(DEFICIENT_START_RECT_W) - 1 > i32::from(bounds.max_rx())
+                || ry + i32::from(DEFICIENT_START_RECT_H) - 1 > i32::from(bounds.max_ry())
+            {
                 continue;
             }
-            if deficient_start_rect_track_passable(terrain, rx, ry) {
-                return Some((rx, ry));
+            let (rx, ry) = (rx as u16, ry as u16);
+            if deficient_start_rect_track_passable(terrain, occupancy, rx, ry) {
+                accepted.push((rx, ry));
+                if accepted.len() == 24 {
+                    break;
+                }
             }
+        }
+        if let Some(first) = accepted.first().copied() {
+            return Some(first);
         }
     }
     None
 }
 
-fn deficient_start_rect_track_passable(terrain: &ResolvedTerrainGrid, rx: u16, ry: u16) -> bool {
-    for y in ry..ry + DEFICIENT_START_RECT_H {
-        for x in rx..rx + DEFICIENT_START_RECT_W {
-            let Some(cell) = terrain.cell(x, y) else {
-                return false;
-            };
-            if !deficient_start_cell_track_passable(cell) {
-                return false;
-            }
+/// Assign the gathered vector in HouseClass order: every human first, then
+/// AI. Explicit starts populate a last-writer-wins table; automatic selection
+/// follows the retail random/near/far branches and their exact draw points.
+fn native_assign_launch_starts(
+    session: &SkirmishLaunchSession,
+    starts: &[Waypoint],
+    rng: &mut SimRng,
+) -> Vec<(usize, Waypoint)> {
+    if starts.is_empty() {
+        return Vec::new();
+    }
+
+    let requested: Vec<LaunchStartPosition> = std::iter::once(session.local.start_position)
+        .chain(
+            session
+                .opponents
+                .iter()
+                .map(|opponent| opponent.start_position),
+        )
+        .collect();
+    let mut explicit_owner = vec![None; starts.len()];
+    for (slot, request) in requested.iter().enumerate() {
+        let LaunchStartPosition::Position(index) = request else {
+            continue;
+        };
+        if let Some(owner) = explicit_owner.get_mut(usize::from(*index)) {
+            *owner = Some(slot);
         }
     }
-    true
+
+    let mut occupied = vec![false; starts.len()];
+    let mut assigned = vec![None; requested.len()];
+    for (slot, is_human) in (0..requested.len())
+        .map(|slot| (slot, slot == 0))
+        .collect::<Vec<_>>()
+    {
+        let explicit = explicit_owner.iter().position(|owner| *owner == Some(slot));
+        let start_index =
+            explicit.unwrap_or_else(|| choose_automatic_start(starts, &occupied, is_human, rng));
+        occupied[start_index] = true;
+        assigned[slot] = Some(starts[start_index]);
+    }
+
+    assigned
+        .into_iter()
+        .enumerate()
+        .filter_map(|(slot, start)| start.map(|start| (slot, start)))
+        .collect()
 }
 
-fn deficient_start_cell_track_passable(
-    cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
-) -> bool {
-    if cell.has_bridge_deck && cell.bridge_walkable {
-        return true;
+/// Cooperative's custom start callback partitions authored positions into a
+/// human prefix and an AI suffix. The explicit Scenario start table reserves
+/// all of its entries before HouseClass iteration; automatic human placement
+/// draws within the prefix and probes forward, while the remaining houses
+/// take the first free suffix entry without a draw.
+fn native_assign_cooperative_launch_starts(
+    session: &SkirmishLaunchSession,
+    starts: &[Waypoint],
+    human_start_spots: usize,
+    rng: &mut SimRng,
+) -> Vec<(usize, Waypoint)> {
+    if starts.is_empty() {
+        return Vec::new();
     }
-    // The verified deficient-start call uses MovementZone 0, whose reduced
-    // movement-class row accepts only plain ground; overlay walls and outside
-    // cells reject through this cached zone type.
-    cell.zone_type == crate::map::resolved_terrain::zone_class::GROUND
+
+    let requested: Vec<LaunchStartPosition> = std::iter::once(session.local.start_position)
+        .chain(
+            session
+                .opponents
+                .iter()
+                .map(|opponent| opponent.start_position),
+        )
+        .collect();
+    let mut explicit_owner = vec![None; starts.len()];
+    for (slot, request) in requested.iter().enumerate() {
+        let LaunchStartPosition::Position(index) = request else {
+            continue;
+        };
+        if let Some(owner) = explicit_owner.get_mut(usize::from(*index)) {
+            *owner = Some(slot);
+        }
+    }
+
+    let mut occupied: Vec<bool> = explicit_owner.iter().map(Option::is_some).collect();
+    let human_house_count = 1usize;
+    let human_start_spots = human_start_spots.min(starts.len());
+    let mut assigned = vec![None; requested.len()];
+
+    for slot in 0..requested.len() {
+        let explicit = explicit_owner.iter().position(|owner| *owner == Some(slot));
+        let start_index = if let Some(explicit) = explicit {
+            explicit
+        } else {
+            let occupied_count = occupied.iter().filter(|used| **used).count();
+            if occupied_count < human_house_count && human_start_spots != 0 {
+                let mut candidate =
+                    rng.next_range_u32_inclusive(0, human_start_spots as u32 - 1) as usize;
+                while occupied[candidate] {
+                    candidate = (candidate + 1) % human_start_spots;
+                }
+                candidate
+            } else {
+                (human_start_spots..starts.len())
+                    .find(|candidate| !occupied[*candidate])
+                    .or_else(|| occupied.iter().position(|used| !*used))
+                    .expect("participant count cannot exceed gathered starts")
+            }
+        };
+        occupied[start_index] = true;
+        assigned[slot] = Some(starts[start_index]);
+    }
+
+    assigned
+        .into_iter()
+        .enumerate()
+        .filter_map(|(slot, start)| start.map(|start| (slot, start)))
+        .collect()
+}
+
+fn choose_automatic_start(
+    starts: &[Waypoint],
+    occupied: &[bool],
+    is_human: bool,
+    rng: &mut SimRng,
+) -> usize {
+    let used_count = occupied.iter().filter(|used| **used).count();
+    if used_count == 0 && is_human {
+        return rng.next_range_u32_inclusive(0, starts.len() as u32 - 1) as usize;
+    }
+
+    let free: Vec<usize> = occupied
+        .iter()
+        .enumerate()
+        .filter_map(|(index, used)| (!*used).then_some(index))
+        .collect();
+    if used_count == 2 && !is_human {
+        let ordinal = rng.next_range_u32_inclusive(0, free.len() as u32 - 1) as usize;
+        return free[ordinal];
+    }
+
+    let distance_sum = |candidate: usize| -> i32 {
+        occupied
+            .iter()
+            .enumerate()
+            .filter(|(_, used)| **used)
+            .map(|(other, _)| native_start_distance(starts[candidate], starts[other]))
+            .sum()
+    };
+    let mut iter = free.into_iter();
+    let mut selected = iter
+        .next()
+        .expect("participant count cannot exceed gathered starts");
+    let mut selected_sum = distance_sum(selected);
+    for candidate in iter {
+        let sum = distance_sum(candidate);
+        let replace = if used_count == 1 {
+            sum < selected_sum
+        } else {
+            sum > selected_sum
+        };
+        if replace {
+            selected = candidate;
+            selected_sum = sum;
+        }
+    }
+    selected
+}
+
+fn native_start_distance(left: Waypoint, right: Waypoint) -> i32 {
+    let dx = i32::from((left.rx as i16).wrapping_sub(right.rx as i16));
+    let dy = i32::from((left.ry as i16).wrapping_sub(right.ry as i16));
+    crate::map::rmg::x87::approx_sqrt_f32(dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)))
+        as i32
+}
+
+const DEFICIENT_START_RECT_W: u16 = 8;
+const DEFICIENT_START_RECT_H: u16 = 8;
+
+fn deficient_start_rect_track_passable(
+    terrain: &ResolvedTerrainGrid,
+    occupancy: &crate::sim::occupancy::OccupancyGrid,
+    rx: u16,
+    ry: u16,
+) -> bool {
+    crate::sim::cell_rect::check_passability_rect(
+        crate::sim::cell_rect::CellRectPassabilityContext {
+            rect: crate::sim::cell_rect::CellRect::new(
+                i32::from(rx),
+                i32::from(ry),
+                i32::from(DEFICIENT_START_RECT_W),
+                i32::from(DEFICIENT_START_RECT_H),
+            ),
+            speed_type: crate::rules::locomotor_type::SpeedType::Track,
+            required_zone_id: None,
+            movement_zone: crate::rules::locomotor_type::MovementZone::Normal,
+            required_height_or_level: None,
+            bridge_aware_zone: false,
+            reject_any_overlay: false,
+            path_grid: None,
+            resolved_terrain: Some(terrain),
+            overlay_grid: None,
+            occupancy: Some(occupancy),
+            zone_grid: None,
+        },
+    )
 }
 
 const STARTING_MCV_FACING: u8 = 64;
@@ -598,6 +938,7 @@ fn place_starting_mcv(
     owner: &str,
     base_rx: u16,
     base_ry: u16,
+    bounds: NativeStartBounds,
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
@@ -610,6 +951,7 @@ fn place_starting_mcv(
         base_ry,
         STARTING_MCV_FACING,
         1,
+        bounds,
         rules,
         height_map,
         resolved_terrain,
@@ -624,27 +966,57 @@ fn place_starting_object_near_base(
     base_ry: u16,
     facing: u8,
     start_radius: i32,
+    bounds: NativeStartBounds,
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
 ) -> Option<u64> {
-    if starting_mcv_cell_placeable(sim, resolved_terrain, base_rx, base_ry) {
+    let category = rules.object(type_id)?.category;
+    if starting_object_cell_placeable(sim, resolved_terrain, bounds, base_rx, base_ry, category) {
         return sim.spawn_object(type_id, owner, base_rx, base_ry, facing, rules, height_map);
     }
 
     for radius in start_radius..=STARTING_MCV_FALLBACK_MAX_RADIUS {
-        for (dx, dy) in STARTING_MCV_FALLBACK_DIRECTIONS {
-            let rx = base_rx as i32 + dx * radius;
-            let ry = base_ry as i32 + dy * radius;
-            if rx < 0 || ry < 0 {
-                continue;
-            }
-            let (rx, ry) = (rx as u16, ry as u16);
-            if !starting_mcv_cell_placeable(sim, resolved_terrain, rx, ry) {
-                continue;
-            }
-            if let Some(id) = sim.spawn_object(type_id, owner, rx, ry, facing, rules, height_map) {
-                return Some(id);
+        let start_direction = sim.scenario_rng.next_range_u32_inclusive(0, 7) as usize;
+        for jitter_pass in 0..2 {
+            for offset in 0..8 {
+                let direction = (start_direction + offset) & 7;
+                let (dx, dy) = STARTING_MCV_FALLBACK_DIRECTIONS[direction];
+                let (mut rx, mut ry) = bounds.clamp(
+                    i32::from(base_rx) + dx * radius,
+                    i32::from(base_ry) + dy * radius,
+                );
+
+                if jitter_pass != 0 {
+                    let x_amount = sim.scenario_rng.next_range_u32_inclusive(0, 1) as i32;
+                    let x_sign = sim.scenario_rng.next_range_u32_inclusive(0, 99);
+                    let y_amount = sim.scenario_rng.next_range_u32_inclusive(0, 1) as i32;
+                    let y_sign = sim.scenario_rng.next_range_u32_inclusive(0, 99);
+                    let jittered = bounds.clamp(
+                        i32::from(rx) + if x_sign < 50 { x_amount } else { -x_amount },
+                        i32::from(ry) + if y_sign < 50 { y_amount } else { -y_amount },
+                    );
+                    rx = jittered.0;
+                    ry = jittered.1;
+                }
+
+                if (rx, ry) == (base_rx, base_ry)
+                    || !starting_object_cell_placeable(
+                        sim,
+                        resolved_terrain,
+                        bounds,
+                        rx,
+                        ry,
+                        category,
+                    )
+                {
+                    continue;
+                }
+                if let Some(id) =
+                    sim.spawn_object(type_id, owner, rx, ry, facing, rules, height_map)
+                {
+                    return Some(id);
+                }
             }
         }
     }
@@ -658,27 +1030,37 @@ struct StartingUnitCandidate {
     cost: i32,
 }
 
+const STARTING_EXTRA_UNIT_MAX_PLACEMENT_FAILURES: u8 = 20;
+
+fn starting_unit_prefers_vehicle(spent: i32, budget: i32) -> bool {
+    // gamemd 0x005D7337..0x005D7349 compares remaining budget against
+    // trunc(initial_budget / 3). Expressed through `spent`, the strict
+    // boundary is initial_budget - trunc(initial_budget / 3).
+    spent < budget.wrapping_sub(budget / 3)
+}
+
 fn seed_starting_extra_units(
     sim: &mut Simulation,
     slots: &[NormalizedSkirmishSlot],
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
+    bounds: NativeStartBounds,
     unit_count: i32,
+    initial_veteran: bool,
 ) -> u32 {
     if unit_count <= 0 {
         return 0;
     }
     let budget = starting_unit_budget(
-        slots,
         rules,
-        unit_count,
+        slots,
         sim.session.game_options.tech_level,
+        unit_count,
     );
     if budget <= 0 {
         return 0;
     }
-    let spend_target = (budget.saturating_mul(2) / 3).max(1);
     let mut spawned = 0;
 
     for slot in slots {
@@ -695,18 +1077,32 @@ fn seed_starting_extra_units(
             slot.country,
             sim.session.game_options.tech_level,
         );
-        if candidates.is_empty() {
+        if candidates.vehicles.is_empty() && candidates.infantry.is_empty() {
             continue;
         }
-        let mut spent = 0;
-        let mut index = 0;
-        while spent < spend_target {
-            let candidate = &candidates[index % candidates.len()];
-            let candidate_cost = candidate.cost.max(1);
-            if spent > 0 && spent.saturating_add(candidate_cost) > spend_target {
-                break;
-            }
-            if place_starting_object_near_base(
+        let mut spent = 0i32;
+        let mut placement_failures_left = STARTING_EXTRA_UNIT_MAX_PLACEMENT_FAILURES;
+        while spent < budget && placement_failures_left != 0 {
+            let prefer_vehicle = starting_unit_prefers_vehicle(spent, budget);
+            let preferred = if prefer_vehicle {
+                &candidates.vehicles
+            } else {
+                &candidates.infantry
+            };
+            let pool = if preferred.is_empty() {
+                if prefer_vehicle {
+                    &candidates.infantry
+                } else {
+                    break;
+                }
+            } else {
+                preferred
+            };
+            let candidate_index =
+                sim.scenario_rng
+                    .next_range_u32_inclusive(0, pool.len() as u32 - 1) as usize;
+            let candidate = &pool[candidate_index];
+            let Some(stable_id) = place_starting_object_near_base(
                 sim,
                 &candidate.type_id,
                 &slot.owner_name,
@@ -714,18 +1110,32 @@ fn seed_starting_extra_units(
                 base_center.1,
                 STARTING_MCV_FACING,
                 STARTING_EXTRA_UNIT_FALLBACK_START_RADIUS,
+                bounds,
                 rules,
                 height_map,
                 resolved_terrain,
-            )
-            .is_some()
-            {
-                spawned += 1;
-                spent += candidate_cost;
-            } else {
-                break;
+            ) else {
+                placement_failures_left -= 1;
+                continue;
+            };
+
+            if initial_veteran {
+                if let Some(entity) = sim.entities_mut().get_mut(stable_id) {
+                    entity.veterancy = 200;
+                }
             }
-            index += 1;
+            let mission = if slot.is_human {
+                MissionType::Guard
+            } else {
+                MissionType::AreaGuard
+            };
+            let _ = sim.mission_assign_exact(
+                stable_id,
+                MissionId::from_known(mission),
+                sim.session.binary_frame,
+            );
+            spawned += 1;
+            spent = spent.wrapping_add(candidate.cost);
         }
     }
 
@@ -733,96 +1143,152 @@ fn seed_starting_extra_units(
 }
 
 fn starting_unit_budget(
-    slots: &[NormalizedSkirmishSlot],
     rules: &RuleSet,
-    unit_count: i32,
+    slots: &[NormalizedSkirmishSlot],
     tech_level: i32,
+    unit_count: i32,
 ) -> i32 {
     if unit_count <= 0 {
         return 0;
     }
-    let mut total_cost = 0;
-    let mut eligible_count = 0;
-    for id in rules.vehicle_ids.iter().chain(rules.infantry_ids.iter()) {
+    let mut total_cost: i32 = 0;
+    let mut eligible_count: i32 = 0;
+    for id in &rules.vehicle_ids {
         let Some(object) = rules.object(id) else {
             continue;
         };
-        if !starting_unit_candidate_allowed_for_any_slot(slots, rules, object, tech_level) {
+        if !object.allowed_to_start_in_multiplayer
+            || object.tech_level > tech_level
+            || !slots
+                .iter()
+                .any(|slot| launch_country_can_own_object(slot.country, object))
+            || rules
+                .general
+                .base_unit_types
+                .iter()
+                .any(|base_unit| base_unit.eq_ignore_ascii_case(&object.id))
+        {
             continue;
         }
-        eligible_count += 1;
-        total_cost += object.cost.max(0);
+        eligible_count += 1i32;
+        total_cost = total_cost.wrapping_add(object.cost);
     }
-    if eligible_count == 0 {
-        return 0;
+    for id in &rules.infantry_ids {
+        let Some(object) = rules.object(id) else {
+            continue;
+        };
+        if !object.allowed_to_start_in_multiplayer
+            || object.tech_level > tech_level
+            || !slots
+                .iter()
+                .any(|slot| launch_country_can_own_object(slot.country, object))
+        {
+            continue;
+        }
+        eligible_count += 1i32;
+        total_cost = total_cost.wrapping_add(object.cost);
     }
-    ((eligible_count / 2 + total_cost) / eligible_count) * unit_count
+    eligible_count = eligible_count.max(1);
+    (eligible_count / 2)
+        .wrapping_add(total_cost)
+        .wrapping_div(eligible_count)
+        .wrapping_mul(unit_count)
 }
 
-fn starting_unit_candidate_allowed_for_any_slot(
-    slots: &[NormalizedSkirmishSlot],
-    rules: &RuleSet,
-    object: &crate::rules::object_type::ObjectType,
-    tech_level: i32,
-) -> bool {
-    starting_unit_candidate_baseline_allowed(rules, object, tech_level)
-        && slots
-            .iter()
-            .any(|slot| launch_country_can_own_object(slot.country, object))
+#[derive(Debug, Default)]
+struct StartingUnitCandidates {
+    vehicles: Vec<StartingUnitCandidate>,
+    infantry: Vec<StartingUnitCandidate>,
 }
 
 fn starting_unit_candidates_for_country(
     rules: &RuleSet,
     country: LaunchCountry,
     tech_level: i32,
-) -> Vec<StartingUnitCandidate> {
-    rules
+) -> StartingUnitCandidates {
+    let vehicles = rules
         .vehicle_ids
         .iter()
-        .chain(rules.infantry_ids.iter())
         .filter_map(|id| {
             let object = rules.object(id)?;
-            if !starting_unit_candidate_baseline_allowed(rules, object, tech_level)
+            if !starting_unit_vehicle_allowed(rules, object, tech_level)
                 || !launch_country_can_own_object(country, object)
             {
                 return None;
             }
             Some(StartingUnitCandidate {
                 type_id: id.clone(),
-                cost: object.cost.max(1),
+                cost: object.cost,
             })
         })
-        .collect()
+        .collect();
+    let infantry = rules
+        .infantry_ids
+        .iter()
+        .filter_map(|id| {
+            let object = rules.object(id)?;
+            if !starting_unit_infantry_allowed(object, tech_level)
+                || !launch_country_can_own_object(country, object)
+            {
+                return None;
+            }
+            Some(StartingUnitCandidate {
+                type_id: id.clone(),
+                cost: object.cost,
+            })
+        })
+        .collect();
+    StartingUnitCandidates { vehicles, infantry }
 }
 
-fn starting_unit_candidate_baseline_allowed(
+fn starting_unit_vehicle_allowed(
     rules: &RuleSet,
     object: &crate::rules::object_type::ObjectType,
     tech_level: i32,
 ) -> bool {
     object.allowed_to_start_in_multiplayer
         && object.tech_level <= tech_level
-        && object.cost > 0
         && !rules
             .general
             .base_unit_types
             .iter()
             .any(|base_unit| base_unit.eq_ignore_ascii_case(&object.id))
-        && matches!(
-            object.category,
-            crate::rules::object_type::ObjectCategory::Vehicle
-                | crate::rules::object_type::ObjectCategory::Infantry
-        )
 }
 
-fn starting_mcv_cell_placeable(
+fn starting_unit_infantry_allowed(
+    object: &crate::rules::object_type::ObjectType,
+    tech_level: i32,
+) -> bool {
+    object.allowed_to_start_in_multiplayer && object.tech_level <= tech_level
+}
+
+fn starting_object_cell_placeable(
     sim: &Simulation,
     resolved_terrain: &ResolvedTerrainGrid,
+    bounds: NativeStartBounds,
     rx: u16,
     ry: u16,
+    category: crate::rules::object_type::ObjectCategory,
 ) -> bool {
-    if sim.occupancy().get(rx, ry).is_some() {
+    if !bounds.contains(rx, ry) {
         return false;
+    }
+    if let Some(occupancy) = sim.occupancy().get(rx, ry) {
+        let compatible_infantry = category == crate::rules::object_type::ObjectCategory::Infantry
+            && occupancy
+                .occupants
+                .first()
+                .and_then(|occupant| sim.entities().get(occupant.entity_id))
+                .is_some_and(|entity| entity.category == EntityCategory::Infantry)
+            && occupancy
+                .occupants
+                .iter()
+                .filter(|occupant| occupant.sub_cell.is_some())
+                .count()
+                < 5;
+        if !compatible_infantry {
+            return false;
+        }
     }
     let Some(cell) = resolved_terrain.cell(rx, ry) else {
         return false;
@@ -887,6 +1353,19 @@ mod tests {
         }
     }
 
+    fn test_cooperative_mode() -> SkirmishLaunchMode {
+        SkirmishLaunchMode {
+            id: 3,
+            ui_name_key: "GUI:Cooperative".to_string(),
+            tooltip_key: "STT:ModeCooperative".to_string(),
+            override_file: "MPCoopMD.ini".to_string(),
+            map_filter: "cooperative".to_string(),
+            random_maps_allowed: false,
+            allies_allowed: true,
+            must_ally: false,
+        }
+    }
+
     fn test_rules_with_base_units(
         base_units: &str,
         objects: &[(&str, &str, Option<&str>, Option<&str>)],
@@ -924,6 +1403,20 @@ mod tests {
         )
     }
 
+    fn ordered_country_side_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[Countries]\n\
+             0=Americans\n1=Alliance\n2=French\n3=Germans\n4=British\n\
+             5=Africans\n6=Arabs\n7=Confederation\n8=Russians\n9=YuriCountry\n\
+             10=GDI\n11=Nod\n12=Neutral\n13=Special\n\
+             [Sides]\n\
+             GDI=British,French,Germans,Americans,Alliance\n\
+             Nod=Russians,Africans,Confederation,Arabs\n\
+             ThirdSide=YuriCountry\nCivilian=Neutral\nMutant=Special\n",
+        );
+        RuleSet::from_ini(&ini).expect("ordered country/side rules parse")
+    }
+
     fn test_starting_unit_rules() -> RuleSet {
         let ini = IniFile::from_str(
             "[General]\nBaseUnit=AMCV,SMCV,PCV\n\
@@ -949,6 +1442,8 @@ mod tests {
         MapFile {
             header: crate::map::map_file::MapHeader {
                 theater: "TEMPERATE".to_string(),
+                fill: "Clear".to_string(),
+                level: 0,
                 width: 64,
                 height: 64,
                 local_left: 0,
@@ -979,12 +1474,22 @@ mod tests {
         }
     }
 
-    fn test_launch_starts() -> [Waypoint; 2] {
+    fn test_launch_starts() -> [Waypoint; 4] {
         [
             Waypoint {
                 index: 0,
                 rx: 10,
                 ry: 10,
+            },
+            Waypoint {
+                index: 1,
+                rx: 30,
+                ry: 10,
+            },
+            Waypoint {
+                index: 2,
+                rx: 10,
+                ry: 30,
             },
             Waypoint {
                 index: 3,
@@ -1050,7 +1555,10 @@ mod tests {
             canonical_ramp: None,
             ground_walk_blocked: false,
             terrain_object_blocks: false,
+            terrain_object_occupation: None,
             overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
             zone_type: zone_class::GROUND,
             base_ground_walk_blocked: false,
             base_build_blocked: false,
@@ -1164,64 +1672,133 @@ mod tests {
     }
 
     #[test]
-    fn assign_launch_starts_generates_fallback_for_deficient_start_pool() {
-        let mut session = test_session();
-        session.opponents[0].start_position = LaunchStartPosition::Position(3);
-        let starts = [Waypoint {
-            index: 3,
+    fn native_gather_generates_deficient_start_with_two_ranged_draws() {
+        let authored = Waypoint {
+            index: 0,
             rx: 30,
             ry: 30,
-        }];
-        let terrain = test_terrain(8, 8);
+        };
+        let waypoints = HashMap::from([(0, authored)]);
+        let terrain = test_terrain(64, 64);
+        let bounds = NativeStartBounds {
+            min_rx: 0,
+            min_ry: 0,
+            width: 64,
+            height: 64,
+        };
+        let mut rng = SimRng::new(9);
+        let mut expected = rng.clone();
+        let _ = expected.next_range_u32_inclusive(0, 54);
+        let _ = expected.next_range_u32_inclusive(10, 54);
+        let occupancy = crate::sim::occupancy::OccupancyGrid::new();
 
-        let original = original_launch_start_assignments(&session, &starts);
-        let assignments = assign_launch_starts(&session, &starts, &terrain);
+        let starts =
+            native_gather_start_positions(&waypoints, 2, &terrain, &occupancy, bounds, &mut rng);
 
-        assert_eq!(original, vec![(0, starts[0])]);
-        assert_eq!(assignments.len(), 2);
-        assert_eq!(assignments[0], original[0]);
-        assert_eq!(
-            assignments[1],
-            (
-                1,
-                Waypoint {
-                    index: u32::MAX,
-                    rx: 0,
-                    ry: 0,
-                }
-            )
-        );
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[0], authored);
+        assert_eq!(starts[1].index, 1);
+        assert!(deficient_start_rect_track_passable(
+            &terrain,
+            &occupancy,
+            starts[1].rx,
+            starts[1].ry
+        ));
+        assert_eq!(rng.logical_state(), expected.logical_state());
     }
 
     #[test]
-    fn assign_launch_starts_rejects_fallback_with_blocked_cell_inside_8x8_rect() {
-        let session = test_session();
-        let starts = [Waypoint {
-            index: 3,
-            rx: 30,
-            ry: 30,
-        }];
+    fn native_gather_rejects_a_blocked_cell_inside_the_8x8_rect() {
         let mut terrain = test_terrain(16, 8);
         let blocked = terrain.cell_mut(7, 7).unwrap();
         blocked.speed_costs.track = Some(0);
         blocked.base_speed_costs.track = Some(0);
         blocked.zone_type = zone_class::IMPASSABLE;
+        let occupancy = crate::sim::occupancy::OccupancyGrid::new();
 
-        let assignments = assign_launch_starts(&session, &starts, &terrain);
+        assert!(!deficient_start_rect_track_passable(
+            &terrain, &occupancy, 0, 0
+        ));
+        assert!(deficient_start_rect_track_passable(
+            &terrain, &occupancy, 8, 0
+        ));
+    }
 
-        assert_eq!(assignments.len(), 2);
-        assert_eq!(assignments[0], (0, starts[0]));
-        assert_eq!(
-            assignments[1],
-            (
-                1,
-                Waypoint {
-                    index: u32::MAX,
-                    rx: 8,
-                    ry: 0,
-                }
-            )
+    #[test]
+    fn native_gather_rejects_live_occupation_inside_the_8x8_rect() {
+        let terrain = test_terrain(16, 8);
+        let mut occupancy = crate::sim::occupancy::OccupancyGrid::new();
+        occupancy.add(
+            7,
+            7,
+            1,
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+            None,
+            crate::sim::occupancy::CellListInsertion::PrependNonBuilding,
         );
+
+        assert!(!deficient_start_rect_track_passable(
+            &terrain, &occupancy, 0, 0
+        ));
+        assert!(deficient_start_rect_track_passable(
+            &terrain, &occupancy, 8, 0
+        ));
+    }
+
+    #[test]
+    fn launch_registration_orders_participants_before_guaranteed_special_houses() {
+        let session = test_session();
+        let mut sim = Simulation::new();
+        let rules = test_standard_launch_rules();
+
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
+        populate_special_houses(&mut sim, &HouseRoster::default(), &rules);
+
+        let order: Vec<_> = sim
+            .session
+            .house_order
+            .iter()
+            .map(|id| sim.interner.resolve(*id))
+            .collect();
+        assert_eq!(order, ["Player", "Computer1", "Neutral", "Special"]);
+        assert_eq!(sim.houses.len(), 4);
+    }
+
+    #[test]
+    fn ordered_country_side_stock_identities_reach_skirmish_house_state() {
+        let mut session = test_session();
+        session.opponents.push(SkirmishAiSlot {
+            country: LaunchCountry::Yuri,
+            country_random: false,
+            color_index: 3,
+            color_random: false,
+            start_position: LaunchStartPosition::Auto,
+            team: LaunchTeam::None,
+            difficulty: Default::default(),
+        });
+        let rules = ordered_country_side_rules();
+        let mut sim = Simulation::new();
+
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
+        populate_special_houses(&mut sim, &HouseRoster::default(), &rules);
+
+        let side = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .map(|house| house.side_index)
+        };
+        assert_eq!(side("Player"), Some(0));
+        assert_eq!(side("Computer1"), Some(1));
+        assert_eq!(side("Computer2"), Some(2));
+        assert_eq!(side("Neutral"), Some(3));
+        assert_eq!(side("Special"), Some(4));
+
+        let country = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .and_then(|house| house.country)
+                .map(|country| sim.interner.resolve(country).to_string())
+        };
+        assert_eq!(country("Neutral"), Some("Neutral".to_string()));
+        assert_eq!(country("Special"), Some("Special".to_string()));
     }
 
     #[test]
@@ -1239,7 +1816,8 @@ mod tests {
             difficulty: Default::default(),
         });
         let slots = normalized_launch_slots(&session);
-        let alliances = launch_alliance_map(&roster_with_neutral_and_playable(), &slots);
+        let alliances =
+            launch_alliance_map(&roster_with_neutral_and_playable(), &slots, &session.mode);
 
         assert!(
             alliances
@@ -1260,8 +1838,10 @@ mod tests {
 
     #[test]
     fn skirmish_launch_team_sentinels_do_not_auto_ally() {
-        let slots = normalized_launch_slots(&test_session());
-        let alliances = launch_alliance_map(&roster_with_neutral_and_playable(), &slots);
+        let session = test_session();
+        let slots = normalized_launch_slots(&session);
+        let alliances =
+            launch_alliance_map(&roster_with_neutral_and_playable(), &slots, &session.mode);
 
         assert!(
             !alliances
@@ -1276,6 +1856,97 @@ mod tests {
     }
 
     #[test]
+    fn cooperative_mode_allies_nonspecial_houses_by_control_group() {
+        let mut session = test_session();
+        session.mode = test_cooperative_mode();
+        session.opponents.push(SkirmishAiSlot {
+            country: LaunchCountry::Cuba,
+            country_random: false,
+            color_index: 3,
+            color_random: false,
+            start_position: LaunchStartPosition::Auto,
+            team: LaunchTeam::None,
+            difficulty: Default::default(),
+        });
+        let slots = normalized_launch_slots(&session);
+
+        let alliances =
+            launch_alliance_map(&roster_with_neutral_and_playable(), &slots, &session.mode);
+
+        assert!(
+            alliances
+                .get("COMPUTER1")
+                .is_some_and(|allies| allies.contains("COMPUTER2"))
+        );
+        assert!(
+            !alliances
+                .get("PLAYER")
+                .is_some_and(|allies| allies.contains("COMPUTER1"))
+        );
+    }
+
+    #[test]
+    fn automatic_start_distance_uses_the_retail_lut_tie() {
+        let starts = [
+            Waypoint {
+                index: 0,
+                rx: 100,
+                ry: 100,
+            },
+            Waypoint {
+                index: 1,
+                rx: 100,
+                ry: 229,
+            },
+            Waypoint {
+                index: 2,
+                rx: 228,
+                ry: 100,
+            },
+        ];
+        assert_eq!(native_start_distance(starts[1], starts[0]), 128);
+        assert_eq!(native_start_distance(starts[2], starts[0]), 128);
+
+        let mut rng = SimRng::new(7);
+        assert_eq!(
+            choose_automatic_start(&starts, &[true, false, false], false, &mut rng),
+            1
+        );
+    }
+
+    #[test]
+    fn cooperative_start_uses_human_prefix_then_ai_suffix() {
+        let mut session = test_session();
+        session.local.start_position = LaunchStartPosition::Auto;
+        let starts = test_launch_starts();
+        let mut expected_rng = SimRng::new(17);
+        let expected_human = expected_rng.next_range_u32_inclusive(0, 1) as usize;
+        let mut rng = SimRng::new(17);
+
+        let assignments = native_assign_cooperative_launch_starts(&session, &starts, 2, &mut rng);
+
+        assert_eq!(assignments[0], (0, starts[expected_human]));
+        assert_eq!(assignments[1], (1, starts[2]));
+        assert_eq!(rng.logical_state(), expected_rng.logical_state());
+    }
+
+    #[test]
+    fn cooperative_explicit_table_is_reserved_before_house_iteration() {
+        let mut session = test_session();
+        session.local.start_position = LaunchStartPosition::Auto;
+        session.opponents[0].start_position = LaunchStartPosition::Position(0);
+        let starts = test_launch_starts();
+        let mut rng = SimRng::new(17);
+        let before = rng.logical_state();
+
+        let assignments = native_assign_cooperative_launch_starts(&session, &starts, 2, &mut rng);
+
+        assert_eq!(assignments[0], (0, starts[2]));
+        assert_eq!(assignments[1], (1, starts[0]));
+        assert_eq!(rng.logical_state(), before);
+    }
+
+    #[test]
     fn skirmish_launch_start_position_and_team_are_independent() {
         let mut session = test_session();
         session.local.start_position = LaunchStartPosition::Position(3);
@@ -1283,25 +1954,16 @@ mod tests {
         session.opponents[0].start_position = LaunchStartPosition::Position(0);
         session.opponents[0].team = LaunchTeam::Team(0);
         let slots = normalized_launch_slots(&session);
-        let starts = [
-            Waypoint {
-                index: 0,
-                rx: 10,
-                ry: 10,
-            },
-            Waypoint {
-                index: 3,
-                rx: 30,
-                ry: 30,
-            },
-        ];
-        let terrain = test_terrain(16, 16);
+        let starts = test_launch_starts();
+        let mut rng = SimRng::new(17);
+        let before = rng.logical_state();
+        let assignments = native_assign_launch_starts(&session, &starts, &mut rng);
+        let alliances =
+            launch_alliance_map(&roster_with_neutral_and_playable(), &slots, &session.mode);
 
-        let assignments = assign_launch_starts(&session, &starts, &terrain);
-        let alliances = launch_alliance_map(&roster_with_neutral_and_playable(), &slots);
-
-        assert_eq!(assignments[0], (0, starts[1]));
+        assert_eq!(assignments[0], (0, starts[3]));
         assert_eq!(assignments[1], (1, starts[0]));
+        assert_eq!(rng.logical_state(), before);
         assert!(
             alliances
                 .get("PLAYER")
@@ -1341,7 +2003,7 @@ mod tests {
         assert_eq!(
             crate::sim::house_state::house_state_for_owner(&sim.houses, "Computer1", &sim.interner)
                 .and_then(|house| house.base_center),
-            Some((10, 10))
+            Some((30, 10))
         );
     }
 
@@ -1461,7 +2123,8 @@ mod tests {
         let starts = test_launch_starts();
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
-        let scenario_before = sim.rng_state().scenario;
+        let mut expected_scenario = sim.scenario_rng.clone();
+        let _ = expected_scenario.next_range_u32_inclusive(0, 0xffff);
 
         let result = apply_explicit_skirmish_launch_session(
             &mut sim,
@@ -1475,7 +2138,7 @@ mod tests {
 
         assert_eq!(result.spawned_mcvs, 0);
         assert_eq!(result.active_slots, 2);
-        assert_eq!(sim.rng_state().scenario, scenario_before);
+        assert_eq!(sim.rng_state().scenario, expected_scenario.logical_state());
         assert!(
             session.local.country_random,
             "the borrowed poison fixture must remain marked random"
@@ -1497,7 +2160,8 @@ mod tests {
             .collect();
 
         let mut sim = Simulation::new();
-        populate_launch_houses(&mut sim, &normalized_launch_slots(&session));
+        let rules = test_standard_launch_rules();
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
 
         let difficulty = |owner: &str| {
             crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
@@ -1517,7 +2181,8 @@ mod tests {
         session.options.unit_count = 1;
         let terrain = test_terrain(64, 64);
         let starts = test_launch_starts();
-        let map = test_map_with_starts(&starts);
+        let mut map = test_map_with_starts(&starts);
+        map.special_flags.initial_veteran = Some(true);
         let rules = test_starting_unit_rules();
 
         let result = apply_explicit_skirmish_launch_session(
@@ -1531,9 +2196,22 @@ mod tests {
         );
 
         assert_eq!(result.spawned_mcvs, 0);
-        assert_eq!(sim.entities().len(), 2);
+        assert_eq!(sim.entities().len(), 4);
         assert_eq!(entity_position_for_owner(&sim, "Player"), Some((30, 30)));
-        assert_eq!(entity_position_for_owner(&sim, "Computer1"), Some((10, 10)));
+        assert_eq!(entity_position_for_owner(&sim, "Computer1"), Some((30, 10)));
+        assert!(
+            sim.entities()
+                .values()
+                .all(|entity| entity.veterancy == 200)
+        );
+        assert!(sim.entities().values().all(|entity| {
+            let expected = if sim.interner.resolve(entity.owner) == "Player" {
+                MissionType::Guard
+            } else {
+                MissionType::AreaGuard
+            };
+            entity.mission.current().known() == Some(expected)
+        }));
     }
 
     #[test]
@@ -1608,6 +2286,11 @@ mod tests {
             &test_height_map(),
         )
         .expect("blocker");
+        let mut expected_rng = sim.scenario_rng.clone();
+        let direction = expected_rng.next_range_u32_inclusive(0, 7) as usize;
+        let (dx, dy) = STARTING_MCV_FALLBACK_DIRECTIONS[direction];
+        let expected_position = ((30i32 + dx) as u16, (30i32 + dy) as u16);
+        let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
 
         let result = apply_explicit_skirmish_launch_session(
             &mut sim,
@@ -1625,20 +2308,30 @@ mod tests {
                 .and_then(|house| house.base_center),
             Some((30, 30))
         );
-        assert_eq!(entity_position_for_owner(&sim, "Player"), Some((30, 29)));
+        assert_eq!(
+            entity_position_for_owner(&sim, "Player"),
+            Some(expected_position)
+        );
+        assert_eq!(
+            sim.rng_state().scenario,
+            expected_rng.logical_state(),
+            "one direction draw plus the final sync draw"
+        );
     }
 
     #[test]
-    fn skirmish_start_unit_budget_filters_spawnable_tech_and_house_mask() {
+    fn skirmish_start_unit_budget_is_global_but_house_pools_filter_tech_and_mask() {
         let rules = test_starting_unit_rules();
         let slots = normalized_launch_slots(&test_session());
 
-        assert_eq!(starting_unit_budget(&slots, &rules, 2, 10), 334);
+        assert_eq!(starting_unit_budget(&rules, &slots, 10, 2), 334);
 
         let allied_candidates =
             starting_unit_candidates_for_country(&rules, LaunchCountry::America, 10);
         let allied_ids: Vec<&str> = allied_candidates
+            .vehicles
             .iter()
+            .chain(allied_candidates.infantry.iter())
             .map(|candidate| candidate.type_id.as_str())
             .collect();
         assert_eq!(allied_ids, vec!["MTNK", "E1"]);
@@ -1646,7 +2339,9 @@ mod tests {
         let soviet_candidates =
             starting_unit_candidates_for_country(&rules, LaunchCountry::Russia, 10);
         let soviet_ids: Vec<&str> = soviet_candidates
+            .vehicles
             .iter()
+            .chain(soviet_candidates.infantry.iter())
             .map(|candidate| candidate.type_id.as_str())
             .collect();
         assert_eq!(soviet_ids, vec!["HTNK"]);
@@ -1655,14 +2350,93 @@ mod tests {
     #[test]
     fn skirmish_start_unit_budget_excludes_baseunit_entries() {
         let rules = test_starting_unit_rules();
+        let slots = normalized_launch_slots(&test_session());
 
         let allied_candidates =
             starting_unit_candidates_for_country(&rules, LaunchCountry::America, 10);
+        assert_eq!(starting_unit_budget(&rules, &slots, 10, 1), 167);
 
         assert!(
             !allied_candidates
+                .vehicles
                 .iter()
                 .any(|candidate| candidate.type_id == "AMCV")
+        );
+    }
+
+    #[test]
+    fn skirmish_start_unit_vehicle_phase_preserves_native_third_rounding() {
+        assert!(starting_unit_prefers_vehicle(0, 4));
+        assert!(
+            starting_unit_prefers_vehicle(2, 4),
+            "remaining 2 is still greater than trunc(4 / 3)"
+        );
+        assert!(!starting_unit_prefers_vehicle(3, 4));
+    }
+
+    #[test]
+    fn skirmish_start_unit_blocked_placement_stops_after_twenty_failures() {
+        let mut sim = Simulation::new();
+        let session = test_session();
+        sim.session.game_options = session.options.to_game_options(0);
+        let all_slots = normalized_launch_slots(&session);
+        let slots = &all_slots[..1];
+        let rules = test_starting_unit_rules();
+        populate_launch_houses(&mut sim, slots, &rules);
+        crate::sim::house_state::house_state_for_owner_mut(
+            &mut sim.houses,
+            &slots[0].owner_name,
+            &sim.interner,
+        )
+        .expect("launch house")
+        .base_center = Some((32, 32));
+
+        let mut terrain = test_terrain(64, 64);
+        for ry in 0..terrain.height() {
+            for rx in 0..terrain.width() {
+                terrain
+                    .cell_mut(rx, ry)
+                    .expect("terrain cell")
+                    .overlay_blocks = true;
+            }
+        }
+        let bounds = NativeStartBounds::from_session(&sim, &terrain);
+        let mut expected_rng = sim.scenario_rng.clone();
+        assert_eq!(STARTING_EXTRA_UNIT_MAX_PLACEMENT_FAILURES, 20);
+        for _ in 0..20 {
+            // The only eligible vehicle has a one-entry pool. RandomRanged(0,0)
+            // is still called but does not advance the native RNG.
+            let _ = expected_rng.next_range_u32_inclusive(0, 0);
+            for _radius in
+                STARTING_EXTRA_UNIT_FALLBACK_START_RADIUS..=STARTING_MCV_FALLBACK_MAX_RADIUS
+            {
+                let _ = expected_rng.next_range_u32_inclusive(0, 7);
+                for _direction in 0..8 {
+                    let _ = expected_rng.next_range_u32_inclusive(0, 1);
+                    let _ = expected_rng.next_range_u32_inclusive(0, 99);
+                    let _ = expected_rng.next_range_u32_inclusive(0, 1);
+                    let _ = expected_rng.next_range_u32_inclusive(0, 99);
+                }
+            }
+        }
+
+        let spawned = seed_starting_extra_units(
+            &mut sim,
+            slots,
+            &rules,
+            &test_height_map(),
+            &terrain,
+            bounds,
+            1,
+            false,
+        );
+
+        assert_eq!(spawned, 0);
+        assert!(sim.entities().is_empty());
+        assert_eq!(
+            sim.rng_state().scenario,
+            expected_rng.logical_state(),
+            "candidate plus fallback draws stop after the twentieth failed placement"
         );
     }
 
@@ -1670,7 +2444,7 @@ mod tests {
     fn skirmish_positive_unit_count_spawns_extra_starting_units() {
         let mut sim = Simulation::new();
         let mut session = test_session();
-        session.options.unit_count = 1;
+        session.options.unit_count = 2;
         let terrain = test_terrain(64, 64);
         let starts = test_launch_starts();
         let map = test_map_with_starts(&starts);
@@ -1687,7 +2461,7 @@ mod tests {
         );
 
         assert_eq!(result.spawned_mcvs, 2);
-        assert_eq!(sim.entities().len(), 4);
+        assert_eq!(sim.entities().len(), 9);
         let player_units = sim
             .entities()
             .values()
@@ -1698,8 +2472,8 @@ mod tests {
             .values()
             .filter(|entity| sim.interner.resolve(entity.owner) == "Computer1")
             .count();
-        assert_eq!(player_units, 2);
-        assert_eq!(ai_units, 2);
+        assert_eq!(player_units, 5);
+        assert_eq!(ai_units, 4);
     }
 
     #[test]

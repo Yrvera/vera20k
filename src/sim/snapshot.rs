@@ -8,6 +8,8 @@
 //! - Part of sim/ — depends only on sim/world (Simulation).
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 use crate::sim::world::Simulation;
@@ -82,7 +84,25 @@ use crate::sim::world::Simulation;
 // Bumped 29 -> 30: the miner FSM cursor (`Miner.state`) retired from the
 // serialized Miner component — `MissionCom.handler_state` is the cursor of
 // record (Harvest handler absorption / substate-authority flip).
-const SNAPSHOT_VERSION: u32 = 30;
+// Bumped 33 -> 34: ParticleSystemStore moved into ObjectSubstrate and became
+// serialized; particle systems now share object IDs, LogicVector membership,
+// and deferred finalization.
+// Bumped 34 -> 35: Phase-0 persistence contract. ScenarioSession gains native
+// HouseClass registration order and a wrapping 32-bit frame; frame-anchored
+// timers replace reduced countdown state; HouseState gains MapIsClear;
+// GameEntity persists MoveSound grace state and HomingTarget's object/cell
+// discriminator; PassengerCargo persists one Size value per entry; animation
+// membership is rebuilt rather than serialized. Production loading now also
+// enforces exact map/rules/session metadata before stable-ID fixup.
+// Bumped 35 -> 36: lifecycle target and animation identity state is persisted.
+// Bumped 36 -> 37: process-global Main/MapGen RNG cursors are no longer
+// serialized; production load retains their live pre-load process state.
+// Bumped 37 -> 38: DriveLocomotionRuntime persists the independent head-to
+// occupation footprint and whether the current-cell occupation was cleared.
+// Bumped 38 -> 39: overlay wall ownership became authoritative persisted state.
+// Bumped 39 -> 40: ObjectSubstrate persists the authoritative per-cell raw
+// ground/deck occupation bytes instead of reconstructing them from object lists.
+const SNAPSHOT_VERSION: u32 = 40;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -122,12 +142,89 @@ pub struct GameSnapshotHeader {
 pub enum SnapshotError {
     #[error("snapshot version {found} does not match expected {expected}")]
     VersionMismatch { expected: u32, found: u32 },
-    #[error("map hash mismatch — save was made on a different map")]
-    MapMismatch,
-    #[error("rules hash mismatch — save was made with different rules")]
-    RulesMismatch,
+    #[error("map hash {found:#018x} does not match active map {expected:#018x}")]
+    MapMismatch { expected: u64, found: u64 },
+    #[error("rules hash {found:#018x} does not match active rules {expected:#018x}")]
+    RulesMismatch { expected: u64, found: u64 },
+    #[error("snapshot map name {found:?} does not match active map {expected:?}")]
+    MapNameMismatch { expected: String, found: String },
+    #[error(
+        "snapshot header tick {header_tick} does not match serialized simulation tick {simulation_tick}"
+    )]
+    TickMetadataMismatch {
+        header_tick: u64,
+        simulation_tick: u64,
+    },
+    #[error(
+        "snapshot header map name {header_map_name:?} does not match serialized session map name {simulation_map_name:?}"
+    )]
+    MapNameMetadataMismatch {
+        header_map_name: String,
+        simulation_map_name: String,
+    },
     #[error("deserialization failed: {0}")]
     DeserializeFailed(#[from] bincode::Error),
+}
+
+/// Structural failures found before a deserialized simulation is admitted.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SnapshotRestoreError {
+    #[error("{registry} contains reserved object id 0")]
+    ReservedObjectId { registry: &'static str },
+    #[error(
+        "{registry} registry key {registry_id} does not match the object's serialized id {object_id}"
+    )]
+    ObjectIdentityMismatch {
+        registry: &'static str,
+        registry_id: u64,
+        object_id: u64,
+    },
+    #[error("object id {object_id} is registered by both {first_registry} and {second_registry}")]
+    DuplicateObjectIdentity {
+        object_id: u64,
+        first_registry: &'static str,
+        second_registry: &'static str,
+    },
+    #[error("next object id {next_id} is not after the highest restored object id {highest_id}")]
+    ObjectIdCounterBehind { next_id: u64, highest_id: u64 },
+    #[error(
+        "next occupancy-enter order {next_order} is not after the highest restored order {highest_order}"
+    )]
+    OccupancyOrderCounterBehind { next_order: u64, highest_order: u64 },
+    #[error("LogicVector contains duplicate object id {object_id}")]
+    DuplicateLogicIdentity { object_id: u64 },
+    #[error("LogicVector object id {object_id} has no restored registry identity")]
+    MissingLogicIdentity { object_id: u64 },
+    #[error(
+        "{source_registry} object {source_id} field {field} references missing {target_registry} object {target_id}"
+    )]
+    UnresolvedObjectReference {
+        source_registry: &'static str,
+        source_id: u64,
+        field: &'static str,
+        target_registry: &'static str,
+        target_id: u64,
+    },
+    #[error(
+        "carrier {carrier_id} has {passenger_count} passengers but {size_count} saved Size entries"
+    )]
+    PassengerSizeCountMismatch {
+        carrier_id: u64,
+        passenger_count: usize,
+        size_count: usize,
+    },
+    #[error(
+        "carrier {carrier_id} saved total Size {saved_total}, but its entry sizes sum to {computed_total}"
+    )]
+    PassengerSizeTotalMismatch {
+        carrier_id: u64,
+        saved_total: u32,
+        computed_total: u64,
+    },
+    #[error(
+        "entity {object_id} has active MoveSound state but no restorable configured sound identity"
+    )]
+    ActiveMoveSoundUnresolvable { object_id: u64 },
 }
 
 /// Internal borrow-based envelope for serialization (avoids cloning Simulation).
@@ -143,14 +240,7 @@ struct GameSnapshotRef<'a> {
 }
 
 impl GameSnapshot {
-    /// Serialize the current simulation state into a binary save blob.
-    ///
-    /// The caller provides hashes of the current map and rules, the current
-    /// tick, the map name, and the wall-clock save timestamp (seconds since
-    /// UNIX epoch) for header metadata. The timestamp is taken at the app
-    /// layer — sim/ must not read the system clock so headless/replay builds
-    /// stay clock-independent.
-    pub fn save(
+    fn serialize(
         sim: &Simulation,
         map_hash: u64,
         rules_hash: u64,
@@ -169,19 +259,102 @@ impl GameSnapshot {
         bincode::serialize(&snapshot).expect("snapshot serialization should not fail")
     }
 
-    /// Deserialize a snapshot from bytes.
+    /// Serialize a production save with metadata owned by the active session.
     ///
-    /// Checks the version field but NOT map/rules hashes — the caller decides
-    /// policy on hash mismatches (warn vs reject).
-    pub fn load(bytes: &[u8]) -> Result<GameSnapshot, SnapshotError> {
-        let header: GameSnapshotHeader = bincode::deserialize(bytes)?;
-        if header.version != SNAPSHOT_VERSION {
-            return Err(SnapshotError::VersionMismatch {
-                expected: SNAPSHOT_VERSION,
-                found: header.version,
+    /// Map/rules digests come from the app's loaded content owners. Tick and map
+    /// name are copied from `ScenarioSession`, so the envelope cannot disagree
+    /// with the authoritative body. The app supplies the wall-clock timestamp;
+    /// sim code remains clock-independent.
+    pub fn save_validated(
+        sim: &Simulation,
+        map_hash: u64,
+        rules_hash: u64,
+        save_timestamp: u64,
+    ) -> Vec<u8> {
+        Self::serialize(
+            sim,
+            map_hash,
+            rules_hash,
+            &sim.session.map_name,
+            save_timestamp,
+        )
+    }
+
+    /// Test-only constructor for deliberately synthetic envelope metadata.
+    #[cfg(test)]
+    pub(crate) fn save(
+        sim: &Simulation,
+        map_hash: u64,
+        rules_hash: u64,
+        map_name: &str,
+        save_timestamp: u64,
+    ) -> Vec<u8> {
+        Self::serialize(sim, map_hash, rules_hash, map_name, save_timestamp)
+    }
+
+    /// Deserialize a current-version snapshot without content validation.
+    ///
+    /// This exists for internal tests and diagnostics. Production restoration
+    /// must use [`Self::load_validated`].
+    pub(crate) fn load_unchecked(bytes: &[u8]) -> Result<GameSnapshot, SnapshotError> {
+        let _ = Self::read_header(bytes)?;
+        Ok(bincode::deserialize(bytes)?)
+    }
+
+    /// Compatibility alias for existing unit fixtures that intentionally use
+    /// synthetic zero hashes and header-only map names.
+    #[cfg(test)]
+    pub(crate) fn load(bytes: &[u8]) -> Result<GameSnapshot, SnapshotError> {
+        Self::load_unchecked(bytes)
+    }
+
+    /// Deserialize only when the save belongs to the exact active content.
+    ///
+    /// Version and compatibility metadata are rejected before the simulation
+    /// body is admitted. The duplicated preview metadata must also agree with
+    /// `ScenarioSession`; no warning/continue or zero-hash sentinel exists.
+    /// The returned Main/MapGen fields are deserialize placeholders; the app's
+    /// production load seam replaces them with the live process cursors.
+    pub fn load_validated(
+        bytes: &[u8],
+        expected_map_hash: u64,
+        expected_rules_hash: u64,
+        expected_map_name: &str,
+    ) -> Result<GameSnapshot, SnapshotError> {
+        let header = Self::read_header(bytes)?;
+        if header.map_hash != expected_map_hash {
+            return Err(SnapshotError::MapMismatch {
+                expected: expected_map_hash,
+                found: header.map_hash,
             });
         }
-        Ok(bincode::deserialize(bytes)?)
+        if header.rules_hash != expected_rules_hash {
+            return Err(SnapshotError::RulesMismatch {
+                expected: expected_rules_hash,
+                found: header.rules_hash,
+            });
+        }
+        if header.map_name != expected_map_name {
+            return Err(SnapshotError::MapNameMismatch {
+                expected: expected_map_name.to_string(),
+                found: header.map_name,
+            });
+        }
+
+        let snapshot: GameSnapshot = bincode::deserialize(bytes)?;
+        if snapshot.tick != snapshot.sim.session.tick {
+            return Err(SnapshotError::TickMetadataMismatch {
+                header_tick: snapshot.tick,
+                simulation_tick: snapshot.sim.session.tick,
+            });
+        }
+        if snapshot.map_name != snapshot.sim.session.map_name {
+            return Err(SnapshotError::MapNameMetadataMismatch {
+                header_map_name: snapshot.map_name,
+                simulation_map_name: snapshot.sim.session.map_name,
+            });
+        }
+        Ok(snapshot)
     }
 
     /// Read only the header fields from a save file without deserializing the
@@ -195,6 +368,623 @@ impl GameSnapshot {
             });
         }
         Ok(header)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RestoredObjectIndex {
+    highest_id: u64,
+}
+
+impl RestoredObjectIndex {
+    fn build(
+        sim: &Simulation,
+    ) -> Result<(Self, BTreeMap<u64, &'static str>), SnapshotRestoreError> {
+        let mut identities = BTreeMap::new();
+        let mut highest_id = 0;
+
+        for (registry_id, entity) in sim.substrate.entities.iter_sorted() {
+            Self::register(
+                &mut identities,
+                "EntityStore",
+                registry_id,
+                entity.stable_id,
+            )?;
+            highest_id = highest_id.max(registry_id);
+        }
+        for (&registry_id, anim) in sim.substrate.anims.iter() {
+            Self::register(&mut identities, "AnimStore", registry_id, anim.stable_id)?;
+            highest_id = highest_id.max(registry_id);
+        }
+        for (&registry_id, system) in sim.substrate.particle_systems.iter() {
+            Self::register(
+                &mut identities,
+                "ParticleSystemStore",
+                registry_id,
+                system.stable_id,
+            )?;
+            highest_id = highest_id.max(registry_id);
+        }
+
+        Ok((Self { highest_id }, identities))
+    }
+
+    fn register(
+        identities: &mut BTreeMap<u64, &'static str>,
+        registry: &'static str,
+        registry_id: u64,
+        object_id: u64,
+    ) -> Result<(), SnapshotRestoreError> {
+        if registry_id == 0 {
+            return Err(SnapshotRestoreError::ReservedObjectId { registry });
+        }
+        if registry_id != object_id {
+            return Err(SnapshotRestoreError::ObjectIdentityMismatch {
+                registry,
+                registry_id,
+                object_id,
+            });
+        }
+        if let Some(first_registry) = identities.insert(registry_id, registry) {
+            return Err(SnapshotRestoreError::DuplicateObjectIdentity {
+                object_id: registry_id,
+                first_registry,
+                second_registry: registry,
+            });
+        }
+        Ok(())
+    }
+}
+
+fn require_resolved_reference(
+    resolves: bool,
+    source_registry: &'static str,
+    source_id: u64,
+    field: &'static str,
+    target_registry: &'static str,
+    target_id: u64,
+) -> Result<(), SnapshotRestoreError> {
+    if resolves {
+        Ok(())
+    } else {
+        Err(SnapshotRestoreError::UnresolvedObjectReference {
+            source_registry,
+            source_id,
+            field,
+            target_registry,
+            target_id,
+        })
+    }
+}
+
+fn validate_nav_reference(
+    target: &crate::sim::components::NavTargetRef,
+    identities: &BTreeMap<u64, &'static str>,
+    entity_ids: &BTreeSet<u64>,
+    source_id: u64,
+    field: &'static str,
+) -> Result<(), SnapshotRestoreError> {
+    match target {
+        crate::sim::components::NavTargetRef::Cell { .. } => Ok(()),
+        crate::sim::components::NavTargetRef::Entity { id }
+        | crate::sim::components::NavTargetRef::Building { id } => require_resolved_reference(
+            entity_ids.contains(id),
+            "EntityStore",
+            source_id,
+            field,
+            "EntityStore",
+            *id,
+        ),
+        crate::sim::components::NavTargetRef::Object { id } => require_resolved_reference(
+            identities.contains_key(id),
+            "EntityStore",
+            source_id,
+            field,
+            "object namespace",
+            *id,
+        ),
+    }
+}
+
+fn validate_passenger_size_tables(sim: &Simulation) -> Result<(), SnapshotRestoreError> {
+    for (carrier_id, entity) in sim.substrate.entities.iter_sorted() {
+        let crate::sim::passenger::PassengerRole::Transport { cargo } = &entity.passenger_role
+        else {
+            continue;
+        };
+        if cargo.passengers.len() != cargo.passenger_sizes.len() {
+            return Err(SnapshotRestoreError::PassengerSizeCountMismatch {
+                carrier_id,
+                passenger_count: cargo.passengers.len(),
+                size_count: cargo.passenger_sizes.len(),
+            });
+        }
+        let computed_total: u64 = cargo
+            .passenger_sizes
+            .iter()
+            .map(|&size| u64::from(size))
+            .sum();
+        if computed_total != u64::from(cargo.total_size) {
+            return Err(SnapshotRestoreError::PassengerSizeTotalMismatch {
+                carrier_id,
+                saved_total: cargo.total_size,
+                computed_total,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn restore_object_references(
+    sim: &mut Simulation,
+    identities: &BTreeMap<u64, &'static str>,
+) -> Result<(), SnapshotRestoreError> {
+    use crate::sim::combat::TargetKind;
+    use crate::sim::game_entity::BunkerLink;
+    use crate::sim::movement::homing_movement::HomingTarget;
+    use crate::sim::passenger::PassengerRole;
+
+    let entity_ids: BTreeSet<u64> = sim.substrate.entities.keys_sorted().into_iter().collect();
+    let anim_ids: BTreeSet<u64> = sim.substrate.anims.iter().map(|(&id, _)| id).collect();
+
+    // Swizzle::Apply has no unmatched-reference recovery path. Validate the
+    // complete modeled pointer graph before mutating even weak references or
+    // derived caches, so a failed restore remains an atomic rejection.
+    for (entity_id, entity) in sim.substrate.entities.iter_sorted() {
+        for contact_id in entity.radio_contacts.iter_live() {
+            require_resolved_reference(
+                entity_ids.contains(&contact_id),
+                "EntityStore",
+                entity_id,
+                "radio_contacts",
+                "EntityStore",
+                contact_id,
+            )?;
+        }
+
+        if let PassengerRole::Transport { cargo } = &entity.passenger_role {
+            for &passenger_id in &cargo.passengers {
+                require_resolved_reference(
+                    entity_ids.contains(&passenger_id),
+                    "EntityStore",
+                    entity_id,
+                    "passenger_role.cargo.passengers",
+                    "EntityStore",
+                    passenger_id,
+                )?;
+            }
+        }
+
+        if let Some(TargetKind::Entity(target_id)) =
+            entity.attack_target.as_ref().map(|target| target.target)
+        {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "attack_target",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let Some(TargetKind::Entity(target_id)) = entity.suspended_attack_target {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "suspended_attack_target",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+
+        if let Some(target) = entity.navigation.suspended_nav_com.as_ref() {
+            validate_nav_reference(
+                target,
+                identities,
+                &entity_ids,
+                entity_id,
+                "navigation.suspended_nav_com",
+            )?;
+        }
+        if let Some(target) = entity.navigation.nav_com_aux.as_ref() {
+            validate_nav_reference(
+                target,
+                identities,
+                &entity_ids,
+                entity_id,
+                "navigation.nav_com_aux",
+            )?;
+        }
+        if let Some(target) = entity.navigation.nav_com.as_ref() {
+            validate_nav_reference(
+                target,
+                identities,
+                &entity_ids,
+                entity_id,
+                "navigation.nav_com",
+            )?;
+        }
+        for target in &entity.navigation.nav_queue {
+            validate_nav_reference(
+                target,
+                identities,
+                &entity_ids,
+                entity_id,
+                "navigation.nav_queue",
+            )?;
+        }
+
+        if let Some(target_id) = entity.dock_entered_with {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "dock_entered_with",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let Some(target_id) = entity.capture_target {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "capture_target",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let Some(plant) = entity.c4_plant.as_ref() {
+            require_resolved_reference(
+                entity_ids.contains(&plant.target_building_id),
+                "EntityStore",
+                entity_id,
+                "c4_plant.target_building_id",
+                "EntityStore",
+                plant.target_building_id,
+            )?;
+        }
+
+        if let Some(dock) = entity.dock_state.as_ref() {
+            require_resolved_reference(
+                entity_ids.contains(&dock.dock_building_id),
+                "EntityStore",
+                entity_id,
+                "dock_state.dock_building_id",
+                "EntityStore",
+                dock.dock_building_id,
+            )?;
+        }
+        if let Some(ammo) = entity.aircraft_ammo.as_ref()
+            && let Some(target_id) = ammo.target_airfield
+        {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "aircraft_ammo.target_airfield",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let Some(miner) = entity.miner.as_ref() {
+            if let Some(target_id) = miner.home_refinery {
+                require_resolved_reference(
+                    entity_ids.contains(&target_id),
+                    "EntityStore",
+                    entity_id,
+                    "miner.home_refinery",
+                    "EntityStore",
+                    target_id,
+                )?;
+            }
+            if let Some(target_id) = miner.reserved_refinery {
+                require_resolved_reference(
+                    entity_ids.contains(&target_id),
+                    "EntityStore",
+                    entity_id,
+                    "miner.reserved_refinery",
+                    "EntityStore",
+                    target_id,
+                )?;
+            }
+        }
+        if let Some(slave) = entity.slave_harvester.as_ref() {
+            require_resolved_reference(
+                entity_ids.contains(&slave.master_id),
+                "EntityStore",
+                entity_id,
+                "slave_harvester.master_id",
+                "EntityStore",
+                slave.master_id,
+            )?;
+        }
+
+        let passenger_partner = match &entity.passenger_role {
+            PassengerRole::Boarding {
+                target_transport_id,
+                ..
+            } => Some((*target_transport_id, "passenger_role.boarding")),
+            PassengerRole::Inside { transport_id } => {
+                Some((*transport_id, "passenger_role.inside"))
+            }
+            PassengerRole::None | PassengerRole::Transport { .. } => None,
+        };
+        if let Some((target_id, field)) = passenger_partner {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                field,
+                "EntityStore",
+                target_id,
+            )?;
+        }
+
+        if let Some(homing) = entity.homing_state.as_ref()
+            && let Some(HomingTarget::Object(target_id)) = homing.target
+        {
+            require_resolved_reference(
+                identities.contains_key(&target_id),
+                "EntityStore",
+                entity_id,
+                "homing_state.target",
+                "object namespace",
+                target_id,
+            )?;
+        }
+
+        for &anim_id in entity.damage_fire_anim_ids.iter().flatten() {
+            require_resolved_reference(
+                anim_ids.contains(&anim_id),
+                "EntityStore",
+                entity_id,
+                "damage_fire_anim_ids",
+                "AnimStore",
+                anim_id,
+            )?;
+        }
+        if let Some(target_id) = entity.bunker_occupant {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "bunker_occupant",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let BunkerLink::Approaching(target_id) | BunkerLink::Installed(target_id) =
+            entity.bunker_link
+        {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "bunker_link",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+        if let Some(runtime) = entity.bunker_runtime.as_ref()
+            && let Some(target_id) = runtime.installing_unit
+        {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "EntityStore",
+                entity_id,
+                "bunker_runtime.installing_unit",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+    }
+
+    for (&anim_id, anim) in sim.substrate.anims.iter() {
+        if let Some(owner_id) = anim.owner_entity {
+            require_resolved_reference(
+                entity_ids.contains(&owner_id),
+                "AnimStore",
+                anim_id,
+                "owner_entity",
+                "EntityStore",
+                owner_id,
+            )?;
+        }
+    }
+
+    for (&system_id, system) in sim.substrate.particle_systems.iter() {
+        if let Some(owner_id) = system.owner_entity {
+            require_resolved_reference(
+                entity_ids.contains(&owner_id),
+                "ParticleSystemStore",
+                system_id,
+                "owner_entity",
+                "EntityStore",
+                owner_id,
+            )?;
+        }
+        if let Some(attached_id) = system.attached_entity {
+            require_resolved_reference(
+                entity_ids.contains(&attached_id),
+                "ParticleSystemStore",
+                system_id,
+                "attached_entity",
+                "EntityStore",
+                attached_id,
+            )?;
+        }
+    }
+
+    for &object_id in &sim.substrate.pending_delete {
+        require_resolved_reference(
+            identities.contains_key(&object_id),
+            "PendingDeleteList",
+            object_id,
+            "entry",
+            "object namespace",
+            object_id,
+        )?;
+    }
+
+    for factory in sim.production.factory_shadow.iter_insertion_ordered() {
+        if let Some(object_id) = factory.object.as_ref().and_then(|object| object.entity_id) {
+            require_resolved_reference(
+                entity_ids.contains(&object_id),
+                "FactoryRegistry",
+                u64::from(factory.owner.index()),
+                "object.entity_id",
+                "EntityStore",
+                object_id,
+            )?;
+        }
+    }
+
+    // These are deliberate weak identities. Native expiry can leave the last
+    // attacker dangling, and C4 kill credit may outlive its attacker.
+    for entity in sim.substrate.entities.values_mut() {
+        if entity
+            .last_attacker_id
+            .is_some_and(|id| !entity_ids.contains(&id))
+        {
+            entity.last_attacker_id = None;
+        }
+        if let Some(pending) = entity.pending_c4_detonation.as_mut()
+            && !entity_ids.contains(&pending.attacker_id)
+        {
+            pending.attacker_id = 0;
+        }
+    }
+
+    // These manager maps are derived/transitional mirrors rather than modeled
+    // native pointer slots. Restore prunes them only after the authoritative
+    // object graph has passed validation.
+    for producers in sim.production.active_producer_by_owner.values_mut() {
+        producers.retain(|_, id| entity_ids.contains(id));
+    }
+    sim.production
+        .slave_bindings
+        .retain(|master_id, slave_ids| {
+            slave_ids.retain(|id| entity_ids.contains(id));
+            entity_ids.contains(master_id)
+        });
+    sim.production.dock_reservations.cleanup_dead(&entity_ids);
+    sim.production
+        .depot_dock_reservations
+        .cleanup_dead(&entity_ids);
+    sim.production.airfield_docks.cleanup_dead(&entity_ids);
+
+    // The produced-object link was validated above, so this legacy helper is
+    // intentionally a no-op for every admitted snapshot.
+    sim.production
+        .factory_shadow
+        .fixup_object_references(&entity_ids);
+
+    Ok(())
+}
+
+impl Simulation {
+    /// Validate and re-register a deserialized simulation before it can resume.
+    ///
+    /// Native load registers old identities and pointer slots, resolves them,
+    /// then restores global active/cell membership. Rust stores stable IDs
+    /// directly, so the equivalent transaction builds one global namespace,
+    /// rejects any unmatched modeled native pointer, cleans only deliberate
+    /// weak/derived identities, and reconstructs skipped indexes in dependency
+    /// order.
+    pub(crate) fn restore_after_snapshot_load(&mut self) -> Result<(), SnapshotRestoreError> {
+        let (index, identities) = RestoredObjectIndex::build(self)?;
+        if self.substrate.next_stable_object_id <= index.highest_id {
+            return Err(SnapshotRestoreError::ObjectIdCounterBehind {
+                next_id: self.substrate.next_stable_object_id,
+                highest_id: index.highest_id,
+            });
+        }
+
+        let highest_order = self
+            .substrate
+            .entities
+            .values()
+            .filter(|entity| entity.lifecycle.cell_marked)
+            .map(|entity| entity.occupancy_enter_order)
+            .max()
+            .unwrap_or(0);
+        let next_order = self.substrate.next_occupancy_enter_order.current();
+        if next_order <= highest_order {
+            return Err(SnapshotRestoreError::OccupancyOrderCounterBehind {
+                next_order,
+                highest_order,
+            });
+        }
+
+        let mut seen_logic = BTreeSet::new();
+        for &object_id in self.substrate.logic.as_slice() {
+            if !seen_logic.insert(object_id) {
+                return Err(SnapshotRestoreError::DuplicateLogicIdentity { object_id });
+            }
+            if !identities.contains_key(&object_id) {
+                return Err(SnapshotRestoreError::MissingLogicIdentity { object_id });
+            }
+        }
+
+        validate_passenger_size_tables(self)?;
+        restore_object_references(self, &identities)?;
+
+        // Rust's native-shaped re-registration order:
+        // 1. class registry indexes, 2. Logic slots (including ParticleSystem),
+        // 3. CellClass-style lists.
+        self.substrate.entities.rebuild_owner_index();
+        self.rebuild_logic_membership();
+        self.substrate.occupancy =
+            crate::sim::occupancy::OccupancyGrid::rebuild(&self.substrate.entities);
+        self.substrate.cell_occupation =
+            crate::sim::occupancy::CellOccupationGrid::rebuild(&self.substrate.entities);
+        Ok(())
+    }
+
+    /// Recreate app-owned loop handles for serialized active MoveSound state.
+    ///
+    /// The configured identity is re-emitted as a transient sound event while
+    /// the authoritative active/countdown bytes remain untouched. The local
+    /// audio owner performs any process-global selection after its acceptance
+    /// gates; snapshot restoration never advances an RNG itself.
+    pub(crate) fn restore_move_sound_handles_after_load(
+        &mut self,
+        rules: &crate::rules::ruleset::RuleSet,
+    ) -> Result<(), SnapshotRestoreError> {
+        let object_ids = self.substrate.entities.keys_sorted();
+        for object_id in object_ids {
+            let Some(entity) = self.substrate.entities.get(object_id) else {
+                continue;
+            };
+            if !entity.move_sound_active {
+                continue;
+            }
+
+            let type_ref = entity.type_ref;
+            let world = Self::movement_sound_world(entity);
+            let Some(configured_sound) = self
+                .object_type(type_ref, rules)
+                .and_then(|object| object.move_sound.as_deref())
+                .map(str::trim)
+                .filter(|sound| !sound.is_empty() && !sound.eq_ignore_ascii_case("none"))
+                .map(str::to_owned)
+            else {
+                return Err(SnapshotRestoreError::ActiveMoveSoundUnresolvable { object_id });
+            };
+            let Some(sound_id) = self.interner.get(&configured_sound) else {
+                return Err(SnapshotRestoreError::ActiveMoveSoundUnresolvable { object_id });
+            };
+
+            self.sound_events
+                .push(crate::sim::world::SimSoundEvent::AnimationStarted {
+                    anim_id: object_id,
+                    sound_id,
+                    world,
+                });
+        }
+        Ok(())
     }
 }
 
@@ -249,7 +1039,10 @@ mod tests {
             canonical_ramp: None,
             ground_walk_blocked: false,
             terrain_object_blocks: false,
+            terrain_object_occupation: None,
             overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
             zone_type: crate::map::resolved_terrain::zone_class::GROUND,
             base_ground_walk_blocked: false,
             base_build_blocked: false,
@@ -304,6 +1097,15 @@ mod tests {
 
     fn rebuild_load_caches(sim: &mut Simulation, terrain: ResolvedTerrainGrid) {
         let terrain_costs = all_terrain_costs(&terrain);
+        // Synthetic fixtures use unchecked snapshots and often bypass the
+        // monotonic allocators. Rebuild their substrate caches directly; the
+        // production path uses `restore_after_snapshot_load`.
+        sim.substrate.entities.rebuild_owner_index();
+        sim.rebuild_logic_membership();
+        sim.substrate.occupancy =
+            crate::sim::occupancy::OccupancyGrid::rebuild(&sim.substrate.entities);
+        sim.substrate.cell_occupation =
+            crate::sim::occupancy::CellOccupationGrid::rebuild(&sim.substrate.entities);
         sim.rebuild_caches_after_load(
             terrain,
             crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -435,23 +1237,23 @@ mod tests {
     }
 
     #[test]
-    fn old_header_is_rejected_before_an_absent_body_is_decoded() {
+    fn gsi_04_07_v38_header_is_rejected_before_wall_owner_decode() {
         let bytes = bincode::serialize(&GameSnapshotHeader {
-            version: SNAPSHOT_VERSION - 1,
+            version: 38,
             map_hash: 1,
             rules_hash: 2,
             tick: 3,
             save_timestamp: 4,
-            map_name: "old-layout".to_string(),
+            map_name: "v38-layout".to_string(),
         })
-        .expect("serialize old header only");
+        .expect("serialize v38 header only");
 
         assert!(matches!(
             GameSnapshot::load(&bytes),
             Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                found,
-            }) if found == SNAPSHOT_VERSION - 1
+                found: 38,
+            })
         ));
     }
 
@@ -483,11 +1285,453 @@ mod tests {
     /// axes plus the pending-delete boundary took 27 -> 28, and exact Mission
     /// state/readiness schema took 28 -> 29, and the Harvest handler
     /// absorption (the miner FSM cursor retired into
-    /// `MissionCom.handler_state`) took 29 -> 30. This pins it so a later
-    /// accidental bump is caught.
+    /// `MissionCom.handler_state`) took 29 -> 30. Particle systems reached 34;
+    /// the consolidated Phase-0 persistence schema took 34 -> 35, and
+    /// lifecycle target/animation identity state took 35 -> 36, and omission
+    /// of process-global Main/MapGen RNG state took 36 -> 37, and serialized
+    /// Drive occupation footprints took 37 -> 38, and authoritative wall
+    /// ownership took 38 -> 39, and raw occupation bytes took 39 -> 40. This
+    /// pins it so a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_30() {
-        assert_eq!(super::SNAPSHOT_VERSION, 30);
+    fn snapshot_version_is_40() {
+        assert_eq!(super::SNAPSHOT_VERSION, 40);
+    }
+
+    #[test]
+    fn gsi_04_12_raw_occupation_snapshot_roundtrip_preserves_both_planes() {
+        let mut sim = Simulation::new();
+        sim.substrate.raw_cell_occupation.mark_ground(17, 23, 0x23);
+        sim.substrate.raw_cell_occupation.mark_deck(17, 23, 0xC4);
+        sim.substrate.raw_cell_occupation.mark_ground(2, 31, 0x02);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_12_raw_occupation", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes)
+                .expect("current snapshot header")
+                .version,
+            40
+        );
+
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("restore transient caches without replacing raw bytes");
+
+        assert_eq!(
+            restored.substrate.raw_cell_occupation.ground_bits(17, 23),
+            0x23
+        );
+        assert_eq!(
+            restored.substrate.raw_cell_occupation.deck_bits(17, 23),
+            0xC4
+        );
+        assert_eq!(
+            restored.substrate.raw_cell_occupation.ground_bits(2, 31),
+            0x02
+        );
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn gsi_04_05_v40_roundtrip_restores_drive_footprint_and_cell_occupation() {
+        use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::occupancy::{CellOccupationGrid, VEHICLE_OCCUPATION_BIT};
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let type_ref = sim.interner.intern("MTNK");
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::test_default(entity_id, "MTNK", "AMERICANS", 2, 2);
+        entity.owner = owner;
+        entity.type_ref = type_ref;
+        sim.substrate.entities.insert(entity);
+        sim.add_entity_occupancy(entity_id);
+
+        let footprint = DriveOccupationFootprint {
+            rx: 3,
+            ry: 2,
+            layer: MovementLayer::Ground,
+        };
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .expect("Drive unit")
+            .drive_locomotion = Some(DriveLocomotionRuntime {
+            occupation_head_to: Some(footprint),
+            current_occupation_cleared: true,
+            ..Default::default()
+        });
+        sim.substrate.cell_occupation = CellOccupationGrid::rebuild(&sim.substrate.entities);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_05", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes)
+                .expect("current snapshot header")
+                .version,
+            40
+        );
+
+        let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        let mut restored_b = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored_a
+            .restore_after_snapshot_load()
+            .expect("first deterministic rebuild");
+        restored_b
+            .restore_after_snapshot_load()
+            .expect("second deterministic rebuild");
+
+        for restored in [&restored_a, &restored_b] {
+            let drive = restored
+                .substrate
+                .entities
+                .get(entity_id)
+                .expect("restored Drive unit")
+                .drive_locomotion
+                .as_ref()
+                .expect("restored Drive runtime");
+            assert_eq!(drive.occupation_head_to, Some(footprint));
+            assert!(drive.current_occupation_cleared);
+            assert_eq!(restored.state_hash(), expected_hash);
+            assert_eq!(
+                restored
+                    .substrate
+                    .cell_occupation
+                    .vehicle_bits(2, 2, MovementLayer::Ground),
+                0
+            );
+            assert_eq!(
+                restored.substrate.cell_occupation.vehicle_bits(
+                    footprint.rx,
+                    footprint.ry,
+                    footprint.layer
+                ),
+                VEHICLE_OCCUPATION_BIT
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_04_07_v40_roundtrip_restores_wall_owner() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
+        overlays.place_owned_wall(3, 4, 2, 0x1A, owner);
+        sim.overlay_grid = Some(overlays);
+        let expected_hash = sim.state_hash();
+        let mut unowned = Simulation::new();
+        let _ = unowned.interner.intern("AMERICANS");
+        let mut unowned_overlays = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
+        unowned_overlays.place_overlay(3, 4, 2, 0x1A);
+        unowned.overlay_grid = Some(unowned_overlays);
+        assert_ne!(
+            unowned.state_hash(),
+            expected_hash,
+            "wall ownership participates in deterministic state"
+        );
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_07", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes)
+                .expect("current snapshot header")
+                .version,
+            40
+        );
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        let cell = restored
+            .overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(3, 4);
+        assert_eq!(cell.overlay_id, Some(2));
+        assert_eq!(cell.overlay_data, 0x1A);
+        assert_eq!(cell.wall_owner, Some(owner));
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn validated_load_requires_exact_content_and_session_metadata() {
+        use crate::sim::command::{Command, CommandEnvelope};
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("AMERICANS");
+        sim.session.map_name = "MAP01.MAP".to_string();
+        sim.session.tick = 0x1_0000_0007;
+        sim.session.binary_frame = u32::MAX - 2;
+        sim.session.total_sim_ms = 12_345;
+        sim.session.house_order.push(owner);
+        sim.pending_commands.push(CommandEnvelope::new(
+            owner,
+            sim.session.tick + 3,
+            Command::Stop { entity_id: 71 },
+        ));
+        sim.scatter_rng().next_u32();
+        sim.weapon_spread_rng().next_u32();
+        sim.mapgen_rng.next_u32();
+        let rng_before = sim.rng_state();
+        let process_default = crate::sim::rng::SimRng::new(0).logical_state();
+
+        let bytes = GameSnapshot::save_validated(&sim, 0x11, 0x22, 0x33);
+        let restored =
+            GameSnapshot::load_validated(&bytes, 0x11, 0x22, "MAP01.MAP").expect("exact metadata");
+        assert_eq!(restored.tick, sim.session.tick);
+        assert_eq!(restored.map_name, sim.session.map_name);
+        assert_eq!(restored.sim.session.binary_frame, u32::MAX - 2);
+        assert_eq!(restored.sim.session.total_sim_ms, 12_345);
+        assert_eq!(restored.sim.session.house_order, vec![owner]);
+        assert_eq!(restored.sim.pending_commands, sim.pending_commands);
+        assert_eq!(
+            restored.sim.scenario_rng.logical_state(),
+            rng_before.scenario
+        );
+        assert_eq!(restored.sim.main_rng.logical_state(), process_default);
+        assert_eq!(restored.sim.mapgen_rng.logical_state(), process_default);
+
+        assert!(matches!(
+            GameSnapshot::load_validated(&bytes, 0x12, 0x22, "MAP01.MAP"),
+            Err(SnapshotError::MapMismatch { .. })
+        ));
+        assert!(matches!(
+            GameSnapshot::load_validated(&bytes, 0x11, 0x23, "MAP01.MAP"),
+            Err(SnapshotError::RulesMismatch { .. })
+        ));
+        assert!(matches!(
+            GameSnapshot::load_validated(&bytes, 0x11, 0x22, "MAP02.MAP"),
+            Err(SnapshotError::MapNameMismatch { .. })
+        ));
+
+        let mut inconsistent = GameSnapshot::load_unchecked(&bytes).expect("current snapshot");
+        inconsistent.tick = inconsistent.tick.wrapping_add(1);
+        let inconsistent_bytes = bincode::serialize(&inconsistent).expect("corrupt tick metadata");
+        assert!(matches!(
+            GameSnapshot::load_validated(&inconsistent_bytes, 0x11, 0x22, "MAP01.MAP"),
+            Err(SnapshotError::TickMetadataMismatch { .. })
+        ));
+
+        inconsistent.tick = inconsistent.sim.session.tick;
+        inconsistent.sim.session.map_name = "OTHER.MAP".to_string();
+        let inconsistent_bytes = bincode::serialize(&inconsistent).expect("corrupt map metadata");
+        assert!(matches!(
+            GameSnapshot::load_validated(&inconsistent_bytes, 0x11, 0x22, "MAP01.MAP"),
+            Err(SnapshotError::MapNameMetadataMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn restore_validates_references_then_rebuilds_logic_particles_and_cells() {
+        use crate::rules::particle_system_type::ParticleSystemTypeId;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::particles::ParticleSystem;
+        use crate::util::fixed_math::SimFixed;
+        use glam::IVec3;
+
+        let mut sim = Simulation::new();
+        sim.session.map_name = "RESTORE.MAP".to_string();
+        let owner = sim.interner.intern("AMERICANS");
+        let type_ref = sim.interner.intern("MTNK");
+
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::test_default(entity_id, "MTNK", "AMERICANS", 5, 6);
+        entity.owner = owner;
+        entity.type_ref = type_ref;
+        entity.last_attacker_id = Some(999);
+        sim.substrate.entities.insert(entity);
+        sim.add_entity_occupancy(entity_id);
+
+        let particle_id = sim.allocate_stable_id();
+        sim.substrate.particle_systems.insert(ParticleSystem {
+            stable_id: particle_id,
+            in_logic_vector: false,
+            type_id: ParticleSystemTypeId(0),
+            coords: IVec3::ZERO,
+            offset: IVec3::ZERO,
+            particles: Vec::new(),
+            spawn_timer: SimFixed::from_num(0),
+            lifetime: -1,
+            spark_spawn_frames: 0,
+            facing: 0x1d,
+            marked_for_deletion: false,
+            directionless: false,
+            attached_entity: Some(entity_id),
+            owner_entity: Some(entity_id),
+            target_coords: IVec3::ZERO,
+            owner_house: None,
+            done_spawning: false,
+        });
+        sim.set_logic_order_for_test(vec![particle_id, entity_id]);
+
+        let bytes = GameSnapshot::save_validated(&sim, 7, 8, 9);
+        let mut restored = GameSnapshot::load_validated(&bytes, 7, 8, "RESTORE.MAP")
+            .expect("strict snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("valid restored object graph");
+
+        assert_eq!(
+            restored.live_object_order_snapshot(),
+            vec![particle_id, entity_id]
+        );
+        assert!(
+            restored
+                .substrate
+                .particle_systems
+                .get(particle_id)
+                .expect("particle system")
+                .in_logic_vector
+        );
+        assert!(
+            restored
+                .substrate
+                .entities
+                .get(entity_id)
+                .expect("entity")
+                .in_logic_vector
+        );
+        assert!(
+            restored
+                .substrate
+                .occupancy
+                .contains_entity(5, 6, entity_id)
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(entity_id)
+                .expect("entity")
+                .last_attacker_id,
+            None
+        );
+        let system = restored
+            .substrate
+            .particle_systems
+            .get(particle_id)
+            .expect("particle system");
+        assert_eq!(system.owner_entity, Some(entity_id));
+        assert_eq!(system.attached_entity, Some(entity_id));
+    }
+
+    #[test]
+    fn restore_rejects_unresolved_native_pointer_before_weak_cleanup() {
+        use crate::rules::particle_system_type::ParticleSystemTypeId;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::particles::ParticleSystem;
+        use crate::util::fixed_math::SimFixed;
+        use glam::IVec3;
+
+        let mut sim = Simulation::new();
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::test_default(entity_id, "MTNK", "AMERICANS", 5, 6);
+        entity.last_attacker_id = Some(999);
+        sim.substrate.entities.insert(entity);
+
+        let particle_id = sim.allocate_stable_id();
+        sim.substrate.particle_systems.insert(ParticleSystem {
+            stable_id: particle_id,
+            in_logic_vector: false,
+            type_id: ParticleSystemTypeId(0),
+            coords: IVec3::ZERO,
+            offset: IVec3::ZERO,
+            particles: Vec::new(),
+            spawn_timer: SimFixed::from_num(0),
+            lifetime: -1,
+            spark_spawn_frames: 0,
+            facing: 0x1d,
+            marked_for_deletion: false,
+            directionless: false,
+            attached_entity: Some(999),
+            owner_entity: Some(entity_id),
+            target_coords: IVec3::ZERO,
+            owner_house: None,
+            done_spawning: false,
+        });
+
+        assert_eq!(
+            sim.restore_after_snapshot_load(),
+            Err(SnapshotRestoreError::UnresolvedObjectReference {
+                source_registry: "ParticleSystemStore",
+                source_id: particle_id,
+                field: "attached_entity",
+                target_registry: "EntityStore",
+                target_id: 999,
+            })
+        );
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(entity_id)
+                .expect("entity")
+                .last_attacker_id,
+            Some(999),
+            "failed restoration must not clean a later weak reference"
+        );
+        assert_eq!(
+            sim.substrate
+                .particle_systems
+                .get(particle_id)
+                .expect("particle system")
+                .attached_entity,
+            Some(999),
+            "failed restoration must not sanitize the unresolved strong reference"
+        );
+    }
+
+    #[test]
+    fn restore_recreates_active_move_sound_without_rng_or_countdown_mutation() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::world::SimSoundEvent;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n0=TEST\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [TEST]\nMoveSound=VMove\n",
+        ))
+        .expect("move-sound rules");
+        let mut sim = Simulation::new();
+        sim.session.map_name = "MOVESOUND.MAP".to_string();
+        let owner = sim.interner.intern("AMERICANS");
+        let type_ref = sim.interner.intern("TEST");
+        let sound_id = sim.interner.intern("VMove");
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::test_default(entity_id, "TEST", "AMERICANS", 7, 9);
+        entity.owner = owner;
+        entity.type_ref = type_ref;
+        entity.move_sound_active = true;
+        entity.move_sound_countdown = 2;
+        sim.substrate.entities.insert(entity);
+
+        let bytes = GameSnapshot::save_validated(&sim, 17, 18, 19);
+        let mut restored = GameSnapshot::load_validated(&bytes, 17, 18, "MOVESOUND.MAP")
+            .expect("strict snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("valid restored object graph");
+        restored.resolve_type_handles(&rules);
+        let rng_before = restored.rng_state();
+        restored
+            .restore_move_sound_handles_after_load(&rules)
+            .expect("active move sound resolves");
+
+        assert_eq!(restored.rng_state(), rng_before);
+        let entity = restored.substrate.entities.get(entity_id).expect("entity");
+        assert!(entity.move_sound_active);
+        assert_eq!(entity.move_sound_countdown, 2);
+        assert!(matches!(
+            restored.sound_events.as_slice(),
+            [SimSoundEvent::AnimationStarted {
+                anim_id,
+                sound_id: restored_sound,
+                ..
+            }] if *anim_id == entity_id && *restored_sound == sound_id
+        ));
     }
 
     #[test]
@@ -508,31 +1752,6 @@ mod tests {
             MissionLeafState::unit_raw_for_test(9, 10, 11, 12),
             MissionLeafState::infantry_raw_for_test(13, -1),
         ];
-        let locomotor_inputs = [
-            LocomotorReadyState::Drive {
-                turning_active: true,
-                slot_moving: false,
-                head_to_nonnull: true,
-                owner_speed: -1,
-            },
-            LocomotorReadyState::Ship {
-                turning_active: false,
-                slot_moving: true,
-                head_to_nonnull: true,
-                owner_speed: 1,
-            },
-            LocomotorReadyState::Hover {
-                slot_moving: true,
-                speed_bits: 0x7ff8_0000_0000_0001,
-            },
-            LocomotorReadyState::Walk {
-                moving_byte: 255,
-                applied_speed_bits: 1,
-                destination_nonnull: true,
-            },
-            LocomotorReadyState::Teleport { state: 255 },
-            LocomotorReadyState::Jumpjet { state: -1 },
-        ];
 
         let mut sim = Simulation::new();
         for index in 0..6 {
@@ -545,9 +1764,7 @@ mod tests {
                 TargetKind::Cell(index as u16, (index + 1) as u16)
             });
             entity.set_object_is_falling_down_for_test(index as u8 + 1);
-            let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Drive);
-            locomotor.set_mission_ready_state_for_test(Some(locomotor_inputs[index]));
-            entity.locomotor = Some(locomotor);
+            entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
             if index == 0 {
                 entity.mission.apply_test_fixture(MissionTestFixture {
                     current: MissionId::from_raw(i32::MIN),
@@ -583,13 +1800,6 @@ mod tests {
             assert_eq!(
                 entity.suspended_attack_target, expected_suspended_target,
                 "suspended TargetKind variant and payload must round-trip"
-            );
-            assert_eq!(
-                entity
-                    .locomotor
-                    .as_ref()
-                    .and_then(|locomotor| locomotor.mission_ready_state),
-                Some(locomotor_inputs[index])
             );
             assert_eq!(entity.object_is_falling_down, index as u8 + 1);
         }

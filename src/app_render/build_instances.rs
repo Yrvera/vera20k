@@ -117,37 +117,43 @@ impl SidebarInstances {
 // Phase 1: Game world (terrain, overlays, entities)
 // ---------------------------------------------------------------------------
 
+fn lookup_exact_terrain_variant<T>(
+    tile_id: u16,
+    sub_tile: u8,
+    variant: u8,
+    lookup: impl FnOnce(TileKey) -> Option<T>,
+) -> Option<T> {
+    lookup(TileKey {
+        tile_id,
+        sub_tile,
+        variant,
+    })
+}
+
 /// Build all game-world sprite instances: terrain tiles, map overlays, bridges,
 /// VXL units, SHP buildings/infantry, world effects, damage fires.
 /// All instance vectors are Y-sorted (depth descending) for correct draw order.
 pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> WorldInstances {
-    // Terrain tiles — look up atlas UVs with variant fallback.
+    // Terrain tiles use the selected TMP owner exactly. A sparse/null cell in
+    // a positive suffix remains absent instead of borrowing pristine UVs.
     let uv_fn_closure;
-    let uv_fn: Option<&dyn Fn(u16, u8, u8) -> Option<TilePlacement>> =
-        if let Some(atlas) = &state.tile_atlas {
-            uv_fn_closure = |tile_id: u16, sub_tile: u8, variant: u8| -> Option<TilePlacement> {
-                let key = TileKey {
-                    tile_id,
-                    sub_tile,
-                    variant,
-                };
-                let key_main = TileKey {
-                    tile_id,
-                    sub_tile,
-                    variant: 0,
-                };
-                let uv = atlas.get_uv(key).or_else(|| atlas.get_uv(key_main))?;
-                Some(TilePlacement {
-                    uv_origin: uv.uv_origin,
-                    uv_size: uv.uv_size,
-                    pixel_size: uv.pixel_size,
-                    draw_offset: uv.draw_offset,
-                })
-            };
-            Some(&uv_fn_closure)
-        } else {
-            None
+    let uv_fn: Option<&dyn Fn(u16, u8, u8) -> Option<TilePlacement>> = if let Some(atlas) =
+        &state.tile_atlas
+    {
+        uv_fn_closure = |tile_id: u16, sub_tile: u8, variant: u8| -> Option<TilePlacement> {
+            let uv =
+                lookup_exact_terrain_variant(tile_id, sub_tile, variant, |key| atlas.get_uv(key))?;
+            Some(TilePlacement {
+                uv_origin: uv.uv_origin,
+                uv_size: uv.uv_size,
+                pixel_size: uv.pixel_size,
+                draw_offset: uv.draw_offset,
+            })
         };
+        Some(&uv_fn_closure)
+    } else {
+        None
+    };
     let terrain = if let Some(grid) = &state.terrain_grid {
         // Skip terrain for fully shrouded cells — matches gamemd which doesn't
         // render terrain under shroud. The multiply pass still darkens edges.
@@ -751,22 +757,22 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .map(|v| build_sidebar_chrome_instances(state, v))
         .unwrap_or_default();
 
-    let ready_text: &str = state
+    let ready_text = state
         .csf
         .as_ref()
-        .and_then(|csf| csf.get("TXT_READY"))
-        .unwrap_or("Ready");
+        .map(|csf| csf.text("TXT_READY"))
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("Ready"));
     let ready_tint = {
         let theme = crate::app_sidebar_render::current_sidebar_theme(state);
         crate::render::sidebar_text::side_highlight_color(theme)
     };
     let (cameo, gclock, cameo_overlay) = view
         .as_ref()
-        .map(|v| build_sidebar_cameo_instances(state, v, ready_text))
+        .map(|v| build_sidebar_cameo_instances(state, v, ready_text.as_ref()))
         .unwrap_or_default();
     let text = view
         .as_ref()
-        .map(|v| build_sidebar_text_instances(state, v, ready_text, ready_tint))
+        .map(|v| build_sidebar_text_instances(state, v, ready_text.as_ref(), ready_tint))
         .unwrap_or_default();
 
     let radar_anim = build_radar_anim_instance(state);
@@ -894,5 +900,27 @@ mod tests {
             vec![20, 30, 10]
         );
         assert_eq!(pages, vec![0, 2, 1]);
+    }
+
+    #[test]
+    fn positive_terrain_variant_never_falls_back_to_pristine_owner() {
+        let pristine = TileKey {
+            tile_id: 9,
+            sub_tile: 3,
+            variant: 0,
+        };
+        let selected = TileKey {
+            variant: 2,
+            ..pristine
+        };
+        let mut looked_up = Vec::new();
+
+        let result = lookup_exact_terrain_variant(9, 3, 2, |key| {
+            looked_up.push(key);
+            (key == pristine).then_some(())
+        });
+
+        assert_eq!(result, None);
+        assert_eq!(looked_up, vec![selected]);
     }
 }

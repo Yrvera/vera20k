@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::assets::asset_manager::AssetManager;
-use crate::assets::pal_file::Palette;
+use crate::assets::pal_file::{Color, Palette};
 use crate::assets::tmp_file::TmpFile;
 use crate::map::bridge_facts::{BridgeRampKind, BridgeRampTile};
 use crate::map::map_file::MapError;
@@ -25,13 +25,13 @@ use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
 pub const NO_TILE: i32 = -1;
 
 /// Identifies a specific sub-tile within a TMP template, including variant.
-/// Used as a key for atlas lookups. Variant 0 = main tile; 1-4 = visual
-/// replacements loaded from `{name}a.{ext}` through `{name}d.{ext}`.
+/// Used as a key for atlas lookups. Variant 0 is pristine; positive values
+/// index the theater-resolved contiguous suffix chain.
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct TileKey {
     pub tile_id: u16,
     pub sub_tile: u8,
-    /// Visual replacement index: 0 = main tile, 1-4 = variant a-d.
+    /// Visual replacement index: 0 = pristine, 1 = `a`, 2 = `b`, etc.
     pub variant: u8,
 }
 
@@ -56,96 +56,90 @@ pub struct TileImage {
 
 /// Static definition for a theater.
 struct TheaterDef {
-    /// INI filenames to try (YR md variant first, base RA2 fallback).
-    ini_names: &'static [&'static str],
+    /// Exact active-YR theater INI filename.
+    ini_name: &'static str,
     /// File extension for TMP files (e.g., "tem" for temperate).
     extension: &'static str,
-    /// Palette filenames to try (iso palette first, then unit, then generic).
-    palette_names: &'static [&'static str],
-    /// Unit palette filenames to try (theater-specific unit palette).
-    unit_palette_names: &'static [&'static str],
-    /// Tiberium palette filenames to try (used for ore/gem overlays).
-    /// Tiberium uses a separate theater palette: temperat.pal, snow.pal, etc.
-    tiberium_palette_names: &'static [&'static str],
-    /// Theater-specific MIX archives to load for highest priority file access.
-    /// YR md variants first, then base RA2 variants. Loaded via load_nested().
+    /// Exact isometric, unit, and theater/ore palette filenames.
+    iso_palette_name: &'static str,
+    unit_palette_name: &'static str,
+    theater_palette_name: &'static str,
+    /// Theater-specific MIX archives in retail construction order.
     mix_archives: &'static [&'static str],
 }
 
-/// All known theater definitions. First match wins for INI/palette lookup.
+/// All active Yuri's Revenge theater definitions.
 const THEATER_DEFS: &[(&str, TheaterDef)] = &[
-    // Try YR (md) INI first — YR maps use YR tileset indices.
-    // Fall back to base RA2 INI if md version not found.
     (
         "TEMPERATE",
         TheaterDef {
-            ini_names: &["temperatmd.ini", "temperat.ini"],
+            ini_name: "temperatmd.ini",
             extension: "tem",
-            palette_names: &["isotem.pal", "temperat.pal"],
-            unit_palette_names: &["unittem.pal", "unit.pal"],
-            tiberium_palette_names: &["temperat.pal", "isotem.pal"],
-            mix_archives: &["isotemmd.mix", "isotemp.mix", "tem.mix", "temperat.mix"],
+            iso_palette_name: "isotem.pal",
+            unit_palette_name: "unittem.pal",
+            theater_palette_name: "temperat.pal",
+            mix_archives: &["temperat.mix", "tem.mix", "isotemmd.mix", "isotemp.mix"],
         },
     ),
     (
         "SNOW",
         TheaterDef {
-            ini_names: &["snowmd.ini", "snow.ini"],
+            ini_name: "snowmd.ini",
             extension: "sno",
-            palette_names: &["isosno.pal", "snow.pal"],
-            unit_palette_names: &["unitsno.pal", "unit.pal"],
-            tiberium_palette_names: &["snow.pal", "isosno.pal"],
-            mix_archives: &["isosnowmd.mix", "isosnow.mix", "sno.mix", "snow.mix"],
+            iso_palette_name: "isosno.pal",
+            unit_palette_name: "unitsno.pal",
+            theater_palette_name: "snow.pal",
+            mix_archives: &[
+                "snowmd.mix",
+                "snow.mix",
+                "sno.mix",
+                "isosnomd.mix",
+                "isosnow.mix",
+            ],
         },
     ),
     (
         "URBAN",
         TheaterDef {
-            ini_names: &["urbanmd.ini", "urban.ini"],
+            ini_name: "urbanmd.ini",
             extension: "urb",
-            palette_names: &["isourb.pal", "urban.pal"],
-            unit_palette_names: &["uniturb.pal", "unit.pal"],
-            tiberium_palette_names: &["urban.pal", "isourb.pal"],
-            mix_archives: &["isourbnmd.mix", "isourb.mix", "urb.mix", "urban.mix"],
+            iso_palette_name: "isourb.pal",
+            unit_palette_name: "uniturb.pal",
+            theater_palette_name: "urban.pal",
+            mix_archives: &["urban.mix", "urb.mix", "isourbmd.mix", "isourb.mix"],
         },
     ),
-    // YR-introduced theaters. No base RA2 INI variants exist for these in
-    // retail (urbann.ini / lunar.ini / desert.ini absent), so only the YR
-    // `md` INI is listed. MIX/palette names follow the same Westwood
-    // convention as TEMPERATE/SNOW/URBAN: 6-char `iso<ext>.pal` iso
-    // palette, `unit<ext>.pal` unit palette, `<name>.pal` for tiberium.
     (
         "LUNAR",
         TheaterDef {
-            ini_names: &["lunarmd.ini"],
+            ini_name: "lunarmd.ini",
             extension: "lun",
-            palette_names: &["isolun.pal", "lunar.pal"],
-            unit_palette_names: &["unitlun.pal", "unit.pal"],
-            tiberium_palette_names: &["lunar.pal", "isolun.pal"],
-            mix_archives: &["isolunmd.mix", "isolun.mix", "lun.mix", "lunar.mix"],
+            iso_palette_name: "isolun.pal",
+            unit_palette_name: "unitlun.pal",
+            theater_palette_name: "lunar.pal",
+            mix_archives: &["lunar.mix", "lun.mix", "isolunmd.mix", "isolun.mix"],
         },
     ),
     (
         "DESERT",
         TheaterDef {
-            ini_names: &["desertmd.ini"],
+            ini_name: "desertmd.ini",
             extension: "des",
-            palette_names: &["isodes.pal", "desert.pal"],
-            unit_palette_names: &["unitdes.pal", "unit.pal"],
-            tiberium_palette_names: &["desert.pal", "isodes.pal"],
-            mix_archives: &["isodesmd.mix", "isodes.mix", "des.mix", "desert.mix"],
+            iso_palette_name: "isodes.pal",
+            unit_palette_name: "unitdes.pal",
+            theater_palette_name: "desert.pal",
+            mix_archives: &["desert.mix", "des.mix", "isodesmd.mix", "isodes.mix"],
         },
     ),
     (
         "NEWURBAN",
         TheaterDef {
-            // INI key is `urbann` (double-n), the engine theater key is `NEWURBAN`.
-            ini_names: &["urbannmd.ini"],
+            ini_name: "urbannmd.ini",
             extension: "ubn",
-            palette_names: &["isoubn.pal", "urbann.pal"],
-            unit_palette_names: &["unitubn.pal", "unit.pal"],
-            tiberium_palette_names: &["urbann.pal", "isoubn.pal"],
-            mix_archives: &["isoubnmd.mix", "isoubn.mix", "ubn.mix", "urbann.mix"],
+            iso_palette_name: "isoubn.pal",
+            unit_palette_name: "unitubn.pal",
+            theater_palette_name: "urbann.pal",
+            mix_archives: &["urbann.mix", "ubn.mix", "isoubnmd.mix", "isoubn.mix"],
         },
     ),
 ];
@@ -181,8 +175,8 @@ pub struct TheaterCliffRanges {
 }
 
 impl TheaterCliffRanges {
-    /// Broad `IsCliffOrImpassableTile @ 0x004863d0` predicate.
-    pub fn is_cliff_or_impassable_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
+    /// Broad special-terrain identity predicate used by terrain-height logic.
+    pub fn is_special_terrain_tile(&self, tile_id: u16, sub_tile: u8) -> bool {
         in_fixed_range(self.cliff_set, tile_id, 0x28)
             || in_fixed_range(self.cliff_ramps, tile_id, 0x14)
             || in_fixed_range(self.water_cliffs, tile_id, 0x1c)
@@ -190,10 +184,10 @@ impl TheaterCliffRanges {
             || in_fixed_range(self.bridge_set, tile_id, 0x10)
             || in_fixed_range(self.wood_bridge_set, tile_id, 0x10)
             || in_fixed_range(self.water_caves, tile_id, 4)
-            || waterfall_blocks(self.waterfall_east, tile_id, slope_byte, &[0, 4])
-            || waterfall_blocks(self.waterfall_west, tile_id, slope_byte, &[1, 3])
-            || waterfall_blocks(self.waterfall_south, tile_id, slope_byte, &[0, 1])
-            || waterfall_blocks(self.waterfall_north, tile_id, slope_byte, &[2, 3])
+            || waterfall_is_special(self.waterfall_east, tile_id, sub_tile, &[0, 4])
+            || waterfall_is_special(self.waterfall_west, tile_id, sub_tile, &[1, 3])
+            || waterfall_is_special(self.waterfall_south, tile_id, sub_tile, &[0, 1])
+            || waterfall_is_special(self.waterfall_north, tile_id, sub_tile, &[2, 3])
     }
 
     /// Narrow `IsOnBridgeRamp @ 0x00578d80` predicate.
@@ -215,6 +209,7 @@ impl TheaterCliffRanges {
 pub struct RmgTileKeys {
     pub clear_tile: Option<u16>,
     pub ramp_base: Option<u16>,
+    pub ramp_smooth: Option<u16>,
     pub rough_tile: Option<u16>,
     pub sand_tile: Option<u16>,
     pub green_tile: Option<u16>,
@@ -260,8 +255,8 @@ pub struct TilesetLookup {
     /// tile_id → TMP filename (e.g., "clear01.tem"). None = blank/empty tileset.
     entries: Vec<Option<String>>,
     /// tile_id → variant TMP filenames (e.g., ["clear01a.tem", "clear01b.tem"]).
-    /// FA2 loads up to 4 visual replacements per tile by inserting 'a'-'d' before
-    /// the extension. Empty vec = no variants for that tile_id.
+    /// Existing suffix siblings are discovered after theater archive activation.
+    /// Empty means that this tile has only its pristine file.
     variant_filenames: Vec<Vec<String>>,
     /// Tileset index → bounds (start tile_id and count).
     /// Index 0 corresponds to [TileSet0000], etc.
@@ -337,12 +332,18 @@ impl TilesetLookup {
     ///
     /// Looks up the tileset's SetName and checks for "Cliff" (case-insensitive).
     /// Note: some cliffs are passable ramps — this is a conservative check.
-    /// Number of visual replacement variants for a tile_id (0 = no variants).
-    /// FA2 loads up to 4 variants per TMP: {base}a.{ext} through {base}d.{ext}.
+    /// Number of suffix siblings for a tile_id (0 = pristine only).
     pub fn variant_count(&self, tile_id: u16) -> u8 {
         self.variant_filenames
             .get(tile_id as usize)
             .map(|v| v.len() as u8)
+            .unwrap_or(0)
+    }
+
+    /// Total independent TMP file count, including the pristine file.
+    pub fn total_file_count(&self, tile_id: u16) -> u8 {
+        self.filename(i32::from(tile_id))
+            .map(|_| self.variant_count(tile_id).saturating_add(1))
             .unwrap_or(0)
     }
 
@@ -352,6 +353,17 @@ impl TilesetLookup {
             .get(tile_id as usize)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Exact independent TMP filename for a resolved file index.
+    pub fn filename_for_variant(&self, tile_id: u16, variant: u8) -> Option<&str> {
+        if variant == 0 {
+            self.filename(i32::from(tile_id))
+        } else {
+            self.variant_filenames(tile_id)
+                .get(usize::from(variant - 1))
+                .map(String::as_str)
+        }
     }
 
     pub fn is_cliff(&self, tile_id: u16) -> bool {
@@ -454,19 +466,13 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
                 variant_filenames.push(Vec::new());
             }
         } else {
-            // Each tile is named {prefix}{NN:02}.{ext}, 1-indexed.
-            // FA2 also loads up to 4 replacement TMP files per tile by inserting
-            // 'a'-'d' before the extension: clear01a.tem, clear01b.tem, etc.
-            // (Loading.cpp:4499-4520). We generate the candidate names here;
-            // actual existence is checked at image load time.
+            // Each tile is named {prefix}{NN:02}.{ext}, 1-indexed. Sibling
+            // discovery waits until load_theater has activated the theater
+            // archives, keeping this parser asset-independent.
             for i in 1..=tiles_in_set {
                 let main_name = format!("{}{:02}.{}", filename, i, extension);
-                let variants: Vec<String> = ['a', 'b', 'c', 'd']
-                    .iter()
-                    .map(|c| format!("{}{:02}{}.{}", filename, i, c, extension))
-                    .collect();
                 entries.push(Some(main_name));
-                variant_filenames.push(variants);
+                variant_filenames.push(Vec::new());
             }
         }
     }
@@ -670,9 +676,9 @@ impl BridgeRampTileTable {
 }
 
 impl TheaterData {
-    pub fn is_cliff_or_impassable_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
+    pub fn is_special_terrain_tile(&self, tile_id: u16, sub_tile: u8) -> bool {
         self.cliff_ranges
-            .is_cliff_or_impassable_tile(tile_id, slope_byte)
+            .is_special_terrain_tile(tile_id, sub_tile)
     }
 
     pub fn is_on_bridge_ramp_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
@@ -775,71 +781,50 @@ impl BridgeAnchorVariantTable {
 
 /// Load tileset data for a theater.
 ///
-/// Loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority,
-/// then parses the theater INI for tileset definitions and loads palettes.
+/// Replaces the active theater MIX group, then loads the exact active-YR INI
+/// and palette filenames.
 /// The AssetManager is mutable because theater MIX archives are loaded on demand.
 pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Option<TheaterData> {
     let def: &TheaterDef = theater_def(theater_name)?;
 
-    // Load theater-specific MIX archives at highest priority.
-    // These contain the .tmp terrain tiles and theater-specific SHP sprites.
-    for &mix_name in def.mix_archives {
-        match asset_manager.load_nested(mix_name) {
-            Ok(()) => log::info!("Theater {}: loaded MIX '{}'", theater_name, mix_name),
-            Err(_) => log::debug!(
-                "Theater {}: MIX '{}' not found (optional)",
-                theater_name,
-                mix_name
-            ),
-        }
+    if let Err(err) = asset_manager.activate_theater_archives(theater_name, def.mix_archives) {
+        log::warn!(
+            "Theater {}: archive activation failed: {}",
+            theater_name,
+            err
+        );
+        return None;
     }
 
-    // Find the theater INI file (try each name in order, log which one matched).
-    let mut ini_data: Option<Vec<u8>> = None;
-    let mut ini_name: &str = "";
-    for &name in def.ini_names {
-        if let Some((data, source)) = asset_manager.get_with_source(name) {
-            log::info!("Theater {}: INI '{}' from {}", theater_name, name, source);
-            ini_name = name;
-            ini_data = Some(data);
-            break;
-        }
-    }
-    let ini_data: Vec<u8> = ini_data?;
+    let (ini_data, ini_source) = asset_manager.get_with_source(def.ini_name)?;
+    log::info!(
+        "Theater {}: INI '{}' from {}",
+        theater_name,
+        def.ini_name,
+        ini_source
+    );
 
-    let lookup: TilesetLookup = parse_tileset_ini(&ini_data, def.extension).ok()?;
+    let mut lookup: TilesetLookup = parse_tileset_ini(&ini_data, def.extension).ok()?;
+    resolve_contiguous_variant_chains(&mut lookup, asset_manager);
     log::info!(
         "Theater {}: loaded {} from INI '{}' ({} tile_id slots, {} tilesets)",
         theater_name,
         def.extension,
-        ini_name,
+        def.ini_name,
         lookup.len(),
         lookup.bounds().len()
     );
 
-    // Find the iso palette (for terrain tile rendering).
-    let iso_palette: Palette = find_palette(asset_manager, def.palette_names, theater_name, "iso")?;
-
-    // Find the unit palette (for unit/overlay sprites on this theater).
-    let unit_palette: Palette =
-        find_palette(asset_manager, def.unit_palette_names, theater_name, "unit")?;
-
-    // Find the tiberium palette (for ore/gem overlays).
-    // Tiberium uses a dedicated palette (e.g., temperat.pal) distinct from the unit palette.
-    // Fall back to iso palette if the dedicated tiberium palette is not found.
-    let tiberium_palette: Palette = find_palette(
+    let iso_palette = load_exact_palette(asset_manager, def.iso_palette_name, theater_name, "iso")?;
+    let unit_palette =
+        load_exact_palette(asset_manager, def.unit_palette_name, theater_name, "unit")?;
+    let tiberium_palette = load_exact_palette(
         asset_manager,
-        def.tiberium_palette_names,
+        def.theater_palette_name,
         theater_name,
-        "tiberium",
+        "theater",
     )
-    .unwrap_or_else(|| {
-        log::warn!(
-            "Theater {}: tiberium palette not found, falling back to iso palette",
-            theater_name
-        );
-        iso_palette.clone()
-    });
+    .unwrap_or_else(native_missing_theater_palette);
 
     // Parse theater [General] tile-set keys directly from the raw text; these
     // keys are not represented by the TileSet parser.
@@ -866,12 +851,13 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     let dirt_tunnels = parse_general_int(&ini_text, "DirtTunnels");
     let dirt_track_tunnels = parse_general_int(&ini_text, "DirtTrackTunnels");
     let mut cliff_ranges = resolve_cliff_ranges(&lookup, &ini_text, bridge_set, wood_bridge_set);
-    let rmg_tiles = resolve_rmg_tile_keys(&lookup, &ini_text);
-    apply_lunar_cliff_zeroing(
+    let mut rmg_tiles = resolve_rmg_tile_keys(&lookup, &ini_text);
+    apply_lunar_global_zeroing(
         theater_name,
         &mut bridge_set,
         &mut wood_bridge_set,
         &mut cliff_ranges,
+        &mut rmg_tiles,
     );
     if bridge_set.is_some() || wood_bridge_set.is_some() {
         log::info!(
@@ -929,6 +915,61 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     })
 }
 
+/// The stock corpus stops at `g`. The alphabet-wide cap is deliberately well
+/// beyond retail while keeping defensive filename generation bounded for mods.
+const MAX_VARIANT_SUFFIXES: usize = 26;
+
+fn contiguous_variant_filenames(
+    pristine: &str,
+    mut exists: impl FnMut(&str) -> bool,
+) -> Vec<String> {
+    if !exists(pristine) {
+        return Vec::new();
+    }
+    let Some((stem, extension)) = pristine.rsplit_once('.') else {
+        return Vec::new();
+    };
+    let mut siblings = Vec::new();
+    for suffix_offset in 0..MAX_VARIANT_SUFFIXES {
+        let suffix = char::from(b'a' + suffix_offset as u8);
+        let candidate = format!("{stem}{suffix}.{extension}");
+        if !exists(&candidate) {
+            break;
+        }
+        siblings.push(candidate);
+    }
+    siblings
+}
+
+fn resolve_contiguous_variant_chains(lookup: &mut TilesetLookup, asset_manager: &AssetManager) {
+    let mut sibling_files = 0usize;
+    let mut groups = 0usize;
+    let mut max_total_files = 1usize;
+    for (pristine, siblings) in lookup
+        .entries
+        .iter()
+        .zip(lookup.variant_filenames.iter_mut())
+    {
+        let Some(pristine) = pristine.as_deref() else {
+            continue;
+        };
+        *siblings = contiguous_variant_filenames(pristine, |candidate| {
+            asset_manager.get_ref(candidate).is_some()
+        });
+        if !siblings.is_empty() {
+            groups += 1;
+            sibling_files += siblings.len();
+            max_total_files = max_total_files.max(siblings.len() + 1);
+        }
+    }
+    log::info!(
+        "Theater TMP variants: {} contiguous sibling files across {} groups (max total files {})",
+        sibling_files,
+        groups,
+        max_total_files,
+    );
+}
+
 fn resolve_tileset_start(lookup: &TilesetLookup, ordinal: Option<i32>) -> Option<u16> {
     let ordinal = ordinal?;
     if ordinal < 0 {
@@ -945,6 +986,7 @@ fn resolve_rmg_tile_keys(lookup: &TilesetLookup, ini_text: &str) -> RmgTileKeys 
     RmgTileKeys {
         clear_tile: resolve("ClearTile"),
         ramp_base: resolve("RampBase"),
+        ramp_smooth: resolve("RampSmooth"),
         rough_tile: resolve("RoughTile"),
         sand_tile: resolve("SandTile"),
         green_tile: resolve("GreenTile"),
@@ -993,11 +1035,12 @@ fn resolve_cliff_ranges(
     }
 }
 
-fn apply_lunar_cliff_zeroing(
+fn apply_lunar_global_zeroing(
     theater_name: &str,
     bridge_set: &mut Option<u16>,
     wood_bridge_set: &mut Option<u16>,
     cliff_ranges: &mut TheaterCliffRanges,
+    rmg_tiles: &mut RmgTileKeys,
 ) {
     if !theater_name.eq_ignore_ascii_case("LUNAR") {
         return;
@@ -1005,6 +1048,16 @@ fn apply_lunar_cliff_zeroing(
     *bridge_set = None;
     *wood_bridge_set = None;
     *cliff_ranges = TheaterCliffRanges::default();
+    rmg_tiles.water_set = None;
+}
+
+fn waterfall_is_special(
+    start: Option<u16>,
+    tile_id: u16,
+    sub_tile: u8,
+    ordinary: &[u8],
+) -> bool {
+    waterfall_blocks(start, tile_id, sub_tile, ordinary)
 }
 
 /// Parse a key=value integer from the `[General]` section of a theater INI file.
@@ -1044,33 +1097,45 @@ fn parse_general_i32(text: &str, key: &str) -> Option<i32> {
     None
 }
 
-/// Try palette filenames in order, returning the first valid palette found.
-fn find_palette(
+fn load_exact_palette(
     asset_manager: &AssetManager,
-    names: &[&str],
+    name: &str,
     theater_name: &str,
     palette_kind: &str,
 ) -> Option<Palette> {
-    for &name in names {
-        if let Some((data, source)) = asset_manager.get_with_source(name) {
-            if let Ok(pal) = Palette::from_bytes(&data) {
-                log::info!(
-                    "Theater {}: {} palette '{}' from {}",
-                    theater_name,
-                    palette_kind,
-                    name,
-                    source
-                );
-                return Some(pal);
-            }
+    if let Some((data, source)) = asset_manager.get_with_source(name) {
+        if let Ok(palette) = Palette::from_bytes_gamemd_ui(&data) {
+            log::info!(
+                "Theater {}: {} palette '{}' from {}",
+                theater_name,
+                palette_kind,
+                name,
+                source
+            );
+            return Some(palette);
         }
     }
     log::warn!(
-        "Theater {}: no {} palette found",
+        "Theater {}: {} palette '{}' unavailable",
         theater_name,
-        palette_kind
+        palette_kind,
+        name
     );
     None
+}
+
+fn native_missing_theater_palette() -> Palette {
+    let mut colors = [Color::rgb(0, 0, 0); 256];
+    for (index, color) in colors.iter_mut().enumerate() {
+        let value = index as u8;
+        *color = Color {
+            r: value,
+            g: 255u8.wrapping_sub(value),
+            b: value.wrapping_shl(2),
+            a: if index == 0 { 0 } else { 255 },
+        };
+    }
+    Palette { colors }
 }
 
 /// Collect all unique TileKey values used by a terrain grid.
@@ -1085,6 +1150,20 @@ pub fn collect_used_tiles(cells: &[(i32, u8)]) -> HashSet<TileKey> {
             sub_tile,
         })
         .collect()
+}
+
+/// Resolve the active positive subtile through the pristine/variant template
+/// grid while leaving the map-requested u8 identity available to atlas keys.
+pub(crate) fn wrapped_subtile_index(
+    sub_tile: u8,
+    template_width: u32,
+    template_height: u32,
+) -> Option<usize> {
+    let cell_count = template_width.checked_mul(template_height)?;
+    if cell_count == 0 {
+        return None;
+    }
+    usize::try_from(u32::from(sub_tile) % cell_count).ok()
 }
 
 /// Inject TileKey entries for the 8 bridge anchor variant tile_ids × all
@@ -1235,19 +1314,19 @@ pub fn load_tile_images(
             );
         }
 
-        let cell_count: usize = (tmp.template_width * tmp.template_height) as usize;
-
         for &sub in sub_tiles {
-            if (sub as usize) >= cell_count {
-                empty_cell_count += 1;
-                continue;
-            }
-
-            let Some(tile) = tmp.tiles[sub as usize].as_ref() else {
+            let Some(source_sub) =
+                wrapped_subtile_index(sub, tmp.template_width, tmp.template_height)
+            else {
                 empty_cell_count += 1;
                 continue;
             };
-            match tmp.tile_to_rgba(sub as usize, palette) {
+
+            let Some(tile) = tmp.tiles.get(source_sub).and_then(|tile| tile.as_ref()) else {
+                empty_cell_count += 1;
+                continue;
+            };
+            match tmp.tile_to_rgba(source_sub, palette) {
                 Ok(rgba) => {
                     images.insert(
                         TileKey {
@@ -1272,8 +1351,8 @@ pub fn load_tile_images(
         }
     }
 
-    // Load variant TMP files (FA2 replacements: {base}a.{ext} through {base}d.{ext}).
-    // Each variant that exists in the MIX archive gets its own TileKey with variant=1..4.
+    // Load the exact contiguous sibling chains resolved after theater archive
+    // activation. Each independent TMP gets its own positive variant index.
     let mut variant_count: u32 = 0;
     for (tile_id, sub_tiles) in &by_tile_id {
         let var_names = lookup.variant_filenames(*tile_id);
@@ -1282,20 +1361,23 @@ pub fn load_tile_images(
         }
         for (var_idx, var_name) in var_names.iter().enumerate() {
             let Some(var_data) = asset_manager.get_ref(var_name) else {
-                break; // Stop at first missing variant (same as FA2)
+                log::warn!("Resolved TMP variant disappeared during atlas load: {var_name}");
+                break;
             };
             let Ok(var_tmp) = TmpFile::from_bytes(var_data) else {
                 break;
             };
-            let var_cell_count = (var_tmp.template_width * var_tmp.template_height) as usize;
             for &sub in sub_tiles {
-                if (sub as usize) >= var_cell_count {
-                    continue;
-                }
-                let Some(tile) = var_tmp.tiles[sub as usize].as_ref() else {
+                let Some(source_sub) =
+                    wrapped_subtile_index(sub, var_tmp.template_width, var_tmp.template_height)
+                else {
                     continue;
                 };
-                if let Ok(rgba) = var_tmp.tile_to_rgba(sub as usize, palette) {
+                let Some(tile) = var_tmp.tiles.get(source_sub).and_then(|tile| tile.as_ref())
+                else {
+                    continue;
+                };
+                if let Ok(rgba) = var_tmp.tile_to_rgba(source_sub, palette) {
                     images.insert(
                         TileKey {
                             tile_id: *tile_id,

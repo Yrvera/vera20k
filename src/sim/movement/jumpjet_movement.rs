@@ -16,6 +16,8 @@
 //! - Part of sim/ — depends on sim/locomotor, sim/movement.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use crate::sim::movement::locomotion::LocomotorSlot;
+
 use crate::sim::movement::locomotor::{AirMovePhase, LocomotorState};
 use crate::util::fixed_math::{SIM_1_5, SIM_ZERO, SimFixed};
 
@@ -283,8 +285,8 @@ mod tests {
         use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
         LocomotorState {
             kind: LocomotorKind::Jumpjet,
-            mission_ready_state: None,
-            primary_kind: Some(LocomotorKind::Jumpjet),
+            slot: LocomotorSlot::from_kind(LocomotorKind::Jumpjet),
+            powered: true,
             piggyback: None,
             layer: MovementLayer::Air,
             phase: GroundMovePhase::Idle,
@@ -296,7 +298,6 @@ mod tests {
             target_altitude: SimFixed::from_num(500),
             climb_rate: sim_from_f32(75.0),
             jumpjet_speed: SimFixed::from_num(14),
-            jumpjet_wobbles: 0.15,
             jumpjet_accel: SimFixed::from_num(2),
             jumpjet_current_speed: SIM_ZERO,
             jumpjet_deviation: 40,
@@ -307,11 +308,11 @@ mod tests {
             speed_type: SpeedType::Track,
             movement_zone: crate::rules::locomotor_type::MovementZone::Normal,
             rot: 0,
-            override_state: None,
             air_progress: SIM_ZERO,
             infantry_wobble_phase: 0.0,
             subcell_dest: None,
             hover_throttle: crate::util::fixed_math::SIM_ZERO,
+            hover_speed_request: crate::util::fixed_math::SIM_ZERO,
             hover_bob_offset: crate::util::fixed_math::SIM_ZERO,
         }
     }

@@ -28,17 +28,13 @@ pub fn shortest_rotation(current: u8, target: u8) -> i16 {
     }
 }
 
-/// Convert ROT (degrees/frame at 15fps) + tick_ms into an 8-bit facing delta per tick.
-/// Returns the maximum facing units the entity can rotate this tick.
-pub fn rot_to_facing_delta(rot: i32, tick_ms: u32) -> u8 {
-    if rot <= 0 || tick_ms == 0 {
+/// Convert native ROT degrees per reached frame into an 8-bit facing delta.
+pub fn rot_to_facing_delta(rot: i32) -> u8 {
+    if rot <= 0 {
         return 0;
     }
-    // ROT degrees/frame * 15 frames/sec = degrees/sec
-    // degrees/sec * tick_ms/1000 = degrees this tick
-    // degrees * 256/360 = facing units this tick
-    let numerator: u64 = rot as u64 * 256 * 15 * tick_ms as u64;
-    let denominator: u64 = 360 * 1000;
+    let numerator: u64 = rot as u64 * 256;
+    let denominator: u64 = 360;
     let delta: u64 = numerator.div_ceil(denominator);
     delta.clamp(1, 128) as u8
 }
@@ -128,7 +124,7 @@ pub(crate) fn desired_turret_facing(entity: &GameEntity, entities: &EntityStore)
 pub fn tick_turret_rotation(
     entities: &mut EntityStore,
     rules: &RuleSet,
-    binary_frame: u32,
+    native_frame: u32,
     interner: &crate::sim::intern::StringInterner,
 ) {
     struct TurretUpdate {
@@ -181,7 +177,7 @@ pub fn tick_turret_rotation(
             if let Some(ref mut barrel) = entity.barrel_facing {
                 // Refresh ROT in case rules changed (cheap; idempotent).
                 barrel.set_rot(rot_byte);
-                barrel.set(update.target_facing, binary_frame);
+                barrel.set(update.target_facing, native_frame);
             }
         }
     }
@@ -213,16 +209,13 @@ mod tests {
 
     #[test]
     fn test_rot_to_facing_delta() {
-        // ROT=5, tick_ms=33 (30Hz): 5 * 256 * 15 * 33 / (360 * 1000) = ~1.76 -> 2
-        let delta: u8 = rot_to_facing_delta(5, 33);
-        assert!(delta >= 1 && delta <= 3, "delta={}", delta);
+        assert_eq!(rot_to_facing_delta(5), 4);
 
         // ROT=0 -> 0
-        assert_eq!(rot_to_facing_delta(0, 33), 0);
+        assert_eq!(rot_to_facing_delta(0), 0);
 
-        // ROT=7 (Grizzly), tick_ms=33: 7*256*15*33 / 360000 = ~2.46 -> 3
-        let delta: u8 = rot_to_facing_delta(7, 33);
-        assert!(delta >= 2 && delta <= 4, "delta={}", delta);
+        // ROT=7 (Grizzly): ceil(7 * 256 / 360) = 5.
+        assert_eq!(rot_to_facing_delta(7), 5);
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 use crate::map::rmg::options::RmgOptions;
 use crate::map::rmg::preview::PreviewImage;
-use crate::map::rmg::randomize::{RandomRanged, randomize};
+use crate::map::rmg::randomize::{RandomRanged, derive_from_map_type, randomize};
 use crate::map::rmg::settings::RmgSettings;
 
 use super::super::layout::RandomMapSetupControl;
@@ -14,42 +14,6 @@ use super::choose_map::ChooseMapSelection;
 
 /// Sentinel meaning "no seed chosen yet"; replaced with a random one on open.
 const UNSET_SEED: i32 = -1;
-
-/// Dialog-time RNG.
-///
-/// Deliberately separate from the generator's seeded RNG: this only decides
-/// which configuration the player is offered, never the terrain, which follows
-/// from the chosen seed. Keeping it separate also means dialog draws can never
-/// perturb a stream that gameplay depends on.
-pub struct DialogRng(u32);
-
-impl DialogRng {
-    pub fn from_entropy() -> Self {
-        Self(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.subsec_nanos())
-                .unwrap_or(0x1234_5678)
-                | 1,
-        )
-    }
-}
-
-impl RandomRanged for DialogRng {
-    fn ranged(&mut self, min: i32, max: i32) -> i32 {
-        // The original swaps an inverted pair and short-circuits an empty range;
-        // no caller passes either, but match it so the helper is total.
-        let (min, max) = if max < min { (max, min) } else { (min, max) };
-        if min == max {
-            return min;
-        }
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 17;
-        self.0 ^= self.0 << 5;
-        let span = (max - min + 1) as u32;
-        min + (self.0 % span) as i32
-    }
-}
 
 /// Which combo is currently dropped open, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,6 +317,16 @@ impl RandomMapSetupModalState {
         self.open_combo = None;
     }
 
+    /// Refresh the map-type-derived fields immediately before Generate.
+    /// The caller supplies the process Main stream that also seeded this dialog.
+    pub fn reroll_derived_for_generate(
+        &mut self,
+        settings: &RmgSettings,
+        rng: &mut impl RandomRanged,
+    ) {
+        derive_from_map_type(&mut self.options, settings, rng);
+    }
+
     /// Begin the synchronous generate block: every control goes inert.
     pub fn begin_generate(&mut self) {
         self.generating = true;
@@ -424,6 +398,39 @@ mod tests {
     fn open_replaces_the_unset_seed() {
         assert_eq!(RmgOptions::default().seed, UNSET_SEED);
         assert_eq!(opened().options.seed, 0xFFFF, "unset seed is randomized");
+    }
+
+    #[test]
+    fn gsi_04_02_dialog_open_and_generate_reroll_share_process_main_only() {
+        let mut process_main = crate::sim::rng::SimRng::new(0);
+        let mut reference_main = crate::sim::rng::SimRng::new(0);
+        let scenario = crate::sim::rng::SimRng::new(0x1234);
+        let scenario_before = scenario.state();
+        let mut mapgen = crate::map::rmg::RmgRng::new(0x5678);
+        let mut mapgen_reference = mapgen.clone();
+
+        let mut modal = RandomMapSetupModalState::open(
+            RmgOptions::default(),
+            None,
+            false,
+            &mut process_main,
+        );
+        let expected_seed = reference_main.next_range_u32_inclusive(0, 0xFFFF) as i32;
+        assert_eq!(modal.options.seed, expected_seed);
+        assert_eq!(process_main.logical_state(), reference_main.logical_state());
+
+        let mut expected_options = modal.options.clone();
+        derive_from_map_type(
+            &mut expected_options,
+            &RmgSettings::default(),
+            &mut reference_main,
+        );
+        modal.reroll_derived_for_generate(&RmgSettings::default(), &mut process_main);
+
+        assert_eq!(modal.options, expected_options);
+        assert_eq!(process_main.logical_state(), reference_main.logical_state());
+        assert_eq!(scenario.state(), scenario_before);
+        assert_eq!(mapgen.next_u32(), mapgen_reference.next_u32());
     }
 
     #[test]

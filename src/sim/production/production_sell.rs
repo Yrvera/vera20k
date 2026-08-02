@@ -589,9 +589,7 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
     // empty-garrison ownership reversion belongs to reconciliation/unload.
     if let Some(building) = sim.substrate.entities.get_mut(building_id) {
         if let Some(cargo) = building.passenger_role.cargo_mut() {
-            cargo.passengers.clear();
-            cargo.total_size = 0;
-            cargo.garrison_fire_index = 0;
+            cargo.clear_contents();
         }
     }
 
@@ -693,9 +691,7 @@ pub(crate) fn eject_red_hp_garrison(
 
     if let Some(building) = sim.substrate.entities.get_mut(building_id) {
         if let Some(cargo) = building.passenger_role.cargo_mut() {
-            cargo.passengers.clear();
-            cargo.total_size = 0;
-            cargo.garrison_fire_index = 0;
+            cargo.clear_contents();
         }
     }
 

@@ -28,17 +28,18 @@ pub use launch::{launch_session, launch_settings, pack_launch_session_without_st
 
 pub use choose_map::{ChooseMapModalState, ChooseMapSelection};
 pub use player_name::{
-    PLAYER_NAME_CARET_MARGIN_PX, PLAYER_NAME_DEFAULT, PLAYER_NAME_MAX_CHARS, PlayerNameEditState,
-    SkirmishShellState, accept_selected_map, blur_player_name_edit, clear_status_help_text,
-    combo_dropdown_open, dismiss_validation_modal, drain_pending_ui_sounds, focus_player_name_edit,
-    handle_player_name_backspace, handle_player_name_delete, handle_player_name_end,
-    handle_player_name_home, handle_player_name_left, handle_player_name_right,
-    handle_player_name_tab, initialize_rows_for_selected_map, insert_player_name_text,
-    player_name_caret_prefix, player_name_edit_rect_hit, player_row_visible,
-    repair_teams_for_selected_mode, set_status_help_text, update_player_name_scroll_for_caret,
+    PLAYER_NAME_CARET_MARGIN_PX, PLAYER_NAME_DEFAULT, PLAYER_NAME_EDIT_LIMIT_BYTES,
+    PlayerNameEditState, SkirmishShellState, accept_selected_map, blur_player_name_edit,
+    clear_status_help_text, combo_dropdown_open, dismiss_validation_modal, drain_pending_ui_sounds,
+    focus_player_name_edit, handle_player_name_backspace, handle_player_name_delete,
+    handle_player_name_end, handle_player_name_home, handle_player_name_left,
+    handle_player_name_right, handle_player_name_tab, initialize_rows_for_selected_map,
+    insert_player_name_text, player_name_caret_prefix, player_name_edit_rect_hit,
+    player_row_visible, repair_teams_for_selected_mode, set_status_help_text,
+    update_player_name_scroll_for_caret,
 };
 pub use random_map_setup::{
-    AcceptOutcome, DialogRng, RandomMapSetupModalState, SETUP_COMBO_ROWS, SetupCombo,
+    AcceptOutcome, RandomMapSetupModalState, SETUP_COMBO_ROWS, SetupCombo,
     SetupComboItem, setup_combo_items,
 };
 pub use saved_seed_browser::{SAVED_SEED_NAME_MAX_CHARS, SavedSeedBrowserState, SavedSeedOutcome};
