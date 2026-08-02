@@ -9,8 +9,8 @@ use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::occupancy::{
-    BUILDING_OCCUPATION_BIT, CellListInsertion, VEHICLE_OCCUPATION_BIT, entity_occupancy_cells,
-    infantry_raw_occupation_mask,
+    BUILDING_OCCUPATION_BIT, CellListInsertion, OBJECT_OCCUPATION_BIT, VEHICLE_OCCUPATION_BIT,
+    cell_list_layer_for_entity, entity_occupancy_cells, infantry_raw_occupation_mask,
 };
 use crate::sim::passenger::PassengerRole;
 use crate::util::fixed_math::SimFixed;
@@ -232,7 +232,24 @@ impl Simulation {
                 }
                 !cells.is_empty()
             }
-            EntityCategory::Aircraft => false,
+            EntityCategory::Aircraft => {
+                let (ground_level, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position.rx, position.ry);
+                if i16::from(position.z as i8) >= ground_level + 4 && live_structural_bridge {
+                    self.substrate.raw_cell_occupation.mark_deck(
+                        position.rx,
+                        position.ry,
+                        OBJECT_OCCUPATION_BIT,
+                    );
+                } else {
+                    self.substrate.raw_cell_occupation.mark_ground(
+                        position.rx,
+                        position.ry,
+                        OBJECT_OCCUPATION_BIT,
+                    );
+                }
+                true
+            }
         }
     }
 
@@ -270,9 +287,27 @@ impl Simulation {
                 }
                 !cells.is_empty()
             }
+            EntityCategory::Aircraft => {
+                let (ground_level, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position.rx, position.ry);
+                if i16::from(position.z as i8) >= ground_level + 4 && live_structural_bridge {
+                    self.substrate.raw_cell_occupation.clear_deck(
+                        position.rx,
+                        position.ry,
+                        OBJECT_OCCUPATION_BIT,
+                    );
+                } else {
+                    self.substrate.raw_cell_occupation.clear_ground(
+                        position.rx,
+                        position.ry,
+                        OBJECT_OCCUPATION_BIT,
+                    );
+                }
+                true
+            }
             // Generic Infantry removal intentionally leaves the destructive raw
             // bit stale; movement/sub-cell transitions own explicit clears.
-            EntityCategory::Infantry | EntityCategory::Aircraft => false,
+            EntityCategory::Infantry => false,
         }
     }
 
@@ -378,7 +413,7 @@ impl Simulation {
             return;
         }
         let cells = entity_occupancy_cells(entity);
-        let layer = entity.occupancy_list_layer();
+        let layer = cell_list_layer_for_entity(entity);
         let sub_cell = if entity.category == EntityCategory::Infantry {
             entity.sub_cell
         } else {
@@ -406,7 +441,10 @@ impl Simulation {
                 }
                 if matches!(
                     category,
-                    EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Structure
+                    EntityCategory::Unit
+                        | EntityCategory::Infantry
+                        | EntityCategory::Structure
+                        | EntityCategory::Aircraft
                 ) {
                     #[cfg(test)]
                     self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationListLinked);
@@ -444,7 +482,7 @@ impl Simulation {
             return false;
         }
         let cells = entity_occupancy_cells(entity);
-        let layer = entity.occupancy_list_layer();
+        let layer = cell_list_layer_for_entity(entity);
         let category = entity.category;
         let current_cell = (entity.position.rx, entity.position.ry);
         let raw_position = RevealPosition {
@@ -478,7 +516,10 @@ impl Simulation {
             if !inside_transport
                 && matches!(
                     category,
-                    EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Structure
+                    EntityCategory::Unit
+                        | EntityCategory::Infantry
+                        | EntityCategory::Structure
+                        | EntityCategory::Aircraft
                 )
             {
                 #[cfg(test)]
@@ -516,6 +557,43 @@ impl Simulation {
     /// private unmark transaction instead.
     pub(crate) fn remove_entity_occupancy(&mut self, stable_id: u64) {
         self.unmark_entity_remove(stable_id);
+    }
+
+    /// Run one production air-process visit with the active Fly
+    /// remove-before/process/add-after cell-list transaction around it.
+    pub(crate) fn tick_air_movement_with_cell_lists_one(
+        &mut self,
+        stable_id: u64,
+    ) -> crate::sim::movement::air_movement::AirMovementTickStats {
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::movement::locomotor::MovementLayer;
+
+        let transact_fly = self.substrate.entities.get(stable_id).is_some_and(|entity| {
+            entity.category == EntityCategory::Aircraft
+                && entity.lifecycle.object_alive
+                && !entity.lifecycle.in_limbo
+                && entity.locomotor.as_ref().is_some_and(|locomotor| {
+                    locomotor.kind == LocomotorKind::Fly && locomotor.layer == MovementLayer::Air
+                })
+        });
+        if transact_fly {
+            self.remove_entity_occupancy(stable_id);
+        }
+
+        let stats = crate::sim::movement::air_movement::tick_air_movement(
+            &mut self.substrate.entities,
+            &[stable_id],
+            self.session.tick,
+        );
+
+        if transact_fly
+            && self.substrate.entities.get(stable_id).is_some_and(|entity| {
+                entity.lifecycle.object_alive && !entity.lifecycle.in_limbo
+            })
+        {
+            self.add_entity_occupancy(stable_id);
+        }
+        stats
     }
 
     fn register_logic_object(&mut self, stable_id: u64) -> bool {

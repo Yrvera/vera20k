@@ -17,12 +17,34 @@ use crate::map::entities::EntityCategory;
 use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::util::fixed_math::SimFixed;
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 /// UnitClass vehicle-occupation bit in both CellClass occupation planes.
 pub(crate) const VEHICLE_OCCUPATION_BIT: u8 = 0x20;
+/// Generic ObjectClass occupation bit used by landed AircraftClass objects.
+pub(crate) const OBJECT_OCCUPATION_BIT: u8 = 0x40;
 pub(crate) const BUILDING_OCCUPATION_BIT: u8 = 0x80;
+
+/// Object-list layer after the native display-layer eligibility gate.
+/// Aircraft use Fly height rather than their Air path layer; every other
+/// category retains the existing locomotor-layer gate and OnBridge selector.
+pub(crate) fn cell_list_layer_for_entity(entity: &GameEntity) -> Option<MovementLayer> {
+    if entity.category != EntityCategory::Aircraft {
+        return entity.occupancy_list_layer();
+    }
+    let locomotor = entity.locomotor.as_ref()?;
+    if locomotor.kind != crate::rules::locomotor_type::LocomotorKind::Fly
+        || locomotor.altitude > SIM_ZERO
+    {
+        return None;
+    }
+    Some(if entity.on_bridge {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
+    })
+}
 
 /// Convert a coordinate's exact intra-cell position into the raw Infantry
 /// occupation mask. The native selector has no sub-cell-1 result: center and
@@ -714,7 +736,7 @@ impl OccupancyGrid {
             if entity.passenger_role.is_inside_transport() {
                 continue;
             }
-            let Some(layer) = entity.occupancy_list_layer() else {
+            let Some(layer) = cell_list_layer_for_entity(entity) else {
                 continue;
             };
             let sid = entity.stable_id;

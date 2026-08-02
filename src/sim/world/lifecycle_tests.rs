@@ -21,7 +21,7 @@ use crate::sim::house_state::HouseState;
 use crate::sim::mission::state::MissionTestFixture;
 use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionType};
 use crate::sim::movement::homing_movement::{HomingTarget, attach_homing_state};
-use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+use crate::sim::movement::locomotor::{AirMovePhase, LocomotorState, MovementLayer};
 use crate::sim::occupancy::CellListInsertion;
 use crate::sim::particles::ParticleSystem;
 use crate::sim::passenger::{PassengerCargo, PassengerRole};
@@ -181,6 +181,22 @@ fn install_common_raw_terrain(
         crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1500),
     );
     sim.resolved_terrain = Some(terrain);
+}
+
+fn install_fly_aircraft(sim: &mut Simulation, stable_id: u64, altitude: SimFixed) {
+    insert_entity(sim, stable_id, EntityCategory::Aircraft);
+    let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Fly);
+    locomotor.altitude = altitude;
+    locomotor.air_phase = if altitude <= SimFixed::from_num(0) {
+        AirMovePhase::Landed
+    } else {
+        AirMovePhase::Cruising
+    };
+    sim.substrate
+        .entities
+        .get_mut(stable_id)
+        .expect("aircraft")
+        .locomotor = Some(locomotor);
 }
 
 #[test]
@@ -469,6 +485,178 @@ fn gsi_04_12_common_raw_occupation_skips_transport_and_airborne_entities() {
     assert!(!sim.substrate.occupancy.contains_entity(5, 6, 2));
     assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(5, 6), 0);
     assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(5, 6), 0);
+}
+
+#[test]
+fn gsi_04_12_object_raw_occupation_landed_fly_reveal_and_conceal_are_ordered() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 0, None);
+    install_fly_aircraft(&mut sim, 1, SimFixed::from_num(0));
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 0, 128, 128));
+
+    assert_eq!(
+        sim.substrate
+            .occupancy
+            .count_on_layer(3, 4, MovementLayer::Ground),
+        1
+    );
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x40);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+    let linked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListLinked)
+        .expect("landed Fly list link");
+    let marked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationMarked)
+        .expect("landed Fly raw mark");
+    assert!(linked < marked);
+
+    sim.lifecycle_test_events.clear();
+    let _ = sim.object_conceal(1);
+
+    assert!(!sim.substrate.occupancy.contains_entity(3, 4, 1));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    let unlinked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListUnlinked)
+        .expect("landed Fly list unlink");
+    let cleared = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationCleared)
+        .expect("landed Fly raw clear");
+    assert!(unlinked < cleared);
+}
+
+#[test]
+fn gsi_04_12_object_raw_occupation_airborne_and_non_fly_aircraft_are_excluded() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 0, None);
+    install_fly_aircraft(&mut sim, 1, SimFixed::from_num(1));
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 0, 128, 128));
+
+    insert_entity(&mut sim, 2, EntityCategory::Aircraft);
+    sim.substrate.entities.get_mut(2).unwrap().locomotor =
+        Some(LocomotorState::for_test_kind(LocomotorKind::Rocket));
+    let _ = sim.try_reveal_entity(2, common_raw_request(5, 6, 0, 128, 128));
+
+    for (stable_id, rx, ry) in [(1, 3, 4), (2, 5, 6)] {
+        assert!(!sim.substrate.occupancy.contains_entity(rx, ry, stable_id));
+        assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(rx, ry), 0);
+        assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(rx, ry), 0);
+    }
+}
+
+#[test]
+fn gsi_04_12_object_raw_occupation_deck_clear_rechecks_live_structural_state() {
+    let mut sim = Simulation::new();
+    // Signed level -2 makes z=2 exactly four normalized levels above ground.
+    install_common_raw_terrain(&mut sim, 8, 8, 0xFE, Some((3, 4)));
+    install_fly_aircraft(&mut sim, 1, SimFixed::from_num(0));
+    sim.substrate.entities.get_mut(1).unwrap().on_bridge = true;
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 2, 128, 128));
+    assert_eq!(
+        sim.substrate
+            .occupancy
+            .count_on_layer(3, 4, MovementLayer::Bridge),
+        1
+    );
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x40);
+
+    let _ = sim.object_conceal(1);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+
+    install_fly_aircraft(&mut sim, 2, SimFixed::from_num(0));
+    sim.substrate.entities.get_mut(2).unwrap().on_bridge = true;
+    let _ = sim.try_reveal_entity(2, common_raw_request(3, 4, 2, 128, 128));
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x40);
+
+    {
+        let terrain = sim.resolved_terrain.as_ref().expect("resolved terrain");
+        let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
+        assert!(matches!(
+            bridge_state.body_cell_advance_state(3, 4, true, terrain),
+            StateOutcome::Absorbed
+        ));
+        assert!(matches!(
+            bridge_state.body_cell_advance_state(3, 4, true, terrain),
+            StateOutcome::Collapsed { .. }
+        ));
+        assert!(!bridge_state.is_bridge_walkable(3, 4));
+    }
+
+    let _ = sim.object_conceal(2);
+    assert!(!sim.substrate.occupancy.contains_entity(3, 4, 2));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.deck_bits(3, 4),
+        0x40,
+        "generic clear retargets ground after collapse and leaves the deck bit stale"
+    );
+}
+
+#[test]
+fn gsi_04_12_object_raw_occupation_production_fly_tick_unmarks_takeoff_and_marks_landing() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 0, None);
+    install_fly_aircraft(&mut sim, 1, SimFixed::from_num(0));
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 0, 128, 128));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x40);
+
+    {
+        let locomotor = sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap();
+        locomotor.air_phase = AirMovePhase::Ascending;
+        locomotor.target_altitude = SimFixed::from_num(600);
+        locomotor.climb_rate = SimFixed::from_num(1500);
+    }
+    sim.tick_air_movement_with_cell_lists_one(1);
+
+    let aircraft = sim.substrate.entities.get(1).unwrap();
+    assert!(aircraft.locomotor.as_ref().unwrap().altitude > SimFixed::from_num(0));
+    assert!(aircraft.lifecycle.cell_marked, "the post-process Mark transaction completed");
+    assert!(!sim.substrate.occupancy.contains_entity(3, 4, 1));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+
+    {
+        let locomotor = sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap();
+        locomotor.air_phase = AirMovePhase::Descending;
+        locomotor.altitude = SimFixed::from_num(1);
+        locomotor.target_altitude = SimFixed::from_num(0);
+        locomotor.climb_rate = SimFixed::from_num(1500);
+    }
+    sim.tick_air_movement_with_cell_lists_one(1);
+
+    let aircraft = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(aircraft.locomotor.as_ref().unwrap().altitude, SimFixed::from_num(0));
+    assert!(aircraft.lifecycle.cell_marked);
+    assert_eq!(
+        sim.substrate
+            .occupancy
+            .count_on_layer(3, 4, MovementLayer::Ground),
+        1
+    );
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x40);
 }
 
 fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {

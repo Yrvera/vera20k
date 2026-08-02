@@ -62,7 +62,6 @@ use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
-use crate::sim::movement::air_movement;
 use crate::sim::movement::group_destination;
 use crate::sim::movement::homing_movement;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -2859,7 +2858,7 @@ impl Simulation {
                 &mut sim.pending_lifecycle_requests,
             ));
 
-            air_movement::tick_air_movement(&mut sim.substrate.entities, &one, sim.session.tick);
+            sim.tick_air_movement_with_cell_lists_one(stable_id);
             if let Some(rules) = rules {
                 let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
                 let mut teleport_visuals = teleport_movement::TeleportVisuals {
