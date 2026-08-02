@@ -49,9 +49,12 @@ pub struct PaletteLoad {
     pub name: String,
     pub reason: String,
     pub alpha_policy: AlphaPolicy,
-    /// `declared` only when art.ini named it or the caller overrode it.
-    /// Everything else is a heuristic and must be reported as one.
+    /// `production` when an engine code path binds this palette to this asset
+    /// class, `declared` when art.ini named it or the caller overrode it,
+    /// `heuristic` otherwise.
     pub confidence: &'static str,
+    /// For `production`, the code path the binding was read from.
+    pub production_site: Option<&'static str>,
 }
 
 impl PaletteLoad {
@@ -61,6 +64,7 @@ impl PaletteLoad {
             reason: self.reason.clone(),
             alpha_policy: self.alpha_policy.as_str().to_string(),
             confidence: self.confidence.to_string(),
+            production_site: self.production_site.map(str::to_string),
         }
     }
 }
@@ -100,7 +104,7 @@ const ARCHIVE_PALETTE_MAP: &[(&str, &[&str])] = &[
     ("isourb", &["isourb.pal"]),
     ("isodes", &["isodes.pal"]),
     ("isolun", &["isolun.pal"]),
-    ("isonurb", &["isonurb.pal"]),
+    ("isoubn", &["isoubn.pal"]),
     ("tem", &["temperat.pal", "unittem.pal"]),
     ("temperat", &["temperat.pal", "unittem.pal"]),
     ("sno", &["snow.pal", "unitsno.pal"]),
@@ -131,19 +135,38 @@ const ARCHIVE_PALETTE_MAP: &[(&str, &[&str])] = &[
 ];
 
 /// Palette families whose production consumers use the non-alpha-baking
-/// conversion: theater terrain, and the UI/loading chrome.
+/// conversion.
+///
+/// The theater set is not a guess: `map::theater` holds one `TheaterDef` per
+/// theater naming its iso, unit and theater palette, and `load_exact_palette`
+/// (theater.rs:1107) decodes all three with `from_bytes_gamemd_ui`. This list
+/// mirrors that table exactly — including `unit*.pal`, which an earlier
+/// name-pattern guess wrongly treated as alpha-baking, and `isoubn.pal`, which
+/// that guess spelled `isonurb.pal`, a filename that appears nowhere in the
+/// engine or the retail archives.
 const GAMEMD_UI_PALETTES: &[&str] = &[
+    // TheaterDef iso palettes.
     "isotem.pal",
     "isosno.pal",
     "isourb.pal",
-    "isodes.pal",
     "isolun.pal",
-    "isonurb.pal",
+    "isodes.pal",
+    "isoubn.pal",
+    // TheaterDef unit palettes.
+    "unittem.pal",
+    "unitsno.pal",
+    "uniturb.pal",
+    "unitlun.pal",
+    "unitdes.pal",
+    "unitubn.pal",
+    // TheaterDef theater palettes.
     "temperat.pal",
     "snow.pal",
     "urban.pal",
-    "desert.pal",
     "lunar.pal",
+    "desert.pal",
+    "urbann.pal",
+    // Loading-screen chrome.
     "ls800bkg.pal",
     "ls640bkg.pal",
     "load.pal",
@@ -190,10 +213,21 @@ pub fn infer(
     source_archive: &str,
     override_name: Option<&str>,
 ) -> PaletteInference {
-    let mut proposals: Vec<(String, String, &'static str)> = Vec::new();
-    let mut propose = |name: String, reason: String, confidence: &'static str| {
-        if !proposals.iter().any(|(existing, _, _)| *existing == name) {
-            proposals.push((name, reason, confidence));
+    // (name, reason, confidence, production site, forced alpha policy)
+    let mut proposals: Vec<(
+        String,
+        String,
+        &'static str,
+        Option<&'static str>,
+        Option<AlphaPolicy>,
+    )> = Vec::new();
+    let mut propose = |name: String,
+                       reason: String,
+                       confidence: &'static str,
+                       site: Option<&'static str>,
+                       policy: Option<AlphaPolicy>| {
+        if !proposals.iter().any(|(existing, ..)| *existing == name) {
+            proposals.push((name, reason, confidence, site, policy));
         }
     };
 
@@ -205,8 +239,29 @@ pub fn infer(
                 trimmed.to_ascii_lowercase(),
                 "override".to_string(),
                 "declared",
+                None,
+                None,
             );
         }
+    }
+
+    // 2. A production code path that binds a palette to this asset class beats
+    //    every heuristic below it, and carries the citation to prove it. When no
+    //    path claims the asset this yields nothing and the chain proceeds — that
+    //    is the honest outcome, not a failure.
+    if let Some(binding) =
+        crate::asset_tools::palette_production::binding_for(&lower_name(asset_name), source_archive)
+    {
+        propose(
+            binding.palette.to_ascii_lowercase(),
+            format!("production:{}", binding.rule),
+            "production",
+            Some(binding.site),
+            Some(match binding.alpha_policy {
+                "gamemd_ui" => AlphaPolicy::GamemdUi,
+                _ => AlphaPolicy::Standard,
+            }),
+        );
     }
 
     let lower = asset_name.unwrap_or_default().to_ascii_lowercase();
@@ -223,6 +278,8 @@ pub fn infer(
             format!("{pal_base}.pal"),
             "art.ini Palette=".to_string(),
             "declared",
+            None,
+            None,
         );
     }
 
@@ -235,6 +292,8 @@ pub fn infer(
                     (*pal).to_string(),
                     format!("archive-map:{pattern}"),
                     "heuristic",
+                    None,
+                    None,
                 );
             }
             break;
@@ -247,6 +306,8 @@ pub fn infer(
             "radaryuri.pal".to_string(),
             "filename-heuristic:yuri-radar".to_string(),
             "heuristic",
+            None,
+            None,
         );
     }
     if lower.contains("mouse") || lower.contains("cursor") || lower.contains("pointer") {
@@ -254,6 +315,8 @@ pub fn infer(
             "mousepal.pal".to_string(),
             "filename-heuristic:cursor".to_string(),
             "heuristic",
+            None,
+            None,
         );
     }
     if lower.contains("icon") || source_lower.contains("cameo") {
@@ -261,11 +324,15 @@ pub fn infer(
             "cameomd.pal".to_string(),
             "filename-heuristic:cameo".to_string(),
             "heuristic",
+            None,
+            None,
         );
         propose(
             "cameo.pal".to_string(),
             "filename-heuristic:cameo".to_string(),
             "heuristic",
+            None,
+            None,
         );
     }
     if is_sidebar_ui(&lower, &source_lower) {
@@ -274,6 +341,8 @@ pub fn infer(
                 pal.to_string(),
                 "filename-heuristic:sidebar-ui".to_string(),
                 "heuristic",
+                None,
+                None,
             );
         }
     }
@@ -282,6 +351,8 @@ pub fn infer(
             "anim.pal".to_string(),
             "filename-heuristic:anim".to_string(),
             "heuristic",
+            None,
+            None,
         );
     }
     if lower.starts_with("ls") || lower.starts_with("load") || lower.contains("loading") {
@@ -290,6 +361,8 @@ pub fn infer(
                 pal.to_string(),
                 "filename-heuristic:loading-screen".to_string(),
                 "heuristic",
+                None,
+                None,
             );
         }
     }
@@ -300,6 +373,8 @@ pub fn infer(
             (*pal).to_string(),
             "fallback-chain".to_string(),
             "heuristic",
+            None,
+            None,
         );
     }
 
@@ -307,7 +382,7 @@ pub fn infer(
     let mut candidates: Vec<PaletteCandidateRow> = Vec::with_capacity(proposals.len());
     let mut chosen: Option<PaletteLoad> = None;
 
-    for (name, reason, confidence) in proposals {
+    for (name, reason, confidence, site, forced_policy) in proposals {
         // Two lookup rules, in order, and both matter:
         //
         // 1. Prefer the palette that sits in the *same archive as the art*. The
@@ -326,7 +401,8 @@ pub fn infer(
         let exists = bytes.is_some();
         if chosen.is_none()
             && let Some(bytes) = bytes
-            && let Some(load) = load_with_policy(&name, &bytes, &reason, confidence)
+            && let Some(load) =
+                load_with_policy(&name, &bytes, &reason, confidence, site, forced_policy)
         {
             chosen = Some(load);
         }
@@ -354,7 +430,7 @@ pub fn infer(
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("archive-pal {:#010X}", entry.id as u32));
             let reason = "last-resort-768-byte-scan".to_string();
-            if let Some(load) = load_with_policy(&name, bytes, &reason, "heuristic") {
+            if let Some(load) = load_with_policy(&name, bytes, &reason, "heuristic", None, None) {
                 candidates.push(PaletteCandidateRow {
                     name: load.name.clone(),
                     reason: reason.clone(),
@@ -390,8 +466,13 @@ fn load_with_policy(
     bytes: &[u8],
     reason: &str,
     confidence: &'static str,
+    site: Option<&'static str>,
+    forced_policy: Option<AlphaPolicy>,
 ) -> Option<PaletteLoad> {
-    let policy = policy_for(name);
+    // A production binding cites which conversion its call site uses, so it
+    // overrides the name-based guess; everything else falls back to the family
+    // rule.
+    let policy = forced_policy.unwrap_or_else(|| policy_for(name));
     let palette = match policy {
         AlphaPolicy::Standard => Palette::from_bytes(bytes).ok()?,
         AlphaPolicy::GamemdUi => Palette::from_bytes_gamemd_ui(bytes).ok()?,
@@ -402,7 +483,13 @@ fn load_with_policy(
         reason: reason.to_string(),
         alpha_policy: policy,
         confidence,
+        production_site: site,
     })
+}
+
+/// Lowercased asset name, or an empty string when the caller had none.
+fn lower_name(asset_name: Option<&str>) -> String {
+    asset_name.unwrap_or_default().to_ascii_lowercase()
 }
 
 /// Match the conversion the production consumer of this palette family uses.
@@ -449,11 +536,38 @@ mod tests {
     }
 
     #[test]
-    fn theater_palettes_take_the_non_alpha_baking_policy() {
-        assert_eq!(policy_for("isotem.pal"), AlphaPolicy::GamemdUi);
-        assert_eq!(policy_for("TEMPERAT.PAL"), AlphaPolicy::GamemdUi);
-        assert_eq!(policy_for("unittem.pal"), AlphaPolicy::Standard);
+    fn every_theater_table_palette_takes_the_non_alpha_baking_policy() {
+        // `map::theater::load_exact_palette` (theater.rs:1107) decodes all three
+        // palettes of every TheaterDef with `from_bytes_gamemd_ui` — iso, unit
+        // and theater alike. An earlier name-pattern guess had `unit*.pal` on the
+        // alpha-baking side, which is what this test now pins against.
+        for name in [
+            "isotem.pal",
+            "isoubn.pal",
+            "TEMPERAT.PAL",
+            "unittem.pal",
+            "unitubn.pal",
+            "urbann.pal",
+        ] {
+            assert_eq!(policy_for(name), AlphaPolicy::GamemdUi, "{name}");
+        }
+        // Sidebar chrome goes through `Palette::from_bytes` instead
+        // (sidebar_chrome.rs:452/:458), so it keeps the alpha-baking decode.
         assert_eq!(policy_for("sidebar.pal"), AlphaPolicy::Standard);
+        assert_eq!(policy_for("cameo.pal"), AlphaPolicy::Standard);
+    }
+
+    #[test]
+    fn the_newurban_iso_palette_is_spelled_as_the_engine_spells_it() {
+        // theater.rs:139 names it isoubn.pal. `isonurb.pal` was a fabricated
+        // name carried in from the GUI browser's map and exists nowhere.
+        assert!(GAMEMD_UI_PALETTES.contains(&"isoubn.pal"));
+        assert!(!GAMEMD_UI_PALETTES.contains(&"isonurb.pal"));
+        assert!(
+            ARCHIVE_PALETTE_MAP
+                .iter()
+                .all(|(_, palettes)| !palettes.contains(&"isonurb.pal"))
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 
 use crate::asset_tools::verb_art::ArtForOptions;
+use crate::asset_tools::verb_compare::CompareOptions;
 use crate::asset_tools::verb_csf::CsfOptions;
 use crate::asset_tools::verb_extract::ExtractOptions;
 use crate::asset_tools::verb_find::FindOptions;
@@ -41,6 +42,7 @@ pub enum Verb {
     ArtFor { type_id: String },
     Scan,
     ParseCheck,
+    Compare { name: String },
     Help,
 }
 
@@ -61,6 +63,7 @@ pub struct Cli {
     pub art_image: String,
     pub scan: ScanOptions,
     pub parse_check: ParseCheckOptions,
+    pub compare: CompareOptions,
 }
 
 pub fn usage() -> &'static str {
@@ -85,6 +88,7 @@ VERBS
   sound <NAME>         One audio-bag entry; --wav decodes it.
   bag-ls               List the audio bag, filtered by --prefix.
   art-for <TYPE>       Rules type id to the art files that back it, resolved.
+  compare <NAME>       Every archive's copy of one name, side by side.
   scan                 Search every archive by format and field predicates.
   parse-check          Run every parser over the whole corpus; report failures.
 
@@ -147,6 +151,11 @@ art-for
   --theater <T>        tem (default) | sno | urb | lun | des | ubn
   --image <ID>         The rules Image= value, when you already know it.
 
+compare
+  --frame <N>          Frame rendered from each variant. Default 0.
+  --scale <N>          Shared integer upscale across all variants.
+  --no-render          Structural diff only; write no PNGs.
+
 scan
   --format <TAG>       Restrict to one format. Strongly recommended: without it
                        every entry in the corpus is sniffed and parsed.
@@ -183,6 +192,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
         art_image: String::new(),
         scan: ScanOptions::default(),
         parse_check: ParseCheckOptions::default(),
+        compare: CompareOptions::default(),
     };
 
     let mut args = argv.into_iter().peekable();
@@ -240,6 +250,9 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
         "art-for" => Verb::ArtFor {
             type_id: require_target(target, "art-for", "<TYPE>")?,
         },
+        "compare" => Verb::Compare {
+            name: require_target(target, "compare", "<NAME>")?,
+        },
         "scan" => Verb::Scan,
         "parse-check" => Verb::ParseCheck,
         other => return Err(format!("unknown verb \"{other}\"")),
@@ -258,6 +271,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
                 let dir = PathBuf::from(value(&mut args, "--out")?);
                 cli.render.out = dir.clone();
                 cli.extract.out = dir.clone();
+                cli.compare.out = dir.clone();
                 cli.sound.out = dir;
             }
 
@@ -307,6 +321,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
             }
 
             "--ascii" => cli.info.ascii = true,
+            "--no-render" => cli.compare.no_render = true,
             "--crop" => cli.render.crop = true,
 
             // --- Phase 2 flags ---
@@ -327,7 +342,11 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
             "--bag" => cli.sound.bag = Some(value(&mut args, "--bag")?),
             "--source" => cli.csf.source = Some(value(&mut args, "--source")?),
             "--raw" => cli.csf.raw = true,
-            "--scale" => cli.render.scale = Some(number::<u32>(&mut args, "--scale")?),
+            "--scale" => {
+                let n = number::<u32>(&mut args, "--scale")?;
+                cli.render.scale = Some(n);
+                cli.compare.scale = Some(n);
+            }
             "--house" => cli.render.house = Some(number::<u8>(&mut args, "--house")?),
             "--palette" => {
                 let name = value(&mut args, "--palette")?;
@@ -341,6 +360,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Cli, String> {
                 match cli.verb {
                     Verb::Info { .. } => cli.info.frame = n,
                     Verb::Render { .. } => cli.render.frame = Some(n),
+                    Verb::Compare { .. } => cli.compare.frame = n,
                     _ => return Err(flag_not_valid(&flag, &cli.verb)),
                 }
             }
@@ -405,6 +425,7 @@ fn flag_not_valid(flag: &str, verb: &Verb) -> String {
         Verb::Sound { .. } => "sound",
         Verb::BagLs => "bag-ls",
         Verb::ArtFor { .. } => "art-for",
+        Verb::Compare { .. } => "compare",
         Verb::Scan => "scan",
         Verb::ParseCheck => "parse-check",
         Verb::Help => "help",
