@@ -711,6 +711,66 @@ def asset_art_for(
 
 
 @mcp.tool()
+def asset_compare(
+    name: str,
+    frame: int = 0,
+    scale: int | None = None,
+    no_render: bool = False,
+    out: str | None = None,
+    ra2_dir: str | None = None,
+    all_mixes: bool = False,
+) -> str:
+    """Every archive's copy of one filename, diffed and rendered side by side. READ the sheet.
+
+    One name can exist several times over: the RA2 and YR copies of a sidebar
+    sprite, a per-theater terrain variant, an ecache override. They are not
+    interchangeable — POWERP.SHP is 12x2 in sidec01.mix and 16x2 in sidec02.mix —
+    and every other verb reports only the one copy that won.
+
+    Use this when art looks right in one faction/theater and wrong in another,
+    or before concluding anything from a single `asset_info` result. For which
+    single copy the engine would actually load, use asset_find; for the frame
+    table of one copy, asset_info.
+
+    LIKE asset_render, THIS WRITES A PNG AND RETURNS ITS PATH. `outputs.sheet`
+    holds every variant at one shared scale so the sizes are directly
+    comparable; open it with your file-reading tool to see them. The JSON's
+    `differences` list names each field that varies and `differ` is the verdict,
+    so a structural answer is available without the image.
+
+    Each variant is rendered with its own inferred palette, since a sidec01 copy
+    and a sidec02 copy legitimately want different ones — the same palette
+    caveat as asset_render applies to each cell.
+
+    Args:
+        name: Filename to compare, e.g. "POWERP.SHP".
+        frame: Frame (or TMP tile) rendered from each variant. Default 0.
+        scale: Shared integer upscale across all variants. Default: fitted.
+        no_render: Report the structural diff only and write no PNGs. Cheap, and
+            enough when you only need to know whether the copies differ.
+        out: Output root directory. Default: the repo's target/asset.
+        ra2_dir: Retail install root. Omit to let the CLI resolve it.
+        all_mixes: Also mount archives the game's startup path skips, which can
+            surface further copies. Default False.
+    """
+    args = ["compare", name]
+    if frame:
+        args += _flag("--frame", frame)
+    args += _flag("--scale", scale)
+    args += _switch("--no-render", no_render)
+    args += _flag("--out", out)
+    return _invoke(
+        args,
+        ra2_dir=ra2_dir,
+        all_mixes=all_mixes,
+        timeout_s=TIMEOUT_SWEEP_S,
+        slow_advice=(
+            "Pass no_render=True for the structural diff alone, or lower scale=."
+        ),
+    )
+
+
+@mcp.tool()
 def asset_scan(
     format: str | None = None,
     archive: str | None = None,
@@ -737,7 +797,7 @@ def asset_scan(
             back in each hit's `fields` map, so run one broad scan first to see
             what a predicate could match against. The parsed predicates are
             echoed in the report, so a typo is visible rather than silent.
-        limit: Page size. Omit to use the CLI's own default.
+        limit: Page size. Omit for the CLI default of 200.
         offset: Rows to skip. Default 0.
         ra2_dir: Retail install root. Omit to let the CLI resolve it.
         all_mixes: Also mount archives the game's startup path skips, widening

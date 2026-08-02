@@ -10,8 +10,8 @@ use vera20k::asset_tools::args::{self, Cli, Verb};
 use vera20k::asset_tools::names::NameDict;
 use vera20k::asset_tools::report::{ErrorReport, to_json};
 use vera20k::asset_tools::{
-    palette, render_dispatch, root, verb_art, verb_csf, verb_extract, verb_find, verb_info,
-    verb_ls, verb_palette, verb_parse_check, verb_scan, verb_sound,
+    palette, render_dispatch, root, verb_art, verb_compare, verb_csf, verb_extract, verb_find,
+    verb_info, verb_ls, verb_palette, verb_parse_check, verb_scan, verb_sound,
 };
 
 const EXIT_FAILED: i32 = 1;
@@ -131,6 +131,15 @@ fn run(cli: Cli) -> Result<(), ErrorReport> {
 
         Verb::BagLs => {
             let report = verb_sound::bag_ls(&manager, &cli.sound)?;
+            println!("{}", to_json(&report));
+        }
+
+        // `compare` renders each variant with its own inferred palette, so it
+        // needs the art registry the way `render` does.
+        Verb::Compare { name } => {
+            let dict = NameDict::build_offline();
+            let art_registry = palette::load_art_registry(&manager);
+            let report = verb_compare::run(&manager, &dict, &art_registry, &name, &cli.compare)?;
             println!("{}", to_json(&report));
         }
 

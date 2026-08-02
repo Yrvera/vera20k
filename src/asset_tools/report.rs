@@ -274,8 +274,46 @@ pub struct PaletteChoice {
     /// `standard` bakes index-0 alpha into the palette; `gamemd_ui` does not.
     /// Pairing the wrong one with a frame converter yields opaque sprites.
     pub alpha_policy: String,
-    /// `declared` only when art.ini named it; everything else is a heuristic.
+    /// `production` when a real engine code path binds this palette to this
+    /// asset class, `declared` when art.ini named it, `heuristic` otherwise.
     pub confidence: String,
+    /// For `production`, the code path the binding was read from. This is the
+    /// difference between "the engine does this" and "this looked plausible".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub production_site: Option<String>,
+}
+
+/// One archive's copy of a name, for `asset compare`.
+#[derive(Debug, Serialize)]
+pub struct CompareVariant {
+    pub archive: String,
+    pub entry_id: String,
+    pub size: u32,
+    pub format: String,
+    pub detail: String,
+    /// False when only the catalogue sweep found it — the engine's own lookup
+    /// would not resolve this copy by name.
+    pub reachable: bool,
+    /// Structural fields, for the field-by-field diff.
+    pub fields: std::collections::BTreeMap<String, String>,
+    /// Rendered PNG for this variant, when the format could be drawn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub png: Option<String>,
+}
+
+/// `asset compare` — every archive's copy of one name, side by side.
+#[derive(Debug, Serialize)]
+pub struct CompareReport {
+    pub name: String,
+    pub variant_count: usize,
+    /// True when the variants are not all structurally identical.
+    pub differ: bool,
+    /// Field-by-field differences, one line per field that varies.
+    pub differences: Vec<String>,
+    pub variants: Vec<CompareVariant>,
+    pub outputs: RenderOutputs,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// One rejected or untried palette candidate, with why it was proposed.

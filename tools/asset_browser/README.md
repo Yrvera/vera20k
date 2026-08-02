@@ -81,6 +81,7 @@ install itself, in its own order: `--ra2-dir` → `$RA2_DIR` → `config.toml`.
 | `asset_csf` | The string table: `mode="get"` for one key, `mode="grep"` to search keys and values. |
 | `asset_sound` | The audio bag: `mode="one"` for one entry (`wav=True` decodes it), `mode="list"` to page the index. |
 | `asset_art_for` | A rules type id resolved to the art files that back it, per theater. |
+| `asset_compare` | Every archive's copy of one filename, diffed and rendered side by side. |
 | `asset_scan` | Corpus-wide search across every mounted archive by format, archive and field predicates. **Slow.** |
 | `asset_parse_check` | Every retail entry run through its parser, tallied per format. **Slow.** |
 
@@ -90,8 +91,10 @@ Two things worth knowing before trusting output:
   under `outputs.frames`, `outputs.sheet` and `outputs.index`. Reporting that JSON
   is not looking at the art — open the paths to actually see the sprite.
 - **The palette is inferred.** `palette.reason` says how it was picked and
-  `palette.confidence` says how much to trust it; only `declared` means art.ini
-  named it. A render that looks plausible is not proof the palette is right. Use
+  `palette.confidence` says how much to trust it: `production` means a real engine
+  code path binds that palette to this asset class and `palette.production_site`
+  cites the line it was read from; `declared` means art.ini named it; `heuristic`
+  is a guess. A render that looks plausible is not proof the palette is right. Use
   `asset_palette_for` when colour matters.
 
 ## Failure behaviour
@@ -136,6 +139,7 @@ cargo build --release -p vera20k --bin asset
 ./target/release/asset bag-ls --prefix ir
 ./target/release/asset sound irbuild --wav
 ./target/release/asset art-for GAPOWR --theater sno
+./target/release/asset compare POWERP.SHP
 ./target/release/asset scan --format vxl --limit 40
 ./target/release/asset parse-check --format shp
 ```

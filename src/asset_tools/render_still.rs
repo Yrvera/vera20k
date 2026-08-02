@@ -634,6 +634,8 @@ fn pal_report(
             reason: "the rendered asset is itself the palette".to_string(),
             alpha_policy: AlphaPolicy::Standard.as_str().to_string(),
             confidence: "declared".to_string(),
+            // No engine path is being cited: the asset simply is the palette.
+            production_site: None,
         }),
         house_color: house,
         canvas: render.canvas,
