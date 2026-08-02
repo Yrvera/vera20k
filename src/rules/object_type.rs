@@ -318,6 +318,17 @@ pub struct ObjectType {
     /// `CanRetaliate=` — when false, the unit does not fire back when hit
     /// (suppresses the damage-triggered retaliation acquisition). Default yes.
     pub can_retaliate: bool,
+    /// `CanPassiveAquire=` (the key is misspelled in the original INI and in
+    /// the binary's key table — parsed verbatim). When false the object never
+    /// reaches the passive target scanner, so it only ever fires at a target it
+    /// was explicitly given. Default **yes**; stock `rulesmd.ini` opts 17 types
+    /// out ("Won't try to pick up own targets").
+    pub can_passive_acquire: bool,
+    /// `DistributedFire=` — the type spreads fire across several nearby targets
+    /// instead of committing to one. VERA parses it only to keep those types
+    /// OFF the single-target passive-acquire commit; the spread-fire mechanism
+    /// itself is not implemented. Default no.
+    pub distributed_fire: bool,
     /// Whether this unit fires a warhead at its own position on death (e.g.,
     /// Apocalypse Tank explosion damages nearby units).
     pub explodes: bool,
@@ -1021,6 +1032,9 @@ impl ObjectType {
             opportunity_fire: section.get_bool("OpportunityFire").unwrap_or(false),
             // Default yes (retaliation allowed unless the type opts out).
             can_retaliate: section.get_bool("CanRetaliate").unwrap_or(true),
+            // Default yes. The INI spelling really is "Aquire" — do not correct it.
+            can_passive_acquire: section.get_bool("CanPassiveAquire").unwrap_or(true),
+            distributed_fire: section.get_bool("DistributedFire").unwrap_or(false),
             explodes: section.get_bool("Explodes").unwrap_or(false),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
             super_weapon: section.get("SuperWeapon").map(|s| s.to_string()),
@@ -2238,6 +2252,58 @@ mod tests {
         let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
         assert!(obj.opportunity_fire, "OpportunityFire=yes parses true");
         assert!(!obj.can_retaliate, "CanRetaliate=no parses false");
+    }
+
+    #[test]
+    fn techno_type_can_passive_acquire_defaults_yes_and_parses_the_misspelled_key() {
+        // Absent key → yes (the gamemd TechnoType constructor default). The INI
+        // spelling is "CanPassiveAquire"; the correctly-spelled variant is NOT a
+        // key the original reads, so it must not turn the flag off.
+        let plain = IniFile::from_str("[E1]\n");
+        let obj = ObjectType::from_ini_section(
+            "E1",
+            plain.section("E1").unwrap(),
+            ObjectCategory::Infantry,
+        );
+        assert!(obj.can_passive_acquire, "CanPassiveAquire defaults to yes");
+
+        let opted_out = IniFile::from_str("[DESO]\nCanPassiveAquire=no\n");
+        let obj = ObjectType::from_ini_section(
+            "DESO",
+            opted_out.section("DESO").unwrap(),
+            ObjectCategory::Infantry,
+        );
+        assert!(!obj.can_passive_acquire, "CanPassiveAquire=no parses false");
+
+        let misspelled_the_other_way = IniFile::from_str("[DESO]\nCanPassiveAcquire=no\n");
+        let obj = ObjectType::from_ini_section(
+            "DESO",
+            misspelled_the_other_way.section("DESO").unwrap(),
+            ObjectCategory::Infantry,
+        );
+        assert!(
+            obj.can_passive_acquire,
+            "only the binary's misspelled key is read"
+        );
+    }
+
+    #[test]
+    fn techno_type_distributed_fire_defaults_no_and_parses() {
+        let plain = IniFile::from_str("[MTNK]\n");
+        let obj = ObjectType::from_ini_section(
+            "MTNK",
+            plain.section("MTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(!obj.distributed_fire, "DistributedFire defaults to no");
+
+        let aegis = IniFile::from_str("[AEGIS]\nDistributedFire=yes\n");
+        let obj = ObjectType::from_ini_section(
+            "AEGIS",
+            aegis.section("AEGIS").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(obj.distributed_fire, "DistributedFire=yes parses true");
     }
 
     #[test]

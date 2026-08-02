@@ -360,6 +360,13 @@ pub struct GeneralRules {
     /// Integer roll threshold for the yellow-band damage-Spark prob-roll.
     /// Default 21_474_837 (band 0.01).
     pub condition_yellow_spark_threshold: u32,
+    /// `NormalTargetingDelay=` ([General], stock 27) — frames between passive
+    /// target scans for every mission except Area Guard. The per-object scan
+    /// timer is re-armed to this value plus a 0..=2 scenario-RNG jitter.
+    pub normal_targeting_delay: u32,
+    /// `GuardAreaTargetingDelay=` ([General], stock 36) — the same cadence for
+    /// an Area Guard object, which scans twice as far and so scans less often.
+    pub guard_area_targeting_delay: u32,
     /// SFX played when the first occupant enters a CanBeOccupied building.
     /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
@@ -803,6 +810,8 @@ impl Default for GeneralRules {
             condition_yellow_sparking_probability: 0.01,
             condition_red_spark_threshold: damage_spark_spawn_threshold(0.02),
             condition_yellow_spark_threshold: damage_spark_spawn_threshold(0.01),
+            normal_targeting_delay: 27,
+            guard_area_targeting_delay: 36,
             building_garrisoned_sound: None,
             chute_sound: None,
             gui_main_button_sound: None,
@@ -1174,6 +1183,17 @@ impl GeneralRules {
             condition_yellow_spark_threshold: damage_spark_spawn_threshold(
                 condition_yellow_spark_prob,
             ),
+            // Passive-scan cadence, in frames. Both keys are present in stock
+            // rulesmd.ini with exactly the constructor defaults (27 / 36); read
+            // them rather than hardcoding so a mod's values take effect.
+            normal_targeting_delay: general
+                .get_i32("NormalTargetingDelay")
+                .map(|v| v.max(0) as u32)
+                .unwrap_or(defaults.normal_targeting_delay),
+            guard_area_targeting_delay: general
+                .get_i32("GuardAreaTargetingDelay")
+                .map(|v| v.max(0) as u32)
+                .unwrap_or(defaults.guard_area_targeting_delay),
             // Gravity lives in [AudioVisual] (stock value 6). Reading it from
             // [General] silently fell back to the code default 3 — half stock
             // gravity for spark ballistics and the hover bob amplitude.
@@ -4123,6 +4143,24 @@ DefaultSparkSystem=SparkSys
         ));
         assert_eq!(g.condition_red_sparking_probability, f64::from(0.05_f32));
         assert_eq!(g.condition_yellow_sparking_probability, f64::from(0.03_f32));
+    }
+
+    #[test]
+    fn targeting_delay_defaults_and_override() {
+        // Stock rulesmd.ini carries both keys with exactly the constructor
+        // defaults; a missing section must still yield them.
+        let d = GeneralRules::default();
+        assert_eq!(d.normal_targeting_delay, 27);
+        assert_eq!(d.guard_area_targeting_delay, 36);
+        let none = GeneralRules::from_ini(&IniFile::from_str("[Foo]\n"));
+        assert_eq!(none.normal_targeting_delay, 27);
+        assert_eq!(none.guard_area_targeting_delay, 36);
+        // Values come FROM the INI, not from a hardcoded constant.
+        let g = GeneralRules::from_ini(&ini_with_general(
+            "NormalTargetingDelay=9\nGuardAreaTargetingDelay=13",
+        ));
+        assert_eq!(g.normal_targeting_delay, 9);
+        assert_eq!(g.guard_area_targeting_delay, 13);
     }
 
     #[test]

@@ -496,8 +496,51 @@ pub fn issue_attack_command(
 
     // Attach the attack target using stable ID (fire immediately).
     attacker.attack_target = Some(AttackTarget::new(target_id));
+    // An ordered target was not picked up by the passive scanner, so it is not
+    // subject to the scanner's stale-target drop or the off-mission clear.
+    attacker.passively_acquired_target = false;
 
     true
+}
+
+/// Swing an existing attack onto a different entity WITHOUT restarting the
+/// weapon.
+///
+/// The rearm countdown, the burst counter and the inter-shot delay all live on
+/// [`AttackTarget`] here, so replacing the whole record — which is what building
+/// a fresh `AttackTarget` does — zeroes them and hands the attacker a free shot
+/// on the spot. The original keeps its rearm timer on the OBJECT and its target
+/// assignment writes nothing but the target pointer and two adjacent fields, so
+/// swinging onto a new victim never shortens the reload. Mutating in place is
+/// how that contract is honoured here.
+///
+/// This is the one owner of that operation: combat's own auto-retarget and the
+/// passive scanner's re-pick both go through it. Only the pending infantry shot
+/// is dropped, because it was latched against the old victim.
+///
+/// RESIDUAL: this does NOT perform the infantry firing-sequence and animation
+/// reset that the full target setter does. That was unreachable in practice
+/// before the passive scanner existed; it is now reachable on every infantry
+/// re-pick, roughly every 28 frames. Deterministic and visual only — the fire
+/// decision does not read the sequence — so it is recorded rather than fixed
+/// here.
+///
+/// **Target provenance is preserved on purpose.** Swinging onto a new victim
+/// continues whatever acquisition installed the target in the first place — an
+/// auto-retarget after the old victim died is not a new order — so
+/// `passively_acquired_target` carries over. Clearing it here would leave the
+/// object holding a live target with the flag false, and that state is exactly
+/// what the passive block, the pursuit skip and the release-on-range-loss path
+/// all key off: the object would stop re-evaluating, start being chased across
+/// the map, and never let go of a target that walked out of range. The
+/// flag-clearing that the original's target ASSIGNMENT performs lives in the
+/// target setter, which is the assignment's counterpart; this in-place swing has
+/// no counterpart there.
+pub(crate) fn retarget_preserving_rearm(entity: &mut GameEntity, new_target_sid: u64) {
+    if let Some(ref mut attack) = entity.attack_target {
+        attack.target = TargetKind::Entity(new_target_sid);
+        attack.pending_infantry_fire = None;
+    }
 }
 
 /// Issue a force-fire-on-cell command: make `attacker` fire at a ground cell.
@@ -559,6 +602,7 @@ pub fn issue_attack_cell_command(
 
     attacker.movement_target = None;
     attacker.attack_target = Some(AttackTarget::for_cell(target_rx, target_ry));
+    attacker.passively_acquired_target = false;
     true
 }
 
@@ -1409,6 +1453,7 @@ pub fn tick_combat_with_fog_and_main_rng(
         for id in clear_self_target {
             if let Some(entity) = entities.get_mut(id) {
                 entity.attack_target = None;
+                entity.passively_acquired_target = false;
             }
         }
     }
@@ -1797,10 +1842,7 @@ pub fn tick_combat_with_fog_and_main_rng(
     // scans hostile entities), so this wraps the u64 in TargetKind::Entity.
     for &(attacker_id, new_target_sid) in &retarget_events {
         if let Some(entity) = entities.get_mut(attacker_id) {
-            if let Some(ref mut attack) = entity.attack_target {
-                attack.target = TargetKind::Entity(new_target_sid);
-                attack.pending_infantry_fire = None;
-            }
+            retarget_preserving_rearm(entity, new_target_sid);
         }
     }
     for &(attacker_id, sequence) in &animation_switches {
@@ -1993,6 +2035,8 @@ pub fn tick_combat_with_fog_and_main_rng(
     for &attacker_id in &remove_attack {
         if let Some(entity) = entities.get_mut(attacker_id) {
             entity.attack_target = None;
+            // The provenance flag cannot outlive the target it describes.
+            entity.passively_acquired_target = false;
         }
     }
 

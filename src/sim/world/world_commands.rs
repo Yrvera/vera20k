@@ -161,6 +161,8 @@ impl Simulation {
                 // Clear attack and order intent.
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
+                    // Provenance cannot outlive the target it describes.
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.c4_plant = None;
@@ -349,6 +351,7 @@ impl Simulation {
                         e.movement_target = None;
                     }
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.c4_plant = None;
@@ -482,6 +485,7 @@ impl Simulation {
                 );
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                 }
 
                 // Snapshot speed, locomotor, and rules data in one lookup.
@@ -907,6 +911,7 @@ impl Simulation {
                     building_dock::depot_dock_cell(depot_rx, depot_ry, &foundation);
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = Some(DockState {
                         dock_building_id: *depot_id,
@@ -1018,6 +1023,7 @@ impl Simulation {
                 // Clear existing state on the passenger.
                 if let Some(e) = self.substrate.entities.get_mut(*passenger_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.passenger_role = passenger::PassengerRole::Boarding {
@@ -1201,6 +1207,7 @@ impl Simulation {
                 // Clear conflicting state and set c4_plant.
                 if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.capture_target = None;
@@ -1320,6 +1327,7 @@ impl Simulation {
                 // Clear conflicting state and set capture target.
                 if let Some(e) = self.substrate.entities.get_mut(*engineer_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.capture_target = Some(*target_building_id);
@@ -1528,6 +1536,7 @@ impl Simulation {
                 self.queue_mission_with_teardown(*unit_id, MissionType::Enter, DockTeardown::None);
                 if let Some(e) = self.substrate.entities.get_mut(*unit_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.c4_plant = None;
@@ -1883,6 +1892,7 @@ impl Simulation {
             None => {
                 if let Some(e) = self.substrate.entities.get_mut(entity_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = Some(OrderIntent::Guard {
                         anchor_rx,
                         anchor_ry,

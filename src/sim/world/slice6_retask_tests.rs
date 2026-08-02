@@ -177,7 +177,23 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8477_F4BD_F3D8_B12B;
 // wired in this slice (deploy-begin off, undeploy-complete on, destination-
 // accepted on) changed no other hashed state in these fixtures. The absolute
 // per-stream RNG pins held throughout.
-const SLICE6_BASELINE_HASH: u64 = 0x64E3_D8E5_D202_8D5C;
+//
+// Re-baselined 2026-08-02 for passive/opportunity target acquisition.
+// **Composition-only, but NOT for the reason this file's usual ceremony would
+// suggest.** Both schema probes above run with the v29 block excluded, and every
+// field this slice adds or changes — `passive_scan_timer`,
+// `last_target_scan_frame`, `passively_acquired_target` — lives inside that
+// block. So the probes are structurally incapable of moving for this change and
+// prove nothing about it either way. Do not read their staying green as
+// evidence.
+//
+// What actually isolates it is the fixture: it runs 16 ticks, short of the
+// object's 45-frame initial scan delay, so no scan fires, no draw is consumed
+// and no target is installed. The entire delta is therefore the three v29-block
+// fields moving off their old values — `passive_scan_timer` armed at the
+// construction frame instead of left unarmed, plus the two new fields folded at
+// their defaults. Rust regression ratchet, not gamemd evidence.
+const SLICE6_BASELINE_HASH: u64 = 0xEB99_377F_0C2A_6AB8;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

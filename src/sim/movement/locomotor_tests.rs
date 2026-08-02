@@ -81,6 +81,8 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         air_range_bonus: None,
         opportunity_fire: false,
         can_retaliate: true,
+        can_passive_acquire: true,
+        distributed_fire: false,
         explodes: false,
         death_weapon: None,
         super_weapon: None,

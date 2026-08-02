@@ -551,6 +551,7 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
             pax.passenger_role = PassengerRole::Inside { transport_id };
             pax.movement_target = None;
             pax.attack_target = None;
+            pax.passively_acquired_target = false;
             pax.order_intent = None;
         }
         if transport_open_topped {
@@ -831,6 +832,7 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                     pax.passenger_role = PassengerRole::Inside { transport_id };
                     pax.movement_target = None;
                     pax.attack_target = None;
+                    pax.passively_acquired_target = false;
                     pax.order_intent = None;
                 }
                 if transport_open_topped {
