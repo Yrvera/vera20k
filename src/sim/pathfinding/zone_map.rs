@@ -83,8 +83,11 @@ impl ZoneMap {
     /// Look up the zone ID for a cell at the given layer.
     ///
     /// For bridge-layer queries on a structural cell, returns the ground zone
-    /// selected by the matching high-bridge record. Nonstructural cells keep
-    /// their own ground zone. A structural cell with no record is invalid.
+    /// selected by the matching high-bridge record. Nonstructural cells a high
+    /// record reaches keep their own ground zone. Any cell the redirect table
+    /// does not cover — and every cell when the map has no high bridge at all —
+    /// has no bridge layer and is invalid. Answering such a query with the
+    /// ground zone would report every cell as bridge-reachable.
     pub fn zone_at(&self, x: u16, y: u16, layer: MovementLayer) -> ZoneId {
         if x >= self.width || y >= self.height {
             return ZONE_INVALID;
@@ -92,14 +95,14 @@ impl ZoneMap {
         let idx = y as usize * self.width as usize + x as usize;
         match layer {
             MovementLayer::Bridge => {
-                if let Some(redirect) = &self.bridge_redirect {
-                    if let Some(Some((ex, ey))) = redirect.get(idx) {
-                        let e_idx = *ey as usize * self.width as usize + *ex as usize;
-                        return self.zone_ids.get(e_idx).copied().unwrap_or(ZONE_INVALID);
-                    }
+                let Some(redirect) = &self.bridge_redirect else {
                     return ZONE_INVALID;
-                }
-                self.zone_ids[idx]
+                };
+                let Some(Some((ex, ey))) = redirect.get(idx) else {
+                    return ZONE_INVALID;
+                };
+                let e_idx = *ey as usize * self.width as usize + *ex as usize;
+                self.zone_ids.get(e_idx).copied().unwrap_or(ZONE_INVALID)
             }
             _ => self.zone_ids[idx],
         }

@@ -1597,8 +1597,9 @@ fn native_cell_distance(lhs: (u16, u16), rhs: (u16, u16)) -> i32 {
 }
 
 /// Build the exact per-cell bridge redirect used by bridge-aware zone lookup.
-/// Nonstructural cells resolve to themselves. Structural cells require the
-/// first matching high record at tolerance one.
+/// Nonstructural cells a high record reaches resolve to themselves. Structural
+/// cells require the first matching high record at tolerance one. Every other
+/// cell is left absent, which reads as "no bridge layer here".
 pub(crate) fn build_bridge_redirect(
     _path_grid: &PathGrid,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
@@ -1621,7 +1622,14 @@ pub(crate) fn build_bridge_redirect(
             };
             let idx = ry as usize * width as usize + rx as usize;
             if !cell.bridge_facts.has_structural_bridge() {
-                redirect[idx] = Some((rx, ry));
+                // A nonstructural cell keeps its own ground zone on the bridge
+                // layer only where a high record actually reaches it — the deck
+                // approach and its endpoint cells. Cells no high record covers
+                // have no bridge layer at all; that includes every cell of a low
+                // bridge, which is ground movement rather than deck movement.
+                if find_high_bridge_record(bridge_records, 0, (rx, ry), 1).is_some() {
+                    redirect[idx] = Some((rx, ry));
+                }
                 continue;
             }
             has_structural_cell = true;

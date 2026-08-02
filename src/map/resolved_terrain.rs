@@ -1157,6 +1157,11 @@ impl ResolvedTerrainGrid {
         // Only overrides Clear(0), Water(4), Beach(3) land types.
         if cliff_back_impassability == 2 {
             const CLIFF_BACK_HEIGHT_DIFF: i16 = 4;
+            // Ground-blocked wheel cost the Rock reclass carries on its own, so
+            // the zone derivation below never depends on a rules table having
+            // been supplied. A loaded `[Rock]` row replaces the whole profile
+            // and stays authoritative.
+            const CLIFF_BACK_RECLASS_WHEEL_SPEED: u8 = 0;
             // 6 neighbor offsets in (dx, dy) matching gamemd.exe RecalcAttributes:
             // (X, Y-1), (X-1, Y), (X+2, Y+2), (X+1, Y+1), (X-1, Y+1), (X+1, Y-1)
             const NEIGHBOR_OFFSETS: [(i32, i32); 6] =
@@ -1200,7 +1205,11 @@ impl ResolvedTerrainGrid {
                     // The reclass precedes zone derivation in the engine, so the
                     // reduced zone follows the new Rock land (wheel speed 0 →
                     // Impassable) unless an overlay branch already claimed the
-                    // cell (those branches outrank the land checks).
+                    // cell (those branches outrank the land checks). The reclass
+                    // supplies that wheel cost itself: a cliff back is impassable
+                    // because it is a cliff back, not because `[Rock]` happened
+                    // to be loaded.
+                    cell.speed_costs.wheel = Some(CLIFF_BACK_RECLASS_WHEEL_SPEED);
                     if let Some(rock) = terrain_rules
                         .and_then(|tr| tr.semantics_for_land_type(LandType::Rock.as_index()))
                     {
