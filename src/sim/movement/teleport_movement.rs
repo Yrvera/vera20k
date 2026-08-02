@@ -571,6 +571,7 @@ mod tests {
             powered: false,
             can_disguise: false,
             wall: false,
+            selectable: true,
             light_visibility: 0,
             light_intensity: 0.0,
             light_red_tint: 1.0,

@@ -747,6 +747,16 @@ pub struct ObjectType {
     /// not as normal SHP building sprites. GAWALL, NAWALL, GAFWLL etc.
     pub wall: bool,
 
+    /// Whether the player may put this object into the selection group
+    /// (`Selectable=` in rules.ini). gamemd reads this on the object *type* and
+    /// consults it from `CanBeSelected`, which `ObjectClass::Select` calls as its
+    /// last rejection test — so a `Selectable=no` object can never join the
+    /// selection and never receives player orders. Stock uses it for the
+    /// scripted aircraft (`PDPLANE`, `SPYP`, `BPLN`), walls, and civilian props.
+    /// Omission means yes: the type constructor seeds the field true and the INI
+    /// read passes that seed as its default.
+    pub selectable: bool,
+
     // -- Naval flags --
     /// Building requires water placement (WaterBound=yes in INI).
     /// When set, the placement validator checks the water speed column instead
@@ -1209,6 +1219,10 @@ impl ObjectType {
                 .unwrap_or(category == ObjectCategory::Building),
             can_disguise: section.get_bool("CanDisguise").unwrap_or(false),
             wall: section.get_bool("Wall").unwrap_or(false),
+            // Selectable defaults to yes — the ObjectTypeClass constructor seeds
+            // the field true and only the 67 stock types that spell out
+            // `Selectable=no` turn it off.
+            selectable: section.get_bool("Selectable").unwrap_or(true),
 
             // Naval flags
             water_bound: {

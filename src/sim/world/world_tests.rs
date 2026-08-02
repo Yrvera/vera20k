@@ -2705,6 +2705,149 @@ fn test_select_command_deduplicates_and_sorts_ids() {
     assert!(sim.substrate.entities.get(2).is_some_and(|e| e.selected));
 }
 
+/// One ordinary type plus one carrying `Selectable=no` — the flag stock puts on
+/// the scripted aircraft (`PDPLANE`, `SPYP`, `BPLN`), walls, and civilian props.
+/// The gate is type-driven, so a ground type exercises it without dragging the
+/// aircraft spawn path into the fixture.
+fn selection_gate_test_rules() -> RuleSet {
+    let ini: IniFile = IniFile::from_str(
+        "[InfantryTypes]\n\n\
+         [VehicleTypes]\n0=MTNK\n1=NOSEL\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\n\
+         [NOSEL]\nStrength=150\nArmor=light\nSpeed=6\nSelectable=no\n",
+    );
+    RuleSet::from_ini(&ini).expect("selection gate rules should parse")
+}
+
+#[test]
+fn test_select_command_rejects_selectable_no_type() {
+    let mut sim: Simulation = Simulation::new();
+    let rules = selection_gate_test_rules();
+    let heights = empty_heights();
+    let tank = sim
+        .spawn_object("MTNK", "Americans", 20, 22, 0, &rules, &heights)
+        .expect("spawn MTNK");
+    let unselectable = sim
+        .spawn_object("NOSEL", "Americans", 21, 22, 0, &rules, &heights)
+        .expect("spawn NOSEL");
+
+    let select = cmd_envelope(
+        &sim,
+        "Americans",
+        1,
+        Command::Select {
+            entity_ids: vec![tank, unselectable],
+            additive: false,
+        },
+    );
+    let _ = sim.advance_tick(&[select], Some(&rules), &heights, None, None, 33);
+
+    assert!(sim.substrate.entities.get(tank).is_some_and(|e| e.selected));
+    assert!(
+        !sim.substrate
+            .entities
+            .get(unselectable)
+            .is_some_and(|e| e.selected),
+        "a Selectable=no object must never join the selection"
+    );
+}
+
+/// Declare one human house and one AI house, the ordinary skirmish shape.
+fn declare_selection_gate_houses(sim: &mut Simulation) {
+    for (name, is_human) in [("Americans", true), ("Soviet", false)] {
+        let id = sim.interner.intern(name);
+        sim.houses.insert(
+            id,
+            crate::sim::house_state::HouseState::new(id, 0, None, is_human, 0, 10),
+        );
+    }
+}
+
+#[test]
+fn test_select_command_rejects_ai_owned_entity() {
+    let mut sim: Simulation = Simulation::new();
+    let rules = selection_gate_test_rules();
+    let heights = empty_heights();
+    let mine = sim
+        .spawn_object("MTNK", "Americans", 20, 22, 0, &rules, &heights)
+        .expect("spawn own MTNK");
+    let theirs = sim
+        .spawn_object("MTNK", "Soviet", 24, 22, 0, &rules, &heights)
+        .expect("spawn AI MTNK");
+    declare_selection_gate_houses(&mut sim);
+
+    // The snapshot a band-box swept across a fight would produce.
+    let select = cmd_envelope(
+        &sim,
+        "Americans",
+        1,
+        Command::Select {
+            entity_ids: vec![mine, theirs],
+            additive: false,
+        },
+    );
+    let _ = sim.advance_tick(&[select], Some(&rules), &heights, None, None, 33);
+
+    assert!(sim.substrate.entities.get(mine).is_some_and(|e| e.selected));
+    assert!(
+        !sim.substrate
+            .entities
+            .get(theirs)
+            .is_some_and(|e| e.selected),
+        "an AI-owned object is refused before the ObjectClass gates run"
+    );
+}
+
+#[test]
+fn test_select_command_rejects_limbo_object() {
+    let mut sim: Simulation = Simulation::new();
+    let rules = selection_gate_test_rules();
+    let heights = empty_heights();
+    // Never revealed onto the map — the state a paradrop passenger sits in while
+    // it rides inside the plane.
+    let cargo = sim
+        .spawn_object_limbo_at_height("MTNK", "Americans", 20, 22, 0, 0, &rules)
+        .expect("spawn limbo MTNK");
+
+    let select = cmd_envelope(
+        &sim,
+        "Americans",
+        1,
+        Command::Select {
+            entity_ids: vec![cargo],
+            additive: false,
+        },
+    );
+    let _ = sim.advance_tick(&[select], Some(&rules), &heights, None, None, 33);
+
+    assert!(
+        !sim.substrate
+            .entities
+            .get(cargo)
+            .is_some_and(|e| e.selected),
+        "an in-limbo object has no map presence to select"
+    );
+}
+
+#[test]
+fn test_try_select_object_rejects_an_already_selected_object() {
+    let mut sim: Simulation = Simulation::new();
+    let rules = selection_gate_test_rules();
+    let heights = empty_heights();
+    let tank = sim
+        .spawn_object("MTNK", "Americans", 20, 22, 0, &rules, &heights)
+        .expect("spawn MTNK");
+
+    assert!(sim.try_select_object(tank, Some(&rules)));
+    assert!(
+        !sim.try_select_object(tank, Some(&rules)),
+        "the selection group holds no duplicates"
+    );
+    assert!(sim.substrate.entities.get(tank).is_some_and(|e| e.selected));
+}
+
 #[test]
 fn test_deploy_mcv_replaces_vehicle_with_conyard() {
     let mut sim = Simulation::new();

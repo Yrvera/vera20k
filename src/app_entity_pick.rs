@@ -21,6 +21,8 @@ use crate::sim::vision::FogState;
 const PICK_DISTANCE_THRESHOLD: f32 = 200.0;
 type TacticalBridgeInverseMap =
     std::collections::BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>;
+/// The simulation's house table, as the picker needs it: owner → player state.
+type HouseStates = std::collections::BTreeMap<InternedId, crate::sim::house_state::HouseState>;
 
 /// Y-axis weight in the elliptical pick distance formula.
 /// Makes the hit zone taller than wide, matching the isometric projection where
@@ -204,6 +206,7 @@ pub(crate) fn compute_click_selection_snapshot(
     click_radius: f32,
     additive: bool,
     rules: Option<&RuleSet>,
+    houses: Option<&HouseStates>,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
     bridge_height_map: Option<&TacticalBridgeInverseMap>,
     interner: Option<&crate::sim::intern::StringInterner>,
@@ -217,6 +220,7 @@ pub(crate) fn compute_click_selection_snapshot(
         world_y,
         click_radius,
         rules,
+        houses,
         height_map,
         bridge_height_map,
         interner,
@@ -258,6 +262,8 @@ pub(crate) fn compute_box_selection_snapshot(
     max_x: f32,
     max_y: f32,
     additive: bool,
+    rules: Option<&RuleSet>,
+    houses: Option<&HouseStates>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<Vec<u64>> {
     let current: Vec<u64> = selected_stable_ids_sorted_from_store(entities);
@@ -269,6 +275,8 @@ pub(crate) fn compute_box_selection_snapshot(
         min_y,
         max_x,
         max_y,
+        rules,
+        houses,
         interner,
     );
     if candidates.is_empty() && additive {
@@ -320,6 +328,8 @@ fn entities_in_rect(
     min_y: f32,
     max_x: f32,
     max_y: f32,
+    rules: Option<&RuleSet>,
+    houses: Option<&HouseStates>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Vec<u64> {
     let local_owner_id = local_owner.and_then(|o| interner.and_then(|i| i.get(o)));
@@ -327,11 +337,15 @@ fn entities_in_rect(
         .values()
         .filter_map(|entity| {
             let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
+            let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
             if !is_selectable_entity(
                 fog,
                 local_owner,
                 owner_str,
-                &entity.position,
+                entity,
+                type_str,
+                rules,
+                houses,
                 local_owner_id,
             ) {
                 return None;
@@ -377,6 +391,7 @@ fn pick_entity_at_point(
     world_y: f32,
     click_radius: f32,
     rules: Option<&RuleSet>,
+    houses: Option<&HouseStates>,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
     bridge_height_map: Option<&TacticalBridgeInverseMap>,
     interner: Option<&crate::sim::intern::StringInterner>,
@@ -396,7 +411,10 @@ fn pick_entity_at_point(
             fog,
             local_owner,
             owner_str,
-            &entity.position,
+            entity,
+            type_str,
+            rules,
+            houses,
             local_owner_id,
         ) {
             continue;
@@ -445,15 +463,42 @@ fn pick_entity_at_point(
     best_mobile.or(best_structure).map(|(sid, _)| sid)
 }
 
-/// Visibility check for selection — replicates selection::is_selectable_for_player
-/// using plain string fields instead of ECS components.
+/// Selection eligibility for picking — the `TechnoClass::Select` and
+/// `ObjectClass::Select` rejections that depend on the object itself, followed
+/// by the visibility check.
+///
+/// gamemd refuses to select an object owned by a house that is not a human
+/// player (so an enemy AI tank never joins a band-box), one that is in limbo
+/// (loaded into a transport or garrison, so it has no map presence), or one
+/// whose type says `Selectable=no` (the scripted paradrop and spy planes, walls,
+/// civilian props). The already-selected rejection is not mirrored here: it
+/// exists to keep duplicates out of the native selection array, and a picked
+/// snapshot is deduplicated and re-committed wholesale.
+///
+/// A house the caller does not know about is treated as human, matching the sim
+/// commit; the commit is authority either way.
 fn is_selectable_entity(
     fog: Option<&FogState>,
     local_owner: Option<&str>,
     entity_owner: &str,
-    pos: &crate::sim::components::Position,
+    entity: &crate::sim::game_entity::GameEntity,
+    entity_type: &str,
+    rules: Option<&RuleSet>,
+    houses: Option<&HouseStates>,
     local_owner_id: Option<InternedId>,
 ) -> bool {
+    if houses.is_some_and(|h| h.get(&entity.owner).is_some_and(|house| !house.is_human)) {
+        return false;
+    }
+    if entity.lifecycle.in_limbo {
+        return false;
+    }
+    let type_selectable =
+        rules.is_none_or(|r| r.object(entity_type).is_none_or(|obj| obj.selectable));
+    if !type_selectable {
+        return false;
+    }
+    let pos = &entity.position;
     let Some(local_owner) = local_owner else {
         return true;
     };
