@@ -102,7 +102,16 @@ use crate::sim::world::Simulation;
 // Bumped 38 -> 39: overlay wall ownership became authoritative persisted state.
 // Bumped 39 -> 40: ObjectSubstrate persists the authoritative per-cell raw
 // ground/deck occupation bytes instead of reconstructing them from object lists.
-const SNAPSHOT_VERSION: u32 = 40;
+// Bumped 40 -> 41: HouseState gains the serialized MultiplayPassive house-type
+// fact. Defeat evaluation and the game-over alive scan both skip passive houses,
+// so it is an authoritative outcome input and cannot be re-derived on load —
+// `rebuild_caches_after_load` takes no RuleSet. Serialized but NOT hashed.
+// Bumped 41 -> 42: GameEntity gains the passive target-acquisition bookkeeping
+// — `last_target_scan_frame` and `passively_acquired_target` — and its
+// `passive_scan_timer` is now armed at the construction frame instead of left
+// unarmed. All three are HASHED, so a v41 save written before this change
+// restores into a world whose hash differs from a v41 written after it.
+const SNAPSHOT_VERSION: u32 = 42;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1290,11 +1299,13 @@ mod tests {
     /// lifecycle target/animation identity state took 35 -> 36, and omission
     /// of process-global Main/MapGen RNG state took 36 -> 37, and serialized
     /// Drive occupation footprints took 37 -> 38, and authoritative wall
-    /// ownership took 38 -> 39, and raw occupation bytes took 39 -> 40. This
+    /// ownership took 38 -> 39, and raw occupation bytes took 39 -> 40, and the
+    /// serialized HouseState MultiplayPassive fact took 40 -> 41, and the
+    /// hashed passive target-acquisition bookkeeping took 41 -> 42. This
     /// pins it so a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_40() {
-        assert_eq!(super::SNAPSHOT_VERSION, 40);
+    fn snapshot_version_is_42() {
+        assert_eq!(super::SNAPSHOT_VERSION, 42);
     }
 
     #[test]
@@ -1310,7 +1321,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            40
+            42
         );
 
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1371,7 +1382,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            40
+            42
         );
 
         let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1437,7 +1448,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            40
+            42
         );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         let cell = restored

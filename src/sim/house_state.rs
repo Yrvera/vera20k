@@ -72,6 +72,28 @@ pub struct HouseState {
     /// game-mode initializer explicitly assigns another native value.
     #[serde(default)]
     pub difficulty: HouseDifficulty,
+    /// `MultiplayPassive=` from this house's country/house-type rules.
+    ///
+    /// gamemd keeps this on the house type and reads it back out of the house
+    /// during defeat evaluation: a passive house is never tested for defeat and
+    /// never counted in the "everyone still alive is allied" game-over scan.
+    /// Stock `Neutral` (Civilian) and `Special` (JP) both set it, and they exist
+    /// in every skirmish, so without it the alive set can never shrink to one.
+    ///
+    /// Stamped once at house creation, while a `RuleSet` is still in hand, and
+    /// then read straight off the house — `check_defeat` takes
+    /// `rules: Option<&RuleSet>` and never has to resolve the country itself. A
+    /// house built with no rules available is stamped `false`, the INI default
+    /// for `MultiplayPassive=`; there is no runtime fallback, because gamemd has
+    /// none.
+    ///
+    /// Persisted state, and versioned as such: it is an authoritative input to
+    /// the win/loss outcome, so a save that dropped it would reload as an
+    /// ordinary house and lose the match forever. It is nonetheless left out of
+    /// the state hash and the retail multiplayer checksum, which fold the
+    /// mutable `HouseClass` bytes — gamemd keeps this one on the house type.
+    #[serde(default)]
+    pub multiplay_passive: bool,
     /// Current credit balance.
     pub credits: i32,
     /// Rally point for newly produced units (isometric cell coords).
@@ -128,6 +150,7 @@ impl HouseState {
             country,
             is_human,
             difficulty: HouseDifficulty::Normal,
+            multiplay_passive: false,
             credits,
             rally_point: None,
             is_defeated: false,
@@ -233,6 +256,34 @@ pub fn resolve_house_side_index(
         .unwrap_or(fallback)
 }
 
+/// The house type an absent `Country=` binds to.
+///
+/// gamemd's `[Houses]` reader asks the INI for `Country=` with a default of -1
+/// and maps a -1 result to 0, so a house section with no `Country=` key binds to
+/// the first `[Countries]` entry — stock `Americans`, which is not
+/// MultiplayPassive. It does NOT fall back to the house's own section name.
+const ABSENT_COUNTRY_IDX: crate::rules::ruleset::CountryIdx = crate::rules::ruleset::CountryIdx(0);
+
+/// Resolve a house's `MultiplayPassive` fact from its country/house-type rules.
+///
+/// A house with no `Country=` resolves through [`ABSENT_COUNTRY_IDX`], matching
+/// the native reader. Missing rules, an empty `[Countries]` registry, or an
+/// unknown country name resolve to `false` — the INI default for
+/// `MultiplayPassive=`.
+pub fn resolve_multiplay_passive(
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    country: Option<&str>,
+) -> bool {
+    let Some(rules) = rules else {
+        return false;
+    };
+    let key = match country {
+        Some(country) => Some(country),
+        None => rules.country_name(ABSENT_COUNTRY_IDX),
+    };
+    key.is_some_and(|key| rules.country_multiplay_passive(key))
+}
+
 /// Compute the closest map edge to a given anchor cell.
 ///
 /// Picks the minimum-distance edge from 4 reference points: top-edge midpoint,
@@ -286,6 +337,56 @@ mod difficulty_tests {
     fn new_house_defaults_to_normal_difficulty() {
         let house = HouseState::new(Default::default(), 0, None, false, 0, 10);
         assert_eq!(house.difficulty, HouseDifficulty::Normal);
+    }
+}
+
+#[cfg(test)]
+mod multiplay_passive_tests {
+    use super::resolve_multiplay_passive;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+
+    fn rules_with_country_order(first: &str, second: &str) -> RuleSet {
+        let ini = IniFile::from_str(&format!(
+            "[Countries]\n0={first}\n1={second}\n\
+             [Americans]\nSide=Allies\n\
+             [Neutral]\nSide=Civilian\nMultiplayPassive=true\n"
+        ));
+        RuleSet::from_ini(&ini).expect("country registry parses")
+    }
+
+    #[test]
+    fn named_country_resolves_its_own_multiplay_passive() {
+        let rules = rules_with_country_order("Americans", "Neutral");
+        assert!(resolve_multiplay_passive(Some(&rules), Some("Neutral")));
+        assert!(!resolve_multiplay_passive(Some(&rules), Some("Americans")));
+        // Case-insensitive, like every other country lookup.
+        assert!(resolve_multiplay_passive(Some(&rules), Some("neutral")));
+    }
+
+    #[test]
+    fn absent_country_binds_to_the_first_countries_entry() {
+        // The native `[Houses]` reader defaults a missing `Country=` to -1 and
+        // maps -1 to 0, so the house takes the FIRST `[Countries]` entry. It
+        // does not fall back to the house's own section name — with `Neutral`
+        // sitting at entry 1, a section-name fallback would answer `true` here.
+        let americans_first = rules_with_country_order("Americans", "Neutral");
+        assert!(!resolve_multiplay_passive(Some(&americans_first), None));
+
+        // Flip the registry order and the same absent key now follows entry 0.
+        let neutral_first = rules_with_country_order("Neutral", "Americans");
+        assert!(resolve_multiplay_passive(Some(&neutral_first), None));
+    }
+
+    #[test]
+    fn missing_rules_or_unknown_country_is_not_passive() {
+        let rules = rules_with_country_order("Americans", "Neutral");
+        assert!(!resolve_multiplay_passive(None, Some("Neutral")));
+        assert!(!resolve_multiplay_passive(None, None));
+        assert!(!resolve_multiplay_passive(
+            Some(&rules),
+            Some("Nonexistent")
+        ));
     }
 }
 

@@ -946,6 +946,12 @@ impl Simulation {
                 hash_mission_leaf(&entity.mission_leaf, hasher);
                 entity.occupier.hash(hasher);
                 entity.passive_scan_timer.hash(hasher);
+                // Passive-acquire bookkeeping. `passively_acquired_target` gates
+                // the stale-target drop and the off-mission clear, so a
+                // divergence here changes future targets; the scan-frame stamp
+                // rides along in the same block.
+                entity.last_target_scan_frame.hash(hasher);
+                entity.passively_acquired_target.hash(hasher);
                 match entity.suspended_attack_target {
                     Some(target) => {
                         1u8.hash(hasher);

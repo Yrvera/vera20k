@@ -134,7 +134,7 @@ impl Simulation {
                 let mut snapshot = entity_ids.clone();
                 snapshot.sort_unstable();
                 snapshot.dedup();
-                self.apply_selection_snapshot(&snapshot)
+                self.apply_selection_snapshot(&snapshot, rules)
             }
             Command::Move {
                 entity_id,
@@ -161,6 +161,8 @@ impl Simulation {
                 // Clear attack and order intent.
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
+                    // Provenance cannot outlive the target it describes.
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.c4_plant = None;
@@ -349,6 +351,7 @@ impl Simulation {
                         e.movement_target = None;
                     }
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.c4_plant = None;
@@ -482,6 +485,7 @@ impl Simulation {
                 );
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                 }
 
                 // Snapshot speed, locomotor, and rules data in one lookup.
@@ -907,6 +911,7 @@ impl Simulation {
                     building_dock::depot_dock_cell(depot_rx, depot_ry, &foundation);
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = Some(DockState {
                         dock_building_id: *depot_id,
@@ -998,7 +1003,6 @@ impl Simulation {
                         &cargo,
                         rules,
                         &self.houses,
-                        &self.interner,
                         path_grid,
                     ) {
                         Some(())
@@ -1019,6 +1023,7 @@ impl Simulation {
                 // Clear existing state on the passenger.
                 if let Some(e) = self.substrate.entities.get_mut(*passenger_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.passenger_role = passenger::PassengerRole::Boarding {
@@ -1202,6 +1207,7 @@ impl Simulation {
                 // Clear conflicting state and set c4_plant.
                 if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.capture_target = None;
@@ -1321,6 +1327,7 @@ impl Simulation {
                 // Clear conflicting state and set capture target.
                 if let Some(e) = self.substrate.entities.get_mut(*engineer_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.capture_target = Some(*target_building_id);
@@ -1529,6 +1536,7 @@ impl Simulation {
                 self.queue_mission_with_teardown(*unit_id, MissionType::Enter, DockTeardown::None);
                 if let Some(e) = self.substrate.entities.get_mut(*unit_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = None;
                     e.dock_state = None;
                     e.c4_plant = None;
@@ -1707,7 +1715,11 @@ impl Simulation {
     }
 
     /// Replace the current selection with exactly the given stable entity IDs.
-    fn apply_selection_snapshot(&mut self, stable_ids: &[u64]) -> bool {
+    ///
+    /// Mirrors gamemd's replace-selection flow: clear the whole group first, then
+    /// run each requested object through `ObjectClass::Select`, which decides on
+    /// its own whether the object may join.
+    fn apply_selection_snapshot(&mut self, stable_ids: &[u64], rules: Option<&RuleSet>) -> bool {
         // Deselect all via EntityStore.
         let keys: Vec<u64> = self.substrate.entities.keys_sorted();
         for &id in &keys {
@@ -1717,11 +1729,63 @@ impl Simulation {
         }
         // Select the requested IDs.
         for &stable_id in stable_ids {
-            if let Some(e) = self.substrate.entities.get_mut(stable_id) {
-                e.selected = true;
-            }
+            self.try_select_object(stable_id, rules);
         }
         true
+    }
+
+    /// `TechnoClass::Select` then `ObjectClass::Select` — commit one object into
+    /// the selection group.
+    ///
+    /// Returns whether the object joined. A unit or building never reaches the
+    /// ObjectClass gates directly: `TechnoClass::Select` runs first and refuses
+    /// outright when the owning house is not a human player, which is what keeps
+    /// enemy AI armour and civilian props out of a band-box swept across a
+    /// fight. gamemd lets a per-object override byte bypass that refusal; the
+    /// byte's meaning is UNCHECKED and no VERA field models it. Note also that
+    /// gamemd's human-player test has two forms — a per-house pair of flags, and
+    /// a strict identity test against the local player — and which one a YR
+    /// skirmish takes is UNCHECKED; VERA implements the per-house form, so the
+    /// gate admits any human house rather than only the command issuer.
+    ///
+    /// Then the ObjectClass gates reject, in this order, an object that is in
+    /// limbo (it has no map presence to select), one that is already selected
+    /// (the group holds no duplicates), and one whose type answers no to
+    /// `CanBeSelected` — i.e. `Selectable=no`, which is how the scripted
+    /// paradrop/spy planes stay out of the player's hands. Without rules loaded
+    /// the type answer is unknown, and the type default is yes.
+    pub(crate) fn try_select_object(&mut self, stable_id: u64, rules: Option<&RuleSet>) -> bool {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return false;
+        };
+        // A house that was never declared — bare test sims, unowned map props —
+        // is treated as human, so this only fires on a house known to be AI.
+        // Same convention `credits_entry_for_owner` uses for missing houses.
+        if self
+            .houses
+            .get(&entity.owner)
+            .is_some_and(|house| !house.is_human)
+        {
+            return false;
+        }
+        if entity.lifecycle.in_limbo || entity.selected {
+            return false;
+        }
+        let type_ref = entity.type_ref;
+        let selectable = rules.is_none_or(|r| {
+            r.object(self.interner.resolve(type_ref))
+                .is_none_or(|obj| obj.selectable)
+        });
+        if !selectable {
+            return false;
+        }
+        match self.substrate.entities.get_mut(stable_id) {
+            Some(entity) => {
+                entity.selected = true;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Check ownership using stable_id via EntityStore.
@@ -1828,6 +1892,7 @@ impl Simulation {
             None => {
                 if let Some(e) = self.substrate.entities.get_mut(entity_id) {
                     e.attack_target = None;
+                    e.passively_acquired_target = false;
                     e.order_intent = Some(OrderIntent::Guard {
                         anchor_rx,
                         anchor_ry,

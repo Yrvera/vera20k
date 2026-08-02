@@ -405,6 +405,8 @@ pub fn tick_retaliation(
                 }
                 entity.movement_target = None;
                 entity.attack_target = Some(crate::sim::combat::AttackTarget::new(attacker_sid));
+                // Retaliation is a damage-driven target, not a scanner pick.
+                entity.passively_acquired_target = false;
             }
         }
         // Clear last_attacker regardless (prevent repeated attempts).

@@ -846,17 +846,24 @@ pub(crate) fn load_map_from_initial(
                 let is_human = house.player_control == Some(true);
                 let name_id = sim.interner.intern(&house.name);
                 let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
-                sim.houses.insert(
+                let mut house_state = crate::sim::house_state::HouseState::new(
                     name_id,
-                    crate::sim::house_state::HouseState::new(
-                        name_id,
-                        side_idx,
-                        country_id,
-                        is_human,
-                        sim.session.game_options.starting_credits,
-                        sim.session.game_options.tech_level,
-                    ),
+                    side_idx,
+                    country_id,
+                    is_human,
+                    sim.session.game_options.starting_credits,
+                    sim.session.game_options.tech_level,
                 );
+                // MultiplayPassive lives on the country/house type; stamp it now,
+                // while a RuleSet is in hand, so the defeat check never has to
+                // resolve the country itself. A roster section with no `Country=`
+                // resolves through the first `[Countries]` entry, as the native
+                // reader does.
+                house_state.multiplay_passive = crate::sim::house_state::resolve_multiplay_passive(
+                    rules.as_ref(),
+                    house.country.as_deref(),
+                );
+                sim.houses.insert(name_id, house_state);
                 sim.session.house_order.push(name_id);
             }
         }

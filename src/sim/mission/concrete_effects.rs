@@ -142,6 +142,12 @@ impl ConcreteMissionEffects for RepresentedConcreteMissionEffects {
             .entities
             .get_mut(prepared.receiver)
             .expect("preflight guaranteed receiver");
+        // The original's target assignment clears the passive-acquire flag as
+        // its first statement, ahead of any same-target short-circuit, so a
+        // target arriving from an order, a retaliation or a pointer expiry can
+        // never inherit the provenance of one the scanner picked. The scanner
+        // re-sets the flag itself after calling this.
+        entity.passively_acquired_target = false;
         if entity.attack_target.as_ref().map(|target| target.target) == requested {
             return;
         }

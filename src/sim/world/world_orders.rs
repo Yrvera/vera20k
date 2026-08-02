@@ -914,6 +914,16 @@ impl Simulation {
     /// - Deployed-fire infantry (locked while deployed)
     /// - Entities inside transports
     /// - Dying entities
+    /// - Objects holding a target their own scanner picked up (see below)
+    ///
+    /// **A passively-acquired target is never pursued.** The original's passive
+    /// commit writes the target pointer and nothing else — no mission assign and
+    /// no destination assign — and a Guard-mission unit derives any destination
+    /// it does have from its OWN position, never from the target's. So an idle
+    /// unit that notices an enemy fires from where it stands and stays put.
+    /// Without this skip an idle base-defence force would walk off across the
+    /// map, unleashed, the first time an enemy scouted past: nothing carries
+    /// these units home because they have no `OrderIntent` to resume.
     pub(crate) fn tick_attack_pursuit(&mut self, rules: &RuleSet, path_grid: Option<&PathGrid>) {
         let Some(grid) = path_grid else {
             return;
@@ -939,6 +949,9 @@ impl Simulation {
 
             // Skip filters — see "Skips" doc above.
             if entity.dying {
+                continue;
+            }
+            if entity.passively_acquired_target {
                 continue;
             }
             if entity.category == EntityCategory::Structure {

@@ -1043,7 +1043,9 @@ impl Simulation {
                 house.is_human
                     && (house.is_defeated
                         || house.has_lost
-                        || (self.houses.len() > 1 && house.has_won))
+                        // VERA-internal opponent precondition; gamemd equivalent
+                        // UNCHECKED. See `contending_house_count`.
+                        || (self.contending_house_count() > 1 && house.has_won))
             })
     }
 
@@ -1565,7 +1567,10 @@ impl Simulation {
         let owners: Vec<InternedId> = self.houses.keys().copied().collect();
         for &owner in &owners {
             let house = &self.houses[&owner];
-            if house.is_defeated {
+            // gamemd gates its entire defeat block on the house type's
+            // MultiplayPassive being clear, so Civilian/JP houses are never
+            // evaluated for defeat no matter what they own or lose.
+            if house.is_defeated || house.multiplay_passive {
                 continue;
             }
             let should_defeat = if self.session.game_options.short_game {
@@ -1590,10 +1595,14 @@ impl Simulation {
         }
 
         // Check if all remaining alive houses are mutually allied → game over.
+        // The native alive scan counts only houses that are neither defeated nor
+        // passive; the Civilian/JP houses present in every skirmish own map
+        // objects forever, so including them would keep the alive set above one
+        // and the victory screen would never appear.
         let alive: Vec<InternedId> = self
             .houses
             .iter()
-            .filter(|(_, h)| !h.is_defeated)
+            .filter(|(_, h)| !h.is_defeated && !h.multiplay_passive)
             .map(|(k, _)| *k)
             .collect();
 
@@ -1609,11 +1618,14 @@ impl Simulation {
             return;
         }
 
-        // O(n^2) bidirectional alliance check.
+        // O(n^2) mutual-alliance check. Native alliance is directional — each
+        // house owns its own ally bits — and the game-over scan requires BOTH
+        // houses of a pair to name the other, so a one-way alliance must not end
+        // the match.
         let all_allied = alive.iter().all(|a| {
             alive.iter().all(|b| {
                 a == b
-                    || crate::map::houses::are_houses_friendly(
+                    || crate::map::houses::are_houses_mutually_allied(
                         &self.house_alliances,
                         self.interner.resolve(*a),
                         self.interner.resolve(*b),
@@ -1628,6 +1640,26 @@ impl Simulation {
                 }
             }
         }
+    }
+
+    /// Number of houses that can actually contend for the match outcome.
+    ///
+    /// MultiplayPassive houses (stock Civilian/JP) are roster filler: they are
+    /// never defeated and never counted alive, so they must not make a
+    /// single-player board look contested. Callers use `> 1` to mean "a real
+    /// opponent exists" before announcing a victory that would otherwise be
+    /// true from tick 0.
+    ///
+    /// VERA-internal: the gamemd equivalent is UNCHECKED. Neither the native
+    /// defeat block nor its all-allied scan has an "is there a real opponent"
+    /// precondition — this exists only to keep zero-opponent sandbox and dev
+    /// maps, which the retail game cannot launch, from declaring instant
+    /// victory. The passive filter it counts with IS gamemd-derived.
+    pub(crate) fn contending_house_count(&self) -> usize {
+        self.houses
+            .values()
+            .filter(|house| !house.multiplay_passive)
+            .count()
     }
 
     fn house_has_live_base_unit(&self, owner: InternedId, rules: Option<&RuleSet>) -> bool {
@@ -3499,12 +3531,6 @@ impl Simulation {
         // fields, so state_hash stays bit-identical (proven by the *_no_hash_change
         // tests). `rules` is the advance_tick `Option<&RuleSet>` tail param.
         self.refresh_production_shadow(rules);
-        // S4c: passive/opportunity-acquire eligibility shadow (read-only,
-        // hash-neutral). Counts Units that would reach the passive-acquire
-        // scanner per the verified gate; the authority flip (running the scanner)
-        // is S5. Return value is the eligibility metric, unused for now.
-        #[cfg(any(test, debug_assertions))]
-        let _ = self.debug_s4c_passive_acquire_shadow(rules);
         #[cfg(debug_assertions)]
         self.debug_assert_production_shadow();
         let state_hash = self.state_hash();
