@@ -568,6 +568,20 @@ impl AssetManager {
             .collect()
     }
 
+    /// Return only the archives that participate in name lookup.
+    ///
+    /// [`Self::loaded_archive_names`] also reports the catalogued nested
+    /// archives, whose contents are parsed and in memory but absent from the
+    /// lookup index — `get`/`resolve_ref` cannot reach them. Tools that report
+    /// where an asset lives need to tell the two apart, or they present
+    /// unreachable bytes as if normal lookup would find them.
+    pub fn registered_archive_names(&self) -> Vec<String> {
+        self.archives
+            .iter()
+            .map(|archive| archive.name.clone())
+            .collect()
+    }
+
     /// Return the RA2 installation directory.
     pub fn ra2_dir(&self) -> &Path {
         &self.ra2_dir

@@ -822,7 +822,10 @@ pub(crate) mod tests {
     }
 }
 
-fn fallback_5x7_glyphs() -> Vec<(char, [&'static str; 7])> {
+/// The built-in 5x7 glyph table. Each entry is seven 5-character rows where `#`
+/// sets a pixel. Visible to the crate so the headless asset tools can burn
+/// labels into rendered sheets without a font dependency or a second table.
+pub(crate) fn fallback_5x7_glyphs() -> Vec<(char, [&'static str; 7])> {
     vec![
         (
             ' ',

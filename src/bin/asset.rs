@@ -1,0 +1,170 @@
+//! `asset` — headless browser for retail RA2/YR assets, for automated callers.
+//!
+//! Every verb prints JSON to stdout, including failures, so a caller parsing
+//! stdout always gets JSON. All logic lives in `vera20k::asset_tools`; this file
+//! only parses arguments, dispatches, and prints.
+//!
+//! Exit codes: 0 success, 1 the verb failed, 2 the command line was wrong.
+
+use vera20k::asset_tools::args::{self, Cli, Verb};
+use vera20k::asset_tools::names::NameDict;
+use vera20k::asset_tools::report::{ErrorReport, to_json};
+use vera20k::asset_tools::{
+    palette, render_dispatch, root, verb_art, verb_csf, verb_extract, verb_find, verb_info,
+    verb_ls, verb_palette, verb_parse_check, verb_scan, verb_sound,
+};
+
+const EXIT_FAILED: i32 = 1;
+const EXIT_USAGE: i32 = 2;
+
+fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        // Logs go to stderr; stdout is reserved for the JSON payload.
+        .target(env_logger::Target::Stderr)
+        .init();
+
+    let cli = match args::parse(std::env::args().skip(1)) {
+        Ok(cli) => cli,
+        Err(message) => {
+            eprintln!("{}", args::usage());
+            print_error(&message, Some("run `asset --help` for the verb list"));
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+
+    if matches!(cli.verb, Verb::Help) {
+        println!("{}", args::usage());
+        return;
+    }
+
+    if let Err(error) = run(cli) {
+        print_error(&error.error, error.hint.as_deref());
+        std::process::exit(EXIT_FAILED);
+    }
+}
+
+fn run(cli: Cli) -> Result<(), ErrorReport> {
+    let (ra2_dir, source) =
+        root::resolve_ra2_dir(cli.ra2_dir.as_deref()).map_err(|error| ErrorReport {
+            error,
+            hint: Some(
+                "pass --ra2-dir <PATH>, set RA2_DIR, or put a config.toml with [paths] ra2_dir \
+                 next to the working directory"
+                    .to_string(),
+            ),
+        })?;
+    log::info!("retail root {} (from {source:?})", ra2_dir.display());
+
+    let manager = root::open_manager(&ra2_dir, cli.all_mixes).map_err(|error| ErrorReport {
+        error,
+        hint: Some(format!(
+            "check that {} is the install root containing ra2md.mix",
+            ra2_dir.display()
+        )),
+    })?;
+
+    match cli.verb {
+        Verb::Help => unreachable!("handled before dispatch"),
+
+        // `find` hashes the requested name forward, so it needs no INI expansion —
+        // only the offline dictionary, for naming palette entries and reporting
+        // which name database backed the answer.
+        Verb::Find { name } => {
+            let dict = NameDict::build_offline();
+            let report = verb_find::run(&manager, &dict, &name, &cli.find)?;
+            println!("{}", to_json(&report));
+        }
+
+        // `ls` is the one verb that must reverse hashes for every row, so it pays
+        // for the full dictionary including the INI-derived names.
+        Verb::Ls { archive } => {
+            let dict = NameDict::build(&manager);
+            let report = verb_ls::run(&manager, &dict, &archive, &cli.ls)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::Archives => {
+            let rows = verb_ls::archives(&manager);
+            println!("{}", to_json(&rows));
+        }
+
+        // `info` never reverses a hash and never picks a palette.
+        Verb::Info { name } => {
+            let report = verb_info::run(&manager, &name, &cli.info)?;
+            println!("{}", to_json(&report));
+        }
+
+        // `render` sniffs the bytes and routes to the matching renderer.
+        Verb::Render { name } => {
+            let dict = NameDict::build_offline();
+            let art_registry = palette::load_art_registry(&manager);
+            let report = render_dispatch::run(&manager, &dict, &art_registry, &name, &cli.render)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::PaletteFor { name } => {
+            let dict = NameDict::build_offline();
+            let art_registry = palette::load_art_registry(&manager);
+            let report = verb_palette::run(&manager, &dict, &art_registry, &name, &cli.palette)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::Extract { name } => {
+            let report = verb_extract::run(&manager, &name, &cli.extract)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::CsfGet { key } => {
+            let report = verb_csf::get(&manager, &key, &cli.csf)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::CsfGrep { text } => {
+            let report = verb_csf::grep(&manager, &text, &cli.csf)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::Sound { name } => {
+            let report = verb_sound::sound(&manager, &name, &cli.sound)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::BagLs => {
+            let report = verb_sound::bag_ls(&manager, &cli.sound)?;
+            println!("{}", to_json(&report));
+        }
+
+        // The two corpus-wide verbs both reverse hashes for every hit they
+        // report, so they pay for the full dictionary like `ls` does.
+        Verb::Scan => {
+            let dict = NameDict::build(&manager);
+            let report = verb_scan::run(&manager, &dict, &cli.scan)?;
+            println!("{}", to_json(&report));
+        }
+
+        Verb::ParseCheck => {
+            let dict = NameDict::build(&manager);
+            let report = verb_parse_check::run(&manager, &dict, &cli.parse_check)?;
+            println!("{}", to_json(&report));
+        }
+
+        // `art-for` is the one verb that needs the art registry for its answer
+        // rather than for a palette guess.
+        Verb::ArtFor { type_id } => {
+            let art_registry = palette::load_art_registry(&manager);
+            let report =
+                verb_art::run(&manager, &art_registry, &cli.art_image, &type_id, &cli.art)?;
+            println!("{}", to_json(&report));
+        }
+    }
+
+    Ok(())
+}
+
+fn print_error(error: &str, hint: Option<&str>) {
+    let report = ErrorReport {
+        error: error.to_string(),
+        hint: hint.map(str::to_string),
+    };
+    println!("{}", to_json(&report));
+}
