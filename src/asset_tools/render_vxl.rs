@@ -14,11 +14,10 @@
 //! palette holds at index 0 — a `gamemd_ui` palette has an opaque entry there,
 //! and honouring it would paint the whole background in palette colour 0.
 //!
-//! Body only. Turret and barrel need the depth-correct layer merge in
-//! `render::unit_atlas`, which is private and whose entry point requires a GPU
-//! context, so a sibling turret or barrel voxel that resolves is reported as a
-//! warning rather than silently dropped: the turret is missing from the *image*,
-//! not from the game.
+//! Turret and barrel are composited in, through the same depth-correct CPU
+//! merge the unit atlas bakes with (`render::unit_atlas::composite_unit_vxl_cpu`)
+//! — so a tank is drawn with its gun, and the picture cannot drift from what the
+//! game builds. Which layers were merged is reported in the warnings.
 //!
 //! ## Dependency rules
 //! - Depends on `assets/` (VXL/HVA/VPL/palette), `rules/` (`[Colors]` schemes
@@ -39,7 +38,8 @@ use crate::assets::hva_file::HvaFile;
 use crate::assets::pal_file::Palette;
 use crate::assets::vpl_file::VplFile;
 use crate::assets::vxl_file::VxlFile;
-use crate::render::vxl_raster::{VxlRenderParams, VxlSprite, render_vxl};
+use crate::render::unit_atlas::composite_unit_vxl_cpu;
+use crate::render::vxl_raster::{VxlRenderParams, VxlSprite};
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::color_scheme::parse_color_schemes;
 use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
@@ -291,7 +291,16 @@ pub fn run(
             facing,
             ..Default::default()
         };
-        let sprite = render_vxl(&vxl, hva.as_ref(), &params, vpl.as_ref());
+        // Composite body + turret + barrel through the same CPU path the atlas
+        // bake uses, so a tank is drawn with its gun rather than without it.
+        let sprite = composite_unit_vxl_cpu(
+            asset_manager,
+            &vxl,
+            hva.as_ref(),
+            &image,
+            &params,
+            vpl.as_ref(),
+        );
 
         let converted = sprite_to_rgba(&sprite, &render_palette);
         if converted.is_none() {
@@ -506,26 +515,48 @@ fn load_vpl(
     }
 }
 
-/// Name any turret or barrel voxel that resolves for this image id.
+/// Report which turret/barrel layers were merged into the body sprite.
 ///
-/// The compositor that merges them into the body sprite is private to
-/// `render::unit_atlas` and needs a GPU context, so this verb cannot draw them.
-/// Reporting them keeps a caller from concluding the unit has no turret.
+/// These images go through the same CPU compositor the atlas bake uses, so a
+/// tank is drawn with its gun. Naming the layers tells a caller the image is a
+/// composite rather than a bare hull.
+///
+/// The one asymmetry worth reporting: the compositor resolves siblings through
+/// production lookup, which cannot reach catalogued archives, while this verb's
+/// own `locate` can. A sibling visible to one and not the other is silently
+/// absent from the picture, so it is called out rather than left to be noticed.
 fn sibling_layer_warnings(asset_manager: &AssetManager, image_id: &str) -> Vec<String> {
-    let found: Vec<String> = LAYER_SUFFIXES
-        .iter()
-        .map(|suffix| format!("{image_id}{suffix}.VXL"))
-        .filter(|candidate| crate::asset_tools::locate::locate(asset_manager, candidate).is_some())
-        .collect();
-    if found.is_empty() {
-        return Vec::new();
+    let mut composited: Vec<String> = Vec::new();
+    let mut unreachable: Vec<String> = Vec::new();
+
+    for suffix in LAYER_SUFFIXES {
+        let candidate = format!("{image_id}{suffix}.VXL");
+        if crate::asset_tools::locate::locate(asset_manager, &candidate).is_none() {
+            continue;
+        }
+        // The compositor uses `get_ref`; match that reachability exactly.
+        if asset_manager.get_ref(&candidate).is_some() {
+            composited.push(candidate);
+        } else {
+            unreachable.push(candidate);
+        }
     }
-    vec![format!(
-        "body only: {} also resolves, and the depth-correct layer compositor is not reachable \
-         without a GPU — the gun is missing from these images, not from the game. Render it \
-         separately by name to see it.",
-        found.join(", ")
-    )]
+
+    let mut notes = Vec::new();
+    if !composited.is_empty() {
+        notes.push(format!(
+            "composite: {} were depth-merged into the body, matching what the unit atlas bakes",
+            composited.join(", ")
+        ));
+    }
+    if !unreachable.is_empty() {
+        notes.push(format!(
+            "{} exists but only in a catalogued archive that production lookup cannot reach, so \
+             it is MISSING from these images — the game would not load it by this name either",
+            unreachable.join(", ")
+        ));
+    }
+    notes
 }
 
 /// `HTNK.VXL` -> `HTNK`, path prefixes and case normalised.
@@ -820,7 +851,7 @@ fn sheet_header(
             "house colour scheme {index} applied to indices 16 to 32"
         ));
     }
-    header.push("body only   cyan bounds   yellow model centre".to_string());
+    header.push("composite body turret barrel   cyan bounds   yellow model centre".to_string());
     header
 }
 
@@ -1321,6 +1352,6 @@ mod tests {
         assert!(joined.contains("no hva"));
         assert!(joined.contains("N-dot-L"), "must flag the missing vpl");
         assert!(joined.contains("house colour scheme 2"));
-        assert!(joined.contains("body only"));
+        assert!(joined.contains("composite body turret barrel"));
     }
 }

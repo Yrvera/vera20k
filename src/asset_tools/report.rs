@@ -423,6 +423,31 @@ pub struct ArtCandidate {
     pub detail: Option<String>,
 }
 
+/// One building-animation slot declared in art.ini, resolved to its art.
+///
+/// A building's overlay anims are separate art sections with their own image
+/// ids and theater conventions, so "which SHP is playing" is a different
+/// question from "which SHP is the building".
+#[derive(Debug, Serialize)]
+pub struct AnimSlot {
+    /// The declared anim type id, e.g. `GAPOWR_A`.
+    pub slot: String,
+    /// Active, Idle, Super, Special or Production.
+    pub kind: String,
+    /// False for the suffixed secondary slots (`ActiveAnimTwo` and friends).
+    pub is_primary: bool,
+    /// Draw offset relative to the building origin.
+    pub offset: [i32; 2],
+    pub rate: u16,
+    /// Slot played instead of this one while the building is damaged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub damaged_variant: Option<String>,
+    /// Slot played instead of this one while the building is garrisoned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub garrisoned_variant: Option<String>,
+    pub candidates: Vec<ArtCandidate>,
+}
+
 /// `asset art-for` — rules/art id to the files that actually back it.
 #[derive(Debug, Serialize)]
 pub struct ArtForReport {
@@ -434,9 +459,18 @@ pub struct ArtForReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub declared_palette: Option<String>,
     pub cameo_id: String,
+    /// Building footprint from art.ini `Foundation=`, e.g. `3x2`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foundation: Option<String>,
+    /// `BibShape=`: the ground pad drawn under a building, resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bib_shape: Option<ArtCandidate>,
     pub shp_candidates: Vec<ArtCandidate>,
     pub cameo_candidates: Vec<ArtCandidate>,
     pub voxel_candidates: Vec<ArtCandidate>,
+    /// Overlay animation slots, each resolved to its own art.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub building_anims: Vec<AnimSlot>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
