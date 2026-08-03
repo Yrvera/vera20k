@@ -32,9 +32,11 @@ use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
 use crate::sim::mission::{MissionCom, MissionLeafState, MissionTimer, MissionType};
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
+use crate::sim::movement::drop_pod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
 use crate::sim::movement::rocket_movement::RocketState;
 use crate::sim::movement::teleport_movement::TeleportState;
+use crate::sim::movement::tunnel_movement::TunnelState;
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::radio::Contacts;
@@ -380,6 +382,10 @@ pub struct GameEntity {
     /// locomotor.layer. Set during spawn, updated at cell-crossing bridge transitions.
     #[serde(default)]
     pub on_bridge: bool,
+    /// Runtime-only Foot bridge mismatch latch (`FootClass+0x68b` in YR).
+    #[serde(default)]
+    pub(crate) runtime_bridge_transition:
+        crate::sim::movement::movement_bridge::RuntimeBridgeTransitionState,
     /// Infantry sprite animation state (sequence + frame + timing).
     pub animation: Option<Animation>,
     /// Voxel HVA animation state (frame cycling for multi-frame models).
@@ -394,6 +400,10 @@ pub struct GameEntity {
     pub order_intent: Option<OrderIntent>,
     /// Teleport movement state machine (warp out/in phases).
     pub teleport_state: Option<TeleportState>,
+    /// Dormant YR TunnelLocomotionClass process state. Its underground depth
+    /// lives in the typed runtime, because `Position::z` cannot represent -256.
+    #[serde(default)]
+    pub tunnel_state: Option<TunnelState>,
     /// Active low-bridge TubeClass movement. Active YR behaviour — not to be
     /// confused with the subterranean tunnel locomotor, which is Tiberian Sun
     /// legacy and was removed as unreachable in stock YR.
@@ -411,6 +421,10 @@ pub struct GameEntity {
     pub spawn_owner_id: Option<u64>,
     /// Rocket/missile flight state machine (launch/ascend/terminal/detonate).
     pub rocket_state: Option<RocketState>,
+    /// Distinct DropPodLocomotionClass descent state; never shares parachute
+    /// state or surface occupation while airborne.
+    #[serde(default)]
+    pub drop_pod_state: Option<DropPodState>,
     /// Homing missile flight state. `Some` while this entity is an in-flight
     /// homing projectile; `None` otherwise. Distinct from `rocket_state` —
     /// ballistic-arc rockets keep using `rocket_state`; only `Ranged=yes`
@@ -832,6 +846,7 @@ impl GameEntity {
             damage_fire_anim_ids: [None; 8],
             bridge_occupancy: None,
             on_bridge: false,
+            runtime_bridge_transition: Default::default(),
             animation: None,
             voxel_animation: None,
             harvest_overlay: None,
@@ -839,10 +854,12 @@ impl GameEntity {
             slave_harvester: None,
             order_intent: None,
             teleport_state: None,
+            tunnel_state: None,
             low_bridge_tube_state: None,
             spawn_manager: None,
             spawn_owner_id: None,
             rocket_state: None,
+            drop_pod_state: None,
             homing_state: None,
             parachute_state: None,
             invulnerability: None,

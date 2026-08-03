@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
+use crate::render::draw_state::DrawState;
 use crate::render::gpu::GpuContext;
 
 /// WGSL shader for instanced sprite rendering (loaded from batch_shader.wgsl).
@@ -57,21 +58,9 @@ pub struct SpriteInstance {
     /// Alpha multiplier for translucency. 1.0 = fully opaque, 0.5 = 50% translucent.
     /// Used for chrono warp "being warped" visual (50% during chrono delay).
     pub alpha: f32,
-    /// Per-house ramp row index. 0 = no remap (SHP / non-voxel paths;
-    /// row 0 of the PaletteSet house_ramp_tex mirrors the theater palette's
-    /// [16, 32) range, so byte ranges stay correct). 1..=MAX_HOUSES-1 =
-    /// per-house ramp row. Read by the voxel sprite fragment shader; other
-    /// pipelines ignore it.
-    pub house_color_idx: u32,
-    /// Bitfield of active visual FX. Bit 0 = cloak, bit 1 = EMP, bit 2 =
-    /// iron curtain, bit 3 = warp, bit 4 = mirror. Phase 1 stubs this as 0;
-    /// phases 2-5 populate.
-    pub fx_flags: u32,
-    /// FX scalar parameters: [cloak_alpha, emp_dim, ic_phase, warp_phase].
-    /// Stub in Phase 1.
-    pub fx_params: [f32; 4],
-    /// Iron-curtain tint: [r, g, b, intensity]. Stub in Phase 1.
-    pub ic_tint: [f32; 4],
+    /// Representation-neutral visual state resolved from the authoritative
+    /// entity before either SHP or voxel instance construction.
+    pub draw_state: DrawState,
 }
 
 /// Number of vertex attributes in SpriteInstance: 7 base + 4 voxel-shader fields.
@@ -364,10 +353,10 @@ impl BatchRenderer {
         // Instance buffer vertex layout (matches SpriteInstance memory layout):
         //   position(8) + size(8) + uv_origin(8) + uv_size(8) = 32 → loc 0-3
         //   depth(4) + tint(12) + alpha(4) = 20 → loc 4-6 (offsets 32, 36, 48)
-        //   house_color_idx(4) at offset 52 → loc 7 (Uint32)
-        //   fx_flags(4) at offset 56 → loc 8 (Uint32)
-        //   fx_params(16) at offset 60 → loc 9 (Float32x4)
-        //   ic_tint(16) at offset 76 → loc 10 (Float32x4)
+        //   DrawState::remap_row(4) at offset 52 → loc 7 (Uint32)
+        //   DrawState::fx_flags(4) at offset 56 → loc 8 (Uint32)
+        //   DrawState::fx_params(16) at offset 60 → loc 9 (Float32x4)
+        //   DrawState::effect_tint(16) at offset 76 → loc 10 (Float32x4)
         // Total stride: 92 bytes.
         let instance_attrs: [wgpu::VertexAttribute; INSTANCE_ATTRIBUTE_COUNT] = [
             wgpu::VertexAttribute {

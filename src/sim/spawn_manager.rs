@@ -1141,31 +1141,19 @@ fn recall_child_to_owner(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, c
 /// Hand a launched missile child to the rocket locomotor with the impact
 /// payload attached.
 ///
-/// **DRIFT — missile flight arc.** gamemd flies these on
-/// `RocketLocomotionClass` (`ILoco::Process 0x006622C0`), a six-phase machine:
-/// pause+smoke → tilt (or vertical raise for DMisl) → boosted ascent
-/// accumulating `*Acceleration` per frame → cruise at `*Altitude` with the
-/// `*LazyCurve` pitch lerp → `*TurnRate`-clamped descent → impact-predicted
-/// detonation. VERA reuses the existing three-phase `rocket_movement` arc
-/// (fixed launch boost, parabola to a fixed peak, linear terminal dive) with a
-/// constant cells-per-second speed.
-/// - **Trigger:** every spawn-manager missile launch — V3 Launcher,
-///   Dreadnought, Boomer.
-/// - **Player effect:** the missile's silhouette path and time-to-impact
-///   differ from retail. The V3's wide lazy arc and the Dreadnought's vertical
-///   silo launch both render as the same generic parabola, and the descent
-///   does not steepen under a turn-rate clamp. Impact cell, damage, and
-///   warhead are correct; only the trajectory and flight duration are not.
-/// - **Frequency:** constant for any Soviet player fielding V3s, and for every
-///   naval engagement involving a Dreadnought or Boomer.
-/// - **Downstream risk:** flight duration is the input to nothing else — the
-///   slot's regen clock starts from `PauseFrames + TiltFrames` (a Rules value,
-///   not the flight), and the impact is self-contained. No deterministic or
-///   architectural debt; the arc can be replaced in place by porting
-///   `RocketLocomotionClass` behind the same `RocketState` handoff. The
-///   per-frame `*Acceleration`/`*Pitch*`/`*TurnRate` INI keys are deliberately
-///   **unparsed** rather than parsed-and-ignored, because they are floats and
-///   the port that consumes them must decide their fixed-point representation.
+/// **DRIFT (largely closed 2026-08-03) — missile flight arc.** The original
+/// record here predicted "the arc can be replaced in place by porting
+/// `RocketLocomotionClass` behind the same `RocketState` handoff" — that is
+/// exactly what happened: the foundations merge landed the six-phase machine
+/// (`ILoco::Process 0x006622C0` — ignition → tilt → ascent → cruise →
+/// terminal → secondary) in `rocket_movement`, and this launch path now rides
+/// it via `RocketFlightParameters::legacy`. What REMAINS open, recorded here:
+/// `legacy()` uses default acceleration/altitude/tilt constants rather than
+/// the per-family `*Acceleration`/`*Altitude`/`*LazyCurve`/`*TurnRate` table
+/// values (still unparsed — floats whose fixed-point form belongs to whoever
+/// wires the table), and the DMisl vertical raise is not selected. Silhouette
+/// nuance only; impact cell, damage and warhead are exact, and flight duration
+/// feeds nothing (the regen clock is Rules `PauseFrames + TiltFrames`).
 ///
 /// **DRIFT — launch position and effects.** Native reads the muzzle through
 /// `GetFLH` and offsets the launch Z by +10 leptons; the Boomer additionally
@@ -1194,14 +1182,17 @@ fn launch_missile_child(
         .entities
         .get(child_id)
         .map(|c| sim.interner.resolve(c.type_ref).to_string());
-    // `RocketState.speed` is cells per second, so the raw INI `Speed=` must go
-    // through the RA2 conversion. Passing the raw value made a missile cover
-    // roughly one cell per frame.
+    // The six-phase rocket machine runs in LEPTONS per second (its ascent
+    // altitude, acceleration and terminal constants are lepton-domain, and its
+    // own attach test uses a 300-scale speed), so the raw INI `Speed=` goes
+    // through the leptons/s conversion. Two prior unit bugs on this exact line:
+    // the raw value (one cell per frame), then cells/s into the lepton-domain
+    // machine (~256x too slow — the missile never finished its ascent).
     let speed = child_type
         .as_deref()
         .and_then(|name| rules.object(name))
-        .map(|o| crate::util::fixed_math::ra2_speed_to_cells_per_second(o.speed.max(1)))
-        .unwrap_or_else(|| crate::util::fixed_math::ra2_speed_to_cells_per_second(15));
+        .map(|o| crate::util::fixed_math::ra2_speed_to_leptons_per_second(o.speed.max(1)))
+        .unwrap_or_else(|| crate::util::fixed_math::ra2_speed_to_leptons_per_second(15));
     let warhead_id = sim.interner.intern(params.warhead_for(owner_veterancy));
     let payload = crate::sim::movement::rocket_movement::RocketPayload {
         warhead: warhead_id,

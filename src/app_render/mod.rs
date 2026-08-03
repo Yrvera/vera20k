@@ -21,6 +21,7 @@
 
 mod build_instances;
 mod draw_passes;
+pub(crate) mod draw_plan_lowering;
 mod merge_passes;
 
 use anyhow::Result;
@@ -138,7 +139,6 @@ pub(crate) fn render_game(
             unit_pages: &world.unit_pages,
             unit_transition_paged: &world.unit_transition_paged,
             shp_paged: &world.shp_paged,
-            wall_instances: &world.wall,
             particle_paged: &world.particle_paged,
             top_unit_pages: &world.top_unit_pages,
             ghost_page: ui.ghost_page,
@@ -194,7 +194,6 @@ fn upload_to_gpu(
         &world.bridge_body_shadow,
     );
     pool.upload(&state.gpu, "overlay_bridge_railing", &world.bridge_railing);
-    pool.upload(&state.gpu, "overlay_wall", &world.wall);
     // Smudges: drawn inside the terrain layer, before the bridge body and
     // before overlays, matching the native per-cell tile-then-smudge dispatch.
     pool.upload(&state.gpu, "smudge", &world.smudge);

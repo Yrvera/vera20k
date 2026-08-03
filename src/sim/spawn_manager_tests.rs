@@ -876,12 +876,21 @@ fn missile_flight_speed_uses_the_ra2_conversion() {
         .and_then(|c| c.rocket_state.as_ref())
         .map(|r| r.speed)
         .expect("rocket state");
-    // V3ROCKET Speed=15 → 15*256/100 = 38 leptons/tick → 38*15/256 cells/sec.
-    let expected = crate::util::fixed_math::ra2_speed_to_cells_per_second(15);
+    // V3ROCKET Speed=15 → 15*256/100 = 38 leptons/tick → 38*15 = 570 leptons/s,
+    // the unit domain of the six-phase rocket machine (its ascent altitude and
+    // acceleration constants are lepton-scale).
+    let expected = crate::util::fixed_math::ra2_speed_to_leptons_per_second(15);
     assert_eq!(speed, expected);
-    assert!(
-        speed < crate::util::fixed_math::SimFixed::from_num(15),
-        "the raw INI Speed= must not reach the cells-per-second field"
+    assert_ne!(
+        speed,
+        crate::util::fixed_math::SimFixed::from_num(15),
+        "the raw INI Speed= must not reach the flight-speed field"
+    );
+    assert_ne!(
+        speed,
+        crate::util::fixed_math::ra2_speed_to_cells_per_second(15),
+        "cells/s is the wrong unit domain for the lepton-scale flight machine \
+         (a prior merge briefly fed it, stalling every missile in Ascent)"
     );
 }
 

@@ -46,7 +46,7 @@ use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed, facing_from_delta_int
 mod drive_locomotion;
 pub(crate) mod locomotor_ready;
 mod movement_blocked;
-mod movement_bridge;
+pub(crate) mod movement_bridge;
 mod movement_commands;
 mod movement_occupancy;
 mod movement_path;
@@ -61,6 +61,7 @@ pub(crate) mod ready_producer;
 pub mod air_movement;
 pub mod bump_crush;
 pub mod drive_track;
+pub mod drop_pod_movement;
 pub mod facing_class;
 pub mod group_destination;
 pub mod homing_movement;
@@ -72,6 +73,7 @@ pub mod parachute_descent;
 pub mod rocket_movement;
 pub mod scatter;
 pub mod teleport_movement;
+pub mod tunnel_movement;
 pub mod tube_movement;
 pub mod turret;
 
@@ -217,6 +219,7 @@ pub(super) struct MoverSnapshot {
     pub owner: InternedId,
     pub too_big_to_fit_under_bridge: bool,
     pub on_bridge: bool,
+    pub runtime_bridge_transition: movement_bridge::RuntimeBridgeTransitionState,
     pub locomotor: Option<locomotor::LocomotorState>,
     pub rot: i32,
     /// Mover's `MovementTarget.bypass_grid` flag — when true, structure

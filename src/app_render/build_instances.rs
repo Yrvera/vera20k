@@ -38,7 +38,6 @@ pub(super) struct WorldInstances {
     pub bridge_body: Vec<SpriteInstance>,
     pub bridge_body_shadow: Vec<SpriteInstance>,
     pub bridge_railing: Vec<SpriteInstance>,
-    pub wall: Vec<SpriteInstance>,
     pub unit: Vec<SpriteInstance>,
     pub unit_pages: Vec<usize>,
     pub bridge_unit: Vec<SpriteInstance>,
@@ -194,13 +193,13 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         }
     };
 
-    // Overlays: map overlays, walls — each sorted by depth descending. Low
-    // bridges (LOBRDG*) ride in `overlay`; high-bridge bodies are emitted by
-    // `app_instances::bridges` instead.
+    // Map overlays and walls are lowered through the fixed per-cell draw plan.
+    // Terrain objects remain an explicit fallback until they carry LayerClass
+    // registration metadata. Low bridges (LOBRDG*) ride in `overlay`; high
+    // bridge bodies are emitted by `app_instances::bridges` instead.
     let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.cached_overlay_instances);
     overlay.clear();
-    let mut wall: Vec<SpriteInstance> = Vec::new();
-    app_instances::build_overlay_instances(state, sw, sh, &mut overlay, &mut wall);
+    app_instances::build_overlay_instances(state, sw, sh, &mut overlay);
     // Bridge body, shadow, and railing emission live in app_instances::bridges
     // (Phase D). Read from BridgeRuntimeCell post-tick (NOT OverlayGrid).
     let mut bridge_body: Vec<SpriteInstance> = Vec::new();
@@ -209,11 +208,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     app_instances::bridges::build_bridge_body_instances(state, sw, sh, &mut bridge_body);
     app_instances::bridges::build_bridge_shadow_instances(state, sw, sh, &mut bridge_body_shadow);
     app_instances::bridges::build_bridge_railing_instances(state, sw, sh, &mut bridge_railing);
-    sort_by_depth_desc(&mut overlay);
     sort_by_depth_desc(&mut bridge_body);
     sort_by_depth_desc(&mut bridge_body_shadow);
     sort_by_depth_desc(&mut bridge_railing);
-    sort_by_depth_desc(&mut wall);
 
     // Smudges: static crater/scorch decals on top of terrain, under entities.
     // Atlas registration for SmudgeType SHPs is a deferred follow-up; until it
@@ -324,6 +321,14 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         sort_by_depth_desc(page);
     }
 
+    // `LayerClass` needs integer ObjectClass::GetYSort and registration order.
+    // Existing atlas vectors retain neither, so publish the typed fallback once.
+    super::draw_plan_lowering::report_object_buffer_fallbacks(
+        !unit.is_empty(),
+        unit_transition_paged.iter().any(|page| !page.is_empty()),
+        shp_paged.iter().any(|page| !page.is_empty()),
+    );
+
     // PixelFX water/ore sparkles — per-frame 1-pixel cell dots.
     let cell_sparkles: Vec<SpriteInstance> = build_pixel_fx_sparkle_instances(state, sw, sh);
 
@@ -349,7 +354,6 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         bridge_body,
         bridge_body_shadow,
         bridge_railing,
-        wall,
         unit,
         unit_pages,
         bridge_unit,
@@ -921,23 +925,33 @@ fn sort_by_depth_desc_with_pages(instances: &mut Vec<SpriteInstance>, pages: &mu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::draw_state::DrawState;
 
     #[test]
     fn paired_unit_sort_keeps_page_tags_and_equal_depth_order() {
         let mut instances = vec![
             SpriteInstance {
                 depth: 0.5,
-                fx_flags: 10,
+                draw_state: DrawState {
+                    fx_flags: 10,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             SpriteInstance {
                 depth: 0.8,
-                fx_flags: 20,
+                draw_state: DrawState {
+                    fx_flags: 20,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             SpriteInstance {
                 depth: 0.8,
-                fx_flags: 30,
+                draw_state: DrawState {
+                    fx_flags: 30,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         ];
@@ -948,7 +962,7 @@ mod tests {
         assert_eq!(
             instances
                 .iter()
-                .map(|instance| instance.fx_flags)
+                .map(|instance| instance.draw_state.fx_flags)
                 .collect::<Vec<_>>(),
             vec![20, 30, 10]
         );
@@ -960,6 +974,17 @@ mod tests {
     /// instead of being flushed in a pass of their own. A vehicle at a nearer
     /// row must end up after the turret; one at the same row must stay before
     /// it, which is what leaves the turret sitting on its own building.
+    fn marker_instance(depth: f32, marker: u32) -> SpriteInstance {
+        SpriteInstance {
+            depth,
+            draw_state: crate::render::draw_state::DrawState {
+                fx_flags: marker,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn building_turrets_interleave_with_vehicles_by_depth_once_appended() {
         const BEHIND: f32 = 0.8;
@@ -967,27 +992,11 @@ mod tests {
         const IN_FRONT: f32 = 0.2;
         // fx_flags is only a marker here: 1 = vehicle body, 2 = building turret.
         let mut instances = vec![
-            SpriteInstance {
-                depth: IN_FRONT,
-                fx_flags: 1,
-                ..Default::default()
-            },
-            SpriteInstance {
-                depth: SAME_ROW,
-                fx_flags: 1,
-                ..Default::default()
-            },
+            marker_instance(IN_FRONT, 1),
+            marker_instance(SAME_ROW, 1),
             // Turrets are emitted after every vehicle body.
-            SpriteInstance {
-                depth: BEHIND,
-                fx_flags: 2,
-                ..Default::default()
-            },
-            SpriteInstance {
-                depth: SAME_ROW,
-                fx_flags: 2,
-                ..Default::default()
-            },
+            marker_instance(BEHIND, 2),
+            marker_instance(SAME_ROW, 2),
         ];
         let mut pages = vec![0usize, 1, 2, 3];
 
@@ -996,7 +1005,7 @@ mod tests {
         assert_eq!(
             instances
                 .iter()
-                .map(|i| (i.fx_flags, i.depth))
+                .map(|i| (i.draw_state.fx_flags, i.depth))
                 .collect::<Vec<_>>(),
             vec![(2, BEHIND), (1, SAME_ROW), (2, SAME_ROW), (1, IN_FRONT),],
             "a turret behind draws first, a turret on the same row draws after \

@@ -31,7 +31,7 @@ use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
-use crate::sim::world::{LifecycleOutput, SimFireEvent, SimSoundEvent, TickLane};
+use crate::sim::world::{LifecycleOutput, SimFireEvent, SimSoundEvent, TickLane, TriggerInputs};
 use crate::ui::game_screen::GameScreen;
 
 /// Directory for Rust-only deterministic diagnostic logs.
@@ -865,11 +865,18 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     for _ in 0..1 {
         // Compute local owner before mutable borrow of simulation.
         let local_owner_for_fog = preferred_local_owner_name(state);
+        let trigger_inputs = TriggerInputs {
+            graph: &state.trigger_graph,
+            triggers: &state.triggers,
+            events: &state.events,
+            actions: &state.actions,
+        };
 
         // Cache local owner name before mutable sim borrow (avoids borrow conflict).
         let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
         let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
+        let mut trigger_effects: Vec<TriggerEffect> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
         if let Some(sim) = &mut state.simulation {
@@ -884,7 +891,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             } else {
                 Vec::new()
             };
-            let tick_result = sim.advance_tick_in_lane(
+            let tick_result = sim.advance_master_frame(
                 &due_commands,
                 state.rules.as_ref(),
                 &state.height_map,
@@ -893,7 +900,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 SIM_TICK_MS,
                 tick_lane,
                 Some(&state.animation_sequences),
+                Some(trigger_inputs),
             );
+            trigger_effects = sim.drain_trigger_effects();
             frame_committed = tick_result.frame_committed;
             // Parity capture, if requested. Placed directly after the committed tick so
             // it observes the same state the tick hash covers, and before any app-layer
@@ -1418,16 +1427,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             crate::app_input::report_black_cell_causes(state);
         }
 
-        let trigger_effects = if let Some(sim) = &mut state.simulation {
-            sim.advance_triggers(
-                &state.trigger_graph,
-                &state.triggers,
-                &state.events,
-                &state.actions,
-            )
-        } else {
-            Vec::new()
-        };
         apply_trigger_effects(state, &trigger_effects);
 
         // Drain overlay dirty cells and recompute passability. If any cell's
@@ -2252,7 +2251,10 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(upsert_overlay_entries(&mut render_entries, authoritative), 1);
+        assert_eq!(
+            upsert_overlay_entries(&mut render_entries, authoritative),
+            1
+        );
         assert_eq!(render_entries.len(), 2);
         assert_eq!((render_entries[0].rx, render_entries[0].ry), (4, 4));
         assert_eq!(render_entries[0].overlay_id, 3);

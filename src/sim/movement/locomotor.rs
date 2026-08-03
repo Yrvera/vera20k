@@ -26,7 +26,7 @@ use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::ObjectType;
 use crate::sim::movement::locomotion::LocomotorSlot;
-use crate::sim::movement::locomotion::piggyback::{self, StashedLocomotor};
+use crate::sim::movement::locomotion::piggyback::{self, EndGateContext, LocomotorRuntime, StashedLocomotor};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
 
 /// Which spatial layer the unit currently occupies.
@@ -129,10 +129,10 @@ pub struct LocomotorState {
     /// to on — an unpowered locomotor is a state something must actively put a
     /// unit into.
     pub powered: bool,
-    /// Active piggybacked locomotor storage.
+    /// One boxed suspended locomotor runtime.
     ///
-    /// For CMIN drive phases, `kind` becomes Drive and this stores the primary
-    /// Teleport locomotor until the active Drive locomotor is ok to end.
+    /// For CMIN drive phases, `kind` becomes Drive and this stores the complete
+    /// primary Teleport runtime until the active Drive locomotor is ok to end.
     #[serde(default)]
     pub piggyback: Option<StashedLocomotor>,
     /// Which spatial layer the unit currently occupies.
@@ -444,11 +444,10 @@ impl LocomotorState {
             // Drive on top of itself. Repair, not a BEGIN: the native protocol
             // has no path that reaches this shape.
             if self.piggyback.is_none() {
-                self.piggyback = Some(StashedLocomotor {
-                    kind: LocomotorKind::Teleport,
-                    layer: MovementLayer::Ground,
-                    ..StashedLocomotor::capture(self)
-                });
+                let mut runtime = LocomotorRuntime::capture(self);
+                runtime.kind = LocomotorKind::Teleport;
+                runtime.layer = MovementLayer::Ground;
+                self.piggyback = Some(StashedLocomotor::from_runtime(runtime));
             }
             return true;
         }
@@ -472,7 +471,11 @@ impl LocomotorState {
         owner_teleporting: bool,
         owner_deploying: bool,
     ) -> bool {
-        self.piggyback.is_some() && !owner_moving && !owner_teleporting && !owner_deploying
+        self.is_ok_to_end_piggyback(EndGateContext {
+            owner_moving,
+            owner_teleporting,
+            owner_deploying,
+        })
     }
 
     /// Begin a piggyback: stash the driving locomotor and install this one.
@@ -508,8 +511,8 @@ impl LocomotorState {
 
     /// Whether the active piggyback may be unwound now. The movement clause
     /// dominates: a moving unit never unwinds.
-    pub fn is_ok_to_end_piggyback(&self, is_moving: bool) -> bool {
-        piggyback::is_ok_to_end(self, is_moving)
+    pub fn is_ok_to_end_piggyback(&self, context: EndGateContext) -> bool {
+        piggyback::is_ok_to_end(self, context)
     }
 }
 

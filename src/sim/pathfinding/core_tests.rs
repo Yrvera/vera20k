@@ -937,9 +937,7 @@ fn test_from_resolved_terrain_uses_resolved_blocking_flags() {
             },
             ResolvedTerrainCell {
                 overlay_blocks: true,
-                overlay_zone_type: Some(
-                    crate::map::resolved_terrain::zone_class::IMPASSABLE,
-                ),
+                overlay_zone_type: Some(crate::map::resolved_terrain::zone_class::IMPASSABLE),
                 build_blocked: true,
                 ..make_resolved_cell(1, 1)
             },
@@ -2613,6 +2611,59 @@ fn ground_mover_rejects_pathgrid_walkable_water_without_cost_grid() {
         is_cell_passable_for_mover(&grid, 0, 0, Some(MovementZone::Normal), Some(&terrain)),
         "Normal ground entry still accepts ordinary land"
     );
+}
+
+#[test]
+fn runtime_and_search_share_known_water_cell_admission() {
+    let terrain = make_water_channel_terrain();
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    let costs = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Track);
+
+    // Ground movement uses RuntimeTransition at the cell boundary; A* uses
+    // AStarNeighbor. Both must enter through the same known-input predicate.
+    let runtime_admission = is_cell_passable_for_mover_with_speed(
+        &grid,
+        0,
+        1,
+        Some(MovementZone::Normal),
+        Some(SpeedType::Track),
+        Some(&terrain),
+        Some(&costs),
+        false,
+        TerrainEntryMode::RuntimeTransition,
+    );
+    let search_admission = is_cell_passable_for_mover_with_speed(
+        &grid,
+        0,
+        1,
+        Some(MovementZone::Normal),
+        Some(SpeedType::Track),
+        Some(&terrain),
+        Some(&costs),
+        false,
+        TerrainEntryMode::AStarNeighbor,
+    );
+    assert!(!runtime_admission);
+    assert_eq!(search_admission, runtime_admission);
+
+    let trace = AStarTraceCollector::new();
+    let path = astar_search(
+        &grid,
+        (0, 0),
+        MovementLayer::Ground,
+        (0, 2),
+        &AStarOptions {
+            terrain_costs: Some(&costs),
+            movement_zone: Some(MovementZone::Normal),
+            resolved_terrain: Some(&terrain),
+            trace_sink: Some(&trace),
+            ..Default::default()
+        },
+    );
+    assert!(path.is_none(), "A* must reject the same water boundary");
+    assert!(trace.steps().iter().any(|step| {
+        step.candidate_cell == (0, 1) && step.rejected_reason == Some("walkability_blocked")
+    }));
 }
 
 #[test]

@@ -120,8 +120,14 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // (6f78bac7) world_hash.rs swapped in and all branch behaviour kept, this probe
 // read 0xFEEA0679D9429547 — neither the old baseline nor the branch value. So
 // hashed state content changed, not just which fields are folded.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xC2FA_0728_1D1C_CE92;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xDC26_BF96_164D_39C2;
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
+// Native Move mission cadence now advances MissionCom and Scenario RNG.
+// Re-baselined after hashing the newly persisted YR runtime-contract state.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xFF25_F56A_6E1E_2A46;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xEE98_241E_37BE_6CFE;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -177,6 +183,10 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xDC26_BF96_164D_39C2;
 // wired in this slice (deploy-begin off, undeploy-complete on, destination-
 // accepted on) changed no other hashed state in these fixtures. The absolute
 // per-stream RNG pins held throughout.
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
 //
 // Re-baselined 2026-08-02 for passive/opportunity target acquisition.
 // **Composition-only, but NOT for the reason this file's usual ceremony would
@@ -193,7 +203,7 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xDC26_BF96_164D_39C2;
 // fields moving off their old values — `passive_scan_timer` armed at the
 // construction frame instead of left unarmed, plus the two new fields folded at
 // their defaults. Rust regression ratchet, not gamemd evidence.
-const SLICE6_BASELINE_HASH: u64 = 0x2DAB_F65B_DAA0_9F67;
+const SLICE6_BASELINE_HASH: u64 = 0x6763_3A9A_A228_3C22;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

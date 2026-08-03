@@ -61,6 +61,10 @@ use crate::sim::infantry;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
 use crate::sim::power_system::PowerState;
+use crate::sim::projectile::{
+    ProjectileCollisionPolicy, ProjectileCoord, ProjectileDetonation, ProjectilePayload,
+    ProjectileSpawn, ProjectileTarget, TargetExpiryPolicy,
+};
 use crate::sim::rng::SimRng;
 use crate::sim::vision::FogState;
 use crate::sim::world::{FireOriginSnapshot, SimFireEvent, SimSoundEvent};
@@ -77,6 +81,126 @@ use super::production::foundation_dimensions;
 const REVEAL_ON_FIRE_RADIUS: u16 = 3;
 /// Step size for selecting explosion anim from a warhead's AnimList: idx = damage / 25.
 const ANIM_LIST_DAMAGE_STEP: u16 = 25;
+
+/// Explicitly classified delivery decision at weapon fire.
+///
+/// Unsupported projectile behaviors intentionally remain on the established
+/// immediate path until their own native trajectory contracts are ported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectileDelivery {
+    Persistent {
+        arm_frames: u16,
+        tracks_target: bool,
+        collision: ProjectileCollisionPolicy,
+    },
+    Immediate(ImmediateProjectileReason),
+}
+
+/// The bounded lifecycle never silently treats an unsupported bullet as a
+/// straight ordinary shot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImmediateProjectileReason {
+    NoProjectile,
+    MissingProjectileType,
+    Invisible,
+    InstantSpeed,
+    Vertical,
+    Ballistic,
+    ObstacleTrajectory,
+    SpecialTrajectory,
+}
+
+fn classify_projectile_delivery(
+    weapon: &crate::rules::weapon_type::WeaponType,
+    rules: &RuleSet,
+) -> ProjectileDelivery {
+    let Some(projectile_id) = weapon.projectile.as_deref() else {
+        return ProjectileDelivery::Immediate(ImmediateProjectileReason::NoProjectile);
+    };
+    let Some(projectile) = rules.projectile(projectile_id) else {
+        return ProjectileDelivery::Immediate(ImmediateProjectileReason::MissingProjectileType);
+    };
+    if projectile.inviso {
+        return ProjectileDelivery::Immediate(ImmediateProjectileReason::Invisible);
+    }
+    if weapon.speed <= 0 {
+        return ProjectileDelivery::Immediate(ImmediateProjectileReason::InstantSpeed);
+    }
+    if projectile.vertical {
+        return ProjectileDelivery::Immediate(ImmediateProjectileReason::Vertical);
+    }
+    if projectile.arcing || weapon.lobber {
+        return ProjectileDelivery::Immediate(ImmediateProjectileReason::Ballistic);
+    }
+    // YR BulletClass::AI linkage: Level's current-cell water predicate and
+    // wall entry are now owned by the world collision rung. Cliff/elevation
+    // kernels still need their native coordinate contracts.
+    if projectile.subject_to_cliffs || projectile.subject_to_elevation {
+        return ProjectileDelivery::Immediate(ImmediateProjectileReason::ObstacleTrajectory);
+    }
+    if projectile.airburst
+        || projectile.dropping
+        || projectile.very_high
+        || projectile.proximity
+        || projectile.flak_scatter
+        || projectile.inaccurate
+        || projectile.degenerates
+        || projectile.bouncy
+        // BulletTypeClass defaults Cluster to one ordinary impact. Only a
+        // value other than that baseline requires the cluster kernel.
+        || projectile.cluster != 1
+        || projectile.shrapnel_count != 0
+    {
+        return ProjectileDelivery::Immediate(ImmediateProjectileReason::SpecialTrajectory);
+    }
+    ProjectileDelivery::Persistent {
+        arm_frames: projectile.arm.max(0).min(u16::MAX as i32) as u16,
+        tracks_target: projectile.rot > 0,
+        collision: ProjectileCollisionPolicy {
+            level_non_water: projectile.level,
+            subject_to_walls: projectile.subject_to_walls,
+        },
+    }
+}
+
+/// Whether a fire event's visible projectile is represented by the serialized
+/// world `ProjectileStore`, rather than the legacy app-local interpolation.
+pub(crate) fn projectile_uses_authoritative_flight(
+    weapon: &crate::rules::weapon_type::WeaponType,
+    rules: &RuleSet,
+) -> bool {
+    matches!(
+        classify_projectile_delivery(weapon, rules),
+        ProjectileDelivery::Persistent { .. }
+    )
+}
+
+#[cfg(test)]
+mod projectile_delivery_tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+
+    #[test]
+    fn wall_projectile_uses_the_authoritative_collision_path() {
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=TEST\n\n[TEST]\nStrength=100\nArmor=heavy\nPrimary=GUN\n\n[GUN]\nDamage=20\nROF=10\nRange=5\nSpeed=30\nProjectile=SHELL\nWarhead=WH\n\n[SHELL]\nSubjectToWalls=yes\n\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("projectile rules");
+        let weapon = rules.weapon("GUN").expect("weapon");
+
+        assert_eq!(
+            classify_projectile_delivery(weapon, &rules),
+            ProjectileDelivery::Persistent {
+                arm_frames: 0,
+                tracks_target: false,
+                collision: ProjectileCollisionPolicy {
+                    level_non_water: false,
+                    subject_to_walls: true,
+                },
+            }
+        );
+    }
+}
 
 /// A cell area to reveal due to a RevealOnFire weapon firing.
 pub struct RevealEvent {
@@ -153,9 +277,7 @@ fn warhead_damages_wall(
     warhead: &WarheadType,
     wall_flags: &crate::map::overlay_types::OverlayTypeFlags,
 ) -> bool {
-    warhead.wall
-        || warhead.wall_absolute_destroyer
-        || (warhead.wood && wall_flags.armor_is_wood)
+    warhead.wall || warhead.wall_absolute_destroyer || (warhead.wood && wall_flags.armor_is_wood)
 }
 
 pub(crate) fn apply_prone_damage_modifier(
@@ -786,6 +908,9 @@ pub struct TiberiumReductionRequest {
 
 /// Result of a combat tick: reveal events + stable IDs of despawned entities.
 pub struct CombatTickResult {
+    /// Ordinary projectiles created by fire this frame, to admit after the
+    /// current BulletClass pass. New bullets never advance recursively.
+    pub projectile_spawns: Vec<ProjectileSpawn>,
     pub reveal_events: Vec<RevealEvent>,
     pub despawned_ids: Vec<u64>,
     /// IDs that should enter world-owned UnInit immediately this tick.
@@ -1122,8 +1247,7 @@ fn handle_entity_deaths(
         if let Some(warhead) = rules.warhead(interner.resolve(*wh_id)) {
             if *dmg > 0 {
                 let damage_u16 = (*dmg).max(0) as u16;
-                let wall_flags =
-                    wall_overlay_flags_at(overlay_grid, overlay_registry, *rx, *ry);
+                let wall_flags = wall_overlay_flags_at(overlay_grid, overlay_registry, *rx, *ry);
                 if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
                     wall_damage_events.push(WallDamageEvent {
                         rx: *rx,
@@ -1265,6 +1389,9 @@ fn destroy_ore_at_impact(
 /// never hashed — destructured back into the named locals after the Phase-2 loop.
 #[derive(Default)]
 pub(crate) struct CombatEmit {
+    /// Persistent ordinary bullets admitted by accepted weapon fire. The world
+    /// inserts them only after this frame's BulletClass pass has completed.
+    pub(crate) projectile_spawns: Vec<ProjectileSpawn>,
     /// (target_id, damage, attacker_id, warhead_id)
     pub(crate) damage_events: Vec<(u64, u16, u64, InternedId)>,
     /// Radiation-emitting detonations (weapon RadLevel > 0), folded into
@@ -1297,6 +1424,155 @@ pub(crate) struct CombatEmit {
     /// gamemd's `Fire_At` hands the target to the parent's `SpawnManager` and
     /// returns NULL, so no bullet, damage or rearm follows.
     pub(crate) spawn_target_updates: Vec<(u64, TargetKind)>,
+}
+
+fn projectile_impact_cell(impact: ProjectileCoord) -> (u16, u16, SimFixed, SimFixed, i32) {
+    let rx = impact.x.div_euclid(256).clamp(0, i32::from(u16::MAX)) as u16;
+    let ry = impact.y.div_euclid(256).clamp(0, i32::from(u16::MAX)) as u16;
+    (
+        rx,
+        ry,
+        SimFixed::from_num(impact.x.rem_euclid(256)),
+        SimFixed::from_num(impact.y.rem_euclid(256)),
+        impact.z,
+    )
+}
+
+/// Reuse the ordinary combat emission paths after a persistent bullet reaches
+/// `BulletClass::Detonate`; this stays before the shared damage/death phases.
+fn emit_projectile_detonations(
+    detonations: &[ProjectileDetonation],
+    entities: &mut EntityStore,
+    occupancy: &OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    overlay_grid: Option<&OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    out: &mut CombatEmit,
+) {
+    for detonation in detonations {
+        let Some(warhead) = rules.warhead(interner.resolve(detonation.payload.warhead)) else {
+            log::warn!(
+                "Projectile {} dropped: missing serialized warhead {}",
+                detonation.projectile_id,
+                detonation.payload.warhead
+            );
+            continue;
+        };
+        let (impact_rx, impact_ry, impact_sub_x, impact_sub_y, impact_z) =
+            projectile_impact_cell(detonation.impact);
+        let direct_target = match detonation.target {
+            ProjectileTarget::Entity(id) => entities
+                .get(id)
+                .filter(|entity| entity.is_alive() && !entity.dying),
+            ProjectileTarget::Cell(_) => None,
+        };
+
+        if warhead.cell_spread > SIM_ZERO {
+            let aoe_hits = self::combat_aoe::apply_aoe_damage(
+                entities,
+                impact_rx,
+                impact_ry,
+                detonation.payload.base_damage,
+                warhead,
+                rules,
+                interner,
+                interner.resolve(detonation.payload.owner),
+                self::combat_aoe::AoELayerContext {
+                    occupancy: Some(occupancy),
+                    terrain,
+                    impact_z,
+                },
+            );
+            for (target_id, damage) in aoe_hits {
+                out.damage_events.push((
+                    target_id,
+                    damage,
+                    detonation.source_id,
+                    detonation.payload.warhead,
+                ));
+            }
+        } else if let Some(target) = direct_target {
+            let armor = rules
+                .object(interner.resolve(target.type_ref))
+                .map(|object| object.armor.as_str())
+                .unwrap_or("none");
+            let raw_damage =
+                detonation.payload.base_damage * warhead.verses[armor_index(armor)] as i32 / 100;
+            let prone = target.category == EntityCategory::Infantry
+                && infantry::is_prone_for_damage(target);
+            let actual_damage = apply_prone_damage_modifier(prone, warhead, raw_damage);
+            if actual_damage > 0 {
+                out.damage_events.push((
+                    target.stable_id,
+                    actual_damage,
+                    detonation.source_id,
+                    detonation.payload.warhead,
+                ));
+            }
+        }
+
+        if detonation.payload.base_damage > 0 {
+            let damage = detonation.payload.base_damage.min(i32::from(u16::MAX)) as u16;
+            let wall_flags =
+                wall_overlay_flags_at(overlay_grid, overlay_registry, impact_rx, impact_ry);
+            if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
+                out.wall_damage_events.push(WallDamageEvent {
+                    rx: impact_rx,
+                    ry: impact_ry,
+                    damage,
+                });
+            } else if wall_flags.is_none() && warhead.wall {
+                out.bridge_damage_events.push(BridgeDamageEvent {
+                    rx: impact_rx,
+                    ry: impact_ry,
+                    damage,
+                    warhead_ref: detonation.payload.warhead,
+                    is_ion_cannon: detonation.payload.warhead == rules.ion_cannon_warhead_id(),
+                    impact_z,
+                });
+            }
+        }
+        if warhead.wood && detonation.payload.base_damage > 0 {
+            out.terrain_damage_events.push(TerrainDamageEvent {
+                rx: impact_rx,
+                ry: impact_ry,
+                damage: detonation.payload.base_damage,
+                warhead_ref: detonation.payload.warhead,
+            });
+        }
+        destroy_ore_at_impact(
+            &mut out.tiberium_reduction_requests,
+            impact_rx,
+            impact_ry,
+            detonation.payload.base_damage,
+            warhead.cell_spread,
+        );
+        if let Some(weapon) = rules.weapon(interner.resolve(detonation.payload.weapon))
+            && weapon.rad_level > 0
+        {
+            out.rad_detonations
+                .push(crate::sim::radiation::RadDetonation {
+                    rx: impact_rx,
+                    ry: impact_ry,
+                    rad_level: weapon.rad_level,
+                    spread: warhead.cell_spread.to_num::<i32>(),
+                });
+        }
+        emit_warhead_detonation_effects(
+            warhead,
+            detonation.payload.base_damage,
+            impact_rx,
+            impact_ry,
+            impact_sub_x,
+            impact_sub_y,
+            impact_z.clamp(0, i32::from(u8::MAX)) as u8,
+            interner,
+            &mut out.explosion_effects,
+            &mut out.smudge_spawn_requests,
+        );
+    }
 }
 
 /// Advance combat with optional owner visibility gating and sound event sink.
@@ -1347,6 +1623,7 @@ pub fn tick_combat_with_fog(
         tick_ms,
         binary_frame,
         live_order,
+        &[],
         radiation,
         &[],
         scenario_rng,
@@ -1375,6 +1652,7 @@ pub fn tick_combat_with_fog_and_main_rng(
     tick_ms: u32,
     binary_frame: u32,
     live_order: &[u64],
+    projectile_detonations: &[ProjectileDetonation],
     radiation: Option<&mut crate::sim::radiation::RadiationState>,
     missile_detonations: &[crate::sim::spawn_manager::MissileDetonation],
     scenario_rng: &mut SimRng,
@@ -1382,6 +1660,7 @@ pub fn tick_combat_with_fog_and_main_rng(
 ) -> CombatTickResult {
     if tick_ms == 0 {
         return CombatTickResult {
+            projectile_spawns: Vec::new(),
             reveal_events: Vec::new(),
             despawned_ids: Vec::new(),
             immediate_uninit_ids: Vec::new(),
@@ -1828,8 +2107,22 @@ pub fn tick_combat_with_fog_and_main_rng(
             emit.unit_facing.push((id, desired));
         }
     }
+    // YR BulletClass::Detonate: completed prior-frame bullets enter the same
+    // combat damage/death pipeline as all other authoritative detonations.
+    emit_projectile_detonations(
+        projectile_detonations,
+        entities,
+        occupancy,
+        rules,
+        interner,
+        overlay_grid,
+        overlay_registry,
+        terrain,
+        &mut emit,
+    );
     // Destructure back into the named locals so Phases 3-6 are untouched.
     let CombatEmit {
+        projectile_spawns,
         mut damage_events,
         rad_detonations,
         mut remove_attack,
@@ -2162,6 +2455,7 @@ pub fn tick_combat_with_fog_and_main_rng(
     }
 
     CombatTickResult {
+        projectile_spawns,
         reveal_events,
         despawned_ids: death.despawned_ids,
         immediate_uninit_ids: death.immediate_uninit_ids,
@@ -2740,166 +3034,206 @@ pub(crate) fn resolve_attacker_fire(
     } else {
         weapon.damage
     };
-    let impact_z = attack_impact_z(snap.target, entities);
-    if warhead.cell_spread > SIM_ZERO {
-        let aoe_hits = self::combat_aoe::apply_aoe_damage(
-            entities,
+    let persistent_delivery = classify_projectile_delivery(weapon, rules);
+    if let ProjectileDelivery::Persistent {
+        arm_frames,
+        tracks_target,
+        collision,
+    } = persistent_delivery
+    {
+        let impact = ProjectileCoord::new(
+            i32::from(target_rx) * 256 + target_sub_x.to_num::<i32>(),
+            i32::from(target_ry) * 256 + target_sub_y.to_num::<i32>(),
+            attack_impact_z(snap.target, entities),
+        );
+        let target = match snap.target {
+            TargetKind::Entity(id) => ProjectileTarget::Entity(id),
+            TargetKind::Cell(_, _) => ProjectileTarget::Cell(impact),
+        };
+        out.projectile_spawns.push(ProjectileSpawn {
+            source_id: snap.stable_id,
+            origin: ProjectileCoord::new(
+                i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),
+                i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>(),
+                i32::from(snap.pos_z),
+            ),
+            target,
+            initial_target_position: impact,
+            payload: ProjectilePayload {
+                base_damage,
+                warhead: interner.intern(&warhead.id),
+                weapon: interner.intern(selected.weapon_id),
+                owner: snap.owner,
+            },
+            speed_leptons_per_frame: weapon.speed.clamp(1, i32::from(u16::MAX)) as u16,
+            arm_frames,
+            fuse_frames: None,
+            tracks_target,
+            target_expiry: TargetExpiryPolicy::DetonateAtLastKnown,
+            collision,
+        });
+    } else {
+        let impact_z = attack_impact_z(snap.target, entities);
+        if warhead.cell_spread > SIM_ZERO {
+            let aoe_hits = self::combat_aoe::apply_aoe_damage(
+                entities,
+                target_rx,
+                target_ry,
+                base_damage,
+                warhead,
+                rules,
+                interner,
+                interner.resolve(snap.owner),
+                self::combat_aoe::AoELayerContext {
+                    occupancy: Some(&*occupancy),
+                    terrain,
+                    impact_z,
+                },
+            );
+            for (target_id, dmg) in aoe_hits {
+                let wh_iid = interner.intern(&warhead.id);
+                out.damage_events
+                    .push((target_id, dmg, snap.stable_id, wh_iid));
+            }
+            if base_damage > 0 {
+                let damage_u16 = base_damage as u16;
+                let wall_flags =
+                    wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
+                if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
+                    out.wall_damage_events.push(WallDamageEvent {
+                        rx: target_rx,
+                        ry: target_ry,
+                        damage: damage_u16,
+                    });
+                } else if wall_flags.is_none() && warhead.wall {
+                    let wh_iid = interner.intern(&warhead.id);
+                    out.bridge_damage_events.push(BridgeDamageEvent {
+                        rx: target_rx,
+                        ry: target_ry,
+                        damage: damage_u16,
+                        warhead_ref: wh_iid,
+                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
+                        impact_z,
+                    });
+                }
+            }
+            if warhead.wood && base_damage > 0 {
+                out.terrain_damage_events.push(TerrainDamageEvent {
+                    rx: target_rx,
+                    ry: target_ry,
+                    damage: base_damage,
+                    warhead_ref: interner.intern(&warhead.id),
+                });
+            }
+        } else {
+            // Integer damage: base_damage * verses_pct / 100.
+            // base_damage already includes OccupyDamageMultiplier for garrison.
+            let raw_damage: i32 = base_damage * selected.verses_pct as i32 / 100;
+            let actual_damage: u16 =
+                apply_prone_damage_modifier(target_prone_infantry, warhead, raw_damage);
+            // Direct-hit damage only applies to Entity targets. For Cell
+            // targets (force-fire on terrain), splash logic via warhead
+            // CellSpread handles AoE damage at the impact cell — there's no
+            // primary target entity to damage.
+            if actual_damage > 0 {
+                if let TargetKind::Entity(target_id) = snap.target {
+                    let wh_iid = interner.intern(&warhead.id);
+                    out.damage_events
+                        .push((target_id, actual_damage, snap.stable_id, wh_iid));
+                }
+            }
+            if base_damage > 0 {
+                let damage_u16 = base_damage as u16;
+                let wall_flags =
+                    wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
+                if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
+                    out.wall_damage_events.push(WallDamageEvent {
+                        rx: target_rx,
+                        ry: target_ry,
+                        damage: damage_u16,
+                    });
+                } else if wall_flags.is_none() && warhead.wall {
+                    let wh_iid = interner.intern(&warhead.id);
+                    out.bridge_damage_events.push(BridgeDamageEvent {
+                        rx: target_rx,
+                        ry: target_ry,
+                        damage: damage_u16,
+                        warhead_ref: wh_iid,
+                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
+                        impact_z,
+                    });
+                }
+            }
+            if warhead.wood && base_damage > 0 {
+                out.terrain_damage_events.push(TerrainDamageEvent {
+                    rx: target_rx,
+                    ry: target_ry,
+                    damage: base_damage,
+                    warhead_ref: interner.intern(&warhead.id),
+                });
+            }
+        }
+
+        // Ore destruction: all warheads unconditionally destroy ore at impact cells.
+        // CellSpreadTable[0] = 1, so even CellSpread=0 weapons check the center cell.
+        destroy_ore_at_impact(
+            &mut out.tiberium_reduction_requests,
             target_rx,
             target_ry,
             base_damage,
-            warhead,
-            rules,
-            interner,
-            interner.resolve(snap.owner),
-            self::combat_aoe::AoELayerContext {
-                occupancy: Some(&*occupancy),
-                terrain,
-                impact_z,
-            },
+            warhead.cell_spread,
         );
-        for (target_id, dmg) in aoe_hits {
-            let wh_iid = interner.intern(&warhead.id);
-            out.damage_events
-                .push((target_id, dmg, snap.stable_id, wh_iid));
-        }
-        if base_damage > 0 {
-            let damage_u16 = base_damage as u16;
-            let wall_flags =
-                wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
-            if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
-                out.wall_damage_events.push(WallDamageEvent {
+
+        // Radiation-emitting detonation: one site request per shot at the impact
+        // cell. Spread is the warhead's CellSpread truncated to whole cells.
+        if weapon.rad_level > 0 {
+            out.rad_detonations
+                .push(crate::sim::radiation::RadDetonation {
                     rx: target_rx,
                     ry: target_ry,
-                    damage: damage_u16,
+                    rad_level: weapon.rad_level,
+                    spread: warhead.cell_spread.to_num::<i32>(),
                 });
-            } else if wall_flags.is_none() && warhead.wall {
-                let wh_iid = interner.intern(&warhead.id);
-                out.bridge_damage_events.push(BridgeDamageEvent {
-                    rx: target_rx,
-                    ry: target_ry,
-                    damage: damage_u16,
-                    warhead_ref: wh_iid,
-                    is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
-                    impact_z,
-                });
-            }
         }
-        if warhead.wood && base_damage > 0 {
-            out.terrain_damage_events.push(TerrainDamageEvent {
-                rx: target_rx,
-                ry: target_ry,
-                damage: base_damage,
-                warhead_ref: interner.intern(&warhead.id),
-            });
-        }
-    } else {
-        // Integer damage: base_damage * verses_pct / 100.
-        // base_damage already includes OccupyDamageMultiplier for garrison.
-        let raw_damage: i32 = base_damage * selected.verses_pct as i32 / 100;
-        let actual_damage: u16 =
-            apply_prone_damage_modifier(target_prone_infantry, warhead, raw_damage);
-        // Direct-hit damage only applies to Entity targets. For Cell
-        // targets (force-fire on terrain), splash logic via warhead
-        // CellSpread handles AoE damage at the impact cell — there's no
-        // primary target entity to damage.
-        if actual_damage > 0 {
-            if let TargetKind::Entity(target_id) = snap.target {
-                let wh_iid = interner.intern(&warhead.id);
-                out.damage_events
-                    .push((target_id, actual_damage, snap.stable_id, wh_iid));
-            }
-        }
-        if base_damage > 0 {
-            let damage_u16 = base_damage as u16;
-            let wall_flags =
-                wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
-            if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
-                out.wall_damage_events.push(WallDamageEvent {
-                    rx: target_rx,
-                    ry: target_ry,
-                    damage: damage_u16,
-                });
-            } else if wall_flags.is_none() && warhead.wall {
-                let wh_iid = interner.intern(&warhead.id);
-                out.bridge_damage_events.push(BridgeDamageEvent {
-                    rx: target_rx,
-                    ry: target_ry,
-                    damage: damage_u16,
-                    warhead_ref: wh_iid,
-                    is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
-                    impact_z,
-                });
-            }
-        }
-        if warhead.wood && base_damage > 0 {
-            out.terrain_damage_events.push(TerrainDamageEvent {
-                rx: target_rx,
-                ry: target_ry,
-                damage: base_damage,
-                warhead_ref: interner.intern(&warhead.id),
-            });
-        }
+
+        // Cell-target force-fire on terrain has no entity z; the dispatcher
+        // re-derives ground_z from terrain.cell(rx,ry).level, so 0 is safe.
+        let impact_z: u8 = match snap.target {
+            TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
+            TargetKind::Cell(_, _) => 0,
+        };
+        // BulletClass::Detonate randomizes only the visible CoordStruct for an
+        // Inviso projectile. The draw happens before AnimList selection, so this
+        // must run even when the warhead has no animation to emit.
+        let (effect_rx, effect_ry, effect_sub_x, effect_sub_y) = if weapon
+            .projectile
+            .as_deref()
+            .and_then(|projectile_id| rules.projectile(projectile_id))
+            .is_some_and(|projectile| projectile.inviso)
+        {
+            inviso_scatter::scatter_inviso_effect_coord(
+                scenario_rng,
+                target_rx,
+                target_ry,
+                target_sub_x,
+                target_sub_y,
+            )
+        } else {
+            (target_rx, target_ry, target_sub_x, target_sub_y)
+        };
+        emit_warhead_detonation_effects(
+            warhead,
+            base_damage,
+            effect_rx,
+            effect_ry,
+            effect_sub_x,
+            effect_sub_y,
+            impact_z,
+            interner,
+            &mut out.explosion_effects,
+            &mut out.smudge_spawn_requests,
+        );
     }
-
-    // Ore destruction: all warheads unconditionally destroy ore at impact cells.
-    // CellSpreadTable[0] = 1, so even CellSpread=0 weapons check the center cell.
-    destroy_ore_at_impact(
-        &mut out.tiberium_reduction_requests,
-        target_rx,
-        target_ry,
-        base_damage,
-        warhead.cell_spread,
-    );
-
-    // Radiation-emitting detonation: one site request per shot at the impact
-    // cell. Spread is the warhead's CellSpread truncated to whole cells.
-    if weapon.rad_level > 0 {
-        out.rad_detonations
-            .push(crate::sim::radiation::RadDetonation {
-                rx: target_rx,
-                ry: target_ry,
-                rad_level: weapon.rad_level,
-                spread: warhead.cell_spread.to_num::<i32>(),
-            });
-    }
-
-    // Cell-target force-fire on terrain has no entity z; the dispatcher
-    // re-derives ground_z from terrain.cell(rx,ry).level, so 0 is safe.
-    let impact_z: u8 = match snap.target {
-        TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
-        TargetKind::Cell(_, _) => 0,
-    };
-    // BulletClass::Detonate randomizes only the visible CoordStruct for an
-    // Inviso projectile. The draw happens before AnimList selection, so this
-    // must run even when the warhead has no animation to emit.
-    let (effect_rx, effect_ry, effect_sub_x, effect_sub_y) = if weapon
-        .projectile
-        .as_deref()
-        .and_then(|projectile_id| rules.projectile(projectile_id))
-        .is_some_and(|projectile| projectile.inviso)
-    {
-        inviso_scatter::scatter_inviso_effect_coord(
-            scenario_rng,
-            target_rx,
-            target_ry,
-            target_sub_x,
-            target_sub_y,
-        )
-    } else {
-        (target_rx, target_ry, target_sub_x, target_sub_y)
-    };
-    emit_warhead_detonation_effects(
-        warhead,
-        base_damage,
-        effect_rx,
-        effect_ry,
-        effect_sub_x,
-        effect_sub_y,
-        impact_z,
-        interner,
-        &mut out.explosion_effects,
-        &mut out.smudge_spawn_requests,
-    );
 
     let report_sound_id = weapon
         .report

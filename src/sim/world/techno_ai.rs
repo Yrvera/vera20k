@@ -22,7 +22,8 @@ use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::particle_system_type::ParticleSystemBehavesLike;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::miner::MinerConfig;
-use crate::sim::mission::MissionType;
+use crate::sim::mission::authority::EntityReadyInputProvider;
+use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::pathfinding::PathGrid;
 
 /// Non-rules world context the mission handler bodies dispatched from the
@@ -246,9 +247,13 @@ fn techno_ai_shell(
         // something shoots it. A passenger inside a transport is gated out by
         // the mission read, and a garrisoned occupant fires through the garrison
         // path instead.
+        // The supported Foot mission cadence branches run here as well.
         EntityCategory::Infantry => {
             clear_passive_target_off_mission(sim, id);
             mission_common_step(sim, id, rules);
+            if let Some(rules) = rules {
+                dispatch_supported_foot_mission_cadence(sim, id, rules);
+            }
             passive_acquire_step(sim, id, rules);
         }
         EntityCategory::Structure => {
@@ -321,8 +326,8 @@ fn mission_common_step(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
 // bracket: pre-mission block -> +0xC4/Mission work -> post-mission block, with
 // two IsAlive early-returns (after the pre-block, after dispatch). The mission
 // work at the dispatch point is the flip's counter + owner-local promotion;
-// the handler-body execution (dispatch-timer gate + per-mission handlers)
-// remains with the legacy per-system phases (recorded residual).
+// the handler-body execution remains with legacy per-system phases except for
+// the timer-only Move reschedule below and the absorbed Harvest handler.
 
 /// S4a pre-mission common block (the `TechnoClass::AI_Update` head: one-shot
 /// flag clear, turret-anim loop sound, cloak tick, health smoothing, target
@@ -504,6 +509,9 @@ fn unit_techno_bracket(
             id,
         );
     }
+    if let Some(rules) = rules {
+        dispatch_supported_foot_mission_cadence(sim, id, rules);
+    }
     // Passive / opportunity target acquisition sits between mission dispatch
     // and the second IsAlive guard, before the object's own locomotion.
     passive_acquire_step(sim, id, rules);
@@ -573,6 +581,261 @@ fn passive_acquire_gate(mission: MissionType, can_acquire: bool, opportunity_fir
     ) && can_acquire
         && (opportunity_fire || mission == MissionType::Guard)
 }
+
+/// Re-arm the evidence-backed Foot/Unit handler subset without duplicating the
+/// legacy movement, combat, or target-selection systems.
+///
+/// YR `MissionClass::AI` at `0x005B3060` gates the current handler on the
+/// dispatch timer and writes `(current frame, handler return)` afterward. The
+/// existing movement/combat phases remain the sole owners of their path and
+/// target side effects; this absorbs only proven handler-return cadence. Harvest
+/// has its own full handler and epilogue, so miners are excluded to avoid a
+/// second write. Target acquisition and approach-result producers are still
+/// absent; their native routes remain explicit no-ops rather than guessed AI.
+fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules: &RuleSet) {
+    let now = sim.session.binary_frame;
+    let input = {
+        let Some(entity) = sim.substrate.entities.get(id) else {
+            return;
+        };
+        if entity.dying || entity.miner.is_some() {
+            return;
+        }
+        let category = entity.category;
+        if !matches!(category, EntityCategory::Unit | EntityCategory::Infantry) {
+            return;
+        }
+        let Some(mission) = entity.mission.current().known() else {
+            return;
+        };
+        let moving = entity.movement_target.is_some()
+            || entity.navigation.nav_com.is_some()
+            || entity.drive_track.is_some()
+            || entity.forced_drive_track.is_some();
+        MissionHandlerInput {
+            category,
+            mission,
+            timer_due: entity.mission.dispatch_timer().due(now),
+            moving_or_queued: moving || entity.mission.queued() != MissionId::NONE,
+            bunker_delegate: entity.bunker_link.installed_in().is_some(),
+            has_attack_target: entity.attack_target.is_some(),
+            unit_deploy_begin_active: entity
+                .mission_leaf
+                .as_unit()
+                .is_some_and(|leaf| leaf.deploy_begin_active() != 0),
+            unit_deploy_reverse_active: entity
+                .mission_leaf
+                .as_unit()
+                .is_some_and(|leaf| leaf.deploy_reverse_active() != 0),
+        }
+    };
+    if !input.timer_due {
+        return;
+    }
+
+    let evaluation = match (input.category, input.mission) {
+        // `FootClass::Mission_Move` is the native named location for this
+        // handler-return cadence; movement execution remains in movement/.
+        (EntityCategory::Unit | EntityCategory::Infantry, MissionType::Move) => {
+            if input.moving_or_queued {
+                MissionHandlerEvaluation::cadence(jittered_mission_cadence(
+                    sim,
+                    rules,
+                    MissionType::Move,
+                ))
+            } else {
+                // FootClass::Mission_Move returns one frame after an unqueued arrival.
+                MissionHandlerEvaluation::cadence(1)
+            }
+        }
+        // `UnitClass::Mission_Attack @ 0x007447A0` is a tail jump to
+        // `FootClass::Mission_Attack`; keep both categories on this one path.
+        (EntityCategory::Unit | EntityCategory::Infantry, MissionType::Attack) => {
+            let cadence = jittered_mission_cadence(sim, rules, MissionType::Attack);
+            let delay = if foot_attack_in_half_cadence_band(sim, id) {
+                cadence / 2
+            } else {
+                cadence
+            };
+            // Stale entity IDs are an authoritative target-loss input. The
+            // native next-mission selector is not closed, so only clear this
+            // invalid handle; do not guess a Guard/Move transition.
+            MissionHandlerEvaluation {
+                delay,
+                clear_stale_attack_target: input.has_attack_target
+                    && attack_target_is_stale(sim, id),
+                queue: None,
+            }
+        }
+        (EntityCategory::Unit, MissionType::Guard) => {
+            // `UnitClass::Mission_Guard @ 0x00740810`: the two Unit-local
+            // deploy latches queue before the FootClass delegate and return 1.
+            if input.unit_deploy_begin_active {
+                MissionHandlerEvaluation::queue(1, MissionType::Harvest)
+            } else if input.unit_deploy_reverse_active {
+                MissionHandlerEvaluation::queue(1, MissionType::Unload)
+            } else {
+                evaluate_foot_guard_cadence(sim, rules, input.bunker_delegate)
+            }
+        }
+        (EntityCategory::Infantry, MissionType::Guard) => {
+            evaluate_foot_guard_cadence(sim, rules, input.bunker_delegate)
+        }
+        // `FootClass::Mission_Hunt`: the observed Capture/Sabotage/Move routes
+        // need an authoritative selector. Until one exists, retain its cadence
+        // and do not manufacture a target or queued mission.
+        (EntityCategory::Infantry, MissionType::Hunt) => {
+            MissionHandlerEvaluation::cadence(jittered_mission_cadence(
+                sim,
+                rules,
+                MissionType::Hunt,
+            ))
+        }
+        // `UnitClass::Mission_Hunt @ 0x00740EF0` retries the strict target
+        // probe, then queues Enter only if its separate approach virtual
+        // returns one. Neither producer exists here, so preserve its exact
+        // no-jitter fallback rather than infer arrival from target presence.
+        (EntityCategory::Unit, MissionType::Hunt) => {
+            MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Hunt))
+        }
+        _ => return,
+    };
+
+    if evaluation.clear_stale_attack_target {
+        if let Some(entity) = sim.substrate.entities.get_mut(id) {
+            entity.attack_target = None;
+        }
+    }
+    if let Some(queued_mission) = evaluation.queue {
+        let _ = sim.mission_queue_exact(
+            id,
+            MissionId::from_known(queued_mission),
+            0,
+            now,
+            &EntityReadyInputProvider,
+        );
+    }
+    if let Some(entity) = sim.substrate.entities.get_mut(id) {
+        entity
+            .mission
+            .write_dispatch_epilogue(now as i32, evaluation.delay);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MissionHandlerInput {
+    category: EntityCategory,
+    mission: MissionType,
+    timer_due: bool,
+    moving_or_queued: bool,
+    bunker_delegate: bool,
+    has_attack_target: bool,
+    unit_deploy_begin_active: bool,
+    unit_deploy_reverse_active: bool,
+}
+
+/// The handler result is evaluated before the one common MissionClass timer
+/// write, which prevents branch-local epilogues from double-rearming it.
+#[derive(Debug, Clone, Copy)]
+struct MissionHandlerEvaluation {
+    delay: i32,
+    clear_stale_attack_target: bool,
+    queue: Option<MissionType>,
+}
+
+impl MissionHandlerEvaluation {
+    const fn cadence(delay: i32) -> Self {
+        Self {
+            delay,
+            clear_stale_attack_target: false,
+            queue: None,
+        }
+    }
+
+    const fn queue(delay: i32, mission: MissionType) -> Self {
+        Self {
+            delay,
+            clear_stale_attack_target: false,
+            queue: Some(mission),
+        }
+    }
+}
+
+fn evaluate_foot_guard_cadence(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    bunker_delegate: bool,
+) -> MissionHandlerEvaluation {
+    // `FootClass::Mission_Guard`: bunker delegation returns the base cadence;
+    // all represented local-guard paths take exactly one RandomRanged(0, 2).
+    if bunker_delegate {
+        MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Guard))
+    } else {
+        MissionHandlerEvaluation::cadence(jittered_mission_cadence(
+            sim,
+            rules,
+            MissionType::Guard,
+        ))
+    }
+}
+
+#[inline]
+fn mission_cadence(rules: &RuleSet, mission: MissionType) -> i32 {
+    rules
+        .mission_control
+        .rate_frames(mission)
+        .min(i32::MAX as u32) as i32
+}
+
+#[inline]
+fn jittered_mission_cadence(sim: &mut Simulation, rules: &RuleSet, mission: MissionType) -> i32 {
+    let base = mission_cadence(rules, mission);
+    let jitter = sim.scenario_rng.next_range_u32_inclusive(0, 2) as i32;
+    base.saturating_add(jitter)
+}
+
+/// The representative Foot Attack cadence halves only inside the observed
+/// 282..=768 lepton band. Entity target positions are authoritative here;
+/// force-fire cell geometry is intentionally deferred with target routing.
+fn foot_attack_in_half_cadence_band(sim: &Simulation, id: u64) -> bool {
+    const MIN_LEPTONS: i64 = 282;
+    const MAX_LEPTONS: i64 = 768;
+
+    let Some(attacker) = sim.substrate.entities.get(id) else {
+        return false;
+    };
+    let Some(crate::sim::combat::AttackTarget {
+        target: crate::sim::combat::TargetKind::Entity(target_id),
+        ..
+    }) = attacker.attack_target.as_ref()
+    else {
+        return false;
+    };
+    let Some(target) = sim.substrate.entities.get(*target_id) else {
+        return false;
+    };
+    let distance_sq = crate::sim::combat::lepton_distance_sq(&attacker.position, &target.position);
+    distance_sq >= MIN_LEPTONS * MIN_LEPTONS && distance_sq <= MAX_LEPTONS * MAX_LEPTONS
+}
+
+fn attack_target_is_stale(sim: &Simulation, id: u64) -> bool {
+    let Some(attacker) = sim.substrate.entities.get(id) else {
+        return false;
+    };
+    let Some(crate::sim::combat::AttackTarget {
+        target: crate::sim::combat::TargetKind::Entity(target_id),
+        ..
+    }) = attacker.attack_target.as_ref()
+    else {
+        return false;
+    };
+    !sim
+        .substrate
+        .entities
+        .get(*target_id)
+        .is_some_and(|target| !target.dying && target.is_alive())
+}
+
 
 /// The base can-acquire check every passive path sits behind.
 ///
@@ -1072,8 +1335,9 @@ mod tests {
     use crate::sim::combat::{AttackTarget, TargetKind};
     use crate::sim::components::{DriveLocomotionRuntime, MovementTarget, NavTargetRef};
     use crate::sim::docking::building_dock::{DockPhase, DockState};
-    use crate::sim::game_entity::GameEntity;
+    use crate::sim::game_entity::{BunkerLink, GameEntity};
     use crate::sim::miner::{Miner, MinerConfig, MinerKind};
+    use crate::sim::mission::leaf::MissionLeafState;
     use crate::sim::mission::state::MissionTestFixture;
     use crate::sim::mission::{
         MissionCom, MissionControl, MissionDispatchTimer, MissionId, MissionType,
@@ -1092,6 +1356,12 @@ mod tests {
         let mut e = GameEntity::test_default(id, "TEST", "Americans", 5, 5);
         e.category = category;
         e
+    }
+
+    fn register_entity(sim: &mut Simulation, mut entity: GameEntity) {
+        entity.owner = sim.interner.intern("Americans");
+        entity.type_ref = sim.interner.intern("TEST");
+        sim.substrate.entities.insert(entity);
     }
 
     fn mission_test_fixture(mission: &MissionCom) -> MissionTestFixture {
@@ -2449,6 +2719,8 @@ mod tests {
     fn ordinary_drive_host_sim(seed: u64) -> Simulation {
         let mut sim = Simulation::with_seed(seed);
         let mut entity = entity_of(ORDINARY_DRIVE_HOST_ID, EntityCategory::Unit);
+        entity.owner = sim.interner.intern("Americans");
+        entity.type_ref = sim.interner.intern("TEST");
         entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
         entity.drive_locomotion = Some(DriveLocomotionRuntime::default());
         entity.navigation.nav_com = Some(NavTargetRef::cell(8, 8));
@@ -2459,6 +2731,352 @@ mod tests {
         sim.substrate.entities.insert(entity);
         sim.set_logic_order_for_test(vec![ORDINARY_DRIVE_HOST_ID]);
         sim
+    }
+
+    fn move_cadence_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str("[General]\n\n[Move]\nRate=.016\n"))
+            .expect("move cadence rules parse")
+    }
+
+    fn representative_foot_handler_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[General]\n\n[Move]\nRate=.016\n\n[Attack]\nRate=.016\n\n[Guard]\nRate=.016\n\n[Hunt]\nRate=.016\n",
+        ))
+        .expect("representative Foot handler rules parse")
+    }
+
+    #[test]
+    fn move_handler_rearms_from_the_authoritative_object_ai_host() {
+        let mut sim = ordinary_drive_host_sim(0xCAFE);
+        let rules = move_cadence_rules();
+        let mut expected_rng = sim.clone_scenario_rng();
+        let jitter = expected_rng.next_range_u32_inclusive(0, 2) as i32;
+
+        assert!(sim.object_ai_visit_one(
+            ORDINARY_DRIVE_HOST_ID,
+            Some(&rules),
+            ObjectAiCtx::default(),
+        ));
+
+        let entity = sim
+            .substrate
+            .entities
+            .get(ORDINARY_DRIVE_HOST_ID)
+            .expect("fixture entity");
+        assert_eq!(entity.mission.dispatch_timer().start_frame(), 0);
+        assert_eq!(entity.mission.dispatch_timer().delay(), 14 + jitter);
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+
+        let hash = sim.state_hash();
+        let bytes = GameSnapshot::save(&sim, 0, 0, "move_cadence", 0);
+        let restored = GameSnapshot::load(&bytes).expect("snapshot").sim;
+        assert_eq!(restored.state_hash(), hash);
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(ORDINARY_DRIVE_HOST_ID)
+                .expect("restored fixture entity")
+                .mission
+                .dispatch_timer(),
+            entity.mission.dispatch_timer()
+        );
+    }
+
+    #[test]
+    fn move_handler_preserves_pending_timer_without_consuming_rng() {
+        let mut sim = ordinary_drive_host_sim(0xCAFE);
+        let rules = move_cadence_rules();
+        let pending = MissionDispatchTimer::from_raw(0, 5);
+        let fixture = mission_test_fixture(
+            &sim.substrate
+                .entities
+                .get(ORDINARY_DRIVE_HOST_ID)
+                .expect("fixture entity")
+                .mission,
+        );
+        sim.substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .expect("fixture entity")
+            .mission
+            .apply_test_fixture(MissionTestFixture {
+                dispatch_timer: pending,
+                ..fixture
+            });
+        let before_rng = sim.scenario_rng.logical_state();
+
+        sim.object_ai_visit_one(ORDINARY_DRIVE_HOST_ID, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(ORDINARY_DRIVE_HOST_ID)
+                .expect("fixture entity")
+                .mission
+                .dispatch_timer(),
+            pending
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    #[test]
+    fn move_handler_arrival_returns_one_frame_without_rng() {
+        let mut sim = ordinary_drive_host_sim(0xCAFE);
+        let rules = move_cadence_rules();
+        sim.substrate
+            .entities
+            .get_mut(ORDINARY_DRIVE_HOST_ID)
+            .expect("fixture entity")
+            .navigation
+            .nav_com = None;
+        let before_rng = sim.scenario_rng.logical_state();
+
+        sim.object_ai_visit_one(ORDINARY_DRIVE_HOST_ID, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(ORDINARY_DRIVE_HOST_ID)
+                .expect("fixture entity")
+                .mission
+                .dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 1)
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    #[test]
+    fn infantry_attack_handler_halves_jittered_cadence_inside_the_proven_band() {
+        let mut sim = Simulation::with_seed(0xA771);
+        let rules = representative_foot_handler_rules();
+        let mut infantry = entity_of(1, EntityCategory::Infantry);
+        infantry.attack_target = Some(AttackTarget::new(2));
+        update_mission_test_fixture(&mut infantry.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Attack);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        let target = entity_of(2, EntityCategory::Unit);
+        assert_eq!((target.position.rx, target.position.ry), (5, 5));
+        infantry.position.rx = 7; // 512 leptons: within FootClass::Mission_Attack band.
+        sim.substrate.entities.insert(infantry);
+        sim.substrate.entities.insert(target);
+
+        let mut expected_rng = sim.clone_scenario_rng();
+        let expected_delay = (14 + expected_rng.next_range_u32_inclusive(0, 2) as i32) / 2;
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, expected_delay)
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+    }
+
+    #[test]
+    fn unit_attack_delegates_to_the_foot_attack_cadence() {
+        let mut sim = Simulation::with_seed(0xA772);
+        let rules = representative_foot_handler_rules();
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        unit.attack_target = Some(AttackTarget::new(2));
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Attack);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        let target = entity_of(2, EntityCategory::Unit);
+        unit.position.rx = 7; // 512 leptons: FootClass::Mission_Attack band.
+        register_entity(&mut sim, unit);
+        register_entity(&mut sim, target);
+
+        let mut expected_rng = sim.clone_scenario_rng();
+        let expected_delay = (14 + expected_rng.next_range_u32_inclusive(0, 2) as i32) / 2;
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, expected_delay)
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), expected_rng.logical_state());
+    }
+
+    #[test]
+    fn attack_handler_clears_only_an_authoritatively_stale_entity_target() {
+        let mut sim = Simulation::with_seed(0xA773);
+        let rules = representative_foot_handler_rules();
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        unit.attack_target = Some(AttackTarget::new(99));
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Attack);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, unit);
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert!(unit.attack_target.is_none());
+        assert_eq!(unit.mission.queued(), MissionId::NONE);
+    }
+
+    #[test]
+    fn infantry_guard_handler_skips_jitter_for_a_bunker_delegate() {
+        let mut sim = Simulation::with_seed(0x6A2D);
+        let rules = representative_foot_handler_rules();
+        let mut infantry = entity_of(1, EntityCategory::Infantry);
+        infantry.bunker_link = BunkerLink::Installed(99);
+        update_mission_test_fixture(&mut infantry.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Guard);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        sim.substrate.entities.insert(infantry);
+        let before_rng = sim.scenario_rng.logical_state();
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 14)
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    #[test]
+    fn unit_guard_deploy_begin_queues_harvest_without_rng() {
+        let mut sim = Simulation::with_seed(0x6A2E);
+        let rules = representative_foot_handler_rules();
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        unit.mission_leaf = MissionLeafState::unit_raw_for_test(1, 0, 0, 0);
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Guard);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, unit);
+        let before_rng = sim.scenario_rng.logical_state();
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.mission.queued().known(), Some(MissionType::Harvest));
+        assert_eq!(unit.mission.dispatch_timer(), MissionDispatchTimer::from_raw(0, 1));
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    #[test]
+    fn unit_guard_deploy_reverse_queues_unload_without_rng() {
+        let mut sim = Simulation::with_seed(0x6A2F);
+        let rules = representative_foot_handler_rules();
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        unit.mission_leaf = MissionLeafState::unit_raw_for_test(0, 1, 0, 0);
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Guard);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, unit);
+        let before_rng = sim.scenario_rng.logical_state();
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.mission.queued().known(), Some(MissionType::Unload));
+        assert_eq!(unit.mission.dispatch_timer(), MissionDispatchTimer::from_raw(0, 1));
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    #[test]
+    fn infantry_hunt_handler_uses_foot_jittered_cadence() {
+        let mut sim = Simulation::with_seed(0x487A);
+        let rules = representative_foot_handler_rules();
+        let mut infantry = entity_of(1, EntityCategory::Infantry);
+        update_mission_test_fixture(&mut infantry.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Hunt);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        sim.substrate.entities.insert(infantry);
+        let mut expected_rng = sim.clone_scenario_rng();
+        let expected_delay = 14 + expected_rng.next_range_u32_inclusive(0, 2) as i32;
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, expected_delay)
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+    }
+
+    #[test]
+    fn unit_hunt_handler_uses_base_cadence_without_foot_jitter() {
+        let mut sim = Simulation::with_seed(0xF007);
+        let rules = representative_foot_handler_rules();
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        unit.owner = sim.interner.intern("Americans");
+        unit.type_ref = sim.interner.intern("TEST");
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Hunt);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        sim.substrate.entities.insert(unit);
+        let before_rng = sim.scenario_rng.logical_state();
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 14)
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    #[test]
+    fn unit_hunt_does_not_infer_enter_without_an_approach_result() {
+        let mut sim = Simulation::with_seed(0xF008);
+        let rules = representative_foot_handler_rules();
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        unit.attack_target = Some(AttackTarget::new(2));
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Hunt);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, unit);
+        let target = entity_of(2, EntityCategory::Structure);
+        register_entity(&mut sim, target);
+        let before_rng = sim.scenario_rng.logical_state();
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.mission.queued(), MissionId::NONE);
+        assert_eq!(unit.mission.dispatch_timer(), MissionDispatchTimer::from_raw(0, 14));
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
     }
 
     fn capture_live_host_witness(sim: &Simulation, id: u64) -> LiveHostWitness {

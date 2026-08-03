@@ -17,21 +17,17 @@ use crate::render::bridge_atlas::is_high_bridge_body_name;
 use crate::render::overlay_atlas::{CRATE_BODY_FRAME, OverlaySpriteKey};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::rules::art_data::{AnimTypeRuntimeConfig, anim_frame_source_alpha};
+use crate::render::tactical_draw_plan::{BlitPolicy, RenderZPolicy, SpriteEncoding};
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::WeaponMuzzleFlash;
 use crate::sim::miner::ResourceType;
+use crate::sim::projectile::{Projectile, ProjectileCoord};
 use crate::util::fixed_math::SimFixed;
 
 use super::helpers::{
     ANIM_DRAW_DEPTH_BIAS_PX, apply_shape_z_adjust, compute_sprite_depth,
     compute_sprite_depth_params, in_view,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OverlayRenderBucket {
-    Generic,
-    Wall,
-}
 
 /// Map terrain entries remain the render metadata source, but once rules-backed
 /// simulation authority exists the live cell index decides whether an instance
@@ -51,10 +47,7 @@ fn terrain_object_is_render_visible(
     {
         return true;
     }
-    let Some(stable_id) = production
-        .terrain_object_cells
-        .get(&(object.rx, object.ry))
-    else {
+    let Some(stable_id) = production.terrain_object_cells.get(&(object.rx, object.ry)) else {
         return false;
     };
     production
@@ -88,6 +81,12 @@ fn overlay_body_frame(is_crate: bool, overlay_data: u8) -> u8 {
     } else {
         overlay_data
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayRenderBucket {
+    Generic,
+    Wall,
 }
 
 fn classify_overlay_render_bucket(is_wall: bool) -> OverlayRenderBucket {
@@ -337,7 +336,6 @@ pub(crate) fn build_overlay_instances(
     sw: f32,
     sh: f32,
     instances: &mut Vec<SpriteInstance>,
-    wall_instances: &mut Vec<SpriteInstance>,
 ) {
     let atlas = match &state.overlay_atlas {
         Some(a) => a,
@@ -372,7 +370,10 @@ pub(crate) fn build_overlay_instances(
         }
     };
 
-    // Overlay entries from [OverlayPack].
+    // Overlay entries from [OverlayPack]. `YR TacticalClass::Draw` keeps walls
+    // in the fixed cell overlay family, not the `LayerClass` object sort.
+    let mut planned_cells = Vec::new();
+    let mut next_draw_id = 0u64;
     for entry in &state.overlays {
         if let Some((owner_id, fog)) = cell_visibility_fog {
             if !fog.is_cell_revealed(owner_id, entry.rx, entry.ry) {
@@ -459,7 +460,6 @@ pub(crate) fn build_overlay_instances(
         };
         let render_frame: u8 = overlay_body_frame(is_crate, render_frame);
 
-        let bucket = classify_overlay_render_bucket(is_wall);
         // FA2 IsoView.cpp:5955-5956: track overlays render +CellHeight (15px) lower.
         let track_y_offset: f32 = if overlay_flags.map(|f| f.track).unwrap_or(false) {
             15.0
@@ -498,55 +498,37 @@ pub(crate) fn build_overlay_instances(
         let spr = atlas.get(&key).or_else(|| atlas.get(&key_fallback));
         let Some(spr) = spr else { continue };
         let depth_z: u8 = z;
-        // Walls use the same NW-corner render coords as buildings:
-        // (Location.X - 128, Location.Y - 128). Apply -TILE_HEIGHT/2 to match.
-        // Without this, a wall one cell behind a building lands at the same
-        // sort depth (the building's own -TILE_HEIGHT/2 shift eats the gap)
-        // and the tie-break nudge below pushes the wall in front.
-        let depth_y: f32 = if is_wall {
-            screen_y - TILE_HEIGHT / 2.0
-        } else {
-            screen_y
-        };
-        let raw_depth: f32 = compute_sprite_depth_params(origin_y, world_height, depth_y, depth_z);
-        // Walls get a tiny depth nudge closer to the camera so they win ties
-        // against building bodies at the same iso row. In the original engine,
-        // walls sort AFTER other buildings at the same YSort (inserted later →
-        // drawn later → in front). Our merge can't replicate insertion-order
-        // tie-breaking, so this nudge ensures walls render in front of building
-        // bibs/bodies at equal depth.
-        let depth: f32 = if is_wall {
-            (raw_depth - 0.00005).clamp(0.001, 0.999)
-        } else {
-            raw_depth
-        };
+        let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, depth_z);
         let tint: [f32; 3] = state.lighting_grid.overlay_tint_at((entry.rx, entry.ry));
-
-        let target = match bucket {
-            OverlayRenderBucket::Wall => &mut *wall_instances,
-            OverlayRenderBucket::Generic => &mut *instances,
-        };
-        target.push(SpriteInstance {
-            position: [
-                screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
-                screen_y + TILE_HEIGHT / 2.0 + spr.offset_y,
-            ],
-            size: spr.pixel_size,
-            uv_origin: spr.uv_origin,
-            uv_size: spr.uv_size,
-            depth,
-            tint,
-            alpha: 1.0,
-            ..Default::default()
+        planned_cells.push(crate::app_render::draw_plan_lowering::PlannedCellInstance {
+            draw: crate::render::tactical_draw_plan::CellDraw {
+                id: next_draw_id,
+                kind: crate::app_render::draw_plan_lowering::cell_draw_kind(is_wall),
+                policy: BlitPolicy::translucent(SpriteEncoding::Terrain, RenderZPolicy::None),
+            },
+            instance: SpriteInstance {
+                position: [
+                    screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
+                    screen_y + TILE_HEIGHT / 2.0 + spr.offset_y,
+                ],
+                size: spr.pixel_size,
+                uv_origin: spr.uv_origin,
+                uv_size: spr.uv_size,
+                depth,
+                tint,
+                alpha: 1.0,
+                ..Default::default()
+            },
         });
+        next_draw_id += 1;
     }
 
+    instances.extend(crate::app_render::draw_plan_lowering::lower_cell_instances(
+        planned_cells,
+    ));
+
     if std::env::var("RA2_DEBUG_BRIDGE_RENDER_BUCKETS").is_ok() {
-        log::debug!(
-            "Overlay buckets: generic={} walls={}",
-            instances.len(),
-            wall_instances.len()
-        );
+        log::debug!("Cell overlay instances: {}", instances.len());
     }
 
     // Terrain objects from [Terrain] section.
@@ -818,11 +800,112 @@ fn projectile_visual_key(projectile: &ProjectileVisual) -> ShpSpriteKey {
     }
 }
 
+fn projectile_authoritative_screen_position(
+    coordinate: ProjectileCoord,
+) -> Option<(f32, f32, u16, u16, u8)> {
+    let rx = u16::try_from(coordinate.x.div_euclid(256)).ok()?;
+    let ry = u16::try_from(coordinate.y.div_euclid(256)).ok()?;
+    let sub_x = SimFixed::from_num(coordinate.x.rem_euclid(256));
+    let sub_y = SimFixed::from_num(coordinate.y.rem_euclid(256));
+    let z = coordinate.z.clamp(0, i32::from(u8::MAX)) as u8;
+    let (screen_x, screen_y) = crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z);
+    Some((screen_x, screen_y, rx, ry, z))
+}
+
+fn authoritative_projectile_frame(projectile: &Projectile, frame_count: u16) -> u16 {
+    if frame_count == 0 {
+        return 0;
+    }
+    let facing = crate::sim::movement::facing_from_delta(
+        projectile.last_target_position.x - projectile.position.x,
+        projectile.last_target_position.y - projectile.position.y,
+    );
+    (((u32::from(facing) * u32::from(frame_count)) / 256) as u16).min(frame_count.saturating_sub(1))
+}
+
+/// Build visible persistent shots from `Simulation::projectiles`.
+///
+/// YR `BulletClass::AI` linkage: rendering reads the same committed CoordStruct
+/// that the next authoritative flight pass will advance.
+fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
+    let (sim, rules, atlas) = match (&state.simulation, &state.rules, &state.sprite_atlas) {
+        (Some(sim), Some(rules), Some(atlas)) => (sim, rules, atlas),
+        _ => return,
+    };
+    let z = state.zoom_level;
+    let (cam_x, cam_y, sw, sh) = (
+        state.camera_x,
+        state.camera_y,
+        state.render_width() as f32 / z,
+        state.render_height() as f32 / z,
+    );
+    let (origin_y, world_height) = state
+        .terrain_grid
+        .as_ref()
+        .map(|grid| (grid.origin_y, grid.world_height))
+        .unwrap_or((0.0, 1.0));
+
+    for (_, projectile) in sim.projectiles.iter() {
+        let Some(weapon) = rules.weapon(sim.interner.resolve(projectile.payload.weapon)) else {
+            continue;
+        };
+        let Some(projectile_type_id) = weapon.projectile.as_deref() else {
+            continue;
+        };
+        let Some(projectile_type) = rules.projectile(projectile_type_id) else {
+            continue;
+        };
+        let Some(image) = projectile_type.image.as_deref() else {
+            continue;
+        };
+        let Some((screen_x, screen_y, rx, ry, projectile_z)) =
+            projectile_authoritative_screen_position(projectile.position)
+        else {
+            continue;
+        };
+        if !in_view(screen_x, screen_y, 96.0, 96.0, cam_x, cam_y, sw, sh, 96.0) {
+            continue;
+        }
+        let frame_count = sim
+            .interner
+            .get(image)
+            .and_then(|image_id| sim.effect_frame_counts.get(&image_id).copied())
+            .unwrap_or(32);
+        let key = ShpSpriteKey {
+            type_id: image.to_string(),
+            facing: 0,
+            frame: authoritative_projectile_frame(projectile, frame_count),
+            house_color: HouseColorIndex(0),
+        };
+        let Some(entry) = atlas.get(&key) else {
+            continue;
+        };
+        // In-flight projectile shapes draw at FIXED full brightness: the native
+        // bullet draw passes a literal neutral value for both its shadow and
+        // body passes and never reads a cell lighting field at all. (An earlier
+        // revision sampled the grid here; a merge briefly reintroduced that —
+        // do not re-lit projectiles.)
+        let tint = DEFAULT_TINT;
+        let depth = compute_sprite_depth_params(origin_y, world_height, screen_y, projectile_z);
+        paged[entry.page as usize].push(SpriteInstance {
+            position: [screen_x + entry.offset_x, screen_y + entry.offset_y],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth,
+            tint,
+            alpha: 1.0,
+            ..Default::default()
+        });
+    }
+}
+
 /// Build SpriteInstances for render-only in-flight projectile visuals.
 pub(crate) fn build_projectile_visual_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
 ) {
+    build_authoritative_projectile_instances(state, paged);
     let atlas = match &state.sprite_atlas {
         Some(a) => a,
         None => return,

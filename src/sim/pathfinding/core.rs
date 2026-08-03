@@ -14,15 +14,15 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use super::cell_entry::{
-    CanEnterLayerContext, CellEntryTerrainContext, TerrainEntryMode, evaluate_cell_entry_terrain,
+    CanEnterCellContext, CanEnterLayerContext, TerrainEntryMode, evaluate_can_enter_cell,
+    search_cell_cost_decision,
 };
-use super::passability;
 use super::terrain_cost::TerrainCostGrid;
 use super::zone_hierarchy::ZoneLevelGraph;
 use super::zone_map::{ZONE_INVALID, ZoneId};
 use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
 use crate::map::map_file::MapCell;
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::theater::TilesetLookup;
 use crate::map::tube_facts::{TubeId, TubeSource};
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
@@ -697,6 +697,16 @@ fn explicit_tube_edge(
 pub struct AStarOptions<'a> {
     /// Terrain speed multipliers (cost 0 = blocked for this SpeedType).
     pub terrain_costs: Option<&'a TerrainCostGrid>,
+    /// Search-only bridge/coercion gate for the native Foot predicate result.
+    ///
+    /// This never receives a terrain speed percentage: those remain in
+    /// `terrain_costs`. The default is off until a mover's native gate source is
+    /// represented by runtime state.
+    pub search_cost_class_coerce_to_zero: bool,
+    /// Optional native cost-class producer for the Foot `+0x1ac` search call.
+    /// The classifier is deliberately cell/search scoped and never receives a
+    /// `TerrainCostGrid` speed percentage.
+    pub search_cost_classifier: Option<&'a dyn SearchCellCostClassifier>,
     /// Hard-blocked cells on ground layer (stationary/enemy units). Goal exempt.
     pub entity_blocks: Option<&'a BTreeSet<(u16, u16)>>,
     /// Hard-blocked cells on bridge layer. Goal exempt.
@@ -739,6 +749,11 @@ pub struct AStarOptions<'a> {
     pub trace_search_id: u64,
     /// Optional route/window filter for trace rows.
     pub trace_window: Option<&'a BTreeSet<(u16, u16)>>,
+}
+
+/// Caller-owned adapter for the native Foot search cost-class virtual.
+pub trait SearchCellCostClassifier {
+    fn classify(&self, from: (u16, u16), candidate: (u16, u16), bridge: bool) -> u8;
 }
 
 fn emit_astar_trace(options: &AStarOptions<'_>, step: BridgeOracleAStarStep) {
@@ -851,7 +866,18 @@ pub fn astar_search(
         false,
         TerrainEntryMode::AStarNeighbor,
     );
-    let goal_bridge_ok = grid.is_walkable_on_layer(goal.0, goal.1, MovementLayer::Bridge);
+    let goal_bridge_ok = is_cell_passable_for_mover_on_layer_with_speed(
+        grid,
+        goal.0,
+        goal.1,
+        MovementLayer::Bridge,
+        options.movement_zone,
+        None,
+        options.resolved_terrain,
+        options.terrain_costs,
+        false,
+        TerrainEntryMode::AStarNeighbor,
+    );
     if !goal_ground_ok && !goal_bridge_ok {
         return None;
     }
@@ -1143,11 +1169,22 @@ pub fn astar_search(
                 // alone is not enough for Forward2-style non-transition cells.
                 let neighbor_passable = if neighbor_use_bridge {
                     let prev_on_bridge = is_at_bridge_level(current.height, cur_cell);
+                    let bridge_terrain_passable = is_cell_passable_for_mover_on_layer_with_speed(
+                        grid,
+                        nx,
+                        ny,
+                        MovementLayer::Bridge,
+                        options.movement_zone,
+                        None,
+                        options.resolved_terrain,
+                        options.terrain_costs,
+                        false,
+                        TerrainEntryMode::AStarNeighbor,
+                    );
                     if prev_on_bridge {
-                        grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                        bridge_terrain_passable
                     } else {
-                        grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
-                            && neighbor_cell.transition
+                        bridge_terrain_passable && neighbor_cell.transition
                     }
                 } else {
                     is_cell_passable_for_mover_with_speed(
@@ -1228,7 +1265,8 @@ pub fn astar_search(
                     }
                 }
 
-                // Terrain cost
+                // Terrain speed percentage. This is distinct from the native
+                // Foot +0x1AC cost class handled immediately below.
                 let terrain_cost: u8 = if neighbor_use_bridge {
                     100 // bridge layer: no terrain cost modifiers
                 } else if is_water_mover {
@@ -1241,6 +1279,24 @@ pub fn astar_search(
                 trace_step.terrain_cost = Some(terrain_cost);
                 if terrain_cost == 0 {
                     trace_step.rejected_reason = Some("terrain_cost_blocked");
+                    emit_astar_trace(options, trace_step);
+                    continue;
+                }
+
+                // The current grid-level predicate can only produce the known
+                // clear/blocked endpoints (0/7). Keep that adaptation separate
+                // from terrain speed while preserving the YR coercion threshold.
+                // Original: FindPathRegular calls FootClass virtual +0x1AC.
+                let raw_cost_class = options.search_cost_classifier.map_or_else(
+                    || if neighbor_passable { 0 } else { 7 },
+                    |classifier| classifier.classify((cx, cy), (nx, ny), neighbor_use_bridge),
+                );
+                let search_cost = search_cell_cost_decision(
+                    raw_cost_class,
+                    options.search_cost_class_coerce_to_zero,
+                );
+                if !search_cost.expands {
+                    trace_step.rejected_reason = Some("search_cost_class_blocked");
                     emit_astar_trace(options, trace_step);
                     continue;
                 }
@@ -1270,6 +1326,10 @@ pub fn astar_search(
                 } else {
                     base_cost * 100 / terrain_cost as i32
                 };
+                step_cost = apply_search_cost_class_multiplier(
+                    step_cost,
+                    search_cost.effective_cost_class.unwrap_or(0),
+                );
 
                 // Cliff cost: uses effective path heights, NOT raw ground_levels
                 if current.height != neighbor_height {
@@ -1378,6 +1438,19 @@ pub fn astar_search(
     })
 }
 
+fn apply_search_cost_class_multiplier(step_cost: i32, cost_class: u8) -> i32 {
+    // Original: Pathfinding::NeighborStepCost indexes the YR table at 0x81870c.
+    let multiplier = match cost_class {
+        0 | 2 | 3 => 1,
+        1 => 1000,
+        4 => 60,
+        5 => 20,
+        6 => 8,
+        _ => 1,
+    };
+    step_cost.saturating_mul(multiplier)
+}
+
 /// Check if a cell is passable for pathfinding purposes.
 ///
 /// For water movers (`MovementZone::Water` / `WaterBeach`), the normal PathGrid
@@ -1386,23 +1459,6 @@ pub fn astar_search(
 ///
 /// For all other movers (or when `movement_zone` is `None`), uses the shared
 /// terrain-entry evaluator above `PathGrid`.
-pub(crate) fn is_water_surface_cell_passable(
-    cell: &ResolvedTerrainCell,
-    movement_zone: MovementZone,
-) -> bool {
-    let matrix_ok = passability::is_passable_for_zone(cell.zone_type, movement_zone);
-    if matrix_ok {
-        return true;
-    }
-    // Real RA2 maps contain shoreline/coast tiles that are still flagged as water
-    // surfaces even when their TMP land_type is not the canonical water column.
-    // Naval units should still treat those cells as navigable water.
-    if cell.is_water {
-        return true;
-    }
-    movement_zone == MovementZone::WaterBeach && cell.zone_type == zone_class::BEACH
-}
-
 pub fn is_cell_passable_for_mover(
     grid: &PathGrid,
     x: u16,
@@ -1435,19 +1491,36 @@ pub fn is_cell_passable_for_mover_with_speed(
     bypass_grid: bool,
     mode: TerrainEntryMode,
 ) -> bool {
-    if let Some(mz) = movement_zone {
-        if mz.is_water_mover() {
-            // Water movers bypass PathGrid and use the reduced ZoneType matrix.
-            if let Some(terrain) = resolved_terrain {
-                if let Some(cell) = terrain.cell(x, y) {
-                    return is_water_surface_cell_passable(cell, mz);
-                }
-            }
-            return false;
-        }
-    }
-    evaluate_cell_entry_terrain(CellEntryTerrainContext {
+    is_cell_passable_for_mover_on_layer_with_speed(
+        grid,
+        x,
+        y,
+        MovementLayer::Ground,
+        movement_zone,
+        speed_type,
+        resolved_terrain,
+        terrain_costs,
+        bypass_grid,
+        mode,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn is_cell_passable_for_mover_on_layer_with_speed(
+    grid: &PathGrid,
+    x: u16,
+    y: u16,
+    terrain_layer: MovementLayer,
+    movement_zone: Option<MovementZone>,
+    speed_type: Option<SpeedType>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    terrain_costs: Option<&TerrainCostGrid>,
+    bypass_grid: bool,
+    mode: TerrainEntryMode,
+) -> bool {
+    evaluate_can_enter_cell(CanEnterCellContext {
         target: (x, y),
+        terrain_layer,
         movement_zone,
         speed_type,
         path_grid: Some(grid),

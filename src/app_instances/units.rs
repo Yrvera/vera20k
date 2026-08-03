@@ -15,6 +15,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::lighting;
 use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
+use crate::render::draw_state::DrawState;
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::unit_atlas::{
     UnitSpriteEntry, UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
@@ -242,6 +243,15 @@ pub(crate) fn build_unit_instances(
             .get(owner_str)
             .copied()
             .unwrap_or_default();
+        let draw_decision = DrawState::for_entity(
+            entity,
+            sim.session.binary_frame,
+            house_color_to_remap_row(hc),
+        );
+        if !draw_decision.visible {
+            continue;
+        }
+        let draw_state = draw_decision.state;
         let mut tint: [f32; 3] = match entity.category {
             crate::map::entities::EntityCategory::Aircraft => {
                 state.lighting_grid.aircraft_tint_at((pos.rx, pos.ry))
@@ -320,6 +330,7 @@ pub(crate) fn build_unit_instances(
                 interp_z,
                 tint,
                 alpha,
+                draw_state,
                 anim_frame,
                 dock_depth_y_offset,
                 slope_state,
@@ -350,7 +361,7 @@ pub(crate) fn build_unit_instances(
                     depth,
                     tint,
                     alpha,
-                    house_color_idx: house_color_to_remap_row(hc),
+                    draw_state,
                     ..Default::default()
                 };
                 push_unit_sprite(
@@ -380,6 +391,7 @@ pub(crate) fn build_unit_instances(
                     center_y,
                     pos.z,
                     tint,
+                    draw_state,
                 );
             }
         }
@@ -557,6 +569,7 @@ fn emit_turret_unit_sprites(
     z: u8,
     tint: [f32; 3],
     alpha: f32,
+    draw_state: DrawState,
     anim_frame: u32,
     dock_depth_y_offset: f32,
     slope_state: UnitRenderSlopeState,
@@ -618,7 +631,7 @@ fn emit_turret_unit_sprites(
             depth: entity_depth,
             tint,
             alpha,
-            house_color_idx: house_color_to_remap_row(hc),
+            draw_state,
             ..Default::default()
         };
         push_unit_sprite(
@@ -659,7 +672,7 @@ fn emit_turret_unit_sprites(
                 depth: entity_depth,
                 tint,
                 alpha,
-                house_color_idx: house_color_to_remap_row(hc),
+                draw_state,
                 ..Default::default()
             };
             push_unit_sprite(
@@ -698,6 +711,7 @@ fn emit_harvest_overlay(
     center_y: f32,
     z: u8,
     tint: [f32; 3],
+    draw_state: DrawState,
 ) {
     let sprite_atlas = match &state.sprite_atlas {
         Some(a) => a,
@@ -736,6 +750,7 @@ fn emit_harvest_overlay(
         depth,
         tint,
         alpha: 1.0,
+        draw_state,
         ..Default::default()
     });
 }
@@ -765,7 +780,7 @@ fn harvest_arm_screen_offset(body_facing: u8) -> (f32, f32) {
 /// house_ramp_tex. Row 0 is the no-remap fallback (mirrors the theater
 /// palette's [16, 32) range); civilian/neutral units (`NO_REMAP`) map to
 /// row 0. Real players occupy rows 1..N (the +1 reserves row 0).
-fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
+pub(super) fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
     if hc == house_colors::NO_REMAP {
         0
     } else {
@@ -794,7 +809,10 @@ mod tests {
     #[test]
     fn stable_and_transition_sources_route_to_distinct_texture_streams() {
         let sprite = SpriteInstance {
-            fx_flags: 7,
+            draw_state: DrawState {
+                fx_flags: 7,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut stable = Vec::new();

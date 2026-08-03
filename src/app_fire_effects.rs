@@ -406,6 +406,11 @@ fn build_projectile_visuals(
         let Some(projectile) = rules.projectile(projectile_id) else {
             continue;
         };
+        if crate::sim::combat::projectile_uses_authoritative_flight(weapon, rules) {
+            // YR BulletClass::AI linkage: persistent shots render from the
+            // simulation store, never a parallel app-local interpolation.
+            continue;
+        }
         if projectile.inviso {
             continue;
         }

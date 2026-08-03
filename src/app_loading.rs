@@ -21,6 +21,7 @@ use crate::map::preview::DecodedPreview;
 use crate::match_bootstrap::{LoadingStartup, PreparedMatchStartup};
 use crate::render::batch::{BatchRenderer, SpriteInstance};
 use crate::render::bit_font::BitFont;
+use crate::render::draw_state::DrawState;
 use crate::render::gpu::GpuContext;
 use crate::render::loading_screen_chrome::{
     LoadingArtVariant, LoadingScreenAtlas, LoadingScreenCompositionAtlasInput, LoadingScreenEntry,
@@ -1869,10 +1870,7 @@ fn push_entry_scaled(
         depth,
         tint,
         alpha: 1.0,
-        house_color_idx: 0,
-        fx_flags: 0,
-        fx_params: [0.0; 4],
-        ic_tint: [0.0; 4],
+        draw_state: DrawState::default(),
     });
 }
 
@@ -1917,10 +1915,7 @@ fn push_entry_clipped(
         depth,
         tint: [1.0, 1.0, 1.0],
         alpha: 1.0,
-        house_color_idx: 0,
-        fx_flags: 0,
-        fx_params: [0.0; 4],
-        ic_tint: [0.0; 4],
+        draw_state: DrawState::default(),
     });
 }
 
@@ -1959,10 +1954,7 @@ fn push_progress_fill(
         depth,
         tint: [1.0, 1.0, 1.0],
         alpha: 1.0,
-        house_color_idx: 0,
-        fx_flags: 0,
-        fx_params: [0.0; 4],
-        ic_tint: [0.0; 4],
+        draw_state: DrawState::default(),
     });
 }
 

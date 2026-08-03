@@ -115,7 +115,11 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// same cadence, adding their draws. Streams 1 and 2 are still byte-identical
 /// to the pre-slice baseline.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
-    534595878155476129,
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
+    16681026125836176425,
     4175722561206807420,
     2082941527059030371,
 );
@@ -221,6 +225,12 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // baseline nor the branch. RNG routing is unchanged: FINAL_STREAM_STATES passes
 // untouched, and record/replay cursor consistency plus the per-tick intra-run
 // hash asserts all pass.
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
+// Native Move mission cadence now mutates existing MissionCom and Scenario RNG.
+// Re-baselined after hashing the newly persisted YR runtime-contract state.
 // Re-baselined 2026-08-02 for passive/opportunity target acquisition. BOTH
 // probes move here, and that is the correct outcome rather than a warning
 // sign: this change is behaviour-bearing by construction. The two E1 riflemen
@@ -250,8 +260,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // still reproduces BOTH of its legacy probes unchanged across the whole slice —
 // its 16-tick fixture never reaches the first scan — so the composition half
 // remains isolated and behaviour-free, and everything moving here is behaviour.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x4D55_E207_91BD_F587;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x008D_1E4F_75A7_D07F;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x3A67_AEDE_00FF_1225;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x956F_3C99_481C_0E99;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -313,6 +323,10 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x008D_1E4F_75A7_D07F;
 /// wired in this slice (deploy-begin off, undeploy-complete on, destination-
 /// accepted on) changed no other hashed state in these fixtures. The absolute
 /// per-stream RNG pins held throughout.
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
 /// Re-baselined 2026-08-02 for passive/opportunity target acquisition — the
 /// behaviour-bearing shift documented at `GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH`
 /// above. Idle units now engage on their own, so this fixture's committed
@@ -320,7 +334,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x008D_1E4F_75A7_D07F;
 /// hash, and only the scenario RNG stream moved.
 /// Re-measured in the same slice when the passive block was extended to the
 /// Infantry leaf — same rationale, same ceremony, still a lone stream-0 shift.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xF7D7_ED29_EC93_470F;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xE639_0C80_C27A_DEFF;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -647,7 +661,8 @@ fn dense_converging_setup() -> (
     let mut sim = Simulation::with_seed(DENSE_SEED);
     let mut roster: Vec<MapEntity> = Vec::new();
     for i in 0..DENSE_ROWS {
-        roster.push(unit("Americans", "MTNK", 10, 5 + i, EntityCategory::Unit)); // ids 1..=10
+        roster.push(unit("Americans", "MTNK", 10, 5 + i, EntityCategory::Unit));
+        // ids 1..=10
     }
     for i in 0..DENSE_ROWS {
         roster.push(unit("Soviet", "MTNK", 40, 5 + i, EntityCategory::Unit)); // ids 11..=20
@@ -722,7 +737,7 @@ fn dense_converging_setup() -> (
 /// combatants sit on the `NONE` selector and were already scanning before this
 /// change. The per-tick observations, and the one cause left UNCHECKED, are
 /// written up at `FINAL_STREAM_STATES`.
-const POSITION_FINGERPRINT: u64 = 0x6C7F_7D2B_369E_6148;
+const POSITION_FINGERPRINT: u64 = 0x2543_25C4_9102_818F;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

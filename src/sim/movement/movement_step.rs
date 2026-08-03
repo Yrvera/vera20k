@@ -23,7 +23,7 @@ use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::movement::movement_bridge::resolve_cell_transition_bridge_state;
 use crate::sim::movement::movement_occupancy::{
     DeferredCellCheck, LiveBuildingEntrySkipMap, detect_deferred_cell_check,
-    evaluate_runtime_can_enter_cell, naval_terrain_diag, runtime_can_enter_cell_args,
+    evaluate_runtime_can_enter_cell_with_transition, naval_terrain_diag, runtime_can_enter_cell_args,
 };
 use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
 use crate::sim::occupancy::{CellListInsertion, CellOccupationGrid, OccupancyGrid};
@@ -1448,6 +1448,7 @@ pub(super) struct CrossingOutput {
     pub debug_events: Vec<(u32, DebugEventKind)>,
     /// Whether the entity was marked as stuck and should abort.
     pub aborted_for_stuck: bool,
+    pub runtime_bridge_transition: super::movement_bridge::RuntimeBridgeTransitionState,
 }
 
 /// Process cell boundary crossings — the inner loop that checks whether
@@ -1493,6 +1494,7 @@ pub(super) fn process_cell_crossings(
 ) -> CrossingOutput {
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
     let mut deferred_cell_check: Option<DeferredCellCheck> = None;
+    let mut runtime_bridge_transition = snap.runtime_bridge_transition;
     let mut pending_bridge_update: super::movement_bridge::BridgeStateUpdate =
         super::movement_bridge::BridgeStateUpdate::Unchanged;
     let mut projected_on_bridge_state = snap.on_bridge;
@@ -1524,9 +1526,11 @@ pub(super) fn process_cell_crossings(
         }
 
         let next_layer = target.layer_at(target.next_index);
-        let runtime_entry = evaluate_runtime_can_enter_cell(
+        let runtime_entry = evaluate_runtime_can_enter_cell_with_transition(
             path_grid,
             next_layer,
+            &mut runtime_bridge_transition,
+            projected_on_bridge_state,
             runtime_can_enter_cell_args(
                 path_grid,
                 (position.rx, position.ry),
@@ -1609,10 +1613,18 @@ pub(super) fn process_cell_crossings(
                 grid_ok && terrain_ok
             }
             MovementLayer::Bridge => path_grid.is_some_and(|grid| {
-                if !grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge) {
-                    return false;
-                }
-                true
+                crate::sim::pathfinding::is_cell_passable_for_mover_on_layer_with_speed(
+                    grid,
+                    nx,
+                    ny,
+                    MovementLayer::Bridge,
+                    Some(snap.movement_zone),
+                    snap.speed_type,
+                    resolved_terrain,
+                    entity_cost_grid,
+                    target.bypass_grid,
+                    crate::sim::pathfinding::cell_entry::TerrainEntryMode::RuntimeTransition,
+                )
             }),
             MovementLayer::Air | MovementLayer::Underground => false,
         };
@@ -1903,5 +1915,6 @@ pub(super) fn process_cell_crossings(
         active_layer,
         debug_events,
         aborted_for_stuck,
+        runtime_bridge_transition,
     }
 }

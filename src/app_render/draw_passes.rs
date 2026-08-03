@@ -32,7 +32,6 @@ pub(super) struct DrawPassData<'a> {
     pub unit_pages: &'a [usize],
     pub unit_transition_paged: &'a [Vec<SpriteInstance>],
     pub shp_paged: &'a [Vec<SpriteInstance>],
-    pub wall_instances: &'a [SpriteInstance],
     pub particle_paged: &'a [Vec<SpriteInstance>],
     pub top_unit_pages: &'a [usize],
     pub ghost_page: u8,
@@ -129,10 +128,7 @@ pub(super) fn dispatch_draw_passes(
     // occlude overlays via LessEqual depth test ("sinking into ground").
     // Cliff occlusion for overlays comes from the cliff redraw pass (step 7).
     //
-    // Walls are NOT drawn here — they participate in the Y-sorted merge
-    // (step 5) so they correctly interleave with buildings by depth.
-
-    // Non-wall overlays (ore, trees, terrain objects, low bridges) — no depth test.
+    // Overlays (including walls) stay in the fixed cell family.
     draw_pooled_passthrough_overlay(
         &mut pass,
         &state.batch_renderer,
@@ -209,9 +205,6 @@ pub(super) fn dispatch_draw_passes(
 
     // --- Step 5: Ground objects (unified multi-way Y-merge) ---
     // All ground objects Y-sorted together (Layer 2).
-    // Walls are included so they correctly appear in front of units at
-    // closer iso rows (walls render in both terrain pass and object pass --
-    // the object pass rendering provides Y-sorted priority).
     merge_passes::draw_merged_object_pass(
         &mut pass,
         &state.batch_renderer,
@@ -220,11 +213,9 @@ pub(super) fn dispatch_draw_passes(
         data.unit_pages,
         data.unit_transition_paged,
         data.shp_paged,
-        data.wall_instances,
         state.unit_atlas.as_ref(),
         &transition_cache,
         state.sprite_atlas.as_ref(),
-        state.overlay_atlas.as_ref(),
         state.palette_set.as_ref(),
     );
 

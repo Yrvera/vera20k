@@ -142,7 +142,25 @@ use crate::sim::world::Simulation;
 // deserialize at all. Presentation state, so NOT hashed.
 // (44 is claimed by the in-flight spawner slice, which lands first; this jumps
 // over it deliberately.)
-const SNAPSHOT_VERSION: u32 = 45;
+//
+// FORK WARNING — versions 41 through 46 are AMBIGUOUS. Two branches (this
+// repo's dev and the foundations-contracts line merged via PR #109/#110)
+// diverged from v40 and independently assigned 41..46 to entirely different
+// layout changes. The two lineages are preserved verbatim above and below;
+// a version tag in that range does NOT identify a unique layout, so no
+// compatibility path may ever key on 41..46. The merge of the two branches
+// lands on 47, whose layout is the union of both lineages' fields.
+// [foundations lineage] Bumped 40 -> 41: persistent BulletClass-style projectile state is serialized.
+// Bumped 41 -> 42: persistent BulletClass collision policy is serialized.
+// Bumped 42 -> 43: TriggerRuntime latches now participate in the lockstep hash.
+// Bumped 43 -> 44: TeamClass raw actions, deferred advance, timers, attachment
+// identities, per-type counts, and non-CRC success state are authoritative.
+// Bumped 44 -> 45: piggyback persistence stores one complete nested locomotor runtime.
+// Bumped 45 -> 46: Tunnel and DropPod typed special-locomotor runtimes are
+// serialized on GameEntity, including their phase and landing state.
+// Bumped {41..46 fork} -> 47: merge of the two lineages; layout is the
+// union of every field both sides added.
+const SNAPSHOT_VERSION: u32 = 47;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1330,16 +1348,16 @@ mod tests {
     /// lifecycle target/animation identity state took 35 -> 36, and omission
     /// of process-global Main/MapGen RNG state took 36 -> 37, and serialized
     /// Drive occupation footprints took 37 -> 38, and authoritative wall
-    /// ownership took 38 -> 39, and raw occupation bytes took 39 -> 40, and the
-    /// serialized HouseState MultiplayPassive fact took 40 -> 41, and the
-    /// hashed passive target-acquisition bookkeeping took 41 -> 42, and the
-    /// infantry idle-action timer took 42 -> 43, and the per-entity spawn
-    /// manager pool plus child back-pointer took 43 -> 44, and the building
-    /// animation overlay's switch from wall-clock milliseconds to logic frames
-    /// took 44 -> 45. This pins it so a later accidental bump is caught.
+    /// ownership took 38 -> 39, and raw occupation bytes took 39 -> 40. Versions
+    /// 41..46 are a FORK: dev assigned them to MultiplayPassive, passive-acquire
+    /// bookkeeping, the infantry idle timer, the spawn-manager pool, and the
+    /// anim-overlay unit change, while the foundations line assigned the same
+    /// numbers to projectile state, trigger hashing, TeamClass state, piggyback
+    /// persistence, and typed special locomotors. The merge unified both as 47.
+    /// This pins it so a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_45() {
-        assert_eq!(super::SNAPSHOT_VERSION, 45);
+    fn snapshot_version_is_47() {
+        assert_eq!(super::SNAPSHOT_VERSION, 47);
     }
 
     #[test]
@@ -1355,7 +1373,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            45
+            47
         );
 
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1416,7 +1434,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            45
+            47
         );
 
         let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1482,7 +1500,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            45
+            47
         );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         let cell = restored

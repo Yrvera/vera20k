@@ -13,11 +13,18 @@ use super::helpers::{
     is_entity_visible_for_local_owner, is_under_bridge_render_state,
 };
 use crate::app::AppState;
+use crate::app_render::draw_plan_lowering::{
+    PlannedBuildingPieceInstance, lower_building_piece_instances,
+};
 use crate::map::entities::EntityCategory;
 use crate::map::lighting;
 use crate::map::terrain::TILE_HEIGHT;
 use crate::render::batch::SpriteInstance;
+use crate::render::draw_state::DrawState;
 use crate::render::sprite_atlas::ShpSpriteKey;
+use crate::render::tactical_draw_plan::{
+    BlitPolicy, BuildingPieceKind, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalLayer,
+};
 use crate::render::unit_atlas::{UnitSpriteKey, VxlLayer, canonical_turret_facing};
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::animation;
@@ -121,6 +128,15 @@ pub(crate) fn build_shp_instances(
             .get(owner_str)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
+        let draw_decision = DrawState::for_entity(
+            entity,
+            sim.session.binary_frame,
+            super::units::house_color_to_remap_row(hc),
+        );
+        if !draw_decision.visible {
+            continue;
+        }
+        let draw_state = draw_decision.state;
         // Determine if this building is in its make/build-up or build-down animation.
         let is_building_up: bool =
             entity.category == EntityCategory::Structure && entity.building_up.is_some();
@@ -288,7 +304,7 @@ pub(crate) fn build_shp_instances(
             }
             EntityDrawBand::Ground => &mut *paged,
         };
-        target_pages[entry.page as usize].push(SpriteInstance {
+        let body = SpriteInstance {
             position: [final_x, final_y],
             size: entry.pixel_size,
             uv_origin: entry.uv_origin,
@@ -296,8 +312,26 @@ pub(crate) fn build_shp_instances(
             depth,
             tint,
             alpha: 1.0,
+            draw_state,
             ..Default::default()
-        });
+        };
+
+        let mut building_pieces = Vec::new();
+        if entity.category == EntityCategory::Structure {
+            building_pieces.push(PlannedBuildingPieceInstance {
+                kind: if is_building_up || is_building_down {
+                    BuildingPieceKind::BuildupOrSpecial
+                } else {
+                    BuildingPieceKind::Body
+                },
+                z_bias: 0,
+                policy: BlitPolicy::opaque(SpriteEncoding::Plain),
+                page: entry.page as usize,
+                instance: body,
+            });
+        } else {
+            target_pages[entry.page as usize].push(body);
+        }
 
         // Emit building animation overlays and bib — but NOT during build-up/down.
         // Bibs and anims use the raw cell position (sy) — their own SHP offsets
@@ -308,7 +342,7 @@ pub(crate) fn build_shp_instances(
                 // right after the main body sprite, as part of the same object pass.
                 // It overwrites the body's terrain-colored pixels at the ramp area.
                 emit_building_bib(
-                    paged,
+                    &mut building_pieces,
                     atlas,
                     art,
                     state.rules.as_ref(),
@@ -319,6 +353,7 @@ pub(crate) fn build_shp_instances(
                     interp_z,
                     depth,
                     tint,
+                    draw_state,
                 );
                 // Building anims render in the same pass as building bodies so they
                 // can sort together via depth. Anims use the building's entity depth
@@ -332,7 +367,7 @@ pub(crate) fn build_shp_instances(
                     .map(|g| g.world_height)
                     .unwrap_or(1.0);
                 emit_building_anims(
-                    paged,
+                    &mut building_pieces,
                     atlas,
                     art,
                     state.rules.as_ref(),
@@ -353,6 +388,7 @@ pub(crate) fn build_shp_instances(
                     is_player_owned,
                     entity.building_damage_state_active,
                     world_height,
+                    draw_state,
                 );
             }
             // Emit VXL turret on top of building (e.g., SAM site, Prism Tower).
@@ -375,11 +411,31 @@ pub(crate) fn build_shp_instances(
                             interp_z,
                             depth,
                             tint,
+                            draw_state,
                             rules_obj.turret_anim_x,
                             rules_obj.turret_anim_y,
                         );
                     }
                 }
+            }
+        }
+
+        if entity.category == EntityCategory::Structure {
+            let coord = TacticalCoord {
+                x: i32::from(pos.rx) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_x),
+                y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
+                z: i32::from(pos.z),
+            };
+            let parent = ObjectDraw {
+                id: entity.stable_id,
+                layer: TacticalLayer(2),
+                coord,
+                y_sort_adjust: 0,
+                registration_order: entity.stable_id,
+                policy: BlitPolicy::opaque(SpriteEncoding::Plain),
+            };
+            for (page, instance) in lower_building_piece_instances(parent, building_pieces) {
+                paged[page].push(instance);
             }
         }
     }
@@ -413,6 +469,7 @@ fn emit_building_turret_vxl(
     _z: u8,
     building_depth: f32,
     tint: [f32; 3],
+    draw_state: DrawState,
     anim_x: i32,
     anim_y: i32,
 ) {
@@ -444,6 +501,7 @@ fn emit_building_turret_vxl(
         depth: building_depth,
         tint,
         alpha: 1.0,
+        draw_state,
         ..Default::default()
     });
     instance_pages.push(entry.page);
@@ -455,7 +513,7 @@ fn emit_building_turret_vxl(
 /// behind the building at the same cell position. It provides the flat ground
 /// surface where harvesters dock or other ground-level detail.
 fn emit_building_bib(
-    paged: &mut [Vec<SpriteInstance>],
+    pieces: &mut Vec<PlannedBuildingPieceInstance>,
     atlas: &crate::render::sprite_atlas::SpriteAtlas,
     art_reg: &crate::rules::art_data::ArtRegistry,
     rules: Option<&crate::rules::ruleset::RuleSet>,
@@ -466,6 +524,7 @@ fn emit_building_bib(
     _z: u8,
     building_depth: f32,
     tint: [f32; 3],
+    draw_state: DrawState,
 ) {
     let rules_image: String = rules
         .and_then(|r| r.object(building_type))
@@ -495,15 +554,22 @@ fn emit_building_bib(
     // building's YSort position. Use the building's depth so bib and body stay
     // together in the Y-sorted merge, preventing bibs from incorrectly
     // overlapping walls at closer iso rows.
-    paged[bib_entry.page as usize].push(SpriteInstance {
-        position: [bx, by],
-        size: bib_entry.pixel_size,
-        uv_origin: bib_entry.uv_origin,
-        uv_size: bib_entry.uv_size,
-        depth: building_depth,
-        tint,
-        alpha: 1.0,
-        ..Default::default()
+    pieces.push(PlannedBuildingPieceInstance {
+        kind: BuildingPieceKind::Bib,
+        z_bias: 0,
+        policy: BlitPolicy::opaque(SpriteEncoding::Plain),
+        page: bib_entry.page as usize,
+        instance: SpriteInstance {
+            position: [bx, by],
+            size: bib_entry.pixel_size,
+            uv_origin: bib_entry.uv_origin,
+            uv_size: bib_entry.uv_size,
+            depth: building_depth,
+            tint,
+            alpha: 1.0,
+            draw_state,
+            ..Default::default()
+        },
     });
 }
 
@@ -653,7 +719,7 @@ fn selected_building_anim_view<'a>(
 /// in the sprite atlas and positioned at the building's cell center + the
 /// animation's (X, Y) pixel offset from art.ini.
 fn emit_building_anims(
-    paged: &mut [Vec<SpriteInstance>],
+    pieces: &mut Vec<PlannedBuildingPieceInstance>,
     atlas: &crate::render::sprite_atlas::SpriteAtlas,
     art_reg: &crate::rules::art_data::ArtRegistry,
     rules: Option<&crate::rules::ruleset::RuleSet>,
@@ -671,6 +737,7 @@ fn emit_building_anims(
     is_player_owned: bool,
     building_damage_state_active: bool,
     world_height: f32,
+    draw_state: DrawState,
 ) {
     let rules_image: String = rules
         .and_then(|r| r.object(building_type))
@@ -829,15 +896,22 @@ fn emit_building_anims(
             effective_anim_z_adjust(anim.z_adjust, type_z_adjust) + ANIM_DRAW_DEPTH_BIAS_PX;
         let anim_depth: f32 = apply_shape_z_adjust(building_depth, z_adjust_px, world_height);
 
-        paged[anim_entry.page as usize].push(SpriteInstance {
-            position: [ax, ay],
-            size: anim_entry.pixel_size,
-            uv_origin: anim_entry.uv_origin,
-            uv_size: anim_entry.uv_size,
-            depth: anim_depth,
-            tint,
-            alpha: 1.0,
-            ..Default::default()
+        pieces.push(PlannedBuildingPieceInstance {
+            kind: BuildingPieceKind::PoweredOrActiveOverlay,
+            z_bias: z_adjust_px,
+            policy: BlitPolicy::opaque(SpriteEncoding::Plain),
+            page: anim_entry.page as usize,
+            instance: SpriteInstance {
+                position: [ax, ay],
+                size: anim_entry.pixel_size,
+                uv_origin: anim_entry.uv_origin,
+                uv_size: anim_entry.uv_size,
+                depth: anim_depth,
+                tint,
+                alpha: 1.0,
+                draw_state,
+                ..Default::default()
+            },
         });
     }
 }

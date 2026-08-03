@@ -53,6 +53,7 @@ pub mod radio; // RadioMessage / RadioResponse / RadioPayload
 //     special locomotors, drive tracks, turret rotation ---
 pub mod movement;
 pub mod pathfinding; // A* search, zone connectivity, terrain costs, path smoothing
+pub mod projectile; // serialized BulletClass-style flight state and detonation handoff
 
 // --- Docking: repair depots and airfield landing pads ---
 pub mod docking;
@@ -112,6 +113,7 @@ pub mod game_options;
 pub mod house_state;
 
 // --- Trigger runtime (map trigger evaluation during gameplay) ---
+pub mod team_script_vm;
 pub mod trigger_runtime;
 
 // --- AI, replay, selection, debug ---
