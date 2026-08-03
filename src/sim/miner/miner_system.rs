@@ -1955,7 +1955,7 @@ pub(crate) fn issue_stock_miner_drive_move(
                 let snapshot = (
                     locomotor.kind,
                     locomotor.slot,
-                    locomotor.piggyback,
+                    locomotor.piggyback.clone(),
                     locomotor.layer,
                     locomotor.phase,
                 );

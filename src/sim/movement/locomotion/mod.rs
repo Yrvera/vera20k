@@ -15,5 +15,8 @@ pub mod power;
 pub mod slot;
 
 pub use install::{resolve_installed_class, resolve_installed_kind};
-pub use piggyback::{BeginOutcome, StashedLocomotor};
+pub use piggyback::{
+    BeginOutcome, EndGateContext, EndOutcome, LocomotorCommonRuntime, LocomotorRuntime,
+    LocomotorRuntimePayload, StashedLocomotor,
+};
 pub use slot::LocomotorSlot;
