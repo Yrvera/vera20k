@@ -96,6 +96,8 @@ pub mod radiation;
 pub mod parity_digest;
 pub mod passenger;
 pub mod slave_miner;
+pub mod spawn_manager;
+mod spawn_manager_tests;
 
 // --- Economy, map resources ---
 pub mod ore_growth;

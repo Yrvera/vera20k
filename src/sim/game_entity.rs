@@ -372,6 +372,16 @@ pub struct GameEntity {
     /// legacy and was removed as unreachable in stock YR.
     #[serde(default)]
     pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
+    /// Spawn-manager pool carried by a `Spawns=` parent (V3 Launcher,
+    /// Dreadnought, Boomer, Aircraft Carrier, Destroyer). Mirrors the native
+    /// `TechnoClass+0x2D0` manager pointer: present iff `Spawns=` resolved.
+    #[serde(default)]
+    pub spawn_manager: Option<crate::sim::spawn_manager::SpawnManagerState>,
+    /// Back-pointer from a spawned child to the parent that owns its pool
+    /// (native child `+0x2D4`). Kill credit and the "do not self-RTB" gate
+    /// read it; cleared when the parent releases the child.
+    #[serde(default)]
+    pub spawn_owner_id: Option<u64>,
     /// Rocket/missile flight state machine (launch/ascend/terminal/detonate).
     pub rocket_state: Option<RocketState>,
     /// Homing missile flight state. `Some` while this entity is an in-flight
@@ -800,6 +810,8 @@ impl GameEntity {
             order_intent: None,
             teleport_state: None,
             low_bridge_tube_state: None,
+            spawn_manager: None,
+            spawn_owner_id: None,
             rocket_state: None,
             homing_state: None,
             parachute_state: None,

@@ -234,8 +234,23 @@ impl Simulation {
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.foundation = obj.foundation.clone();
             }
+            // TechnoClass::Init_Managers for map-placed parents.
+            if let Some(ruleset) = rules
+                && let Some(obj) = ruleset.object(&map_ent.type_id)
+            {
+                ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
+                    obj,
+                    ruleset,
+                    &mut self.interner,
+                    self.session.binary_frame,
+                );
+            }
+            let has_spawn_manager = ge.spawn_manager.is_some();
             let (stable_id, outcome) = self.unlimbo(ge);
             debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+            if has_spawn_manager && let Some(ruleset) = rules {
+                crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, ruleset);
+            }
             self.commit_spawn_harvest_mission(stable_id);
             count += 1;
         }
@@ -418,8 +433,20 @@ impl Simulation {
         }
 
         ge.foundation = obj.foundation.clone();
+        // TechnoClass::Init_Managers — the spawn pool exists iff `Spawns=`
+        // resolves. Children are created right after placement, below.
+        ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
+            obj,
+            rules,
+            &mut self.interner,
+            self.session.binary_frame,
+        );
+        let has_spawn_manager = ge.spawn_manager.is_some();
         let (stable_id, outcome) = self.unlimbo(ge);
         debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+        if has_spawn_manager {
+            crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, rules);
+        }
         self.commit_spawn_harvest_mission(stable_id);
         Some(stable_id)
     }

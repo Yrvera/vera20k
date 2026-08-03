@@ -118,7 +118,18 @@ use crate::sim::world::Simulation;
 // code would therefore pass the version check and then misread every byte after
 // the first infantry entity. The bump turns that silent corruption into a clean
 // rejection. The new field is also HASHED.
-const SNAPSHOT_VERSION: u32 = 43;
+// Bumped 43 -> 44: `GameEntity` gains the spawn-manager pool
+// (`spawn_manager: Option<SpawnManagerState>` — spawn type, missile family,
+// regen/reload/kamikaze frames, both manager timers, both targets, manager
+// mode, and a variable-length slot vector) and the child back-pointer
+// (`spawn_owner_id: Option<u64>`). Same bincode trap as 42 -> 43: the encoding
+// is not self-describing, so the decoder reads the next field's bytes
+// unconditionally and `#[serde(default)]` never fires for a short record. A v43
+// save read by this code would pass the version check and then misread every
+// byte from the first entity onward — these two fields are on EVERY entity, not
+// just spawner parents, so the corruption starts at entity one. Both are
+// HASHED, but only when present (see `world_hash.rs`).
+const SNAPSHOT_VERSION: u32 = 44;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1308,11 +1319,13 @@ mod tests {
     /// Drive occupation footprints took 37 -> 38, and authoritative wall
     /// ownership took 38 -> 39, and raw occupation bytes took 39 -> 40, and the
     /// serialized HouseState MultiplayPassive fact took 40 -> 41, and the
-    /// hashed passive target-acquisition bookkeeping took 41 -> 42. This
-    /// pins it so a later accidental bump is caught.
+    /// hashed passive target-acquisition bookkeeping took 41 -> 42, and the
+    /// infantry idle-action timer took 42 -> 43, and the per-entity spawn
+    /// manager pool plus child back-pointer took 43 -> 44. This pins it so a
+    /// later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_43() {
-        assert_eq!(super::SNAPSHOT_VERSION, 43);
+    fn snapshot_version_is_44() {
+        assert_eq!(super::SNAPSHOT_VERSION, 44);
     }
 
     #[test]
@@ -1328,7 +1341,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            43
+            44
         );
 
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1389,7 +1402,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            43
+            44
         );
 
         let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1455,7 +1468,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            43
+            44
         );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         let cell = restored

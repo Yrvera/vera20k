@@ -1152,6 +1152,15 @@ impl Simulation {
                     expired_health,
                     expired_is_selling,
                 );
+                // `TechnoClass::PointerExpired` forwards to the listener's
+                // SpawnManager (`0x00707A6F`). This is the only mechanism that
+                // drops a destroyed wing target, so without it a Carrier keeps
+                // sending its Hornets at a corpse.
+                crate::sim::spawn_manager::notify_pointer_expired(
+                    self,
+                    listener_id,
+                    expired_id,
+                );
             } else if is_anim {
                 self.expire_anim_owner_reference(listener_id, expired_id);
             } else if is_particle {
@@ -1179,6 +1188,20 @@ impl Simulation {
 
         self.run_represented_uninit_pre_hook(stable_id);
         self.uninit_carried_passengers(stable_id);
+        // `SpawnManagerClass::PointerExpired`, owner arm: `Kill_All_Spawns()`
+        // then `ClearAllTargets()`. Docked/reloading children and any missile
+        // still in its post-launch window die with the parent; aircraft already
+        // out are released. The target clear is the second, separate call —
+        // `Kill_All_Spawns` alone never touches the targets.
+        if self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.spawn_manager.is_some())
+        {
+            crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
+            crate::sim::spawn_manager::clear_all_spawn_targets(self, stable_id);
+        }
 
         #[cfg(test)]
         {

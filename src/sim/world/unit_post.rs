@@ -9,7 +9,17 @@
 //!   3. GuardTerrain — Guard + invalid terrain + sight → self-destroy    [SLOT — UNCHECKED, needs RE]
 //!   4. HarvestBrain — idle Harvester/Weeder → Harvest decision          [SLOT — miner substrate owns]
 //!   5. Anim/Ammo    — the per-unit anim/ammo wrapper                    [SLOT — target unresolved, needs RE]
-//!   6. SpawnManager — Carrier/Dreadnought spawn dispatch                [SLOT — feature absent, named gap]
+//!   6. (no SpawnManager slot here — see below)
+//!
+//! Correction (verified 2026-08-03): the SpawnManager is NOT a post-Foot
+//! `UnitClass::AI` slot. `decompile_function 0x006F9E50` shows
+//! `TechnoClass::AI_Update` dispatching it directly — `if (this+0x2D0)
+//! (*(vtable+0x5C))()` — after the self-heal/power block and before the cloak
+//! block, for every techno rather than for units only. VERA runs it as its own
+//! pass right after the combat phase (`sim::spawn_manager::tick_spawn_managers`,
+//! called from `World::advance_tick` Phase 5), which preserves the native
+//! "this object fired and set its spawn target, then its manager reads it"
+//! ordering within the tick.
 //! Pre-fire idle turret scan + AI auto-hunt / stuck-harvester rescue are
 //! S4 / AI-deferred respectively.
 //!
