@@ -1393,17 +1393,9 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
         );
         return;
     };
-    let wp_z = state
-        .height_map
-        .get(&(waypoint.rx, waypoint.ry))
-        .copied()
-        .unwrap_or(0);
-    let (sx, sy) = terrain::iso_to_screen(waypoint.rx, waypoint.ry, wp_z);
-    let sw = state.render_width() as f32;
-    let sh = state.render_height() as f32;
-    let z = state.zoom_level;
-    state.camera_x = sx - sw / (2.0 * z);
-    state.camera_y = sy - sh / (2.0 * z);
+    let (rx, ry) = (waypoint.rx, waypoint.ry);
+    // Centres on the tactical viewport, not the window.
+    crate::app_camera::center_camera_on_cell(state, rx, ry);
 }
 
 /// Rebuild both terrain-derived navigation caches from one resolved-terrain

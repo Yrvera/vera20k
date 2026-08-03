@@ -138,8 +138,11 @@ pub struct MapLoadResult {
     /// True when MCV seeding was deferred for spawn-pick phase.
     /// The map has 2+ multiplayer start waypoints and the player should pick one.
     pub spawn_pick_pending: bool,
-    pub camera_x: f32,
-    pub camera_y: f32,
+    /// World point the camera should be centred on, in the frame
+    /// `terrain::iso_to_screen` produces. Converted to a camera top-left by the
+    /// transition, which knows the scaled sidebar width and the live zoom.
+    pub camera_anchor_x: f32,
+    pub camera_anchor_y: f32,
     /// Asset manager — kept alive for music/audio lookups after map load.
     pub asset_manager: Option<AssetManager>,
 }
@@ -1251,17 +1254,19 @@ pub(crate) fn load_map_from_initial(
     }
 
     // Prefer the first multiplayer start waypoint as the initial anchor when
-    // present. Otherwise, center on the playable area / terrain grid.
-    let sw: f32 = gpu.config.width as f32;
-    let sh: f32 = gpu.config.height as f32;
-    let (camera_x, camera_y): (f32, f32) =
+    // present. Otherwise, anchor on the middle of the playable area.
+    //
+    // This is a **world point**, not a camera position: the sidebar's real width
+    // depends on the UI scale, which only exists once `AppState` is built, so the
+    // conversion to a camera top-left happens in `app_transitions` where the
+    // scaled layout spec is available.
+    let (camera_anchor_x, camera_anchor_y): (f32, f32) =
         if let Some(start_wp) = waypoints::first_multiplayer_start(&map_data.waypoints) {
             let wp_z = height_map
                 .get(&(start_wp.rx, start_wp.ry))
                 .copied()
                 .unwrap_or(0);
-            let (sx, sy) = terrain::iso_to_screen(start_wp.rx, start_wp.ry, wp_z);
-            (sx - sw / 2.0, sy - sh / 2.0)
+            crate::app_camera::cell_centre_world_point(start_wp.rx, start_wp.ry, wp_z)
         } else {
             let (area_x, area_y, area_w, area_h) = match local_bounds {
                 Some(b) => (b.pixel_x, b.pixel_y, b.pixel_w, b.pixel_h),
@@ -1272,7 +1277,7 @@ pub(crate) fn load_map_from_initial(
                     grid.world_height,
                 ),
             };
-            (area_x + (area_w - sw) / 2.0, area_y + (area_h - sh) / 2.0)
+            (area_x + area_w / 2.0, area_y + area_h / 2.0)
         };
     // Load cameo MIX archives so that *ICON.SHP files are findable.
     // These nested MIXes live inside local.mix/localmd.mix and aren't
@@ -1366,8 +1371,8 @@ pub(crate) fn load_map_from_initial(
         sandbox_full_visibility: false,
         spawn_pick_pending,
         initial_local_owner,
-        camera_x,
-        camera_y,
+        camera_anchor_x,
+        camera_anchor_y,
         // The app loading job retains the one process-lifetime manager while
         // this borrowed phase runs, then moves it into the completed result.
         asset_manager: None,

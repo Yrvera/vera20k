@@ -234,6 +234,8 @@ pub(crate) struct AppState {
     pub(crate) zoom_anchor_world: [f32; 2],
     /// Screen-space position of the zoom anchor (cursor position when wheel fired).
     pub(crate) zoom_anchor_screen: [f32; 2],
+    /// Mouse edge auto-scroll ramp state (gamemd's CoastLevel and its 16 ms timer).
+    pub(crate) edge_scroll: crate::app_camera::EdgeScrollState,
     pub(crate) cursor_x: f32,
     pub(crate) cursor_y: f32,
     pub(crate) keys_held: HashSet<KeyCode>,
@@ -4147,6 +4149,7 @@ impl App {
             zoom_target: 1.0,
             zoom_anchor_world: [0.0, 0.0],
             zoom_anchor_screen: [0.0, 0.0],
+            edge_scroll: crate::app_camera::EdgeScrollState::default(),
             cursor_x: 0.0,
             cursor_y: 0.0,
             keys_held: HashSet::new(),

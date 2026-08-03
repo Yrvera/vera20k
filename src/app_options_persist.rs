@@ -41,11 +41,14 @@ pub(crate) fn apply_in_game_options(state: &mut AppState) {
     }
     // UnitActionLines -> the target-line render gate (the one confirmed live consumer).
     apply_target_lines(&mut state.target_lines, &state.in_game_options);
-    // The remaining four are persist-only — no existing Rust consumer reads them, and
+    // ScrollRate now has a live consumer: the edge auto-scroll ramp
+    // (app_camera.rs) reads `in_game_options.scroll_rate` every frame to floor
+    // the speed-table index, so nothing has to be pushed from here. The
+    // round-trip is NOT closed — the startup read-back of `[Options] ScrollRate`
+    // from RA2MD.INI is still missing, so a persisted value does not survive a
+    // restart. That gap predates this consumer.
+    // The remaining three are persist-only — no existing Rust consumer reads them, and
     // none is fabricated here (Task 8 grep, 2026-06-16):
-    //   ScrollRate  -> the camera scrolls at a fixed `CAMERA_SCROLL_SPEED` const
-    //                  (app_camera.rs); there is no options-driven scroll-rate input,
-    //                  and the gamemd rate->pixels mapping is out of this slice's scope.
     //   ToolTips    -> the tooltip service (app_tooltips.rs) has no enable gate to flip.
     //   DetailLevel -> hidden in 0xBBB; no render-detail consumer exists.
     //   ShowHidden  -> a debug byte with no standard consumer.
