@@ -1038,6 +1038,64 @@ impl BridgeRules {
     }
 }
 
+/// Scenario-start crate counts and crate overlay images from `[CrateRules]`.
+///
+/// gamemd reads these into RulesClass and `Post_Map_Init` clamps the lobby
+/// player count between `CrateMinimum` and `CrateMaximum` to decide how many
+/// crates to scatter. Pickup effects (`SilverCrate`, `UnitCrateType`, the
+/// per-goodie weights) belong to the crate system and are deliberately not
+/// parsed here.
+#[derive(Debug, Clone)]
+pub struct CrateRules {
+    /// `CrateMinimum=` — floor on the scenario-start crate count (stock 1).
+    pub minimum: u32,
+    /// `CrateMaximum=` — ceiling on the scenario-start crate count (stock 255).
+    pub maximum: u32,
+    /// `CrateImg=` — overlay type used for the ordinary land crate (stock CRATE).
+    pub crate_img: String,
+    /// `WaterCrateImg=` — overlay type used over water (stock WCRATE).
+    pub water_crate_img: String,
+}
+
+impl Default for CrateRules {
+    fn default() -> Self {
+        Self {
+            minimum: 1,
+            maximum: 255,
+            crate_img: "CRATE".to_string(),
+            water_crate_img: "WCRATE".to_string(),
+        }
+    }
+}
+
+impl CrateRules {
+    fn from_ini(ini: &IniFile) -> Self {
+        let defaults = Self::default();
+        let Some(section) = ini.section("CrateRules") else {
+            return defaults;
+        };
+        let name = |key: &str, fallback: String| -> String {
+            section
+                .get(key)
+                .map(|value| value.trim().to_uppercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or(fallback)
+        };
+        Self {
+            minimum: section
+                .get_i32("CrateMinimum")
+                .unwrap_or(defaults.minimum as i32)
+                .max(0) as u32,
+            maximum: section
+                .get_i32("CrateMaximum")
+                .unwrap_or(defaults.maximum as i32)
+                .max(0) as u32,
+            crate_img: name("CrateImg", defaults.crate_img),
+            water_crate_img: name("WaterCrateImg", defaults.water_crate_img),
+        }
+    }
+}
+
 /// Global radiation-field constants parsed from the `[Radiation]` section.
 /// Consumed by the per-cell radiation service (`sim::radiation`) and the
 /// per-foot-unit damage step. Render-only keys (light/tint/color) are parsed
@@ -1819,6 +1877,8 @@ pub struct RuleSet {
     pub terrain_object_types: HashMap<String, TerrainObjectType>,
     /// Rules-driven bridge destruction defaults.
     pub bridge_rules: BridgeRules,
+    /// Scenario-start crate counts and crate overlay images from `[CrateRules]`.
+    pub crate_rules: CrateRules,
     /// Garrison/bunker/open-topped combat multipliers from [CombatDamage].
     pub garrison_rules: GarrisonRules,
     /// Per-cell radiation-field constants from [Radiation].
@@ -1922,6 +1982,7 @@ impl RuleSet {
         let terrain_rules: TerrainRules = TerrainRules::from_ini(ini);
         let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
+        let crate_rules: CrateRules = CrateRules::from_ini(ini);
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
         let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
@@ -2214,6 +2275,7 @@ impl RuleSet {
             tiberium_types,
             terrain_object_types,
             bridge_rules,
+            crate_rules,
             garrison_rules,
             radiation,
             radar_event_config,
