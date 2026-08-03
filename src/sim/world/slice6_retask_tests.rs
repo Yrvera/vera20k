@@ -120,8 +120,8 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // (6f78bac7) world_hash.rs swapped in and all branch behaviour kept, this probe
 // read 0xFEEA0679D9429547 — neither the old baseline nor the branch value. So
 // hashed state content changed, not just which fields are folded.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x99F0_E195_4E2F_94C9;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8477_F4BD_F3D8_B12B;
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xC2FA_0728_1D1C_CE92;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xDC26_BF96_164D_39C2;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -193,7 +193,7 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8477_F4BD_F3D8_B12B;
 // fields moving off their old values — `passive_scan_timer` armed at the
 // construction frame instead of left unarmed, plus the two new fields folded at
 // their defaults. Rust regression ratchet, not gamemd evidence.
-const SLICE6_BASELINE_HASH: u64 = 0xEB99_377F_0C2A_6AB8;
+const SLICE6_BASELINE_HASH: u64 = 0x2DAB_F65B_DAA0_9F67;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

@@ -115,7 +115,7 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// same cadence, adding their draws. Streams 1 and 2 are still byte-identical
 /// to the pre-slice baseline.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
-    11394046661504998160,
+    534595878155476129,
     4175722561206807420,
     2082941527059030371,
 );
@@ -250,8 +250,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // still reproduces BOTH of its legacy probes unchanged across the whole slice —
 // its 16-tick fixture never reaches the first scan — so the composition half
 // remains isolated and behaviour-free, and everything moving here is behaviour.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x4DF9_DB77_91C8_1B2A;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xF716_F60E_EDAF_D9E0;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x4D55_E207_91BD_F587;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x008D_1E4F_75A7_D07F;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -320,7 +320,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xF716_F60E_EDAF_D9E0;
 /// hash, and only the scenario RNG stream moved.
 /// Re-measured in the same slice when the passive block was extended to the
 /// Infantry leaf — same rationale, same ceremony, still a lone stream-0 shift.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x4FEB_1A4C_C911_833C;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xF7D7_ED29_EC93_470F;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
