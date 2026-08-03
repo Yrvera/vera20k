@@ -166,6 +166,11 @@ pub struct SidebarItem {
     /// True when this type is the one actively being produced in its category.
     pub is_building_this_type: bool,
     pub is_ready: bool,
+    /// True while this type's production is suspended — the player paused the
+    /// queue or ran short of cash mid-build. gamemd draws the `TXT_HOLD`
+    /// status text with the same dark strip as `TXT_READY` in that state, and
+    /// it is the game's only visual cue that a build has stalled.
+    pub is_on_hold: bool,
     pub is_armed: bool,
     /// True if this cameo represents a superweapon (not a buildable).
     pub is_superweapon: bool,
@@ -332,6 +337,33 @@ pub(crate) fn compute_layout_with_spec(
     }
 }
 
+/// Screen rect of the vertical power meter (the `powerp.shp` strip stack).
+///
+/// gamemd registers a tooltip region over this bar and answers it before the
+/// sidebar gadgets, so the rect has to be derivable outside the render lane.
+/// The bar runs from `power_bar_top_y` below the tab strip down to
+/// `power_bar_bottom_y` above the side3 bottom edge — the same span
+/// `set_max_segments` measures, and the same origin `render_power_bar`
+/// currently draws from.
+///
+/// MERGE HAZARD: a parallel session is replacing that origin in
+/// `app_sidebar_build.rs` with a theme-dependent `power_bar_origin(theme,
+/// layout, ui_scale)`. This helper re-derives `sidebar_x + power_bar_x`, so
+/// once that lands the hover rect and the drawn bar will disagree by the
+/// per-theme x delta with nothing failing. Whoever merges must re-point this
+/// at the renderer's helper (the rect needs a theme argument too) rather than
+/// leave two copies of the geometry.
+pub fn power_bar_rect(layout: &SidebarLayout, spec: SidebarChromeLayoutSpec) -> Rect {
+    let top = layout.tabs_y + spec.power_bar_top_y;
+    let bottom = layout.side3_y + spec.side3_height - spec.power_bar_bottom_y;
+    Rect {
+        x: layout.sidebar_x + spec.power_bar_x,
+        y: top,
+        w: spec.power_bar_width,
+        h: (bottom - top).max(0.0),
+    }
+}
+
 /// Strip-scroll button rects (the R-DN/R-UP pair). gamemd anchors the pair at
 /// ScrollX / ScrollX+ScrollWidth in retail strip geometry; our adaptive RON
 /// layout (R11 geometry policy — OUT of this plan's scope) has no such
@@ -451,6 +483,7 @@ mod tests {
             queued_count: 0,
             is_building_this_type: !is_ready,
             is_ready,
+            is_on_hold: false,
             is_armed,
             is_superweapon: true,
             super_weapon_section: Some("LightningStormSpecial".to_string()),

@@ -213,6 +213,7 @@ pub(crate) fn build_sidebar_view_with_spec(
                 queued_count: entry.queued_count,
                 is_building_this_type: entry.is_building_this_type,
                 is_ready: entry.is_ready,
+                is_on_hold: entry.is_on_hold,
                 is_armed: entry.is_armed,
                 is_superweapon: entry.is_superweapon,
                 super_weapon_section: entry.super_weapon_section,
@@ -332,6 +333,8 @@ struct BuildEntry {
     /// True when this type is the one actively being produced in its category.
     is_building_this_type: bool,
     is_ready: bool,
+    /// Production of this type is suspended (paused queue or out of funds).
+    is_on_hold: bool,
     is_armed: bool,
     is_superweapon: bool,
     super_weapon_section: Option<String>,
@@ -376,6 +379,7 @@ fn collect_build_entries(
                 queued_count: 0,
                 is_building_this_type: !sw.is_ready && sw.is_online && sw.progress > 0.0,
                 is_ready: sw.is_ready,
+                is_on_hold: false,
                 is_armed: armed_sw_section
                     .map_or(false, |s| s.eq_ignore_ascii_case(&sw.display_name)),
                 is_superweapon: true,
@@ -411,6 +415,7 @@ fn collect_build_entries(
                     queued_count: 1,
                     is_building_this_type: false,
                     is_ready: true,
+                    is_on_hold: false,
                     is_armed,
                     is_superweapon: false,
                     super_weapon_section: None,
@@ -424,6 +429,16 @@ fn collect_build_entries(
                 let is_building_this_type = queue_items.iter().any(|item| {
                     item.type_id == opt.type_id
                         && item.state == crate::sim::production::BuildQueueState::Building
+                });
+                // Suspended production — the two ways a stock queue stalls:
+                // the player paused it, or the house ran out of cash. gamemd
+                // shows its `TXT_HOLD` status text for exactly this state.
+                let is_on_hold = queue_items.iter().any(|item| {
+                    item.type_id == opt.type_id
+                        && matches!(
+                            item.state,
+                            BuildQueueState::Paused | BuildQueueState::NoFunds
+                        )
                 });
                 let progress = queue_items
                     .iter()
@@ -443,6 +458,7 @@ fn collect_build_entries(
                     queued_count,
                     is_building_this_type,
                     is_ready: false,
+                    is_on_hold,
                     is_armed: false,
                     is_superweapon: false,
                     super_weapon_section: None,
@@ -472,6 +488,7 @@ fn collect_build_entries(
                 queued_count: 1,
                 is_building_this_type: false,
                 is_ready: true,
+                is_on_hold: false,
                 is_armed,
                 is_superweapon: false,
                 super_weapon_section: None,
@@ -730,5 +747,69 @@ mod tests {
             view.spawn_test_units_button.action,
             SidebarAction::SpawnTestUnits
         );
+    }
+
+    fn queue_item(
+        interner: &mut StringInterner,
+        id: &str,
+        state: crate::sim::production::BuildQueueState,
+    ) -> crate::sim::production::QueueItemView {
+        crate::sim::production::QueueItemView {
+            type_id: interner.intern(id),
+            display_name: id.to_string(),
+            queue_category: ProductionCategory::Building,
+            state,
+            remaining_ms: 5_000,
+            total_ms: 10_000,
+        }
+    }
+
+    /// gamemd shows its `TXT_HOLD` status text while production is suspended.
+    /// Our two suspended states are a player-paused queue and a house that ran
+    /// out of cash; neither an actively-building nor a merely-queued item
+    /// carries the flag.
+    #[test]
+    fn suspended_queue_items_mark_their_cameo_on_hold() {
+        use crate::sim::production::BuildQueueState;
+
+        let cases = [
+            (BuildQueueState::Paused, true),
+            (BuildQueueState::NoFunds, true),
+            (BuildQueueState::Building, false),
+            (BuildQueueState::Queued, false),
+        ];
+        for (state, expected) in cases {
+            let mut interner = StringInterner::new();
+            let build_options = vec![option(&mut interner, "GAPOWR", true, None)];
+            let queue = vec![queue_item(&mut interner, "GAPOWR", state)];
+            let view = build_sidebar_view(
+                1280.0,
+                960.0,
+                SidebarTab::Building,
+                5000,
+                0,
+                0,
+                Some([28.0, 27.0]),
+                &queue,
+                &build_options,
+                &[],
+                None,
+                &[],
+                0,
+                Some(&interner),
+                &SidebarGadgetState::new(),
+                None,
+                None,
+            );
+            let item = view
+                .items
+                .iter()
+                .find(|i| i.type_id.eq_ignore_ascii_case("GAPOWR"))
+                .expect("GAPOWR cameo");
+            assert_eq!(
+                item.is_on_hold, expected,
+                "state {state:?} should map is_on_hold = {expected}"
+            );
+        }
     }
 }

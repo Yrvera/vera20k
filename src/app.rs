@@ -4790,15 +4790,10 @@ impl App {
                         )?;
                     }
                 }
-                // Always run egui in-game for sidebar text overlay (Ready labels, credits).
+                // All sidebar text (credits, Ready labels, queue counts) is now
+                // GAME.FNT sprite geometry built in app_render; egui in-game
+                // carries only the dev/debug overlays.
                 state.egui.begin_frame(&state.window);
-                if let Some(sv) = sidebar_view {
-                    crate::app_sidebar_text::draw_sidebar_text_overlay(
-                        &state.egui.ctx,
-                        sv,
-                        state.ui_scale,
-                    );
-                }
                 // Debug panels use a light/.NET theme — push light visuals
                 // before rendering, then restore the original after.
                 let any_debug_panel = state.debug_show_pathgrid

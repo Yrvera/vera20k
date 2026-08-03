@@ -65,6 +65,21 @@ pub struct TextRect {
     pub h: u32,
 }
 
+/// Vertical-centre offset for the v-centre flag.
+///
+/// gamemd's Path A wrapper computes `y += (rect_height - measured_height) / 2`
+/// unconditionally — text taller than its rect gets a *negative* offset and
+/// overhangs upward, and the per-pixel clip against the text rect is what
+/// keeps it inside. VERA previously gated the offset on
+/// `measured_height < rect_height`, which pinned over-tall text to the rect
+/// top instead; that gate has no counterpart in the binary.
+///
+/// Both operands are C++ `int` there, so the division truncates toward zero
+/// for negative values — which is also Rust's `i32` division.
+fn vcenter_offset(rect_h: u32, measured_h: u32) -> f32 {
+    ((rect_h as i32 - measured_h as i32) / 2) as f32
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw_in_rect(
     font: &BitFont,
@@ -91,8 +106,8 @@ pub fn draw_in_rect(
     let layout = font.wrap_layout(text, rect.w);
     let base_x = rect.x as f32;
     let mut line_y = rect.y as f32;
-    if flags.contains(ShellAlign::V_CENTER) && layout.height < rect.h {
-        line_y += ((rect.h - layout.height) / 2) as f32;
+    if flags.contains(ShellAlign::V_CENTER) {
+        line_y += vcenter_offset(rect.h, layout.height);
     }
     let line_advance = font.cell_height();
 
@@ -164,8 +179,8 @@ pub fn draw_in_rect_path_a(
     let layout = font.wrap_layout(text, rect.w);
     let base_x = rect.x as f32;
     let mut line_y = rect.y as f32;
-    if flags.contains(ShellAlign::V_CENTER) && layout.height < rect.h {
-        line_y += ((rect.h - layout.height) / 2) as f32;
+    if flags.contains(ShellAlign::V_CENTER) {
+        line_y += vcenter_offset(rect.h, layout.height);
     }
     let line_advance = font.cell_height();
     let mut instances = Vec::with_capacity(text.len());
@@ -296,6 +311,37 @@ mod tests {
             "y = {}",
             draw.instances[0].position[1]
         );
+    }
+
+    /// gamemd computes the v-centre offset unconditionally, so text taller
+    /// than its rect overhangs upward with a negative offset and the clip rect
+    /// trims it. VERA used to gate the offset on the text fitting, which
+    /// pinned over-tall text to the rect top instead.
+    #[test]
+    fn vcenter_offset_is_negative_when_text_is_taller_than_the_rect() {
+        let font = test_font();
+        // Two lines measure 2 * 17 = 34 px against a 30 px rect.
+        let draw = draw_in_rect(
+            &font,
+            "x\nx",
+            TextRect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 30,
+            },
+            [1.0, 1.0, 1.0],
+            ShellAlign::V_CENTER,
+            [0.0, 0.0],
+            0.5,
+            None,
+        );
+        assert_eq!(draw.instances.len(), 1, "second line is past the rect");
+        assert_eq!(draw.instances[0].position[1], -2.0);
+        assert_eq!(vcenter_offset(30, 34), -2.0);
+        // C++ integer division truncates toward zero for negatives.
+        assert_eq!(vcenter_offset(10, 13), -1.0);
+        assert_eq!(vcenter_offset(40, 17), 11.0);
     }
 
     #[test]

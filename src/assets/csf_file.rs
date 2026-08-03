@@ -142,6 +142,109 @@ impl CsfFile {
     }
 }
 
+/// One argument for [`format_csf`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CsfArg<'a> {
+    Str(&'a str),
+    Int(i64),
+}
+
+/// Substitute arguments into a CSF value that is a `printf` format string.
+///
+/// Several retail labels are formats rather than finished text —
+/// `TXT_MONEY_FORMAT_2` is `"%s $%d"`, `TXT_POWER_DRAIN` is
+/// `"Power = %d\nDrain = %d"`. The engine feeds them to `swprintf`, which
+/// consumes its variadic arguments strictly in the order the conversion
+/// specifiers appear, so callers must never rebuild the surrounding literal
+/// text (the currency sign, the `Power =` prefix) in Rust: it lives in the
+/// localized table and changes per language.
+///
+/// Supported the way the retail formats use them: `%%` for a literal percent,
+/// `%s` (with the `h`/`l`/`w` size prefixes the engine's wide call sites
+/// carry) for a string argument, and `%d`/`%i`/`%u` — optionally
+/// zero/width/`hh`..`ll`-qualified, as in `TXT_TIME_FORMAT_HOURS`'s `%02d` —
+/// for an integer argument. A specifier with no argument left, or one this
+/// helper does not model, is copied through verbatim so a mismatched
+/// localization degrades to visible text instead of silently dropping content.
+pub fn format_csf(fmt: &str, args: &[CsfArg]) -> String {
+    let mut out = String::with_capacity(fmt.len() + 16);
+    let mut next_arg = 0usize;
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        // Scan the specifier: flags/width/precision/size prefix, then the
+        // conversion character.
+        let start = i;
+        let mut j = i + 1;
+        while j < chars.len() && !chars[j].is_ascii_alphabetic() && chars[j] != '%' {
+            j += 1;
+        }
+        while j < chars.len() && matches!(chars[j], 'h' | 'l' | 'w' | 'L') {
+            j += 1;
+        }
+        if j >= chars.len() {
+            // Trailing '%' with no conversion — copy the tail verbatim.
+            out.extend(&chars[start..]);
+            break;
+        }
+        let conv = chars[j];
+        i = j + 1;
+        match conv {
+            '%' => out.push('%'),
+            's' | 'S' => match args.get(next_arg) {
+                Some(CsfArg::Str(s)) => {
+                    out.push_str(s);
+                    next_arg += 1;
+                }
+                _ => out.extend(&chars[start..=j]),
+            },
+            'd' | 'i' | 'u' => match args.get(next_arg) {
+                Some(CsfArg::Int(v)) => {
+                    push_padded_int(&mut out, &chars[start + 1..j], *v);
+                    next_arg += 1;
+                }
+                _ => out.extend(&chars[start..=j]),
+            },
+            _ => out.extend(&chars[start..=j]),
+        }
+    }
+    out
+}
+
+/// Apply the zero-pad / minimum-width part of an integer specifier
+/// (`%02d` in `TXT_TIME_FORMAT_HOURS`). Anything else in the flag run is
+/// ignored, matching how the retail formats actually use it.
+fn push_padded_int(out: &mut String, flags: &[char], value: i64) {
+    let zero_pad = flags.first() == Some(&'0');
+    let width: usize = flags
+        .iter()
+        .skip(usize::from(zero_pad))
+        .take_while(|c| c.is_ascii_digit())
+        .fold(0usize, |acc, c| acc * 10 + (*c as usize - '0' as usize));
+    let digits = value.to_string();
+    if digits.len() < width {
+        let pad = if zero_pad { '0' } else { ' ' };
+        // Zero padding goes after the sign, exactly like printf.
+        if zero_pad && value < 0 {
+            out.push('-');
+            for _ in 0..(width - digits.len()) {
+                out.push(pad);
+            }
+            out.push_str(&digits[1..]);
+            return;
+        }
+        for _ in 0..(width - digits.len()) {
+            out.push(pad);
+        }
+    }
+    out.push_str(&digits);
+}
+
 /// Parse one label entry starting at `offset`. Returns (key, value, next_offset).
 fn parse_label_entry(data: &[u8], offset: usize) -> Result<(String, String, usize), ()> {
     // Need at least 12 bytes: 4 (LBL magic) + 4 (pair count) + 4 (name length).
@@ -306,6 +409,63 @@ mod tests {
         data.extend_from_slice(&encoded_value);
 
         data
+    }
+
+    #[test]
+    fn format_csf_consumes_specifiers_in_order_and_keeps_literals() {
+        // Retail TXT_MONEY_FORMAT_2 — the currency sign is table data, not
+        // something a caller may rebuild.
+        assert_eq!(
+            format_csf(
+                "%s $%d",
+                &[CsfArg::Str("Grizzly Battle Tank"), CsfArg::Int(700)]
+            ),
+            "Grizzly Battle Tank $700"
+        );
+        // Retail TXT_MONEY_FORMAT_1.
+        assert_eq!(format_csf("$%d", &[CsfArg::Int(700)]), "$700");
+        // Retail TXT_POWER_DRAIN — two integers, embedded newline preserved.
+        assert_eq!(
+            format_csf(
+                "Power = %d\nDrain = %d",
+                &[CsfArg::Int(150), CsfArg::Int(220)]
+            ),
+            "Power = 150\nDrain = 220"
+        );
+        // A localization that reorders must still pair args by specifier
+        // order, exactly like swprintf.
+        assert_eq!(
+            format_csf("%d kr %s", &[CsfArg::Int(700), CsfArg::Str("Grizzly")]),
+            "700 kr Grizzly"
+        );
+    }
+
+    #[test]
+    fn format_csf_handles_percent_width_and_size_prefixes() {
+        // Retail TXT_TIME_FORMAT_HOURS uses %02d.
+        assert_eq!(
+            format_csf(
+                "Time: %02d:%02d:%02d",
+                &[CsfArg::Int(1), CsfArg::Int(5), CsfArg::Int(30)]
+            ),
+            "Time: 01:05:30"
+        );
+        assert_eq!(format_csf("100%%", &[]), "100%");
+        // The engine's wide call sites carry %hs / %ls.
+        assert_eq!(format_csf("%hs", &[CsfArg::Str("ok")]), "ok");
+        assert_eq!(format_csf("%ls", &[CsfArg::Str("ok")]), "ok");
+    }
+
+    #[test]
+    fn format_csf_leaves_unsatisfied_specifiers_visible() {
+        // A localization with more specifiers than the call site supplies must
+        // degrade to visible text, never silently swallow content.
+        assert_eq!(
+            format_csf("%s $%d", &[CsfArg::Str("Grizzly")]),
+            "Grizzly $%d"
+        );
+        assert_eq!(format_csf("%d", &[CsfArg::Str("x")]), "%d");
+        assert_eq!(format_csf("abc%", &[]), "abc%");
     }
 
     #[test]
