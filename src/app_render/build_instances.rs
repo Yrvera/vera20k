@@ -872,23 +872,33 @@ fn sort_by_depth_desc_with_pages(instances: &mut Vec<SpriteInstance>, pages: &mu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::draw_state::DrawState;
 
     #[test]
     fn paired_unit_sort_keeps_page_tags_and_equal_depth_order() {
         let mut instances = vec![
             SpriteInstance {
                 depth: 0.5,
-                fx_flags: 10,
+                draw_state: DrawState {
+                    fx_flags: 10,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             SpriteInstance {
                 depth: 0.8,
-                fx_flags: 20,
+                draw_state: DrawState {
+                    fx_flags: 20,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             SpriteInstance {
                 depth: 0.8,
-                fx_flags: 30,
+                draw_state: DrawState {
+                    fx_flags: 30,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         ];
@@ -899,7 +909,7 @@ mod tests {
         assert_eq!(
             instances
                 .iter()
-                .map(|instance| instance.fx_flags)
+                .map(|instance| instance.draw_state.fx_flags)
                 .collect::<Vec<_>>(),
             vec![20, 30, 10]
         );

@@ -1210,7 +1210,7 @@ pub(crate) fn is_passable(
     if let Some(terrain) = resolved_terrain {
         if let Some(cell) = terrain.cell(x, y) {
             if mz.is_water_mover() {
-                return super::is_water_surface_cell_passable(cell, mz);
+                return super::cell_entry::is_water_surface_cell_passable(cell, mz);
             }
             return passability::is_passable_for_zone(cell.zone_type, mz);
         }

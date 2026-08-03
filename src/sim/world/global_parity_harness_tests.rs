@@ -71,7 +71,7 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// frame values, changing frame-anchored Harvest dispatch jitter draws.
 /// Main and MapGen remain unchanged, localizing the intended shift to Scenario.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
-    2051724246393896192,
+    1901247961783407109,
     4175722561206807420,
     2082941527059030371,
 );
@@ -177,8 +177,10 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // baseline nor the branch. RNG routing is unchanged: FINAL_STREAM_STATES passes
 // untouched, and record/replay cursor consistency plus the per-tick intra-run
 // hash asserts all pass.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x1A00_98C0_61EB_BD56;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC2B8_BAEF_E6C7_9CB6;
+// Native Move mission cadence now mutates existing MissionCom and Scenario RNG.
+// Re-baselined after hashing the newly persisted YR runtime-contract state.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xB2BD_4476_25B0_55DB;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x28E0_8567_5030_604B;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -240,7 +242,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC2B8_BAEF_E6C7_9CB6;
 /// wired in this slice (deploy-begin off, undeploy-complete on, destination-
 /// accepted on) changed no other hashed state in these fixtures. The absolute
 /// per-stream RNG pins held throughout.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xD900_CD22_0276_1CD9;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2EF5_F0F2_B546_6B0C;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -565,7 +567,8 @@ fn dense_converging_setup() -> (
     let mut sim = Simulation::with_seed(DENSE_SEED);
     let mut roster: Vec<MapEntity> = Vec::new();
     for i in 0..DENSE_ROWS {
-        roster.push(unit("Americans", "MTNK", 10, 5 + i, EntityCategory::Unit)); // ids 1..=10
+        roster.push(unit("Americans", "MTNK", 10, 5 + i, EntityCategory::Unit));
+        // ids 1..=10
     }
     for i in 0..DENSE_ROWS {
         roster.push(unit("Soviet", "MTNK", 40, 5 + i, EntityCategory::Unit)); // ids 11..=20

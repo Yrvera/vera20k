@@ -6,7 +6,7 @@
 //   if (byte == 0) discard;
 //   if (16 <= byte < 32) → rgb = house_ramp[house_idx][byte - 16]
 //   else                 → rgb = palette[byte]
-//   color = apply_fx(color, fx_flags, fx_params, ic_tint);
+//   color = apply_fx(color, fx_flags, fx_params, effect_tint);
 //   return rgb * tint, alpha;
 //
 // Bind groups:
@@ -39,10 +39,10 @@ struct Instance {
     @location(4) depth: f32,
     @location(5) tint: vec3f,
     @location(6) alpha: f32,
-    @location(7) house_color_idx: u32,
+    @location(7) remap_row: u32,
     @location(8) fx_flags: u32,
     @location(9) fx_params: vec4f,
-    @location(10) ic_tint: vec4f,
+    @location(10) effect_tint: vec4f,
 };
 
 struct VertexOutput {
@@ -50,10 +50,10 @@ struct VertexOutput {
     @location(0) atlas_uv: vec2f,
     @location(1) tint: vec3f,
     @location(2) alpha: f32,
-    @location(3) @interpolate(flat) house_color_idx: u32,
+    @location(3) @interpolate(flat) remap_row: u32,
     @location(4) @interpolate(flat) fx_flags: u32,
     @location(5) fx_params: vec4f,
-    @location(6) ic_tint: vec4f,
+    @location(6) effect_tint: vec4f,
 };
 
 @vertex
@@ -88,26 +88,20 @@ fn vs_main(
     out.atlas_uv = instance.uv_origin + quad_uv[idx] * instance.uv_size;
     out.tint = instance.tint;
     out.alpha = instance.alpha;
-    out.house_color_idx = instance.house_color_idx;
+    out.remap_row = instance.remap_row;
     out.fx_flags = instance.fx_flags;
     out.fx_params = instance.fx_params;
-    out.ic_tint = instance.ic_tint;
+    out.effect_tint = instance.effect_tint;
     return out;
 }
 
-fn apply_fx(color: vec4f, flags: u32, params: vec4f, ic: vec4f) -> vec4f {
-    // Phase 1 stub: future phases (cloak/EMP/IC/warp) wire branches here.
-    var c = color;
-    if ((flags & 1u) != 0u) { c.a = c.a * params.x; }                // cloak
-    if ((flags & 2u) != 0u) {                                        // EMP
-        let luma = dot(c.rgb, vec3f(0.299, 0.587, 0.114));
-        c = vec4f(mix(c.rgb, vec3f(luma), params.y), c.a);
-    }
-    if ((flags & 4u) != 0u) {                                        // iron curtain
-        c = vec4f(mix(c.rgb, ic.rgb, ic.a), c.a);
-    }
-    if ((flags & 8u) != 0u) { c.a = c.a * params.w; }                // warp
-    return c;
+fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec4f {
+    // Original location: `RA2-GAME.EXE-IDB` canon,
+    // `rendering.drawStateEffects.ra2yr.json`; the same branch exists in the
+    // SHP shader so representation does not affect active visual state.
+    // Match the SHP path exactly: selector opacity plus independent YR
+    // invulnerability brightness, with no inferred EMP or mirror styling.
+    return vec4f(color.rgb * effect_tint.rgb, color.a * params.x);
 }
 
 @fragment
@@ -125,7 +119,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     // others sample the theater palette directly.
     var rgb: vec3f;
     if (byte >= 16u && byte < 32u) {
-        let ramp_coord: vec2i = vec2i(i32(byte - 16u), i32(in.house_color_idx));
+        let ramp_coord: vec2i = vec2i(i32(byte - 16u), i32(in.remap_row));
         rgb = textureLoad(house_ramp, ramp_coord, 0).rgb;
     } else {
         let palette_coord: vec2i = vec2i(i32(byte), 0);
@@ -133,6 +127,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     }
 
     var color: vec4f = vec4f(rgb * in.tint, in.alpha);
-    color = apply_fx(color, in.fx_flags, in.fx_params, in.ic_tint);
+    color = apply_fx(color, in.fx_flags, in.fx_params, in.effect_tint);
     return color;
 }

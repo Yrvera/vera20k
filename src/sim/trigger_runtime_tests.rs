@@ -235,6 +235,7 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
             MasterFrameTestRung::Triggers,
             MasterFrameTestRung::LogicVector,
             MasterFrameTestRung::Houses,
+            MasterFrameTestRung::TeamScript,
             MasterFrameTestRung::FrameCommit,
             MasterFrameTestRung::PendingDelete,
         ]

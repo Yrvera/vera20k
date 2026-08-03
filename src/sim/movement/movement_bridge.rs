@@ -46,6 +46,44 @@ pub(super) enum BridgeStateUpdate {
     Unchanged,
 }
 
+/// Persisted analogue of the runtime Foot bridge-state mismatch byte.
+///
+/// The owner integration stores this alongside locomotor runtime state. It is
+/// intentionally independent from A* bridge-layer selection and from the
+/// `on_bridge` occupancy byte.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RuntimeBridgeTransitionState {
+    /// Set when candidate bridge bit and current bridge state differ.
+    pub pending_mismatch: bool,
+}
+
+/// Result supplied by the runtime-only bridge policy seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeBridgePolicyResult {
+    Continue,
+    Reject,
+}
+
+/// Evaluate the runtime bridge mismatch branch without borrowing A* policy.
+///
+/// Original: `FootClass::EvaluateCellEnterabilityOrCost` (YR 1.001) compares
+/// candidate `CellClass+0x140 & 0x100` with Foot `+0x8c`, sets `+0x68b` on a
+/// mismatch, then calls virtual `+0x29c` to select the local return path.
+pub(crate) fn evaluate_runtime_bridge_transition(
+    state: &mut RuntimeBridgeTransitionState,
+    candidate_bridge_bit: bool,
+    current_bridge_state: bool,
+    policy: impl FnOnce() -> RuntimeBridgePolicyResult,
+) -> RuntimeBridgePolicyResult {
+    let mismatch = candidate_bridge_bit != current_bridge_state;
+    state.pending_mismatch = mismatch;
+    if mismatch {
+        policy()
+    } else {
+        RuntimeBridgePolicyResult::Continue
+    }
+}
+
 /// Read-only runtime bridge row for oracle diagnostics.
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct BridgeRuntimeOracleTick {
@@ -353,6 +391,31 @@ mod tests {
         assert!(!projected_on_bridge(true, BridgeStateUpdate::Clear));
         assert!(projected_on_bridge(true, BridgeStateUpdate::Unchanged));
         assert!(!projected_on_bridge(false, BridgeStateUpdate::Unchanged));
+    }
+
+    #[test]
+    fn runtime_bridge_mismatch_sets_pending_state_and_uses_policy_seam() {
+        let mut state = RuntimeBridgeTransitionState::default();
+        let outcome = evaluate_runtime_bridge_transition(&mut state, true, false, || {
+            RuntimeBridgePolicyResult::Reject
+        });
+
+        assert!(state.pending_mismatch);
+        assert_eq!(outcome, RuntimeBridgePolicyResult::Reject);
+    }
+
+    #[test]
+    fn matching_runtime_bridge_state_skips_policy_seam() {
+        let mut state = RuntimeBridgeTransitionState::default();
+        let mut policy_called = false;
+        let outcome = evaluate_runtime_bridge_transition(&mut state, true, true, || {
+            policy_called = true;
+            RuntimeBridgePolicyResult::Reject
+        });
+
+        assert!(!state.pending_mismatch);
+        assert!(!policy_called);
+        assert_eq!(outcome, RuntimeBridgePolicyResult::Continue);
     }
 
     #[test]

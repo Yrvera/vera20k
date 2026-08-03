@@ -45,7 +45,8 @@ use super::movement_bridge::{
     BRIDGE_Z_OFFSET, BridgeStateUpdate, apply_pending_bridge_render_state,
 };
 use super::movement_occupancy::{
-    DeferredCellCheck, build_live_building_entry_skip_map, evaluate_runtime_can_enter_cell,
+    DeferredCellCheck, build_live_building_entry_skip_map,
+    evaluate_runtime_can_enter_cell_with_transition,
     handle_deferred_occupancy, has_unignored_runtime_occupants_on_layers,
     runtime_can_enter_direction, runtime_current_effective_height,
 };
@@ -269,6 +270,7 @@ fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapsho
         owner: e.owner,
         too_big_to_fit_under_bridge: e.too_big_to_fit_under_bridge,
         on_bridge: e.on_bridge,
+        runtime_bridge_transition: e.runtime_bridge_transition,
         locomotor: e.locomotor.clone(),
         rot: e.locomotor.as_ref().map(|l| l.rot).unwrap_or(0),
         bypass_grid: e
@@ -842,9 +844,20 @@ fn classify_drive_track_chain_entry(
                 TerrainEntryMode::RuntimeTransition,
             )
         }),
-        MovementLayer::Bridge => {
-            path_grid.is_some_and(|grid| grid.is_walkable_on_layer(x, y, MovementLayer::Bridge))
-        }
+        MovementLayer::Bridge => path_grid.is_some_and(|grid| {
+            crate::sim::pathfinding::is_cell_passable_for_mover_on_layer_with_speed(
+                grid,
+                x,
+                y,
+                MovementLayer::Bridge,
+                Some(snap.movement_zone),
+                snap.speed_type,
+                resolved_terrain,
+                entity_cost_grid,
+                snap.bypass_grid,
+                TerrainEntryMode::RuntimeTransition,
+            )
+        }),
         MovementLayer::Air | MovementLayer::Underground => false,
     };
     if !terrain_clear {
@@ -1977,9 +1990,11 @@ fn tick_movement_with_grids_scoped(
                                 // lookahead: target, direction, current height,
                                 // null parent, arg5=1.
                                 let next_layer = target.layer_at(target.next_index + 1);
-                                let runtime_entry = evaluate_runtime_can_enter_cell(
+                                let runtime_entry = evaluate_runtime_can_enter_cell_with_transition(
                                     path_grid,
                                     next_layer,
+                                    &mut entity.runtime_bridge_transition,
+                                    entity.on_bridge,
                                     super::movement_occupancy::RuntimeCanEnterCellArgs::runtime(
                                         after,
                                         runtime_can_enter_direction(cur_cell, after),
@@ -2050,6 +2065,7 @@ fn tick_movement_with_grids_scoped(
                 active_layer = crossing.active_layer;
                 debug_events.extend(crossing.debug_events);
                 aborted_for_stuck = crossing.aborted_for_stuck;
+                entity.runtime_bridge_transition = crossing.runtime_bridge_transition;
 
                 // Apply bridge layer state BEFORE computing screen position, so that
                 // the render frame always sees consistent state. Without this, there's
@@ -2654,6 +2670,7 @@ mod drive_track_chain_tests {
             owner: test_intern("Americans"),
             too_big_to_fit_under_bridge: false,
             on_bridge: false,
+            runtime_bridge_transition: Default::default(),
             locomotor: Some(locomotor),
             rot: 5,
             bypass_grid: false,

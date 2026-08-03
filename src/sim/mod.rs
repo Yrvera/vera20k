@@ -110,6 +110,7 @@ pub mod game_options;
 pub mod house_state;
 
 // --- Trigger runtime (map trigger evaluation during gameplay) ---
+pub mod team_script_vm;
 pub mod trigger_runtime;
 
 // --- AI, replay, selection, debug ---

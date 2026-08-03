@@ -467,7 +467,7 @@ fn locomotor_tuple(
     (
         locomotor.kind,
         locomotor.slot,
-        locomotor.piggyback,
+        locomotor.piggyback.clone(),
         locomotor.layer,
         locomotor.phase,
     )
@@ -518,7 +518,11 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
                     LocomotorSlot::from_kind(LocomotorKind::Teleport)
                 );
                 assert_eq!(
-                    locomotor.piggyback.expect("CMIN Drive piggyback").kind,
+                    locomotor
+                        .piggyback
+                        .as_ref()
+                        .expect("CMIN Drive piggyback")
+                        .kind,
                     LocomotorKind::Teleport,
                 );
             } else {

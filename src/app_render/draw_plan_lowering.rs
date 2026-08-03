@@ -222,6 +222,7 @@ pub(crate) fn cell_draw_kind(is_wall: bool) -> CellDrawKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::draw_state::DrawState;
     use crate::render::tactical_draw_plan::{BlitPolicy, RenderZPolicy, SpriteEncoding};
 
     fn cell(id: DrawId, is_wall: bool) -> PlannedCellInstance {
@@ -232,7 +233,10 @@ mod tests {
                 policy: BlitPolicy::translucent(SpriteEncoding::Terrain, RenderZPolicy::None),
             },
             instance: SpriteInstance {
-                fx_flags: id as u32,
+                draw_state: DrawState {
+                    fx_flags: id as u32,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         }
@@ -244,7 +248,7 @@ mod tests {
         assert_eq!(
             lowered
                 .iter()
-                .map(|instance| instance.fx_flags)
+                .map(|instance| instance.draw_state.fx_flags)
                 .collect::<Vec<_>>(),
             [4, 3, 2]
         );
@@ -327,7 +331,10 @@ mod tests {
             policy: BlitPolicy::opaque(SpriteEncoding::Plain),
             page,
             instance: SpriteInstance {
-                fx_flags: marker,
+                draw_state: DrawState {
+                    fx_flags: marker,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         };
@@ -344,7 +351,7 @@ mod tests {
         assert_eq!(
             lowered
                 .iter()
-                .map(|(page, instance)| (*page, instance.fx_flags))
+                .map(|(page, instance)| (*page, instance.draw_state.fx_flags))
                 .collect::<Vec<_>>(),
             [(0, 30), (1, 40), (2, 50)]
         );

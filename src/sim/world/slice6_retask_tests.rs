@@ -120,8 +120,10 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // (6f78bac7) world_hash.rs swapped in and all branch behaviour kept, this probe
 // read 0xFEEA0679D9429547 — neither the old baseline nor the branch value. So
 // hashed state content changed, not just which fields are folded.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x99F0_E195_4E2F_94C9;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8477_F4BD_F3D8_B12B;
+// Native Move mission cadence now advances MissionCom and Scenario RNG.
+// Re-baselined after hashing the newly persisted YR runtime-contract state.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xAE2C_DACB_54A2_27E3;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8D9E_A32D_E86D_05DA;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -177,7 +179,7 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8477_F4BD_F3D8_B12B;
 // wired in this slice (deploy-begin off, undeploy-complete on, destination-
 // accepted on) changed no other hashed state in these fixtures. The absolute
 // per-stream RNG pins held throughout.
-const SLICE6_BASELINE_HASH: u64 = 0x6818_979C_3D5A_113D;
+const SLICE6_BASELINE_HASH: u64 = 0x266F_0EBE_9DE0_904C;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
