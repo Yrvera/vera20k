@@ -16,6 +16,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         ui_name: None,
         cost: 0,
         strength: 100,
+        dont_score: false,
         armor: "none".to_string(),
         speed: 6,
         weight: SimFixed::lit("2.0"),

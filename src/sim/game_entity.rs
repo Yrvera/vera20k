@@ -250,6 +250,33 @@ pub struct GameEntity {
     pub foundation: String,
     /// Veterancy level: 0 = rookie, 100 = veteran, 200 = elite.
     pub veterancy: u16,
+    /// House credited with destroying this object, captured at the instant its
+    /// health reached zero.
+    ///
+    /// Separate from `last_attacker_id` on purpose. That field is retaliation
+    /// bookkeeping and the retaliation pass clears it unconditionally in the same
+    /// tick, which for infantry runs *before* the object is uninitialised (they
+    /// linger in the logic vector through a death animation), so reading it later
+    /// loses the killer. gamemd has no equivalent problem — its kill-record step
+    /// receives the actual killer at the moment of destruction — so this field is
+    /// that moment, recorded once.
+    #[serde(skip)]
+    pub killed_by: Option<InternedId>,
+    /// Score value this object's destruction is worth to `killed_by`, resolved at
+    /// the same instant from the type's `Cost=` and this object's veterancy.
+    /// Resolved at capture time because the rules are in hand there and the
+    /// veterancy is still the value it died at.
+    #[serde(skip)]
+    pub kill_award_points: i32,
+    /// Type's `DontScore=`, copied in at spawn so the score bookkeeping can honor
+    /// it without a `RuleSet` borrow — the same reason `foundation` is copied.
+    ///
+    /// Not serialized, matching the rest of the score bookkeeping. A snapshot
+    /// reload therefore clears it and the affected types (slaves, spawner
+    /// missiles) resume contributing phantom entries until this is promoted to a
+    /// persisted field.
+    #[serde(skip)]
+    pub dont_score: bool,
     /// Fog-of-war sight range in cells.
     pub vision_range: u16,
 
@@ -758,6 +785,9 @@ impl GameEntity {
             )
         };
         Self {
+            killed_by: None,
+            kill_award_points: 0,
+            dont_score: false,
             stable_id,
             position: Position {
                 rx,

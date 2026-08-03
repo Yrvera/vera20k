@@ -437,6 +437,13 @@ pub fn tick_production_with_overlay_registry(
         };
         let done_type_str = sim.interner.resolve(done_type).to_string();
         let produced_category = rules.object(&done_type_str).map(|o| o.category);
+        // Score-screen "Built" column. gamemd increments a per-category built
+        // counter once per finished factory item, at the same point: the item is
+        // complete and about to be delivered. Counted here (not at spawn) so a
+        // building that the player never places still counts, as it does natively.
+        if let Some(house) = sim.houses.get_mut(&owner_id) {
+            house.stats.built = house.stats.built.saturating_add(1);
+        }
         if produced_category == Some(crate::rules::object_type::ObjectCategory::Building) {
             sim.production
                 .ready_by_owner

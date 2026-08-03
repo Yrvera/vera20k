@@ -2224,8 +2224,16 @@ fn tick_movement_with_grids_scoped(
             }
         }
         if entities.get(victim_id).is_some() {
+            // Crushing is a lethal path that never produces a damage event, so
+            // the score-screen kill credit is captured here, against the same
+            // shared helper the damage loop uses. Running infantry over is
+            // routine, so without this the Kills column reads visibly low.
+            let crusher_owner = entities.get(kill.crusher_id).map(|crusher| crusher.owner);
             if let Some(victim) = entities.get_mut(victim_id) {
                 victim.health.current = 0;
+                if let Some(rules) = rules {
+                    crate::sim::combat::capture_kill_credit(victim, crusher_owner, rules, interner);
+                }
             }
             lifecycle_requests.push(LifecycleRequest::Uninit {
                 stable_id: victim_id,

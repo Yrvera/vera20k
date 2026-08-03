@@ -7,6 +7,7 @@
 use crate::map::entities::EntityCategory;
 use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
+use crate::sim::intern::InternedId;
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::occupancy::{
     BUILDING_OCCUPATION_BIT, CellListInsertion, OBJECT_OCCUPATION_BIT, VEHICLE_OCCUPATION_BIT,
@@ -834,11 +835,18 @@ impl Simulation {
 
     /// Existing Rust owner-count mutation with an explicit exactly-once guard.
     pub(crate) fn release_owned_count_once(&mut self, stable_id: u64) {
-        let Some((owner, category, already_released)) = self
-            .substrate
-            .entities
-            .get(stable_id)
-            .map(|entity| (entity.owner, entity.category, entity.owned_count_released))
+        let Some((owner, category, already_released, destroyed, killed_by, award, dont_score)) =
+            self.substrate.entities.get(stable_id).map(|entity| {
+                (
+                    entity.owner,
+                    entity.category,
+                    entity.owned_count_released,
+                    entity.health.current == 0,
+                    entity.killed_by,
+                    entity.kill_award_points,
+                    entity.dont_score,
+                )
+            })
         else {
             return;
         };
@@ -850,6 +858,65 @@ impl Simulation {
         }
         let owner_name = self.interner.resolve(owner).to_string();
         self.decrement_owned_count(&owner_name, category);
+        if destroyed && !dont_score {
+            self.record_match_kill_and_loss(owner, category, killed_by, award);
+        }
+    }
+
+    /// Score-screen bookkeeping for one destroyed object: a loss for its owner, a
+    /// kill for the house credited with destroying it, and that house's score
+    /// award.
+    ///
+    /// This runs at the single owned-count release point rather than in the
+    /// damage loop so it fires exactly once per object, but it does NOT
+    /// re-derive the killer here — `killed_by` was captured at the instant of
+    /// destruction, which is where gamemd records it.
+    ///
+    /// A `DontScore=` victim never reaches this recorder at all — its loss is
+    /// suppressed alongside its kill and points, matching the single early return
+    /// gamemd takes before any of the three.
+    ///
+    /// The kill is counted regardless of how the killer relates to the victim:
+    /// gamemd increments the killing house's kill table for allied and
+    /// self-inflicted destruction too, and suppresses only the *points*. (It also
+    /// has a victim-type suppression flag with no VERA equivalent yet —
+    /// UNCHECKED, not modelled.) Sold or otherwise despawned objects reach this
+    /// helper with non-zero health and the caller filters them out.
+    fn record_match_kill_and_loss(
+        &mut self,
+        owner: InternedId,
+        category: EntityCategory,
+        killed_by: Option<InternedId>,
+        award: i32,
+    ) {
+        let structure = category == EntityCategory::Structure;
+        if let Some(house) = self.houses.get_mut(&owner) {
+            if structure {
+                house.stats.buildings_lost = house.stats.buildings_lost.saturating_add(1);
+            } else {
+                house.stats.units_lost = house.stats.units_lost.saturating_add(1);
+            }
+        }
+        let Some(killer) = killed_by else {
+            return;
+        };
+        // Destroying an ally's object (or one's own) still counts as a kill but
+        // is worth no score.
+        let friendly = crate::map::houses::are_houses_friendly(
+            &self.house_alliances,
+            self.interner.resolve(killer),
+            self.interner.resolve(owner),
+        );
+        if let Some(house) = self.houses.get_mut(&killer) {
+            if structure {
+                house.stats.buildings_killed = house.stats.buildings_killed.saturating_add(1);
+            } else {
+                house.stats.units_killed = house.stats.units_killed.saturating_add(1);
+            }
+            if !friendly {
+                house.stats.score_points = house.stats.score_points.saturating_add(award);
+            }
+        }
     }
 
     pub(crate) fn apply_lifecycle_request(&mut self, request: LifecycleRequest) {

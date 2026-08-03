@@ -48,6 +48,13 @@ pub struct CountryRules {
     /// commented out in stock rulesmd). Applied at ore/gem deposit time to BOTH the base
     /// credits and the OrePurifier-bonus credits.
     pub income_ppm: i64,
+    /// `UIName=` — the country's string-table key (e.g. `Name:Americans`).
+    /// gamemd fills a house's stored display name from this key's localized text,
+    /// which is what the end-of-match score screen shows in the Player column.
+    pub ui_name: Option<String>,
+    /// `Name=` — the country's plain English name, the fallback when `UIName=`
+    /// is absent or its key does not resolve.
+    pub name: Option<String>,
 }
 
 /// PPM scale for `IncomeMult` (1_000_000 = 1.0×). Must equal `apply_income_mult`'s divisor.
@@ -61,6 +68,8 @@ impl Default for CountryRules {
         Self {
             multiplay_passive: false,
             income_ppm: INCOME_PPM_SCALE,
+            ui_name: None,
+            name: None,
         }
     }
 }
@@ -75,6 +84,14 @@ impl CountryRules {
                 .get_f32("IncomeMult")
                 .map(|v| (v as f64 * INCOME_PPM_SCALE as f64).round() as i64)
                 .unwrap_or(INCOME_PPM_SCALE),
+            ui_name: section
+                .get("UIName")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            name: section
+                .get("Name")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
         }
     }
 }
@@ -2495,6 +2512,16 @@ impl RuleSet {
             .get(country.0 as usize)
             .copied()
             .flatten()
+    }
+
+    /// The country's `UIName=` string-table key, then its plain `Name=`.
+    /// Callers resolve the key through the CSF table; the plain name is the
+    /// fallback when there is no key or the key is missing from the table.
+    pub fn country_display_name_sources(&self, id: &str) -> (Option<&str>, Option<&str>) {
+        match self.country_rules(id) {
+            Some(rules) => (rules.ui_name.as_deref(), rules.name.as_deref()),
+            None => (None, None),
+        }
     }
 
     /// Case-insensitive country lookup (gamemd parity), exact key first.
