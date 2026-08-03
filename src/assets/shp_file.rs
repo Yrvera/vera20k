@@ -253,7 +253,14 @@ impl ShpFile {
             rgba.push(color.r);
             rgba.push(color.g);
             rgba.push(color.b);
-            rgba.push(color.a);
+            // Index 0 is transparent by BLITTER contract, not by palette
+            // content: gamemd's SHP blitters skip index-0 pixels outright, and
+            // retail palettes carry no alpha for the loaders to preserve. Keying
+            // this on `color.a` broke the moment the theater/unit palettes were
+            // loaded byte-faithfully — every sprite grew an opaque palette-0
+            // (blue) box. Other indices keep the palette's alpha so the
+            // chroma-key policy of the standard loader still applies.
+            rgba.push(if palette_index == 0 { 0 } else { color.a });
         }
 
         Ok(rgba)
@@ -295,6 +302,29 @@ impl ShpFile {
 mod tests {
     use super::*;
     use crate::assets::pal_file::Color;
+
+    /// PIN — index 0 is transparent by BLITTER contract, not palette content.
+    ///
+    /// Retail palettes carry no alpha; the loaders preserve that (index 0
+    /// opaque in the `Palette`). gamemd's SHP blitters skip index-0 pixels
+    /// unconditionally, so frame conversion must key on the INDEX. When this
+    /// keyed on `color.a` instead, every sprite in the game grew an opaque
+    /// palette-0 (blue) box the moment palette loading went byte-faithful —
+    /// invisible to the whole suite until a live run.
+    #[test]
+    fn frame_to_rgba_bakes_index_zero_transparent_even_when_palette_has_no_alpha() {
+        let shp = ShpFile::from_bytes(&make_test_shp_raw()).expect("parse");
+        // 768 raw bytes -> gamemd_ui palette: EVERY entry opaque, index 0 included.
+        let pal = Palette::from_bytes_gamemd_ui(&vec![21u8; 768]).expect("palette");
+        assert_eq!(pal.colors[0].a, 255, "fixture guard: palette carries no alpha policy");
+
+        // Test frame pixels are [1, 2, 3, 0] — the last one is index 0.
+        let rgba = shp.frame_to_rgba(0, &pal).expect("convert");
+        assert_eq!(rgba[3], 255, "index 1 stays opaque");
+        assert_eq!(rgba[7], 255, "index 2 stays opaque");
+        assert_eq!(rgba[11], 255, "index 3 stays opaque");
+        assert_eq!(rgba[15], 0, "index 0 must bake transparent regardless of palette alpha");
+    }
 
     /// Build a minimal valid SHP file with one uncompressed 2x2 frame.
     fn make_test_shp_raw() -> Vec<u8> {

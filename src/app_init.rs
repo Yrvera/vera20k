@@ -640,9 +640,8 @@ pub(crate) fn load_map_from_initial(
         .unwrap_or(2);
     let mut terrain_scenario_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
     let mut variant_main_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
-    let mut scenario_fill_ranged = |low, high| {
-        terrain_scenario_rng.next_range_u32_inclusive(low, high)
-    };
+    let mut scenario_fill_ranged =
+        |low, high| terrain_scenario_rng.next_range_u32_inclusive(low, high);
     let mut variant_draw = || variant_main_rng.next_u32();
     let mut variant_selector = tile_variant_selector_cache.begin_load(&mut variant_draw);
     let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector(
@@ -1253,32 +1252,54 @@ pub(crate) fn load_map_from_initial(
         );
     }
 
-    // Prefer the first multiplayer start waypoint as the initial anchor when
-    // present. Otherwise, anchor on the middle of the playable area.
+    // Anchor the opening view on the LOCAL player's start — retail opens a
+    // skirmish looking at your own MCV, and anything else strands the player
+    // staring at shroud. The local house's units are already spawned at the
+    // assigned start slot by this point, so the MCV's actual cell is the
+    // authoritative anchor. Falling back to the first multiplayer start
+    // waypoint is wrong on any map with more than one start slot (it is some
+    // OTHER player's corner unless you happened to draw slot one); it remains
+    // only as the no-local-spawn fallback, then the middle of the playable
+    // area for maps with no start waypoints at all.
     //
     // This is a **world point**, not a camera position: the sidebar's real width
     // depends on the UI scale, which only exists once `AppState` is built, so the
     // conversion to a camera top-left happens in `app_transitions` where the
     // scaled layout spec is available.
-    let (camera_anchor_x, camera_anchor_y): (f32, f32) =
-        if let Some(start_wp) = waypoints::first_multiplayer_start(&map_data.waypoints) {
-            let wp_z = height_map
-                .get(&(start_wp.rx, start_wp.ry))
-                .copied()
-                .unwrap_or(0);
-            crate::app_camera::cell_centre_world_point(start_wp.rx, start_wp.ry, wp_z)
-        } else {
-            let (area_x, area_y, area_w, area_h) = match local_bounds {
-                Some(b) => (b.pixel_x, b.pixel_y, b.pixel_w, b.pixel_h),
-                None => (
-                    grid.origin_x,
-                    grid.origin_y,
-                    grid.world_width,
-                    grid.world_height,
-                ),
-            };
-            (area_x + area_w / 2.0, area_y + area_h / 2.0)
+    let local_start_cell: Option<(u16, u16)> = initial_local_owner
+        .as_deref()
+        .zip(simulation.as_ref())
+        .and_then(|(owner, sim)| {
+            let owner_id = sim.interner.get(owner)?;
+            sim.substrate
+                .entities
+                .keys_sorted()
+                .into_iter()
+                .filter_map(|id| sim.substrate.entities.get(id))
+                .find(|e| e.owner == owner_id)
+                .map(|e| (e.position.rx, e.position.ry))
+        });
+    let (camera_anchor_x, camera_anchor_y): (f32, f32) = if let Some((rx, ry)) = local_start_cell {
+        let z = height_map.get(&(rx, ry)).copied().unwrap_or(0);
+        crate::app_camera::cell_centre_world_point(rx, ry, z)
+    } else if let Some(start_wp) = waypoints::first_multiplayer_start(&map_data.waypoints) {
+        let wp_z = height_map
+            .get(&(start_wp.rx, start_wp.ry))
+            .copied()
+            .unwrap_or(0);
+        crate::app_camera::cell_centre_world_point(start_wp.rx, start_wp.ry, wp_z)
+    } else {
+        let (area_x, area_y, area_w, area_h) = match local_bounds {
+            Some(b) => (b.pixel_x, b.pixel_y, b.pixel_w, b.pixel_h),
+            None => (
+                grid.origin_x,
+                grid.origin_y,
+                grid.world_width,
+                grid.world_height,
+            ),
         };
+        (area_x + area_w / 2.0, area_y + area_h / 2.0)
+    };
     // Load cameo MIX archives so that *ICON.SHP files are findable.
     // These nested MIXes live inside local.mix/localmd.mix and aren't
     // auto-extracted by the two-level brute-force pass.

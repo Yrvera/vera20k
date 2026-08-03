@@ -202,18 +202,23 @@ impl TmpFile {
             // Inside the diamond, palette index 0 is a valid color — render opaque.
             // Outside the diamond, index 0 means transparent background.
             // Chroma key (magenta, idx != 0) stays transparent everywhere.
-            if idx == 0
-                && color.a == 0
-                && is_inside_diamond(
+            //
+            // The index-0 decision must NOT consult the palette's alpha: retail
+            // palettes carry no alpha at all — in gamemd, transparency is the
+            // BLITTER skipping index 0, never a palette property. The loaders
+            // match the retail bytes (index 0 opaque), so gating this on
+            // `color.a == 0` silently turned every out-of-diamond corner into
+            // an opaque palette-0 (blue) triangle on every tile of every map.
+            if idx == 0 {
+                let inside = is_inside_diamond(
                     (i as u32) % tile.pixel_width,
                     (i as u32) / tile.pixel_width,
                     self.tile_width,
                     self.tile_height,
                     tile.offset_x,
                     tile.offset_y,
-                )
-            {
-                rgba.push(255);
+                );
+                rgba.push(if inside { 255 } else { 0 });
             } else {
                 rgba.push(color.a);
             }
@@ -321,6 +326,28 @@ mod tests {
         }
         data.extend_from_slice(&vec![0u8; dpixels]); // depth
         data
+    }
+
+    /// PIN — out-of-diamond corners are transparent by GEOMETRY, not palette alpha.
+    ///
+    /// The rectangular tile buffer is index-0 filler outside the isometric
+    /// diamond. gamemd never draws it (the blitter skips index 0); when this
+    /// conversion gated the corner test on `color.a == 0`, a byte-faithful
+    /// (no-alpha) palette turned every corner into an opaque palette-0 (blue)
+    /// triangle on every tile of every map.
+    #[test]
+    fn tile_corners_bake_transparent_even_when_palette_has_no_alpha() {
+        let tmp = TmpFile::from_bytes(&make_test_tmp()).expect("parse");
+        let pal = crate::assets::pal_file::Palette::from_bytes_gamemd_ui(&vec![21u8; 768])
+            .expect("palette");
+        assert_eq!(pal.colors[0].a, 255, "fixture guard: palette carries no alpha policy");
+
+        let rgba = tmp.tile_to_rgba(0, &pal).expect("convert");
+        // 8x4 tile, row 0 diamond width 4 -> columns 0,1 are outside the diamond.
+        assert_eq!(rgba[3], 0, "corner (0,0) must be transparent");
+        assert_eq!(rgba[7], 0, "corner (1,0) must be transparent");
+        // Row 0 columns 2..6 are inside the diamond (indices 1..): opaque.
+        assert_eq!(rgba[2 * 4 + 3], 255, "diamond pixel stays opaque");
     }
 
     #[test]
