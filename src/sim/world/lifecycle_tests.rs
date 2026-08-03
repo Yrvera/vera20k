@@ -1935,6 +1935,124 @@ fn lifecycle_authority_immediate_uninit_releases_owned_count_once() {
 }
 
 #[test]
+fn score_stats_credit_the_killer_and_charge_the_victim_once() {
+    let mut sim = Simulation::new();
+    let victim_owner = sim.interner.intern("Americans");
+    let killer_owner = sim.interner.intern("Russians");
+    sim.houses.insert(
+        victim_owner,
+        HouseState::new(victim_owner, 0, None, true, 0, 10),
+    );
+    sim.houses.insert(
+        killer_owner,
+        HouseState::new(killer_owner, 1, None, false, 0, 10),
+    );
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    let victim = sim.substrate.entities.get_mut(1).unwrap();
+    victim.health.current = 0;
+    victim.killed_by = Some(killer_owner);
+    victim.kill_award_points = 25;
+
+    // A repeated uninit must not double-count: the exactly-once owned-count
+    // guard covers the statistics too.
+    sim.uninit(1);
+    sim.uninit(1);
+
+    assert_eq!(sim.houses.get(&victim_owner).unwrap().stats.losses(), 1);
+    assert_eq!(sim.houses.get(&victim_owner).unwrap().stats.kills(), 0);
+    let killer = sim.houses.get(&killer_owner).unwrap();
+    assert_eq!(killer.stats.kills(), 1);
+    assert_eq!(
+        killer.stats.units_killed, 1,
+        "a unit victim must land in the unit bucket, not the building one"
+    );
+    assert_eq!(killer.stats.score_points, 25);
+}
+
+#[test]
+fn score_stats_survive_the_retaliation_pass_clearing_last_attacker() {
+    // Dying infantry linger in the logic vector, so the retaliation pass wipes
+    // `last_attacker_id` before they are removed. The kill record is captured at
+    // the instant of destruction and must not depend on that field.
+    let mut sim = Simulation::new();
+    let victim_owner = sim.interner.intern("Americans");
+    let killer_owner = sim.interner.intern("Russians");
+    sim.houses.insert(
+        victim_owner,
+        HouseState::new(victim_owner, 0, None, true, 0, 10),
+    );
+    sim.houses.insert(
+        killer_owner,
+        HouseState::new(killer_owner, 1, None, false, 0, 10),
+    );
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    let victim = sim.substrate.entities.get_mut(1).unwrap();
+    victim.health.current = 0;
+    victim.killed_by = Some(killer_owner);
+    victim.kill_award_points = 10;
+    victim.last_attacker_id = None;
+
+    sim.uninit(1);
+
+    assert_eq!(sim.houses.get(&killer_owner).unwrap().stats.kills(), 1);
+    assert_eq!(
+        sim.houses.get(&killer_owner).unwrap().stats.score_points,
+        10
+    );
+}
+
+#[test]
+fn score_stats_ignore_a_removal_that_was_not_a_destruction() {
+    // Selling or otherwise despawning a healthy object is not a loss.
+    let mut sim = Simulation::new();
+    let owner = sim.interner.intern("Americans");
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
+    insert_entity(&mut sim, 1, EntityCategory::Structure);
+    sim.substrate.entities.get_mut(1).unwrap().health.current = 400;
+
+    sim.uninit(1);
+
+    assert_eq!(sim.houses.get(&owner).unwrap().stats.losses(), 0);
+}
+
+#[test]
+fn score_stats_count_a_self_inflicted_kill_but_award_no_points() {
+    // Self-inflicted destruction (own death weapon, own splash) is both a loss
+    // and a kill for the house — native increments the kill table regardless of
+    // relation and suppresses only the points.
+    let mut sim = Simulation::new();
+    let owner = sim.interner.intern("Americans");
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
+    insert_entity(&mut sim, 1, EntityCategory::Structure);
+    let victim = sim.substrate.entities.get_mut(1).unwrap();
+    victim.health.current = 0;
+    victim.killed_by = Some(owner);
+    victim.kill_award_points = 40;
+
+    sim.uninit(1);
+
+    let house = sim.houses.get(&owner).unwrap();
+    assert_eq!(house.stats.buildings_lost, 1);
+    assert_eq!(house.stats.buildings_killed, 1);
+    assert_eq!(
+        house.stats.score_points, 0,
+        "an allied or self-inflicted victim is worth no score"
+    );
+}
+
+#[test]
+fn score_column_sums_the_harvest_and_kill_feeders() {
+    use crate::sim::house_state::MatchStatistics;
+    let stats = MatchStatistics {
+        score_points: 450,
+        ..Default::default()
+    };
+    assert_eq!(stats.score(1_200), 1_650);
+}
+
+#[test]
 fn lifecycle_authority_animated_death_stays_represented_until_uninit() {
     let mut sim = Simulation::new();
     let owner = sim.interner.intern("Americans");

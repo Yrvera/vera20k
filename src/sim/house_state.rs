@@ -122,6 +122,20 @@ pub struct HouseState {
     /// Encoding: 0=N, 1=E, 2=S, 3=W. Computed at game start from base_center
     /// via the closest-edge-of-bounds algorithm.
     pub waypoint_edge: u8,
+    /// End-of-match score-screen statistics (Kills / Losses / Built columns).
+    ///
+    /// gamemd keeps the same three quantities on the house: per-house
+    /// `UnitsKilled`/`BuildingsKilled` tables that the score screen sums, a
+    /// `UnitsLost`/`BuildingsLost` pair, and four "quantity built" counters that
+    /// its `Record_Last_Built` step increments once per finished factory item.
+    /// Only the totals are player-visible, so the Rust model keeps totals.
+    ///
+    /// Deliberately NOT serialized and NOT folded into the state hash: they feed
+    /// one post-match screen and never a sim decision, and adding them to either
+    /// would move a shared schema this slice is not allowed to touch. The
+    /// consequence is that a save/load resets them (recorded DRIFT).
+    #[serde(skip)]
+    pub stats: MatchStatistics,
     /// Per-house wallet/storage/statistics (the authority flip). The wallet stays
     /// the authoritative `HouseState.credits`; `economy.credits` is a per-sweep shim
     /// loaded from / stored to it and is NOT hashed. The statistics
@@ -162,8 +176,57 @@ impl HouseState {
             base_center: None,
             tech_level,
             waypoint_edge: 0,
+            stats: MatchStatistics::default(),
             economy: Economy::default(),
         }
+    }
+}
+
+/// Post-match statistics accumulated for the end-of-match score screen.
+///
+/// gamemd sums per-victim-house kill tables into one number for the Kills
+/// column, adds its two loss counters for the Losses column, and sums its four
+/// per-category built counters for the Built column. Totals are all the screen
+/// ever reads, so these are kept as totals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MatchStatistics {
+    /// Non-building enemy objects this house destroyed.
+    pub units_killed: u32,
+    /// Enemy buildings this house destroyed.
+    pub buildings_killed: u32,
+    /// Non-building objects of this house that were destroyed.
+    pub units_lost: u32,
+    /// Buildings of this house that were destroyed.
+    pub buildings_lost: u32,
+    /// Objects this house finished producing.
+    pub built: u32,
+    /// Score earned by destroying other houses' objects: the sum of each
+    /// victim's point value at the moment it died.
+    ///
+    /// gamemd keeps ONE score accumulator per house with two large feeders — the
+    /// ore-deposit statistic and this kill-points stream — and the score screen
+    /// shows their sum. The ore half is the existing hashed
+    /// `Economy::harvested_credits`; this is the kill half, split out only so the
+    /// hashed accumulator is not disturbed. Always read the two together through
+    /// [`MatchStatistics::score`].
+    pub score_points: i32,
+}
+
+impl MatchStatistics {
+    /// Score-screen Kills column: units + buildings destroyed.
+    pub const fn kills(&self) -> u32 {
+        self.units_killed + self.buildings_killed
+    }
+
+    /// Score-screen Losses column: units + buildings lost.
+    pub const fn losses(&self) -> u32 {
+        self.units_lost + self.buildings_lost
+    }
+
+    /// Score-screen Score column: the house's single native score accumulator,
+    /// reassembled from its harvest and kill feeders.
+    pub const fn score(&self, harvested_credits: i32) -> i32 {
+        harvested_credits.saturating_add(self.score_points)
     }
 }
 

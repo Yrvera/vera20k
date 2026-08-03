@@ -510,6 +510,16 @@ fn replace_match_startup_slots(
     *receipt = None;
 }
 
+/// The handle the player launched this skirmish under, as shown on the loading
+/// screen's progress row. `None` outside a skirmish launch.
+pub(crate) fn launch_player_name(state: &AppState) -> Option<String> {
+    state
+        .loading_session
+        .as_ref()
+        .and_then(|session| session.request.skirmish_launch_session())
+        .map(|launch| launch.player_name.clone())
+}
+
 pub(crate) fn is_native_loading_session(state: &AppState) -> bool {
     state
         .loading_session

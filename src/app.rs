@@ -438,6 +438,15 @@ pub(crate) struct AppState {
     /// Owner name → house color index mapping for atlas key lookups.
     pub(crate) house_color_map: HouseColorMap,
     pub(crate) house_roster: HouseRoster,
+    /// End-of-match score screen contents, resolved off the houses when the match
+    /// ends and held until the player leaves the screen. `None` for result
+    /// screens with no native score analogue (a load failure, a trigger-driven
+    /// campaign end), which keep the non-art fallback.
+    pub(crate) score_screen: Option<crate::ui::score_shell::ScoreScreenModel>,
+    pub(crate) score_shell_state: crate::ui::score_shell::ScoreShellState,
+    /// Number of matches finished this session — the score screen's `Game: n`.
+    /// gamemd increments the same counter as it tears the scenario down.
+    pub(crate) finished_game_count: u32,
     /// Cell (rx, ry) → terrain elevation z for entity/overlay height lookup.
     pub(crate) height_map: BTreeMap<(u16, u16), u8>,
     /// Cell (rx, ry) → bridge deck elevation z. Only bridge cells present.
@@ -744,6 +753,64 @@ impl App {
 
     fn single_player_shell_active(state: &AppState) -> bool {
         state.screen == GameScreen::MainMenu && state.main_menu_show_single_player_shell
+    }
+
+    /// The end-of-match score screen owns input whenever it has both a resolved
+    /// model and the shell chrome to draw it with; without either, the result
+    /// screen falls back to its egui form and egui keeps the input.
+    fn score_shell_active(state: &AppState) -> bool {
+        matches!(state.screen, GameScreen::MissionResult { .. })
+            && state.score_screen.is_some()
+            && state.main_menu_shell_chrome.is_some()
+    }
+
+    fn score_shell_layout(state: &AppState) -> crate::ui::score_shell::ScoreShellLayout {
+        crate::ui::score_shell::compute_layout(state.gpu.config.width, state.gpu.config.height)
+    }
+
+    fn handle_score_shell_mouse_move(state: &mut AppState) {
+        let layout = Self::score_shell_layout(state);
+        state.score_shell_state.continue_hovered =
+            layout.hit_continue(state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+    }
+
+    fn handle_score_shell_mouse_down(state: &mut AppState) {
+        let layout = Self::score_shell_layout(state);
+        let inside =
+            layout.hit_continue(state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+        state.score_shell_state.continue_pressed = inside;
+        if inside {
+            Self::play_main_menu_button_sound(state);
+        }
+    }
+
+    /// Release inside the button leaves the score screen. This is the only exit:
+    /// the native dialog is modal with one Continue button and dismisses to the
+    /// shell, so there is no cancel path to mirror.
+    fn handle_score_shell_mouse_up(state: &mut AppState) {
+        let layout = Self::score_shell_layout(state);
+        let inside =
+            layout.hit_continue(state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+        let activated = state.score_shell_state.continue_pressed && inside;
+        state.score_shell_state.continue_pressed = false;
+        if activated {
+            Self::leave_mission_result_screen(state);
+        }
+    }
+
+    /// Shared teardown for both result-screen forms: flush the deterministic log
+    /// while its simulation is still alive, hand the scenario stream back to the
+    /// offline shell, then drop the match.
+    fn leave_mission_result_screen(state: &mut AppState) {
+        crate::app_sim_tick::flush_replay_log(state);
+        Self::capture_returned_skirmish_rng(state);
+        crate::app_loading::clear_match_startup_state(state);
+        state.score_screen = None;
+        state.score_shell_state = Default::default();
+        state.screen = GameScreen::MainMenu;
+        Self::enter_shell_window_mode(state);
+        state.zoom_level = 1.0;
+        state.zoom_target = 1.0;
     }
 
     fn single_player_shell_layout(
@@ -3711,6 +3778,9 @@ impl ApplicationHandler for App {
                 if !egui_consumed && Self::single_player_shell_active(state) {
                     Self::handle_single_player_shell_mouse_move(state);
                 }
+                if Self::score_shell_active(state) {
+                    Self::handle_score_shell_mouse_move(state);
+                }
                 if !egui_consumed
                     && state.screen == GameScreen::MainMenu
                     && !state.main_menu_shell_failed
@@ -3760,7 +3830,15 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
-                if Self::native_skirmish_shell_active(state) {
+                if Self::score_shell_active(state) {
+                    if button == MouseButton::Left {
+                        if btn_state.is_pressed() {
+                            Self::handle_score_shell_mouse_down(state);
+                        } else {
+                            Self::handle_score_shell_mouse_up(state);
+                        }
+                    }
+                } else if Self::native_skirmish_shell_active(state) {
                     if button == MouseButton::Left {
                         if btn_state.is_pressed() {
                             Self::handle_skirmish_shell_mouse_down(state);
@@ -4332,6 +4410,9 @@ impl App {
             csf: startup_csf,
             house_color_map: HashMap::new(),
             house_roster: HouseRoster::default(),
+            score_screen: None,
+            score_shell_state: Default::default(),
+            finished_game_count: 0,
             height_map: BTreeMap::new(),
             bridge_height_map: BTreeMap::new(),
             tactical_bridge_inverse_map: BTreeMap::new(),
@@ -4830,30 +4911,45 @@ impl App {
                 game_render_output = Some(game_output);
             }
             GameScreen::MissionResult { title, detail } => {
-                app_transitions::clear_screen(&mut encoder, &view);
-                state.egui.begin_frame(&state.window);
-                if crate::ui::mission_status::draw_mission_result_screen(
-                    &state.egui.ctx,
-                    title,
-                    detail,
-                ) {
-                    // Persist the deterministic diagnostic log before the sim
-                    // is torn down, symmetric with return_to_main_menu.
-                    crate::app_sim_tick::flush_replay_log(state);
-                    Self::capture_returned_skirmish_rng(state);
-                    crate::app_loading::clear_match_startup_state(state);
-                    state.screen = GameScreen::MainMenu;
-                    Self::enter_shell_window_mode(state);
-                    state.zoom_level = 1.0;
-                    state.zoom_target = 1.0;
+                // The fallback card's strings are copied out before the score
+                // render takes `state` mutably.
+                let (title, detail) = (title.clone(), detail.clone());
+                // A finished match presents the native score screen. Result
+                // screens with no native analogue (a load failure, a
+                // trigger-driven campaign end) carry no model and keep the
+                // non-art card.
+                let score_rendered = if Self::score_shell_active(state) {
+                    matches!(
+                        crate::app_score_shell_render::render_score_shell(
+                            state,
+                            &mut encoder,
+                            &output.texture,
+                        )?,
+                        crate::app_score_shell_render::ScoreShellRenderResult::Rendered
+                    )
+                } else {
+                    false
+                };
+                if !score_rendered {
+                    app_transitions::clear_screen(&mut encoder, &view);
+                    state.egui.begin_frame(&state.window);
+                    if crate::ui::mission_status::draw_mission_result_screen(
+                        &state.egui.ctx,
+                        &title,
+                        &detail,
+                    ) {
+                        // Persist the deterministic diagnostic log before the sim
+                        // is torn down, symmetric with return_to_main_menu.
+                        Self::leave_mission_result_screen(state);
+                    }
+                    state.egui.end_frame_and_render(
+                        &state.gpu,
+                        &mut encoder,
+                        &view,
+                        &state.window,
+                        state.use_software_cursor(),
+                    );
                 }
-                state.egui.end_frame_and_render(
-                    &state.gpu,
-                    &mut encoder,
-                    &view,
-                    &state.window,
-                    state.use_software_cursor(),
-                );
             }
             GameScreen::SpawnPick => {
                 crate::app_spawn_pick::render_spawn_pick(state, &mut encoder, &view)?;

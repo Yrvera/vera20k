@@ -3510,3 +3510,44 @@ fn under_attack_events_fire_for_enemy_hit_structures_and_miners_only() {
         "plain unit hits do not ping"
     );
 }
+
+/// Build one ObjectType straight from an INI body, so the `Points=` parse is
+/// exercised rather than a hand-set field.
+fn object_with_body(body: &str) -> ObjectType {
+    let ini = IniFile::from_str(&format!(
+        "[TEST]
+{body}"
+    ));
+    ObjectType::from_ini_section(
+        "TEST",
+        ini.section("TEST").expect("test section"),
+        crate::rules::object_type::ObjectCategory::Vehicle,
+    )
+}
+
+#[test]
+fn score_points_scale_with_the_victim_veterancy_tier() {
+    // gamemd asks the victim type for its point value: `Points=` at rookie,
+    // doubled at veteran, tripled at elite.
+    let obj = object_with_body(
+        "Points=20
+",
+    );
+    assert_eq!(obj.points, 20, "Points= parsed off the section");
+    assert_eq!(score_points_for_victim(Some(&obj), 0), 20);
+    assert_eq!(score_points_for_victim(Some(&obj), 99), 20);
+    assert_eq!(score_points_for_victim(Some(&obj), 100), 40);
+    assert_eq!(score_points_for_victim(Some(&obj), 199), 40);
+    assert_eq!(score_points_for_victim(Some(&obj), 200), 60);
+}
+
+#[test]
+fn score_points_are_zero_without_a_points_key_or_a_resolvable_type() {
+    let obj = object_with_body(
+        "Strength=100
+",
+    );
+    assert_eq!(obj.points, 0, "stock default is no score value");
+    assert_eq!(score_points_for_victim(Some(&obj), 200), 0);
+    assert_eq!(score_points_for_victim(None, 200), 0);
+}

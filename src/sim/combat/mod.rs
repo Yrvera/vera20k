@@ -2005,6 +2005,25 @@ pub fn tick_combat_with_fog_and_main_rng(
             }
             if target.health.current == 0 {
                 dead_entities.push(*target_id);
+                // Score-screen kill record, taken here because this is the
+                // instant of destruction — the same point gamemd records a kill.
+                // Reading it later would be unsafe: the retaliation pass clears
+                // `last_attacker_id` unconditionally later this tick, and dying
+                // infantry stay in the logic vector through their death
+                // animation, so they would reach removal with no attacker left.
+                // Guarded on the field being empty so a second lethal hit in the
+                // same tick cannot re-credit the kill to a different house.
+                if target.killed_by.is_none() {
+                    target.killed_by = attacker_owner;
+                    target.kill_award_points = attacker_owner
+                        .map(|_| {
+                            score_points_for_victim(
+                                rules.object(interner.resolve(target.type_ref)),
+                                target.veterancy,
+                            )
+                        })
+                        .unwrap_or(0);
+                }
             }
             // Under-attack ping: another house damaged a base structure or a
             // harvester. Owner-differs is the hostility gate — alliances are
@@ -2145,6 +2164,32 @@ pub(crate) fn build_attacker_snapshot(
         weapon_override: entity.weapon_override,
         garrison,
     }
+}
+
+/// Veterancy at or above this counts as veteran for the score award.
+const VETERAN_VETERANCY: u16 = 100;
+/// Veterancy at or above this counts as elite for the score award.
+const ELITE_VETERANCY: u16 = 200;
+
+/// Score value destroying `victim` is worth, before the allied-victim zeroing the
+/// caller applies.
+///
+/// gamemd asks the victim's type for its point value, which is the type's
+/// `Points=` doubled at veteran and tripled at elite. A type with no `Points=`
+/// (or an unresolvable type) is worth nothing, which is the stock default.
+pub(crate) fn score_points_for_victim(victim: Option<&ObjectType>, veterancy: u16) -> i32 {
+    let points = victim.map_or(0, |obj| obj.points);
+    if points <= 0 {
+        return 0;
+    }
+    let multiplier = if veterancy >= ELITE_VETERANCY {
+        3
+    } else if veterancy >= VETERAN_VETERANCY {
+        2
+    } else {
+        1
+    };
+    points.saturating_mul(multiplier)
 }
 
 /// Resolve one attacker's Phase-2 fire decision + emission for the current tick.

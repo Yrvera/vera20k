@@ -739,6 +739,9 @@ impl Simulation {
     // --- Scenario stream (gamemd Scenario->Random @ Scen+0x218) ---
     // Keep accessors distinct even though several return the same stream today:
     // the intent name is the per-consumer routing record and the grep/audit anchor.
+    pub(crate) fn score_bonus_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // end-of-match score screen: surviving houses' displayed-score bonus
     pub(crate) fn scatter_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // bump displacement, idle/forced scatter, passenger unload exit, sell-eject
