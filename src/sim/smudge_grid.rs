@@ -139,8 +139,9 @@ impl SmudgeGrid {
             let Some(def) = registry.get(type_id) else {
                 continue;
             };
+            // Map load has no occupancy grid yet, so `allow_building` is moot.
             if !grid.passes_placement_gates(
-                entry.rx, entry.ry, def.width, def.height, terrain, overlay, None,
+                entry.rx, entry.ry, def.width, def.height, terrain, overlay, None, false,
             ) {
                 continue;
             }
@@ -155,6 +156,13 @@ impl SmudgeGrid {
 impl SmudgeGrid {
     /// Six-gate placement check: in-bounds, no smudge, no overlay,
     /// no building, slope==0, accepts_smudge. All cells in the W×H footprint must pass.
+    ///
+    /// `allow_building` is gamemd's `allowBuilding` argument to `CanPlaceHere`:
+    /// when set, the building-occupancy gate is skipped entirely and a smudge
+    /// may land under a structure. The spawners pass their `forceBig` flag
+    /// straight through, so a building-destruction centre mark is exempt while
+    /// ordinary anim and survivor marks are not.
+    #[allow(clippy::too_many_arguments)]
     fn passes_placement_gates(
         &self,
         rx: u16,
@@ -164,6 +172,7 @@ impl SmudgeGrid {
         terrain: &ResolvedTerrainGrid,
         overlay: &OverlayGrid,
         occupancy: Option<&OccupancyGrid>,
+        allow_building: bool,
     ) -> bool {
         for dy in 0..h as u16 {
             for dx in 0..w as u16 {
@@ -187,9 +196,11 @@ impl SmudgeGrid {
                 if !tcell.accepts_smudge {
                     return false;
                 }
-                if let Some(occ) = occupancy {
-                    if cell_has_building(occ, cx, cy) {
-                        return false;
+                if !allow_building {
+                    if let Some(occ) = occupancy {
+                        if cell_has_building(occ, cx, cy) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -216,16 +227,40 @@ impl SmudgeGrid {
     }
 }
 
+/// gamemd's placement check asks the cell for a *building*, not for an
+/// obstruction: its lookup walks the cell's object list and returns only
+/// BuildingClass objects. A vehicle sitting on the cell is never returned, so a
+/// shell landing on a tank that survives still leaves its scorch.
 fn cell_has_building(occupancy: &OccupancyGrid, rx: u16, ry: u16) -> bool {
     use crate::sim::movement::locomotor::MovementLayer;
     occupancy
         .get(rx, ry)
-        .map_or(false, |c| c.has_blockers_on(MovementLayer::Ground))
+        .map_or(false, |c| c.has_building_on(MovementLayer::Ground))
 }
 
 impl SmudgeGrid {
     /// Try to place a smudge of the given kind at `coord` (lepton-space).
-    /// Runs the full filter + size selector + CanPlaceHere chain.
+    ///
+    /// Mirrors the two-pass selection both gamemd smudge spawners share.
+    /// Pass 1 walks every SmudgeType carrying the requested Crater/Burn flag
+    /// and runs the placement check (`CanPlaceHere`) on each candidate *at the
+    /// target cell*, keeping only the types whose W×H footprint actually fits —
+    /// this is the *placeable* list. Pass 2 applies the size preference over
+    /// that placeable list. The random pick then runs over a list every entry
+    /// of which is already known to fit, so the pick can never fail: if any
+    /// type fits, a smudge is placed.
+    ///
+    /// Two consequences of that ordering, both load-bearing:
+    /// - a cell that already carries one smudge, or sits under a structure on
+    ///   the `force_big` path, still receives a mark whenever *some* smaller or
+    ///   offset-free type fits, instead of silently dropping the mark because
+    ///   the drawn type happened not to fit;
+    /// - when nothing fits at all the function returns before touching the RNG,
+    ///   so the shared scenario cursor does not advance on a no-op.
+    ///
+    /// `force_big` doubles as gamemd's `allowBuilding` argument to the
+    /// placement check, so building-destruction centre marks skip the
+    /// building-occupancy gate.
     ///
     /// Returns true if a smudge was placed, false otherwise.
     /// Callers MUST destroy the underlying ore (reduce_tiberium(6)) BEFORE this
@@ -247,56 +282,58 @@ impl SmudgeGrid {
         let rx: u16 = (coord.x >> 8).clamp(0, self.width as i32 - 1) as u16;
         let ry: u16 = (coord.y >> 8).clamp(0, self.height as i32 - 1) as u16;
 
-        let unfiltered: Vec<u16> = registry
-            .iter_with_id()
-            .filter(|(_, def)| match kind {
+        // Pass 1 — flag filter and per-candidate placement check.
+        let mut placeable: Vec<u16> = Vec::new();
+        for (id, def) in registry.iter_with_id() {
+            let flagged = match kind {
                 SmudgeKind::Burn => def.burn,
                 SmudgeKind::Crater => def.crater,
-            })
-            .map(|(id, _)| id)
-            .collect();
-        if unfiltered.is_empty() {
+            };
+            if !flagged {
+                continue;
+            }
+            if self.passes_placement_gates(
+                rx,
+                ry,
+                def.width,
+                def.height,
+                terrain,
+                overlay,
+                Some(occupancy),
+                force_big,
+            ) {
+                placeable.push(id);
+            }
+        }
+        // Nothing fits: return without consuming a draw, as gamemd does.
+        if placeable.is_empty() {
             return false;
         }
 
-        let mut filtered: Vec<u16> = if force_big {
-            unfiltered
-                .iter()
-                .copied()
-                .filter(|&id| {
-                    let d = registry.get(id).unwrap();
+        // Pass 2 — size preference, applied to the placeable list only.
+        let preferred: Vec<u16> = placeable
+            .iter()
+            .copied()
+            .filter(|&id| {
+                let d = registry.get(id).unwrap();
+                if force_big {
                     d.width >= 2 && d.height >= 2
-                })
-                .collect()
-        } else {
-            unfiltered
-                .iter()
-                .copied()
-                .filter(|&id| {
-                    let d = registry.get(id).unwrap();
+                } else {
                     (d.width == 1 && d.height == 1) || (0x3C < dmg && 0x32 < dmg2)
-                })
-                .collect()
+                }
+            })
+            .collect();
+        // An empty preference set falls back to the whole placeable list —
+        // gamemd draws over `placeable` in that case rather than bailing.
+        let pool: &[u16] = if preferred.is_empty() {
+            &placeable
+        } else {
+            &preferred
         };
-        if filtered.is_empty() {
-            filtered = unfiltered;
-        }
 
-        let pick_idx = (rng.next_range_u32(filtered.len() as u32)) as usize;
-        let chosen_id = filtered[pick_idx];
+        let pick_idx = (rng.next_range_u32(pool.len() as u32)) as usize;
+        let chosen_id = pool[pick_idx];
         let chosen = registry.get(chosen_id).unwrap();
-
-        if !self.passes_placement_gates(
-            rx,
-            ry,
-            chosen.width,
-            chosen.height,
-            terrain,
-            overlay,
-            Some(occupancy),
-        ) {
-            return false;
-        }
         self.write_footprint(rx, ry, chosen_id, chosen.width, chosen.height);
         true
     }
@@ -547,5 +584,225 @@ mod tests {
         ));
         // 2x2 footprint placed at (4,4): 4 cells written.
         assert_eq!(grid.iter_occupied().count(), 4);
+    }
+
+    fn registry_1x1_and_2x2_craters() -> SmudgeTypeRegistry {
+        let ini = crate::rules::ini_parser::IniFile::from_bytes(
+            b"[SmudgeTypes]\n1=CR1\n2=CR2\n\
+              [CR1]\nCrater=yes\nWidth=1\nHeight=1\n\
+              [CR2]\nCrater=yes\nWidth=2\nHeight=2\n",
+        )
+        .unwrap();
+        SmudgeTypeRegistry::from_rules_ini(&ini)
+    }
+
+    const CENTER_COORD: SimCoord = SimCoord {
+        x: 4 * 256 + 128,
+        y: 4 * 256 + 128,
+        z: 0,
+    };
+
+    #[test]
+    fn occupied_neighbour_blocks_2x2_but_1x1_still_lands_without_a_draw() {
+        // gamemd builds the placeable list BEFORE the random pick, so a cell
+        // whose 2x2 footprint is fouled by an earlier crater still receives the
+        // 1x1 that does fit. Picking first and gating afterwards would drop the
+        // mark whenever the 2x2 came up.
+        let registry = registry_1x1_and_2x2_craters();
+        let mut grid = SmudgeGrid::new(8, 8);
+        // Earlier smudge at (5,4): inside CR2's footprint from (4,4), but not
+        // on the impact cell itself.
+        grid.test_force_set(
+            5,
+            4,
+            SmudgeCell {
+                type_id: Some(0),
+                footprint_origin: Some((5, 4)),
+                frame_offset: 0,
+            },
+        );
+        let _ = grid.drain_dirty();
+        let terrain = make_terrain(8, 8, true);
+        let overlay = OverlayGrid::new(8, 8);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(1);
+
+        // dmg/dmg2 above both thresholds, so the size pass keeps every
+        // placeable type and cannot itself be what eliminates CR2.
+        assert!(grid.try_place(
+            SmudgeKind::Crater,
+            CENTER_COORD,
+            100,
+            100,
+            false,
+            &registry,
+            &terrain,
+            &overlay,
+            &occupancy,
+            &mut rng,
+        ));
+        // CR1 (id 0) is the only type that fits.
+        assert_eq!(grid.cell(4, 4).type_id, Some(0));
+        // A single-entry pool means the ranged draw is a no-op, so the shared
+        // cursor must not have moved. Under a pick-then-gate order the pool
+        // would have held both types and consumed a draw.
+        assert_eq!(rng.state(), SimRng::new(1).state());
+    }
+
+    #[test]
+    fn force_big_centre_mark_places_on_a_building_cell() {
+        // gamemd forwards `forceBig` as CanPlaceHere's `allowBuilding`, so the
+        // building-destruction centre mark lands under the wreck.
+        let registry = registry_1x1_and_2x2_craters();
+        let mut grid = SmudgeGrid::new(8, 8);
+        let terrain = make_terrain(8, 8, true);
+        let overlay = OverlayGrid::new(8, 8);
+        let mut occupancy = OccupancyGrid::new();
+        use crate::sim::movement::locomotor::MovementLayer;
+        use crate::sim::occupancy::CellListInsertion;
+        for (cx, cy) in [(4, 4), (5, 4), (4, 5), (5, 5)] {
+            occupancy.add(
+                cx,
+                cy,
+                7,
+                MovementLayer::Ground,
+                None,
+                CellListInsertion::AppendBuilding,
+            );
+        }
+        let mut rng = SimRng::new(1);
+
+        assert!(grid.try_place(
+            SmudgeKind::Crater,
+            CENTER_COORD,
+            100,
+            100,
+            true, // force_big => allowBuilding
+            &registry,
+            &terrain,
+            &overlay,
+            &occupancy,
+            &mut rng,
+        ));
+        // force_big prefers >=2x2, so CR2 lands across all four cells.
+        assert_eq!(grid.iter_occupied().count(), 4);
+
+        // Same cell, same occupancy, force_big=false: the building gate applies
+        // and nothing is placed.
+        let mut plain_grid = SmudgeGrid::new(8, 8);
+        let mut plain_rng = SimRng::new(1);
+        assert!(!plain_grid.try_place(
+            SmudgeKind::Crater,
+            CENTER_COORD,
+            100,
+            100,
+            false,
+            &registry,
+            &terrain,
+            &overlay,
+            &occupancy,
+            &mut plain_rng,
+        ));
+        assert_eq!(plain_grid.iter_occupied().count(), 0);
+    }
+
+    #[test]
+    fn surviving_vehicle_does_not_block_a_smudge_but_a_structure_does() {
+        // gamemd's building lookup returns BuildingClass objects only, so a
+        // shell landing on a tank that lives still scorches the ground. Testing
+        // "any ground blocker" instead would swallow the mark on every cell
+        // holding a surviving vehicle.
+        use crate::sim::movement::locomotor::MovementLayer;
+        use crate::sim::occupancy::CellListInsertion;
+        let registry = registry_1x1_and_2x2_craters();
+        let terrain = make_terrain(8, 8, true);
+        let overlay = OverlayGrid::new(8, 8);
+
+        // A vehicle on the impact cell: non-force_big smudge still lands.
+        let mut vehicle_occupancy = OccupancyGrid::new();
+        vehicle_occupancy.add(
+            4,
+            4,
+            11,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let mut grid = SmudgeGrid::new(8, 8);
+        let mut rng = SimRng::new(1);
+        assert!(
+            grid.try_place(
+                SmudgeKind::Crater,
+                CENTER_COORD,
+                100,
+                100,
+                false,
+                &registry,
+                &terrain,
+                &overlay,
+                &vehicle_occupancy,
+                &mut rng,
+            ),
+            "a surviving vehicle is not a building and must not block the mark"
+        );
+        assert!(grid.cell(4, 4).type_id.is_some());
+
+        // A structure on the same cell: the non-force_big gate still applies.
+        let mut building_occupancy = OccupancyGrid::new();
+        building_occupancy.add(
+            4,
+            4,
+            12,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        let mut blocked = SmudgeGrid::new(8, 8);
+        let mut blocked_rng = SimRng::new(1);
+        assert!(!blocked.try_place(
+            SmudgeKind::Crater,
+            CENTER_COORD,
+            100,
+            100,
+            false,
+            &registry,
+            &terrain,
+            &overlay,
+            &building_occupancy,
+            &mut blocked_rng,
+        ));
+        assert_eq!(blocked.iter_occupied().count(), 0);
+    }
+
+    #[test]
+    fn no_rng_draw_when_nothing_can_be_placed() {
+        // Overlay on the impact cell rejects every candidate; gamemd returns
+        // from pass 1 without reaching RandomRanged.
+        let registry = registry_1x1_and_2x2_craters();
+        let mut grid = SmudgeGrid::new(8, 8);
+        let terrain = make_terrain(8, 8, true);
+        let mut overlay = OverlayGrid::new(8, 8);
+        overlay.place_overlay(4, 4, 0, 0);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(1);
+
+        assert!(!grid.try_place(
+            SmudgeKind::Crater,
+            CENTER_COORD,
+            100,
+            100,
+            false,
+            &registry,
+            &terrain,
+            &overlay,
+            &occupancy,
+            &mut rng,
+        ));
+        assert_eq!(grid.iter_occupied().count(), 0);
+        assert_eq!(
+            rng.state(),
+            SimRng::new(1).state(),
+            "no candidate fits, so the scenario cursor must not advance"
+        );
     }
 }
