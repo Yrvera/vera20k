@@ -7,10 +7,10 @@
 //! ## rules.ini format
 //! ```ini
 //! [LightningStormSpecial]
-//! UIName=Name:LStorm
+//! UIName=Name:Storm
 //! Type=LightningStorm
 //! RechargeTime=10
-//! SidebarImage=INTICON
+//! SidebarImage=BOLTICON
 //! Action=LightningStorm
 //! ```
 //!
@@ -80,6 +80,10 @@ impl SuperWeaponKind {
 pub struct SuperWeaponType {
     /// Section name in rules.ini (e.g., "LightningStormSpecial").
     pub id: String,
+    /// CSF label for the localized display name (`UIName=Name:LStorm`). This
+    /// is what the sidebar cameo tooltip shows for a superweapon slot — the
+    /// section name is an internal identifier and never reaches the player.
+    pub ui_name: Option<String>,
     /// Launch dispatch type (determines what happens on fire).
     pub kind: SuperWeaponKind,
     /// Charge time in game frames. INI value is minutes × 900.
@@ -128,6 +132,7 @@ impl SuperWeaponType {
         let recharge_minutes = section.get_f32("RechargeTime").unwrap_or(5.0);
         Some(Self {
             id: id.to_string(),
+            ui_name: section.get("UIName").map(|s| s.to_string()),
             kind,
             recharge_time_frames: (recharge_minutes * 900.0) as i32,
             is_powered: section.get_bool("IsPowered").unwrap_or(true),
@@ -158,13 +163,14 @@ mod tests {
 
     #[test]
     fn parse_lightning_storm_special() {
+        // Verbatim from `ini/rulesmd.ini` [LightningStormSpecial].
         let ini_text = "\
 [LightningStormSpecial]
-UIName=Name:LStorm
+UIName=Name:Storm
 Name=Lightning Storm
 Type=LightningStorm
 RechargeTime=10
-SidebarImage=INTICON
+SidebarImage=BOLTICON
 Action=LightningStorm
 IsPowered=yes
 ShowTimer=yes
@@ -178,6 +184,18 @@ DisableableFromShell=yes
         assert!(sw.is_powered);
         assert!(sw.show_timer);
         assert!(sw.disableable_from_shell);
+        // The sidebar cameo tooltip shows the localized UIName, not `Name=`
+        // and not the section id. Retail value, not a plausible-looking one.
+        assert_eq!(sw.ui_name.as_deref(), Some("Name:Storm"));
+        assert_eq!(sw.sidebar_image.as_deref(), Some("BOLTICON"));
+    }
+
+    #[test]
+    fn ui_name_is_absent_when_the_section_omits_it() {
+        let ini = IniFile::from_str("[NoNameSW]\nType=MultiMissile\n");
+        let section = ini.section("NoNameSW").unwrap();
+        let sw = SuperWeaponType::from_ini_section("NoNameSW", section).unwrap();
+        assert_eq!(sw.ui_name, None);
     }
 
     #[test]

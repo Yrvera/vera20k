@@ -4650,7 +4650,7 @@ impl App {
                 let sidebar_view = game_output.sidebar_view.as_ref();
                 // Paused: draw the native in-game Options (0xBBB) overlay over the
                 // frozen battlefield before egui. The egui pause card is retired;
-                // egui below now only carries the sidebar text + dev overlay.
+                // egui below now only carries the dev/debug overlay.
                 if state.paused {
                     if Self::ensure_skirmish_shell_chrome(state) {
                         crate::app_skirmish_shell_render::render_in_game_options_overlay(
@@ -4661,15 +4661,10 @@ impl App {
                         )?;
                     }
                 }
-                // Always run egui in-game for sidebar text overlay (Ready labels, credits).
+                // All sidebar text (credits, Ready labels, queue counts) is now
+                // GAME.FNT sprite geometry built in app_render; egui in-game
+                // carries only the dev/debug overlays.
                 state.egui.begin_frame(&state.window);
-                if let Some(sv) = sidebar_view {
-                    crate::app_sidebar_text::draw_sidebar_text_overlay(
-                        &state.egui.ctx,
-                        sv,
-                        state.ui_scale,
-                    );
-                }
                 // Debug panels use a light/.NET theme — push light visuals
                 // before rendering, then restore the original after.
                 let any_debug_panel = state.debug_show_pathgrid

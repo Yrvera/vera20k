@@ -762,18 +762,46 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .as_ref()
         .map(|csf| csf.text("TXT_READY"))
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("Ready"));
+    // gamemd's strip draw pairs TXT_READY with TXT_HOLD ("On Hold"), shown on
+    // the same cameo slot when production is suspended.
+    let hold_text = state
+        .csf
+        .as_ref()
+        .map(|csf| csf.text("TXT_HOLD"))
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("On Hold"));
     let ready_tint = {
         let theme = crate::app_sidebar_render::current_sidebar_theme(state);
         crate::render::sidebar_text::side_highlight_color(theme)
     };
     let (cameo, gclock, cameo_overlay) = view
         .as_ref()
-        .map(|v| build_sidebar_cameo_instances(state, v, ready_text.as_ref()))
+        .map(|v| build_sidebar_cameo_instances(state, v, ready_text.as_ref(), hold_text.as_ref()))
         .unwrap_or_default();
-    let text = view
+    let mut text = view
         .as_ref()
-        .map(|v| build_sidebar_text_instances(state, v, ready_text.as_ref(), ready_tint))
+        .map(|v| {
+            build_sidebar_text_instances(
+                state,
+                v,
+                ready_text.as_ref(),
+                hold_text.as_ref(),
+                ready_tint,
+            )
+        })
         .unwrap_or_default();
+    // Credits counter shares the GAME.FNT sidebar-text layer: gamemd draws it
+    // with the same BitFont on the sidebar surface, in the same packed side
+    // text colour as the cameo labels.
+    if let Some(v) = view.as_ref() {
+        let theme = crate::app_sidebar_render::current_sidebar_theme(state);
+        text.extend(crate::app_sidebar_text::build_sidebar_credits_instances(
+            &state.bit_font,
+            v,
+            state.ui_scale,
+            crate::app_sidebar_text::credits_tint(theme),
+            [state.camera_x, state.camera_y],
+        ));
+    }
 
     let radar_anim = build_radar_anim_instance(state);
 
