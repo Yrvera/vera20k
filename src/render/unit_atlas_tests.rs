@@ -184,39 +184,69 @@ fn test_pad_layer_to_union_bounds() {
 #[test]
 fn test_canonical_turret_facing() {
     use super::canonical_turret_facing;
-    // canonical_turret_facing takes a 16-bit DirStruct and converts via >>8 to the
-    // 8-bit facing used for sprite selection. At step=1 there are 256 buckets, one per
-    // representable facing, so the quantization is the identity — the high byte passes
-    // through untouched.
+    // canonical_turret_facing takes a 16-bit DirStruct and quantizes it to one of the
+    // renderer's 32 facing steps, then scales that step back into the 8-bit facing the
+    // atlas key uses. The voxel rotation matrix is built from a 5-bit facing, so a
+    // turret has exactly 32 orientations no matter how finely the sim aims it.
     assert_eq!(canonical_turret_facing(0u16), 0);
-    assert_eq!(canonical_turret_facing(256), 1);
-    assert_eq!(canonical_turret_facing(512), 2);
-    assert_eq!(canonical_turret_facing(768), 3);
-    assert_eq!(canonical_turret_facing(1024), 4);
-    assert_eq!(canonical_turret_facing(65280), 255);
-    // The low byte is sub-facing precision and must not affect sprite selection.
-    assert_eq!(canonical_turret_facing(768 + 255), 3);
-    // Body and turret share the same granularity, and neither loses information.
-    assert_eq!(canonical_unit_facing(3), 3);
-    assert_eq!(canonical_turret_facing(768), 3);
+    // Everything inside one 11.25° step collapses to that step's representative.
+    // One step spans 8 units of 8-bit facing, i.e. 2048 units of 16-bit facing,
+    // centred on the representative — so the step-0 bucket runs to just under 1024.
+    assert_eq!(canonical_turret_facing(256), 0);
+    assert_eq!(canonical_turret_facing(1023), 0);
+    assert_eq!(
+        canonical_turret_facing(1024),
+        8,
+        "round-half-up into step 1"
+    );
+    assert_eq!(canonical_turret_facing(2048), 8);
+    assert_eq!(canonical_turret_facing(64 << 8), 64, "east");
+    assert_eq!(canonical_turret_facing(128 << 8), 128, "south");
+    assert_eq!(canonical_turret_facing(65280), 0, "wraps back to north");
+    // Body and turret share the same granularity.
+    assert_eq!(canonical_unit_facing(64), 64);
+    assert_eq!(canonical_turret_facing(64 << 8), 64);
 }
 
 #[test]
-fn every_representable_facing_has_its_own_bucket() {
+fn canonical_facing_collapses_to_the_32_rendered_orientations() {
     use super::{canonical_turret_facing, canonical_unit_facing};
-    // The simulation stores facing as a byte. With 256 buckets each of those 256 values
-    // maps to a distinct pre-rendered sprite, so rotation can never show a staircase.
-    // If a step > 1 is ever reintroduced this fails loudly rather than degrading looks
-    // silently.
+    // The sim stores facing as a byte, but the renderer only has 32 orientations, so
+    // canonicalization is deliberately lossy: retail tanks visibly step through 11.25°
+    // increments. Pin that the collapse is exactly 32-way, that it agrees between the
+    // body and turret entry points, and that every output is a real bucket
+    // representative (otherwise the atlas key would miss).
+    let mut distinct = std::collections::BTreeSet::new();
     for facing in 0..=u8::MAX {
+        let body = canonical_unit_facing(facing);
+        assert_eq!(
+            body,
+            canonical_turret_facing(u16::from(facing) << 8),
+            "body and turret quantization disagree at facing {facing}"
+        );
+        assert_eq!(
+            body % 8,
+            0,
+            "facing {facing} produced non-representative {body}"
+        );
+        distinct.insert(body);
+    }
+    assert_eq!(
+        distinct.len(),
+        32,
+        "expected exactly 32 rendered orientations"
+    );
+
+    // Quantization must be a projection: re-canonicalizing a representative is a no-op,
+    // or a sprite lookup could land in a different bucket than the one baked.
+    for &facing in &distinct {
         assert_eq!(canonical_unit_facing(facing), facing);
-        assert_eq!(canonical_turret_facing(u16::from(facing) << 8), facing);
     }
 }
 
 #[test]
 fn test_facing_config_for_layer() {
-    // Every layer renders one sprite per representable facing: step 1, 256 buckets.
+    // Every layer renders the same 32 orientations: step 8, 32 buckets.
     for layer in [
         VxlLayer::Body,
         VxlLayer::Composite,
@@ -224,10 +254,10 @@ fn test_facing_config_for_layer() {
         VxlLayer::Barrel,
     ] {
         let (step, buckets) = super::facing_config_for_layer(layer);
-        assert_eq!(step, 1, "{layer:?} facing step");
-        assert_eq!(buckets, 256, "{layer:?} facing buckets");
+        assert_eq!(step, 8, "{layer:?} facing step");
+        assert_eq!(buckets, 32, "{layer:?} facing buckets");
         // The facing derived from the last bucket must still fit a byte.
-        assert_eq!((buckets - 1) * u16::from(step), 255);
+        assert_eq!((buckets - 1) * u16::from(step), 248);
     }
 }
 
