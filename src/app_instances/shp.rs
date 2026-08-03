@@ -8,9 +8,9 @@
 //! - Part of the app layer — may depend on everything.
 
 use super::helpers::{
-    ANIM_DRAW_DEPTH_BIAS_PX, apply_bridge_depth_bias, apply_shape_z_adjust, compute_sprite_depth,
-    effective_anim_z_adjust, in_view, is_entity_visible_for_local_owner,
-    is_under_bridge_render_state,
+    ANIM_DRAW_DEPTH_BIAS_PX, EntityDrawBand, apply_bridge_depth_bias, apply_shape_z_adjust,
+    compute_sprite_depth, effective_anim_z_adjust, entity_draw_band, ground_sort_row, in_view,
+    is_entity_visible_for_local_owner, is_under_bridge_render_state,
 };
 use crate::app::AppState;
 use crate::map::entities::EntityCategory;
@@ -23,18 +23,40 @@ use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::animation;
 use crate::sim::components::BuildingUp;
 
+/// Sort keys of the bodies currently hanging under a parachute, by entity id.
+///
+/// A parachute canopy is not an object in gamemd — `AnimClass::GetLayer` forces
+/// an owner-attached anim into the owner's own layer, and the canopy is
+/// composed into the descending body's draw. So the canopy has to sort at
+/// exactly the body's key, and the only way to guarantee that is for the body
+/// to hand its key over rather than for the canopy builder to re-derive one
+/// from the same inputs and drift when either side changes.
+///
+/// Only ever read by key, never iterated, so the hash order is not observable.
+pub(crate) type ParachuteBodyDepths = std::collections::HashMap<u64, f32>;
+
 /// Iterate visible SHP sprite entities from EntityStore and build SpriteInstances.
 ///
 /// Build SpriteInstances for all SHP entities (buildings, infantry).
 /// Building bibs and anims are emitted into `paged` together with bodies,
 /// matching the original engine where bibs are drawn inside BuildingClass_DrawBody.
-/// `unit_instances` receives building turret VXLs (drawn after building bodies).
+/// `unit_instances` receives building turret VXLs. They go into the ordinary
+/// voxel stream, at the building's own sort depth and emitted right after the
+/// body, because gamemd draws them inside the building's own display call in
+/// the sorted ground layer rather than in a pass of their own.
+/// `top_paged` receives SHP bodies whose locomotor puts them above the Ground
+/// band — in stock YR that is the Rocketeer at hover height, the one infantry
+/// type on a Jumpjet locomotor.
+/// `parachute_body_depths` collects the sort key of every body currently under
+/// a parachute, keyed by entity — see [`ParachuteBodyDepths`].
 pub(crate) fn build_shp_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
     bridge_paged: &mut [Vec<SpriteInstance>],
+    top_paged: &mut [Vec<SpriteInstance>],
     unit_instances: &mut Vec<SpriteInstance>,
     unit_instance_pages: &mut Vec<usize>,
+    parachute_body_depths: &mut ParachuteBodyDepths,
 ) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -212,6 +234,7 @@ pub(crate) fn build_shp_instances(
 
         let final_x: f32 = sx + entry.offset_x;
         let final_y: f32 = sy + entry.offset_y;
+        let band = entity_draw_band(entity);
         let base_depth: f32 = match entity.category {
             EntityCategory::Structure => {
                 // Building render coords use (Location.X - 128, Location.Y - 128) — the
@@ -221,11 +244,20 @@ pub(crate) fn build_shp_instances(
                 compute_sprite_depth(state, sy - TILE_HEIGHT / 2.0, interp_z)
             }
             _ => {
+                // The drawn row carries this body's height lift; the sort key
+                // must not. A hovering Rocketeer or a descending paradrop key
+                // off the cell it is over, exactly like a GI standing there.
                 let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1];
-                compute_sprite_depth(state, depth_y, interp_z)
+                compute_sprite_depth(state, ground_sort_row(entity, depth_y), interp_z)
             }
         };
-        let depth: f32 = apply_bridge_depth_bias(state, entity, base_depth);
+        let depth: f32 = match band {
+            EntityDrawBand::Top => base_depth,
+            EntityDrawBand::Ground => apply_bridge_depth_bias(state, entity, base_depth),
+        };
+        if entity.parachute_state.is_some() {
+            parachute_body_depths.insert(entity.stable_id, depth);
+        }
         let mut tint: [f32; 3] = match entity.category {
             EntityCategory::Infantry => state.lighting_grid.infantry_tint_at((pos.rx, pos.ry)),
             EntityCategory::Structure => {
@@ -245,12 +277,16 @@ pub(crate) fn build_shp_instances(
                 }
             }
         }
-        let target_pages = if is_under_bridge_render_state(state, entity)
-            && entity.category != EntityCategory::Structure
-        {
-            &mut *bridge_paged
-        } else {
-            &mut *paged
+        let target_pages = match band {
+            // Above the Ground band, so also above any bridge deck.
+            EntityDrawBand::Top => &mut *top_paged,
+            EntityDrawBand::Ground
+                if is_under_bridge_render_state(state, entity)
+                    && entity.category != EntityCategory::Structure =>
+            {
+                &mut *bridge_paged
+            }
+            EntityDrawBand::Ground => &mut *paged,
         };
         target_pages[entry.page as usize].push(SpriteInstance {
             position: [final_x, final_y],
@@ -337,7 +373,6 @@ pub(crate) fn build_shp_instances(
                             tint,
                             rules_obj.turret_anim_x,
                             rules_obj.turret_anim_y,
-                            rules_obj.turret_anim_z_adjust,
                         );
                     }
                 }
@@ -350,6 +385,18 @@ pub(crate) fn build_shp_instances(
 ///
 /// Looks up the pre-rendered turret VXL from the UnitAtlas at the current turret facing,
 /// positioned at the building's screen origin + pixel offset from TurretAnimX/Y.
+///
+/// The turret carries the building's own sort depth verbatim. `TurretAnimZAdjust=`
+/// is deliberately not folded in: gamemd's ground-layer sort key for a building
+/// reads only `TurretAnimIsVoxel` (+32 leptons) and `Gate` (−16 leptons), while
+/// `TurretAnimZAdjust` is read by a different virtual that composes the
+/// building's *draw* Z. Using it as a sort bias here would pull the turret
+/// toward the camera and put it over units standing in front of the building —
+/// by 1.3 to 4 iso rows on the defences a player actually fights around
+/// (SAM Site and Sentry Gun −20, Flak and Gattling Cannon −40, Slave Miner −50,
+/// Grand Cannon −60), more on a couple of civilian map props. The +32/−16 key
+/// terms are a separate gap. Note the set is small and does not include Prism
+/// Tower, whose turret is not a voxel.
 fn emit_building_turret_vxl(
     instances: &mut Vec<SpriteInstance>,
     instance_pages: &mut Vec<usize>,
@@ -364,7 +411,6 @@ fn emit_building_turret_vxl(
     tint: [f32; 3],
     anim_x: i32,
     anim_y: i32,
-    z_adjust: i32,
 ) {
     let unit_atlas = match &state.unit_atlas {
         Some(a) => a,
@@ -381,27 +427,17 @@ fn emit_building_turret_vxl(
         return;
     };
     // Position turret at building cell origin + pixel offset from INI.
-    // TurretAnimZAdjust affects depth-sort only, never screen Y (ZAdjust is a
-    // sort bias in the original engine; YDrawOffset is what shifts screen Y).
+    // TurretAnimX/Y are screen pixel offsets added to the building's own draw
+    // point, which is exactly what the native turret draw does with them.
     let center_x: f32 = building_sx;
     let tx: f32 = center_x + anim_x as f32 + entry.offset_x;
     let ty: f32 = building_sy + anim_y as f32 + entry.offset_y + 3.0;
-    // Turret draws on top of its own body via instance order (pushed after
-    // the building body). TurretAnimZAdjust= additionally biases the sort
-    // depth (negative = toward camera) so the turret orders correctly
-    // against OTHER nearby objects, matching the native signed pixel bias.
-    let world_height: f32 = state
-        .terrain_grid
-        .as_ref()
-        .map(|g| g.world_height)
-        .unwrap_or(1.0);
-    let turret_depth: f32 = apply_shape_z_adjust(building_depth, z_adjust, world_height);
     instances.push(SpriteInstance {
         position: [tx, ty],
         size: entry.pixel_size,
         uv_origin: entry.uv_origin,
         uv_size: entry.uv_size,
-        depth: turret_depth,
+        depth: building_depth,
         tint,
         alpha: 1.0,
         ..Default::default()

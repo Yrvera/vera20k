@@ -33,8 +33,8 @@ pub(super) struct DrawPassData<'a> {
     pub unit_transition_paged: &'a [Vec<SpriteInstance>],
     pub shp_paged: &'a [Vec<SpriteInstance>],
     pub wall_instances: &'a [SpriteInstance],
-    pub building_turret_pages: &'a [usize],
     pub particle_paged: &'a [Vec<SpriteInstance>],
+    pub top_unit_pages: &'a [usize],
     pub ghost_page: u8,
 }
 
@@ -42,8 +42,10 @@ pub(super) struct DrawPassData<'a> {
 ///
 /// Draw order follows the original engine's layered rendering:
 /// 1. Terrain (zdepth) → 2. Bridge body (zdepth) → 3. Overlays (passthrough) →
-/// 4. Bridge entities (merge) → 5. Ground objects (merge) → 6. Turrets →
-/// 7. Cliff redraw (zdepth) → 8. Debug → 9. Shroud/fog → 10. UI/sidebar
+/// 4. Bridge entities (merge) → 5. Ground objects, building turrets included
+/// (merge) → 7. Cliff redraw (zdepth) → 7.6 Particles (layer 3) →
+/// 7.7 Bodies above the Ground band (layers 3–4) → 8. Debug → 9. Shroud/fog →
+/// 10. UI/sidebar
 pub(super) fn dispatch_draw_passes(
     state: &AppState,
     encoder: &mut wgpu::CommandEncoder,
@@ -215,25 +217,13 @@ pub(super) fn dispatch_draw_passes(
         );
     }
 
-    // --- Step 6: Building turrets ---
-    // Drawn AFTER all layer-2 objects (separate turret pass). Building turret
-    // VXLs go through the voxel sprite pipeline like regular vehicle voxels.
-    if let (Some(unit_atlas), Some(palette_set)) =
-        (state.unit_atlas.as_ref(), state.palette_set.as_ref())
-    {
-        if let Some((buf, count)) = pool.get("building_turret") {
-            merge_passes::draw_unit_atlas_page_runs(
-                &mut pass,
-                &state.batch_renderer,
-                unit_atlas,
-                palette_set,
-                buf,
-                data.building_turret_pages,
-                0,
-                count,
-            );
-        }
-    }
+    // (There is no separate building-turret pass. gamemd draws a building's
+    // voxel turret inside the building's own display call, in the sorted
+    // ground layer, right after the body — the pass that does run after
+    // layer 2 walks the building array to draw a production/ally overlay and
+    // never touches a turret. The turret instances are therefore emitted into
+    // the same UnitAtlas stream as the vehicles and interleave with them in
+    // step 5; see the note in build_instances.)
 
     // --- Step 7: Cliff redraw ---
     // Cliff terrain tiles redrawn AFTER sprites using zdepth shader + Less compare.
@@ -268,6 +258,59 @@ pub(super) fn dispatch_draw_passes(
     // and Y-sorted on the CPU, so no GPU depth read/write needed.
     const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
     for (i, key) in PARTICLE_KEYS.iter().enumerate() {
+        if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
+            if let Some((buf, count)) = pool.get(key) {
+                if count == 0 {
+                    continue;
+                }
+                state.batch_renderer.draw_passthrough_range(
+                    &mut pass,
+                    &page.texture,
+                    buf,
+                    0,
+                    count,
+                );
+            }
+        }
+    }
+
+    // --- Step 7.7: The band above Ground (gamemd layers 3 and 4) ---
+    // The native object loop walks its display layers in index order and only
+    // layer 2 is kept sorted, so everything an air locomotor puts in layers 3
+    // and 4 is drawn after every ground object, in submission order. That is
+    // the whole reason this pass exists: an aircraft off its pad must never be
+    // covered by a building or a unit, whatever iso row it happens to be over.
+    //
+    // Instance order inside the band is emission order, not depth — see the
+    // note on `top_unit` in build_instances.
+    //
+    // The SHP half goes through passthrough, which does no depth test at all —
+    // the same thing the native sprite blitters do for these layers. The voxel
+    // half is stuck with the voxel pipeline's LessEqual test against the
+    // terrain buffer; with the sort key now anchored on the body's own ground
+    // row (see helpers::ground_sort_row) that test passes for everything the
+    // body flies over, so the residual is a cliff face standing in a *nearer*
+    // iso row than the body's own cell, which its lifted sprite does not reach.
+    const TOP_SHP_KEYS: [&str; 4] = ["shp_top_p0", "shp_top_p1", "shp_top_p2", "shp_top_p3"];
+    if let (Some(unit_atlas), Some(palette_set)) =
+        (state.unit_atlas.as_ref(), state.palette_set.as_ref())
+    {
+        if let Some((buf, count)) = pool.get("unit_top") {
+            if count > 0 {
+                merge_passes::draw_unit_atlas_page_runs(
+                    &mut pass,
+                    &state.batch_renderer,
+                    unit_atlas,
+                    palette_set,
+                    buf,
+                    data.top_unit_pages,
+                    0,
+                    count,
+                );
+            }
+        }
+    }
+    for (i, key) in TOP_SHP_KEYS.iter().enumerate() {
         if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
             if let Some((buf, count)) = pool.get(key) {
                 if count == 0 {

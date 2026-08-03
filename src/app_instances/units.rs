@@ -7,8 +7,8 @@
 //! - Part of the app layer — may depend on everything.
 
 use super::helpers::{
-    apply_bridge_depth_bias, compute_sprite_depth, in_view, is_entity_visible_for_local_owner,
-    is_under_bridge_render_state,
+    EntityDrawBand, apply_bridge_depth_bias, compute_sprite_depth, entity_draw_band,
+    ground_sort_row, in_view, is_entity_visible_for_local_owner, is_under_bridge_render_state,
 };
 use crate::app::AppState;
 use crate::map::entities::EntityCategory;
@@ -108,6 +108,14 @@ fn unit_render_slope_state(
     if entity.category == EntityCategory::Aircraft {
         return UnitRenderSlopeState::Stable(0);
     }
+    // A body that has left the floor has no cell slope to sit on, so it never
+    // enters the drive-track tilt transition. This also keeps every Top-band
+    // body on the stable-atlas path, which is the only path the Top stream
+    // carries. (VERA-internal; no stock YR voxel unit uses Jumpjet, so the
+    // gamemd equivalent for an airborne tilt is UNCHECKED.)
+    if entity_draw_band(entity) == EntityDrawBand::Top {
+        return UnitRenderSlopeState::Stable(0);
+    }
 
     let terrain_slope = terrain_slope_for_render(state, entity.position.rx, entity.position.ry);
     let Some(rocking) = entity.rocking.as_ref() else {
@@ -134,15 +142,42 @@ fn unit_render_slope_state(
     }
 }
 
+/// Depth key for one voxel body, from the screen row it was drawn at.
+///
+/// Two corrections sit between the drawn row and the key: the entity's own
+/// height comes back off (gamemd's key has no Z term — see
+/// [`ground_sort_row`]), and the under-bridge nudge applies only to the Ground
+/// band, because a body in a layer above the deck is never occluded by it.
+fn body_sort_depth(
+    state: &AppState,
+    entity: &crate::sim::game_entity::GameEntity,
+    band: EntityDrawBand,
+    drawn_row_y: f32,
+    z: u8,
+) -> f32 {
+    let depth = compute_sprite_depth(state, ground_sort_row(entity, drawn_row_y), z);
+    match band {
+        EntityDrawBand::Top => depth,
+        EntityDrawBand::Ground => apply_bridge_depth_bias(state, entity, depth),
+    }
+}
+
 /// Iterate visible voxel units from EntityStore and build SpriteInstances.
 ///
 /// Non-turret units emit a single Composite sprite. Turret units emit up to 3
 /// sprites: Body at body facing, Turret + Barrel at turret facing with screen
 /// offset computed from art.ini TurretOffset.
+///
+/// `top_instances` receives the bodies whose locomotor puts them above the
+/// Ground band — an aircraft off its pad, a jumpjet at hover height, a missile
+/// in flight. That band is drawn after every ground object, so it is kept
+/// separate from `instances` rather than merged by depth.
 pub(crate) fn build_unit_instances(
     state: &AppState,
     instances: &mut Vec<SpriteInstance>,
     instance_pages: &mut Vec<usize>,
+    top_instances: &mut Vec<SpriteInstance>,
+    top_instance_pages: &mut Vec<usize>,
     bridge_instances: &mut Vec<SpriteInstance>,
     bridge_instance_pages: &mut Vec<usize>,
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
@@ -249,11 +284,18 @@ pub(crate) fn build_unit_instances(
         // Chrono teleport doesn't tint the unit — the visual effect is the
         // WarpOut animation overlay; the unit itself stays fully opaque.
         let alpha: f32 = 1.0;
-        let is_bridge_unit = is_under_bridge_render_state(state, entity);
-        let (target_instances, target_instance_pages) = if is_bridge_unit {
-            (&mut *bridge_instances, &mut *bridge_instance_pages)
-        } else {
-            (&mut *instances, &mut *instance_pages)
+        let band = entity_draw_band(entity);
+        // A body in the air is above the deck, not under it — the under-bridge
+        // stream exists to let a ground unit be occluded by the deck it drives
+        // beneath, which cannot apply to something in a layer above it.
+        let is_bridge_unit =
+            band == EntityDrawBand::Ground && is_under_bridge_render_state(state, entity);
+        let (target_instances, target_instance_pages) = match band {
+            EntityDrawBand::Top => (&mut *top_instances, &mut *top_instance_pages),
+            EntityDrawBand::Ground if is_bridge_unit => {
+                (&mut *bridge_instances, &mut *bridge_instance_pages)
+            }
+            EntityDrawBand::Ground => (&mut *instances, &mut *instance_pages),
         };
 
         if let Some(turret_facing) = entity
@@ -284,6 +326,7 @@ pub(crate) fn build_unit_instances(
                 transition_instances,
                 bridge_transition_instances,
                 is_bridge_unit,
+                band,
             );
         } else {
             // Non-turret unit: single composite sprite.
@@ -298,11 +341,7 @@ pub(crate) fn build_unit_instances(
                 unit_entry_for_slope_state(state, atlas, &key, slope_state)
             {
                 let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
-                let depth: f32 = apply_bridge_depth_bias(
-                    state,
-                    entity,
-                    compute_sprite_depth(state, depth_y, interp_z),
-                );
+                let depth: f32 = body_sort_depth(state, entity, band, depth_y, interp_z);
                 let sprite = SpriteInstance {
                     position: [center_x + entry.offset_x, center_y + entry.offset_y],
                     size: entry.pixel_size,
@@ -539,6 +578,7 @@ fn emit_turret_unit_sprites(
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
     bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
     is_bridge_unit: bool,
+    band: EntityDrawBand,
 ) {
     let slope_type = stable_slope_for_key(slope_state);
     let body_key = UnitSpriteKey {
@@ -579,11 +619,7 @@ fn emit_turret_unit_sprites(
         Some((e, _)) => center_y + e.offset_y + e.pixel_size[1] + dock_depth_y_offset,
         None => center_y + dock_depth_y_offset,
     };
-    let entity_depth: f32 = apply_bridge_depth_bias(
-        state,
-        entity,
-        compute_sprite_depth(state, entity_depth_y, z),
-    );
+    let entity_depth: f32 = body_sort_depth(state, entity, band, entity_depth_y, z);
 
     // Emit body first (always). Uses frame fallback for mismatched HVA counts.
     if let Some((entry, texture_source)) = body_entry_opt {

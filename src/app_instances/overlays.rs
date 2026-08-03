@@ -878,10 +878,21 @@ pub(crate) fn build_projectile_visual_instances(
 /// AnimClass::GetLayer override that forces owner-attached anims to Layer 2
 /// regardless of art.ini Layer=.
 ///
+/// The body's key arrives in `body_depths` from `build_shp_instances`, which
+/// must therefore have run first this frame. It is not re-derived here: the
+/// body's key is anchored on the ground row the GI is descending onto, not on
+/// the row it is drawn at, and a paradrop starts 216 px above that row. A
+/// canopy keyed off the drawn row would sort ~14 iso rows behind the man
+/// hanging on it and disappear behind any building in between.
+///
 /// Palette: AltPalette=yes selects the unit/Convert palette in gamemd. This
 /// matches the default palette branch in `sprite_atlas` so long as the
 /// PARACH frames are NOT registered in `effect_type_ids` (see Task 8).
-pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
+pub(crate) fn build_parachute_instances(
+    state: &AppState,
+    paged: &mut [Vec<SpriteInstance>],
+    body_depths: &super::shp::ParachuteBodyDepths,
+) {
     /// Depth epsilon — chute sorts slightly above the GI body. Half of the
     /// per-Z bias used in `compute_sprite_depth_params`. Increase if
     /// z-fighting is observed in-game.
@@ -904,12 +915,6 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
-    let (origin_y, world_height) = state
-        .terrain_grid
-        .as_ref()
-        .map(|g| (g.origin_y, g.world_height))
-        .unwrap_or((0.0, 1.0));
-
     let config = match state
         .rules
         .as_ref()
@@ -924,7 +929,12 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
             Some(e) => e,
             None => continue,
         };
-        let pos = &entity.position;
+        // The body's own key for this frame. Absent means the body was culled
+        // or never emitted, in which case there is nothing for a canopy to
+        // hang on and nothing to sort it against.
+        let Some(&body_depth) = body_depths.get(&anim.target_id) else {
+            continue;
+        };
         // Draw the chute exactly where the body is drawn, so it follows the
         // airborne GI rather than the ground beneath it.
         let (gx, gy) = crate::render::locomotor_visual::screen_position(entity);
@@ -956,8 +966,7 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
         // top. ZAdjust=-10 in gamemd is a depth-sort fudge with no precise
         // pixel mapping; in our depth-buffer rendering, lower depth = closer
         // to camera = on top.
-        let gi_depth = compute_sprite_depth_params(origin_y, world_height, gy, pos.z);
-        let depth = (gi_depth - CHUTE_DEPTH_EPSILON).clamp(0.001, 0.999);
+        let depth = (body_depth - CHUTE_DEPTH_EPSILON).clamp(0.001, 0.999);
 
         paged[entry.page as usize].push(SpriteInstance {
             position: [cx, cy],
