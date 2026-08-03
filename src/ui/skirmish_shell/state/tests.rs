@@ -51,7 +51,8 @@ fn test_scenario_record(
     name: &str,
     game_modes: &str,
 ) -> SkirmishScenarioRecord {
-    let ini = IniFile::from_str(&format!("[Basic]\nName={name}\nGameModes={game_modes}\n"));
+    // Loose-map headers spell the mode-filter key `GameMode`, singular.
+    let ini = IniFile::from_str(&format!("[Basic]\nName={name}\nGameMode={game_modes}\n"));
     SkirmishScenarioRecord::concrete_from_ini(
         source_ordinal,
         SkirmishScenarioSource::LooseYrm(format!("{name}.yrm")),
@@ -1587,7 +1588,7 @@ fn mode_refresh_reselects_native_local_and_ai_team_defaults() {
 }
 
 #[test]
-fn ffa_mode_refresh_defaults_every_ai_team_to_none_without_disabling_team_combo() {
+fn ffa_mode_refresh_defaults_every_ai_team_to_none_and_disables_the_team_column() {
     let mut shell = SkirmishShellState {
         selected_mode_id: 2,
         ..Default::default()
@@ -1600,7 +1601,73 @@ fn ffa_mode_refresh_defaults_every_ai_team_to_none_without_disabling_team_combo(
     let maps = [test_map_entry("ffa.yrm")];
 
     assert!(shell.opponents.iter().all(|opponent| opponent.team == -2));
+    // Free For All is AlliesAllowed=no, so the native refresh greys every team
+    // control including the local row's, even though the rows are all active.
+    assert!(!combo_enabled(&shell, &maps, SkirmishComboId::Team(0)));
+    for row in 1..=shell.opponents.len() {
+        assert!(
+            !combo_enabled(&shell, &maps, SkirmishComboId::Team(row)),
+            "team combo for row {row} must be disabled in Free For All"
+        );
+    }
+    // Only the team column is gated on the mode; the sibling combos still track
+    // row-active state.
+    assert!(combo_enabled(&shell, &maps, SkirmishComboId::Side(0)));
+    assert!(combo_enabled(&shell, &maps, SkirmishComboId::Side(1)));
+    assert!(combo_enabled(&shell, &maps, SkirmishComboId::AiType(0)));
+}
+
+#[test]
+fn battle_mode_enables_the_team_column_for_local_and_active_rows_only() {
+    let mut shell = SkirmishShellState {
+        selected_mode_id: 1,
+        ..Default::default()
+    };
+    shell.opponents[0].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[0].enabled = true;
+    shell.opponents[1].row_type = SkirmishAiRowType::None;
+    shell.opponents[1].enabled = false;
+    repair_teams_for_selected_mode(&mut shell, &stock_skirmish_modes());
+    let maps = [test_map_entry("battle.yrm")];
+
+    // Battle is AlliesAllowed=yes: the local combo is live, and an AI row's
+    // combo follows only whether that row is open.
+    assert!(combo_enabled(&shell, &maps, SkirmishComboId::Team(0)));
     assert!(combo_enabled(&shell, &maps, SkirmishComboId::Team(1)));
+    assert!(!combo_enabled(&shell, &maps, SkirmishComboId::Team(2)));
+}
+
+#[test]
+fn disabled_team_combo_cannot_be_opened_or_reselected_in_free_for_all() {
+    let layout = compute_layout(800, 600);
+    let mut shell = SkirmishShellState {
+        selected_mode_id: 2,
+        ..Default::default()
+    };
+    shell.opponents[0].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[0].enabled = true;
+    repair_teams_for_selected_mode(&mut shell, &stock_skirmish_modes());
+    let maps = [test_map_entry("ffa.yrm")];
+
+    for row in [0usize, 1] {
+        let rect = layout.rows.team_combos[row];
+        assert!(
+            combo_dropdown_rect(&shell, &layout, &maps, SkirmishComboId::Team(row)).is_none(),
+            "disabled team combo for row {row} must not offer a dropdown"
+        );
+        // A click on the arrow zone of a greyed combo neither opens the
+        // dropdown nor plays the open sound.
+        assert_eq!(
+            handle_option_mouse_down(&mut shell, &layout, &maps, rect.x + rect.w - 1, rect.y + 1),
+            SkirmishShellAction::None
+        );
+        assert!(shell.open_combo_dropdown.is_none());
+        assert!(shell.drain_pending_ui_sounds().is_empty());
+    }
+
+    // Both rows stay on None, so nothing can ally in a mode that forbids it.
+    assert_eq!(shell.player_team, -2);
+    assert_eq!(shell.opponents[0].team, -2);
 }
 
 #[test]

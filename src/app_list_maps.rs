@@ -19,8 +19,17 @@ use crate::map::waypoints::{
     skirmish_player_capacity,
 };
 use crate::rules::ini_parser::IniFile;
-use crate::skirmish_scenarios::{SkirmishScenarioRecord, SkirmishScenarioSource};
+use crate::skirmish_scenarios::{
+    PktEntryFields, SkirmishScenarioRecord, SkirmishScenarioSource, parse_game_mode_list,
+};
 use crate::util::config::GameConfig;
+
+/// Names the loose wildcard scans skip. Both are exclusions, not prerequisites:
+/// the archived `MISSIONSMD.PKT` is already consumed as the first source, and
+/// `MISSIONS.YRO` holds campaign missions that never belong in the multiplayer
+/// chooser.
+const MISSIONS_MD_PKT_FILE_NAME: &str = "MISSIONSMD.PKT";
+const MISSIONS_YRO_FILE_NAME: &str = "MISSIONS.YRO";
 
 /// Exact source whose bytes were parsed into the active map.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -125,6 +134,7 @@ fn list_skirmish_scenario_records_from_sources(
                 &pkt,
                 SkirmishScenarioSource::MissionsMdPkt,
                 csf,
+                PktTitleStyle::Verbatim,
                 |file_name| {
                     assets
                         .get_ref(file_name)
@@ -157,6 +167,11 @@ fn append_loose_pkt_records(
     csf: Option<&CsfFile>,
 ) -> Result<()> {
     for (path, file_name) in loose_files_with_extension(ra2_dir, "pkt")? {
+        // The wildcard scan would otherwise re-list every archived row a second
+        // time from an extracted copy sitting beside the executable.
+        if file_name.eq_ignore_ascii_case(MISSIONS_MD_PKT_FILE_NAME) {
+            continue;
+        }
         let Some(pkt) = read_ini_file(&path) else {
             continue;
         };
@@ -165,6 +180,7 @@ fn append_loose_pkt_records(
             &pkt,
             SkirmishScenarioSource::LoosePkt(file_name),
             csf,
+            PktTitleStyle::Verbatim,
             |map_file| {
                 read_map_ini_for_metadata(&ra2_dir.join(map_file)).or_else(|| {
                     assets
@@ -184,6 +200,11 @@ fn append_loose_yro_records(
     csf: Option<&CsfFile>,
 ) -> Result<()> {
     for (path, file_name) in loose_files_with_extension(ra2_dir, "yro")? {
+        // The campaign archive is skipped by name so its missions never reach
+        // the skirmish chooser.
+        if file_name.eq_ignore_ascii_case(MISSIONS_YRO_FILE_NAME) {
+            continue;
+        }
         let owned_archive;
         let archive: &MixArchive;
         let fallback_assets: Option<&AssetManager>;
@@ -221,6 +242,7 @@ fn append_loose_yro_records(
             &pkt,
             SkirmishScenarioSource::LooseYro(file_name),
             csf,
+            PktTitleStyle::YroPlayerCountSuffix,
             |map_file| {
                 archive
                     .get_by_name(map_file)
@@ -287,11 +309,42 @@ fn loose_files_with_extension(ra2_dir: &Path, extension: &str) -> Result<Vec<(Pa
     Ok(files)
 }
 
+/// How a PKT-backed row's title is finished after the record is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PktTitleStyle {
+    /// `MISSIONSMD.PKT` and loose `*.PKT` rows show the title verbatim.
+    Verbatim,
+    /// Only the `*.YRO` branch appends the entry's player-count span.
+    YroPlayerCountSuffix,
+}
+
+/// Longest title the record's title slot holds, in characters.
+///
+/// The native slot is 0x2C wide chars, but after the copy-and-append the
+/// terminator is forced into the last one, so the visible title caps one short
+/// of the slot. An over-long custom title is cut, not wrapped.
+const PKT_TITLE_MAX_CHARS: usize = 0x2C - 1;
+
+/// Native formats the span as `(n)` when min equals max, else `(min-max)`, and
+/// joins it to the title with a single space.
+fn yro_player_count_suffix(min_players: u8, max_players: u8) -> String {
+    if min_players == max_players {
+        format!(" ({min_players})")
+    } else {
+        format!(" ({min_players}-{max_players})")
+    }
+}
+
+fn truncate_pkt_title(title: &str) -> String {
+    title.chars().take(PKT_TITLE_MAX_CHARS).collect()
+}
+
 fn append_pkt_records<F>(
     records: &mut Vec<SkirmishScenarioRecord>,
     pkt: &IniFile,
     source: SkirmishScenarioSource,
     csf: Option<&CsfFile>,
+    title_style: PktTitleStyle,
     mut map_ini: F,
 ) where
     F: FnMut(&str) -> Option<IniFile>,
@@ -308,16 +361,48 @@ fn append_pkt_records<F>(
         let Some(map_ini) = map_ini(&file_name) else {
             continue;
         };
+        let entry_section = pkt.section(map_stem);
         let display_name = pkt_display_name(pkt, map_stem, csf)
             .unwrap_or_else(|| display_name_from_basic_or_file(&map_ini, &file_name));
-        records.push(SkirmishScenarioRecord::pkt_from_ini(
+        let fields = PktEntryFields {
+            display_name,
+            // The mode filter, like the title and the player bounds, is a
+            // property of the PKT entry; the map payload never carries it.
+            game_modes: entry_section
+                .and_then(|section| section.get("GameMode"))
+                .map(parse_game_mode_list)
+                .unwrap_or_default(),
+            min_players: entry_section
+                .and_then(|section| section.get_i32("MinPlayers"))
+                .and_then(pkt_player_count),
+            max_players: entry_section
+                .and_then(|section| section.get_i32("MaxPlayers"))
+                .and_then(pkt_player_count),
+        };
+        let mut record = SkirmishScenarioRecord::pkt_from_ini(
             records.len(),
             source.clone(),
             &file_name,
             &map_ini,
-            display_name,
-        ));
+            fields,
+        );
+        if title_style == PktTitleStyle::YroPlayerCountSuffix {
+            let (Some(min), Some(max)) = (record.min_players, record.max_players) else {
+                records.push(record);
+                continue;
+            };
+            record.display_name = truncate_pkt_title(&format!(
+                "{}{}",
+                record.display_name,
+                yro_player_count_suffix(min, max)
+            ));
+        }
+        records.push(record);
     }
+}
+
+fn pkt_player_count(value: i32) -> Option<u8> {
+    u8::try_from(value).ok()
 }
 
 fn pkt_display_name(pkt: &IniFile, map_stem: &str, csf: Option<&CsfFile>) -> Option<String> {
@@ -721,16 +806,11 @@ mod tests {
             &pkt,
             SkirmishScenarioSource::MissionsMdPkt,
             Some(&csf),
+            PktTitleStyle::Verbatim,
             |file_name| match file_name {
-                "Zoo.MAP" => Some(IniFile::from_str(
-                    "[Basic]\nName=Basic Zoo\nGameModes=standard\n",
-                )),
-                "Alpha.MAP" => Some(IniFile::from_str(
-                    "[Basic]\nName=Basic Alpha\nGameModes=standard\n",
-                )),
-                "Raw.MAP" => Some(IniFile::from_str(
-                    "[Basic]\nName=Basic Raw\nGameModes=standard\n",
-                )),
+                "Zoo.MAP" => Some(IniFile::from_str("[Basic]\nName=Basic Zoo\n")),
+                "Alpha.MAP" => Some(IniFile::from_str("[Basic]\nName=Basic Alpha\n")),
+                "Raw.MAP" => Some(IniFile::from_str("[Basic]\nName=Basic Raw\n")),
                 _ => None,
             },
         );
@@ -743,5 +823,103 @@ mod tests {
         assert_eq!(records[0].file_name, "Zoo.MAP");
         assert_eq!(records[1].file_name, "Alpha.MAP");
         assert_eq!(records[2].file_name, "Raw.MAP");
+    }
+
+    /// Shaped after the real `MISSIONSMD.PKT`: the entry section carries the
+    /// filter list and bounds, the map payload carries neither.
+    fn retail_shaped_pkt() -> IniFile {
+        IniFile::from_str(
+            "[MultiMaps]\n1=XMP02T2\n2=XMP21\n\
+             [XMP02T2]\nDescriptionText=Dustbowl\nCD=2\nMinPlayers=2\nMaxPlayers=2\n\
+             GameMode=standard, meatgrind\n\
+             [XMP21]\nDescriptionText=Circuit Board\nMinPlayers=2\nMaxPlayers=4\n\
+             GameMode=teamgame\n",
+        )
+    }
+
+    fn bare_map_payload(_file_name: &str) -> Option<IniFile> {
+        Some(IniFile::from_str("[Basic]\nOfficial=yes\n"))
+    }
+
+    #[test]
+    fn pkt_rows_carry_the_entry_game_mode_list_so_non_standard_modes_list_maps() {
+        let mut records = Vec::new();
+        append_pkt_records(
+            &mut records,
+            &retail_shaped_pkt(),
+            SkirmishScenarioSource::MissionsMdPkt,
+            None,
+            PktTitleStyle::Verbatim,
+            bare_map_payload,
+        );
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].game_modes, vec!["standard", "meatgrind"]);
+        assert_eq!(records[0].min_players, Some(2));
+        assert_eq!(records[0].max_players, Some(2));
+        assert_eq!(records[1].game_modes, vec!["teamgame"]);
+        assert_eq!(records[1].max_players, Some(4));
+    }
+
+    #[test]
+    fn yro_rows_append_the_entry_player_count_span_to_the_title() {
+        let mut records = Vec::new();
+        append_pkt_records(
+            &mut records,
+            &retail_shaped_pkt(),
+            SkirmishScenarioSource::LooseYro("CrctBrd.yro".to_string()),
+            None,
+            PktTitleStyle::YroPlayerCountSuffix,
+            bare_map_payload,
+        );
+
+        // Equal bounds print one number; differing bounds print the span.
+        assert_eq!(records[0].display_name, "Dustbowl (2)");
+        assert_eq!(records[1].display_name, "Circuit Board (2-4)");
+    }
+
+    #[test]
+    fn pkt_and_missions_pkt_rows_keep_their_title_verbatim() {
+        let mut records = Vec::new();
+        append_pkt_records(
+            &mut records,
+            &retail_shaped_pkt(),
+            SkirmishScenarioSource::MissionsMdPkt,
+            None,
+            PktTitleStyle::Verbatim,
+            bare_map_payload,
+        );
+
+        assert_eq!(records[0].display_name, "Dustbowl");
+        assert_eq!(records[1].display_name, "Circuit Board");
+    }
+
+    #[test]
+    fn yro_title_suffix_is_bounded_to_the_native_title_slot() {
+        // 0x2C wide slots less the forced terminator.
+        assert_eq!(PKT_TITLE_MAX_CHARS, 43);
+        let long = "M".repeat(PKT_TITLE_MAX_CHARS + 8);
+        let pkt = IniFile::from_str(&format!(
+            "[MultiMaps]\n1=Long\n[Long]\nDescriptionText={long}\nMinPlayers=2\nMaxPlayers=4\n"
+        ));
+        let mut records = Vec::new();
+        append_pkt_records(
+            &mut records,
+            &pkt,
+            SkirmishScenarioSource::LooseYro("long.yro".to_string()),
+            None,
+            PktTitleStyle::YroPlayerCountSuffix,
+            bare_map_payload,
+        );
+
+        assert_eq!(records[0].display_name.chars().count(), 43);
+    }
+
+    #[test]
+    fn loose_scan_exclusion_names_match_the_native_wildcard_skips() {
+        // Both are compared case-insensitively against the found file name.
+        assert!("missionsmd.pkt".eq_ignore_ascii_case(MISSIONS_MD_PKT_FILE_NAME));
+        assert!("Missions.Yro".eq_ignore_ascii_case(MISSIONS_YRO_FILE_NAME));
+        assert!(!"MISSIONS.PKT".eq_ignore_ascii_case(MISSIONS_MD_PKT_FILE_NAME));
     }
 }
