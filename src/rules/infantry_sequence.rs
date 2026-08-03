@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use crate::rules::ini_parser::IniFile;
-use crate::sim::animation::{LoopMode, SequenceDef, SequenceKind, SequenceSet};
+use crate::sim::animation::{FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet};
 
 /// Native action-record delay byte for all 42 infantry actions.
 const ACTION_FRAME_DELAYS: [u8; 42] = [
@@ -331,7 +331,7 @@ pub fn build_sequence_set(def: &InfantrySequenceDef) -> SequenceSet {
                 frame_delay,
                 normalized,
                 loop_mode: default_loop_mode(kind),
-                clockwise_facings: false,
+                facing_slots: FacingSlots::InfantryTable,
             },
         );
     }

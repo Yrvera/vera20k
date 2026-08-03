@@ -747,9 +747,10 @@ fn resolve_infantry_shp_frame(
             return animation::resolve_shp_frame(def, facing, anim_state.frame_index);
         }
     }
-    // Fallback to stand frame bucket (0..7), counter-clockwise SHP order.
-    // +32 offset for isometric rotation (SHP frame 0 = screen-N, not cell-N).
-    (8 - (facing.wrapping_add(32) / 32) as u16) % 8
+    // Fallback when no sequence data was built for this type: the standing
+    // block is frames 0..7, so the facing slot is the frame index. Uses the
+    // same native facing table as the real path so the two cannot disagree.
+    animation::infantry_facing_slot(facing)
 }
 
 /// Rendered body SHP frame index for a `CanBeOccupied=yes` building.
