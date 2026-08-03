@@ -571,8 +571,23 @@ pub(crate) struct AppState {
     pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
     /// Retail process-start splash, held until its post-present deadline.
     pub(crate) startup_splash: Option<app_startup_splash::StartupSplashPresentation>,
-    /// Global elapsed time for looping IdleAnim overlays (flags, smokestacks, etc.).
+    /// Global elapsed time for looping terrain overlay animations.
     pub(crate) idle_anim_elapsed_ms: u32,
+    /// Logic frame on which each building's slot animations were created, by
+    /// entity id.
+    ///
+    /// gamemd gives every building animation slot its own animation object whose
+    /// frame timer is based at the frame it was constructed, so two identical
+    /// buildings placed at different times run out of phase with each other.
+    /// Presentation-only, so it lives here rather than on the entity.
+    ///
+    /// DRIFT: gamemd serializes each animation object with its own timer, so a
+    /// saved game restores the phases it was saved with. This map is not in the
+    /// snapshot, so loading re-stamps every surviving structure at the load
+    /// frame and the whole base pulses in unison again — the exact symptom the
+    /// per-building phase exists to remove. Fires once per save load, and only
+    /// unwinds as those buildings are replaced.
+    pub(crate) building_anim_phase_base: std::collections::BTreeMap<u64, u64>,
     /// Debug overlay: show terrain cost / pathgrid overlay. Toggle with P / F9.
     pub(crate) debug_show_pathgrid: bool,
     /// SpeedType for terrain cost overlay. None = auto from selected unit (default Track).
@@ -4392,6 +4407,7 @@ impl App {
             in_game_options_anchor: None,
             startup_splash,
             idle_anim_elapsed_ms: 0,
+            building_anim_phase_base: std::collections::BTreeMap::new(),
             debug_show_pathgrid: false,
             debug_terrain_cost_speed_type: None,
             debug_show_cell_grid: false,

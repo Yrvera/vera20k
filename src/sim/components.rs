@@ -631,6 +631,10 @@ pub struct LastAttacker {
 /// Each active one-shot anim overlay gets its own entry tracking frame progress.
 /// Driven by art.ini LoopStart/LoopEnd/LoopCount/Rate properties from the
 /// anim's own section (e.g., [GACNST_B]).
+///
+/// Timing is in logic frames, not wall-clock milliseconds: gamemd counts the
+/// animation's frame delay in logic frames, and a logic frame's duration is
+/// itself a function of the match game speed.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AnimOverlayState {
     /// Animation type interned ID (uppercase), e.g., "GACNST_B".
@@ -641,10 +645,12 @@ pub struct AnimOverlayState {
     pub loop_start: u16,
     /// Last frame of the loop range, exclusive (from art.ini LoopEnd=).
     pub loop_end: u16,
-    /// Milliseconds per frame (from art.ini Rate=, default 200).
-    pub rate_ms: u32,
-    /// Milliseconds accumulated since last frame advance.
-    pub elapsed_ms: u32,
+    /// Logic frames per animation frame — gamemd's `900 / Rate=` frame delay,
+    /// rescaled through the match game speed when the section is
+    /// `Normalized=yes`. Zero blocks advance, as it does natively.
+    pub rate_logic_frames: u32,
+    /// Logic frames accumulated since the last frame advance.
+    pub elapsed_logic_frames: u32,
     /// true = animation completed its one-shot playback.
     pub finished: bool,
 }

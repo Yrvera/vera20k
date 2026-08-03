@@ -610,10 +610,18 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
         // Drain tank-bunker wall-anim events into SpecialAnim overlays the same
         // frame so the walls rise/fall in step with the install/teardown.
         crate::app_building_anim::consume_bunker_wall_events(state);
-        // Use real wall-clock delta (capped to prevent jumps after pauses/debugger).
-        // Previously this passed SIM_TICK_MS (66ms) per render frame, causing building
-        // idle animations to play ~3-4× too fast (60fps × 66ms = 3960ms/sec).
-        crate::app_building_anim::tick_crane_animations(state, 16);
+        // Two clocks. The 16ms is wall time for the terrain-overlay animations,
+        // which are not part of the building animation model. Building animation
+        // frame delays are counted in logic frames, so they take the number of
+        // sim frames actually committed this iteration — zero when the lockstep
+        // lane declined to advance, so they never step on a frame that did not
+        // happen.
+        let sim_frames_advanced: u32 = garrison_flash_elapsed_ticks as u32;
+        crate::app_building_anim::tick_crane_animations(state, 16, sim_frames_advanced);
+        // Looping slot animations are phased off the logic frame their building
+        // was placed, so the base has to be recorded on a sim frame boundary
+        // rather than on a render frame.
+        crate::app_building_anim::refresh_building_anim_phase_bases(state);
         crate::app_building_anim::tick_garrison_muzzle_flashes(
             state,
             garrison_flash_elapsed_ticks.saturating_mul(u64::from(SIM_TICK_MS)) as u32,
