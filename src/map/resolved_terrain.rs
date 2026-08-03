@@ -354,6 +354,69 @@ impl BridgeOracleCellFacts {
     }
 }
 
+/// One terrain-attached animation the map load resolved for a cell.
+///
+/// `CellClass::RecalcAttributes` spawns one AnimClass per cell whose tile
+/// declares a `Tile%02dAnim` block and whose sub-tile equals that block's
+/// `AttachesTo`, then latches a per-cell flag so no later attribute recompute
+/// spawns a second one. Waterfalls and tunnel mouths are the stock users.
+///
+/// This is the load-time descriptor only: the animation's frame set and cadence
+/// come from the named AnimType's `art(md).ini` row, and the spawner owns the
+/// AnimClass lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerrainTileAnimation {
+    pub rx: u16,
+    pub ry: u16,
+    /// AnimType id from `Tile%02dAnim` (e.g. `WA01X`, `TUNTOP01`).
+    pub anim_name: String,
+    /// Absolute world leptons: pixel offset converted to world, plus the cell
+    /// centre.
+    pub world_x: i32,
+    pub world_y: i32,
+    /// Cell ground height in leptons. The pixel-offset conversion contributes
+    /// nothing here — it is a 2D screen-to-world transform.
+    pub world_z: i32,
+    /// `Tile%02dZAdjust`, forwarded to the spawned animation's sort bias.
+    pub z_adjust: i32,
+}
+
+/// Leptons per cell along one map axis.
+const LEPTONS_PER_CELL: i32 = 256;
+/// Cell-centre offset used by the tile-animation spawn coordinate.
+const CELL_CENTRE_LEPTONS: i32 = LEPTONS_PER_CELL / 2;
+
+/// Numerator of the exact screen-pixel → world-lepton scale used by the
+/// tactical pixel-to-world transform, over `PIXEL_TO_LEPTON_DENOMINATOR`.
+///
+/// The native matrix row is `[ +s, 2s, 0, 0 ]` / `[ -s, 2s, 0, 0 ]` where `s` is
+/// the single-precision constant `4.2667` — an authored decimal approximation of
+/// 256/60, i.e. leptons per cell over the isometric diamond half-width in
+/// pixels. The `Y` coefficient is exactly `2s` (same mantissa, exponent + 1),
+/// so both output axes reduce to `s * k` for an integer `k` and the whole
+/// transform is exact rational arithmetic followed by one truncation.
+///
+/// Working in integers rather than `f32` keeps this off the float path; the
+/// equivalence over the reachable offset range is pinned by
+/// `gsi_13_04_tile_anim_offset_matches_native_float_transform`.
+const PIXEL_TO_LEPTON_NUMERATOR: i64 = 4_473_959;
+const PIXEL_TO_LEPTON_DENOMINATOR: i64 = 1_048_576;
+
+/// Convert a `Tile%02dXOffset` / `YOffset` screen-pixel pair into the world
+/// lepton offset the animation spawn adds to the cell centre.
+///
+/// The native helper bails out to a zero coordinate when either offset is at or
+/// beyond the tactical viewport extent; every stock offset is under 64 pixels,
+/// so that guard is unreachable here and is deliberately not reproduced.
+/// Truncation is toward zero, matching the native float-to-long conversion.
+pub fn tile_anim_pixel_offset_to_leptons(x_offset: i32, y_offset: i32) -> (i32, i32) {
+    let scale =
+        |k: i64| -> i32 { ((PIXEL_TO_LEPTON_NUMERATOR * k) / PIXEL_TO_LEPTON_DENOMINATOR) as i32 };
+    let px = i64::from(x_offset);
+    let py = i64::from(y_offset);
+    (scale(px + 2 * py), scale(2 * py - px))
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedTerrainGrid {
     width: u16,
@@ -375,6 +438,9 @@ pub struct ResolvedTerrainGrid {
     bridge_set_start: Option<u16>,
     /// First flat tile id of the active theater's wooden high-bridge set.
     wood_bridge_set_start: Option<u16>,
+    /// Terrain animations the load resolved, in the native anti-diagonal cell
+    /// order so a spawner reproduces the engine's animation creation order.
+    tile_animations: Vec<TerrainTileAnimation>,
 }
 
 impl ResolvedTerrainGrid {
@@ -398,7 +464,13 @@ impl ResolvedTerrainGrid {
             tile_registry_len: None,
             bridge_set_start: None,
             wood_bridge_set_start: None,
+            tile_animations: Vec::new(),
         }
+    }
+
+    /// Terrain animations to spawn once at map load, in native creation order.
+    pub fn tile_animations(&self) -> &[TerrainTileAnimation] {
+        &self.tile_animations
     }
 
     pub fn width(&self) -> u16 {
@@ -643,6 +715,7 @@ impl ResolvedTerrainGrid {
                         .and_then(|set| td.lookup.bounds().get(set as usize))
                         .map(|bounds| bounds.start)
                 }),
+                tile_animations: Vec::new(),
             };
         }
 
@@ -740,6 +813,7 @@ impl ResolvedTerrainGrid {
 
         let mut cells: Vec<ResolvedTerrainCell> =
             Vec::with_capacity(width as usize * height as usize);
+        let mut tile_animations: Vec<TerrainTileAnimation> = Vec::new();
         let mut selector_calls = 0usize;
         let mut replacement_cells = 0usize;
         let mut high_suffix_cells = 0usize;
@@ -843,6 +917,37 @@ impl ResolvedTerrainGrid {
                     level,
                     metadata.slope_type,
                 );
+                // Tile-attached animation. The engine spawns one AnimClass per
+                // cell whose tile declares a `Tile%02dAnim` block and whose
+                // sub-tile equals that block's `AttachesTo`, latching a per-cell
+                // flag so later attribute recomputes never spawn a second one —
+                // this single pass over each cell is that latch. Two earlier
+                // returns exclude cells here too: a missing or out-of-range tile
+                // id, and an overlay that claims the cell's attributes.
+                if !uses_clear_fallback && !overlay_effects.claims_cell_attributes {
+                    if let Some(anim) =
+                        theater_data.and_then(|td| td.lookup.tile_anim(presentation_tile_id))
+                    {
+                        if anim.attaches_to == i32::from(presentation_sub_tile) {
+                            let (offset_x, offset_y) =
+                                tile_anim_pixel_offset_to_leptons(anim.x_offset, anim.y_offset);
+                            tile_animations.push(TerrainTileAnimation {
+                                rx,
+                                ry,
+                                anim_name: anim.anim_name.clone(),
+                                world_x: offset_x
+                                    + i32::from(rx) * LEPTONS_PER_CELL
+                                    + CELL_CENTRE_LEPTONS,
+                                world_y: offset_y
+                                    + i32::from(ry) * LEPTONS_PER_CELL
+                                    + CELL_CENTRE_LEPTONS,
+                                world_z: i32::from(level as i8)
+                                    * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+                                z_adjust: anim.z_adjust,
+                            });
+                        }
+                    }
+                }
                 let canonical_ramp = canonical_ramp_from_slope_type(metadata.slope_type);
                 // The registered pristine TMP owns the base snapshot. Overlay
                 // land never feeds back into these restoration fields.
@@ -968,6 +1073,17 @@ impl ResolvedTerrainGrid {
                     bridgehead_anchor_class_at_load: None,
                 });
             }
+        }
+        // The engine reaches cells through an anti-diagonal iterator, so the
+        // animations are constructed in that order. The loop above is row-major,
+        // so restore the sweep order here: the spawner then assigns animation
+        // identities the way a native load would.
+        tile_animations.sort_by_key(|anim| (anim.rx as u32 + anim.ry as u32, anim.rx));
+        if !tile_animations.is_empty() {
+            log::info!(
+                "ResolvedTerrain: {} terrain tile animations resolved",
+                tile_animations.len(),
+            );
         }
         if selector_calls > 0 {
             log::info!(
@@ -1109,10 +1225,30 @@ impl ResolvedTerrainGrid {
             );
         }
 
-        // FinalAlert2-style cliff redraw detection (MapData.cpp:3362-3377).
-        // For each cell, check the 2x2 block of neighbors at offsets (-2..-1, -2..-1)
-        // in isometric (rx, ry) space. If any neighbor is >= 4 levels lower than this
-        // cell, mark it for second-pass terrain redraw so cliff faces occlude entities.
+        // Cliff redraw selection — VERA-internal, and the closest thing this
+        // system has to a substitution rather than a port.
+        //
+        // gamemd has no equivalent selection step. Its terrain blitter is always
+        // invoked with the Z-buffer flag set, and for every sub-cell that
+        // carries TMP Z data (cell flags bit 1) the inner loop writes colour and
+        // depth together under a `z <= zbuffer` test, in the same single pass.
+        // Cliff faces occlude units because the unit blitter later tests against
+        // that buffer — not because any tile is chosen for a second pass. A
+        // sub-cell without Z data is blitted with no depth test at all.
+        //
+        // VERA carries the same per-pixel quantity (the R8 depth atlas in
+        // `render/tile_atlas.rs`, sourced from `TileImage.depth`), but resolves
+        // occlusion by redrawing a chosen subset of tiles after the sprites. The
+        // exact-rule equivalent of the native mechanism would be "every tile
+        // whose sub-cell has non-zero Z data"; the heuristic below is a much
+        // smaller set picked by cell height instead. Widening it is a
+        // render-pass and performance decision owned by the draw-pass layer, so
+        // this stays as-is with the native rule recorded rather than guessed.
+        //
+        // The heuristic itself is FinalAlert2-derived (MapData.cpp:3362-3377):
+        // for each cell, check the 2x2 block of neighbours at offsets
+        // (-2..-1, -2..-1) in isometric (rx, ry) space. If any neighbour is >= 4
+        // levels lower than this cell, mark it for the second-pass redraw.
         const CLIFF_HEIGHT_THRESHOLD: u8 = 4;
         let mut cliff_redraw_count: usize = 0;
         for idx in 0..cells.len() {
@@ -1154,7 +1290,9 @@ impl ResolvedTerrainGrid {
         // impassable. Matches gamemd.exe CellClass::RecalcAttributes (0x0047d2b0).
         // When value == 2 (YR default), cells where ANY of 6 isometric neighbors
         // is ≥4 levels above get land_type=Rock and ground_walk_blocked=true.
-        // Only overrides Clear(0), Water(4), Beach(3) land types.
+        // The reclass filter is exactly Clear, Water, Beach and Ice; every other
+        // land type keeps its own value. Ice matters on Snow-theater maps, where
+        // frozen surfaces run up to a cliff base.
         if cliff_back_impassability == 2 {
             const CLIFF_BACK_HEIGHT_DIFF: i16 = 4;
             // Ground-blocked wheel cost the Rock reclass carries on its own, so
@@ -1167,14 +1305,10 @@ impl ResolvedTerrainGrid {
             const NEIGHBOR_OFFSETS: [(i32, i32); 6] =
                 [(0, -1), (-1, 0), (2, 2), (1, 1), (-1, 1), (1, -1)];
             let rock_lt = crate::sim::pathfinding::passability::LandType::Rock.as_index();
-            let clear_lt = crate::sim::pathfinding::passability::LandType::Clear.as_index();
-            let water_lt = crate::sim::pathfinding::passability::LandType::Water.as_index();
-            let beach_lt = crate::sim::pathfinding::passability::LandType::Beach.as_index();
 
             let mut cliff_back_count: usize = 0;
             for idx in 0..cells.len() {
-                let lt = cells[idx].land_type;
-                if lt != clear_lt && lt != water_lt && lt != beach_lt {
+                if !cliff_back_reclass_applies(cells[idx].land_type) {
                     continue;
                 }
                 let cell_level = i16::from(cells[idx].level as i8);
@@ -1299,6 +1433,7 @@ impl ResolvedTerrainGrid {
                     .and_then(|set| td.lookup.bounds().get(set as usize))
                     .map(|bounds| bounds.start)
             }),
+            tile_animations,
         }
     }
 
@@ -1428,6 +1563,10 @@ impl Default for TileMetadata {
 
 #[derive(Debug, Clone, Default)]
 struct OverlayEffects {
+    /// The overlay owns this cell's attributes, so `RecalcAttributes` takes its
+    /// short branch: LAT/slope fixup and the zone recompute still run, but the
+    /// tile-attached animation spawn and the ShadowCaster walk are skipped.
+    claims_cell_attributes: bool,
     overlay_blocks: bool,
     overlay_zone_type: Option<u8>,
     has_bridge_deck: bool,
@@ -1467,6 +1606,24 @@ fn presentation_tile_parts(tile_index: i32, sub_tile: u8, clear_tile_id: u16) ->
     } else {
         (tile_index as u16, sub_tile)
     }
+}
+
+/// Land types the main `CliffBackImpassability` site reclasses to Rock.
+///
+/// The engine's filter on the ordinary (valid-tile, non-overlay) path is
+/// exactly `Clear`, `Water`, `Beach` and `Ice`. Ice is reachable on Snow-theater
+/// maps, where a frozen surface runs up to a cliff base; without it those cells
+/// stay walkable and buildable where the engine blocks them.
+///
+/// The two sibling sites use different filters — the overlay-claimed path
+/// reclasses unconditionally and the invalid-tile path filters `Clear` only —
+/// and are not modelled here.
+fn cliff_back_reclass_applies(land_type: u8) -> bool {
+    use crate::sim::pathfinding::passability::LandType;
+    land_type == LandType::Clear.as_index()
+        || land_type == LandType::Water.as_index()
+        || land_type == LandType::Beach.as_index()
+        || land_type == LandType::Ice.as_index()
 }
 
 fn ordinary_variant_selection_enabled(
@@ -1855,6 +2012,14 @@ fn classify_overlay_effects(
 
         let flags = overlay_registry.and_then(|reg| reg.flags(overlay.overlay_id));
         if let Some(flags) = flags {
+            // The gate on the early authoritative-land branch, evaluated before
+            // the resource-overlay removal so it matches the engine's order.
+            if flags.land == LandType::Wall
+                || flags.land == LandType::Railroad
+                || flags.no_use_tile_land_type
+            {
+                result.claims_cell_attributes = true;
+            }
             // RecalcAttributes can remove resource overlays in its early
             // authoritative-land branch before land or zone flags take effect.
             if clears_tiberium_on_slope(flags, slope_type) {
@@ -3967,5 +4132,191 @@ NoUseTileLandType=no
             !cell.ground_walk_blocked,
             "Height diff 3 should NOT trigger (threshold is 4)"
         );
+    }
+
+    /// `TheaterData` with a single tileset that declares tile animations in its
+    /// `SetName`-named section, shaped like retail `[Waterfalls]` /
+    /// `[Tunnel Floor]` blocks.
+    fn theater_with_tile_anims() -> TheaterData {
+        let ini = b"[TileSet0000]
+TilesInSet=4
+FileName=wf
+SetName=Waterfalls
+
+                    [Waterfalls]
+                    Tile01Anim=WA01X
+Tile01XOffset=-30
+Tile01YOffset=59
+                    Tile01AttachesTo=0
+Tile01ZAdjust=0
+                    Tile03Anim=TUNTOP01
+Tile03XOffset=-48
+Tile03YOffset=-37
+                    Tile03AttachesTo=2
+Tile03ZAdjust=-10
+";
+        let lookup = theater::parse_tileset_ini(ini, "tem").expect("synthetic theater parses");
+        let empty_palette = crate::assets::pal_file::Palette::from_bytes(&[0u8; 768])
+            .expect("768-byte zero palette parses");
+        TheaterData {
+            lookup,
+            iso_palette: empty_palette.clone(),
+            unit_palette: empty_palette.clone(),
+            tiberium_palette: empty_palette,
+            extension: "tem",
+            ini_data: Vec::new(),
+            bridge_set: None,
+            wood_bridge_set: None,
+            slope_set_pieces: None,
+            slope_set_pieces2: None,
+            bridge_top_left_1: None,
+            bridge_top_left_2: None,
+            bridge_top_right_1: None,
+            bridge_top_right_2: None,
+            bridge_middle_1: None,
+            bridge_middle_2: None,
+            tunnels: None,
+            track_tunnels: None,
+            dirt_tunnels: None,
+            dirt_track_tunnels: None,
+            cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
+            rmg_tiles: crate::map::theater::RmgTileKeys::default(),
+        }
+    }
+
+    fn anim_cell(rx: u16, ry: u16, tile_index: i32, sub_tile: u8, z: u8) -> MapCell {
+        MapCell {
+            rx,
+            ry,
+            tile_index,
+            sub_tile,
+            z,
+        }
+    }
+
+    #[test]
+    fn gsi_13_04_tile_anim_offset_matches_native_float_transform() {
+        // The engine converts the pixel offset through a float 3x4 matrix whose
+        // first two rows are [+s, 2s, 0, 0] and [-s, 2s, 0, 0], with s the
+        // single-precision constant 4.2667, then truncates toward zero. This
+        // pins the integer form against that reference across a range that
+        // comfortably contains every stock offset (max magnitude 60).
+        const S: f32 = 4.2667;
+        const S2: f32 = 8.5334;
+        for px in -128i32..=128 {
+            for py in -128i32..=128 {
+                let reference_x = (S * px as f32 + S2 * py as f32).trunc() as i32;
+                let reference_y = (S2 * py as f32 - S * px as f32).trunc() as i32;
+                assert_eq!(
+                    tile_anim_pixel_offset_to_leptons(px, py),
+                    (reference_x, reference_y),
+                    "pixel offset ({px}, {py})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gsi_13_04_tile_anim_spawns_only_on_the_attaches_to_subtile() {
+        let theater = theater_with_tile_anims();
+        // Tile 0 declares AttachesTo=0; tile 2 declares AttachesTo=2.
+        let map = make_map(
+            vec![
+                anim_cell(0, 0, 0, 0, 0),
+                anim_cell(1, 0, 0, 1, 0),
+                anim_cell(0, 1, 2, 2, 0),
+                anim_cell(1, 1, 2, 0, 0),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
+        let anims = grid.tile_animations();
+        assert_eq!(anims.len(), 2, "{anims:?}");
+        assert_eq!(anims[0].rx, 0);
+        assert_eq!(anims[0].ry, 0);
+        assert_eq!(anims[0].anim_name, "WA01X");
+        assert_eq!(anims[1].rx, 0);
+        assert_eq!(anims[1].ry, 1);
+        assert_eq!(anims[1].anim_name, "TUNTOP01");
+        assert_eq!(anims[1].z_adjust, -10);
+    }
+
+    #[test]
+    fn gsi_13_04_tile_anim_world_coord_adds_cell_centre_and_ground_height() {
+        let theater = theater_with_tile_anims();
+        let map = make_map(vec![anim_cell(2, 3, 0, 0, 5)], Vec::new(), Vec::new());
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
+        let anim = &grid.tile_animations()[0];
+        let (offset_x, offset_y) = tile_anim_pixel_offset_to_leptons(-30, 59);
+        assert_eq!(anim.world_x, offset_x + 2 * 256 + 128);
+        assert_eq!(anim.world_y, offset_y + 3 * 256 + 128);
+        assert_eq!(
+            anim.world_z,
+            5 * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS
+        );
+    }
+
+    #[test]
+    fn gsi_13_04_tile_anim_skipped_for_no_tile_cells() {
+        // A no-tile cell takes the engine's early return before the animation
+        // spawn, so ClearTile presentation never inherits an attachment.
+        let theater = theater_with_tile_anims();
+        let map = make_map(vec![anim_cell(0, 0, -1, 0, 0)], Vec::new(), Vec::new());
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
+        assert!(grid.tile_animations().is_empty());
+    }
+
+    #[test]
+    fn gsi_13_04_tile_anims_are_ordered_by_the_native_anti_diagonal_sweep() {
+        let theater = theater_with_tile_anims();
+        let map = make_map(
+            vec![
+                anim_cell(2, 0, 0, 0, 0),
+                anim_cell(0, 1, 0, 0, 0),
+                anim_cell(1, 0, 0, 0, 0),
+                anim_cell(0, 0, 0, 0, 0),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
+        let order: Vec<(u16, u16)> = grid
+            .tile_animations()
+            .iter()
+            .map(|anim| (anim.rx, anim.ry))
+            .collect();
+        assert_eq!(order, vec![(0, 0), (0, 1), (1, 0), (2, 0)]);
+    }
+
+    #[test]
+    fn gsi_13_04_cliff_back_reclass_filter_includes_ice() {
+        use crate::sim::pathfinding::passability::LandType;
+        for land in [
+            LandType::Clear,
+            LandType::Water,
+            LandType::Beach,
+            LandType::Ice,
+        ] {
+            assert!(
+                cliff_back_reclass_applies(land.as_index()),
+                "{land:?} must be reclassed to Rock behind a cliff"
+            );
+        }
+        for land in [
+            LandType::Road,
+            LandType::Rock,
+            LandType::Wall,
+            LandType::Tiberium,
+            LandType::Railroad,
+            LandType::Rough,
+            LandType::Tunnel,
+            LandType::Weeds,
+        ] {
+            assert!(
+                !cliff_back_reclass_applies(land.as_index()),
+                "{land:?} must keep its own land type behind a cliff"
+            );
+        }
     }
 }

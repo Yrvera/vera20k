@@ -687,3 +687,90 @@ fn match_tile_id_rejects_non_variant() {
     assert_eq!(table.match_tile_id(15), None);
     assert_eq!(table.match_tile_id(999), None);
 }
+
+/// Retail shape: the animation keys sit in the section named by `SetName`, not
+/// in `[TileSetNNNN]`. Values copied from `ini/temperatmd.ini` — `[TileSet0053]
+/// SetName=Tunnel Floor` / `[Tunnel Floor]`, and `[Waterfalls-C]`.
+fn make_tile_anim_ini() -> String {
+    "[TileSet0000]\nSetName=Grass\nFileName=clear\nTilesInSet=1\n\n\
+     [TileSet0001]\nSetName=Tunnel Floor\nFileName=tunnel\nTilesInSet=4\n\n\
+     [TileSet0002]\nSetName=Waterfalls-C\nFileName=wfc\nTilesInSet=4\n\n\
+     [Tunnel Floor]\n\
+     Tile01Anim=TUNTOP01\nTile01XOffset=-48\nTile01YOffset=-37\n\
+     Tile01AttachesTo=2\nTile01ZAdjust=-10\n\
+     Tile02Anim=TUNTOP02\nTile02XOffset=48\nTile02YOffset=-37\n\
+     Tile02AttachesTo=10\nTile02ZAdjust=-10\n\n\
+     [Waterfalls-C]\n\
+     Tile04Anim=WC04X\nTile04XOffset=-23\nTile04YOffset=-5\n\
+     Tile04AttachesTo=1\nTile04ZAdjust=0\n"
+        .to_string()
+}
+
+#[test]
+fn gsi_13_04_tile_anims_come_from_the_setname_section() {
+    let lookup = parse_tileset_ini(make_tile_anim_ini().as_bytes(), "tem").unwrap();
+
+    // Tileset 1 starts at tile_id 1 (tileset 0 holds one tile).
+    let first = lookup.tile_anim(1).expect("Tile01 block");
+    assert_eq!(first.anim_name, "TUNTOP01");
+    assert_eq!(first.x_offset, -48);
+    assert_eq!(first.y_offset, -37);
+    assert_eq!(first.attaches_to, 2);
+    assert_eq!(first.z_adjust, -10);
+
+    let second = lookup.tile_anim(2).expect("Tile02 block");
+    assert_eq!(second.anim_name, "TUNTOP02");
+    assert_eq!(second.attaches_to, 10);
+
+    // Tiles 03/04 of that set declare nothing.
+    assert_eq!(lookup.tile_anim(3), None);
+    assert_eq!(lookup.tile_anim(4), None);
+
+    // Tileset 2 starts at tile_id 5; only its 4th tile carries a block, and the
+    // ordinal in the key is 1-based *within the tileset*.
+    assert_eq!(lookup.tile_anim(5), None);
+    let waterfall = lookup.tile_anim(8).expect("Tile04 block");
+    assert_eq!(waterfall.anim_name, "WC04X");
+    assert_eq!(waterfall.x_offset, -23);
+    assert_eq!(waterfall.y_offset, -5);
+    assert_eq!(waterfall.attaches_to, 1);
+
+    // A tileset whose SetName names no section has no animations at all.
+    assert_eq!(lookup.tile_anim(0), None);
+}
+
+#[test]
+fn gsi_13_04_tile_anim_keys_are_ignored_without_a_name() {
+    // The loader gates the whole block on `Tile%02dAnim` reading back a
+    // non-empty string, so offsets alone never produce an attachment.
+    let ini = "[TileSet0000]\nSetName=Ghost\nFileName=g\nTilesInSet=2\n\n\
+               [Ghost]\n\
+               Tile01XOffset=17\nTile01AttachesTo=0\n\
+               Tile02Anim=\nTile02AttachesTo=0\n";
+    let lookup = parse_tileset_ini(ini.as_bytes(), "tem").unwrap();
+    assert_eq!(lookup.tile_anim(0), None);
+    assert_eq!(lookup.tile_anim(1), None);
+}
+
+#[test]
+fn gsi_13_04_tile_anim_numeric_keys_fall_back_to_constructor_defaults() {
+    // Absent numeric keys keep the tile type's constructed values: offsets and
+    // ZAdjust at 0, AttachesTo at the -1 sentinel that matches no sub-tile.
+    let ini = "[TileSet0000]\nSetName=Bare\nFileName=b\nTilesInSet=1\n\n\
+               [Bare]\nTile01Anim=WA01X\n";
+    let lookup = parse_tileset_ini(ini.as_bytes(), "tem").unwrap();
+    let anim = lookup.tile_anim(0).expect("anim block");
+    assert_eq!(anim.anim_name, "WA01X");
+    assert_eq!(anim.x_offset, 0);
+    assert_eq!(anim.y_offset, 0);
+    assert_eq!(anim.z_adjust, 0);
+    assert_eq!(anim.attaches_to, TILE_ANIM_NO_SUBTILE);
+}
+
+#[test]
+fn gsi_13_04_tile_anim_block_is_not_read_from_the_tileset_section() {
+    let ini = "[TileSet0000]\nSetName=Grass\nFileName=clear\nTilesInSet=1\n\
+               Tile01Anim=WA01X\nTile01AttachesTo=0\n";
+    let lookup = parse_tileset_ini(ini.as_bytes(), "tem").unwrap();
+    assert_eq!(lookup.tile_anim(0), None);
+}

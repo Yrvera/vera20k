@@ -250,6 +250,43 @@ fn waterfall_blocks(start: Option<u16>, tile_id: u16, slope_byte: u8, passable: 
     }
 }
 
+/// A `Tile%02dAnim` block: one terrain-attached animation declared for a single
+/// tile of a tileset.
+///
+/// The theater loader reads these from the INI section named by the tileset's
+/// `SetName` value — NOT from `[TileSetNNNN]`. Stock example: `[TileSet0049]`
+/// carries `SetName=Waterfalls-B`, and its animation keys live in the separate
+/// `[Waterfalls-B]` section. `%02d` is the 1-based tile ordinal inside the set.
+///
+/// The animation's own cadence (frame count, `Rate`, `LoopStart`/`LoopEnd`,
+/// `LoopCount`) is NOT part of this block — it comes from the named AnimType's
+/// `art(md).ini` section, exactly like every other animation in the game. This
+/// block only says *which* animation, *where*, and with what sort bias.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileAnimAttachment {
+    /// `Tile%02dAnim` — AnimType id. Present only when the key parsed non-empty.
+    pub anim_name: String,
+    /// `Tile%02dXOffset` — screen-pixel offset from the cell centre.
+    pub x_offset: i32,
+    /// `Tile%02dYOffset` — screen-pixel offset from the cell centre.
+    pub y_offset: i32,
+    /// `Tile%02dAttachesTo` — the sub-tile index that spawns the animation.
+    /// Defaults to `TILE_ANIM_NO_SUBTILE`, which matches no sub-tile, so a
+    /// block without this key never spawns.
+    pub attaches_to: i32,
+    /// `Tile%02dZAdjust` — sort bias handed to the spawned animation.
+    pub z_adjust: i32,
+}
+
+/// `AttachesTo` sentinel when the key is absent. The tile type constructor
+/// leaves this field at -1 and the spawn gate compares it for equality against
+/// an unsigned sub-tile index, so -1 can never match.
+pub const TILE_ANIM_NO_SUBTILE: i32 = -1;
+/// `XOffset` / `YOffset` / `ZAdjust` all start at 0 in the tile type constructor
+/// and the INI read passes the current value as its own default.
+const TILE_ANIM_DEFAULT_OFFSET: i32 = 0;
+const TILE_ANIM_DEFAULT_Z_ADJUST: i32 = 0;
+
 /// Maps tile_id → TMP filename. Built by parsing a theater INI file.
 pub struct TilesetLookup {
     /// tile_id → TMP filename (e.g., "clear01.tem"). None = blank/empty tileset.
@@ -270,6 +307,10 @@ pub struct TilesetLookup {
     /// Per-tileset AllowTiberium= flag — parsed from `[TileSetNNNN] AllowTiberium=`.
     /// Default `false`. Tiberium/ore only places on opt-in in-range tile types.
     allow_tiberium_flags: Vec<bool>,
+    /// tile_id → terrain animation attachment, parallel to `entries`.
+    /// `None` means the tile declared no `Tile%02dAnim`, matching the tile
+    /// type's -1 animation index.
+    tile_anims: Vec<Option<TileAnimAttachment>>,
 }
 
 impl TilesetLookup {
@@ -392,6 +433,11 @@ impl TilesetLookup {
             .unwrap_or(false)
     }
 
+    /// Terrain animation attached to a tile_id, if its tileset declared one.
+    pub fn tile_anim(&self, tile_id: u16) -> Option<&TileAnimAttachment> {
+        self.tile_anims.get(tile_id as usize)?.as_ref()
+    }
+
     /// Returns true if a tile_id belongs to a tileset with `AllowTiberium=yes`.
     /// Absent keys, missing tilesets, and out-of-range tile ids default false.
     pub fn allows_tiberium(&self, tile_id: u16) -> bool {
@@ -421,6 +467,7 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
     let mut set_names: Vec<String> = Vec::new();
     let mut morphable_flags: Vec<bool> = Vec::new();
     let mut allow_tiberium_flags: Vec<bool> = Vec::new();
+    let mut tile_anims: Vec<Option<TileAnimAttachment>> = Vec::new();
 
     // Iterate tileset sections in numerical order: TileSet0000, TileSet0001, ...
     for idx in 0..10000u32 {
@@ -459,11 +506,22 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
             set_name
         );
 
+        // Animation keys live in the section named by SetName, so a tileset
+        // with no SetName (or one naming an absent section) can never carry
+        // them. The loader resolves that section once per tileset, before the
+        // per-tile walk.
+        let anim_section: Option<&IniSection> = if set_name.is_empty() {
+            None
+        } else {
+            ini.section(set_name)
+        };
+
         if filename.is_empty() {
             // Blank tileset — consume slots but produce None entries.
             for _ in 0..tiles_in_set {
                 entries.push(None);
                 variant_filenames.push(Vec::new());
+                tile_anims.push(None);
             }
         } else {
             // Each tile is named {prefix}{NN:02}.{ext}, 1-indexed. Sibling
@@ -473,6 +531,7 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
                 let main_name = format!("{}{:02}.{}", filename, i, extension);
                 entries.push(Some(main_name));
                 variant_filenames.push(Vec::new());
+                tile_anims.push(anim_section.and_then(|section| parse_tile_anim(section, i)));
             }
         }
     }
@@ -510,6 +569,37 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
         set_names,
         morphable_flags,
         allow_tiberium_flags,
+        tile_anims,
+    })
+}
+
+/// Read one tile's animation block out of a `SetName`-named section.
+///
+/// `tile_ordinal` is 1-based within the tileset, matching the `%02d` the loader
+/// formats into every key. The whole block is gated on `Tile%02dAnim` reading
+/// back a non-empty string: the loader only stores the offsets, `AttachesTo`
+/// and `ZAdjust` after the animation name resolved to an AnimType. All four
+/// numeric keys pass the field's current value as their own INI default, which
+/// for a freshly constructed tile type is 0 / 0 / -1 / 0.
+fn parse_tile_anim(section: &IniSection, tile_ordinal: u32) -> Option<TileAnimAttachment> {
+    let anim_name = section.get(&format!("Tile{:02}Anim", tile_ordinal))?.trim();
+    if anim_name.is_empty() {
+        return None;
+    }
+    Some(TileAnimAttachment {
+        anim_name: anim_name.to_string(),
+        x_offset: section
+            .get_i32(&format!("Tile{:02}XOffset", tile_ordinal))
+            .unwrap_or(TILE_ANIM_DEFAULT_OFFSET),
+        y_offset: section
+            .get_i32(&format!("Tile{:02}YOffset", tile_ordinal))
+            .unwrap_or(TILE_ANIM_DEFAULT_OFFSET),
+        attaches_to: section
+            .get_i32(&format!("Tile{:02}AttachesTo", tile_ordinal))
+            .unwrap_or(TILE_ANIM_NO_SUBTILE),
+        z_adjust: section
+            .get_i32(&format!("Tile{:02}ZAdjust", tile_ordinal))
+            .unwrap_or(TILE_ANIM_DEFAULT_Z_ADJUST),
     })
 }
 
