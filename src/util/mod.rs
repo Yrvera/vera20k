@@ -21,6 +21,7 @@ pub mod lzo;
 pub mod native_string;
 pub mod native_x87;
 pub mod read_helpers;
+pub mod single_instance;
 pub mod version;
 // pub mod rect;
 // pub mod color;

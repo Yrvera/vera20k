@@ -63,6 +63,7 @@ pub mod app_single_player_shell_render;
 pub mod app_skirmish;
 pub mod app_skirmish_session;
 pub mod app_skirmish_shell_render;
+pub mod app_startup_options;
 pub mod app_tactical_capture;
 pub mod match_bootstrap;
 

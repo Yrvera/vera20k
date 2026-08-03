@@ -3956,26 +3956,25 @@ impl App {
         // before the first shell is shown.
         let mut frontend_seed_clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
         let frontend_seed = crate::match_bootstrap::read_match_seed(&mut frontend_seed_clock);
-        let startup_rules = startup_asset_manager
-            .as_ref()
-            // Startup shell: no mode or map selected yet, so no overrides.
-            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
+        // The splash goes up as soon as the archives are mounted and the two
+        // things it draws with are available: native presents it immediately
+        // after the mix mount and lets the rules/type initialization run under
+        // the artwork, padding out the remaining hold only if that work
+        // finished early. The string-table load has to stay ahead of the
+        // present — all five text layers fall back to English literals when the
+        // CSF is absent.
+        //
+        // What makes the move safe is that the archive stack is identical at
+        // both positions: the only registration that changes it sits after the
+        // splash in the old ordering as well, so first-winner resolution for
+        // the splash palette and SHP cannot differ. (The steps that moved below
+        // do share the asset manager mutably in effect — its mix cache is
+        // interior-mutable behind a lock — but caching a lookup does not change
+        // which archive wins it.)
         let startup_csf = startup_asset_manager
             .as_ref()
             .map(crate::app_init::load_csf)
             .transpose()?;
-        let startup_sound_registry = startup_asset_manager
-            .as_ref()
-            .map(crate::app_transitions::load_sound_registry)
-            .unwrap_or_default();
-        let startup_audio_indices = startup_asset_manager
-            .as_ref()
-            .map(crate::app_transitions::load_audio_indices)
-            .unwrap_or_default();
-        let startup_eva_registry = startup_asset_manager
-            .as_ref()
-            .map(crate::app_transitions::load_eva_registry)
-            .unwrap_or_default();
         let startup_fnt = startup_asset_manager.as_ref().and_then(|assets| {
             assets.get_ref("GAME.FNT").and_then(|data| {
                 crate::assets::fnt_file::FntFile::from_bytes(data)
@@ -4022,6 +4021,26 @@ impl App {
                 }
             }
         }
+        // Everything below runs with the splash already on screen: the
+        // presented swapchain frame stays composited while this thread blocks,
+        // and the hold armed above is measured from that present, so a slow
+        // load is spent inside the five seconds instead of before them.
+        let startup_rules = startup_asset_manager
+            .as_ref()
+            // Startup shell: no mode or map selected yet, so no overrides.
+            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
+        let startup_sound_registry = startup_asset_manager
+            .as_ref()
+            .map(crate::app_transitions::load_sound_registry)
+            .unwrap_or_default();
+        let startup_audio_indices = startup_asset_manager
+            .as_ref()
+            .map(crate::app_transitions::load_audio_indices)
+            .unwrap_or_default();
+        let startup_eva_registry = startup_asset_manager
+            .as_ref()
+            .map(crate::app_transitions::load_eva_registry)
+            .unwrap_or_default();
         if let Some(assets) = startup_asset_manager.as_mut() {
             match assets.register_neutral_archives() {
                 Ok(true) => {
