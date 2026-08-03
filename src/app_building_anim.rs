@@ -20,13 +20,18 @@ use crate::sim::world::Simulation;
 const GARRISON_OCCUPANT_ANIM_Z_ADJUST: i32 = -200;
 
 /// Advance one-shot building animation overlays stored as ECS components,
-/// and the global idle animation timer.
+/// and the global terrain-overlay animation timer.
 ///
 /// ActiveAnim plays once (one-shot) when triggered by building placement.
 /// When all frames have played, the component is removed and the
 /// renderer falls back to frame 0 (idle pose).
-/// IdleAnims are handled via a global elapsed timer (always looping).
-pub(crate) fn tick_crane_animations(state: &mut AppState, dt_ms: u32) {
+///
+/// `dt_logic_frames` is how many simulation frames actually committed since the
+/// previous call. gamemd's animation frame delay is counted in logic frames, and
+/// a logic frame's wall-clock duration is a function of the match game speed, so
+/// counting milliseconds here would make one-shot playback speed drift with the
+/// speed setting. `dt_ms` still drives the separate terrain-overlay clock.
+pub(crate) fn tick_crane_animations(state: &mut AppState, dt_ms: u32, dt_logic_frames: u32) {
     if let Some(sim) = &mut state.simulation {
         // Advance all active building overlay animations using per-anim Rate.
         let keys: Vec<u64> = sim.entities().keys_sorted();
@@ -41,9 +46,14 @@ pub(crate) fn tick_crane_animations(state: &mut AppState, dt_ms: u32) {
                 if anim.finished {
                     continue;
                 }
-                anim.elapsed_ms += dt_ms;
-                while anim.elapsed_ms >= anim.rate_ms {
-                    anim.elapsed_ms -= anim.rate_ms;
+                // A zero reload never advances natively — the frame-timer branch
+                // exits before touching the frame counter.
+                if anim.rate_logic_frames == 0 {
+                    continue;
+                }
+                anim.elapsed_logic_frames += dt_logic_frames;
+                while anim.elapsed_logic_frames >= anim.rate_logic_frames {
+                    anim.elapsed_logic_frames -= anim.rate_logic_frames;
                     anim.frame += 1;
                     if anim.frame >= anim.loop_end {
                         // One-shot: clamp to last frame and mark finished.
@@ -61,8 +71,92 @@ pub(crate) fn tick_crane_animations(state: &mut AppState, dt_ms: u32) {
         }
     }
 
-    // Advance the global idle animation timer (looping anims: flags, smokestacks, etc.).
+    // Advance the global terrain-overlay animation timer, which is a wall-clock
+    // clock and not part of the building animation model.
     state.idle_anim_elapsed_ms += dt_ms;
+}
+
+/// Per-frame delay, in logic frames, that a building slot animation advances at.
+///
+/// gamemd stores `900 / Rate=` on the animation type and, when the type is
+/// `Normalized=yes`, rescales that delay through the match game speed as the
+/// animation object is constructed. Both steps are needed: `GAPOWR_A` is
+/// `Rate=220` (delay 4) and `Normalized=yes`, which at the stock game speed
+/// becomes 6 logic frames per animation frame, not 4.
+pub(crate) fn building_anim_rate_logic_frames(
+    art_reg: &crate::rules::art_data::ArtRegistry,
+    anim_type: &str,
+    game_options: Option<&crate::sim::game_options::GameOptions>,
+) -> u16 {
+    let Some(config) = art_reg.anim_runtime_config(anim_type) else {
+        return crate::rules::art_data::DEFAULT_ART_RATE_LOGIC_FRAMES;
+    };
+    // `RandomRate=` would draw a per-instance delay from the scenario RNG; no
+    // stock building animation section declares it, so the deterministic
+    // presentation path never needs the draw.
+    match (config.normalized, game_options) {
+        (true, Some(options)) => options.normalized_anim_delay(config.rate_logic_frames),
+        _ => config.rate_logic_frames,
+    }
+}
+
+/// Record the logic frame each structure's slot animations were created on, and
+/// drop the record for structures that no longer exist.
+///
+/// gamemd builds a building's animation slots when the building is placed on the
+/// map, and each slot's animation object bases its own frame timer on the frame
+/// it was constructed. The looping animation therefore has a per-building phase:
+/// two power plants raised a few seconds apart never pulse together. This map is
+/// the app-side stand-in for that construction frame — recorded once, the first
+/// logic frame the structure is seen.
+pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState) {
+    let Some(sim) = &state.simulation else {
+        state.building_anim_phase_base.clear();
+        return;
+    };
+    let tick = sim.session.tick;
+    let live: Vec<u64> = sim
+        .entities()
+        .iter_sorted()
+        .filter(|(_, entity)| entity.category == crate::map::entities::EntityCategory::Structure)
+        .map(|(id, _)| id)
+        .collect();
+    record_building_anim_phase_bases(&mut state.building_anim_phase_base, &live, tick);
+}
+
+/// Insert a phase base for every newly seen structure and forget the ones that
+/// are gone.
+///
+/// An existing entry is never re-stamped: the animation object outlives every
+/// intervening frame, so re-basing it would restart the loop and put the whole
+/// base back in step.
+///
+/// `live_structures` must be sorted ascending — `EntityStore::iter_sorted`
+/// yields stable ids in that order.
+fn record_building_anim_phase_bases(
+    bases: &mut std::collections::BTreeMap<u64, u64>,
+    live_structures: &[u64],
+    tick: u64,
+) {
+    bases.retain(|id, _| live_structures.binary_search(id).is_ok());
+    for id in live_structures {
+        bases.entry(*id).or_insert(tick);
+    }
+}
+
+/// Logic frames elapsed since a building's slot animations were created.
+///
+/// Falls back to zero for a structure with no recorded base, which renders the
+/// animation's first loop frame rather than an arbitrary one.
+pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u64) -> u32 {
+    let Some(sim) = &state.simulation else {
+        return 0;
+    };
+    state
+        .building_anim_phase_base
+        .get(&stable_id)
+        .map(|base| sim.session.tick.saturating_sub(*base).min(u32::MAX as u64) as u32)
+        .unwrap_or(0)
 }
 
 /// Trigger a one-shot crane animation on the active producer (ConYard) for an owner.
@@ -96,6 +190,13 @@ pub(crate) fn trigger_crane_anim(state: &mut AppState, owner: &str) {
         (view.stable_id, type_str.to_string(), rules_image)
     };
 
+    // Copied out before the art borrow so the frame delay can be normalized
+    // through the match game speed without holding a second borrow of `state`.
+    let game_options: Option<crate::sim::game_options::GameOptions> = state
+        .simulation
+        .as_ref()
+        .map(|sim| sim.session.game_options.clone());
+
     let Some(art_reg) = &state.art_registry else {
         return;
     };
@@ -124,18 +225,18 @@ pub(crate) fn trigger_crane_anim(state: &mut AppState, owner: &str) {
         let anim_upper: String = anim.anim_type.to_uppercase();
         let loop_end: u16 = anim.loop_end;
         let loop_start: u16 = anim.loop_start;
-        let rate: u16 = anim.rate;
+        let rate: u16 =
+            building_anim_rate_logic_frames(art_reg, &anim.anim_type, game_options.as_ref());
         let frame_count: u16 = loop_end - loop_start;
 
         log::info!(
-            "Crane anim triggered: owner='{}' anim='{}' frames={}-{} ({} frames) rate={}ms duration={:.0}ms",
+            "Crane anim triggered: owner='{}' anim='{}' frames={}-{} ({} frames) rate={} logic frames",
             owner,
             anim_upper,
             loop_start,
             loop_end,
             frame_count,
             rate,
-            frame_count as f32 * rate as f32,
         );
         let anim_type_id = state
             .simulation
@@ -147,8 +248,8 @@ pub(crate) fn trigger_crane_anim(state: &mut AppState, owner: &str) {
             frame: anim.start_frame.max(loop_start),
             loop_start,
             loop_end,
-            rate_ms: rate as u32,
-            elapsed_ms: 0,
+            rate_logic_frames: u32::from(rate),
+            elapsed_logic_frames: 0,
             finished: false,
         });
     }
@@ -235,7 +336,11 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
                     a.loop_start,
                     a.loop_end,
                     a.start_frame.max(a.loop_start),
-                    a.rate,
+                    building_anim_rate_logic_frames(
+                        art_reg,
+                        &a.anim_type,
+                        Some(&sim.session.game_options),
+                    ),
                 ))
             });
 
@@ -290,8 +395,8 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
                     frame: start_frame,
                     loop_start,
                     loop_end,
-                    rate_ms: rate as u32,
-                    elapsed_ms: 0,
+                    rate_logic_frames: u32::from(rate),
+                    elapsed_logic_frames: 0,
                     finished: false,
                 };
                 if let Some(overlays) = building.building_anim_overlays.as_mut() {
@@ -332,37 +437,38 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
 /// the anim has no loop range or its section was never interned.
 fn bunker_special_overlay(
     sim: &Simulation,
+    art_reg: &crate::rules::art_data::ArtRegistry,
     config: &crate::rules::art_data::BuildingAnimConfig,
     damaged: bool,
 ) -> Option<AnimOverlayState> {
-    let (anim_type, loop_start, loop_end, start_frame, rate) =
-        match (damaged, &config.damaged_variant) {
-            (true, Some(v)) => (
-                v.anim_type.as_str(),
-                v.loop_start,
-                v.loop_end,
-                v.start_frame.max(v.loop_start),
-                v.rate,
-            ),
-            _ => (
-                config.anim_type.as_str(),
-                config.loop_start,
-                config.loop_end,
-                config.start_frame.max(config.loop_start),
-                config.rate,
-            ),
-        };
+    let (anim_type, loop_start, loop_end, start_frame) = match (damaged, &config.damaged_variant) {
+        (true, Some(v)) => (
+            v.anim_type.as_str(),
+            v.loop_start,
+            v.loop_end,
+            v.start_frame.max(v.loop_start),
+        ),
+        _ => (
+            config.anim_type.as_str(),
+            config.loop_start,
+            config.loop_end,
+            config.start_frame.max(config.loop_start),
+        ),
+    };
     if loop_end <= loop_start {
         return None;
     }
+    // The frame delay belongs to the selected variant's own art section — a
+    // `…Damaged` replacement routinely carries a different `Rate=`.
+    let rate = building_anim_rate_logic_frames(art_reg, anim_type, Some(&sim.session.game_options));
     let id = sim.interner.get(&anim_type.to_uppercase())?;
     Some(AnimOverlayState {
         anim_type: id,
         frame: start_frame,
         loop_start,
         loop_end,
-        rate_ms: rate as u32,
-        elapsed_ms: 0,
+        rate_logic_frames: u32::from(rate),
+        elapsed_logic_frames: 0,
         finished: false,
     })
 }
@@ -417,7 +523,7 @@ pub(crate) fn consume_bunker_wall_events(state: &mut AppState) {
             let new_states: Vec<AnimOverlayState> = pick
                 .iter()
                 .filter_map(|&i| specials.get(i))
-                .filter_map(|cfg| bunker_special_overlay(sim, cfg, ev.damaged))
+                .filter_map(|cfg| bunker_special_overlay(sim, art_reg, cfg, ev.damaged))
                 .collect();
             // Collect every interned anim id (base + damaged) for the up pair so
             // the down event removes whichever variant is currently playing.
@@ -1091,6 +1197,31 @@ mod tests {
     use crate::rules::art_data::{ArtRegistry, DEFAULT_ART_RATE_LOGIC_FRAMES};
     use crate::rules::ini_parser::IniFile;
     use crate::sim::world::Simulation;
+
+    #[test]
+    fn building_anim_phase_base_is_stamped_once_and_never_rebased() {
+        // Two power plants placed 15 logic frames apart keep their own bases for
+        // as long as they live, which is what holds their loops out of phase.
+        let mut bases = std::collections::BTreeMap::new();
+
+        record_building_anim_phase_bases(&mut bases, &[10], 100);
+        record_building_anim_phase_bases(&mut bases, &[10, 11], 115);
+        record_building_anim_phase_bases(&mut bases, &[10, 11], 130);
+
+        assert_eq!(bases.get(&10), Some(&100));
+        assert_eq!(bases.get(&11), Some(&115));
+    }
+
+    #[test]
+    fn building_anim_phase_base_is_dropped_when_the_building_dies() {
+        let mut bases = std::collections::BTreeMap::new();
+
+        record_building_anim_phase_bases(&mut bases, &[10, 11], 100);
+        record_building_anim_phase_bases(&mut bases, &[11], 140);
+
+        assert_eq!(bases.get(&10), None);
+        assert_eq!(bases.get(&11), Some(&100));
+    }
 
     #[test]
     fn garrison_occupant_anim_rate_uses_art_section_rate_logic_frames() {
