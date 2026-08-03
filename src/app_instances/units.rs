@@ -388,32 +388,17 @@ pub(crate) fn build_unit_instances(
 
 /// Compute the screen-space offset for a turret pivot point from art.ini TurretOffset.
 ///
-/// Rotate (0, -TurretOffset) by body facing, then convert from leptons to
-/// isometric screen coordinates.
-/// The offset rotates with body facing since the pivot is fixed on the hull.
-fn turret_screen_offset(turret_offset: i32, body_facing: u8) -> (f32, f32) {
-    if turret_offset == 0 {
-        return (0.0, 0.0);
-    }
-    // Our VXL rasterizer uses facing/256 (not 255). Must match so offset
-    // aligns with the rendered model at all facings.
-    let angle: f32 = std::f32::consts::TAU * (body_facing as f32 / 256.0);
-    let (sin, cos) = angle.sin_cos();
-    // XNA Vector2.Transform with CreateRotationZ(angle):
-    //   x' = vx * cos + vy * (-sin)
-    //   y' = vx * sin + vy * cos
-    // With v = (0, -TurretOffset):
-    //   x' = TurretOffset * sin(angle)
-    //   y' = -TurretOffset * cos(angle)
-    let to: f32 = turret_offset as f32;
-    let rx: f32 = to * sin;
-    let ry: f32 = -to * cos;
-    // Convert leptons → screen coords. CellSizeInLeptons=256, our cells are 60×30.
-    let cx: f32 = rx / 256.0;
-    let cy: f32 = ry / 256.0;
-    let screen_x: f32 = (cx - cy) * 60.0 / 2.0;
-    let screen_y: f32 = (cx + cy) * 30.0 / 2.0;
-    (screen_x, screen_y)
+/// Delegates to the voxel renderer, which walks the offset through the same
+/// camera/slope/body-facing chain the hull was drawn with. That matters on ramps:
+/// the pivot is a point on the tilted hull, so it has to rise and fall with it
+/// rather than being nudged by a fixed screen-space vector.
+fn turret_screen_offset(turret_offset: i32, body_facing: u8, slope_type: u8) -> (f32, f32) {
+    crate::render::vxl_raster::turret_pivot_screen_offset(
+        turret_offset,
+        body_facing,
+        slope_type,
+        crate::render::vxl_raster::VxlRenderParams::default().scale,
+    )
 }
 
 /// Look up a unit sprite from the atlas with cascading fallbacks:
@@ -608,7 +593,9 @@ fn emit_turret_unit_sprites(
         .and_then(|a| a.get(type_id))
         .map(|e| e.turret_offset)
         .unwrap_or(0);
-    let (tur_ox, tur_oy) = turret_screen_offset(art_offset, body_facing);
+    // Same slope the body sprite was keyed with, so the pivot cannot disagree with
+    // the hull it sits on.
+    let (tur_ox, tur_oy) = turret_screen_offset(art_offset, body_facing, slope_type);
 
     // All layers of a turreted unit share one depth so insertion order
     // (body, then turret/barrel) controls visual stacking via stable sort.

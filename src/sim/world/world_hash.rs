@@ -917,6 +917,35 @@ impl Simulation {
                 }
             }
             entity.weapon_override.hash(hasher);
+            // Spawn-manager pool: slot states, timers and targets are
+            // deterministic sim state that no other field covers. (Native
+            // folds only the manager-level fields into its CRC and leaves the
+            // per-slot machine uncovered; VERA folds the whole thing, which is
+            // strictly stricter and cannot mask a divergence.)
+            //
+            // Deliberately folded ONLY when present — no absent-case tag byte.
+            // Every object in the game carries these two fields, so an
+            // unconditional tag would move every committed baseline, including
+            // the legacy provenance probes, for fixtures that contain no
+            // spawner unit at all.
+            //
+            // Honest limitation: this block is not self-delimiting. The leading
+            // 1u8/2u8 tags separate the two fields from each other, but nothing
+            // in this hasher marks where one entity's contribution ends, so an
+            // omitted-field encoding is not provably distinct from some other
+            // field's bytes further along the stream. That is a property of the
+            // whole per-entity hasher, not of this block; every neighbouring
+            // conditional field has it too. It is not reachable here — a live
+            // pool always folds a tag plus its spawn type and mode — but the
+            // invariant is "no known aliasing", not "aliasing is impossible".
+            if let Some(ref manager) = entity.spawn_manager {
+                1u8.hash(hasher);
+                manager.hash(hasher);
+            }
+            if let Some(owner_id) = entity.spawn_owner_id {
+                2u8.hash(hasher);
+                owner_id.hash(hasher);
+            }
             // Homing missile flight state. `HomingState` has a manual `Hash`
             // impl that excludes the render-only `pitch: f32` field — see
             // sim::movement::homing_movement.

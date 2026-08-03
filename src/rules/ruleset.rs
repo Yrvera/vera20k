@@ -1919,6 +1919,11 @@ pub struct RuleSet {
     /// IonCannonWarhead=`, `C4Warhead=`). Resolution to interned IDs happens
     /// at world init.
     pub bridge_warheads: crate::rules::bridge_warheads::BridgeWarheads,
+    /// The three hardcoded missile-spawn families (`[General] V3RocketType=`,
+    /// `DMislType=`, `CMislType=`) with their launch frames, impact damage and
+    /// warheads. Read by the spawn manager to classify a spawn child and by the
+    /// missile detonation path.
+    pub missile_spawn: crate::rules::missile_spawn::MissileSpawnRules,
     /// `[CombatDamage] C4Delay=`. Default `0.03` minutes = 27 ticks @ 15 fps.
     /// Time between SEAL plant claim and detonation. Stored as integer ticks
     /// (not minutes) so the per-tick comparison stays integer/lockstep-safe.
@@ -2181,6 +2186,12 @@ impl RuleSet {
             .map(crate::rules::bridge_warheads::BridgeWarheads::from_ini_section)
             .unwrap_or_default();
 
+        // [General] rocket type/frame slots + [CombatDamage] missile warheads.
+        let missile_spawn = crate::rules::missile_spawn::MissileSpawnRules::from_ini_sections(
+            ini.section("General"),
+            ini.section("CombatDamage"),
+        );
+
         // [CombatDamage] C4Delay = minutes (double). Default 0.03 = 27 ticks @ 15 fps.
         // Stored as integer ticks for lockstep-safe per-tick comparison.
         const SIM_TICKS_PER_SECOND: u32 = 15;
@@ -2308,6 +2319,7 @@ impl RuleSet {
             super_weapons,
             combat_damage,
             bridge_warheads,
+            missile_spawn,
             c4_delay_ticks,
             particle_types,
             particle_types_by_name,

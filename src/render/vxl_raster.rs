@@ -28,6 +28,94 @@ const CAMERA_PITCH_DEG: f32 = 60.0;
 /// World yaw offset (45°) to align model north with isometric grid.
 const WORLD_YAW_OFFSET_DEG: f32 = 45.0;
 
+/// Number of distinct orientations a voxel body/turret/barrel can render at.
+///
+/// The original quantizes facing to 5 bits before building the rotation matrix and
+/// reuses those same 5 bits as its draw-cache key, so there is no finer sub-facing
+/// anywhere in the voxel pipeline: a rendered voxel is always exactly 1 of 32.
+const VOXEL_FACING_STEPS: u32 = 32;
+
+/// Angular size of one voxel facing step: 360° / 32 = 11.25° = π/16.
+const VOXEL_FACING_STEP_RAD: f32 = std::f32::consts::PI / 16.0;
+
+/// Quantize an 8-bit facing to the voxel renderer's 5-bit facing step (0–31).
+///
+/// The original computes this from the 16-bit facing as
+/// `((facing16 >> 10) + 1 >> 1) & 0x1F`. An 8-bit facing is the high byte of that
+/// 16-bit value, so the shift reduces to `facing8 >> 2` and the `+1 >> 1` is a
+/// round-half-up to the nearest of 32 steps (the boundary sits at facing 4, i.e.
+/// exactly half of one 11.25° step).
+pub fn voxel_facing_step(facing: u8) -> u8 {
+    ((((u32::from(facing) >> 2) + 1) >> 1) & (VOXEL_FACING_STEPS - 1)) as u8
+}
+
+/// Quantize a 16-bit facing to the voxel renderer's 5-bit facing step (0–31).
+///
+/// This is the form the original uses directly; prefer it wherever the full 16-bit
+/// facing is still in hand, since it rounds off the true value rather than off an
+/// already-truncated byte.
+pub fn voxel_facing_step_u16(facing16: u16) -> u8 {
+    ((((u32::from(facing16) >> 10) + 1) >> 1) & (VOXEL_FACING_STEPS - 1)) as u8
+}
+
+/// The body-rotation angle the original installs for a given facing step.
+///
+/// Built as `RotateZ((step - 8) * -π/16)`. The `-8` bias is a constant +90° folded
+/// into the body term; the camera carries the matching `-45°` yaw, so the net world
+/// rotation works out to `45° − facing°` — but the two terms sit on opposite sides
+/// of the terrain-slope matrix and therefore cannot be collapsed into one another.
+fn voxel_facing_angle(step: u8) -> f32 {
+    (step as f32 - 8.0) * -VOXEL_FACING_STEP_RAD
+}
+
+/// The camera/view basis every voxel draw shares.
+///
+/// Built the way the original does: identity, rotate-X(-pitch), rotate-Z(-yaw).
+/// Both of its rotate helpers post-multiply a right-handed counter-clockwise
+/// rotation — the same convention `glam::Mat4::from_rotation_*` uses — so the two
+/// expressions transcribe one-for-one. This is a pure rotation: there is no scale
+/// anywhere in the camera.
+fn voxel_camera_view() -> Mat4 {
+    Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
+        * Mat4::from_rotation_z(-WORLD_YAW_OFFSET_DEG.to_radians())
+}
+
+/// Divisor taking `TurretOffset` from leptons to voxel model units (= pixels).
+///
+/// The original reads the offset as a signed integer and shifts right by 3 with the
+/// usual round-toward-zero correction, so this is an integer divide by 8, not a
+/// lepton-per-cell conversion.
+const TURRET_OFFSET_DIVISOR: i32 = 8;
+
+/// Screen displacement of a turret's pivot from the hull centre, in pixels.
+///
+/// `TurretOffset` is not a screen-space nudge: the original translates the *body*
+/// matrix along its own X column by `TurretOffset / 8` and only then applies the
+/// turret's rotation, so the pivot inherits the hull's terrain tilt and rises or
+/// falls with it on a ramp. Factoring that chain gives
+/// `camera · slope · Rz(body) · (offset, 0, 0)` as a plain post-transform
+/// displacement, which is what this returns — the turret sprite itself still depends
+/// only on the turret's own facing, so no extra atlas dimension is needed.
+///
+/// Returns pixels in the rasterizer's screen convention (+X right, +Y down), matching
+/// how `render_vxl` projects a voxel: `x * scale` and `-y * scale`.
+pub fn turret_pivot_screen_offset(
+    turret_offset_leptons: i32,
+    body_facing: u8,
+    slope_type: u8,
+    scale: f32,
+) -> (f32, f32) {
+    if turret_offset_leptons == 0 {
+        return (0.0, 0.0);
+    }
+    let offset_units: f32 = (turret_offset_leptons / TURRET_OFFSET_DIVISOR) as f32;
+    let body_facing_mat: Mat4 =
+        Mat4::from_rotation_z(voxel_facing_angle(voxel_facing_step(body_facing)));
+    let chain: Mat4 = voxel_camera_view() * compute_slope_rotation(slope_type) * body_facing_mat;
+    let disp: Vec3 = chain.transform_vector3(Vec3::new(offset_units, 0.0, 0.0));
+    (disp.x * scale, -disp.y * scale)
+}
+
 /// Margin in pixels added around the sprite to avoid clipping.
 const SPRITE_MARGIN: u32 = 2;
 
@@ -83,10 +171,17 @@ pub struct VxlRenderParams {
     /// Optional 3-frame slope transition. When present, this replaces
     /// `slope_type` with an interpolated slope orientation.
     pub slope_blend: Option<VxlSlopeBlend>,
-    /// Pixel scale factor. Higher = larger sprite. Default: 1.045.
-    /// TS default is CellSizeX=48; RA2 uses CellSizeX=60. Base scale = 60/48
-    /// = 1.25, reduced by 16.4% (1.25 * 0.836 = 1.045) to match original RA2
-    /// voxel proportions on the isometric grid.
+    /// Model-space-unit to pixel scale. Default: 1.0 — one unit is one pixel.
+    ///
+    /// The original applies no magnification anywhere between the section
+    /// transform and the pixel write: the camera matrix is a pure rotation, and
+    /// the only constants on the path are a ×256 (an 8.8 fixed-point shift, since
+    /// the rasterizer indexes its 256×256 visibility map with the *high byte* of
+    /// each 16-bit coordinate) and a +128 that centres the model in that buffer.
+    /// So the VXL bounding-box units are already screen pixels.
+    ///
+    /// Kept as a field rather than a constant because the asset contact-sheet
+    /// tool magnifies deliberately; production always leaves it at 1.0.
     pub scale: f32,
     /// Ambient light intensity for fallback N·L shading. Default: 0.6.
     pub ambient: f32,
@@ -110,7 +205,7 @@ impl Default for VxlRenderParams {
             facing: 0,
             slope_type: 0,
             slope_blend: None,
-            scale: 1.045,
+            scale: 1.0,
             ambient: 0.6,
             diffuse: 0.4,
             light_dir,
@@ -337,16 +432,26 @@ pub fn prepare_limb_data(
     hva: Option<&HvaFile>,
     params: &VxlRenderParams,
 ) -> (Vec<LimbRenderData>, f32) {
-    let facing_rad: f32 = (params.facing as f32) / 256.0 * std::f32::consts::TAU;
+    // Facing is quantized to 32 steps before the rotation matrix is built, so
+    // every voxel body, turret and barrel renders at exactly 1 of 32 orientations.
+    let facing_step: u8 = voxel_facing_step(params.facing);
+    // Equivalent continuous facing for the lighting LUT, quantized in lockstep
+    // with the body so a sprite's shading cannot disagree with its geometry.
+    let facing_rad: f32 = (facing_step as f32) * VOXEL_FACING_STEP_RAD;
     let scale: f32 = params.scale;
 
-    // gamemd's simple DriveLocomotion Draw_Matrix path builds
-    // `slope_matrix * facing_rotation`, then TechnoClass::Render applies the
-    // camera/view matrix outside that result. Keep facing separate so terrain
-    // slope remains world/cell-oriented instead of rotating with the unit body.
-    let camera_view: Mat4 = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
-        * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians());
-    let body_facing: Mat4 = Mat4::from_rotation_z(-facing_rad);
+    // The simple (no-rock) draw path builds `slope_matrix * facing_rotation`, then
+    // the render step applies the camera/view matrix outside that result. Keep
+    // facing separate so terrain slope stays world/cell-oriented instead of
+    // rotating with the unit body.
+    //
+    // Both camera rotations are negative. The signs are load-bearing: the body term
+    // carries a compensating +90°, and although the two cancel on flat ground they
+    // sit on opposite sides of `slope_mat`, which does not commute with a Z rotation.
+    // Flipping either sign tilts ramped units about an axis 90° away from the
+    // original's while leaving flat ground looking correct.
+    let camera_view: Mat4 = voxel_camera_view();
+    let body_facing: Mat4 = Mat4::from_rotation_z(voxel_facing_angle(facing_step));
 
     let mut limb_data: Vec<LimbRenderData> = Vec::new();
     let mut max_footprint: f32 = 1.0;
@@ -869,8 +974,11 @@ mod tests {
     #[test]
     fn test_vxl_simple_slope_applies_after_body_facing_before_camera() {
         let vxl = make_test_vxl();
+        // Facing 32 = step 4, a 45° body rotation. Facing 64 would be step 8, whose
+        // body rotation is exactly identity — that makes the slope-order check below
+        // vacuously true, since `slope * I` and `I * slope` are the same matrix.
         let params = VxlRenderParams {
-            facing: 64,
+            facing: 32,
             slope_type: 4,
             ..Default::default()
         };
@@ -878,10 +986,15 @@ mod tests {
         let (limbs, _) = prepare_limb_data(&vxl, None, &params);
         let combined = limbs[0].combined;
 
-        let facing_rad = params.facing as f32 / 256.0 * std::f32::consts::TAU;
+        // Reference built the way the original does: identity, rotate-X(-pitch),
+        // rotate-Z(-yaw) for the camera; identity, rotate-Z((step-8) * -PI/16) for
+        // the body. Both of its rotate helpers post-multiply a right-handed CCW
+        // rotation, which is exactly glam's `from_rotation_*` convention, so the
+        // expressions transcribe one-for-one.
         let camera_view = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
-            * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians());
-        let body_facing = Mat4::from_rotation_z(-facing_rad);
+            * Mat4::from_rotation_z(-WORLD_YAW_OFFSET_DEG.to_radians());
+        let step = voxel_facing_step(params.facing) as f32;
+        let body_facing = Mat4::from_rotation_z((step - 8.0) * -VOXEL_FACING_STEP_RAD);
         let section_transform = Mat4::from_translation(Vec3::new(-1.0, -1.0, -1.0));
         let slope_mat = compute_slope_rotation(params.slope_type);
         let expected = camera_view * slope_mat * body_facing * section_transform;
@@ -894,8 +1007,161 @@ mod tests {
         let old_point = old_body_local_order.transform_point3(sample);
         assert!(
             (new_point - old_point).length() > 0.01,
-            "sloped facing 64 must not use the old body-local slope order"
+            "sloped facing 32 must not use the old body-local slope order"
         );
+    }
+
+    #[test]
+    fn test_camera_yaw_sign_is_load_bearing_on_slopes() {
+        // The camera's -45° yaw and the body term's +90° bias cancel on flat ground,
+        // which is why a sign flip in either one hides for as long as every unit is
+        // on level terrain. They do not cancel once a slope matrix sits between
+        // them: Rz does not commute with a tilt about a horizontal axis, so the
+        // wrong sign tilts a ramped unit about an axis 90° away from the original's.
+        //
+        // Pin both halves of that: identical on flat ground, different on a ramp.
+        let facing: u8 = 64;
+        let step = voxel_facing_step(facing) as f32;
+        let facing_rad = facing as f32 / 256.0 * std::f32::consts::TAU;
+
+        let correct_camera = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
+            * Mat4::from_rotation_z(-WORLD_YAW_OFFSET_DEG.to_radians());
+        let correct_body = Mat4::from_rotation_z((step - 8.0) * -VOXEL_FACING_STEP_RAD);
+
+        // The pre-fix formulation: yaw sign flipped, +90° folded out of the body.
+        let flipped_camera = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
+            * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians());
+        let flipped_body = Mat4::from_rotation_z(-facing_rad);
+
+        let flat = compute_slope_rotation(0);
+        assert_mat4_close(
+            correct_camera * flat * correct_body,
+            flipped_camera * flat * flipped_body,
+            1e-5,
+        );
+
+        let ramp = compute_slope_rotation(4);
+        let sample = Vec3::new(0.0, 1.0, 0.0);
+        let correct_point = (correct_camera * ramp * correct_body).transform_point3(sample);
+        let flipped_point = (flipped_camera * ramp * flipped_body).transform_point3(sample);
+        assert!(
+            (correct_point - flipped_point).length() > 0.1,
+            "camera yaw sign must change the rendered tilt on a ramp; got {:?} vs {:?}",
+            correct_point,
+            flipped_point
+        );
+    }
+
+    #[test]
+    fn test_voxel_facing_quantizes_to_32_steps_with_round_half_up() {
+        // The original reduces facing to 5 bits before building the rotation matrix
+        // and reuses those same 5 bits as its draw-cache key, so 32 is the complete
+        // set of voxel orientations. Boundaries matter: the step changes at facing 4,
+        // half of one 11.25° step, and facing 255 wraps back to step 0 (north).
+        assert_eq!(voxel_facing_step(0), 0);
+        assert_eq!(voxel_facing_step(3), 0);
+        assert_eq!(voxel_facing_step(4), 1, "round-half-up boundary");
+        assert_eq!(voxel_facing_step(8), 1);
+        assert_eq!(voxel_facing_step(64), 8, "east");
+        assert_eq!(voxel_facing_step(128), 16, "south");
+        assert_eq!(voxel_facing_step(192), 24, "west");
+        assert_eq!(voxel_facing_step(252), 0, "wraps to north, not 32");
+        assert_eq!(voxel_facing_step(255), 0);
+
+        // Every step must be reachable, and each bucket representative must map
+        // back onto its own step or the atlas key would not round-trip.
+        for step in 0..32u8 {
+            assert_eq!(
+                voxel_facing_step(step * 8),
+                step,
+                "bucket {} representative",
+                step
+            );
+        }
+
+        // The 16-bit form is the one the original actually evaluates; feeding it a
+        // facing whose low byte is zero must agree with the 8-bit form.
+        for facing in 0..=255u8 {
+            assert_eq!(
+                voxel_facing_step_u16(u16::from(facing) << 8),
+                voxel_facing_step(facing),
+                "8-bit and 16-bit quantization disagree at facing {}",
+                facing
+            );
+        }
+    }
+
+    #[test]
+    fn test_voxel_facing_angle_nets_to_45_minus_facing_on_flat_ground() {
+        // Sanity-check the +90° bias hiding in the `step - 8` term: composed with
+        // the camera's -45° yaw, the net world rotation on flat ground must come out
+        // at `45° - facing°` for the quantized facing. This is the identity that
+        // makes the sign pair self-consistent, and the reason the old formulation
+        // looked right for as long as nothing drove onto a ramp.
+        for step in 0..32u8 {
+            let net = -WORLD_YAW_OFFSET_DEG.to_radians() + voxel_facing_angle(step);
+            let expected =
+                WORLD_YAW_OFFSET_DEG.to_radians() - (step as f32) * VOXEL_FACING_STEP_RAD;
+            assert!(
+                (net - expected).abs() < 1e-5,
+                "step {}: net {} != expected {}",
+                step,
+                net,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_turret_pivot_rides_the_hull_tilt() {
+        // The original translates the *body* matrix along its own X column by
+        // TurretOffset/8 and only then rotates the turret, so the pivot is a point on
+        // the tilted hull. A fixed screen-space nudge cannot reproduce that: on a ramp
+        // the pivot has to move with the hull it is bolted to.
+        let flat = turret_pivot_screen_offset(50, 0, 0, 1.0);
+        let ramp = turret_pivot_screen_offset(50, 0, 4, 1.0);
+        assert!(
+            (flat.0 - ramp.0).abs() > 0.05 || (flat.1 - ramp.1).abs() > 0.05,
+            "turret pivot must shift on a ramp; flat={:?} ramp={:?}",
+            flat,
+            ramp
+        );
+
+        // Walk the concrete fixture: offset 50 leptons, facing 0 (north).
+        // 50/8 truncates to 6 model units along local +X; the body's step-0 rotation
+        // is +90°, taking it to world +Y; the camera's -45° yaw then splits it evenly
+        // across screen X and Y, and the 60° pitch halves the Y component.
+        assert!((flat.0 - 4.2426).abs() < 1e-3, "screen x was {}", flat.0);
+        assert!((flat.1 - -2.1213).abs() < 1e-3, "screen y was {}", flat.1);
+
+        // Integer divide by 8, truncating toward zero — not a lepton-per-cell scale.
+        // 32..=39 all land on 4 model units, so they must agree exactly, while 40
+        // crosses into 5 and must not.
+        assert_eq!(
+            turret_pivot_screen_offset(32, 0, 0, 1.0),
+            turret_pivot_screen_offset(39, 0, 0, 1.0)
+        );
+        assert_ne!(
+            turret_pivot_screen_offset(39, 0, 0, 1.0),
+            turret_pivot_screen_offset(40, 0, 0, 1.0)
+        );
+        // Negative offsets (stock artmd.ini ships -100 and -80) mirror the pivot.
+        let back = turret_pivot_screen_offset(-40, 0, 0, 1.0);
+        let fwd = turret_pivot_screen_offset(40, 0, 0, 1.0);
+        assert!((back.0 + fwd.0).abs() < 1e-4 && (back.1 + fwd.1).abs() < 1e-4);
+
+        assert_eq!(turret_pivot_screen_offset(0, 0, 0, 1.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn test_default_scale_is_unity() {
+        // The original applies no magnification between the section transform and
+        // the pixel write: the camera is a pure rotation, and the only constants on
+        // the path are a x256 (8.8 fixed point — the rasterizer indexes its 256x256
+        // visibility map with the high byte of each 16-bit coordinate) and a +128
+        // that centres the model in that buffer. VXL bounds are already pixels.
+        // The former 1.045 here was an eyeballed fudge with no such provenance.
+        assert_eq!(VxlRenderParams::default().scale, 1.0);
     }
 
     #[test]
@@ -910,12 +1176,18 @@ mod tests {
         let (limbs, _) = prepare_limb_data(&vxl, None, &params);
         let combined = limbs[0].combined;
 
-        let facing_rad = params.facing as f32 / 256.0 * std::f32::consts::TAU;
-        let old_flat_order = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
-            * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians() - facing_rad)
+        // On flat ground the whole camera+body chain must collapse to a single
+        // Z rotation of `45° - facing°`. Facing 64 is exactly on a quantization
+        // step, so the quantized and continuous forms agree and this doubles as
+        // proof that the camera-sign fix did not move flat-ground appearance —
+        // which is the great majority of what a player sees.
+        let quantized_facing_rad =
+            f32::from(voxel_facing_step(params.facing)) * VOXEL_FACING_STEP_RAD;
+        let flat_order = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
+            * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians() - quantized_facing_rad)
             * Mat4::from_translation(Vec3::new(-1.0, -1.0, -1.0));
 
-        assert_mat4_close(combined, old_flat_order, 1e-6);
+        assert_mat4_close(combined, flat_order, 1e-6);
     }
 
     #[test]
@@ -1072,10 +1344,10 @@ mod tests {
         };
 
         let (limbs, _) = prepare_limb_data(&vxl, None, &params);
-        let facing_rad = params.facing as f32 / 256.0 * std::f32::consts::TAU;
         let camera_view = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
-            * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians());
-        let body_facing = Mat4::from_rotation_z(-facing_rad);
+            * Mat4::from_rotation_z(-WORLD_YAW_OFFSET_DEG.to_radians());
+        let step = voxel_facing_step(params.facing) as f32;
+        let body_facing = Mat4::from_rotation_z((step - 8.0) * -VOXEL_FACING_STEP_RAD);
         let section_transform = Mat4::from_translation(Vec3::new(-1.0, -1.0, -1.0));
         let expected = camera_view
             * compute_slope_blend_rotation(params.slope_blend.unwrap())

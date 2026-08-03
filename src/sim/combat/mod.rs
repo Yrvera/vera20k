@@ -1286,6 +1286,10 @@ pub(crate) struct CombatEmit {
     /// per-object window (pre-death state; own-retarget visible), applied
     /// post-batch by `unit_post::apply_unit_facing`.
     pub(crate) unit_facing: Vec<(u64, u16)>,
+    /// (parent_id, target) — a `Spawner=yes` weapon reached its fire point.
+    /// gamemd's `Fire_At` hands the target to the parent's `SpawnManager` and
+    /// returns NULL, so no bullet, damage or rearm follows.
+    pub(crate) spawn_target_updates: Vec<(u64, TargetKind)>,
 }
 
 /// Advance combat with optional owner visibility gating and sound event sink.
@@ -1337,6 +1341,7 @@ pub fn tick_combat_with_fog(
         binary_frame,
         live_order,
         radiation,
+        &[],
         scenario_rng,
         &mut unused_main_rng,
     )
@@ -1364,6 +1369,7 @@ pub fn tick_combat_with_fog_and_main_rng(
     binary_frame: u32,
     live_order: &[u64],
     radiation: Option<&mut crate::sim::radiation::RadiationState>,
+    missile_detonations: &[crate::sim::spawn_manager::MissileDetonation],
     scenario_rng: &mut SimRng,
     main_rng: &mut SimRng,
 ) -> CombatTickResult {
@@ -1835,7 +1841,20 @@ pub fn tick_combat_with_fog_and_main_rng(
         pending_infantry_updates,
         animation_switches,
         unit_facing,
+        spawn_target_updates,
     } = emit;
+
+    // Spawner weapons: hand the fire target to the parent's spawn manager.
+    // `SpawnManagerClass::SetTarget` only queues a target that differs from the
+    // live one; the manager's own AI pass promotes it.
+    for &(parent_id, target) in &spawn_target_updates {
+        if let Some(manager) = entities
+            .get_mut(parent_id)
+            .and_then(|e| e.spawn_manager.as_mut())
+        {
+            manager.set_target(Some(target));
+        }
+    }
 
     // Phase 3: apply retargets and burst/cooldown updates.
     // Auto-retargets only ever produce Entity targets (acquire_best_target
@@ -1966,6 +1985,52 @@ pub fn tick_combat_with_fog_and_main_rng(
                 }
             }
         }
+    }
+
+    // Phase 3.9: spawn-manager missile impacts recorded during this tick's
+    // movement pass. gamemd's `RocketLocomotion::Detonate` calls the engine's
+    // shared area-damage routine, so the impact must reach the same
+    // damage → death → despawn pipeline as any other detonation — including
+    // death weapons, crew ejection and kill credit. Folded in here, ahead of
+    // Phase 4, in the order the missiles landed.
+    for det in missile_detonations {
+        let warhead_name = interner.resolve(det.warhead).to_string();
+        let Some(warhead) = rules.warhead(&warhead_name) else {
+            continue;
+        };
+        let owner_house = interner.resolve(det.owner).to_string();
+        let impact_z = combat_aoe::bridge_adjusted_impact_z(terrain, det.rx, det.ry);
+        let hits = combat_aoe::apply_aoe_damage(
+            entities,
+            det.rx,
+            det.ry,
+            det.damage,
+            warhead,
+            rules,
+            interner,
+            &owner_house,
+            combat_aoe::AoELayerContext {
+                occupancy: Some(&*occupancy),
+                terrain,
+                impact_z,
+            },
+        );
+        let wh_iid = interner.intern(&warhead.id);
+        for (target_id, damage) in hits {
+            damage_events.push((target_id, damage, det.firer_id, wh_iid));
+        }
+        emit_warhead_detonation_effects(
+            warhead,
+            det.damage,
+            det.rx,
+            det.ry,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            0,
+            interner,
+            &mut explosion_effects,
+            &mut smudge_spawn_requests,
+        );
     }
 
     // Phase 4: apply damage to targets and track last attacker for retaliation.
@@ -2567,6 +2632,44 @@ pub(crate) fn resolve_attacker_fire(
     }
     if pending_at_fire_frame {
         out.pending_infantry_updates.push((snap.stable_id, None));
+    }
+
+    // Spawner weapon: gamemd's Fire_At short-circuits here. It calls
+    // `SpawnManagerClass::SetTarget` and returns NULL — no bullet, no damage,
+    // no detonation effects, and no rearm timer write (the rearm write lives
+    // further down Fire_At, past this branch). Because the branch returns above
+    // the first random draw as well as above bullet allocation, a spawner fire
+    // consumes zero scenario-RNG draws natively.
+    //
+    // `TechnoClass::GetFireError` step 18 (`disassemble_bytes 0x006FC606`) adds
+    // three gates ahead of the shot, all read off the FIRER, not the target:
+    //   1. `TechnoClass__IsOnBridge_ForFiring` (`0x00703B10`) → error 6.
+    //      **NOT MODELLED.** It is not a plain "am I on a bridge deck" test —
+    //      it is gated on the firer's own OnBridge byte being *clear*, then
+    //      samples the firer's cell plus four direction-offset neighbours and
+    //      tests cell flags 0x100/0x800 in four different combinations. It
+    //      refuses a launch made from under or alongside a bridge span. Trigger:
+    //      a V3/Dreadnought/Boomer ordered to fire while standing in a
+    //      bridge-adjacent cell. Player effect: VERA launches where retail
+    //      refuses; the missile flies where retail would have made the unit hold
+    //      fire. Frequency: uncommon — needs the launcher parked under a span,
+    //      which players avoid because it blocks line of sight anyway.
+    //      Downstream risk: none — the gate only suppresses a launch, it feeds
+    //      nothing. The exact 0x100/0x800 flag meanings and the four direction
+    //      offsets are UNCHECKED and must be traced before implementing.
+    //   2. `this->vtable+0x380` non-zero → error 6. **NOT MODELLED**; the slot's
+    //      identity is UNCHECKED.
+    //   3. `SpawnManagerClass::CountAliveSpawns == 0` → error 3. MODELLED below.
+    if weapon.spawner {
+        let alive = entities
+            .get(snap.stable_id)
+            .and_then(|e| e.spawn_manager.as_ref())
+            .map(|m| m.count_alive_spawns())
+            .unwrap_or(0);
+        if alive > 0 {
+            out.spawn_target_updates.push((snap.stable_id, snap.target));
+        }
+        return;
     }
 
     // Fire one shot!

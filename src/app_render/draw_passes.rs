@@ -40,6 +40,11 @@ pub(super) struct DrawPassData<'a> {
 
 /// Create the main render pass and dispatch all draw calls in the correct order.
 ///
+/// The frame has two regions, matching the native composition: the **tactical
+/// viewport**, scissored to the window minus the sidebar column, and the
+/// **chrome**, which owns the whole window and goes down last. Steps 1–10 below
+/// are tactical; the screen-fixed block at the end releases the scissor first.
+///
 /// Draw order follows the original engine's layered rendering:
 /// 1. Terrain (zdepth) → 2. Bridge body (zdepth) → 3. Overlays (passthrough) →
 /// 4. Bridge entities (merge) → 5. Ground objects, building turrets included
@@ -55,6 +60,29 @@ pub(super) fn dispatch_draw_passes(
     let pool: &InstanceBufferPool = &state.instance_pool;
     let transition_cache = state.vxl_slope_transition_cache.borrow();
     let mut pass = begin_main_pass(encoder, view, &state.depth_view);
+
+    // Everything from here to the screen-fixed chrome block is battlefield: it
+    // belongs to the tactical viewport and must not be able to paint a pixel
+    // into the sidebar column. The native engine gets that for free — the
+    // battlefield composes into its own surface and every object draw is handed
+    // the intersection of its screen rect with the tactical rect as a clip. VERA
+    // composes into one target, so the scissor is what enforces it.
+    //
+    // Without it the guarantee degrades to "the sidebar art happens to cover
+    // it", and coverage is per-theme, not universal. Allied and Soviet do cover:
+    // side3 is drawn at its own SHP height, not the RON's `side3_height` (which
+    // is 0), and the top-housing panel follows it, so the stack runs past the
+    // window bottom and only a few pixels of the top strip are bare. Yuri does
+    // not. Its atlas is built from sidec02md.mix, whose seven entries are
+    // radary.shp, the three background plates, two palettes and key.ini — and
+    // the by-hash-ID lookups (`render_entry_by_id`, used for the top strips and
+    // the housing panel) have no asset-manager fallback, unlike the by-name
+    // ones. They all resolve to None, leaving the whole top-inset block and a
+    // strip below side3 unpainted. Those are the holes live terrain, units and
+    // any overhanging bracket or health bar were showing through. Clipped, the
+    // region reads black, which is what opaque chrome looks like there.
+    let (tac_x, tac_y, tac_w, tac_h) = crate::app_camera::tactical_viewport_px(state);
+    pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
 
     // --- Step 1: Terrain (Z-depth pipeline for per-pixel depth from TMP Z-data) ---
     draw_pooled_zdepth(
@@ -525,6 +553,11 @@ pub(super) fn dispatch_draw_passes(
         "placement_invalid",
     );
     // --- Screen-fixed UI: sidebar, minimap, cursor — use UI camera (zoom=1.0) ---
+    // Chrome owns the whole window: the sidebar column, the message list that
+    // starts at the tactical origin, tooltips, and the cursor, which the native
+    // engine draws over both regions. Release the tactical scissor before any of
+    // it goes down.
+    pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());
     draw_pooled_ui(
         &mut pass,
         &state.batch_renderer,

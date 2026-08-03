@@ -31,23 +31,26 @@ use crate::rules::ruleset::RuleSet;
 
 /// Padding between sprites in the atlas to prevent texture bleeding.
 const SPRITE_PADDING: u32 = 1;
-/// Body/composite facing quantization step: 1 = 256 buckets (1.4° per bucket).
+/// Body/composite facing quantization step: 8 = 32 buckets (11.25° per bucket).
 ///
-/// Facing is stored as a byte, so 256 buckets is exact — every distinct facing the
-/// simulation can express has its own pre-rendered sprite and no quantization happens
-/// at all. Earlier values (4, then 2) were compromises for atlas size; that constraint
-/// came from requesting a smaller texture limit than the GPU offers, not from hardware.
-const UNIT_FACING_STEP: u8 = 1;
+/// This is not an atlas-size compromise — it is the renderer's real resolution. The
+/// original quantizes facing to 5 bits before building the voxel rotation matrix, so
+/// only 32 distinct body orientations exist. Baking finer buckets would store up to 8
+/// byte-identical copies of every sprite.
+const UNIT_FACING_STEP: u8 = 8;
 /// Number of pre-rendered facing directions for body/composite sprites.
 ///
-/// `u16` because 256 does not fit in a `u8`. The product `bucket * step` always stays
-/// below 256, so the facing derived from a bucket is still a byte.
-const UNIT_FACING_BUCKETS: u16 = 256;
-/// Turret/barrel facing quantization step: 1 = 256 buckets (1.4° per bucket).
-/// Turrets rotate constantly during combat, where stepping shows most.
-const TURRET_FACING_STEP: u8 = 1;
+/// `u16` for arithmetic headroom against the step; `bucket * step` stays below 256, so
+/// the facing derived from a bucket is still a byte.
+const UNIT_FACING_BUCKETS: u16 = 32;
+/// Turret/barrel facing quantization step: 8 = 32 buckets (11.25° per bucket).
+///
+/// Turret and barrel matrices go through the same 5-bit facing quantization as the
+/// body, so turrets step through the same 32 orientations however smoothly the
+/// simulation rotates them.
+const TURRET_FACING_STEP: u8 = 8;
 /// Number of pre-rendered facing directions for turret/barrel sprites.
-const TURRET_FACING_BUCKETS: u16 = 256;
+const TURRET_FACING_BUCKETS: u16 = 32;
 
 // VxlLayer lives in sim::components — re-exported here for convenience.
 pub use crate::sim::components::VxlLayer;
@@ -1122,16 +1125,22 @@ fn pad_layer_to_union_bounds(layer: &VxlSprite, all_layers: &[&VxlSprite]) -> Vx
 }
 
 /// Canonicalize body/composite facing to one of `UNIT_FACING_BUCKETS` buckets.
+///
+/// Rounds to the nearest of the renderer's 32 facing steps rather than truncating,
+/// because that is what the voxel rotation matrix does. Truncating would bias every
+/// unit's rendered heading by up to half a step against its simulated one.
 pub fn canonical_unit_facing(facing: u8) -> u8 {
-    (facing / UNIT_FACING_STEP) * UNIT_FACING_STEP
+    vxl_raster::voxel_facing_step(facing) * UNIT_FACING_STEP
 }
 
 /// Canonicalize turret/barrel facing to one of `TURRET_FACING_BUCKETS` buckets.
 /// Accepts 16-bit DirStruct, converts to 8-bit for sprite frame selection.
 /// This is the single u16→u8 conversion point for turret rendering.
+///
+/// Quantizes straight off the 16-bit facing — the form the original uses — so the
+/// rounding is not applied to an already-truncated byte.
 pub fn canonical_turret_facing(facing_u16: u16) -> u8 {
-    let facing_u8: u8 = (facing_u16 >> 8) as u8;
-    (facing_u8 / TURRET_FACING_STEP) * TURRET_FACING_STEP
+    vxl_raster::voxel_facing_step_u16(facing_u16) * TURRET_FACING_STEP
 }
 
 /// Get the facing quantization step and bucket count for a given VxlLayer.

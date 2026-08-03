@@ -19,6 +19,7 @@
 
 use crate::app::AppState;
 use crate::map::terrain;
+use crate::sidebar::SidebarChromeLayoutSpec;
 
 /// Camera scroll speed in pixels per frame (arrow keys).
 const CAMERA_SCROLL_SPEED: f32 = 8.0;
@@ -377,6 +378,56 @@ pub(crate) fn tactical_camera_top_left(
     )
 }
 
+/// The tactical viewport, in render-target pixels, as `(x, y, w, h)`.
+///
+/// The native engine keeps exactly one tactical rect and clips **every**
+/// battlefield draw to it: an object intersects its own screen rect with the
+/// tactical rect and hands the intersection to its blitter as a clip rect, and
+/// the depth and shroud buffers are allocated at the rect's dimensions, not the
+/// screen's. The sidebar lives on its own surface that is blitted alongside, so
+/// no battlefield pixel can reach the sidebar column even when a sprite,
+/// bracket or health bar overhangs the boundary.
+///
+/// VERA composites the whole frame into one render target, so that guarantee has
+/// to come from a scissor rect instead — otherwise the battlefield is drawn
+/// across the full window and only *covered* by whatever sidebar art happens to
+/// be opaque that frame.
+///
+/// Height is the full target on purpose. The native rect is 32 px shorter than
+/// the screen; what owns that band is unresolved, and reserving it here would
+/// blank a strip of battlefield that is currently drawn.
+pub(crate) fn tactical_viewport_px(state: &AppState) -> (u32, u32, u32, u32) {
+    let rw = state.render_width();
+    let rh = state.render_height();
+    (
+        0,
+        0,
+        tactical_viewport_width_px(rw, state.sidebar_layout_spec),
+        rh,
+    )
+}
+
+/// Width of the tactical viewport in render-target pixels — the one definition
+/// of where the battlefield ends and the sidebar column begins.
+///
+/// This is the same expression `sidebar::compute_layout_with_spec` uses for
+/// `sidebar_x`, `x_offset` included, so the scissor edge and the sidebar's left
+/// edge cannot drift apart. The camera clamp and the scenario-start cursor
+/// centring call this rather than recomputing it, which is what makes "the
+/// camera, the clamp and the clip all mean the same viewport" true by
+/// construction instead of by convention.
+///
+/// Never widens past the target and never collapses to zero: a zero-width
+/// scissor would silently drop the whole battlefield if a layout ever put the
+/// sidebar's left edge at or past the window's.
+pub(crate) fn tactical_viewport_width_px(render_w: u32, spec: SidebarChromeLayoutSpec) -> u32 {
+    let sidebar_left = render_w as f32 - spec.sidebar_width + spec.x_offset;
+    if !sidebar_left.is_finite() {
+        return render_w.max(1);
+    }
+    (sidebar_left.round() as i64).clamp(1, i64::from(render_w.max(1))) as u32
+}
+
 /// World-pixel position of a cell's **projected cell coordinate** — the point a
 /// "go here" camera move should land on, and where an entity standing on that
 /// cell is drawn.
@@ -439,7 +490,10 @@ pub(crate) fn clamp_camera_to_playable_area(state: &mut AppState, sw: f32, sh: f
     };
     // Use game viewport width (excluding sidebar) for X clamping, not full window width.
     // The sidebar covers the right portion of the window and isn't part of the game view.
-    let game_viewport_w: f32 = sw - state.sidebar_layout_spec.sidebar_width;
+    // Same call the tactical scissor makes, so the camera can never push the
+    // battlefield to an edge the clip disagrees with.
+    let game_viewport_w: f32 =
+        tactical_viewport_width_px(sw.max(0.0) as u32, state.sidebar_layout_spec) as f32;
     let (cx_min, cx_max) = clamp_axis(area_x, area_w, game_viewport_w);
     let (cy_min, cy_max) = clamp_axis(area_y, area_h, sh);
     state.camera_x = state.camera_x.clamp(cx_min, cx_max);
@@ -765,5 +819,72 @@ mod tests {
         let (dx, dy) =
             edge_scroll_step(&mut st, (0.0, 0.0), VIEW_W, VIEW_H, DEFAULT_SCROLL_RATE, 0);
         assert_eq!((dx, dy), (-1.0, -1.0));
+    }
+
+    fn spec_with(sidebar_width: f32, x_offset: f32) -> SidebarChromeLayoutSpec {
+        SidebarChromeLayoutSpec {
+            sidebar_width,
+            x_offset,
+            ..SidebarChromeLayoutSpec::stock()
+        }
+    }
+
+    /// The scissor edge and the sidebar's left edge are the same boundary. The
+    /// native engine cannot get this wrong — the battlefield and the sidebar are
+    /// different surfaces — but VERA composes both into one target, so if these
+    /// two ever disagree the frame grows either a strip of battlefield inside
+    /// the sidebar column or a black gutter beside it.
+    ///
+    /// `x_offset` is in here because it is the RON's nudge knob for exactly this
+    /// edge: it lands in `sidebar_x`, so it has to land in the scissor too. The
+    /// shipped value is 0, which is precisely why an all-zero test would not
+    /// notice the day someone changes it.
+    #[test]
+    fn tactical_scissor_edge_is_the_sidebar_left_edge() {
+        use crate::sidebar::compute_layout_with_spec;
+        for spec in [
+            SidebarChromeLayoutSpec::stock(),
+            SidebarChromeLayoutSpec::stock().with_scale(2.0),
+            // Live default: auto UI scale is 0.5 at 1024x768.
+            SidebarChromeLayoutSpec::stock().with_scale(0.5),
+            spec_with(168.0, 24.0),
+            spec_with(168.0, -12.0),
+        ] {
+            for (w, h) in [(1024u32, 768u32), (800, 600), (1920, 1080)] {
+                let layout = compute_layout_with_spec(spec, w as f32, h as f32, 6);
+                assert_eq!(
+                    tactical_viewport_width_px(w, spec) as f32,
+                    layout.sidebar_x,
+                    "width {} offset {} at {w}x{h}",
+                    spec.sidebar_width,
+                    spec.x_offset
+                );
+            }
+        }
+    }
+
+    /// A degenerate layout must not scissor the battlefield out of existence —
+    /// a zero-width scissor drops every tactical draw call silently.
+    #[test]
+    fn tactical_viewport_width_never_collapses_or_overruns_the_target() {
+        assert_eq!(tactical_viewport_width_px(168, spec_with(168.0, 0.0)), 1);
+        assert_eq!(tactical_viewport_width_px(100, spec_with(900.0, 0.0)), 1);
+        assert_eq!(tactical_viewport_width_px(800, spec_with(0.0, 0.0)), 800);
+        assert_eq!(tactical_viewport_width_px(800, spec_with(-5.0, 0.0)), 800);
+        assert_eq!(
+            tactical_viewport_width_px(800, spec_with(f32::NAN, 0.0)),
+            800
+        );
+        // An offset that shoves the sidebar off the right edge cannot widen the
+        // scissor past the target.
+        assert_eq!(
+            tactical_viewport_width_px(800, spec_with(168.0, 400.0)),
+            800
+        );
+        // Rounds to whole pixels rather than truncating toward zero.
+        assert_eq!(
+            tactical_viewport_width_px(800, spec_with(167.6, 0.0)),
+            800 - 168
+        );
     }
 }

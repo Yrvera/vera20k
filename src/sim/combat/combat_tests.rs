@@ -1068,6 +1068,7 @@ fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
         0,
         &[1, 2],
         None,
+        &[],
         &mut scenario_rng,
         &mut human_rng,
     );

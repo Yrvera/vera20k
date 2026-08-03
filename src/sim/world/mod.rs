@@ -405,6 +405,17 @@ pub struct Simulation {
     /// immediately after the movement call returns.
     #[serde(skip)]
     pub(crate) pending_lifecycle_requests: Vec<LifecycleRequest>,
+    /// Missiles whose rocket flight reached its target during this tick's
+    /// movement pass. Drained at the end of that pass, in live-object order.
+    #[serde(skip)]
+    pub(crate) pending_rocket_detonations: Vec<u64>,
+    /// Missile impacts awaiting the combat phase, which expands each into
+    /// ordinary damage events so the shared damage → death → despawn pipeline
+    /// resolves them. Filled during the movement pass, drained after combat in
+    /// the same tick.
+    #[serde(skip)]
+    pub(crate) pending_missile_detonations:
+        Vec<crate::sim::spawn_manager::MissileDetonation>,
     /// Internal order proof; release builds carry no ledger or recording branch.
     #[cfg(test)]
     #[serde(skip)]
@@ -682,6 +693,8 @@ impl Simulation {
             substrate: ObjectSubstrate::new(),
             lifecycle_outputs: Vec::new(),
             pending_lifecycle_requests: Vec::new(),
+            pending_rocket_detonations: Vec::new(),
+            pending_missile_detonations: Vec::new(),
             #[cfg(test)]
             lifecycle_test_events: Vec::new(),
             sound_events: Vec::new(),
@@ -1553,6 +1566,20 @@ impl Simulation {
     /// caller owns any HouseState owned-count adjustment (count semantics differ
     /// by transfer kind: engineer capture adjusts counts; garrison transfers do not).
     pub(crate) fn change_owner(&mut self, stable_id: u64, new_owner: InternedId) {
+        // `TechnoClass::ChangeOwner` calls `SpawnManagerClass::Kill_All_Spawns`
+        // before the house swap: a mind-controlled V3/Dreadnought/Boomer loses
+        // the pool it built for its old owner. Run first so the children are
+        // destroyed while still attributed to the previous house. The owner is
+        // still alive here, so the slots re-arm with a zero regen wait and the
+        // new owner's pool is rebuilt on the next manager pass.
+        if self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.spawn_manager.is_some())
+        {
+            crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
+        }
         self.substrate.entities.change_owner(stable_id, new_owner);
     }
 
@@ -2919,10 +2946,12 @@ impl Simulation {
                     None,
                 );
             }
-            let _ = rocket_movement::tick_rocket_movement(
-                &mut sim.substrate.entities,
-                &one,
-                sim.session.tick,
+            sim.pending_rocket_detonations.extend(
+                rocket_movement::tick_rocket_movement(
+                    &mut sim.substrate.entities,
+                    &one,
+                    sim.session.tick,
+                ),
             );
             let _ = homing_movement::tick_homing_movement(
                 &mut sim.substrate.entities,
@@ -2953,6 +2982,23 @@ impl Simulation {
         });
         if let Some(rules) = rules {
             self.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, rules));
+        }
+        // Spawn-manager missiles that reached their target during the movement
+        // pass are consumed here — the missile leaves the world at the moment
+        // `RocketLocomotion::Process` would have called Detonate. The impact
+        // itself is queued for the combat phase below, which runs it through
+        // the same damage → death → despawn pipeline as any other detonation.
+        if rules.is_some() {
+            if !self.pending_rocket_detonations.is_empty() {
+                let detonated = std::mem::take(&mut self.pending_rocket_detonations);
+                crate::sim::spawn_manager::detonate_missiles(self, &detonated);
+            }
+        } else {
+            // No RuleSet means no spawner could have launched anything; drop
+            // both queues rather than letting them accumulate across ticks that
+            // never reach the combat phase.
+            self.pending_rocket_detonations.clear();
+            self.pending_missile_detonations.clear();
         }
         movement::sync_formation_speeds_after_live_pass(&mut self.substrate.entities);
         if let Some(rules) = rules {
@@ -3160,9 +3206,11 @@ impl Simulation {
                 self.session.binary_frame,
                 &logic_order,
                 Some(&mut self.radiation),
+                &self.pending_missile_detonations,
                 &mut self.scenario_rng,
                 &mut self.main_rng,
             );
+            self.pending_missile_detonations.clear();
             turret::tick_turret_rotation(
                 &mut self.substrate.entities,
                 rules,
@@ -3182,6 +3230,13 @@ impl Simulation {
                 &self.interner,
                 self.session.binary_frame,
             );
+            // SpawnManager pass. Native dispatches it per object from
+            // `TechnoClass::AI_Update` (+0x2D0 → vtable+0x5C), after that
+            // object's Mission_Dispatch → Fire_At → SetTarget. Running it
+            // immediately after the combat phase preserves that
+            // "target set, then manager reads it" ordering within the tick;
+            // the manager self-gates to every 10 frames regardless.
+            crate::sim::spawn_manager::tick_spawn_managers(self, rules, &logic_order);
             destroyed_structure |= combat_result.structure_destroyed;
             let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
                 .despawned_ids

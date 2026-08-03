@@ -22,10 +22,10 @@
 const VXL_TYPES_PER_PLAYER: usize = 30;
 
 /// Body/composite facing buckets (matches `unit_atlas::UNIT_FACING_BUCKETS`).
-const BODY_FACING_BUCKETS: usize = 128;
+const BODY_FACING_BUCKETS: usize = 32;
 
 /// Turret/barrel facing buckets (matches `unit_atlas::TURRET_FACING_BUCKETS`).
-const TURRET_FACING_BUCKETS: usize = 128;
+const TURRET_FACING_BUCKETS: usize = 32;
 
 /// Slope variants pre-rendered for ground vehicles (slopes 0..=16, ramps
 /// + corner tilts). Aircraft never tilt and use slope_type=0 only.
@@ -36,7 +36,7 @@ const GROUND_SLOPE_VARIANTS: usize = 17;
 /// average across the YR roster is ~1.1 frames per layer.
 const AVG_HVA_FRAMES: usize = 1;
 
-// Empirical post-bounding-box tile sizes at scale 1.045 (rasterizer output).
+// Empirical post-bounding-box tile sizes at scale 1.0 (rasterizer output).
 // Body and composite layers are ~48-56 px; turret/barrel layers are smaller
 // (~28-36 px) because the geometry footprint shrinks once the body is
 // excluded. Modeling these separately is more accurate than a uniform avg.

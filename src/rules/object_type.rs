@@ -420,6 +420,24 @@ pub struct ObjectType {
     /// Aircraft with finite ammo return to a helipad/airfield to reload after depleting.
     pub ammo: i32,
 
+    // -- Spawn manager (Spawns= pool: V3, Dreadnought, Boomer, Carrier, Destroyer) --
+    /// TechnoType this unit spawns as sub-units (`Spawns=`). Presence of a
+    /// resolvable value is the sole gate on creating a spawn manager, matching
+    /// `TechnoClass::Init_Managers`.
+    pub spawns: Option<String>,
+    /// Spawn pool capacity (`SpawnsNumber=`). Default 0.
+    pub spawns_number: i32,
+    /// Frames before a destroyed spawn child is rebuilt (`SpawnRegenRate=`).
+    pub spawn_regen_rate: u32,
+    /// Frames a docked child spends reloading after landing (`SpawnReloadRate=`).
+    pub spawn_reload_rate: u32,
+    /// `MissileSpawn=yes`. On a child this marks the fire-and-forget flavour; on
+    /// a *parent* it shortens the per-launch delay from 20 to 9 frames. No stock
+    /// YR parent sets it, so the 9-frame branch is unreachable in stock play.
+    pub missile_spawn: bool,
+    /// `NoSpawnAlt=yes` — swap to the `<TYPE>WO` art while the pool is empty.
+    pub no_spawn_alt: bool,
+
     // -- Slave Miner / economy fields --
     /// Infantry type enslaved/spawned by this unit (Enslaves= in rules.ini, YR only).
     /// Used by Slave Miner (SMIN) to spawn SLAV workers.
@@ -1075,6 +1093,17 @@ impl ObjectType {
             remove_occupy: Vec::new(), // merged from art.ini later
             unloading_class: section.get("UnloadingClass").map(|s| s.to_string()),
             ammo: section.get_i32("Ammo").unwrap_or(-1),
+
+            // Spawn manager pool
+            spawns: section
+                .get("Spawns")
+                .map(|s| s.trim().to_ascii_uppercase())
+                .filter(|s| !s.is_empty()),
+            spawns_number: section.get_i32("SpawnsNumber").unwrap_or(0),
+            spawn_regen_rate: section.get_i32("SpawnRegenRate").unwrap_or(0).max(0) as u32,
+            spawn_reload_rate: section.get_i32("SpawnReloadRate").unwrap_or(0).max(0) as u32,
+            missile_spawn: section.get_bool("MissileSpawn").unwrap_or(false),
+            no_spawn_alt: section.get_bool("NoSpawnAlt").unwrap_or(false),
 
             // Slave Miner / economy fields
             enslaves: section.get("Enslaves").map(|s| s.to_string()),

@@ -235,8 +235,10 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.minimap_dragging = false;
     state.middle_mouse_panning = false;
     state.keys_held.clear();
-    let tactical_w =
-        (state.render_width() as f32 - state.sidebar_layout_spec.sidebar_width).max(1.0);
+    let tactical_w = crate::app_camera::tactical_viewport_width_px(
+        state.render_width(),
+        state.sidebar_layout_spec,
+    ) as f32;
     state.cursor_x = tactical_w * 0.5;
     state.cursor_y = state.render_height() as f32 * 0.5;
 
