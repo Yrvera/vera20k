@@ -139,8 +139,8 @@ pub(crate) fn render_game(
             unit_pages: &world.unit_pages,
             unit_transition_paged: &world.unit_transition_paged,
             shp_paged: &world.shp_paged,
-            building_turret_pages: &world.building_turret_pages,
             particle_paged: &world.particle_paged,
+            top_unit_pages: &world.top_unit_pages,
             ghost_page: ui.ghost_page,
         },
     );
@@ -194,8 +194,8 @@ fn upload_to_gpu(
         &world.bridge_body_shadow,
     );
     pool.upload(&state.gpu, "overlay_bridge_railing", &world.bridge_railing);
-    // Smudges: drawn after overlays, before bridge entities. Empty until the
-    // SmudgeType SHP atlas registration follow-up lands.
+    // Smudges: drawn inside the terrain layer, before the bridge body and
+    // before overlays, matching the native per-cell tile-then-smudge dispatch.
     pool.upload(&state.gpu, "smudge", &world.smudge);
 
     // Entities (VXL + SHP)
@@ -240,9 +240,20 @@ fn upload_to_gpu(
             pool.upload(&state.gpu, SHP_BRIDGE_KEYS[i], page_inst);
         }
     }
-    pool.upload(&state.gpu, "building_turret", &world.building_turret);
-    // PixelFX water/ore sparkles — drawn between ground objects (Step 5) and
-    // turrets (Step 6). Empty when graphics.extra_animations is off.
+    // The band above Ground (gamemd layers 3 and 4) — drawn after every ground
+    // object. Voxel bodies and SHP bodies keep separate streams because they
+    // sample different atlases; the band is unsorted either way.
+    pool.upload(&state.gpu, "unit_top", &world.top_unit);
+    const SHP_TOP_KEYS: [&str; 4] = ["shp_top_p0", "shp_top_p1", "shp_top_p2", "shp_top_p3"];
+    for (i, page_inst) in world.top_shp_paged.iter().enumerate() {
+        if i < SHP_TOP_KEYS.len() {
+            pool.upload(&state.gpu, SHP_TOP_KEYS[i], page_inst);
+        }
+    }
+    // (No `building_turret` buffer: a building's voxel turret rides the `unit`
+    // stream and is drawn inside the sorted ground pass, as gamemd draws it.)
+    // PixelFX water/ore sparkles — drawn after the ground object pass.
+    // Empty when graphics.extra_animations is off.
     pool.upload(&state.gpu, "cell_sparkles", &world.cell_sparkles);
     const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
     for (i, page_inst) in world.particle_paged.iter().enumerate() {

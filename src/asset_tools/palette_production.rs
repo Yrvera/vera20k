@@ -793,8 +793,9 @@ mod tests {
 //   :1095/:1097  pipbrd.shp health bar backing
 //
 // STARTUP SPLASH — src/app_startup_splash.rs
-//   :19-21  SMALL_SPLASH_SHP = GLSSMD.SHP, LARGE_SPLASH_SHP = GLSLMD.SHP,
-//           SPLASH_PALETTE = GLSMD.PAL
+//   :24-26  SMALL_SPLASH_SHP = GLSS.SHP, LARGE_SPLASH_SHP = GLSL.SHP,
+//           SPLASH_PALETTE = GLS.PAL — the Red Alert 2 art, chosen deliberately
+//           over the Yuri's Revenge `*MD` variants
 //   :181  Palette::from_bytes_gamemd_ui
 //
 // SHELL CHROME

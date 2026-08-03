@@ -75,8 +75,8 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         art_registry: None,
         csf: None,
         fnt_file: None,
-        camera_x: 0.0,
-        camera_y: 0.0,
+        camera_anchor_x: 0.0,
+        camera_anchor_y: 0.0,
         asset_manager: None,
         theater_name: "TEMPERATE".to_string(),
         theater_ext: "tem".to_string(),
@@ -176,8 +176,17 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.csf = result.csf;
     state.theater_name = result.theater_name;
     state.theater_ext = result.theater_ext;
-    state.camera_x = result.camera_x;
-    state.camera_y = result.camera_y;
+    // Map load hands over a world anchor point; the camera top-left needs the
+    // scaled sidebar width and the live zoom, both of which only exist here.
+    let (camera_x, camera_y) = crate::app_camera::tactical_camera_top_left(
+        (result.camera_anchor_x, result.camera_anchor_y),
+        state.render_width() as f32,
+        state.render_height() as f32,
+        state.sidebar_layout_spec.sidebar_width,
+        state.zoom_level,
+    );
+    state.camera_x = camera_x;
+    state.camera_y = camera_y;
     state.asset_manager = result.asset_manager;
     state.building_placement_preview = None;
     state.active_sidebar_tab = SidebarTab::default_active_tab();
@@ -226,8 +235,10 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.minimap_dragging = false;
     state.middle_mouse_panning = false;
     state.keys_held.clear();
-    let tactical_w =
-        (state.render_width() as f32 - state.sidebar_layout_spec.sidebar_width).max(1.0);
+    let tactical_w = crate::app_camera::tactical_viewport_width_px(
+        state.render_width(),
+        state.sidebar_layout_spec,
+    ) as f32;
     state.cursor_x = tactical_w * 0.5;
     state.cursor_y = state.render_height() as f32 * 0.5;
 

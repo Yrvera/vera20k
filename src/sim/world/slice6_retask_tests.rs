@@ -120,10 +120,14 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // (6f78bac7) world_hash.rs swapped in and all branch behaviour kept, this probe
 // read 0xFEEA0679D9429547 — neither the old baseline nor the branch value. So
 // hashed state content changed, not just which fields are folded.
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
 // Native Move mission cadence now advances MissionCom and Scenario RNG.
 // Re-baselined after hashing the newly persisted YR runtime-contract state.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xAE2C_DACB_54A2_27E3;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8D9E_A32D_E86D_05DA;
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xFF25_F56A_6E1E_2A46;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xEE98_241E_37BE_6CFE;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -179,7 +183,27 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8D9E_A32D_E86D_05DA;
 // wired in this slice (deploy-begin off, undeploy-complete on, destination-
 // accepted on) changed no other hashed state in these fixtures. The absolute
 // per-stream RNG pins held throughout.
-const SLICE6_BASELINE_HASH: u64 = 0x266F_0EBE_9DE0_904C;
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
+//
+// Re-baselined 2026-08-02 for passive/opportunity target acquisition.
+// **Composition-only, but NOT for the reason this file's usual ceremony would
+// suggest.** Both schema probes above run with the v29 block excluded, and every
+// field this slice adds or changes — `passive_scan_timer`,
+// `last_target_scan_frame`, `passively_acquired_target` — lives inside that
+// block. So the probes are structurally incapable of moving for this change and
+// prove nothing about it either way. Do not read their staying green as
+// evidence.
+//
+// What actually isolates it is the fixture: it runs 16 ticks, short of the
+// object's 45-frame initial scan delay, so no scan fires, no draw is consumed
+// and no target is installed. The entire delta is therefore the three v29-block
+// fields moving off their old values — `passive_scan_timer` armed at the
+// construction frame instead of left unarmed, plus the two new fields folded at
+// their defaults. Rust regression ratchet, not gamemd evidence.
+const SLICE6_BASELINE_HASH: u64 = 0x6763_3A9A_A228_3C22;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

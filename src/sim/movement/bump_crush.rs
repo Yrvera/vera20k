@@ -1227,6 +1227,7 @@ mod tests {
         inf.infantry = Some(InfantryRuntime {
             fear_level: 50,
             is_prone: true,
+            ..InfantryRuntime::new()
         });
         store.insert(inf);
 

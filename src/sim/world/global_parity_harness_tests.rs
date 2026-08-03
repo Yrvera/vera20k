@@ -70,8 +70,56 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// commit exactly 600 frames. The former 67-ms-derived clock skipped three
 /// frame values, changing frame-anchored Harvest dispatch jitter draws.
 /// Main and MapGen remain unchanged, localizing the intended shift to Scenario.
+/// Re-baselined 2026-08-02 for passive/opportunity target acquisition: every
+/// object that passes the gate now draws one `RandomRanged(0, 2)` on the
+/// SCENARIO stream when its scan timer expires, roughly every 27-29 frames.
+/// Which objects that is, in THIS fixture, is narrower than it looks. Measured,
+/// per tick, on an instrumented run — stated here as observations, with the
+/// causes marked where they were not established:
+///
+/// - The Allied MTNK (id 4) holds `mission.current() == AttackMove` and
+///   `order_intent == Some(AttackMove)` continuously from roughly tick 45 to the
+///   end of the run, across ticks 300 and 320. AttackMove is not one of the
+///   three missions the gate admits, so id 4 never scans — identically before
+///   and after the finished-mission bridge.
+/// - The Stop and Move envelopes scripted for id 4 at 300 and 320 ARE delivered
+///   and report `executed_commands == 0`, leaving its mission and order intent
+///   untouched. **Why they have no effect is UNCHECKED** — it is a property of
+///   this fixture, not of this change, and it is the reason the earlier claim
+///   here (that those handlers clear the order intent) did not match what the
+///   run actually does.
+/// - `due_commands` issues every scripted command under the Allied owner, so the
+///   Soviet MTNK's tick-120 Move does not move id 6 off the `NONE` selector.
+///
+/// So the objects that actually scan here are the Soviet MTNK (id 6) and both
+/// E1 riflemen (ids 5 and 7) — all three sitting on the `NONE` selector, which
+/// already read as Guard before the bridge — plus the harvester's own Harvest
+/// mission. Nothing in this fixture is ordered-then-idle, which is why the
+/// bridge left every pin here untouched.
+/// Streams 1 (Main) and 2 (MapGen) are byte-identical to the previous
+/// baseline, which is the proof that the new draw is routed to the scenario
+/// instance and to no other — a lone stream-0 shift is the expected signature
+/// here, and a shift in either other component would have been a misroute.
+///
+/// A SECOND scenario-stream source went live in the same slice and is part of
+/// this shift: the pointer-expiry path already drew `RandomRanged(4, 8)` to
+/// shorten a listener's passive-scan timer when its current target died, gated
+/// on that timer having more than 10 frames left. That draw was unreachable in
+/// production because the timer was always the zero-duration sentinel; arming it
+/// at construction makes the gate satisfiable, so it now fires on target deaths
+/// throughout the run. It is deterministic and on the same stream, so the
+/// re-baseline stands — but the per-scan jitter draw is not the whole story.
+/// Re-measured in the same slice when the passive block was extended to the
+/// Infantry leaf (it reaches the common Techno AI body through the same foot
+/// call the Unit leaf does). This fixture's two E1 riflemen now scan on the
+/// same cadence, adding their draws. Streams 1 and 2 are still byte-identical
+/// to the pre-slice baseline.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
-    1901247961783407109,
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
+    16681026125836176425,
     4175722561206807420,
     2082941527059030371,
 );
@@ -177,10 +225,43 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // baseline nor the branch. RNG routing is unchanged: FINAL_STREAM_STATES passes
 // untouched, and record/replay cursor consistency plus the per-tick intra-run
 // hash asserts all pass.
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
 // Native Move mission cadence now mutates existing MissionCom and Scenario RNG.
 // Re-baselined after hashing the newly persisted YR runtime-contract state.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xB2BD_4476_25B0_55DB;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x28E0_8567_5030_604B;
+// Re-baselined 2026-08-02 for passive/opportunity target acquisition. BOTH
+// probes move here, and that is the correct outcome rather than a warning
+// sign: this change is behaviour-bearing by construction. The two E1 riflemen
+// (ids 5 and 7) are never ordered at all, so they scan from frame 45 for the
+// whole run and engage whatever comes into range; the Soviet MTNK (id 6) sits
+// unordered until its tick-120 Move. New targets, new fire events, new deaths —
+// every position, facing and health field the legacy compositions fold changes
+// with them.
+//
+// The composition half of the delta is separately isolated and is behaviour-
+// free: `slice6_retask_tests` gained the same three hashed fields
+// (`passive_scan_timer`'s armed-at-construction value plus the new
+// `last_target_scan_frame` / `passively_acquired_target`), all inside the v29
+// block, and BOTH of its legacy probes reproduced their committed values
+// exactly while only its current-schema hash moved. That fixture runs 16 ticks,
+// short of the 45-frame first-scan delay, so no scan fires in it at all. So the
+// new fields contribute composition only, and everything moving here is
+// behaviour.
+//
+// Record/replay tick-by-tick equality and the per-stream cursor consistency
+// check both still pass, and only stream 0 moved. Rust regression ratchet, not
+// gamemd parity evidence.
+//
+// Re-measured in the same slice when the passive block was extended to the
+// Infantry leaf: this fixture's Allied E1 (id 5) and Soviet E1 (id 7) now
+// acquire on their own too, so the behaviour delta widens. `slice6_retask_tests`
+// still reproduces BOTH of its legacy probes unchanged across the whole slice —
+// its 16-tick fixture never reaches the first scan — so the composition half
+// remains isolated and behaviour-free, and everything moving here is behaviour.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x3A67_AEDE_00FF_1225;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x956F_3C99_481C_0E99;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -242,7 +323,18 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x28E0_8567_5030_604B;
 /// wired in this slice (deploy-begin off, undeploy-complete on, destination-
 /// accepted on) changed no other hashed state in these fixtures. The absolute
 /// per-stream RNG pins held throughout.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2EF5_F0F2_B546_6B0C;
+// MERGE 2026-08-03: both branches re-baselined these independently (dev:
+// passive acquire + spawner; foundations: Move cadence + hashed runtime
+// state). Neither side's values describe the merged tree; re-derived below
+// from the merged tree's own output in the same merge commit.
+/// Re-baselined 2026-08-02 for passive/opportunity target acquisition — the
+/// behaviour-bearing shift documented at `GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH`
+/// above. Idle units now engage on their own, so this fixture's committed
+/// scenario genuinely changes; both legacy-schema probes move with the live
+/// hash, and only the scenario RNG stream moved.
+/// Re-measured in the same slice when the passive block was extended to the
+/// Infantry leaf — same rationale, same ceremony, still a lone stream-0 shift.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xE639_0C80_C27A_DEFF;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -544,11 +636,13 @@ const DENSE_ROWS: u16 = 10;
 /// non-owned, leaving only one real mover. This measures the *simultaneous* per-tick
 /// churn the S2 authority flip must survive (a single-mover scenario understates it).
 ///
-/// Scope note: this fixture exercises movement/arrival churn only — the tanks converge
-/// but do not engage (no kills; pure-Move auto-acquisition does not fire here), so
-/// combat-driven churn (Move→Attack on target acquisition) is NOT measured by this test.
-/// Quantifying engagement churn needs a fixture that reliably forces combat (explicit
-/// Attack orders + LOS/positioning); deferred to the S2 design phase.
+/// Scope note: this fixture was built to exercise movement/arrival churn only, and
+/// for most of its life the tanks converged without engaging. That is no longer
+/// true. Each tank is ordered under its own owner, arrives, and is then
+/// ordered-then-idle — the case the finished-mission bridge releases back to
+/// Guard — so they now acquire each other on arrival, fire, and kill. The
+/// position fingerprint below therefore covers engagement churn as well as
+/// arrival churn.
 /// Shared construction for the dense converging-battle fixture (20 tanks, two
 /// facing columns converging on x=25; per-owner Move script due on tick 2).
 /// Used by the churn measurement and the S2 position fingerprint below.
@@ -628,7 +722,22 @@ fn dense_converging_setup() -> (
 /// of Drive. Hash composition is not involved — this fingerprint folds entity
 /// positions directly, and its value was byte-identical with the pre-branch
 /// hash schema swapped in.
-const POSITION_FINGERPRINT: u64 = 0xDAB1_2FB8_5CC1_2C93;
+/// Re-baselined 2026-08-02 for passive/opportunity target acquisition, and this
+/// is the fixture where it finally bites. All twenty tanks get a plain Move
+/// under their OWN owner, so each one commits the Move selector, arrives, and
+/// then has nothing left running — no destination, no navigation goal, no
+/// standing order. Those are exactly the objects the finished-mission bridge
+/// releases back to Guard, so they now acquire each other on arrival and open
+/// fire instead of sitting nose to nose. Positions move because units die.
+///
+/// It is worth recording why the sibling global-harness constants did NOT move
+/// with it, since that looked wrong until it was instrumented: nothing in that
+/// fixture is ordered-then-idle. Its Allied MTNK sits on the AttackMove
+/// selector, which the gate does not admit, for the whole run; its other three
+/// combatants sit on the `NONE` selector and were already scanning before this
+/// change. The per-tick observations, and the one cause left UNCHECKED, are
+/// written up at `FINAL_STREAM_STATES`.
+const POSITION_FINGERPRINT: u64 = 0x2543_25C4_9102_818F;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

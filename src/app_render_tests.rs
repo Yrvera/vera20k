@@ -38,6 +38,8 @@ fn spawn_mobile(store: &mut EntityStore, sid: u64, rx: u16, ry: u16, owner: &str
         false,
     );
     entity.selected = selected;
+    // Revealed onto the map — the picker refuses limbo objects.
+    entity.lifecycle.in_limbo = false;
     store.insert(entity);
 }
 
@@ -94,6 +96,7 @@ fn test_click_replace_selects_only_target() {
         CLICK_SELECT_RADIUS,
         false,
         None,
+        None,
         &empty_heights,
         None,
         None,
@@ -120,6 +123,7 @@ fn test_click_additive_toggles_membership() {
         CLICK_SELECT_RADIUS,
         true,
         None,
+        None,
         &empty_heights,
         None,
         None,
@@ -136,6 +140,7 @@ fn test_click_additive_toggles_membership() {
         CLICK_SELECT_RADIUS,
         true,
         None,
+        None,
         &empty_heights,
         None,
         None,
@@ -150,7 +155,7 @@ fn test_box_additive_toggles_and_excludes_structures() {
     spawn_mobile(&mut store, 1, 10, 10, "Americans", true);
     spawn_mobile(&mut store, 2, 12, 10, "Americans", true);
     spawn_mobile(&mut store, 3, 14, 10, "Americans", false);
-    let building = GameEntity::new_at_frame_zero_for_test(
+    let mut building = GameEntity::new_at_frame_zero_for_test(
         4,
         11,
         11,
@@ -167,13 +172,15 @@ fn test_box_additive_toggles_and_excludes_structures() {
         5,
         false,
     );
+    building.lifecycle.in_limbo = false;
     store.insert(building);
 
     // The box covers all four: the units span (0,315)..(120,375) and the
     // building sits at (0,345).
-    let snapshot =
-        compute_box_selection_snapshot(&store, None, None, -40.0, 300.0, 160.0, 400.0, true, None)
-            .expect("snapshot");
+    let snapshot = compute_box_selection_snapshot(
+        &store, None, None, -40.0, 300.0, 160.0, 400.0, true, None, None, None,
+    )
+    .expect("snapshot");
     assert_eq!(snapshot, vec![3]);
 }
 
@@ -182,16 +189,110 @@ fn test_box_replace_can_clear_selection_when_empty() {
     let mut store = EntityStore::new();
     spawn_mobile(&mut store, 1, 10, 10, "Americans", true);
 
-    let snapshot =
-        compute_box_selection_snapshot(&store, None, None, 300.0, 300.0, 340.0, 340.0, false, None)
-            .expect("snapshot");
+    let snapshot = compute_box_selection_snapshot(
+        &store, None, None, 300.0, 300.0, 340.0, 340.0, false, None, None, None,
+    )
+    .expect("snapshot");
     assert!(snapshot.is_empty());
+}
+
+#[test]
+fn test_box_selection_excludes_selectable_no_types() {
+    let mut store = EntityStore::new();
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", false);
+    let mut plane = GameEntity::new_at_frame_zero_for_test(
+        2,
+        11,
+        10,
+        0,
+        0,
+        test_intern("Americans"),
+        Health {
+            current: 100,
+            max: 100,
+        },
+        test_intern("PDPLANE"),
+        EntityCategory::Aircraft,
+        0,
+        5,
+        true,
+    );
+    plane.lifecycle.in_limbo = false;
+    store.insert(plane);
+
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\n\
+         [VehicleTypes]\n\n\
+         [AircraftTypes]\n0=PDPLANE\n\n\
+         [BuildingTypes]\n\n\
+         [E1]\nStrength=125\nArmor=flak\nSpeed=4\n\n\
+         [PDPLANE]\nStrength=150\nArmor=light\nSpeed=16\nSelectable=no\n",
+    );
+    let rules = crate::rules::ruleset::RuleSet::from_ini(&ini).expect("rules parse");
+    let interner = crate::sim::intern::test_interner();
+
+    // A box wide enough to cover both sprites — the paradrop plane overhead must
+    // not be dragged into the group with the unit under it.
+    let (ux, uy) = screen_of(&store, 1);
+    let (px, py) = screen_of(&store, 2);
+    let snapshot = compute_box_selection_snapshot(
+        &store,
+        None,
+        None,
+        ux.min(px) - 20.0,
+        uy.min(py) - 20.0,
+        ux.max(px) + 20.0,
+        uy.max(py) + 20.0,
+        false,
+        Some(&rules),
+        None,
+        Some(&interner),
+    )
+    .expect("snapshot");
+    assert_eq!(snapshot, vec![1]);
+}
+
+#[test]
+fn test_box_selection_excludes_ai_owned_entities() {
+    let mut store = EntityStore::new();
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", false);
+    spawn_mobile(&mut store, 2, 11, 10, "Soviet", false);
+
+    let mut houses: BTreeMap<crate::sim::intern::InternedId, crate::sim::house_state::HouseState> =
+        BTreeMap::new();
+    for (name, is_human) in [("Americans", true), ("Soviet", false)] {
+        let id = test_intern(name);
+        houses.insert(
+            id,
+            crate::sim::house_state::HouseState::new(id, 0, None, is_human, 0, 10),
+        );
+    }
+
+    // A box over both — gamemd's TechnoClass::Select refuses the AI-owned tank
+    // before the ObjectClass gates ever run.
+    let (mx, my) = screen_of(&store, 1);
+    let (ex, ey) = screen_of(&store, 2);
+    let snapshot = compute_box_selection_snapshot(
+        &store,
+        None,
+        None,
+        mx.min(ex) - 20.0,
+        my.min(ey) - 20.0,
+        mx.max(ex) + 20.0,
+        my.max(ey) + 20.0,
+        false,
+        None,
+        Some(&houses),
+        None,
+    )
+    .expect("snapshot");
+    assert_eq!(snapshot, vec![1]);
 }
 
 #[test]
 fn test_click_selection_allows_visible_allied_units_for_local_owner() {
     let mut store = EntityStore::new();
-    let entity = GameEntity::new_at_frame_zero_for_test(
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
         7,
         11,
         10,
@@ -208,6 +309,7 @@ fn test_click_selection_allows_visible_allied_units_for_local_owner() {
         5,
         false,
     );
+    entity.lifecycle.in_limbo = false;
     store.insert(entity);
     let (cx, cy) = screen_of(&store, 7);
 
@@ -222,6 +324,7 @@ fn test_click_selection_allows_visible_allied_units_for_local_owner() {
         cy,
         CLICK_SELECT_RADIUS,
         false,
+        None,
         None,
         &empty_heights,
         None,

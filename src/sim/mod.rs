@@ -24,6 +24,7 @@
 pub mod anim_class;
 pub mod command;
 pub mod components;
+pub mod crates; // scenario-start crate placement (Post_Map_Init step 3)
 pub mod economy; // per-house wallet/storage/statistics value-type (production+economy substrate)
 pub mod entity_store;
 pub mod game_entity;
@@ -96,6 +97,8 @@ pub mod radiation;
 pub mod parity_digest;
 pub mod passenger;
 pub mod slave_miner;
+pub mod spawn_manager;
+mod spawn_manager_tests;
 
 // --- Economy, map resources ---
 pub mod ore_growth;

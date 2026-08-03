@@ -104,6 +104,61 @@ fn test_different_houses_create_separate_keys() {
 }
 
 #[test]
+fn alt_palette_art_takes_the_unit_palette_even_when_it_is_a_world_effect() {
+    // WCCLOUD1 (Weather Storm) and SQDG (squid grapple) are registered as world
+    // effects, so the name set alone would bake them against anim.pal. Both set
+    // AltPalette=yes, which selects the unit palette instead. FBALL1 sets nothing
+    // and must stay on anim.pal.
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "[WCCLOUD1]\nAltPalette=yes\n\
+         [SQDG]\nAltPalette=yes\n\
+         [FBALL1]\nLayer=ground\n",
+    );
+    let art = ArtRegistry::from_ini(&ini);
+    let effects: HashSet<String> = ["WCCLOUD1", "SQDG", "FBALL1"]
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+
+    assert_eq!(
+        sprite_palette_choice("WCCLOUD1", Some(&art), &effects),
+        SpritePaletteChoice::Unit
+    );
+    assert_eq!(
+        sprite_palette_choice("SQDG", Some(&art), &effects),
+        SpritePaletteChoice::Unit
+    );
+    assert_eq!(
+        sprite_palette_choice("FBALL1", Some(&art), &effects),
+        SpritePaletteChoice::Anim
+    );
+}
+
+#[test]
+fn sprite_palette_choice_leaves_non_effect_and_unknown_art_on_the_unit_palette() {
+    let ini = crate::rules::ini_parser::IniFile::from_str("[GAPOWR]\nRemapable=yes\n");
+    let art = ArtRegistry::from_ini(&ini);
+    let effects: HashSet<String> = HashSet::new();
+
+    // A structure that is not a world effect keeps the unit palette.
+    assert_eq!(
+        sprite_palette_choice("GAPOWR", Some(&art), &effects),
+        SpritePaletteChoice::Unit
+    );
+    // No art registry at all must not change the previous name-set behaviour.
+    assert_eq!(
+        sprite_palette_choice("GAPOWR", None, &effects),
+        SpritePaletteChoice::Unit
+    );
+    let mut with_effect: HashSet<String> = HashSet::new();
+    with_effect.insert("FBALL1".to_string());
+    assert_eq!(
+        sprite_palette_choice("FBALL1", None, &with_effect),
+        SpritePaletteChoice::Anim
+    );
+}
+
+#[test]
 fn declared_special_animation_frames_are_all_preloaded() {
     let mut needed = HashSet::new();
     insert_building_anim_frame_keys(&mut needed, "GAREFNOR", 3, HouseColorIndex(2));

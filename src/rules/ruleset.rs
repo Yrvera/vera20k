@@ -48,6 +48,13 @@ pub struct CountryRules {
     /// commented out in stock rulesmd). Applied at ore/gem deposit time to BOTH the base
     /// credits and the OrePurifier-bonus credits.
     pub income_ppm: i64,
+    /// `UIName=` — the country's string-table key (e.g. `Name:Americans`).
+    /// gamemd fills a house's stored display name from this key's localized text,
+    /// which is what the end-of-match score screen shows in the Player column.
+    pub ui_name: Option<String>,
+    /// `Name=` — the country's plain English name, the fallback when `UIName=`
+    /// is absent or its key does not resolve.
+    pub name: Option<String>,
 }
 
 /// PPM scale for `IncomeMult` (1_000_000 = 1.0×). Must equal `apply_income_mult`'s divisor.
@@ -61,6 +68,8 @@ impl Default for CountryRules {
         Self {
             multiplay_passive: false,
             income_ppm: INCOME_PPM_SCALE,
+            ui_name: None,
+            name: None,
         }
     }
 }
@@ -75,6 +84,14 @@ impl CountryRules {
                 .get_f32("IncomeMult")
                 .map(|v| (v as f64 * INCOME_PPM_SCALE as f64).round() as i64)
                 .unwrap_or(INCOME_PPM_SCALE),
+            ui_name: section
+                .get("UIName")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            name: section
+                .get("Name")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
         }
     }
 }
@@ -332,6 +349,15 @@ pub struct GeneralRules {
     /// `condition_red` pre-scaled to integer ×1000 for deterministic sim comparisons.
     /// Computed once at parse time: `(condition_red * 1000.0) as i64`.
     pub condition_red_x1000: i64,
+    /// `IdleActionFrequency=` from `[AudioVisual]`, pre-scaled to integer ×1000.
+    ///
+    /// Scales how long an idle infantryman waits between fidgets: the wait is
+    /// drawn from `frequency * 450` to `frequency * 1800` frames, so stock
+    /// `.15` gives 67 to 270 frames. Stored ×1000 because the sim may only do
+    /// integer arithmetic with it. gamemd's own constructor default (what it
+    /// would use if the key were missing) is UNCHECKED; stock `rulesmd.ini`
+    /// always supplies the key, so the fallback below only ever serves fixtures.
+    pub idle_action_frequency_x1000: i64,
     /// Exact integer cutoff used by ordinary-building damage fire after the
     /// startup validator certifies stock `ConditionYellow=50%`.
     pub damage_fire_ordinary_ratio: DamageFireHealthRatio,
@@ -360,6 +386,13 @@ pub struct GeneralRules {
     /// Integer roll threshold for the yellow-band damage-Spark prob-roll.
     /// Default 21_474_837 (band 0.01).
     pub condition_yellow_spark_threshold: u32,
+    /// `NormalTargetingDelay=` ([General], stock 27) — frames between passive
+    /// target scans for every mission except Area Guard. The per-object scan
+    /// timer is re-armed to this value plus a 0..=2 scenario-RNG jitter.
+    pub normal_targeting_delay: u32,
+    /// `GuardAreaTargetingDelay=` ([General], stock 36) — the same cadence for
+    /// an Area Guard object, which scans twice as far and so scans less often.
+    pub guard_area_targeting_delay: u32,
     /// SFX played when the first occupant enters a CanBeOccupied building.
     /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
@@ -692,6 +725,13 @@ pub(crate) fn damage_spark_spawn_threshold(band: f64) -> u32 {
 /// Matches gamemd constructor default: 1 game frame at 60fps ≈ 17ms.
 const DEFAULT_ANIM_FRAME_DELAY: u16 = 1;
 
+/// Stand-in for `[AudioVisual] IdleActionFrequency=` when the key is absent.
+///
+/// Stock `rulesmd.ini` sets `.15`, so this only serves fixtures that build a
+/// RuleSet without an `[AudioVisual]` section. gamemd's own constructor default
+/// is UNCHECKED.
+const STOCK_IDLE_ACTION_FREQUENCY_X1000: i64 = 150;
+
 /// Zip a parallel pair of paradrop INI keys (`Inf` + `Num`) into `(type, count)` pairs.
 /// `skip_count_assert` mirrors gamemd's Soviet branch which lacks the equality check.
 fn parse_paradrop_list(
@@ -789,6 +829,7 @@ impl Default for GeneralRules {
             condition_yellow_x1000: 500,
             condition_red: 0.25,
             condition_red_x1000: 250,
+            idle_action_frequency_x1000: STOCK_IDLE_ACTION_FREQUENCY_X1000,
             damage_fire_ordinary_ratio: DamageFireHealthRatio {
                 numerator: 1,
                 denominator: 2,
@@ -803,6 +844,8 @@ impl Default for GeneralRules {
             condition_yellow_sparking_probability: 0.01,
             condition_red_spark_threshold: damage_spark_spawn_threshold(0.02),
             condition_yellow_spark_threshold: damage_spark_spawn_threshold(0.01),
+            normal_targeting_delay: 27,
+            guard_area_targeting_delay: 36,
             building_garrisoned_sound: None,
             chute_sound: None,
             gui_main_button_sound: None,
@@ -1029,6 +1072,64 @@ impl BridgeRules {
     }
 }
 
+/// Scenario-start crate counts and crate overlay images from `[CrateRules]`.
+///
+/// gamemd reads these into RulesClass and `Post_Map_Init` clamps the lobby
+/// player count between `CrateMinimum` and `CrateMaximum` to decide how many
+/// crates to scatter. Pickup effects (`SilverCrate`, `UnitCrateType`, the
+/// per-goodie weights) belong to the crate system and are deliberately not
+/// parsed here.
+#[derive(Debug, Clone)]
+pub struct CrateRules {
+    /// `CrateMinimum=` — floor on the scenario-start crate count (stock 1).
+    pub minimum: u32,
+    /// `CrateMaximum=` — ceiling on the scenario-start crate count (stock 255).
+    pub maximum: u32,
+    /// `CrateImg=` — overlay type used for the ordinary land crate (stock CRATE).
+    pub crate_img: String,
+    /// `WaterCrateImg=` — overlay type used over water (stock WCRATE).
+    pub water_crate_img: String,
+}
+
+impl Default for CrateRules {
+    fn default() -> Self {
+        Self {
+            minimum: 1,
+            maximum: 255,
+            crate_img: "CRATE".to_string(),
+            water_crate_img: "WCRATE".to_string(),
+        }
+    }
+}
+
+impl CrateRules {
+    fn from_ini(ini: &IniFile) -> Self {
+        let defaults = Self::default();
+        let Some(section) = ini.section("CrateRules") else {
+            return defaults;
+        };
+        let name = |key: &str, fallback: String| -> String {
+            section
+                .get(key)
+                .map(|value| value.trim().to_uppercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or(fallback)
+        };
+        Self {
+            minimum: section
+                .get_i32("CrateMinimum")
+                .unwrap_or(defaults.minimum as i32)
+                .max(0) as u32,
+            maximum: section
+                .get_i32("CrateMaximum")
+                .unwrap_or(defaults.maximum as i32)
+                .max(0) as u32,
+            crate_img: name("CrateImg", defaults.crate_img),
+            water_crate_img: name("WaterCrateImg", defaults.water_crate_img),
+        }
+    }
+}
+
 /// Global radiation-field constants parsed from the `[Radiation]` section.
 /// Consumed by the per-cell radiation service (`sim::radiation`) and the
 /// per-foot-unit damage step. Render-only keys (light/tint/color) are parsed
@@ -1174,6 +1275,17 @@ impl GeneralRules {
             condition_yellow_spark_threshold: damage_spark_spawn_threshold(
                 condition_yellow_spark_prob,
             ),
+            // Passive-scan cadence, in frames. Both keys are present in stock
+            // rulesmd.ini with exactly the constructor defaults (27 / 36); read
+            // them rather than hardcoding so a mod's values take effect.
+            normal_targeting_delay: general
+                .get_i32("NormalTargetingDelay")
+                .map(|v| v.max(0) as u32)
+                .unwrap_or(defaults.normal_targeting_delay),
+            guard_area_targeting_delay: general
+                .get_i32("GuardAreaTargetingDelay")
+                .map(|v| v.max(0) as u32)
+                .unwrap_or(defaults.guard_area_targeting_delay),
             // Gravity lives in [AudioVisual] (stock value 6). Reading it from
             // [General] silently fell back to the code default 3 — half stock
             // gravity for spark ballistics and the hover bob amplitude.
@@ -1279,6 +1391,15 @@ impl GeneralRules {
             condition_yellow_x1000: (condition_yellow_f32 as f64 * 1000.0) as i64,
             condition_red: condition_red_f32,
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
+            idle_action_frequency_x1000: (audio_visual
+                .map(|s| {
+                    s.read_double(
+                        "IdleActionFrequency",
+                        STOCK_IDLE_ACTION_FREQUENCY_X1000 as f64 / 1000.0,
+                    )
+                })
+                .unwrap_or(STOCK_IDLE_ACTION_FREQUENCY_X1000 as f64 / 1000.0)
+                * 1000.0) as i64,
             damage_fire_ordinary_ratio: DamageFireHealthRatio {
                 numerator: 1,
                 denominator: 2,
@@ -1799,6 +1920,8 @@ pub struct RuleSet {
     pub terrain_object_types: HashMap<String, TerrainObjectType>,
     /// Rules-driven bridge destruction defaults.
     pub bridge_rules: BridgeRules,
+    /// Scenario-start crate counts and crate overlay images from `[CrateRules]`.
+    pub crate_rules: CrateRules,
     /// Garrison/bunker/open-topped combat multipliers from [CombatDamage].
     pub garrison_rules: GarrisonRules,
     /// Per-cell radiation-field constants from [Radiation].
@@ -1813,6 +1936,11 @@ pub struct RuleSet {
     /// IonCannonWarhead=`, `C4Warhead=`). Resolution to interned IDs happens
     /// at world init.
     pub bridge_warheads: crate::rules::bridge_warheads::BridgeWarheads,
+    /// The three hardcoded missile-spawn families (`[General] V3RocketType=`,
+    /// `DMislType=`, `CMislType=`) with their launch frames, impact damage and
+    /// warheads. Read by the spawn manager to classify a spawn child and by the
+    /// missile detonation path.
+    pub missile_spawn: crate::rules::missile_spawn::MissileSpawnRules,
     /// `[CombatDamage] C4Delay=`. Default `0.03` minutes = 27 ticks @ 15 fps.
     /// Time between SEAL plant claim and detonation. Stored as integer ticks
     /// (not minutes) so the per-tick comparison stays integer/lockstep-safe.
@@ -1902,6 +2030,7 @@ impl RuleSet {
         let terrain_rules: TerrainRules = TerrainRules::from_ini(ini);
         let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
+        let crate_rules: CrateRules = CrateRules::from_ini(ini);
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
         let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
@@ -2074,6 +2203,12 @@ impl RuleSet {
             .map(crate::rules::bridge_warheads::BridgeWarheads::from_ini_section)
             .unwrap_or_default();
 
+        // [General] rocket type/frame slots + [CombatDamage] missile warheads.
+        let missile_spawn = crate::rules::missile_spawn::MissileSpawnRules::from_ini_sections(
+            ini.section("General"),
+            ini.section("CombatDamage"),
+        );
+
         // [CombatDamage] C4Delay = minutes (double). Default 0.03 = 27 ticks @ 15 fps.
         // Stored as integer ticks for lockstep-safe per-tick comparison.
         const SIM_TICKS_PER_SECOND: u32 = 15;
@@ -2194,12 +2329,14 @@ impl RuleSet {
             tiberium_types,
             terrain_object_types,
             bridge_rules,
+            crate_rules,
             garrison_rules,
             radiation,
             radar_event_config,
             super_weapons,
             combat_damage,
             bridge_warheads,
+            missile_spawn,
             c4_delay_ticks,
             particle_types,
             particle_types_by_name,
@@ -2375,6 +2512,16 @@ impl RuleSet {
             .get(country.0 as usize)
             .copied()
             .flatten()
+    }
+
+    /// The country's `UIName=` string-table key, then its plain `Name=`.
+    /// Callers resolve the key through the CSF table; the plain name is the
+    /// fallback when there is no key or the key is missing from the table.
+    pub fn country_display_name_sources(&self, id: &str) -> (Option<&str>, Option<&str>) {
+        match self.country_rules(id) {
+            Some(rules) => (rules.ui_name.as_deref(), rules.name.as_deref()),
+            None => (None, None),
+        }
     }
 
     /// Case-insensitive country lookup (gamemd parity), exact key first.
@@ -4123,6 +4270,24 @@ DefaultSparkSystem=SparkSys
         ));
         assert_eq!(g.condition_red_sparking_probability, f64::from(0.05_f32));
         assert_eq!(g.condition_yellow_sparking_probability, f64::from(0.03_f32));
+    }
+
+    #[test]
+    fn targeting_delay_defaults_and_override() {
+        // Stock rulesmd.ini carries both keys with exactly the constructor
+        // defaults; a missing section must still yield them.
+        let d = GeneralRules::default();
+        assert_eq!(d.normal_targeting_delay, 27);
+        assert_eq!(d.guard_area_targeting_delay, 36);
+        let none = GeneralRules::from_ini(&IniFile::from_str("[Foo]\n"));
+        assert_eq!(none.normal_targeting_delay, 27);
+        assert_eq!(none.guard_area_targeting_delay, 36);
+        // Values come FROM the INI, not from a hardcoded constant.
+        let g = GeneralRules::from_ini(&ini_with_general(
+            "NormalTargetingDelay=9\nGuardAreaTargetingDelay=13",
+        ));
+        assert_eq!(g.normal_targeting_delay, 9);
+        assert_eq!(g.guard_area_targeting_delay, 13);
     }
 
     #[test]

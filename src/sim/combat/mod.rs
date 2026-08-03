@@ -618,8 +618,51 @@ pub fn issue_attack_command(
 
     // Attach the attack target using stable ID (fire immediately).
     attacker.attack_target = Some(AttackTarget::new(target_id));
+    // An ordered target was not picked up by the passive scanner, so it is not
+    // subject to the scanner's stale-target drop or the off-mission clear.
+    attacker.passively_acquired_target = false;
 
     true
+}
+
+/// Swing an existing attack onto a different entity WITHOUT restarting the
+/// weapon.
+///
+/// The rearm countdown, the burst counter and the inter-shot delay all live on
+/// [`AttackTarget`] here, so replacing the whole record — which is what building
+/// a fresh `AttackTarget` does — zeroes them and hands the attacker a free shot
+/// on the spot. The original keeps its rearm timer on the OBJECT and its target
+/// assignment writes nothing but the target pointer and two adjacent fields, so
+/// swinging onto a new victim never shortens the reload. Mutating in place is
+/// how that contract is honoured here.
+///
+/// This is the one owner of that operation: combat's own auto-retarget and the
+/// passive scanner's re-pick both go through it. Only the pending infantry shot
+/// is dropped, because it was latched against the old victim.
+///
+/// RESIDUAL: this does NOT perform the infantry firing-sequence and animation
+/// reset that the full target setter does. That was unreachable in practice
+/// before the passive scanner existed; it is now reachable on every infantry
+/// re-pick, roughly every 28 frames. Deterministic and visual only — the fire
+/// decision does not read the sequence — so it is recorded rather than fixed
+/// here.
+///
+/// **Target provenance is preserved on purpose.** Swinging onto a new victim
+/// continues whatever acquisition installed the target in the first place — an
+/// auto-retarget after the old victim died is not a new order — so
+/// `passively_acquired_target` carries over. Clearing it here would leave the
+/// object holding a live target with the flag false, and that state is exactly
+/// what the passive block, the pursuit skip and the release-on-range-loss path
+/// all key off: the object would stop re-evaluating, start being chased across
+/// the map, and never let go of a target that walked out of range. The
+/// flag-clearing that the original's target ASSIGNMENT performs lives in the
+/// target setter, which is the assignment's counterpart; this in-place swing has
+/// no counterpart there.
+pub(crate) fn retarget_preserving_rearm(entity: &mut GameEntity, new_target_sid: u64) {
+    if let Some(ref mut attack) = entity.attack_target {
+        attack.target = TargetKind::Entity(new_target_sid);
+        attack.pending_infantry_fire = None;
+    }
 }
 
 /// Issue a force-fire-on-cell command: make `attacker` fire at a ground cell.
@@ -681,6 +724,7 @@ pub fn issue_attack_cell_command(
 
     attacker.movement_target = None;
     attacker.attack_target = Some(AttackTarget::for_cell(target_rx, target_ry));
+    attacker.passively_acquired_target = false;
     true
 }
 
@@ -1257,6 +1301,13 @@ fn handle_entity_deaths(
                             rules.general.condition_yellow_x1000,
                         );
                     }
+                    // A death explosion kills on behalf of the object that
+                    // carried it — a Demo Truck's owner is credited with what its
+                    // detonation destroys, and so is the owner of anything caught
+                    // in a chain reaction. This path subtracts damage inline
+                    // rather than going through the damage-event loop, so the
+                    // capture has to happen here too.
+                    capture_kill_credit(target, Some(*owner_id), rules, interner);
                 }
             }
             // Ore destruction from death explosion.
@@ -1369,6 +1420,10 @@ pub(crate) struct CombatEmit {
     /// per-object window (pre-death state; own-retarget visible), applied
     /// post-batch by `unit_post::apply_unit_facing`.
     pub(crate) unit_facing: Vec<(u64, u16)>,
+    /// (parent_id, target) — a `Spawner=yes` weapon reached its fire point.
+    /// gamemd's `Fire_At` hands the target to the parent's `SpawnManager` and
+    /// returns NULL, so no bullet, damage or rearm follows.
+    pub(crate) spawn_target_updates: Vec<(u64, TargetKind)>,
 }
 
 fn projectile_impact_cell(impact: ProjectileCoord) -> (u16, u16, SimFixed, SimFixed, i32) {
@@ -1570,6 +1625,7 @@ pub fn tick_combat_with_fog(
         live_order,
         &[],
         radiation,
+        &[],
         scenario_rng,
         &mut unused_main_rng,
     )
@@ -1598,6 +1654,7 @@ pub fn tick_combat_with_fog_and_main_rng(
     live_order: &[u64],
     projectile_detonations: &[ProjectileDetonation],
     radiation: Option<&mut crate::sim::radiation::RadiationState>,
+    missile_detonations: &[crate::sim::spawn_manager::MissileDetonation],
     scenario_rng: &mut SimRng,
     main_rng: &mut SimRng,
 ) -> CombatTickResult {
@@ -1688,6 +1745,7 @@ pub fn tick_combat_with_fog_and_main_rng(
         for id in clear_self_target {
             if let Some(entity) = entities.get_mut(id) {
                 entity.attack_target = None;
+                entity.passively_acquired_target = false;
             }
         }
     }
@@ -2083,17 +2141,27 @@ pub fn tick_combat_with_fog_and_main_rng(
         pending_infantry_updates,
         animation_switches,
         unit_facing,
+        spawn_target_updates,
     } = emit;
+
+    // Spawner weapons: hand the fire target to the parent's spawn manager.
+    // `SpawnManagerClass::SetTarget` only queues a target that differs from the
+    // live one; the manager's own AI pass promotes it.
+    for &(parent_id, target) in &spawn_target_updates {
+        if let Some(manager) = entities
+            .get_mut(parent_id)
+            .and_then(|e| e.spawn_manager.as_mut())
+        {
+            manager.set_target(Some(target));
+        }
+    }
 
     // Phase 3: apply retargets and burst/cooldown updates.
     // Auto-retargets only ever produce Entity targets (acquire_best_target
     // scans hostile entities), so this wraps the u64 in TargetKind::Entity.
     for &(attacker_id, new_target_sid) in &retarget_events {
         if let Some(entity) = entities.get_mut(attacker_id) {
-            if let Some(ref mut attack) = entity.attack_target {
-                attack.target = TargetKind::Entity(new_target_sid);
-                attack.pending_infantry_fire = None;
-            }
+            retarget_preserving_rearm(entity, new_target_sid);
         }
     }
     for &(attacker_id, sequence) in &animation_switches {
@@ -2219,6 +2287,52 @@ pub fn tick_combat_with_fog_and_main_rng(
         }
     }
 
+    // Phase 3.9: spawn-manager missile impacts recorded during this tick's
+    // movement pass. gamemd's `RocketLocomotion::Detonate` calls the engine's
+    // shared area-damage routine, so the impact must reach the same
+    // damage → death → despawn pipeline as any other detonation — including
+    // death weapons, crew ejection and kill credit. Folded in here, ahead of
+    // Phase 4, in the order the missiles landed.
+    for det in missile_detonations {
+        let warhead_name = interner.resolve(det.warhead).to_string();
+        let Some(warhead) = rules.warhead(&warhead_name) else {
+            continue;
+        };
+        let owner_house = interner.resolve(det.owner).to_string();
+        let impact_z = combat_aoe::bridge_adjusted_impact_z(terrain, det.rx, det.ry);
+        let hits = combat_aoe::apply_aoe_damage(
+            entities,
+            det.rx,
+            det.ry,
+            det.damage,
+            warhead,
+            rules,
+            interner,
+            &owner_house,
+            combat_aoe::AoELayerContext {
+                occupancy: Some(&*occupancy),
+                terrain,
+                impact_z,
+            },
+        );
+        let wh_iid = interner.intern(&warhead.id);
+        for (target_id, damage) in hits {
+            damage_events.push((target_id, damage, det.firer_id, wh_iid));
+        }
+        emit_warhead_detonation_effects(
+            warhead,
+            det.damage,
+            det.rx,
+            det.ry,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            0,
+            interner,
+            &mut explosion_effects,
+            &mut smudge_spawn_requests,
+        );
+    }
+
     // Phase 4: apply damage to targets and track last attacker for retaliation.
     let mut dead_entities: Vec<u64> = Vec::new();
     let mut under_attack_events: Vec<UnderAttackEvent> = Vec::new();
@@ -2256,6 +2370,13 @@ pub fn tick_combat_with_fog_and_main_rng(
             }
             if target.health.current == 0 {
                 dead_entities.push(*target_id);
+                // Score-screen kill record, taken here because this is the
+                // instant of destruction — the same point gamemd records a kill.
+                // Reading it later would be unsafe: the retaliation pass clears
+                // `last_attacker_id` unconditionally later this tick, and dying
+                // infantry stay in the logic vector through their death
+                // animation, so they would reach removal with no attacker left.
+                capture_kill_credit(target, attacker_owner, rules, interner);
             }
             // Under-attack ping: another house damaged a base structure or a
             // harvester. Owner-differs is the hostility gate — alliances are
@@ -2286,6 +2407,8 @@ pub fn tick_combat_with_fog_and_main_rng(
     for &attacker_id in &remove_attack {
         if let Some(entity) = entities.get_mut(attacker_id) {
             entity.attack_target = None;
+            // The provenance flag cannot outlive the target it describes.
+            entity.passively_acquired_target = false;
         }
     }
 
@@ -2395,6 +2518,93 @@ pub(crate) fn build_attacker_snapshot(
         weapon_override: entity.weapon_override,
         garrison,
     }
+}
+
+/// Veterancy at or above this counts as veteran for the score award.
+const VETERAN_VETERANCY: u16 = 100;
+/// Veterancy at or above this counts as elite for the score award.
+const ELITE_VETERANCY: u16 = 200;
+
+/// Score value destroying `victim` is worth, before the allied-victim zeroing the
+/// caller applies.
+///
+/// gamemd's kill-record step asks the victim's type for its value and that
+/// accessor returns the type's **`Cost=`** — the same field production charges —
+/// doubled at veteran and tripled at elite.
+///
+/// It is emphatically NOT `Points=`. `Points=` parses into its own type field
+/// that nothing in the binary ever reads back: the only references are the
+/// constructor zeroing it, the INI store, and the type-checksum walk. It is
+/// dormant Tiberian Sun legacy in YR, so this engine does not parse it at all.
+/// The two are not even proportional — a Rhino is `Cost=900 / Points=25` while a
+/// GI is `200 / 10` — so using `Points=` both shrinks the column and reorders the
+/// table.
+///
+/// gamemd passes the victim's house so its cost bonuses apply on top. This engine
+/// models no per-house cost modifier anywhere — production charges the raw
+/// `Cost=` too — so the award is the raw cost, consistent with what the player
+/// was actually charged. UNCHECKED against the native bonus set.
+pub(crate) fn score_award_for_victim(victim: Option<&ObjectType>, veterancy: u16) -> i32 {
+    let cost = victim.map_or(0, |obj| obj.cost);
+    if cost <= 0 {
+        return 0;
+    }
+    let multiplier = if veterancy >= ELITE_VETERANCY {
+        3
+    } else if veterancy >= VETERAN_VETERANCY {
+        2
+    } else {
+        1
+    };
+    cost.saturating_mul(multiplier)
+}
+
+/// Record who destroyed `victim`, at the instant it happened.
+///
+/// Every lethal path funnels through here so there is one capture rather than a
+/// recording mechanism per death cause. Call it immediately after zeroing a
+/// victim's health, with the house that should be credited.
+///
+/// No-ops unless the victim is actually at zero health, and the first writer
+/// wins — a second lethal hit in the same tick cannot re-credit the kill to a
+/// different house. The award is resolved here because the rules are in hand and
+/// the veterancy is still the value the object died at.
+///
+/// Routed today: the projectile/damage-event loop, death-explosion area damage,
+/// and crushing. Spawner missiles arrive through the damage loop with the firer
+/// set to the launching object, so they credit the launcher's house; if the
+/// launcher itself dies during the missile's flight the firer no longer resolves
+/// and that kill goes uncredited.
+///
+/// NOT routed yet, because each site would need a `&RuleSet` threaded into a
+/// function that does not take one: the Iron Curtain and Genetic Mutator infantry
+/// kills, aircraft self-destruct, passengers dying with their transport
+/// (`world::lifecycle`) or with a collapsing bridge, and passengers ejected by a
+/// sell. Those victims book a Loss with no matching Kill.
+pub(crate) fn capture_kill_credit(
+    victim: &mut crate::sim::game_entity::GameEntity,
+    killer_owner: Option<InternedId>,
+    rules: &crate::rules::ruleset::RuleSet,
+    interner: &crate::sim::intern::StringInterner,
+) {
+    // `DontScore=` victims are invisible to the score screen entirely. gamemd
+    // returns on this byte before any of its bookkeeping, so the kill and the
+    // points are both suppressed here and the loss is suppressed at the
+    // lifecycle recorder — the two halves of that one native early return.
+    if victim.dont_score {
+        return;
+    }
+    if victim.health.current != 0 || victim.killed_by.is_some() {
+        return;
+    }
+    let Some(killer_owner) = killer_owner else {
+        return;
+    };
+    victim.killed_by = Some(killer_owner);
+    victim.kill_award_points = score_award_for_victim(
+        rules.object(interner.resolve(victim.type_ref)),
+        victim.veterancy,
+    );
 }
 
 /// Resolve one attacker's Phase-2 fire decision + emission for the current tick.
@@ -2772,6 +2982,44 @@ pub(crate) fn resolve_attacker_fire(
     }
     if pending_at_fire_frame {
         out.pending_infantry_updates.push((snap.stable_id, None));
+    }
+
+    // Spawner weapon: gamemd's Fire_At short-circuits here. It calls
+    // `SpawnManagerClass::SetTarget` and returns NULL — no bullet, no damage,
+    // no detonation effects, and no rearm timer write (the rearm write lives
+    // further down Fire_At, past this branch). Because the branch returns above
+    // the first random draw as well as above bullet allocation, a spawner fire
+    // consumes zero scenario-RNG draws natively.
+    //
+    // `TechnoClass::GetFireError` step 18 (`disassemble_bytes 0x006FC606`) adds
+    // three gates ahead of the shot, all read off the FIRER, not the target:
+    //   1. `TechnoClass__IsOnBridge_ForFiring` (`0x00703B10`) → error 6.
+    //      **NOT MODELLED.** It is not a plain "am I on a bridge deck" test —
+    //      it is gated on the firer's own OnBridge byte being *clear*, then
+    //      samples the firer's cell plus four direction-offset neighbours and
+    //      tests cell flags 0x100/0x800 in four different combinations. It
+    //      refuses a launch made from under or alongside a bridge span. Trigger:
+    //      a V3/Dreadnought/Boomer ordered to fire while standing in a
+    //      bridge-adjacent cell. Player effect: VERA launches where retail
+    //      refuses; the missile flies where retail would have made the unit hold
+    //      fire. Frequency: uncommon — needs the launcher parked under a span,
+    //      which players avoid because it blocks line of sight anyway.
+    //      Downstream risk: none — the gate only suppresses a launch, it feeds
+    //      nothing. The exact 0x100/0x800 flag meanings and the four direction
+    //      offsets are UNCHECKED and must be traced before implementing.
+    //   2. `this->vtable+0x380` non-zero → error 6. **NOT MODELLED**; the slot's
+    //      identity is UNCHECKED.
+    //   3. `SpawnManagerClass::CountAliveSpawns == 0` → error 3. MODELLED below.
+    if weapon.spawner {
+        let alive = entities
+            .get(snap.stable_id)
+            .and_then(|e| e.spawn_manager.as_ref())
+            .map(|m| m.count_alive_spawns())
+            .unwrap_or(0);
+        if alive > 0 {
+            out.spawn_target_updates.push((snap.stable_id, snap.target));
+        }
+        return;
     }
 
     // Fire one shot!

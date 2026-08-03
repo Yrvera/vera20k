@@ -234,7 +234,6 @@ pub fn can_enter_transport(
     cargo: &PassengerCargo,
     rules: &RuleSet,
     houses: &BTreeMap<InternedId, HouseState>,
-    interner: &StringInterner,
     path_grid: Option<&PathGrid>,
 ) -> bool {
     // Must be alive, not dying, not already inside something
@@ -257,7 +256,6 @@ pub fn can_enter_transport(
             cargo,
             rules,
             houses,
-            interner,
             path_grid,
         );
     } else {
@@ -279,7 +277,6 @@ pub fn can_dock_occupier_garrison(
     cargo: &PassengerCargo,
     rules: &RuleSet,
     houses: &BTreeMap<InternedId, HouseState>,
-    interner: &StringInterner,
     path_grid: Option<&PathGrid>,
 ) -> bool {
     if !building_obj.can_be_occupied {
@@ -297,7 +294,7 @@ pub fn can_dock_occupier_garrison(
         return false;
     }
     let same_owner = passenger.owner == building.owner;
-    if !same_owner && !owner_country_multiplay_passive(building.owner, rules, houses, interner) {
+    if !same_owner && !owner_is_multiplay_passive(building.owner, houses) {
         return false;
     }
     if cargo.count() == building_obj.max_number_occupants {
@@ -316,18 +313,19 @@ pub fn can_dock_occupier_garrison(
     true
 }
 
-fn owner_country_multiplay_passive(
+/// Read the target owner's `MultiplayPassive` house-type fact.
+///
+/// One source of truth: the flag is resolved from the country rules once, at
+/// house creation, and stored on the house — see
+/// `house_state::resolve_multiplay_passive`. An owner with no `HouseState` is
+/// not passive.
+fn owner_is_multiplay_passive(
     owner: InternedId,
-    rules: &RuleSet,
     houses: &BTreeMap<InternedId, HouseState>,
-    interner: &StringInterner,
 ) -> bool {
-    let country_name = houses
+    houses
         .get(&owner)
-        .and_then(|house| house.country)
-        .map(|country| interner.resolve(country))
-        .unwrap_or_else(|| interner.resolve(owner));
-    rules.country_multiplay_passive(country_name)
+        .is_some_and(|house| house.multiplay_passive)
 }
 
 pub fn can_entity_enter_garrison(
@@ -360,7 +358,6 @@ pub fn can_entity_enter_garrison(
         cargo,
         rules,
         &sim.houses,
-        &sim.interner,
         path_grid,
     )
 }
@@ -554,6 +551,7 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
             pax.passenger_role = PassengerRole::Inside { transport_id };
             pax.movement_target = None;
             pax.attack_target = None;
+            pax.passively_acquired_target = false;
             pax.order_intent = None;
         }
         if transport_open_topped {
@@ -834,6 +832,7 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                     pax.passenger_role = PassengerRole::Inside { transport_id };
                     pax.movement_target = None;
                     pax.attack_target = None;
+                    pax.passively_acquired_target = false;
                     pax.order_intent = None;
                 }
                 if transport_open_topped {
@@ -1424,7 +1423,6 @@ ConditionYellow=50%
             cargo,
             rules,
             &sim.houses,
-            &sim.interner,
             None,
         )
     }
@@ -1920,7 +1918,6 @@ ConditionYellow=50%
                 cargo,
                 &rules,
                 &sim.houses,
-                &sim.interner,
                 None,
             ),
             "CanDock requires Occupier=yes infantry"
@@ -1971,6 +1968,7 @@ ConditionYellow=50%
         for owner in ["Neutral", "Special"] {
             let mut sim = Simulation::new();
             let rules = garrison_test_rules();
+            insert_stamped_house(&mut sim, &rules, owner, owner);
             let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", owner, 10, 10);
             let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
 
@@ -1981,23 +1979,32 @@ ConditionYellow=50%
         }
     }
 
+    /// Insert a house the way production does — the `MultiplayPassive` flag is
+    /// resolved from the country rules once, at creation, and stamped onto the
+    /// house for every later reader.
+    fn insert_stamped_house(
+        sim: &mut Simulation,
+        rules: &RuleSet,
+        house_name: &str,
+        country_name: &str,
+    ) -> InternedId {
+        let name_id = sim.interner.intern(house_name);
+        let country_id = sim.interner.intern(country_name);
+        let mut house =
+            crate::sim::house_state::HouseState::new(name_id, 0, Some(country_id), false, 0, 10);
+        house.multiplay_passive =
+            crate::sim::house_state::resolve_multiplay_passive(Some(rules), Some(country_name));
+        sim.houses.insert(name_id, house);
+        name_id
+    }
+
     #[test]
     fn test_can_enter_garrison_uses_owner_country_multiplay_passive() {
         let mut sim = Simulation::new();
         let rules = garrison_test_rules();
-        let civ_house = sim.interner.intern("CivHouse");
-        let neutral_country = sim.interner.intern("Neutral");
-        sim.houses.insert(
-            civ_house,
-            crate::sim::house_state::HouseState::new(
-                civ_house,
-                0,
-                Some(neutral_country),
-                false,
-                0,
-                10,
-            ),
-        );
+        // House name and country deliberately differ: the passive fact must come
+        // from `Country=Neutral`, not from the house's own name.
+        insert_stamped_house(&mut sim, &rules, "CivHouse", "Neutral");
         let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "CivHouse", 10, 10);
         let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
 

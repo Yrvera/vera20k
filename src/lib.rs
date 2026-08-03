@@ -57,12 +57,14 @@ pub mod app_loading_progress_row;
 pub mod app_main_menu_shell_render;
 pub mod app_quit_cascade;
 pub mod app_radiation_light;
+pub mod app_score_shell_render;
 pub mod app_shell_capture;
 pub mod app_shell_transition;
 pub mod app_single_player_shell_render;
 pub mod app_skirmish;
 pub mod app_skirmish_session;
 pub mod app_skirmish_shell_render;
+pub mod app_startup_options;
 pub mod app_tactical_capture;
 pub mod match_bootstrap;
 

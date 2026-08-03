@@ -41,8 +41,11 @@ const BRIDGE_BODY_Y_OFFSET_STATE_9_TO_17: f32 = -31.0;
 /// RE doc §3.3.1, ledger #6.
 const BRIDGE_HEIGHT_BONUS: u8 = 4;
 
-/// Shadow X displacement on EW states 9..17. RE doc §10 open Q2 — value
-/// unresolved between -15 and -45. Defaults to -15. Single change point.
+/// Shadow X displacement on EW states 9..17.
+///
+/// Settled at -15: the native overlay-shadow draw subtracts 0xF from the draw
+/// X for bridge cells whose state byte is in 9..=0x11, in the same branch that
+/// adds the +7 to Y. The RE doc's open question between -15 and -45 is closed.
 pub const BRIDGE_SHADOW_EW_DX: i32 = -15;
 /// Shadow Y displacement on EW states 9..17. Verified -0x2D = +7
 /// (RE doc §3.3.2, ledger #10).
@@ -245,6 +248,12 @@ pub(crate) fn build_bridge_shadow_instances(
             continue;
         }
 
+        // DRIFT, recorded and deliberately not chased: this reuses the body's
+        // frame helper, which applies the per-cell variety jitter on state
+        // bytes 0 and 9. The native shadow path reads the cell's state byte
+        // raw and applies no jitter. Visible impact is nil — the frames the
+        // jitter can select are byte-identical in the shadow half — so the
+        // cost of a separate un-jittered shadow helper buys nothing.
         let frame = compute_bridge_body_shp_frame(render_state, axis, rx, ry);
         let y_offset = compute_bridge_body_y_offset(render_state, axis);
 

@@ -8,9 +8,9 @@
 //! - Part of the app layer — may depend on everything.
 
 use super::helpers::{
-    ANIM_DRAW_DEPTH_BIAS_PX, apply_bridge_depth_bias, apply_shape_z_adjust, compute_sprite_depth,
-    effective_anim_z_adjust, in_view, is_entity_visible_for_local_owner,
-    is_under_bridge_render_state,
+    ANIM_DRAW_DEPTH_BIAS_PX, EntityDrawBand, apply_bridge_depth_bias, apply_shape_z_adjust,
+    compute_sprite_depth, effective_anim_z_adjust, entity_draw_band, ground_sort_row, in_view,
+    is_entity_visible_for_local_owner, is_under_bridge_render_state,
 };
 use crate::app::AppState;
 use crate::app_render::draw_plan_lowering::{
@@ -30,18 +30,40 @@ use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::animation;
 use crate::sim::components::BuildingUp;
 
+/// Sort keys of the bodies currently hanging under a parachute, by entity id.
+///
+/// A parachute canopy is not an object in gamemd — `AnimClass::GetLayer` forces
+/// an owner-attached anim into the owner's own layer, and the canopy is
+/// composed into the descending body's draw. So the canopy has to sort at
+/// exactly the body's key, and the only way to guarantee that is for the body
+/// to hand its key over rather than for the canopy builder to re-derive one
+/// from the same inputs and drift when either side changes.
+///
+/// Only ever read by key, never iterated, so the hash order is not observable.
+pub(crate) type ParachuteBodyDepths = std::collections::HashMap<u64, f32>;
+
 /// Iterate visible SHP sprite entities from EntityStore and build SpriteInstances.
 ///
 /// Build SpriteInstances for all SHP entities (buildings, infantry).
 /// Building bibs and anims are emitted into `paged` together with bodies,
 /// matching the original engine where bibs are drawn inside BuildingClass_DrawBody.
-/// `unit_instances` receives building turret VXLs (drawn after building bodies).
+/// `unit_instances` receives building turret VXLs. They go into the ordinary
+/// voxel stream, at the building's own sort depth and emitted right after the
+/// body, because gamemd draws them inside the building's own display call in
+/// the sorted ground layer rather than in a pass of their own.
+/// `top_paged` receives SHP bodies whose locomotor puts them above the Ground
+/// band — in stock YR that is the Rocketeer at hover height, the one infantry
+/// type on a Jumpjet locomotor.
+/// `parachute_body_depths` collects the sort key of every body currently under
+/// a parachute, keyed by entity — see [`ParachuteBodyDepths`].
 pub(crate) fn build_shp_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
     bridge_paged: &mut [Vec<SpriteInstance>],
+    top_paged: &mut [Vec<SpriteInstance>],
     unit_instances: &mut Vec<SpriteInstance>,
     unit_instance_pages: &mut Vec<usize>,
+    parachute_body_depths: &mut ParachuteBodyDepths,
 ) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -228,6 +250,7 @@ pub(crate) fn build_shp_instances(
 
         let final_x: f32 = sx + entry.offset_x;
         let final_y: f32 = sy + entry.offset_y;
+        let band = entity_draw_band(entity);
         let base_depth: f32 = match entity.category {
             EntityCategory::Structure => {
                 // Building render coords use (Location.X - 128, Location.Y - 128) — the
@@ -237,11 +260,20 @@ pub(crate) fn build_shp_instances(
                 compute_sprite_depth(state, sy - TILE_HEIGHT / 2.0, interp_z)
             }
             _ => {
+                // The drawn row carries this body's height lift; the sort key
+                // must not. A hovering Rocketeer or a descending paradrop key
+                // off the cell it is over, exactly like a GI standing there.
                 let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1];
-                compute_sprite_depth(state, depth_y, interp_z)
+                compute_sprite_depth(state, ground_sort_row(entity, depth_y), interp_z)
             }
         };
-        let depth: f32 = apply_bridge_depth_bias(state, entity, base_depth);
+        let depth: f32 = match band {
+            EntityDrawBand::Top => base_depth,
+            EntityDrawBand::Ground => apply_bridge_depth_bias(state, entity, base_depth),
+        };
+        if entity.parachute_state.is_some() {
+            parachute_body_depths.insert(entity.stable_id, depth);
+        }
         let mut tint: [f32; 3] = match entity.category {
             EntityCategory::Infantry => state.lighting_grid.infantry_tint_at((pos.rx, pos.ry)),
             EntityCategory::Structure => {
@@ -261,12 +293,16 @@ pub(crate) fn build_shp_instances(
                 }
             }
         }
-        let target_pages = if is_under_bridge_render_state(state, entity)
-            && entity.category != EntityCategory::Structure
-        {
-            &mut *bridge_paged
-        } else {
-            &mut *paged
+        let target_pages = match band {
+            // Above the Ground band, so also above any bridge deck.
+            EntityDrawBand::Top => &mut *top_paged,
+            EntityDrawBand::Ground
+                if is_under_bridge_render_state(state, entity)
+                    && entity.category != EntityCategory::Structure =>
+            {
+                &mut *bridge_paged
+            }
+            EntityDrawBand::Ground => &mut *paged,
         };
         let body = SpriteInstance {
             position: [final_x, final_y],
@@ -342,7 +378,11 @@ pub(crate) fn build_shp_instances(
                     depth,
                     tint,
                     entity.building_anim_overlays.as_ref(),
-                    state.idle_anim_elapsed_ms,
+                    crate::app_building_anim::building_anim_elapsed_logic_frames(
+                        state,
+                        entity.stable_id,
+                    ),
+                    Some(&sim.session.game_options),
                     Some(&sim.interner),
                     is_garrisoned,
                     is_player_owned,
@@ -374,7 +414,6 @@ pub(crate) fn build_shp_instances(
                             draw_state,
                             rules_obj.turret_anim_x,
                             rules_obj.turret_anim_y,
-                            rules_obj.turret_anim_z_adjust,
                         );
                     }
                 }
@@ -406,6 +445,18 @@ pub(crate) fn build_shp_instances(
 ///
 /// Looks up the pre-rendered turret VXL from the UnitAtlas at the current turret facing,
 /// positioned at the building's screen origin + pixel offset from TurretAnimX/Y.
+///
+/// The turret carries the building's own sort depth verbatim. `TurretAnimZAdjust=`
+/// is deliberately not folded in: gamemd's ground-layer sort key for a building
+/// reads only `TurretAnimIsVoxel` (+32 leptons) and `Gate` (−16 leptons), while
+/// `TurretAnimZAdjust` is read by a different virtual that composes the
+/// building's *draw* Z. Using it as a sort bias here would pull the turret
+/// toward the camera and put it over units standing in front of the building —
+/// by 1.3 to 4 iso rows on the defences a player actually fights around
+/// (SAM Site and Sentry Gun −20, Flak and Gattling Cannon −40, Slave Miner −50,
+/// Grand Cannon −60), more on a couple of civilian map props. The +32/−16 key
+/// terms are a separate gap. Note the set is small and does not include Prism
+/// Tower, whose turret is not a voxel.
 fn emit_building_turret_vxl(
     instances: &mut Vec<SpriteInstance>,
     instance_pages: &mut Vec<usize>,
@@ -421,7 +472,6 @@ fn emit_building_turret_vxl(
     draw_state: DrawState,
     anim_x: i32,
     anim_y: i32,
-    z_adjust: i32,
 ) {
     let unit_atlas = match &state.unit_atlas {
         Some(a) => a,
@@ -438,27 +488,17 @@ fn emit_building_turret_vxl(
         return;
     };
     // Position turret at building cell origin + pixel offset from INI.
-    // TurretAnimZAdjust affects depth-sort only, never screen Y (ZAdjust is a
-    // sort bias in the original engine; YDrawOffset is what shifts screen Y).
+    // TurretAnimX/Y are screen pixel offsets added to the building's own draw
+    // point, which is exactly what the native turret draw does with them.
     let center_x: f32 = building_sx;
     let tx: f32 = center_x + anim_x as f32 + entry.offset_x;
     let ty: f32 = building_sy + anim_y as f32 + entry.offset_y + 3.0;
-    // Turret draws on top of its own body via instance order (pushed after
-    // the building body). TurretAnimZAdjust= additionally biases the sort
-    // depth (negative = toward camera) so the turret orders correctly
-    // against OTHER nearby objects, matching the native signed pixel bias.
-    let world_height: f32 = state
-        .terrain_grid
-        .as_ref()
-        .map(|g| g.world_height)
-        .unwrap_or(1.0);
-    let turret_depth: f32 = apply_shape_z_adjust(building_depth, z_adjust, world_height);
     instances.push(SpriteInstance {
         position: [tx, ty],
         size: entry.pixel_size,
         uv_origin: entry.uv_origin,
         uv_size: entry.uv_size,
-        depth: turret_depth,
+        depth: building_depth,
         tint,
         alpha: 1.0,
         draw_state,
@@ -533,47 +573,102 @@ fn emit_building_bib(
     });
 }
 
-/// Compute the current frame for a looping animation driven by the global elapsed timer.
+/// Frame of a looping building animation, `elapsed_logic_frames` after the
+/// animation object was created.
 ///
-/// Supports PingPong mode (bounces: 0→1→2→3→2→1→0→...) and linear looping (0→1→2→3→0→...).
-/// LoopEnd in RA2 art.ini is **inclusive** — LoopStart=0,LoopEnd=3 means 4 frames (0,1,2,3).
-fn looping_frame(anim: &crate::rules::art_data::BuildingAnimConfig, elapsed_ms: u32) -> u16 {
-    looping_frame_values(
-        anim.loop_start,
-        anim.loop_end,
-        anim.rate,
-        anim.ping_pong,
-        elapsed_ms,
-    )
-}
-
+/// gamemd advances the animation's own frame counter by one every `rate` logic
+/// frames and, on reaching `LoopEnd`, resets it to `LoopStart`; the counter and
+/// its timer both start at construction. The phase is therefore a pure function
+/// of how long this animation has existed — which is why identical buildings
+/// raised at different times do not animate in lockstep.
+///
+/// DRIFT — the first sweep is missing when `Start=` differs from `LoopStart=`.
+/// The native counter is relative to `Start` and begins at zero, so the drawn
+/// frame is `Start + counter`: the animation plays `Start..LoopEnd` once when it
+/// is created and only then settles into `LoopStart..LoopEnd-1`. This goes
+/// straight into the loop. Trigger: creation of the slot animation — building
+/// placement for `[CAWA19_A]`, `[GACTWR_A]`, `[NATBNK_A]`, `[NATBNK_B]` and
+/// `[YAROCK_A]`, and crossing `ConditionYellow` for the 21 `…_AD` damaged
+/// replacements that also qualify. Effect: a one-off sweep through the other
+/// half of the SHP is skipped. Frequency: once per animation creation, never
+/// repeating, so it costs a brief transient and nothing steady-state.
 fn looping_frame_values(
     loop_start: u16,
     loop_end: u16,
-    rate: u16,
+    start_frame: u16,
+    rate_logic_frames: u16,
     ping_pong: bool,
-    elapsed_ms: u32,
+    elapsed_logic_frames: u32,
 ) -> u16 {
     // LoopEnd is EXCLUSIVE in RA2 art.ini — e.g. GAPOWR_A has LoopStart=0,
     // LoopEnd=8 meaning frames 0..8 (0-7), while GAPOWR_AD starts at frame 8.
     // The ranges are contiguous: normal=[0..8), damaged=[8..16).
     let range: u16 = loop_end.saturating_sub(loop_start).max(1);
-    let rate: u32 = (rate as u32).max(1) * 2;
-    let tick: u32 = elapsed_ms / rate;
+    let rate: u32 = u32::from(rate_logic_frames).max(1);
+    let tick: u32 = elapsed_logic_frames / rate;
 
-    if ping_pong && range > 1 {
-        // PingPong cycle: 0,1,2,...,N-1,N-2,...,1 → cycle length = 2*(N-1).
-        let cycle: u32 = 2 * (range as u32 - 1);
-        let pos: u32 = tick % cycle;
-        let offset: u16 = if pos < range as u32 {
-            pos as u16
-        } else {
-            // Bouncing back: cycle - pos.
-            (cycle - pos) as u16
-        };
-        loop_start + offset
+    if ping_pong {
+        return ping_pong_frame_value(loop_end, start_frame, tick);
+    }
+    loop_start + (tick % range as u32) as u16
+}
+
+/// Frame of a `PingPong=yes` building animation `tick` frame-advances after
+/// construction.
+///
+/// The native bounce is **not** symmetric about the loop range, and it does not
+/// read `LoopStart` at all. The frame counter is relative to `Start=`, and the
+/// direction flips when that counter reaches `LoopEnd - Start` or equals
+/// `Start`. The flip returns immediately without touching the counter, so each
+/// endpoint frame is displayed for one full frame delay rather than being
+/// stepped over — `GARADR_A` (`Start=0`, `LoopEnd=14`) is a 28-step bounce
+/// across frames 0..=14, not a 26-step one across 0..=13.
+fn ping_pong_frame_value(loop_end: u16, start_frame: u16, tick: u32) -> u16 {
+    let high: u32 = u32::from(loop_end.saturating_sub(start_frame));
+    let low: u32 = u32::from(start_frame);
+    if high == 0 {
+        return start_frame;
+    }
+    // The counter climbs from zero on construction and turns at `high`.
+    if tick <= high {
+        return start_frame + tick as u16;
+    }
+    if low >= high {
+        // Both turning points land on the same counter value (or invert), so
+        // gamemd's own behaviour here is degenerate: it flips once at the top,
+        // then the descending counter can never satisfy the `== Start` test
+        // again and runs away downwards for the rest of the animation's life,
+        // walking off the start of the SHP. `[GAPLUG_BD]` (Start=10,
+        // LoopStart=10, LoopEnd=20) is the only stock section that hits it.
+        //
+        // VERA-INTERNAL, and a DELIBERATE DIVERGENCE from gamemd rather than an
+        // approximation of it: hold the last frame gamemd draws before the
+        // runaway. Reproducing the runaway faithfully would mean drawing
+        // negative frame indices, i.e. garbage or nothing.
+        return start_frame + high as u16;
+    }
+    let span: u32 = high - low;
+    let phase: u32 = (tick - high) % (2 * span);
+    let counter: u32 = if phase <= span {
+        high - phase
     } else {
-        loop_start + (tick % range as u32) as u16
+        low + (phase - span)
+    };
+    start_frame + counter as u16
+}
+
+/// Whether an `InfantryAbsorb` building's ActiveAnim slot is the one gamemd
+/// clears for the current occupancy.
+///
+/// The native branch only ever touches the first two ActiveAnim slots: with no
+/// occupants it clears the second and creates the first, and with one or more it
+/// clears the first and creates the second. Any further ActiveAnim slot is
+/// outside the branch and keeps rendering.
+fn infantry_absorb_slot_is_hidden(active_slot_ordinal: usize, is_garrisoned: bool) -> bool {
+    match active_slot_ordinal {
+        0 => is_garrisoned,
+        1 => !is_garrisoned,
+        _ => false,
     }
 }
 
@@ -582,7 +677,6 @@ struct BuildingAnimFrameView<'a> {
     loop_start: u16,
     loop_end: u16,
     loop_count: i32,
-    rate: u16,
     start_frame: u16,
     ping_pong: bool,
 }
@@ -605,7 +699,6 @@ fn selected_building_anim_view<'a>(
             loop_start: v.loop_start,
             loop_end: v.loop_end,
             loop_count: v.loop_count,
-            rate: v.rate,
             start_frame: v.start_frame,
             ping_pong: v.ping_pong,
         },
@@ -614,7 +707,6 @@ fn selected_building_anim_view<'a>(
             loop_start: anim.loop_start,
             loop_end: anim.loop_end,
             loop_count: anim.loop_count,
-            rate: anim.rate,
             start_frame: anim.start_frame,
             ping_pong: anim.ping_pong,
         },
@@ -638,7 +730,8 @@ fn emit_building_anims(
     building_depth: f32,
     tint: [f32; 3],
     overlays: Option<&crate::sim::components::BuildingAnimOverlays>,
-    idle_anim_elapsed_ms: u32,
+    anim_elapsed_logic_frames: u32,
+    game_options: Option<&crate::sim::game_options::GameOptions>,
     interner: Option<&crate::sim::intern::StringInterner>,
     is_garrisoned: bool,
     is_player_owned: bool,
@@ -654,11 +747,20 @@ fn emit_building_anims(
         Some(e) => e,
         None => return,
     };
+    // Ordinal of this entry within the `ActiveAnim` family, i.e. its offset from
+    // the first of gamemd's four contiguous ActiveAnim slots. Parse order is key
+    // order (`ActiveAnim`, `…Two`, `…Three`, `…Four`), so counting Active-kind
+    // entries reproduces the slot index the native branches switch on.
+    let mut active_slot_ordinal: usize = 0;
     for anim in &art_entry.building_anims {
+        let this_active_ordinal: usize = active_slot_ordinal;
+        if matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Active) {
+            active_slot_ordinal += 1;
+        }
         // Determine current frame based on animation type and art.ini properties.
         //
         // One-shot anims (Active/Production with LoopCount>0): driven by ECS overlays.
-        // Infinite-loop anims (LoopCount=-1 or IdleAnim): driven by global elapsed timer.
+        // Infinite-loop anims (LoopCount=-1 or IdleAnim): per-building loop phase.
         // Special/Super: event-triggered one-shot — skip entirely if not in overlays.
         let selected =
             selected_building_anim_view(anim, building_damage_state_active, is_garrisoned);
@@ -684,6 +786,17 @@ fn emit_building_anims(
                 if obj.map(|o| o.refinery).unwrap_or(false) && !anim.is_primary {
                     continue;
                 }
+                // Infantry-absorb power plant (Yuri's Bio Reactor): gamemd shows
+                // exactly ONE of the first two ActiveAnim slots and swaps them on
+                // occupant count — empty picks `ActiveAnim`, one or more occupants
+                // picks `ActiveAnimTwo`. Whichever is not selected is cleared, so
+                // the two layers are never on screen together.
+                if matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Active)
+                    && obj.is_some_and(|o| o.infantry_absorb && o.extra_power > 0)
+                    && infantry_absorb_slot_is_hidden(this_active_ordinal, is_garrisoned)
+                {
+                    continue;
+                }
                 // Infinite loop ActiveAnim on a capturable tech building
                 // (Oil Derrick, Airport, etc.): the primary slot (ActiveAnim)
                 // only plays after capture. Decorative civilian buildings
@@ -695,9 +808,14 @@ fn emit_building_anims(
                     looping_frame_values(
                         selected.loop_start,
                         selected.loop_end,
-                        selected.rate,
+                        selected.start_frame,
+                        crate::app_building_anim::building_anim_rate_logic_frames(
+                            art_reg,
+                            selected.anim_type,
+                            game_options,
+                        ),
                         selected.ping_pong,
-                        idle_anim_elapsed_ms,
+                        anim_elapsed_logic_frames,
                     )
                 }
             } else {
@@ -717,9 +835,14 @@ fn emit_building_anims(
             looping_frame_values(
                 selected.loop_start,
                 selected.loop_end,
-                selected.rate,
+                selected.start_frame,
+                crate::app_building_anim::building_anim_rate_logic_frames(
+                    art_reg,
+                    selected.anim_type,
+                    game_options,
+                ),
                 selected.ping_pong,
-                idle_anim_elapsed_ms,
+                anim_elapsed_logic_frames,
             )
         } else {
             // Special/Super are one-shot event-triggered animations (e.g., GAREFNOR ore
@@ -821,9 +944,10 @@ fn resolve_infantry_shp_frame(
             return animation::resolve_shp_frame(def, facing, anim_state.frame_index);
         }
     }
-    // Fallback to stand frame bucket (0..7), counter-clockwise SHP order.
-    // +32 offset for isometric rotation (SHP frame 0 = screen-N, not cell-N).
-    (8 - (facing.wrapping_add(32) / 32) as u16) % 8
+    // Fallback when no sequence data was built for this type: the standing
+    // block is frames 0..7, so the facing slot is the frame index. Uses the
+    // same native facing table as the real path so the two cannot disagree.
+    animation::infantry_facing_slot(facing)
 }
 
 /// Rendered body SHP frame index for a `CanBeOccupied=yes` building.
@@ -890,11 +1014,166 @@ fn building_frame_index(
 #[cfg(test)]
 mod tests {
     use super::building_frame_index;
+    use super::infantry_absorb_slot_is_hidden;
     use super::looping_frame_values;
     use super::rendered_garrison_body_frame_index;
     use super::resting_building_anim_frame;
     use super::selected_building_anim_view;
-    use crate::rules::art_data::{BuildingAnimConfig, BuildingAnimKind, BuildingAnimVariantConfig};
+    use crate::app_building_anim::building_anim_rate_logic_frames;
+    use crate::rules::art_data::{
+        ArtRegistry, BuildingAnimConfig, BuildingAnimKind, BuildingAnimVariantConfig,
+    };
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::game_options::GameOptions;
+
+    /// Stock `[GAPOWR_A]`, the Allied power plant's looping smokestack.
+    const GAPOWR_A_ART: &str = "[GAPOWR_A]\nNormalized=yes\nStart=0\nLoopStart=0\nLoopEnd=8\n\
+                                LoopCount=-1\nRate=220\n";
+
+    fn stock_game_options() -> GameOptions {
+        GameOptions::default()
+    }
+
+    #[test]
+    fn looping_building_anim_rate_applies_normalized_game_speed_scaling() {
+        // Rate=220 is a native frame delay of 900/220 = 4 logic frames, and
+        // Normalized=yes rescales that through the match game speed on
+        // construction. At the stock GameSpeed=1 the delay becomes 6.
+        let art = ArtRegistry::from_ini(&IniFile::from_str(GAPOWR_A_ART));
+        let options = stock_game_options();
+        assert_eq!(options.game_speed, 1);
+
+        assert_eq!(
+            building_anim_rate_logic_frames(&art, "GAPOWR_A", Some(&options)),
+            6
+        );
+        // Without the Normalized= step the raw 900/Rate delay stands.
+        assert_eq!(building_anim_rate_logic_frames(&art, "GAPOWR_A", None), 4);
+    }
+
+    #[test]
+    fn looping_building_anim_rate_of_unnormalized_section_is_not_rescaled() {
+        // [NATSLA_B] is explicitly Normalized=no so its hard frame delay is kept.
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[NATSLA_B]\nNormalized=no\nStart=0\nEnd=9\nRate=300\n",
+        ));
+        assert_eq!(
+            building_anim_rate_logic_frames(&art, "NATSLA_B", Some(&stock_game_options())),
+            3
+        );
+    }
+
+    #[test]
+    fn looping_building_anim_advances_one_frame_per_rate_logic_frames() {
+        // 8 frames at 6 logic frames each: frame 0 holds for logic frames 0..5,
+        // frame 1 begins on logic frame 6, and the cycle wraps after 48.
+        assert_eq!(looping_frame_values(0, 8, 0, 6, false, 0), 0);
+        assert_eq!(looping_frame_values(0, 8, 0, 6, false, 5), 0);
+        assert_eq!(looping_frame_values(0, 8, 0, 6, false, 6), 1);
+        assert_eq!(looping_frame_values(0, 8, 0, 6, false, 47), 7);
+        assert_eq!(looping_frame_values(0, 8, 0, 6, false, 48), 0);
+    }
+
+    #[test]
+    fn looping_building_anim_phase_follows_each_buildings_own_creation_frame() {
+        // Two identical power plants raised 15 logic frames apart. gamemd bases
+        // each slot animation's frame timer on its own construction frame, so at
+        // any later moment the two are on different frames of the same loop.
+        // This is the whole point of the per-building phase: a base full of
+        // power plants must not pulse in unison.
+        let rate: u16 = 6;
+        let older_elapsed: u32 = 40;
+        let newer_elapsed: u32 = 40 - 15;
+
+        let older = looping_frame_values(0, 8, 0, rate, false, older_elapsed);
+        let newer = looping_frame_values(0, 8, 0, rate, false, newer_elapsed);
+
+        assert_eq!(older, 6);
+        assert_eq!(newer, 4);
+        assert_ne!(older, newer);
+    }
+
+    #[test]
+    fn looping_building_anim_damaged_variant_uses_its_own_section_rate() {
+        // Stock `[GARADR]`: the damaged dish replacement carries Rate=180 where
+        // the healthy one carries Rate=220, so the delay has to be resolved from
+        // whichever variant was selected, not from the base slot.
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[GARADR_A]\nNormalized=yes\nLoopStart=0\nLoopEnd=14\nLoopCount=-1\nRate=220\n\
+             PingPong=yes\n\
+             [GARADR_AD]\nImage=GARADR_A\nNormalized=yes\nLoopStart=15\nLoopEnd=29\n\
+             LoopCount=-1\nRate=180\nPingPong=yes\n",
+        ));
+        let options = stock_game_options();
+
+        // 900/220 = 4 → normalized 6; 900/180 = 5 → (5*8)/(1+1) = 20.
+        assert_eq!(
+            building_anim_rate_logic_frames(&art, "GARADR_A", Some(&options)),
+            6
+        );
+        assert_eq!(
+            building_anim_rate_logic_frames(&art, "GARADR_AD", Some(&options)),
+            20
+        );
+    }
+
+    #[test]
+    fn ping_pong_building_anim_dwells_on_both_turning_frames() {
+        // Stock `[GARADR_A]` — the Allied radar dish — is Start=0, LoopEnd=14,
+        // PingPong=yes. gamemd flips direction only after the counter reaches
+        // LoopEnd-Start and returns without stepping back, so frame 14 is drawn
+        // for a full delay and the bounce is 28 steps over frames 0..=14.
+        let frames: Vec<u16> = (0..30)
+            .map(|t| looping_frame_values(0, 14, 0, 1, true, t))
+            .collect();
+
+        assert_eq!(
+            frames,
+            vec![
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4,
+                3, 2, 1, 0, 1,
+            ]
+        );
+        // The cycle is 2 × (LoopEnd - Start), not 2 × (range - 1).
+        assert_eq!(frames[0], frames[28]);
+    }
+
+    #[test]
+    fn ping_pong_building_anim_ignores_loop_start_and_keys_off_start_frame() {
+        // The native flip tests read `Start=` and `LoopEnd=` only. `[GAPLUG_BD]`
+        // is Start=10, LoopStart=10, LoopEnd=20, so both turning points land on
+        // the same counter value and gamemd walks off the end; VERA holds the
+        // last frame it draws instead.
+        assert_eq!(looping_frame_values(10, 20, 10, 1, true, 10), 20);
+        assert_eq!(looping_frame_values(10, 20, 10, 1, true, 40), 20);
+    }
+
+    #[test]
+    fn infantry_absorb_building_shows_exactly_one_active_slot() {
+        // Yuri's Bio Reactor: ActiveAnim=YAPOWR_A while empty, ActiveAnimTwo=
+        // YAPOWR_B once anything is inside — never both, and never neither.
+        assert!(!infantry_absorb_slot_is_hidden(0, false));
+        assert!(infantry_absorb_slot_is_hidden(1, false));
+
+        assert!(infantry_absorb_slot_is_hidden(0, true));
+        assert!(!infantry_absorb_slot_is_hidden(1, true));
+    }
+
+    #[test]
+    fn infantry_absorb_swap_leaves_later_active_slots_alone() {
+        // The native branch only reaches the first two ActiveAnim slots.
+        assert!(!infantry_absorb_slot_is_hidden(2, false));
+        assert!(!infantry_absorb_slot_is_hidden(3, true));
+    }
+
+    #[test]
+    fn looping_building_anim_rate_falls_back_to_native_default_without_a_section() {
+        let art = ArtRegistry::empty();
+        assert_eq!(
+            building_anim_rate_logic_frames(&art, "NAOBEL_A", Some(&stock_game_options())),
+            crate::rules::art_data::DEFAULT_ART_RATE_LOGIC_FRAMES
+        );
+    }
 
     #[test]
     fn one_shot_building_anim_rests_on_last_loop_frame() {
@@ -982,7 +1261,8 @@ mod tests {
             looping_frame_values(
                 selected.loop_start,
                 selected.loop_end,
-                selected.rate,
+                selected.start_frame,
+                4,
                 selected.ping_pong,
                 0,
             ),

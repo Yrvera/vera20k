@@ -455,6 +455,25 @@ fn ready_text_scale(ui_scale: f32) -> f32 {
     ui_scale
 }
 
+/// Status text drawn over a cameo, or `None` when the slot has none.
+///
+/// gamemd's strip draw uses one status slot: `TXT_READY` while an item waits
+/// to be placed, and `TXT_HOLD` while its production is suspended. Both use
+/// the same dark strip and the same anchor rules, and a slot never shows both.
+fn cameo_status_text<'a>(
+    item: &crate::sidebar::SidebarItem,
+    ready_text: &'a str,
+    hold_text: &'a str,
+) -> Option<&'a str> {
+    if item.is_ready {
+        Some(ready_text)
+    } else if item.is_on_hold {
+        Some(hold_text)
+    } else {
+        None
+    }
+}
+
 /// Map an alpha-cropped source rectangle through its original canvas into a
 /// sidebar slot. Rounding both crop edges from the shared canvas transform
 /// keeps the base art and full-canvas overlays on the same pixel boundaries.
@@ -534,6 +553,7 @@ pub(crate) fn build_sidebar_cameo_instances(
     state: &AppState,
     view: &SidebarView,
     ready_text: &str,
+    hold_text: &str,
 ) -> (
     Vec<SpriteInstance>,
     Vec<SpriteInstance>,
@@ -608,12 +628,14 @@ pub(crate) fn build_sidebar_cameo_instances(
         let has_queue_badge = is_unit_category
             && (item.queued_count > 1 || (item.queued_count > 0 && !item.is_building_this_type));
 
-        // Dark strip overlay behind "Ready" text (alpha 0xAF).
-        // When queue badge is also present, the Ready strip shifts left.
-        if item.is_ready && state.bit_font.darken_texture().is_some() {
+        // Dark strip overlay behind the cameo status text (alpha 0xAF).
+        // When a queue badge is also present, the status strip shifts left.
+        if let Some(status_text) = cameo_status_text(item, ready_text, hold_text)
+            && state.bit_font.darken_texture().is_some()
+        {
             let s = state.ui_scale;
             let ts = ready_text_scale(s);
-            let text_w = state.bit_font.text_width(ready_text) as f32 * ts;
+            let text_w = state.bit_font.text_width(status_text) as f32 * ts;
             let strip_w = text_w + READY_PAD_X * 2.0 * ts;
             // gamemd `ComputeTextRect` uses `cell_height + 2*y_pad` for the
             // strip height (cell_height includes the 1 px inter-line gap that
@@ -670,6 +692,7 @@ pub(crate) fn build_sidebar_text_instances(
     state: &AppState,
     view: &SidebarView,
     ready_text: &str,
+    hold_text: &str,
     ready_tint: [f32; 3],
 ) -> Vec<SpriteInstance> {
     if state.bit_font.darken_texture().is_none() {
@@ -693,11 +716,12 @@ pub(crate) fn build_sidebar_text_instances(
         let has_queue_badge = is_unit_category
             && (item.queued_count > 1 || (item.queued_count > 0 && !item.is_building_this_type));
 
-        // "Ready" text — at the top of the cameo.
-        // When a queue badge is also shown, the Ready text shifts left to avoid
-        // overlap (original: x = cameo_x+2, flags 0x42 vs centered cameo_x+30, 0x142).
-        if item.is_ready {
-            let text_w = state.bit_font.text_width(ready_text) as f32 * ts;
+        // Cameo status text ("Ready" / "On Hold") — at the top of the cameo.
+        // When a queue badge is also shown, the status text shifts left to
+        // avoid overlap (original: x = cameo_x+2, flags 0x42 vs centered
+        // cameo_x+30, 0x142).
+        if let Some(status_text) = cameo_status_text(item, ready_text, hold_text) {
+            let text_w = state.bit_font.text_width(status_text) as f32 * ts;
             let text_x = if has_queue_badge {
                 slot.x + READY_PAD_X * ts
             } else {
@@ -706,11 +730,15 @@ pub(crate) fn build_sidebar_text_instances(
             // gamemd anchors text at `cameo_y + y_pad`; the strip extends
             // y_pad above and (cell_height - glyph_height + y_pad) below.
             let text_y = slot.y + READY_PAD_Y * ts;
-            instances.extend(
-                state
-                    .bit_font
-                    .build_text(ready_text, text_x, text_y, ts, 0.00042, ready_tint, co),
-            );
+            instances.extend(state.bit_font.build_text(
+                status_text,
+                text_x,
+                text_y,
+                ts,
+                0.00042,
+                ready_tint,
+                co,
+            ));
         }
 
         // Queue count badge — right-aligned at top-right of cameo.
@@ -832,6 +860,48 @@ mod tests {
         assert_eq!(instance.depth, 0.00043);
         assert_eq!(instance.tint, [1.0, 1.0, 1.0]);
         assert_eq!(instance.alpha, 1.0);
+    }
+
+    /// The cameo status slot carries `TXT_HOLD` for suspended production, the
+    /// same way it carries `TXT_READY` for a placement-ready building. Before
+    /// this, a held or unaffordable item looked identical to an idle one.
+    #[test]
+    fn cameo_status_text_covers_ready_and_hold() {
+        use super::cameo_status_text;
+
+        let mut item = crate::sidebar::SidebarItem {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 60.0,
+                h: 48.0,
+            },
+            type_id: "GAPOWR".to_string(),
+            display_name: "GAPOWR".to_string(),
+            cost: Some(600),
+            has_cameo_art: true,
+            queue_category: crate::sim::production::ProductionCategory::Building,
+            enabled: true,
+            progress: 0.5,
+            queued_count: 1,
+            is_building_this_type: false,
+            is_ready: false,
+            is_on_hold: false,
+            is_armed: false,
+            is_superweapon: false,
+            super_weapon_section: None,
+        };
+        assert_eq!(cameo_status_text(&item, "Ready", "On Hold"), None);
+
+        item.is_on_hold = true;
+        assert_eq!(
+            cameo_status_text(&item, "Ready", "On Hold"),
+            Some("On Hold")
+        );
+
+        // Ready wins when a slot somehow reports both.
+        item.is_ready = true;
+        assert_eq!(cameo_status_text(&item, "Ready", "On Hold"), Some("Ready"));
     }
 
     #[test]

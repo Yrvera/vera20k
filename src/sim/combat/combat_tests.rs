@@ -1069,6 +1069,7 @@ fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
         &[1, 2],
         &[],
         None,
+        &[],
         &mut scenario_rng,
         &mut human_rng,
     );
@@ -2783,6 +2784,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
         &[2],
         &detonations,
         None,
+        &[],
         &mut scenario_rng,
         &mut main_rng,
     );
@@ -3604,4 +3606,64 @@ fn under_attack_events_fire_for_enemy_hit_structures_and_miners_only() {
         result.under_attack_events.is_empty(),
         "plain unit hits do not ping"
     );
+}
+
+/// Build one ObjectType straight from an INI body, so the `Cost=` parse feeding
+/// the score award is exercised rather than a hand-set field.
+fn object_with_body(body: &str) -> ObjectType {
+    let ini = IniFile::from_str(&format!(
+        "[TEST]
+{body}"
+    ));
+    ObjectType::from_ini_section(
+        "TEST",
+        ini.section("TEST").expect("test section"),
+        crate::rules::object_type::ObjectCategory::Vehicle,
+    )
+}
+
+#[test]
+fn score_award_is_the_victim_cost_scaled_by_veterancy() {
+    // gamemd's kill-record step values the victim at its `Cost=`, doubled at
+    // veteran and tripled at elite. Anchored on stock Rhino (HTNK) Cost=900.
+    let obj = object_with_body(
+        "Cost=900
+",
+    );
+    assert_eq!(obj.cost, 900, "Cost= parsed off the section");
+    assert_eq!(score_award_for_victim(Some(&obj), 0), 900);
+    assert_eq!(score_award_for_victim(Some(&obj), 99), 900);
+    assert_eq!(score_award_for_victim(Some(&obj), 100), 1_800);
+    assert_eq!(score_award_for_victim(Some(&obj), 199), 1_800);
+    assert_eq!(score_award_for_victim(Some(&obj), 200), 2_700);
+}
+
+#[test]
+fn score_award_ignores_the_dormant_points_key() {
+    // `Points=` parses into a type field the binary never reads back — dormant
+    // TS legacy in YR — so this engine does not parse it and a section carrying
+    // only `Points=` is worth nothing. Stock GI (E1) is Cost=200 / Points=10; the
+    // award must follow the cost, not the points.
+    let points_only = object_with_body(
+        "Points=10
+",
+    );
+    assert_eq!(score_award_for_victim(Some(&points_only), 0), 0);
+
+    let gi = object_with_body(
+        "Cost=200
+Points=10
+",
+    );
+    assert_eq!(score_award_for_victim(Some(&gi), 0), 200);
+}
+
+#[test]
+fn score_award_is_zero_without_a_cost_or_a_resolvable_type() {
+    let obj = object_with_body(
+        "Strength=100
+",
+    );
+    assert_eq!(score_award_for_victim(Some(&obj), 200), 0);
+    assert_eq!(score_award_for_victim(None, 200), 0);
 }

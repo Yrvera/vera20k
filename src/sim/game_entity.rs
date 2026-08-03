@@ -43,11 +43,26 @@ use crate::sim::radio::Contacts;
 use crate::sim::slave_miner::SlaveHarvester;
 use crate::sim::superweapon::invulnerability::InvulnerabilityState;
 
+/// Frames the passive target-scan timer is armed for at object construction.
+/// The original's Techno constructor anchors the timer at the current frame and
+/// writes 45 as its duration, so a freshly built object waits that long before
+/// its first passive scan; the scanner then re-arms it from the `[General]`
+/// targeting delays.
+pub const PASSIVE_SCAN_CONSTRUCTION_DELAY_FRAMES: u32 = 45;
+
 /// Infantry-only runtime fear/prone state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InfantryRuntime {
     pub fear_level: u16,
     pub is_prone: bool,
+    /// Countdown to this man's next idle fidget.
+    ///
+    /// Re-armed to a fresh random wait every time the idle action fires, and
+    /// only then — the same one-shot timer gamemd keeps on the infantry object.
+    /// Its default is the unarmed sentinel, which reads as already due, so a
+    /// freshly built infantryman is eligible on his first idle turn.
+    #[serde(default)]
+    pub idle_action_timer: MissionTimer,
 }
 
 impl InfantryRuntime {
@@ -55,6 +70,7 @@ impl InfantryRuntime {
         Self {
             fear_level: 0,
             is_prone: false,
+            idle_action_timer: MissionTimer::default(),
         }
     }
 }
@@ -236,6 +252,33 @@ pub struct GameEntity {
     pub foundation: String,
     /// Veterancy level: 0 = rookie, 100 = veteran, 200 = elite.
     pub veterancy: u16,
+    /// House credited with destroying this object, captured at the instant its
+    /// health reached zero.
+    ///
+    /// Separate from `last_attacker_id` on purpose. That field is retaliation
+    /// bookkeeping and the retaliation pass clears it unconditionally in the same
+    /// tick, which for infantry runs *before* the object is uninitialised (they
+    /// linger in the logic vector through a death animation), so reading it later
+    /// loses the killer. gamemd has no equivalent problem — its kill-record step
+    /// receives the actual killer at the moment of destruction — so this field is
+    /// that moment, recorded once.
+    #[serde(skip)]
+    pub killed_by: Option<InternedId>,
+    /// Score value this object's destruction is worth to `killed_by`, resolved at
+    /// the same instant from the type's `Cost=` and this object's veterancy.
+    /// Resolved at capture time because the rules are in hand there and the
+    /// veterancy is still the value it died at.
+    #[serde(skip)]
+    pub kill_award_points: i32,
+    /// Type's `DontScore=`, copied in at spawn so the score bookkeeping can honor
+    /// it without a `RuleSet` borrow — the same reason `foundation` is copied.
+    ///
+    /// Not serialized, matching the rest of the score bookkeeping. A snapshot
+    /// reload therefore clears it and the affected types (slaves, spawner
+    /// missiles) resume contributing phantom entries until this is promoted to a
+    /// persisted field.
+    #[serde(skip)]
+    pub dont_score: bool,
     /// Fog-of-war sight range in cells.
     pub vision_range: u16,
 
@@ -366,6 +409,16 @@ pub struct GameEntity {
     /// legacy and was removed as unreachable in stock YR.
     #[serde(default)]
     pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
+    /// Spawn-manager pool carried by a `Spawns=` parent (V3 Launcher,
+    /// Dreadnought, Boomer, Aircraft Carrier, Destroyer). Mirrors the native
+    /// `TechnoClass+0x2D0` manager pointer: present iff `Spawns=` resolved.
+    #[serde(default)]
+    pub spawn_manager: Option<crate::sim::spawn_manager::SpawnManagerState>,
+    /// Back-pointer from a spawned child to the parent that owns its pool
+    /// (native child `+0x2D4`). Kill credit and the "do not self-RTB" gate
+    /// read it; cleared when the parent releases the child.
+    #[serde(default)]
+    pub spawn_owner_id: Option<u64>,
     /// Rocket/missile flight state machine (launch/ascend/terminal/detonate).
     pub rocket_state: Option<RocketState>,
     /// Distinct DropPodLocomotionClass descent state; never shares parachute
@@ -542,9 +595,24 @@ pub struct GameEntity {
     /// Exact native-width Mission state. All writes pass through a named legacy
     /// compatibility adapter or the dormant exact-authority surface.
     pub mission: MissionCom,
-    /// Techno passive-acquisition delay rearmed when a live target expires.
+    /// Techno passive-acquisition cadence timer. Expiry opens the passive
+    /// target-scan gate; the scanner re-arms it to the `[General]` targeting
+    /// delay plus a 0..=2 jitter. Also re-armed short when a live target's
+    /// pointer expires. Armed at construction for
+    /// [`PASSIVE_SCAN_CONSTRUCTION_DELAY_FRAMES`].
     #[serde(default)]
     pub passive_scan_timer: MissionTimer,
+    /// Frame of this object's last passive target scan. Stamped on entry to the
+    /// scanner. No consumer yet — it is the scanner's own bookkeeping write,
+    /// modelled so the object's hashed state matches what the scan performed.
+    #[serde(default)]
+    pub last_target_scan_frame: u32,
+    /// True while the current `attack_target` was chosen by the passive
+    /// scanner rather than given by an order or by retaliation. Gates both the
+    /// stale-target drop inside the scanner and the off-mission clear that runs
+    /// before the AI counter.
+    #[serde(default)]
+    pub passively_acquired_target: bool,
     /// Category-specific bytes read by Mission readiness and Aircraft policy.
     pub(crate) mission_leaf: MissionLeafState,
     /// Target identity archived by the Techno Override wrapper.
@@ -583,13 +651,86 @@ impl GameEntity {
         })
     }
 
-    /// Debug/test classifier: the mission + sub-phase the legacy `Option<T>`
-    /// machines imply. Since the authority flip, `mission` advances only
-    /// through the exact verbs — this derivation is no longer projected into
-    /// it and survives purely as the cross-check the harvest seam and the
-    /// passive-acquire shadow assert against.
-    #[cfg(any(test, debug_assertions))]
+    /// The mission the passive target-acquisition gate reads.
+    ///
+    /// The original always holds a real mission selector, so the gate can read
+    /// it directly. VERA's mission substrate is mid-migration: an object that
+    /// was never explicitly ordered still holds the `NONE` sentinel, so the
+    /// authoritative selector wins when it names a known mission and the live
+    /// machines fill in otherwise. A machine-less Structure reads as Guard —
+    /// the original has no idle mission, and Guard is the arm that makes a base
+    /// defence engage.
+    ///
+    /// A target the object's own scanner installed does NOT change its mission:
+    /// the passive commit writes the target pointer and nothing else, so the
+    /// object stays on Guard (or Move, or Harvest) and keeps rescanning on
+    /// cadence. The legacy derivation reads any `attack_target` as Attack, which
+    /// would latch the object out of the gate after a single scan — it would
+    /// acquire once per target and then go dormant.
+    ///
+    /// VERA-INTERNAL bridge: the mission a freshly unlimboed object holds in
+    /// the original is UNCHECKED, so this is a representation choice, not a
+    /// verified value.
+    ///
+    /// The bridge also covers a committed mission whose work is over. VERA's
+    /// mission substrate is written on the way IN — a Move, Stop, AttackMove,
+    /// Enter or Capture order commits its selector — but almost nothing writes
+    /// one back when the job finishes, so a unit that was ordered once holds
+    /// that selector for the rest of the match. Read literally, a single move
+    /// order would deafen a unit permanently: the gate admits Move only for the
+    /// handful of stock types with `OpportunityFire`, and Stop is one of the
+    /// missions that strips a scanner target outright. The original has no idle
+    /// mission and its Move and Stop handlers return the object to Guard when
+    /// they complete — the same shape as the building Attack handler's
+    /// null-target arm. VERA has no equivalent handler, so when the committed
+    /// mission's live machinery has gone quiet the derived reading wins instead.
+    /// The gamemd handler equivalent is UNCHECKED.
+    pub fn passive_acquire_mission(&self) -> MissionType {
+        let (derived, _) = self.derived_mission_with(!self.passively_acquired_target);
+        let derived = if derived == MissionType::None
+            && matches!(
+                self.category,
+                EntityCategory::Structure | EntityCategory::Infantry
+            )
+            && !self.passenger_role.is_inside_transport()
+        {
+            MissionType::Guard
+        } else {
+            derived
+        };
+        match self.mission.current().known() {
+            // A committed mission still doing something wins; one whose work is
+            // finished defers to what the object is actually doing (nothing).
+            Some(known) if !self.committed_mission_is_finished() => known,
+            _ => derived,
+        }
+    }
+
+    /// Whether the committed mission selector has outlived the work it named:
+    /// nowhere to drive, no navigation goal, no standing player order, and no
+    /// target beyond one the passive scanner installed. See
+    /// [`GameEntity::passive_acquire_mission`] for why this exists.
+    fn committed_mission_is_finished(&self) -> bool {
+        self.movement_target.is_none()
+            && self.navigation.nav_com.is_none()
+            && self.order_intent.is_none()
+            && (self.attack_target.is_none() || self.passively_acquired_target)
+    }
+
+    /// Classifier: the mission + sub-phase the legacy `Option<T>` machines
+    /// imply. Since the authority flip, `mission` advances only through the
+    /// exact verbs — this derivation is no longer projected into it and
+    /// survives as the cross-check the harvest seam asserts against and as the
+    /// fallback [`GameEntity::passive_acquire_mission`] uses for an object that
+    /// still holds the `NONE` sentinel.
     pub fn derived_mission(&self) -> (MissionType, u8) {
+        self.derived_mission_with(true)
+    }
+
+    /// [`GameEntity::derived_mission`], with control over whether an installed
+    /// `attack_target` implies mission Attack. Only the passive-acquire path
+    /// passes `false`, and only for a target its own scanner installed.
+    fn derived_mission_with(&self, attack_target_implies_attack: bool) -> (MissionType, u8) {
         if self.miner.is_some() {
             // The whole harvest loop is one mission; the FSM cursor of record
             // (MissionCom.handler_state) is its sub-phase.
@@ -611,7 +752,7 @@ impl GameEntity {
         if self.dock_state.is_some() {
             return (MissionType::Enter, 0);
         }
-        if self.attack_target.is_some() {
+        if attack_target_implies_attack && self.attack_target.is_some() {
             return (MissionType::Attack, 0);
         }
         if self.movement_target.is_some() {
@@ -658,6 +799,9 @@ impl GameEntity {
             )
         };
         Self {
+            killed_by: None,
+            kill_award_points: 0,
+            dont_score: false,
             stable_id,
             position: Position {
                 rx,
@@ -712,6 +856,8 @@ impl GameEntity {
             teleport_state: None,
             tunnel_state: None,
             low_bridge_tube_state: None,
+            spawn_manager: None,
+            spawn_owner_id: None,
             rocket_state: None,
             drop_pod_state: None,
             homing_state: None,
@@ -764,7 +910,12 @@ impl GameEntity {
             },
             rocking: None,
             mission: MissionCom::at_frame(construction_frame),
-            passive_scan_timer: MissionTimer::default(),
+            passive_scan_timer: MissionTimer::armed(
+                construction_frame,
+                PASSIVE_SCAN_CONSTRUCTION_DELAY_FRAMES,
+            ),
+            last_target_scan_frame: 0,
+            passively_acquired_target: false,
             mission_leaf: MissionLeafState::for_entity_category(category),
             suspended_attack_target: None,
             object_is_falling_down: 0,

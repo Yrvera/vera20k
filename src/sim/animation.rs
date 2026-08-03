@@ -133,6 +133,71 @@ pub enum LoopMode {
     TransitionTo(SequenceKind),
 }
 
+/// Which native facing-to-frame-slot rule a sequence follows.
+///
+/// The original engine has exactly two of these — one per SHP-bodied object
+/// family — and they are separate code paths, not independent knobs. They
+/// differ on *both* axes at once: which way the frame blocks rotate, and where
+/// the quantizer puts its slot boundaries. Frame block 0 is screen-north
+/// (cell NW) in both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum FacingSlots {
+    /// Infantry bodies: a 32-entry lookup table indexed by the facing
+    /// quantized to 32 steps. Slots run **counter-clockwise** from
+    /// screen-north — NW=0, W=1, SW=2, S=3, SE=4, E=5, NE=6, N=7.
+    #[default]
+    InfantryTable,
+    /// SHP vehicle bodies: the facing rounded to the nearest octant, then
+    /// advanced one slot. Slots run **clockwise** from screen-north —
+    /// NW=0, N=1, NE=2, E=3, SE=4, S=5, SW=6, W=7.
+    VehicleOctant,
+}
+
+/// Facing-to-frame-slot table for infantry bodies, transcribed from the
+/// original engine's 32-dword table.
+///
+/// Indexed by [`infantry_facing_step32`]. The two trailing 7s are what make the
+/// north arc wrap early: slot boundaries land 4/256 of a turn *before* the
+/// octant centers rather than on them, so the arc for slot 7 is facing bytes
+/// 236..=255 plus 0..=11, not the symmetric 240..=15. That bias is native
+/// behavior, not an artifact of the transcription.
+const INFANTRY_FACING_SLOT_TABLE: [u8; 32] = [
+    7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 7, 7,
+];
+
+/// Number of frame blocks an SHP vehicle body must declare for its facing
+/// slots to be used at all. Any other count draws slot 0 for every facing.
+const VEHICLE_FACING_SLOTS: u8 = 8;
+
+/// Quantize a facing byte to the 32-step index into [`INFANTRY_FACING_SLOT_TABLE`].
+///
+/// The original computes this from the 16-bit facing as
+/// `((facing16 >> 10) + 1) >> 1 & 0x1F`. Only bits 10..=15 of the 16-bit facing
+/// survive that shift, and those are exactly bits 2..=7 of the facing byte, so
+/// the byte carries every bit the native expression can see — matching it needs
+/// no 16-bit plumbing. The `+ 1` before the final shift is a round-half-up, which
+/// is why this is not the same as truncating the facing into eight buckets.
+const fn infantry_facing_step32(facing: u8) -> usize {
+    (((facing as u16 >> 2) + 1) >> 1) as usize & 0x1F
+}
+
+/// Facing byte to SHP vehicle frame-block slot.
+///
+/// The original computes `(((facing16 >> 12) + 1) >> 1) + 1 & 7`. As above, the
+/// shift keeps only bits 12..=15 of the 16-bit facing, which are bits 4..=7 of
+/// the byte. The inner `+ 1` rounds to the nearest octant; the outer `+ 1` is
+/// what puts NW — not N — at frame 0 of every block.
+const fn vehicle_facing_slot(facing: u8) -> u16 {
+    ((((facing as u16 >> 4) + 1) >> 1) + 1) & 7
+}
+
+/// Facing byte to infantry frame-block slot (0..=7), counter-clockwise from
+/// screen-north. Exposed for render-side fallbacks that have to pick a standing
+/// pose without a `SequenceDef` in hand.
+pub fn infantry_facing_slot(facing: u8) -> u16 {
+    INFANTRY_FACING_SLOT_TABLE[infantry_facing_step32(facing)] as u16
+}
+
 /// Definition of one animation sequence within an SHP file.
 ///
 /// Describes the frame range, timing, and looping behavior for a named
@@ -141,14 +206,14 @@ pub enum LoopMode {
 ///
 /// ## Frame index formula
 /// For directional sequences:
-///   `start_frame + facing_index * facing_multiplier + frame_within_sequence`
+///   `start_frame + facing_slot * facing_multiplier + frame_within_sequence`
 /// For non-directional (facings == 1):
 ///   `start_frame + frame_within_sequence`
 ///
 /// ## Facing convention
-/// RA2's DirStruct byte (0–255) is screen-relative clockwise (0=N, 64=E,
-/// 128=S, 192=W). SHP frames are laid out counter-clockwise (0=N, 1=NW,
-/// 2=W...). `resolve_shp_frame` negates the quantized index to convert.
+/// RA2's DirStruct byte (0–255) is clockwise in *cell* space (0=N, 64=E,
+/// 128=S, 192=W), but SHP frame blocks start at screen-north, which is cell
+/// NW. `facing_slots` selects which of the two native conversions applies.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SequenceDef {
     /// First SHP frame index for this sequence.
@@ -167,10 +232,9 @@ pub struct SequenceDef {
     pub normalized: bool,
     /// Behavior when the sequence reaches its final frame.
     pub loop_mode: LoopMode,
-    /// If true, SHP facings are laid out clockwise (0=N, 1=NE, 2=E...) as used
-    /// by SHP vehicles. If false (default), facings are counter-clockwise
-    /// (0=N, 1=NW, 2=W...) as used by infantry.
-    pub clockwise_facings: bool,
+    /// Which native facing-to-slot rule converts the facing byte into a frame
+    /// block index. Infantry and SHP vehicles use different ones.
+    pub facing_slots: FacingSlots,
 }
 
 /// Per-entity animation state component.
@@ -292,13 +356,18 @@ impl SequenceSet {
 /// Compute the SHP frame index for a given sequence, facing, and animation frame.
 ///
 /// For directional sequences (facings > 1):
-///   `start_frame + facing_index * facing_multiplier + frame_index`
+///   `start_frame + facing_slot * facing_multiplier + frame_index`
 /// For non-directional (facings == 1):
 ///   `start_frame + frame_index`
 ///
-/// `facing` is the RA2 DirStruct byte (0–255, clockwise:
-/// 0=N, 64=E, 128=S, 192=W). DirStruct is clockwise but infantry SHP frames
-/// are laid out counter-clockwise (0=N, 1=NW, 2=W...), so the index is negated.
+/// `facing` is the RA2 DirStruct byte (0–255, clockwise in cell space:
+/// 0=N, 64=E, 128=S, 192=W). The facing-to-slot conversion is
+/// family-specific — see [`FacingSlots`].
+///
+/// The `facings <= 1` early return stands in for the original's directional
+/// test, which reads the facing multiplier rather than a facing count. The two
+/// agree because every producer that emits a zero multiplier also emits
+/// `facings == 1`, and a zero multiplier contributes nothing to the sum anyway.
 pub fn resolve_shp_frame(def: &SequenceDef, facing: u8, frame_index: u16) -> u16 {
     let clamped: u16 = if def.frame_count > 0 {
         frame_index % def.frame_count
@@ -310,27 +379,18 @@ pub fn resolve_shp_frame(def: &SequenceDef, facing: u8, frame_index: u16) -> u16
         return def.start_frame + clamped;
     }
 
-    // Quantize RA2 facing (0–255) to facing index (0..facings-1).
-    // DirStruct is clockwise (0=N, 1=NE, 2=E...).
-    // Infantry CCW sprites: +32 offset because DirStruct 0 = cell-north
-    // (screen upper-right) but SHP frame 0 faces screen-north (straight up
-    // = cell NW). The +32 rotates the lookup one step CW to compensate.
-    let adjusted: u16 = if def.clockwise_facings {
-        facing as u16
-    } else {
-        (facing as u16 + 32) % 256
-    };
-    let divisor: u16 = 256 / def.facings as u16;
-    let cw_index: u16 = (adjusted / divisor) % def.facings as u16;
-    // Infantry SHP frames are counter-clockwise (0=N, 1=NW, 2=W...) → negate.
-    // SHP vehicle frames are clockwise (0=N, 1=NE, 2=E...) → use directly.
-    let facing_index: u16 = if def.clockwise_facings {
-        cw_index
-    } else {
-        (def.facings as u16 - cw_index) % def.facings as u16
+    let facing_slot: u16 = match def.facing_slots {
+        FacingSlots::InfantryTable => infantry_facing_slot(facing),
+        // The vehicle draw path gates the whole slot computation on the body
+        // declaring exactly 8 frame blocks; any other count draws block 0 for
+        // every facing.
+        FacingSlots::VehicleOctant if def.facings == VEHICLE_FACING_SLOTS => {
+            vehicle_facing_slot(facing)
+        }
+        FacingSlots::VehicleOctant => 0,
     };
 
-    def.start_frame + facing_index * def.facing_multiplier + clamped
+    def.start_frame + facing_slot * def.facing_multiplier + clamped
 }
 
 /// Advance a single animation by one reached native gameplay frame.
@@ -645,7 +705,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_delay: DEFAULT_STAND_FRAME_DELAY,
             normalized: false,
             loop_mode: LoopMode::Loop,
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     set.insert(
@@ -658,7 +718,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_delay: DEFAULT_WALK_FRAME_DELAY,
             normalized: false,
             loop_mode: LoopMode::Loop,
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     set.insert(
@@ -671,7 +731,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_delay: DEFAULT_IDLE_FRAME_DELAY,
             normalized: true,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     set.insert(
@@ -684,7 +744,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_delay: DEFAULT_IDLE_FRAME_DELAY,
             normalized: true,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     set.insert(
@@ -697,7 +757,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_delay: DEFAULT_DIE_FRAME_DELAY,
             normalized: false,
             loop_mode: LoopMode::HoldLast,
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     set.insert(
@@ -710,7 +770,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             frame_delay: DEFAULT_DIE_FRAME_DELAY,
             normalized: false,
             loop_mode: LoopMode::HoldLast,
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
 
@@ -734,7 +794,7 @@ pub fn default_building_sequences() -> SequenceSet {
             frame_delay: DEFAULT_STAND_FRAME_DELAY,
             normalized: false,
             loop_mode: LoopMode::Loop,
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
 

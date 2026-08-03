@@ -25,6 +25,12 @@ const NATIVE_RIPARIUS_OVERLAY_BASE: usize = 102;
 const NATIVE_VINIFERA_OVERLAY_BASE: usize = 127;
 const NATIVE_ABOREUS_OVERLAY_BASE: usize = 147;
 
+/// Per-overlay-type vertical draw bias, in screen pixels.
+///
+/// Applied by the native overlay draw-offset helper to Tiberium, Wall and Crate
+/// overlays; every other overlay type gets 0.
+const OVERLAY_TYPE_Y_DRAW_BIAS_PX: f32 = -12.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeTiberiumOverlayRange {
     base: usize,
@@ -198,11 +204,22 @@ impl OverlayTypeFlags {
         self.tiberium || self.wall || self.is_veins || self.is_veinhole_monster
     }
 
-    /// Y pixel offset for rendering.
-    /// RA2 CellHeight = 15px (CellSizeY/2 = 30/2 = 15). NOT 12px (that's TS).
+    /// Y pixel offset applied before the sprite is centred on its cell.
+    ///
+    /// The active YR overlay draw path biases Tiberium, Wall and Crate overlays
+    /// by -12px and leaves everything else at 0. It is NOT the 15px half-cell
+    /// height: the half-cell shift is already carried by the cell-centre term
+    /// the caller adds, and both engines apply it identically, so this constant
+    /// is the whole remaining vertical delta. `IsVeins=` is deliberately absent
+    /// — it is not in the binary's predicate (and is TS-legacy dead data in YR).
+    ///
+    /// Not modelled: the `-1` the binary adds for `Land=Railroad` overlays and
+    /// for one specific overlay slot. The railroad case is entangled with a
+    /// separate FA2-sourced track offset in the instance builder; see the
+    /// GSI-13.05 report.
     pub fn y_draw_offset(&self) -> f32 {
-        if self.tiberium || self.wall || self.is_veins || self.crate_type {
-            -15.0
+        if self.tiberium || self.wall || self.crate_type {
+            OVERLAY_TYPE_Y_DRAW_BIAS_PX
         } else {
             0.0
         }
@@ -1164,6 +1181,50 @@ Image=5
                 )
             );
         }
+    }
+
+    #[test]
+    fn overlay_y_draw_bias_matches_the_native_predicate() {
+        // The binary biases Tiberium / Wall / Crate overlays by -12 and nothing
+        // else. -15 (half a cell height) is the caller's cell-centre term, not
+        // this one, so folding it in here double-counts by 3px on every ore
+        // cell, wall and crate on screen.
+        for flags in [
+            OverlayTypeFlags {
+                tiberium: true,
+                ..OverlayTypeFlags::default()
+            },
+            OverlayTypeFlags {
+                wall: true,
+                ..OverlayTypeFlags::default()
+            },
+            OverlayTypeFlags {
+                crate_type: true,
+                ..OverlayTypeFlags::default()
+            },
+        ] {
+            assert_eq!(flags.y_draw_offset(), -12.0);
+        }
+
+        // Bridges, tracks, rocks and the rest sit flat on the cell.
+        assert_eq!(OverlayTypeFlags::default().y_draw_offset(), 0.0);
+        assert_eq!(
+            OverlayTypeFlags {
+                bridge_deck: true,
+                ..OverlayTypeFlags::default()
+            }
+            .y_draw_offset(),
+            0.0
+        );
+        // IsVeins= is not part of the native predicate.
+        assert_eq!(
+            OverlayTypeFlags {
+                is_veins: true,
+                ..OverlayTypeFlags::default()
+            }
+            .y_draw_offset(),
+            0.0
+        );
     }
 
     #[test]

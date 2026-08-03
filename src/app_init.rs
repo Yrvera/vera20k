@@ -138,8 +138,11 @@ pub struct MapLoadResult {
     /// True when MCV seeding was deferred for spawn-pick phase.
     /// The map has 2+ multiplayer start waypoints and the player should pick one.
     pub spawn_pick_pending: bool,
-    pub camera_x: f32,
-    pub camera_y: f32,
+    /// World point the camera should be centred on, in the frame
+    /// `terrain::iso_to_screen` produces. Converted to a camera top-left by the
+    /// transition, which knows the scaled sidebar width and the live zoom.
+    pub camera_anchor_x: f32,
+    pub camera_anchor_y: f32,
     /// Asset manager — kept alive for music/audio lookups after map load.
     pub asset_manager: Option<AssetManager>,
 }
@@ -846,17 +849,24 @@ pub(crate) fn load_map_from_initial(
                 let is_human = house.player_control == Some(true);
                 let name_id = sim.interner.intern(&house.name);
                 let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
-                sim.houses.insert(
+                let mut house_state = crate::sim::house_state::HouseState::new(
                     name_id,
-                    crate::sim::house_state::HouseState::new(
-                        name_id,
-                        side_idx,
-                        country_id,
-                        is_human,
-                        sim.session.game_options.starting_credits,
-                        sim.session.game_options.tech_level,
-                    ),
+                    side_idx,
+                    country_id,
+                    is_human,
+                    sim.session.game_options.starting_credits,
+                    sim.session.game_options.tech_level,
                 );
+                // MultiplayPassive lives on the country/house type; stamp it now,
+                // while a RuleSet is in hand, so the defeat check never has to
+                // resolve the country itself. A roster section with no `Country=`
+                // resolves through the first `[Countries]` entry, as the native
+                // reader does.
+                house_state.multiplay_passive = crate::sim::house_state::resolve_multiplay_passive(
+                    rules.as_ref(),
+                    house.country.as_deref(),
+                );
+                sim.houses.insert(name_id, house_state);
                 sim.session.house_order.push(name_id);
             }
         }
@@ -1047,16 +1057,15 @@ pub(crate) fn load_map_from_initial(
     }
 
     if let Some(sim) = &mut simulation {
-        // Seed TIBTRE-style ore-spawning terrain objects. Skip gracefully if
-        // rules failed to load (matches the ore_growth_config pattern below).
+        // Attach the TIBTRE ore-spawner animation index to the terrain objects
+        // constructed ahead of the map entities. Skip gracefully if rules failed
+        // to load (matches the ore_growth_config pattern below).
         if let Some(rules_for_terrain) = rules.as_ref() {
-            let seeded_terrain = crate::sim::terrain_spawn::seed_terrain_spawners(
+            let seeded_terrain = crate::sim::terrain_spawn::seed_terrain_spawner_animation(
                 sim,
-                &map_data.terrain_objects,
                 rules_for_terrain,
                 &overlay_names,
                 &terrain_frame_counts,
-                map_data.header.theater.eq_ignore_ascii_case("SNOW"),
             );
             if seeded_terrain > 0 {
                 log::info!(
@@ -1229,18 +1238,35 @@ pub(crate) fn load_map_from_initial(
         sim.rebuild_zone_grid(grid);
     }
 
+    // gamemd `Post_Map_Init` step 3: with the lobby Crates option on (the stock
+    // default), scatter `min(max(CrateMinimum, players), CrateMaximum)` crates
+    // over the map. Native runs this after the starting force and after the
+    // cell-attribute rebuild, which is exactly this point.
+    if let (Some(sim), Some(rules_for_crates)) = (&mut simulation, rules.as_ref()) {
+        let player_count = crate::sim::crates::human_player_count(sim);
+        crate::sim::crates::place_scenario_start_crates(
+            sim,
+            rules_for_crates,
+            &overlay_registry,
+            path_grid.as_ref(),
+            player_count,
+        );
+    }
+
     // Prefer the first multiplayer start waypoint as the initial anchor when
-    // present. Otherwise, center on the playable area / terrain grid.
-    let sw: f32 = gpu.config.width as f32;
-    let sh: f32 = gpu.config.height as f32;
-    let (camera_x, camera_y): (f32, f32) =
+    // present. Otherwise, anchor on the middle of the playable area.
+    //
+    // This is a **world point**, not a camera position: the sidebar's real width
+    // depends on the UI scale, which only exists once `AppState` is built, so the
+    // conversion to a camera top-left happens in `app_transitions` where the
+    // scaled layout spec is available.
+    let (camera_anchor_x, camera_anchor_y): (f32, f32) =
         if let Some(start_wp) = waypoints::first_multiplayer_start(&map_data.waypoints) {
             let wp_z = height_map
                 .get(&(start_wp.rx, start_wp.ry))
                 .copied()
                 .unwrap_or(0);
-            let (sx, sy) = terrain::iso_to_screen(start_wp.rx, start_wp.ry, wp_z);
-            (sx - sw / 2.0, sy - sh / 2.0)
+            crate::app_camera::cell_centre_world_point(start_wp.rx, start_wp.ry, wp_z)
         } else {
             let (area_x, area_y, area_w, area_h) = match local_bounds {
                 Some(b) => (b.pixel_x, b.pixel_y, b.pixel_w, b.pixel_h),
@@ -1251,7 +1277,7 @@ pub(crate) fn load_map_from_initial(
                     grid.world_height,
                 ),
             };
-            (area_x + (area_w - sw) / 2.0, area_y + (area_h - sh) / 2.0)
+            (area_x + area_w / 2.0, area_y + area_h / 2.0)
         };
     // Load cameo MIX archives so that *ICON.SHP files are findable.
     // These nested MIXes live inside local.mix/localmd.mix and aren't
@@ -1345,8 +1371,8 @@ pub(crate) fn load_map_from_initial(
         sandbox_full_visibility: false,
         spawn_pick_pending,
         initial_local_owner,
-        camera_x,
-        camera_y,
+        camera_anchor_x,
+        camera_anchor_y,
         // The app loading job retains the one process-lifetime manager while
         // this borrowed phase runs, then moves it into the completed result.
         asset_manager: None,

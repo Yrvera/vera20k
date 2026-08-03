@@ -237,6 +237,29 @@ pub struct AnimTypeRuntimeConfig {
     /// Raw art.ini `TranslucencyDetailLevel=` value; zero when omitted.
     pub translucency_detail_level: i32,
     pub translucent: bool,
+    /// art.ini `AltPalette=`. gamemd's animation draw path picks the palette in a
+    /// cascade: an explicit per-instance palette wins, otherwise the global
+    /// ANIM.PAL conversion is used — except when this flag is set, which swaps in
+    /// the first colour scheme's converted unit palette instead. 41 stock sections
+    /// set it, including the Battle Bunker, the `CABUNK0x` bunkers, the Weather
+    /// Storm clouds and the squid grapple.
+    pub alt_palette: bool,
+    /// art.ini `UseNormalLight=`. The retail art.ini documents this as "does this
+    /// anim always draw at 100% brightness? (def=no)", and gamemd's animation draw
+    /// matches: it initialises the shape's brightness argument to full
+    /// (1000 = 1.0) and, in each of that function's branches, only replaces it
+    /// with a scalar read off the animation's cell when this flag is clear. So a
+    /// set flag makes the animation ignore map lighting entirely rather than
+    /// merely brightening it. At least one further native site reads the same
+    /// gate outside that function and was not traced, and the branch taken when
+    /// an animation instance carries its own palette convert takes brightness
+    /// from an instance field rather than a cell scalar — its stock reachability
+    /// is UNCHECKED.
+    /// 43 stock sections set it, all the explosion/fire/flash families —
+    /// `TWLT*`, `S_BANG*`, `S_BRNL*`, `S_CLSN*`, `S_TUMU*`, `BURN-S/M/L`, `FIRE3`,
+    /// `EXPLOSML/MED/LRG/LB`, `BRRLEXP*`, `CRIVEXP*`, `APOCEXP`, `VTEXPLOD`,
+    /// `KTSTLEXP`, `PULSEFX1/2`, `EMP_FX01`, `BEHIND`.
+    pub use_normal_light: bool,
     pub shadow: bool,
     pub ping_pong: bool,
     pub reverse: bool,
@@ -335,16 +358,185 @@ pub fn art_rate_to_delay_ms(ini_rate: i32) -> u32 {
     (delay_frames * 1000 / 15).max(1)
 }
 
+/// Draw-flag bits for an animation's translucency stage.
+///
+/// These are the low bits of the draw-flag word gamemd's shape drawer hands to
+/// its blitter table. The table maps them to three fixed integer blends of the
+/// 16-bit source and destination pixels — read out of the blitter scanline
+/// routines themselves, not inferred from the key names:
+///
+/// | bits | blend                       | source weight |
+/// |------|-----------------------------|---------------|
+/// | 0x2  | `3*(src>>2) + (dst>>2)`      | 3/4           |
+/// | 0x4  | `(src>>1)   + (dst>>1)`      | 1/2           |
+/// | 0x6  | `(src>>2)   + 3*(dst>>2)`    | 1/4           |
+///
+/// **`Translucency=N` therefore reads as "N percent *transparent*".** The source
+/// weight is `1 - N/100`, so `Translucency=25` is the *most* opaque of the three
+/// and `Translucency=75` the faintest. Reading the key as "N percent opaque"
+/// inverts every explosion, fire and wake in the game.
+pub const ANIM_DRAW_BITS_OPAQUE: u32 = 0x0;
+/// `Translucency=25` — source contributes three quarters.
+pub const ANIM_DRAW_BITS_TRANSLUCENT_25: u32 = 0x2;
+/// `Translucency=50` — source and destination contribute equally.
+pub const ANIM_DRAW_BITS_TRANSLUCENT_50: u32 = 0x4;
+/// `Translucency=75` — source contributes one quarter.
+pub const ANIM_DRAW_BITS_TRANSLUCENT_75: u32 = 0x6;
+
 /// Return the fixed draw-bit contribution for an art.ini `Translucency=` value.
 ///
 /// `Translucent=` is an independent boolean and is not interpreted by this helper.
 pub const fn anim_fixed_translucency_draw_bits(translucency: i32) -> Option<u32> {
     match translucency {
-        25 => Some(0x2),
-        50 => Some(0x4),
-        75 => Some(0x6),
+        25 => Some(ANIM_DRAW_BITS_TRANSLUCENT_25),
+        50 => Some(ANIM_DRAW_BITS_TRANSLUCENT_50),
+        75 => Some(ANIM_DRAW_BITS_TRANSLUCENT_75),
         _ => None,
     }
+}
+
+/// Which palette an animation type's frames are baked/sampled against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimDrawPalette {
+    /// The global ANIM.PAL conversion — the default for animation draws.
+    Anim,
+    /// The first colour scheme's converted unit palette, selected by
+    /// `AltPalette=yes`.
+    Unit,
+}
+
+/// Palette an animation type draws through, per gamemd's draw-time cascade.
+///
+/// The native cascade tries, in order: a Tiberian Sun veins branch, a per-instance
+/// cell-owned palette, an explicit per-instance palette override, and finally the
+/// global ANIM.PAL conversion — with `AltPalette=yes` swapping the unit palette in
+/// at that last step. Only the last step is decidable from the art type alone, and
+/// it is the only one a stock skirmish reaches: the veins branch is Tiberian Sun
+/// legacy with no stock YR trigger, and no stock art section sets the per-instance
+/// flags the other two key on. Those are recorded as unmodelled rather than
+/// approximated here.
+pub const fn anim_draw_palette(config: &AnimTypeRuntimeConfig) -> AnimDrawPalette {
+    if config.alt_palette {
+        AnimDrawPalette::Unit
+    } else {
+        AnimDrawPalette::Anim
+    }
+}
+
+/// Progressive translucency ladder for `Translucent=yes` animation types.
+///
+/// `Translucent=yes` is **not** a constant blend: gamemd's animation draw path
+/// compares the current frame against fractions of the type's `End` and fades the
+/// animation out as it plays. An animation is opaque for its first fifth, then
+/// steps through three-quarters, one-half and one-quarter source weight. This is
+/// what makes a fire or a ship wake dissipate instead of vanishing in one frame.
+///
+/// The fraction comparisons are evaluated in native double precision against the
+/// literals 0.2 / 0.4 / 0.6 and are reproduced here rather than rewritten as
+/// integer cross-multiplication, because the two disagree at boundary frames for
+/// some `End` values. This is render material selection only — no simulation
+/// state, ordering or RNG depends on it.
+pub fn anim_progressive_translucency_draw_bits(current_frame: i32, end_frame: i32) -> u32 {
+    const OPAQUE_FRACTION: f64 = 0.2;
+    const QUARTER_FRACTION: f64 = 0.4;
+    const HALF_FRACTION: f64 = 0.6;
+
+    let frame = f64::from(current_frame);
+    let end = f64::from(end_frame);
+    if frame > end * HALF_FRACTION {
+        ANIM_DRAW_BITS_TRANSLUCENT_75
+    } else if frame > end * QUARTER_FRACTION {
+        ANIM_DRAW_BITS_TRANSLUCENT_50
+    } else if frame > end * OPAQUE_FRACTION {
+        ANIM_DRAW_BITS_TRANSLUCENT_25
+    } else {
+        ANIM_DRAW_BITS_OPAQUE
+    }
+}
+
+/// Draw-time `End` for the progressive translucency ladder.
+///
+/// gamemd's AnimType loader seeds `End` from the SHP header frame count, halving
+/// it for `Shadow=yes` (the back half of such a SHP holds the shadow frames), and
+/// an explicit art.ini `End=` overrides it. `bind_scheduler_anim_assets`
+/// reproduces that for the scheduler closure, so a bound config already carries
+/// the native value; for a type that has not been through asset binding, derive
+/// the same value from the caller's SHP frame count rather than reading the
+/// unbound zero.
+fn anim_draw_end_frame(config: &AnimTypeRuntimeConfig, shp_frame_count: i32) -> i32 {
+    if config.raw_shp_frame_count.is_some() {
+        return config.end;
+    }
+    if let Some(end) = config.explicit_end {
+        return end;
+    }
+    if config.shadow {
+        shp_frame_count / 2
+    } else {
+        shp_frame_count
+    }
+}
+
+/// Resolve an animation type's translucency draw bits for one drawn frame.
+///
+/// `Translucent=yes` takes the progressive ladder; otherwise an exact
+/// `Translucency=25/50/75` selects a fixed stage and anything else draws opaque.
+/// `shp_frame_count` is only consulted on the progressive path, and only when the
+/// type has not been bound to its SHP yet.
+///
+/// Two native gates are deliberately not modelled and are recorded here rather
+/// than approximated. gamemd skips this whole selection when the type's
+/// `TranslucencyDetailLevel` exceeds the extra-animations video setting; omitting
+/// the gate is equivalent to that setting being at maximum, which is its normal
+/// value in play, and the runtime value is UNCHECKED. gamemd also aborts the draw
+/// outright above a per-instance byte whose source was not traced; it is zero on a
+/// freshly constructed animation and Rust has no counterpart, so this behaves as
+/// that zero — identical for every path that reaches it with zero.
+pub fn anim_translucency_draw_bits(
+    config: &AnimTypeRuntimeConfig,
+    current_frame: i32,
+    shp_frame_count: i32,
+) -> u32 {
+    if config.translucent {
+        return anim_progressive_translucency_draw_bits(
+            current_frame,
+            anim_draw_end_frame(config, shp_frame_count),
+        );
+    }
+    anim_fixed_translucency_draw_bits(config.translucency).unwrap_or(ANIM_DRAW_BITS_OPAQUE)
+}
+
+/// Source-pixel weight implied by a set of translucency draw bits.
+///
+/// This is the renderer-facing form of the blitter table above: the weight the
+/// native blend gives the incoming sprite pixel. Unknown bit patterns draw opaque.
+/// Float is correct here — it is a colour-target blend factor consumed only by the
+/// render layer, never by simulation math.
+pub const fn anim_translucency_source_alpha(draw_bits: u32) -> f32 {
+    match draw_bits {
+        ANIM_DRAW_BITS_TRANSLUCENT_25 => 0.75,
+        ANIM_DRAW_BITS_TRANSLUCENT_50 => 0.5,
+        ANIM_DRAW_BITS_TRANSLUCENT_75 => 0.25,
+        _ => 1.0,
+    }
+}
+
+/// Alpha an animation sprite instance should carry for one drawn frame.
+///
+/// Single entry point for instance builders: resolve the draw bits for this
+/// frame, then convert them to the source weight the native blend applies. An
+/// animation with neither `Translucent=` nor a recognised `Translucency=` returns
+/// `1.0`, so wiring this in cannot change an opaque animation.
+pub fn anim_frame_source_alpha(
+    config: &AnimTypeRuntimeConfig,
+    current_frame: i32,
+    shp_frame_count: i32,
+) -> f32 {
+    anim_translucency_source_alpha(anim_translucency_draw_bits(
+        config,
+        current_frame,
+        shp_frame_count,
+    ))
 }
 
 fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
@@ -387,6 +579,11 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
         translucency: section.get_i32("Translucency").unwrap_or(0),
         translucency_detail_level: section.get_i32("TranslucencyDetailLevel").unwrap_or(0),
         translucent: section.get_bool("Translucent").unwrap_or(false),
+        alt_palette: section.get_bool("AltPalette").unwrap_or(false),
+        // AnimTypeClass's constructor zeroes this field before the INI read and
+        // the read passes the current field back as its own default, so an
+        // omitted key leaves it false.
+        use_normal_light: section.get_bool("UseNormalLight").unwrap_or(false),
         shadow: section.get_bool("Shadow").unwrap_or(false),
         ping_pong: section.get_bool("PingPong").unwrap_or(false),
         reverse: section.get_bool("Reverse").unwrap_or(false),
@@ -1645,6 +1842,47 @@ mod anim_runtime_metadata_tests {
     }
 
     #[test]
+    fn use_normal_light_defaults_false_and_parses_the_stock_explosion_families() {
+        // The first six sections carry their stock artmd.ini names and the stock
+        // spelling of the keys shown. Every one of the 43 stock hits is a bare
+        // `UseNormalLight=yes`; no stock section writes `=no`, so DEFAULTS_NO is
+        // synthetic and exists only to prove an explicit negative parses.
+        //
+        // TUNTOP01 is one of the twenty `Tile##Anim=` theater-tileset animations
+        // (four tunnel tops and sixteen waterfall frames across the six theater
+        // INIs). Those are the animations gamemd attaches to a cell, and the
+        // attached branch keeps the cell's convert even when the flag is set —
+        // so a cell-attached type that ever set the key would want the cell's
+        // hue at full brightness rather than a fully neutral tint. None of the
+        // twenty sets it, which is what makes the neutral return safe today.
+        let ini = IniFile::from_str(
+            "[TWLT070]\nUseNormalLight=yes\nNormalized=yes\n\
+             [S_BANG24]\nUseNormalLight=yes\nNormalized=yes\n\
+             [BURN-M]\nUseNormalLight=yes\nLayer=ground\n\
+             [EXPLOLRG]\nUseNormalLight=yes\nTranslucent=yes\n\
+             [TUNTOP01]\nTheater=yes\nNormalized=yes\n\
+             [GCMUZZLE]\nNormalized=yes\n\
+             [DEFAULTS_NO]\nUseNormalLight=no\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        for lit_at_full_brightness in ["TWLT070", "S_BANG24", "BURN-M", "EXPLOLRG"] {
+            assert!(
+                reg.anim_runtime_config(lit_at_full_brightness)
+                    .unwrap()
+                    .use_normal_light,
+                "{lit_at_full_brightness} must draw at full brightness"
+            );
+        }
+        for cell_lit in ["TUNTOP01", "GCMUZZLE", "DEFAULTS_NO"] {
+            assert!(
+                !reg.anim_runtime_config(cell_lit).unwrap().use_normal_light,
+                "{cell_lit} must stay on the cell-lit path"
+            );
+        }
+    }
+
+    #[test]
     fn gsi_02_13_parses_fixed_translucency_metadata_and_omitted_zero_defaults() {
         let ini = IniFile::from_str(
             "[TWENTY_FIVE]\n\
@@ -1676,6 +1914,48 @@ mod anim_runtime_metadata_tests {
     }
 
     #[test]
+    fn alt_palette_is_parsed_for_every_anim_type_not_just_the_parachute() {
+        // Stock sections that carry the flag; the palette cascade must be able to
+        // ask any AnimType, not only the one hardcoded section.
+        let ini = IniFile::from_str(
+            "[NABNKR]\n\
+             AltPalette=yes\n\
+             [WCCLOUD1]\n\
+             AltPalette=true\n\
+             [PARACH]\n\
+             AltPalette=yes\n\
+             [FBALL1]\n\
+             Layer=ground\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        assert!(reg.anim_runtime_config("NABNKR").unwrap().alt_palette);
+        assert!(reg.anim_runtime_config("WCCLOUD1").unwrap().alt_palette);
+        assert!(reg.anim_runtime_config("PARACH").unwrap().alt_palette);
+        assert!(!reg.anim_runtime_config("FBALL1").unwrap().alt_palette);
+    }
+
+    #[test]
+    fn alt_palette_selects_the_unit_palette_and_everything_else_the_anim_palette() {
+        let ini = IniFile::from_str(
+            "[NABNKR]\n\
+             AltPalette=yes\n\
+             [FBALL1]\n\
+             Layer=ground\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        assert_eq!(
+            anim_draw_palette(reg.anim_runtime_config("NABNKR").unwrap()),
+            AnimDrawPalette::Unit
+        );
+        assert_eq!(
+            anim_draw_palette(reg.anim_runtime_config("FBALL1").unwrap()),
+            AnimDrawPalette::Anim
+        );
+    }
+
+    #[test]
     fn gsi_02_13_maps_only_exact_fixed_translucency_values_to_draw_bits() {
         assert_eq!(anim_fixed_translucency_draw_bits(25), Some(0x2));
         assert_eq!(anim_fixed_translucency_draw_bits(50), Some(0x4));
@@ -1685,6 +1965,131 @@ mod anim_runtime_metadata_tests {
         assert_eq!(anim_fixed_translucency_draw_bits(100), None);
         assert_eq!(anim_fixed_translucency_draw_bits(0), None);
         assert_eq!(anim_fixed_translucency_draw_bits(-25), None);
+    }
+
+    #[test]
+    fn translucency_draw_bits_invert_the_ini_percentage_into_source_weight() {
+        // Translucency=N is N percent TRANSPARENT: 25 is the most opaque stage.
+        assert_eq!(
+            anim_translucency_source_alpha(ANIM_DRAW_BITS_TRANSLUCENT_25),
+            0.75
+        );
+        assert_eq!(
+            anim_translucency_source_alpha(ANIM_DRAW_BITS_TRANSLUCENT_50),
+            0.5
+        );
+        assert_eq!(
+            anim_translucency_source_alpha(ANIM_DRAW_BITS_TRANSLUCENT_75),
+            0.25
+        );
+        assert_eq!(anim_translucency_source_alpha(ANIM_DRAW_BITS_OPAQUE), 1.0);
+        // Bits outside the table are not a translucency stage.
+        assert_eq!(anim_translucency_source_alpha(0x800), 1.0);
+    }
+
+    #[test]
+    fn stock_fixed_translucency_sections_resolve_to_their_blend_and_others_stay_opaque() {
+        // BURN-S/M/L are the burning-building fires: Translucency=25, no
+        // Translucent=, so every frame draws at three-quarter source weight.
+        let ini = IniFile::from_str(
+            "[BURN-S]\n\
+             Layer=ground\n\
+             Translucency=25\n\
+             [FIRE3]\n\
+             Translucency=50\n\
+             [PLAIN]\n\
+             Layer=ground\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        let burn = reg.anim_runtime_config("BURN-S").unwrap();
+        for frame in [0, 1, 30, 61] {
+            assert_eq!(anim_frame_source_alpha(burn, frame, 62), 0.75);
+        }
+
+        let fire = reg.anim_runtime_config("FIRE3").unwrap();
+        assert_eq!(anim_frame_source_alpha(fire, 3, 8), 0.5);
+
+        // An animation carrying neither key must be untouched by this path.
+        let plain = reg.anim_runtime_config("PLAIN").unwrap();
+        assert_eq!(anim_frame_source_alpha(plain, 3, 8), 1.0);
+    }
+
+    #[test]
+    fn translucent_yes_fades_progressively_instead_of_holding_one_blend() {
+        let ini = IniFile::from_str("[WAKE1]\nFlat=yes\nTranslucent=yes\n");
+        let mut reg = ArtRegistry::from_ini(&ini);
+        // End comes from the SHP header once the type is bound.
+        reg.bind_anim_frame_count_for_test("WAKE1", 10);
+        let wake = reg.anim_runtime_config("WAKE1").unwrap();
+
+        // (current frame, expected source weight) against End = 10.
+        let ladder = [
+            (0, 1.0),
+            (1, 1.0),
+            (2, 1.0),
+            (3, 0.75),
+            (4, 0.75),
+            (5, 0.5),
+            (6, 0.5),
+            (7, 0.25),
+            (10, 0.25),
+        ];
+        for (frame, expected) in ladder {
+            assert_eq!(
+                anim_frame_source_alpha(wake, frame, 10),
+                expected,
+                "frame {frame} of a Translucent=yes animation"
+            );
+        }
+    }
+
+    #[test]
+    fn translucent_yes_takes_precedence_over_a_numeric_translucency_on_the_same_section() {
+        // Stock SMKPUFF and NUKETO carry both keys; the boolean wins, so their
+        // numeric value never selects a blend and frame 0 is opaque.
+        let ini = IniFile::from_str("[SMKPUFF]\nTranslucent=yes\nTranslucency=50\n");
+        let mut reg = ArtRegistry::from_ini(&ini);
+        reg.bind_anim_frame_count_for_test("SMKPUFF", 10);
+        let smoke = reg.anim_runtime_config("SMKPUFF").unwrap();
+
+        assert_eq!(anim_frame_source_alpha(smoke, 0, 10), 1.0);
+        assert_eq!(anim_frame_source_alpha(smoke, 9, 10), 0.25);
+    }
+
+    #[test]
+    fn progressive_end_uses_the_shp_frame_count_until_the_type_is_bound() {
+        let ini = IniFile::from_str("[WAKE2]\nTranslucent=yes\n");
+        let reg = ArtRegistry::from_ini(&ini);
+        let wake = reg.anim_runtime_config("WAKE2").unwrap();
+
+        // Unbound: End is derived from the caller's SHP frame count, so the
+        // ladder still runs instead of collapsing onto End = 0.
+        assert_eq!(anim_frame_source_alpha(wake, 1, 10), 1.0);
+        assert_eq!(anim_frame_source_alpha(wake, 5, 10), 0.5);
+    }
+
+    #[test]
+    fn progressive_end_honours_explicit_end_and_the_shadow_half_split() {
+        let ini = IniFile::from_str(
+            "[SHADOWED]\n\
+             Translucent=yes\n\
+             Shadow=yes\n\
+             [CAPPED]\n\
+             Translucent=yes\n\
+             End=10\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        // Shadow=yes puts the shadow frames in the back half of the SHP, so the
+        // drawn animation ends at half the header count.
+        let shadowed = reg.anim_runtime_config("SHADOWED").unwrap();
+        assert_eq!(anim_frame_source_alpha(shadowed, 5, 20), 0.5);
+        assert_eq!(anim_frame_source_alpha(shadowed, 2, 20), 1.0);
+
+        // An explicit End= overrides the header count either way.
+        let capped = reg.anim_runtime_config("CAPPED").unwrap();
+        assert_eq!(anim_frame_source_alpha(capped, 5, 100), 0.5);
     }
 
     #[test]

@@ -153,6 +153,39 @@ pub fn build_bridge_atlas(
     Some(pack_bridge_sprites(gpu, batch, &rendered))
 }
 
+/// Alpha approximating the native SHP shadow blitter's destination halve.
+///
+/// The blitter tests each source byte against zero and, where non-zero, halves
+/// the destination pixel in place, so a shadow darkens whatever is already in
+/// the framebuffer and overlapping shadows darken twice. Black texels at this
+/// alpha under source-alpha blending give the same *shape* and the same
+/// compositing behaviour.
+///
+/// VERA-internal; gamemd equivalence UNCHECKED and known to diverge. The
+/// blitter halves the **stored, gamma-encoded** word, but VERA composites into
+/// an sRGB target, so wgpu blends in **linear** space and the realized result is
+/// markedly lighter than an encoded-space halve — see
+/// `shadow_darken_is_lighter_than_the_native_encoded_halve`, which pins the
+/// residual. No single alpha can close this: an encoded-space halve is not a
+/// linear operation. Closing it needs this pass composited against a non-sRGB
+/// target, which is a render-target change well outside the atlas.
+const SHADOW_DARKEN_ALPHA: u8 = 128;
+
+/// Convert an SHP shadow frame's 1-bit stencil into black RGBA with the darken
+/// alpha baked in, so the instance builder needs no per-sprite alpha of its own.
+///
+/// Index 0 is the stencil's "no shadow here" value and stays fully transparent;
+/// every other index is a shadow pixel. The blitter never looks at the actual
+/// index value, so neither does this.
+fn shadow_stencil_to_rgba(stencil: &[u8]) -> Vec<u8> {
+    let mut rgba: Vec<u8> = Vec::with_capacity(stencil.len() * 4);
+    for &index in stencil {
+        let alpha: u8 = if index == 0 { 0 } else { SHADOW_DARKEN_ALPHA };
+        rgba.extend_from_slice(&[0, 0, 0, alpha]);
+    }
+    rgba
+}
+
 fn render_bridge_sprite(
     asset_manager: &AssetManager,
     palette: &Palette,
@@ -218,7 +251,13 @@ fn render_bridge_sprite(
     }
 
     let frame = &shp.frames[frame_idx];
-    let frame_rgba: Vec<u8> = shp.frame_to_rgba(frame_idx, palette).ok()?;
+    // Shadow frames are a 1-bit stencil, never colour data — sending them
+    // through a theater palette is what made the earlier bridge-shadow attempt
+    // paint solid cyan and forced the draw call to be disabled.
+    let frame_rgba: Vec<u8> = match key.kind {
+        BridgeFrameKind::Body => shp.frame_to_rgba(frame_idx, palette).ok()?,
+        BridgeFrameKind::Shadow => shadow_stencil_to_rgba(&frame.pixels),
+    };
     let full_w: u32 = shp.width as u32;
     let full_h: u32 = shp.height as u32;
     let mut full_rgba: Vec<u8> = vec![0u8; (full_w * full_h * 4) as usize];
@@ -341,7 +380,7 @@ fn pack_bridge_sprites(
     let texture: BatchTexture = batch.create_texture(gpu, &rgba, atlas_width, atlas_height);
     let depth_texture_view = create_r8_texture(
         gpu,
-        &vec![0u8; (atlas_width * atlas_height) as usize],
+        &neutral_deck_depth_plane(atlas_width, atlas_height),
         atlas_width,
         atlas_height,
     );
@@ -353,6 +392,35 @@ fn pack_bridge_sprites(
         zdepth_bind_group,
         entries,
     }
+}
+
+/// R8 texel meaning "this deck pixel contributes no depth offset of its own".
+///
+/// The zdepth fragment shader computes `base_depth - z_sample * scale`, so a
+/// zero texel leaves the instance's own sort depth untouched.
+const DECK_DEPTH_NEUTRAL: u8 = 0;
+
+/// Depth plane for the bridge-deck atlas: neutral everywhere, deliberately.
+///
+/// This is not a placeholder. gamemd draws a bridge deck through the cell
+/// overlay-body draw, and **every** branch of that draw passes a zero
+/// Z argument. The shape drawer only sets its "has Z data" draw bit when that
+/// argument is non-zero, and the blitter-family selector tests that bit first —
+/// so no Z-tested blitter is ever selected for an overlay body. A deck pixel
+/// therefore neither tests nor writes the native Z-buffer; under-deck occlusion
+/// comes from draw order inside the terrain layer, not from depth.
+///
+/// Giving these texels real per-pixel depth would hand the deck Z participation
+/// the native draw does not have, so the faithful content is a neutral plane.
+/// Verified by decompiling the cell overlay-body draw and hand-counting the
+/// argument pushes at each of its call sites into the shape drawer, plus the
+/// shape drawer's own Z-bit gate and the blitter selector's bit ordering.
+///
+/// SHP frames carry no depth channel at all, so there is nothing to blit here
+/// even in principle — the only per-pixel depth source in the engine is the
+/// terrain tile format's own depth plane, which decks do not use.
+fn neutral_deck_depth_plane(width: u32, height: u32) -> Vec<u8> {
+    vec![DECK_DEPTH_NEUTRAL; (width as usize) * (height as usize)]
 }
 
 fn create_r8_texture(gpu: &GpuContext, data: &[u8], width: u32, height: u32) -> wgpu::TextureView {
@@ -395,6 +463,92 @@ mod tests {
             kind: BridgeFrameKind::Shadow,
         };
         assert_ne!(body, shadow);
+    }
+
+    #[test]
+    fn gsi_13_09_deck_depth_plane_stays_neutral_so_the_deck_never_owns_a_z_pixel() {
+        // The native overlay-body draw passes a zero Z argument on every branch,
+        // which leaves the shape drawer's "has Z data" bit clear and keeps the
+        // blitter selector off its Z-tested families entirely. Any non-neutral
+        // texel here would give the deck per-pixel depth authority gamemd's
+        // overlay draw does not have, so this pins the plane rather than the
+        // absence of code.
+        let plane = neutral_deck_depth_plane(7, 5);
+        assert_eq!(plane.len(), 35);
+        assert!(
+            plane.iter().all(|&texel| texel == DECK_DEPTH_NEUTRAL),
+            "a bridge deck texel must not carry depth of its own"
+        );
+        // The shader reads this as `base_depth - z_sample * scale`; neutral must
+        // be the additive identity so the deck keeps exactly its instance depth.
+        assert_eq!(DECK_DEPTH_NEUTRAL, 0);
+    }
+
+    #[test]
+    fn shadow_frames_become_a_black_stencil_not_palette_colour() {
+        // A shadow frame carries only 0 (nothing) and non-zero (shadow). The
+        // native blitter TESTs the byte and halves the destination; it never
+        // reads a colour, so any palette lookup here is wrong by construction.
+        let rgba = shadow_stencil_to_rgba(&[0, 1, 0, 4, 255]);
+        assert_eq!(rgba.len(), 5 * 4);
+        // Index 0 → fully transparent, destination untouched.
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&rgba[8..12], &[0, 0, 0, 0]);
+        // Every non-zero index → the same black darken texel, whatever its value.
+        for offset in [4usize, 12, 16] {
+            assert_eq!(
+                &rgba[offset..offset + 4],
+                &[0, 0, 0, SHADOW_DARKEN_ALPHA],
+                "non-zero stencil byte at {offset} must darken, not tint"
+            );
+        }
+    }
+
+    #[test]
+    fn shadow_darken_is_lighter_than_the_native_encoded_halve() {
+        // Recorded DRIFT, not a parity assertion. The blitter halves the
+        // stored gamma-encoded word: an encoded 0.5 destination becomes an
+        // encoded 0.25. VERA composites into an sRGB target, so the blend runs
+        // in linear space and lands much lighter. This test pins the size of
+        // that gap so it stays visible instead of decaying into folklore.
+        fn srgb_to_linear(c: f32) -> f32 {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        fn linear_to_srgb(c: f32) -> f32 {
+            if c <= 0.0031308 {
+                12.92 * c
+            } else {
+                1.055 * c.powf(1.0 / 2.4) - 0.055
+            }
+        }
+
+        let dst_encoded: f32 = 0.5;
+        let src_alpha: f32 = f32::from(SHADOW_DARKEN_ALPHA) / 255.0;
+        // out = a*src + (1-a)*dst, in linear space, with src black.
+        let realized: f32 = linear_to_srgb((1.0 - src_alpha) * srgb_to_linear(dst_encoded));
+        let native: f32 = dst_encoded / 2.0;
+
+        assert!(
+            realized > native,
+            "the linear-space blend must come out lighter than the encoded halve \
+             (realized {realized}, native {native})"
+        );
+        assert!(
+            (realized - 0.360).abs() < 0.01,
+            "realized darken drifted from the recorded value; \
+             expected ~0.360 encoded, got {realized}"
+        );
+        // Roughly 44% too light. Recorded so a future render-target change can
+        // be measured against it rather than eyeballed.
+        assert!(
+            ((realized - native) / native - 0.44).abs() < 0.05,
+            "recorded shadow lightness drift is ~44% of the native value, got {}",
+            (realized - native) / native
+        );
     }
 }
 

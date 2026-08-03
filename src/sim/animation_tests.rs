@@ -31,7 +31,7 @@ fn test_def(
         frame_delay,
         normalized: false,
         loop_mode,
-        clockwise_facings: false,
+        facing_slots: FacingSlots::InfantryTable,
     }
 }
 
@@ -40,22 +40,21 @@ fn test_def(
 #[test]
 fn test_resolve_stand_facing_north() {
     let def = test_def(0, 1, 8, 200, LoopMode::Loop);
-    // Facing 0 (cell-N) → +32 adjustment for cell-N-to-screen-N offset →
-    // adjusted=32, cw_index=1, ccw facing_index=7 → frame 7
+    // Facing 0 is cell-N, which is infantry slot 7 → frame 7.
     assert_eq!(resolve_shp_frame(&def, 0, 0), 7);
 }
 
 #[test]
 fn test_resolve_stand_facing_south() {
     let def = test_def(0, 1, 8, 200, LoopMode::Loop);
-    // Facing 128 (cell-S) → +32 adj → adjusted=160, cw_index=5, ccw facing_index=3 → frame 3
+    // Facing 128 is cell-S, which is infantry slot 3 → frame 3.
     assert_eq!(resolve_shp_frame(&def, 128, 0), 3);
 }
 
 #[test]
 fn test_resolve_walk_facing_east_frame_3() {
     let def = test_def(8, 6, 8, 100, LoopMode::Loop);
-    // Facing 64 (cell-E) → +32 adj → adjusted=96, cw_index=3, ccw facing_index=5 → frame = 8 + 5*6 + 3 = 41
+    // Facing 64 is cell-E → slot 5 → frame = 8 + 5*6 + 3 = 41.
     assert_eq!(resolve_shp_frame(&def, 64, 3), 41);
 }
 
@@ -69,7 +68,7 @@ fn test_resolve_non_directional() {
 #[test]
 fn test_resolve_frame_index_wraps() {
     let def = test_def(8, 6, 8, 100, LoopMode::Loop);
-    // Frame 7 wraps: 7 % 6 = 1. Facing 0 (cell-N) → +32 adj → facing_index=7 → 8 + 7*6 + 1 = 51
+    // Frame 7 wraps: 7 % 6 = 1. Facing 0 is cell-N → slot 7 → 8 + 7*6 + 1 = 51.
     assert_eq!(resolve_shp_frame(&def, 0, 7), 51);
 }
 
@@ -84,18 +83,18 @@ fn test_resolve_facing_multiplier_differs_from_frame_count() {
         frame_delay: 1,
         normalized: false,
         loop_mode: LoopMode::Loop,
-        clockwise_facings: false,
+        facing_slots: FacingSlots::InfantryTable,
     };
-    // Facing 64 (cell-E) → +32 adj → facing_index=5 → frame = 0 + 5*8 + 3 = 43
+    // Facing 64 is cell-E → slot 5 → frame = 0 + 5*8 + 3 = 43.
     assert_eq!(resolve_shp_frame(&def, 64, 3), 43);
 }
 
 #[test]
 fn test_resolve_all_8_facings() {
     let def = test_def(0, 1, 8, 200, LoopMode::Loop);
-    // DirStruct (clockwise, cell-relative) → SHP frame index (counter-clockwise).
-    // +32 adjustment converts cell-north (screen upper-right) to screen-north (straight up).
-    // SHP CCW order: 0=screen-N, 1=NW, 2=W, 3=SW, 4=S, 5=SE, 6=E, 7=NE
+    // DirStruct (clockwise, cell-relative) → infantry SHP frame slot.
+    // SHP frame 0 is the screen-north pose, which is cell NW; slots then run
+    // counter-clockwise: 0=NW, 1=W, 2=SW, 3=S, 4=SE, 5=E, 6=NE, 7=N.
     assert_eq!(resolve_shp_frame(&def, 0, 0), 7); // cell-N  → SHP 7
     assert_eq!(resolve_shp_frame(&def, 32, 0), 6); // cell-NE → SHP 6
     assert_eq!(resolve_shp_frame(&def, 64, 0), 5); // cell-E  → SHP 5
@@ -104,6 +103,116 @@ fn test_resolve_all_8_facings() {
     assert_eq!(resolve_shp_frame(&def, 160, 0), 2); // cell-SW → SHP 2
     assert_eq!(resolve_shp_frame(&def, 192, 0), 1); // cell-W  → SHP 1
     assert_eq!(resolve_shp_frame(&def, 224, 0), 0); // cell-NW → SHP 0
+}
+
+#[test]
+fn test_infantry_slot_boundaries_round_not_truncate() {
+    // The eight octant centres above coincide under both a truncating and a
+    // rounding quantiser, so they cannot tell the two apart. These values can.
+    //
+    // Native slot boundaries sit at facing ≡ 12 (mod 32), not at ≡ 0: the arc
+    // for slot 7 runs 236..=255 plus 0..=11. A quantiser that truncates
+    // `facing / 32` holds the previous slot across each of these pairs.
+    let def = test_def(0, 1, 8, 200, LoopMode::Loop);
+
+    assert_eq!(resolve_shp_frame(&def, 11, 0), 7);
+    assert_eq!(
+        resolve_shp_frame(&def, 12, 0),
+        6,
+        "slot flips at 12, not 32"
+    );
+
+    assert_eq!(resolve_shp_frame(&def, 31, 0), 6);
+    assert_eq!(
+        resolve_shp_frame(&def, 32, 0),
+        6,
+        "32 is mid-arc, not a boundary"
+    );
+
+    assert_eq!(resolve_shp_frame(&def, 43, 0), 6);
+    assert_eq!(resolve_shp_frame(&def, 44, 0), 5);
+
+    // The wrap back onto slot 7 happens 20/256 of a turn before cell-north.
+    assert_eq!(resolve_shp_frame(&def, 235, 0), 0);
+    assert_eq!(resolve_shp_frame(&def, 236, 0), 7);
+    assert_eq!(resolve_shp_frame(&def, 255, 0), 7);
+}
+
+#[test]
+fn test_infantry_facing_slot_covers_every_byte() {
+    // Every facing byte must land on a real frame block; an index outside 0..=7
+    // would read past the end of a standing block.
+    for facing in 0..=u8::MAX {
+        assert!(
+            infantry_facing_slot(facing) < 8,
+            "facing {facing} produced an out-of-range slot"
+        );
+    }
+}
+
+// --- SHP vehicle frame blocks ---
+
+/// Terror Drone walk block: `WalkFrames=6`, `FiringFrames=4`, 8 facings, no
+/// `StandingFrames`. Walk occupies frame 0 and strides 6 frames per slot.
+fn dron_walk_def() -> SequenceDef {
+    SequenceDef {
+        start_frame: 0,
+        frame_count: 6,
+        facings: 8,
+        facing_multiplier: 6,
+        frame_delay: 3,
+        normalized: false,
+        loop_mode: LoopMode::Loop,
+        facing_slots: FacingSlots::VehicleOctant,
+    }
+}
+
+#[test]
+fn test_terror_drone_walk_facings() {
+    let def = dron_walk_def();
+    // Vehicle slots run clockwise from screen-north (cell NW), and the block
+    // index is the octant advanced by one — so frame 0 is NW, not N.
+    assert_eq!(resolve_shp_frame(&def, 224, 0), 0); // cell-NW → slot 0
+    assert_eq!(resolve_shp_frame(&def, 0, 0), 6); // cell-N  → slot 1
+    assert_eq!(resolve_shp_frame(&def, 32, 0), 12); // cell-NE → slot 2
+    assert_eq!(resolve_shp_frame(&def, 64, 0), 18); // cell-E  → slot 3
+    assert_eq!(resolve_shp_frame(&def, 96, 0), 24); // cell-SE → slot 4
+    assert_eq!(resolve_shp_frame(&def, 128, 0), 30); // cell-S  → slot 5
+    assert_eq!(resolve_shp_frame(&def, 160, 0), 36); // cell-SW → slot 6
+    assert_eq!(resolve_shp_frame(&def, 192, 0), 42); // cell-W  → slot 7
+}
+
+#[test]
+fn test_terror_drone_walk_slot_rounds_to_nearest_octant() {
+    let def = dron_walk_def();
+    // Vehicle boundaries sit at facing ≡ 16 (mod 32) — halfway between octant
+    // centres. Truncating `facing / 32` would hold slot 0's frames across both.
+    assert_eq!(resolve_shp_frame(&def, 15, 0), 6, "still nearest cell-N");
+    assert_eq!(resolve_shp_frame(&def, 16, 0), 12, "rounds up to cell-NE");
+    // Above 240 the octant rounds forward onto cell-N and wraps to slot 1.
+    assert_eq!(resolve_shp_frame(&def, 239, 0), 0);
+    assert_eq!(resolve_shp_frame(&def, 240, 0), 6);
+}
+
+#[test]
+fn test_terror_drone_walk_advances_within_slot() {
+    let def = dron_walk_def();
+    // Facing cell-W is slot 7 → frames 42..=47 as the walk cycle advances.
+    assert_eq!(resolve_shp_frame(&def, 192, 3), 45);
+    assert_eq!(resolve_shp_frame(&def, 192, 8), 44, "8 % 6 = 2");
+}
+
+#[test]
+fn test_shp_vehicle_non_eight_facings_draws_slot_zero() {
+    // The vehicle draw path only computes a facing slot when the body declares
+    // exactly 8 blocks; any other count draws block 0 for every facing.
+    let def = SequenceDef {
+        facings: 6,
+        ..dron_walk_def()
+    };
+    assert_eq!(resolve_shp_frame(&def, 0, 0), 0);
+    assert_eq!(resolve_shp_frame(&def, 128, 0), 0);
+    assert_eq!(resolve_shp_frame(&def, 128, 2), 2);
 }
 
 // --- advance_animation tests ---
@@ -388,7 +497,7 @@ fn test_tick_attack_triggers_fire_animation() {
             frame_delay: 1,
             normalized: false,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
@@ -427,7 +536,7 @@ fn add_prone_sequences(set: &mut SequenceSet) {
                 frame_delay: 1,
                 normalized: false,
                 loop_mode: next.map_or(LoopMode::Loop, LoopMode::TransitionTo),
-                clockwise_facings: false,
+                facing_slots: FacingSlots::InfantryTable,
             },
         );
     }
@@ -497,7 +606,7 @@ fn test_down_and_up_transitions_are_preserved_until_complete() {
             frame_delay: 1,
             normalized: false,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Prone),
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     set.insert(
@@ -510,7 +619,7 @@ fn test_down_and_up_transitions_are_preserved_until_complete() {
             frame_delay: 1,
             normalized: false,
             loop_mode: LoopMode::Loop,
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     let mut sequences = BTreeMap::new();

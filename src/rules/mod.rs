@@ -30,6 +30,7 @@ pub mod ini_parser;
 pub mod ini_value;
 pub mod jumpjet_params;
 pub mod locomotor_type;
+pub mod missile_spawn;
 pub mod object_type;
 pub mod particle_system_type;
 pub mod particle_type;

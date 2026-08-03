@@ -472,6 +472,17 @@ pub struct Simulation {
     /// immediately after the movement call returns.
     #[serde(skip)]
     pub(crate) pending_lifecycle_requests: Vec<LifecycleRequest>,
+    /// Missiles whose rocket flight reached its target during this tick's
+    /// movement pass. Drained at the end of that pass, in live-object order.
+    #[serde(skip)]
+    pub(crate) pending_rocket_detonations: Vec<u64>,
+    /// Missile impacts awaiting the combat phase, which expands each into
+    /// ordinary damage events so the shared damage → death → despawn pipeline
+    /// resolves them. Filled during the movement pass, drained after combat in
+    /// the same tick.
+    #[serde(skip)]
+    pub(crate) pending_missile_detonations:
+        Vec<crate::sim::spawn_manager::MissileDetonation>,
     /// Internal order proof; release builds carry no ledger or recording branch.
     #[cfg(test)]
     #[serde(skip)]
@@ -764,6 +775,8 @@ impl Simulation {
             substrate: ObjectSubstrate::new(),
             lifecycle_outputs: Vec::new(),
             pending_lifecycle_requests: Vec::new(),
+            pending_rocket_detonations: Vec::new(),
+            pending_missile_detonations: Vec::new(),
             #[cfg(test)]
             lifecycle_test_events: Vec::new(),
             trigger_effects: Vec::new(),
@@ -826,6 +839,9 @@ impl Simulation {
     // --- Scenario stream (gamemd Scenario->Random @ Scen+0x218) ---
     // Keep accessors distinct even though several return the same stream today:
     // the intent name is the per-consumer routing record and the grep/audit anchor.
+    pub(crate) fn score_bonus_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // end-of-match score screen: surviving houses' displayed-score bonus
     pub(crate) fn scatter_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // bump displacement, idle/forced scatter, passenger unload exit, sell-eject
@@ -1130,7 +1146,9 @@ impl Simulation {
                 house.is_human
                     && (house.is_defeated
                         || house.has_lost
-                        || (self.houses.len() > 1 && house.has_won))
+                        // VERA-internal opponent precondition; gamemd equivalent
+                        // UNCHECKED. See `contending_house_count`.
+                        || (self.contending_house_count() > 1 && house.has_won))
             })
     }
 
@@ -1657,6 +1675,20 @@ impl Simulation {
     /// caller owns any HouseState owned-count adjustment (count semantics differ
     /// by transfer kind: engineer capture adjusts counts; garrison transfers do not).
     pub(crate) fn change_owner(&mut self, stable_id: u64, new_owner: InternedId) {
+        // `TechnoClass::ChangeOwner` calls `SpawnManagerClass::Kill_All_Spawns`
+        // before the house swap: a mind-controlled V3/Dreadnought/Boomer loses
+        // the pool it built for its old owner. Run first so the children are
+        // destroyed while still attributed to the previous house. The owner is
+        // still alive here, so the slots re-arm with a zero regen wait and the
+        // new owner's pool is rebuilt on the next manager pass.
+        if self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.spawn_manager.is_some())
+        {
+            crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
+        }
         self.substrate.entities.change_owner(stable_id, new_owner);
     }
 
@@ -1674,7 +1706,10 @@ impl Simulation {
         let owners: Vec<InternedId> = self.houses.keys().copied().collect();
         for &owner in &owners {
             let house = &self.houses[&owner];
-            if house.is_defeated {
+            // gamemd gates its entire defeat block on the house type's
+            // MultiplayPassive being clear, so Civilian/JP houses are never
+            // evaluated for defeat no matter what they own or lose.
+            if house.is_defeated || house.multiplay_passive {
                 continue;
             }
             let should_defeat = if self.session.game_options.short_game {
@@ -1699,10 +1734,14 @@ impl Simulation {
         }
 
         // Check if all remaining alive houses are mutually allied → game over.
+        // The native alive scan counts only houses that are neither defeated nor
+        // passive; the Civilian/JP houses present in every skirmish own map
+        // objects forever, so including them would keep the alive set above one
+        // and the victory screen would never appear.
         let alive: Vec<InternedId> = self
             .houses
             .iter()
-            .filter(|(_, h)| !h.is_defeated)
+            .filter(|(_, h)| !h.is_defeated && !h.multiplay_passive)
             .map(|(k, _)| *k)
             .collect();
 
@@ -1718,11 +1757,14 @@ impl Simulation {
             return;
         }
 
-        // O(n^2) bidirectional alliance check.
+        // O(n^2) mutual-alliance check. Native alliance is directional — each
+        // house owns its own ally bits — and the game-over scan requires BOTH
+        // houses of a pair to name the other, so a one-way alliance must not end
+        // the match.
         let all_allied = alive.iter().all(|a| {
             alive.iter().all(|b| {
                 a == b
-                    || crate::map::houses::are_houses_friendly(
+                    || crate::map::houses::are_houses_mutually_allied(
                         &self.house_alliances,
                         self.interner.resolve(*a),
                         self.interner.resolve(*b),
@@ -1737,6 +1779,26 @@ impl Simulation {
                 }
             }
         }
+    }
+
+    /// Number of houses that can actually contend for the match outcome.
+    ///
+    /// MultiplayPassive houses (stock Civilian/JP) are roster filler: they are
+    /// never defeated and never counted alive, so they must not make a
+    /// single-player board look contested. Callers use `> 1` to mean "a real
+    /// opponent exists" before announcing a victory that would otherwise be
+    /// true from tick 0.
+    ///
+    /// VERA-internal: the gamemd equivalent is UNCHECKED. Neither the native
+    /// defeat block nor its all-allied scan has an "is there a real opponent"
+    /// precondition — this exists only to keep zero-opponent sandbox and dev
+    /// maps, which the retail game cannot launch, from declaring instant
+    /// victory. The passive filter it counts with IS gamemd-derived.
+    pub(crate) fn contending_house_count(&self) -> usize {
+        self.houses
+            .values()
+            .filter(|house| !house.multiplay_passive)
+            .count()
     }
 
     fn house_has_live_base_unit(&self, owner: InternedId, rules: Option<&RuleSet>) -> bool {
@@ -3052,10 +3114,12 @@ impl Simulation {
                     None,
                 );
             }
-            let _ = rocket_movement::tick_rocket_movement(
-                &mut sim.substrate.entities,
-                &one,
-                sim.session.tick,
+            sim.pending_rocket_detonations.extend(
+                rocket_movement::tick_rocket_movement(
+                    &mut sim.substrate.entities,
+                    &one,
+                    sim.session.tick,
+                ),
             );
             sim.tick_tunnel_locomotor_one(stable_id, path_grid);
             sim.tick_drop_pod_locomotor_one(stable_id);
@@ -3088,6 +3152,23 @@ impl Simulation {
         });
         if let Some(rules) = rules {
             self.for_each_multiplayer_feedback_anim(|sim, id| sim.visit_anim(id, rules));
+        }
+        // Spawn-manager missiles that reached their target during the movement
+        // pass are consumed here — the missile leaves the world at the moment
+        // `RocketLocomotion::Process` would have called Detonate. The impact
+        // itself is queued for the combat phase below, which runs it through
+        // the same damage → death → despawn pipeline as any other detonation.
+        if rules.is_some() {
+            if !self.pending_rocket_detonations.is_empty() {
+                let detonated = std::mem::take(&mut self.pending_rocket_detonations);
+                crate::sim::spawn_manager::detonate_missiles(self, &detonated);
+            }
+        } else {
+            // No RuleSet means no spawner could have launched anything; drop
+            // both queues rather than letting them accumulate across ticks that
+            // never reach the combat phase.
+            self.pending_rocket_detonations.clear();
+            self.pending_missile_detonations.clear();
         }
         movement::sync_formation_speeds_after_live_pass(&mut self.substrate.entities);
         if let Some(rules) = rules {
@@ -3226,8 +3307,26 @@ impl Simulation {
             // deploy state and before combat consumes the prone bit.
             crate::sim::infantry::tick_fear_for_entities(
                 &mut self.substrate.entities,
+                &self.houses,
                 rules,
                 &self.interner,
+            );
+
+            // Idle fidgets, immediately after the stance pass so a man who just
+            // stood back up is not eligible on the same tick he was prone.
+            // Driven from the logic vector, not the entity store: limboed
+            // objects never reach this in the original.
+            // DEPENDS ON: prone bit, deploy phase, attack target, mission.
+            // PRODUCES: Idle1/Idle2 sequence switches, idle facing changes, and
+            //   scenario-RNG draws — the one idle path that moves the cursor.
+            crate::sim::infantry::tick_idle_actions(
+                &mut self.substrate.entities,
+                self.substrate.logic.as_slice(),
+                &self.houses,
+                rules,
+                &self.interner,
+                &mut self.scenario_rng,
+                self.session.binary_frame,
             );
 
             // --- Phase 5: Combat + Turret rotation ---
@@ -3312,9 +3411,11 @@ impl Simulation {
                 &logic_order,
                 &projectile_detonations,
                 Some(&mut self.radiation),
+                &self.pending_missile_detonations,
                 &mut self.scenario_rng,
                 &mut self.main_rng,
             );
+            self.pending_missile_detonations.clear();
             for projectile in combat_result.projectile_spawns.iter().copied() {
                 self.projectiles.spawn(projectile);
             }
@@ -3337,6 +3438,13 @@ impl Simulation {
                 &self.interner,
                 self.session.binary_frame,
             );
+            // SpawnManager pass. Native dispatches it per object from
+            // `TechnoClass::AI_Update` (+0x2D0 → vtable+0x5C), after that
+            // object's Mission_Dispatch → Fire_At → SetTarget. Running it
+            // immediately after the combat phase preserves that
+            // "target set, then manager reads it" ordering within the tick;
+            // the manager self-gates to every 10 frames regardless.
+            crate::sim::spawn_manager::tick_spawn_managers(self, rules, &logic_order);
             destroyed_structure |= combat_result.structure_destroyed;
             let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
                 .despawned_ids
@@ -3707,12 +3815,6 @@ impl Simulation {
         // fields, so state_hash stays bit-identical (proven by the *_no_hash_change
         // tests). `rules` is the advance_tick `Option<&RuleSet>` tail param.
         self.refresh_production_shadow(rules);
-        // S4c: passive/opportunity-acquire eligibility shadow (read-only,
-        // hash-neutral). Counts Units that would reach the passive-acquire
-        // scanner per the verified gate; the authority flip (running the scanner)
-        // is S5. Return value is the eligibility metric, unused for now.
-        #[cfg(any(test, debug_assertions))]
-        let _ = self.debug_s4c_passive_acquire_shadow(rules);
         #[cfg(debug_assertions)]
         self.debug_assert_production_shadow();
         let state_hash = self.state_hash();

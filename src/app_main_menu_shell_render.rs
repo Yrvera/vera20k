@@ -26,6 +26,13 @@ use crate::ui::shell::static_reveal::{Kind1PaintWindow, Kind1RevealReceipt, Kind
 
 /// Screen-size thresholds above which the centered 800x600 shell is letterboxed
 /// (background and chrome offset by ((w-800)/2, (h-600)/2) instead of (0,0)).
+/// Archive holding the Red Alert 2 shell loop.
+///
+/// `ra2ts_l.bik` / `ra2ts_s.bik` exist under identical names in both this archive
+/// and `langmd.mix` (Yuri's Revenge). Normal mount priority resolves the Yuri copy,
+/// so the shell loader asks for this one by name instead.
+const RA2_SHELL_MOVIE_ARCHIVE: &str = "language.mix";
+
 const SHELL_LETTERBOX_W_THRESHOLD: i32 = 1023;
 const SHELL_LETTERBOX_H_THRESHOLD: i32 = 767;
 const SHELL_BASE_W: i32 = 800;
@@ -332,16 +339,28 @@ pub(crate) fn ensure_movie_for_current_layout(
         return Ok(());
     };
     let asset_name = layout.movie_base.asset_name();
-    let Some((bytes, source)) = assets.get_with_source_ref(asset_name) else {
+
+    // The shell loop ships under the SAME filename in two archives: `language.mix`
+    // carries the Red Alert 2 loop, `langmd.mix` the Yuri's Revenge one. Normal
+    // archive priority mounts `langmd.mix` first and so resolves the Yuri copy.
+    //
+    // Prefer the Red Alert 2 copy explicitly. This is a deliberate presentation
+    // choice, not a parity claim — it is the loop this project wants on the shell.
+    // It also happens to agree with the retail duplicate priority this code already
+    // expected, which is why the old resolution logged a warning on every load.
+    // Falls back to normal lookup when `language.mix` is unavailable.
+    let preferred = assets
+        .archive(RA2_SHELL_MOVIE_ARCHIVE)
+        .and_then(|archive| archive.get_by_name(asset_name))
+        .map(|bytes| (bytes, RA2_SHELL_MOVIE_ARCHIVE));
+    let Some((bytes, source)) = preferred.or_else(|| assets.get_with_source_ref(asset_name)) else {
         log::warn!("Missing main-menu RA2TS movie asset {asset_name}");
         state.main_menu_shell_failed = true;
         return Ok(());
     };
-    if asset_name.eq_ignore_ascii_case("ra2ts_l.bik")
-        && !source.eq_ignore_ascii_case("language.mix")
-    {
+    if !source.eq_ignore_ascii_case(RA2_SHELL_MOVIE_ARCHIVE) {
         log::warn!(
-            "ra2ts_l.bik resolved from {source}; retail duplicate priority expected language.mix when both language.mix and langmd.mix contain the file"
+            "{asset_name} resolved from {source}; the Red Alert 2 copy in {RA2_SHELL_MOVIE_ARCHIVE} was not available, so the shell is showing the Yuri's Revenge loop"
         );
     }
 

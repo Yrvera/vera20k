@@ -135,6 +135,7 @@ impl Simulation {
 
             // Turret facing for voxel units with Turret=yes.
             let obj = rules.and_then(|r| r.object(&map_ent.type_id));
+            stamp_scoring_flags(&mut ge, obj);
             let has_turret = obj.map(|o| o.has_turret).unwrap_or(false);
             if has_turret {
                 let initial = crate::sim::movement::turret::body_facing_to_turret(map_ent.facing);
@@ -234,8 +235,23 @@ impl Simulation {
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.foundation = obj.foundation.clone();
             }
+            // TechnoClass::Init_Managers for map-placed parents.
+            if let Some(ruleset) = rules
+                && let Some(obj) = ruleset.object(&map_ent.type_id)
+            {
+                ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
+                    obj,
+                    ruleset,
+                    &mut self.interner,
+                    self.session.binary_frame,
+                );
+            }
+            let has_spawn_manager = ge.spawn_manager.is_some();
             let (stable_id, outcome) = self.unlimbo(ge);
             debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+            if has_spawn_manager && let Some(ruleset) = rules {
+                crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, ruleset);
+            }
             self.commit_spawn_harvest_mission(stable_id);
             count += 1;
         }
@@ -334,6 +350,7 @@ impl Simulation {
             ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
         }
 
+        stamp_scoring_flags(&mut ge, Some(obj));
         if obj.has_turret {
             let initial = crate::sim::movement::turret::body_facing_to_turret(facing);
             let rot_byte = obj.turret_rot.clamp(0, 0xFF) as u8;
@@ -418,8 +435,20 @@ impl Simulation {
         }
 
         ge.foundation = obj.foundation.clone();
+        // TechnoClass::Init_Managers — the spawn pool exists iff `Spawns=`
+        // resolves. Children are created right after placement, below.
+        ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
+            obj,
+            rules,
+            &mut self.interner,
+            self.session.binary_frame,
+        );
+        let has_spawn_manager = ge.spawn_manager.is_some();
         let (stable_id, outcome) = self.unlimbo(ge);
         debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+        if has_spawn_manager {
+            crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, rules);
+        }
         self.commit_spawn_harvest_mission(stable_id);
         Some(stable_id)
     }
@@ -477,6 +506,7 @@ impl Simulation {
             ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
         }
 
+        stamp_scoring_flags(&mut ge, Some(obj));
         if obj.has_turret {
             let initial = crate::sim::movement::turret::body_facing_to_turret(facing);
             let rot_byte = obj.turret_rot.clamp(0, 0xFF) as u8;
@@ -946,4 +976,14 @@ fn undeploy_target_for_building(type_id: &str, rules: &RuleSet) -> Option<String
 fn undeploy_center_cell(origin_rx: u16, origin_ry: u16, foundation: &str) -> (u16, u16) {
     let (width, height) = foundation_dimensions(foundation);
     (origin_rx + width / 2, origin_ry + height / 2)
+}
+
+/// Copy the rules-derived scoring flags onto a freshly built entity.
+///
+/// Every spawn path calls this, so a type that must not appear on the score
+/// screen is honored no matter how the object came into the world. The flag is
+/// copied rather than looked up later because the score bookkeeping runs in the
+/// lifecycle authority, which deliberately holds no `RuleSet` borrow.
+fn stamp_scoring_flags(ge: &mut GameEntity, obj: Option<&crate::rules::object_type::ObjectType>) {
+    ge.dont_score = obj.is_some_and(|o| o.dont_score);
 }

@@ -89,6 +89,13 @@ const RANDMAP_SED_FILE: &str = "RandMap.Sed";
 /// becomes the sentinel row's displayed name.
 const RANDOM_MAP_DESCRIPTION_KEY: &str = "TXT_RANDOM_MAP_DESCRIPTION";
 const RANDOM_MAP_DESCRIPTION_FALLBACK: &str = "Random Map";
+/// Caption gamemd loads onto the abort-mission confirmation's action button.
+/// Its two mode-dependent siblings (`GUI:Restart` in campaign, `GUI:Observe` in
+/// multiplayer) sit on a second button that offline skirmish hides outright.
+const ABORT_CONFIRM_LEAVE_KEY: &str = "GUI:Leave";
+/// The shipped English table resolves `GUI:Leave` to "Quit"; the fallback only
+/// applies when the string table is missing entirely, so it says the same.
+const ABORT_CONFIRM_LEAVE_FALLBACK: &str = "Quit";
 /// The players slider is the last of the setup dialog's six option rows, and the
 /// dialog gives it a range of 2..8 with a step of one.
 const SETUP_PLAYERS_ROW: usize = 5;
@@ -167,6 +174,22 @@ fn draws_preview(point: crate::map::rmg::build::GenerationPoint) -> bool {
 /// pub(crate) so app_render.rs can access fields.
 pub(crate) struct AppState {
     pub(crate) window: Arc<Window>,
+    /// Whether this application currently owns the foreground.
+    ///
+    /// gamemd tracks the same edge-triggered byte from `WM_ACTIVATEAPP` and
+    /// parks its main tick in a sleep-and-network-only loop while it is clear:
+    /// the frame counter, input, AI, map logic and per-tick update all stop.
+    /// Only the message pump keeps running. Starts true — a window that never
+    /// reports an activation edge must keep running.
+    pub(crate) window_active: bool,
+    /// Whether the window has no visible surface — minimised, or occluded on
+    /// the platforms that report occlusion.
+    ///
+    /// Windows never emits `WindowEvent::Occluded` (winit only raises it from
+    /// the iOS, X11, macOS and Web backends); a minimise arrives there as a
+    /// zero-sized `Resized` instead. Both signals feed this flag, so the redraw
+    /// loop parks on every platform. Presentation-only.
+    pub(crate) window_hidden: bool,
     pub(crate) gpu: GpuContext,
     pub(crate) batch_renderer: BatchRenderer,
     /// Reusable GPU instance buffers — avoids per-frame GPU buffer allocation.
@@ -234,6 +257,8 @@ pub(crate) struct AppState {
     pub(crate) zoom_anchor_world: [f32; 2],
     /// Screen-space position of the zoom anchor (cursor position when wheel fired).
     pub(crate) zoom_anchor_screen: [f32; 2],
+    /// Mouse edge auto-scroll ramp state (gamemd's CoastLevel and its 16 ms timer).
+    pub(crate) edge_scroll: crate::app_camera::EdgeScrollState,
     pub(crate) cursor_x: f32,
     pub(crate) cursor_y: f32,
     pub(crate) keys_held: HashSet<KeyCode>,
@@ -413,6 +438,15 @@ pub(crate) struct AppState {
     /// Owner name → house color index mapping for atlas key lookups.
     pub(crate) house_color_map: HouseColorMap,
     pub(crate) house_roster: HouseRoster,
+    /// End-of-match score screen contents, resolved off the houses when the match
+    /// ends and held until the player leaves the screen. `None` for result
+    /// screens with no native score analogue (a load failure, a trigger-driven
+    /// campaign end), which keep the non-art fallback.
+    pub(crate) score_screen: Option<crate::ui::score_shell::ScoreScreenModel>,
+    pub(crate) score_shell_state: crate::ui::score_shell::ScoreShellState,
+    /// Number of matches finished this session — the score screen's `Game: n`.
+    /// gamemd increments the same counter as it tears the scenario down.
+    pub(crate) finished_game_count: u32,
     /// Cell (rx, ry) → terrain elevation z for entity/overlay height lookup.
     pub(crate) height_map: BTreeMap<(u16, u16), u8>,
     /// Cell (rx, ry) → bridge deck elevation z. Only bridge cells present.
@@ -521,8 +555,15 @@ pub(crate) struct AppState {
     /// Polling-based lifecycle: spawned when an entity gains parachute_state
     /// in the sim, removed on landing or death. Render-only; not snapshotted.
     pub(crate) parachute_anims: Vec<crate::sim::components::ParachuteAnim>,
-    /// True when the game is paused (ESC menu visible, sim frozen).
+    /// True when the game is paused (an in-scenario modal is open, sim frozen).
+    ///
+    /// Derived from `in_game_menu` for every player-driven modal; the debug
+    /// pause (dev overlay / hotkey) also sets it without opening a menu.
     pub(crate) paused: bool,
+    /// In-scenario modal state — the port of gamemd's in-scenario state
+    /// variable. Owns the in-game menu, the abort-mission confirmation and the
+    /// parent/child relationship with the `0xBBB` Options dialog.
+    pub(crate) in_game_menu: crate::ui::pause_menu::InGameMenuState,
     /// When true, advance exactly one sim tick while paused, then clear.
     pub(crate) debug_frame_step_requested: bool,
     /// Effective simulation ticks per second — controls game speed.
@@ -539,8 +580,23 @@ pub(crate) struct AppState {
     pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
     /// Retail process-start splash, held until its post-present deadline.
     pub(crate) startup_splash: Option<app_startup_splash::StartupSplashPresentation>,
-    /// Global elapsed time for looping IdleAnim overlays (flags, smokestacks, etc.).
+    /// Global elapsed time for looping terrain overlay animations.
     pub(crate) idle_anim_elapsed_ms: u32,
+    /// Logic frame on which each building's slot animations were created, by
+    /// entity id.
+    ///
+    /// gamemd gives every building animation slot its own animation object whose
+    /// frame timer is based at the frame it was constructed, so two identical
+    /// buildings placed at different times run out of phase with each other.
+    /// Presentation-only, so it lives here rather than on the entity.
+    ///
+    /// DRIFT: gamemd serializes each animation object with its own timer, so a
+    /// saved game restores the phases it was saved with. This map is not in the
+    /// snapshot, so loading re-stamps every surviving structure at the load
+    /// frame and the whole base pulses in unison again — the exact symptom the
+    /// per-building phase exists to remove. Fires once per save load, and only
+    /// unwinds as those buildings are replaced.
+    pub(crate) building_anim_phase_base: std::collections::BTreeMap<u64, u64>,
     /// Debug overlay: show terrain cost / pathgrid overlay. Toggle with P / F9.
     pub(crate) debug_show_pathgrid: bool,
     /// SpeedType for terrain cost overlay. None = auto from selected unit (default Track).
@@ -712,6 +768,64 @@ impl App {
 
     fn single_player_shell_active(state: &AppState) -> bool {
         state.screen == GameScreen::MainMenu && state.main_menu_show_single_player_shell
+    }
+
+    /// The end-of-match score screen owns input whenever it has both a resolved
+    /// model and the shell chrome to draw it with; without either, the result
+    /// screen falls back to its egui form and egui keeps the input.
+    fn score_shell_active(state: &AppState) -> bool {
+        matches!(state.screen, GameScreen::MissionResult { .. })
+            && state.score_screen.is_some()
+            && state.main_menu_shell_chrome.is_some()
+    }
+
+    fn score_shell_layout(state: &AppState) -> crate::ui::score_shell::ScoreShellLayout {
+        crate::ui::score_shell::compute_layout(state.gpu.config.width, state.gpu.config.height)
+    }
+
+    fn handle_score_shell_mouse_move(state: &mut AppState) {
+        let layout = Self::score_shell_layout(state);
+        state.score_shell_state.continue_hovered =
+            layout.hit_continue(state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+    }
+
+    fn handle_score_shell_mouse_down(state: &mut AppState) {
+        let layout = Self::score_shell_layout(state);
+        let inside =
+            layout.hit_continue(state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+        state.score_shell_state.continue_pressed = inside;
+        if inside {
+            Self::play_main_menu_button_sound(state);
+        }
+    }
+
+    /// Release inside the button leaves the score screen. This is the only exit:
+    /// the native dialog is modal with one Continue button and dismisses to the
+    /// shell, so there is no cancel path to mirror.
+    fn handle_score_shell_mouse_up(state: &mut AppState) {
+        let layout = Self::score_shell_layout(state);
+        let inside =
+            layout.hit_continue(state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+        let activated = state.score_shell_state.continue_pressed && inside;
+        state.score_shell_state.continue_pressed = false;
+        if activated {
+            Self::leave_mission_result_screen(state);
+        }
+    }
+
+    /// Shared teardown for both result-screen forms: flush the deterministic log
+    /// while its simulation is still alive, hand the scenario stream back to the
+    /// offline shell, then drop the match.
+    fn leave_mission_result_screen(state: &mut AppState) {
+        crate::app_sim_tick::flush_replay_log(state);
+        Self::capture_returned_skirmish_rng(state);
+        crate::app_loading::clear_match_startup_state(state);
+        state.score_screen = None;
+        state.score_shell_state = Default::default();
+        state.screen = GameScreen::MainMenu;
+        Self::enter_shell_window_mode(state);
+        state.zoom_level = 1.0;
+        state.zoom_target = 1.0;
     }
 
     fn single_player_shell_layout(
@@ -3517,7 +3631,27 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                Self::resize_surface_for_window_size(state, size);
+                // A zero dimension is how Windows reports a minimise — that
+                // backend never sends `Occluded` — so the hidden flag is
+                // derived here as well as from the occlusion event below.
+                let hidden = size.width == 0
+                    || size.height == 0
+                    || state.window.is_minimized().unwrap_or(false);
+                Self::set_window_hidden(state, hidden);
+                // A minimise carries no usable client size: the surface cannot
+                // be configured to 0x0 and the UI-scale heuristic would read a
+                // zero viewport. The restore edge delivers the real size.
+                if !hidden {
+                    Self::resize_surface_for_window_size(state, size);
+                }
+            }
+            WindowEvent::Focused(active) => {
+                Self::set_window_active(state, active);
+            }
+            WindowEvent::Occluded(occluded) => {
+                // Fully covered on the backends that report it. Windows does
+                // not; see the `Resized` arm above.
+                Self::set_window_hidden(state, occluded);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -3594,6 +3728,17 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // The in-scenario modal machine owns Escape: it opens the
+                    // in-game menu, backs Options out to its parent menu, and
+                    // dismisses the abort confirmation. Escape's in-world
+                    // cancel duties (placement/targeting, repair/sell) still
+                    // run first — see `in_game_menu_owns_escape`.
+                    if in_game && is_escape && Self::in_game_menu_owns_escape(state) {
+                        Self::route_in_game_menu_escape(state);
+                        state.window.request_redraw();
+                        return;
+                    }
+
                     if in_game && (is_escape || !egui_consumed) {
                         if event.state.is_pressed() && !event.repeat {
                             if code == KeyCode::KeyN {
@@ -3648,6 +3793,9 @@ impl ApplicationHandler for App {
                 if !egui_consumed && Self::single_player_shell_active(state) {
                     Self::handle_single_player_shell_mouse_move(state);
                 }
+                if Self::score_shell_active(state) {
+                    Self::handle_score_shell_mouse_move(state);
+                }
                 if !egui_consumed
                     && state.screen == GameScreen::MainMenu
                     && !state.main_menu_shell_failed
@@ -3697,7 +3845,15 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
-                if Self::native_skirmish_shell_active(state) {
+                if Self::score_shell_active(state) {
+                    if button == MouseButton::Left {
+                        if btn_state.is_pressed() {
+                            Self::handle_score_shell_mouse_down(state);
+                        } else {
+                            Self::handle_score_shell_mouse_up(state);
+                        }
+                    }
+                } else if Self::native_skirmish_shell_active(state) {
                     if button == MouseButton::Left {
                         if btn_state.is_pressed() {
                             Self::handle_skirmish_shell_mouse_down(state);
@@ -3811,6 +3967,11 @@ impl ApplicationHandler for App {
                 } else {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
                 }
+            } else if state.window_hidden {
+                // Nothing on screen to keep fresh. Park the redraw loop until a
+                // window event (including the un-occlude edge) wakes it, rather
+                // than rendering frames no one can see.
+                event_loop.set_control_flow(ControlFlow::Wait);
             } else {
                 state.window.request_redraw();
             }
@@ -3888,26 +4049,25 @@ impl App {
         // before the first shell is shown.
         let mut frontend_seed_clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
         let frontend_seed = crate::match_bootstrap::read_match_seed(&mut frontend_seed_clock);
-        let startup_rules = startup_asset_manager
-            .as_ref()
-            // Startup shell: no mode or map selected yet, so no overrides.
-            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
+        // The splash goes up as soon as the archives are mounted and the two
+        // things it draws with are available: native presents it immediately
+        // after the mix mount and lets the rules/type initialization run under
+        // the artwork, padding out the remaining hold only if that work
+        // finished early. The string-table load has to stay ahead of the
+        // present — all five text layers fall back to English literals when the
+        // CSF is absent.
+        //
+        // What makes the move safe is that the archive stack is identical at
+        // both positions: the only registration that changes it sits after the
+        // splash in the old ordering as well, so first-winner resolution for
+        // the splash palette and SHP cannot differ. (The steps that moved below
+        // do share the asset manager mutably in effect — its mix cache is
+        // interior-mutable behind a lock — but caching a lookup does not change
+        // which archive wins it.)
         let startup_csf = startup_asset_manager
             .as_ref()
             .map(crate::app_init::load_csf)
             .transpose()?;
-        let startup_sound_registry = startup_asset_manager
-            .as_ref()
-            .map(crate::app_transitions::load_sound_registry)
-            .unwrap_or_default();
-        let startup_audio_indices = startup_asset_manager
-            .as_ref()
-            .map(crate::app_transitions::load_audio_indices)
-            .unwrap_or_default();
-        let startup_eva_registry = startup_asset_manager
-            .as_ref()
-            .map(crate::app_transitions::load_eva_registry)
-            .unwrap_or_default();
         let startup_fnt = startup_asset_manager.as_ref().and_then(|assets| {
             assets.get_ref("GAME.FNT").and_then(|data| {
                 crate::assets::fnt_file::FntFile::from_bytes(data)
@@ -3954,6 +4114,26 @@ impl App {
                 }
             }
         }
+        // Everything below runs with the splash already on screen: the
+        // presented swapchain frame stays composited while this thread blocks,
+        // and the hold armed above is measured from that present, so a slow
+        // load is spent inside the five seconds instead of before them.
+        let startup_rules = startup_asset_manager
+            .as_ref()
+            // Startup shell: no mode or map selected yet, so no overrides.
+            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
+        let startup_sound_registry = startup_asset_manager
+            .as_ref()
+            .map(crate::app_transitions::load_sound_registry)
+            .unwrap_or_default();
+        let startup_audio_indices = startup_asset_manager
+            .as_ref()
+            .map(crate::app_transitions::load_audio_indices)
+            .unwrap_or_default();
+        let startup_eva_registry = startup_asset_manager
+            .as_ref()
+            .map(crate::app_transitions::load_eva_registry)
+            .unwrap_or_default();
         if let Some(assets) = startup_asset_manager.as_mut() {
             match assets.register_neutral_archives() {
                 Ok(true) => {
@@ -4109,6 +4289,8 @@ impl App {
         let mut state = AppState {
             random_map_generation: None,
             window,
+            window_active: true,
+            window_hidden: false,
             gpu,
             batch_renderer,
             instance_pool: crate::render::batch::InstanceBufferPool::new(),
@@ -4147,6 +4329,7 @@ impl App {
             zoom_target: 1.0,
             zoom_anchor_world: [0.0, 0.0],
             zoom_anchor_screen: [0.0, 0.0],
+            edge_scroll: crate::app_camera::EdgeScrollState::default(),
             cursor_x: 0.0,
             cursor_y: 0.0,
             keys_held: HashSet::new(),
@@ -4242,6 +4425,9 @@ impl App {
             csf: startup_csf,
             house_color_map: HashMap::new(),
             house_roster: HouseRoster::default(),
+            score_screen: None,
+            score_shell_state: Default::default(),
+            finished_game_count: 0,
             height_map: BTreeMap::new(),
             bridge_height_map: BTreeMap::new(),
             tactical_bridge_inverse_map: BTreeMap::new(),
@@ -4285,6 +4471,7 @@ impl App {
             projectile_visuals: Vec::new(),
             parachute_anims: Vec::new(),
             paused: false,
+            in_game_menu: crate::ui::pause_menu::InGameMenuState::default(),
             debug_frame_step_requested: false,
             // KD-3: unify the two game-speed sources. `in_game_options.game_speed`
             // is the single source of truth; seed it from the skirmish-setup speed
@@ -4301,6 +4488,7 @@ impl App {
             in_game_options_anchor: None,
             startup_splash,
             idle_anim_elapsed_ms: 0,
+            building_anim_phase_base: std::collections::BTreeMap::new(),
             debug_show_pathgrid: false,
             debug_terrain_cost_speed_type: None,
             debug_show_cell_grid: false,
@@ -4370,7 +4558,18 @@ impl App {
         }
         state.frame_timer.sample(Instant::now());
         crate::app_tooltips::update(state);
-        crate::app_messages::update(state);
+        // The message clock has to observe the focus freeze exactly as it
+        // observes a modal pause: a banner on screen when the player Alt+Tabs
+        // must survive the absence with its remaining lifetime intact, not
+        // expire against wall time while the world is stopped. Park the clock
+        // and skip the expiry pass; `app_messages::update` closes the span and
+        // resumes ownership on the first foreground frame.
+        if state.screen == GameScreen::InGame && !state.window_active {
+            let wall = crate::app_tooltips::now_ms(state);
+            state.message_clock.set_paused(true, wall);
+        } else {
+            crate::app_messages::update(state);
+        }
         if state
             .startup_splash
             .as_ref()
@@ -4424,7 +4623,17 @@ impl App {
             }
         }
 
-        if tactical_capture.is_none() && matches!(state.screen, GameScreen::InGame) {
+        Self::sync_in_game_menu_with_options_overlay(state);
+
+        // Deactivated windows do not simulate. gamemd parks its main tick in a
+        // sleep-and-network-only loop while the app is not the foreground, so
+        // the world is exactly where the player left it on Alt+Tab return. The
+        // gate sits at the call site, not inside the runtime, so a focus edge
+        // never re-anchors the frame pacer on its own.
+        if tactical_capture.is_none()
+            && matches!(state.screen, GameScreen::InGame)
+            && state.window_active
+        {
             let now = Instant::now();
             let now_ms = app_sim_tick::monotonic_frame_pacer_ms(state, now);
             app_sim_tick::advance_in_game_runtime(state, now_ms);
@@ -4648,10 +4857,11 @@ impl App {
                     app_render::render_game(state, &mut encoder, &view)?
                 };
                 let sidebar_view = game_output.sidebar_view.as_ref();
-                // Paused: draw the native in-game Options (0xBBB) overlay over the
-                // frozen battlefield before egui. The egui pause card is retired;
-                // egui below now only carries the sidebar text + dev overlay.
-                if state.paused {
+                // Options (the in-scenario state the menu's Game Controls button
+                // opens) draws the native `0xBBB` overlay over the frozen
+                // battlefield, before egui. The in-game menu and the abort
+                // confirmation are egui cards drawn in the pass below.
+                if state.in_game_menu == crate::ui::pause_menu::InGameMenuState::Options {
                     if Self::ensure_skirmish_shell_chrome(state) {
                         crate::app_skirmish_shell_render::render_in_game_options_overlay(
                             state,
@@ -4661,15 +4871,10 @@ impl App {
                         )?;
                     }
                 }
-                // Always run egui in-game for sidebar text overlay (Ready labels, credits).
+                // All sidebar text (credits, Ready labels, queue counts) is now
+                // GAME.FNT sprite geometry built in app_render; egui in-game
+                // carries only the dev/debug overlays.
                 state.egui.begin_frame(&state.window);
-                if let Some(sv) = sidebar_view {
-                    crate::app_sidebar_text::draw_sidebar_text_overlay(
-                        &state.egui.ctx,
-                        sv,
-                        state.ui_scale,
-                    );
-                }
                 // Debug panels use a light/.NET theme — push light visuals
                 // before rendering, then restore the original after.
                 let any_debug_panel = state.debug_show_pathgrid
@@ -4695,10 +4900,14 @@ impl App {
                 if state.show_save_load_panel {
                     Self::handle_save_load_panel(state);
                 }
+                // The in-scenario modal cards. Options is the native `0xBBB`
+                // overlay drawn above; the menu and the abort confirmation are
+                // drawn here and their routes committed immediately.
+                Self::handle_in_game_menu(state);
                 if state.paused {
-                    // The native 0xBBB overlay (drawn above) replaces the egui
-                    // pause card. The dev overlay rides along — push its own light
-                    // visuals so its chrome matches the debug panels.
+                    // The dev overlay rides along with any in-scenario modal —
+                    // push its own light visuals so its chrome matches the
+                    // debug panels.
                     let prev = crate::app_debug_panel::push_debug_light_visuals(&state.egui.ctx);
                     Self::handle_dev_overlay(state);
                     crate::app_debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
@@ -4713,30 +4922,45 @@ impl App {
                 game_render_output = Some(game_output);
             }
             GameScreen::MissionResult { title, detail } => {
-                app_transitions::clear_screen(&mut encoder, &view);
-                state.egui.begin_frame(&state.window);
-                if crate::ui::mission_status::draw_mission_result_screen(
-                    &state.egui.ctx,
-                    title,
-                    detail,
-                ) {
-                    // Persist the deterministic diagnostic log before the sim
-                    // is torn down, symmetric with return_to_main_menu.
-                    crate::app_sim_tick::flush_replay_log(state);
-                    Self::capture_returned_skirmish_rng(state);
-                    crate::app_loading::clear_match_startup_state(state);
-                    state.screen = GameScreen::MainMenu;
-                    Self::enter_shell_window_mode(state);
-                    state.zoom_level = 1.0;
-                    state.zoom_target = 1.0;
+                // The fallback card's strings are copied out before the score
+                // render takes `state` mutably.
+                let (title, detail) = (title.clone(), detail.clone());
+                // A finished match presents the native score screen. Result
+                // screens with no native analogue (a load failure, a
+                // trigger-driven campaign end) carry no model and keep the
+                // non-art card.
+                let score_rendered = if Self::score_shell_active(state) {
+                    matches!(
+                        crate::app_score_shell_render::render_score_shell(
+                            state,
+                            &mut encoder,
+                            &output.texture,
+                        )?,
+                        crate::app_score_shell_render::ScoreShellRenderResult::Rendered
+                    )
+                } else {
+                    false
+                };
+                if !score_rendered {
+                    app_transitions::clear_screen(&mut encoder, &view);
+                    state.egui.begin_frame(&state.window);
+                    if crate::ui::mission_status::draw_mission_result_screen(
+                        &state.egui.ctx,
+                        &title,
+                        &detail,
+                    ) {
+                        // Persist the deterministic diagnostic log before the sim
+                        // is torn down, symmetric with return_to_main_menu.
+                        Self::leave_mission_result_screen(state);
+                    }
+                    state.egui.end_frame_and_render(
+                        &state.gpu,
+                        &mut encoder,
+                        &view,
+                        &state.window,
+                        state.use_software_cursor(),
+                    );
                 }
-                state.egui.end_frame_and_render(
-                    &state.gpu,
-                    &mut encoder,
-                    &view,
-                    &state.window,
-                    state.use_software_cursor(),
-                );
             }
             GameScreen::SpawnPick => {
                 crate::app_spawn_pick::render_spawn_pick(state, &mut encoder, &view)?;
@@ -4914,10 +5138,7 @@ impl App {
         Ok(())
     }
 
-    /// Temporary non-chrome quit-to-menu (design §8 Q1): the native `0xBBB`
-    /// dialog has no quit button and the egui pause card is retired, so
-    /// quit-to-menu survives as a dev-overlay shortcut until the native
-    /// Abort-Mission dialog is built (a later 5a step).
+    /// Hand the scenario RNG cursor back to the offline shell when a match ends.
     fn capture_returned_skirmish_rng(state: &mut AppState) {
         let gameplay_rng = state
             .simulation
@@ -4934,6 +5155,8 @@ impl App {
 
     fn return_to_main_menu(state: &mut AppState) {
         state.paused = false;
+        state.in_game_menu = crate::ui::pause_menu::InGameMenuState::Closed;
+        state.in_game_options_anchor = None;
         // Persist the deterministic diagnostic log before its owning sim is
         // torn down.
         crate::app_sim_tick::flush_replay_log(state);
@@ -4950,56 +5173,188 @@ impl App {
         log::info!("Returned to main menu");
     }
 
-    /// Draw the pause menu and handle its actions.
+    /// Apply one foreground-activation edge.
     ///
-    /// Retired from the in-game paint path in 5a-ii (the native `0xBBB` overlay
-    /// replaces the egui card); kept compiled for reference until 5a-iii wires the
-    /// native control input. Quit-to-menu now lives on `return_to_main_menu`.
-    #[allow(dead_code)]
-    fn handle_pause_menu(state: &mut AppState) {
-        use crate::ui::pause_menu::{self, PauseMenuAction, PauseMenuInfo};
+    /// gamemd handles `WM_ACTIVATEAPP` edge-triggered — it compares the new
+    /// value against the stored one and does nothing when it is unchanged — and
+    /// runs a focus-restore on the regain edge that flushes the recorded
+    /// keyboard and mouse state. Held keys are dropped on both edges here: the
+    /// modifier that performed an Alt+Tab never delivers its release to this
+    /// window, so it would otherwise stay latched and suppress force-fire and
+    /// the ordinary cursor for the rest of the match.
+    fn set_window_active(state: &mut AppState, active: bool) {
+        if state.window_active == active {
+            return;
+        }
+        state.window_active = active;
+        state.keys_held.clear();
+        if active {
+            // The deactivated span must not buy a catch-up frame: forget the
+            // pacing window so exactly one frame runs immediately, then normal
+            // pacing resumes.
+            state.frame_pacer.reset_for_immediate_frame();
+            state.window.request_redraw();
+        }
+        log::info!(
+            "Window {}",
+            if active { "activated" } else { "deactivated" }
+        );
+    }
 
-        let info = PauseMenuInfo {
-            current_track: state.music_player.as_ref().and_then(|p| p.current_track()),
-            volume: state.music_player.as_ref().map_or(0.5, |p| p.volume()),
-            speed_tps: state.sim_speed_tps,
+    /// Apply one window-visibility edge. Waking on the un-hide edge is what
+    /// gets the parked redraw loop turning again.
+    fn set_window_hidden(state: &mut AppState, hidden: bool) {
+        if state.window_hidden == hidden {
+            return;
+        }
+        state.window_hidden = hidden;
+        if !hidden {
+            state.window.request_redraw();
+        }
+    }
+
+    /// Does the in-scenario modal machine own this Escape press?
+    ///
+    /// gamemd reaches the in-game menu from the sidebar menu control; this port
+    /// has no such control yet, so Escape stands in for it. Both the binding and
+    /// this precedence are VERA-internal — gamemd's keyboard route into the menu
+    /// is UNCHECKED. Escape keeps its in-world cancel duties: while no modal is
+    /// open and a placement/targeting or repair/sell mode is armed, Escape
+    /// cancels that instead and the machine stays out of it.
+    fn in_game_menu_owns_escape(state: &AppState) -> bool {
+        let in_world_mode_armed = state.targeting_mode.is_some()
+            || state.sidebar_gadget_state.repair_mode_on
+            || state.sidebar_gadget_state.sell_mode_on;
+        crate::ui::pause_menu::escape_belongs_to_modal_machine(
+            state.in_game_menu,
+            in_world_mode_armed,
+        )
+    }
+
+    /// Route one Escape press through the in-scenario modal machine.
+    fn route_in_game_menu_escape(state: &mut AppState) {
+        use crate::ui::pause_menu::InGameMenuState;
+
+        // Backing out of Options takes the same exit its Back control does —
+        // apply and persist the touched `[Options]` values — so the two ways of
+        // leaving the dialog cannot disagree about what was saved.
+        if state.in_game_menu == InGameMenuState::Options {
+            crate::app_options_persist::in_game_options_close(state);
+        }
+        let next = state.in_game_menu.on_escape();
+        Self::enter_in_game_menu_state(state, next);
+    }
+
+    /// Commit an in-scenario modal transition and the app-layer effects that
+    /// ride on it.
+    ///
+    /// The simulation freezes for every non-zero state: gamemd's modal pump
+    /// never reaches its main tick in offline campaign or skirmish, so no
+    /// per-tick update, frame-counter step or tactical recomposition happens
+    /// while a dialog is up. Freezing does not skip ticks — the tick simply
+    /// stops advancing and resumes from the same number, so the tick stream is
+    /// unchanged and a replay of the match still reproduces.
+    fn enter_in_game_menu_state(
+        state: &mut AppState,
+        next: crate::ui::pause_menu::InGameMenuState,
+    ) {
+        use crate::ui::pause_menu::InGameMenuState;
+
+        let previous = state.in_game_menu;
+        if previous == next {
+            return;
+        }
+        state.in_game_menu = next;
+
+        // Leaving Options: drop the cached `0xBBB` hit-test anchor so the
+        // overlay's own mouse handler cannot claim clicks aimed at the menu.
+        if previous == InGameMenuState::Options {
+            state.in_game_options_anchor = None;
+        }
+        if next == InGameMenuState::Options {
+            // Reset the transient interaction flags so the drag-gated
+            // value-label quirk resets on every open.
+            state.in_game_options.on_open();
+        }
+
+        state.paused = next.is_open();
+        if next.is_open() {
+            // Show the OS cursor so the modal is clickable.
+            if state.software_cursor.is_some() {
+                state.window.set_cursor_visible(true);
+            }
+        } else {
+            // Elapsed modal time must not cause a catch-up frame.
+            state.frame_pacer.reset_for_immediate_frame();
+            if state.software_cursor.is_some() {
+                state.window.set_cursor_visible(false);
+            }
+        }
+        state.window.request_redraw();
+    }
+
+    /// Draw whichever in-scenario modal card is open and commit its route.
+    ///
+    /// Options is the native `0xBBB` overlay, drawn earlier in the frame; this
+    /// only reconciles the machine when that overlay closes itself.
+    fn handle_in_game_menu(state: &mut AppState) {
+        use crate::ui::pause_menu::{self, InGameMenuState, ModalOutcome};
+
+        let outcome = match state.in_game_menu {
+            InGameMenuState::Closed => ModalOutcome::Stay,
+            InGameMenuState::Menu => {
+                pause_menu::resolve_menu_action(pause_menu::draw_in_game_menu(&state.egui.ctx))
+            }
+            InGameMenuState::AbortConfirm => {
+                let leave_label =
+                    Self::csf_label(state, ABORT_CONFIRM_LEAVE_KEY, ABORT_CONFIRM_LEAVE_FALLBACK);
+                pause_menu::resolve_abort_action(pause_menu::draw_abort_confirm(
+                    &state.egui.ctx,
+                    &leave_label,
+                ))
+            }
+            // Options is the native `0xBBB` overlay, drawn earlier in the frame
+            // and reconciled by `sync_in_game_menu_with_options_overlay`.
+            InGameMenuState::Options => ModalOutcome::Stay,
         };
 
-        let action: PauseMenuAction = pause_menu::draw_pause_menu(&state.egui.ctx, &info);
-
-        match action {
-            PauseMenuAction::Resume => {
-                state.paused = false;
-                state.frame_pacer.reset_for_immediate_frame();
-                // Re-hide OS cursor so the software cursor takes over.
-                if state.software_cursor.is_some() {
-                    state.window.set_cursor_visible(false);
-                }
-                log::info!("Game resumed");
-            }
-            PauseMenuAction::ReturnToMenu => {
-                Self::return_to_main_menu(state);
-            }
-            PauseMenuAction::NextTrack => {
-                if let (Some(player), Some(assets)) =
-                    (&mut state.music_player, &state.asset_manager)
-                {
-                    if let Some(name) = player.play_next(assets) {
-                        log::info!("Switched to track: {}", name);
-                    }
-                }
-            }
-            PauseMenuAction::SetMusicVolume(vol) => {
-                if let Some(ref mut player) = state.music_player {
-                    player.set_volume(vol);
-                }
-            }
-            PauseMenuAction::SetGameSpeed(tps) => {
-                state.sim_speed_tps = tps;
-                log::info!("Game speed set to {} tps", tps);
-            }
-            PauseMenuAction::None => {}
+        match outcome {
+            ModalOutcome::Stay => {}
+            ModalOutcome::Enter(next) => Self::enter_in_game_menu_state(state, next),
+            ModalOutcome::LeaveMatch => Self::exit_match_to_shell(state),
         }
+    }
+
+    /// Re-enter the in-game menu when the Options overlay closes itself.
+    ///
+    /// gamemd's Options dialog is a **child** of the in-game menu: when it
+    /// returns, the state machine writes state 1, so closing Options puts the
+    /// player back on the menu rather than back into the mission. The `0xBBB`
+    /// overlay in this port owns its own Back handler and clears `paused`
+    /// there, so the parent state is re-asserted here — before the frame's
+    /// simulation advance, so the child's close cannot leak a stray tick.
+    fn sync_in_game_menu_with_options_overlay(state: &mut AppState) {
+        use crate::ui::pause_menu::InGameMenuState;
+
+        if state.in_game_menu == InGameMenuState::Options && !state.paused {
+            Self::enter_in_game_menu_state(state, InGameMenuState::Menu);
+        }
+    }
+
+    /// Leave the running match by the graceful-exit route.
+    ///
+    /// gamemd's confirmed Abort queues an EXIT event for the local player; when
+    /// that event executes it raises the graceful-exit session flag, and the
+    /// session-end router tears the session down **without** the victory or
+    /// defeat teardown — no outcome announcement, no result screen, straight
+    /// back to the shell. This port commits the same teardown directly instead
+    /// of round-tripping a command event; the residual DRIFT is that gamemd
+    /// spends at least one more scenario tick between the confirmation and the
+    /// teardown, which is invisible because the world is frozen behind the
+    /// modal for that whole span.
+    fn exit_match_to_shell(state: &mut AppState) {
+        log::info!("Abort Mission confirmed — leaving the match");
+        Self::return_to_main_menu(state);
     }
 
     /// Draw the save/load panel and handle its actions.

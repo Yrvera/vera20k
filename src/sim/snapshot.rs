@@ -102,7 +102,55 @@ use crate::sim::world::Simulation;
 // Bumped 38 -> 39: overlay wall ownership became authoritative persisted state.
 // Bumped 39 -> 40: ObjectSubstrate persists the authoritative per-cell raw
 // ground/deck occupation bytes instead of reconstructing them from object lists.
-// Bumped 40 -> 41: persistent BulletClass-style projectile state is serialized.
+// Bumped 40 -> 41: HouseState gains the serialized MultiplayPassive house-type
+// fact. Defeat evaluation and the game-over alive scan both skip passive houses,
+// so it is an authoritative outcome input and cannot be re-derived on load —
+// `rebuild_caches_after_load` takes no RuleSet. Serialized but NOT hashed.
+// Bumped 41 -> 42: GameEntity gains the passive target-acquisition bookkeeping
+// — `last_target_scan_frame` and `passively_acquired_target` — and its
+// `passive_scan_timer` is now armed at the construction frame instead of left
+// unarmed. All three are HASHED, so a v41 save written before this change
+// restores into a world whose hash differs from a v41 written after it.
+// Bumped 42 -> 43: `InfantryRuntime` gains `idle_action_timer` (two u32s), so
+// the component grows from 3 to 11 bytes. The encoding is bincode, which is not
+// self-describing — the decoder reads the next field's bytes unconditionally and
+// a `#[serde(default)]` never fires for a short record. A v42 save read by this
+// code would therefore pass the version check and then misread every byte after
+// the first infantry entity. The bump turns that silent corruption into a clean
+// rejection. The new field is also HASHED.
+// Bumped 43 -> 44: `GameEntity` gains the spawn-manager pool
+// (`spawn_manager: Option<SpawnManagerState>` — spawn type, missile family,
+// regen/reload/kamikaze frames, both manager timers, both targets, manager
+// mode, and a variable-length slot vector) and the child back-pointer
+// (`spawn_owner_id: Option<u64>`). Same bincode trap as 42 -> 43: the encoding
+// is not self-describing, so the decoder reads the next field's bytes
+// unconditionally and `#[serde(default)]` never fires for a short record. A v43
+// save read by this code would pass the version check and then misread every
+// byte from the first entity onward — these two fields are on EVERY entity, not
+// just spawner parents, so the corruption starts at entity one. Both are
+// HASHED, but only when present (see `world_hash.rs`).
+//
+// Bumped 44 -> 45: `AnimOverlayState`'s `rate_ms`/`elapsed_ms` became
+// `rate_logic_frames`/`elapsed_logic_frames`. Both fields were `u32` before and
+// after, so the encoded record is exactly the same width and a v44 save
+// deserializes without any error at all — it just means something else. gamemd
+// counts an animation's frame delay in logic frames, not wall-clock time, so a
+// stored `rate_ms` of 266 comes back as a 266-*frame* delay: the building
+// animation is roughly 44x too slow and looks stopped. Identical width is what
+// makes this dangerous rather than safe — the test a unit change has to pass is
+// whether old bytes still deserialize to the correct meaning, not whether they
+// deserialize at all. Presentation state, so NOT hashed.
+// (44 is claimed by the in-flight spawner slice, which lands first; this jumps
+// over it deliberately.)
+//
+// FORK WARNING — versions 41 through 46 are AMBIGUOUS. Two branches (this
+// repo's dev and the foundations-contracts line merged via PR #109/#110)
+// diverged from v40 and independently assigned 41..46 to entirely different
+// layout changes. The two lineages are preserved verbatim above and below;
+// a version tag in that range does NOT identify a unique layout, so no
+// compatibility path may ever key on 41..46. The merge of the two branches
+// lands on 47, whose layout is the union of both lineages' fields.
+// [foundations lineage] Bumped 40 -> 41: persistent BulletClass-style projectile state is serialized.
 // Bumped 41 -> 42: persistent BulletClass collision policy is serialized.
 // Bumped 42 -> 43: TriggerRuntime latches now participate in the lockstep hash.
 // Bumped 43 -> 44: TeamClass raw actions, deferred advance, timers, attachment
@@ -110,7 +158,9 @@ use crate::sim::world::Simulation;
 // Bumped 44 -> 45: piggyback persistence stores one complete nested locomotor runtime.
 // Bumped 45 -> 46: Tunnel and DropPod typed special-locomotor runtimes are
 // serialized on GameEntity, including their phase and landing state.
-const SNAPSHOT_VERSION: u32 = 46;
+// Bumped {41..46 fork} -> 47: merge of the two lineages; layout is the
+// union of every field both sides added.
+const SNAPSHOT_VERSION: u32 = 47;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1298,15 +1348,16 @@ mod tests {
     /// lifecycle target/animation identity state took 35 -> 36, and omission
     /// of process-global Main/MapGen RNG state took 36 -> 37, and serialized
     /// Drive occupation footprints took 37 -> 38, and authoritative wall
-    /// ownership took 38 -> 39, raw occupation bytes took 39 -> 40, and
-    /// authoritative projectile collision policy took 41 -> 42, and trigger
-    /// runtime lockstep hashing took 42 -> 43, TeamClass script state took
-    /// 43 -> 44, TeamClass success state took 44 -> 45, and typed special
-    /// locomotor state took 45 -> 46. This
-    /// pins it so a later accidental bump is caught.
+    /// ownership took 38 -> 39, and raw occupation bytes took 39 -> 40. Versions
+    /// 41..46 are a FORK: dev assigned them to MultiplayPassive, passive-acquire
+    /// bookkeeping, the infantry idle timer, the spawn-manager pool, and the
+    /// anim-overlay unit change, while the foundations line assigned the same
+    /// numbers to projectile state, trigger hashing, TeamClass state, piggyback
+    /// persistence, and typed special locomotors. The merge unified both as 47.
+    /// This pins it so a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_46() {
-        assert_eq!(super::SNAPSHOT_VERSION, 46);
+    fn snapshot_version_is_47() {
+        assert_eq!(super::SNAPSHOT_VERSION, 47);
     }
 
     #[test]
@@ -1322,7 +1373,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            46
+            47
         );
 
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1383,7 +1434,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            46
+            47
         );
 
         let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1449,7 +1500,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            46
+            47
         );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         let cell = restored

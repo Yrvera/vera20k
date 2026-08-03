@@ -147,6 +147,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                 CLICK_SELECT_RADIUS,
                                 shift,
                                 state.rules.as_ref(),
+                                Some(&sim.houses),
                                 &state.height_map,
                                 Some(&state.tactical_bridge_inverse_map),
                                 Some(&sim.interner),
@@ -168,6 +169,8 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                 max_x / z + state.camera_x,
                                 max_y / z + state.camera_y,
                                 shift,
+                                state.rules.as_ref(),
+                                Some(&sim.houses),
                                 Some(&sim.interner),
                             );
                         }
@@ -601,15 +604,14 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
         }
         KeyCode::Space => {
             // Spacebar cycles through recent radar events and jumps the camera.
-            if let Some(sim) = &mut state.simulation {
-                if let Some((rx, ry)) = sim.radar_events.cycle_event() {
-                    let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
-                    let sw: f32 = state.render_width() as f32;
-                    let sh: f32 = state.render_height() as f32;
-                    let z = state.zoom_level;
-                    state.camera_x = sx - sw / (2.0 * z);
-                    state.camera_y = sy - sh / (2.0 * z);
-                }
+            let event = state
+                .simulation
+                .as_mut()
+                .and_then(|sim| sim.radar_events.cycle_event());
+            if let Some((rx, ry)) = event {
+                // Centres on the tactical viewport, not the window — the sidebar
+                // column is not part of the game view.
+                crate::app_camera::center_camera_on_cell(state, rx, ry);
             }
         }
         _ => {}

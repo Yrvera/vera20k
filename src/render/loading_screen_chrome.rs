@@ -34,6 +34,11 @@ const SIDE_ICON_TRANSPARENT_RGB: [u8; 3] = [255, 0, 255];
 const MMPB_REGION_WIDTH_800: u32 = 800;
 const MMPB_REGION_WIDTH_1024: u32 = 1024;
 
+/// The one screen width that selects the narrow (`ls640*`) loading art. The app
+/// layer keys the matching text table and progress-row origin off the same
+/// width; this module keeps its own copy so `render` stays free of app imports.
+const NARROW_LOADING_SCREEN_WIDTH: u32 = 640;
+
 /// Fixed `(x, y, width, height)` region used to composite the selected-map
 /// preview and `mmpb.shp` frame-0 markers onto the loading background.
 ///
@@ -86,8 +91,14 @@ pub enum LoadingScreenWidth {
 }
 
 impl LoadingScreenWidth {
+    /// Native selects the 640 art by comparing the screen width for equality
+    /// with 640; every other width, wider or narrower, takes the 800 art.
     pub fn for_render_width(width: u32) -> Self {
-        if width >= 800 { Self::W800 } else { Self::W640 }
+        if width == NARROW_LOADING_SCREEN_WIDTH {
+            Self::W640
+        } else {
+            Self::W800
+        }
     }
 
     fn prefix(self) -> &'static str {

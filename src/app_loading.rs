@@ -7,14 +7,17 @@
 use crate::app::AppState;
 use crate::app_init::{self, MapLoadInitial, MapLoadResult};
 use crate::app_loading_composition::{
-    LoadingCompositionSnapshot, LoadingParticipantId, LoadingStartAssignment,
-    build_loading_composition,
+    LoadingCompositionSnapshot, LoadingParticipantId, LoadingStartAssignment, MmpbRegionRect,
+    RANDOM_MAP_PREVIEW_FILE, build_loading_composition, build_random_map_loading_composition,
+    loading_base_origin,
 };
 use crate::app_loading_progress_row::{
     LoadingProgressRowLayout, LoadingProgressRowSnapshot, layout_standard_skirmish_progress_row,
 };
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Color;
+use crate::assets::pcx_file::PcxFile;
+use crate::map::preview::DecodedPreview;
 use crate::match_bootstrap::{LoadingStartup, PreparedMatchStartup};
 use crate::render::batch::{BatchRenderer, SpriteInstance};
 use crate::render::bit_font::BitFont;
@@ -34,7 +37,7 @@ use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
 use crate::skirmish_launch::{LaunchCountry, SkirmishLaunchSession};
 use crate::ui::game_screen::GameScreen;
 use crate::ui::main_menu::SkirmishSettings;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const STANDARD_SKIRMISH_PROGRESS_MAX: f64 = 100.0;
 const PROGRESS_PERCENT_SCALE: f64 = 0.01;
@@ -171,7 +174,14 @@ impl NativeLoadingProgressCadence {
         }
     }
 
-    fn uses_prepared_selected_map_composition(self) -> bool {
+    /// Whether the map has to be parsed before the first displayed frame.
+    ///
+    /// gamemd derives a selected map's loading preview from the scenario, so
+    /// VERA parses the map file first and lets the pump hand over the swallowed
+    /// first milestone afterwards. The random-map branch takes its preview from
+    /// the `RandMap.img` bitmap the setup dialog wrote, so there is nothing to
+    /// parse up front and the loader's own first milestone reaches the sink.
+    fn preloads_scenario_before_first_frame(self) -> bool {
         matches!(self, Self::SelectedMap)
     }
 }
@@ -501,6 +511,16 @@ fn replace_match_startup_slots(
     *receipt = None;
 }
 
+/// The handle the player launched this skirmish under, as shown on the loading
+/// screen's progress row. `None` outside a skirmish launch.
+pub(crate) fn launch_player_name(state: &AppState) -> Option<String> {
+    state
+        .loading_session
+        .as_ref()
+        .and_then(|session| session.request.skirmish_launch_session())
+        .map(|launch| launch.player_name.clone())
+}
+
 pub(crate) fn is_native_loading_session(state: &AppState) -> bool {
     state
         .loading_session
@@ -596,11 +616,14 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
             // split-borrows (gpu/depth_view/batch shared, vxl_compute &mut,
             // native.progress &mut, native.atlas shared, request shared) all
             // hold simultaneously.
-            let render_width = state.gpu.config.width;
+            let render_size = [state.gpu.config.width, state.gpu.config.height];
+            // The pre-parse swallowed the loader's raw 8 so it could not present
+            // before the first frame; hand it over now. The random-map branch
+            // pre-parses nothing, so its loader still emits raw 8 itself.
             if let Some(native) = session.native.as_mut()
                 && native
                     .progress_cadence
-                    .uses_prepared_selected_map_composition()
+                    .preloads_scenario_before_first_frame()
             {
                 advance_and_present_native_progress(
                     &state.gpu,
@@ -609,7 +632,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     &state.bit_font,
                     native,
                     8,
-                    render_width,
+                    render_size,
                 );
             }
             // `session.native` and `session.request` are disjoint fields, so the
@@ -642,7 +665,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         composition,
                         backing_rgb,
                         text_rgb,
-                        render_width,
+                        render_size,
                         cadence,
                     };
                     app_init::load_map_from_initial(
@@ -705,7 +728,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                             &state.bit_font,
                             native,
                             terminal_raw_percent,
-                            render_width,
+                            render_size,
                         );
                     }
                     result.asset_manager = session.job.asset_manager.take();
@@ -787,7 +810,7 @@ fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyh
         .is_some_and(|native| {
             native
                 .progress_cadence
-                .uses_prepared_selected_map_composition()
+                .preloads_scenario_before_first_frame()
         })
         && state.loading_session.as_ref().is_some_and(|session| {
             matches!(session.job.phase, LoadingJobPhase::InitialMapSelection)
@@ -831,7 +854,78 @@ fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyh
     }
 }
 
-fn ensure_selected_map_composition_snapshot(state: &mut AppState) {
+/// Decode the random-map preview bitmap written by the random-map setup dialog.
+///
+/// This is the whole preview source for a random-map load: gamemd reads the same
+/// file rather than deriving a preview from the scenario. A missing or unreadable
+/// file omits the preview layer; every other layer still draws.
+fn decode_random_map_loading_preview(ra2_dir: &Path) -> Option<DecodedPreview> {
+    let path = ra2_dir.join(RANDOM_MAP_PREVIEW_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            log::warn!(
+                "Loading screen: no random-map preview at {} ({err})",
+                path.display()
+            );
+            return None;
+        }
+    };
+    let pcx = match PcxFile::from_bytes(&bytes) {
+        Ok(pcx) => pcx,
+        Err(err) => {
+            log::warn!(
+                "Loading screen: cannot decode random-map preview {} ({err})",
+                path.display()
+            );
+            return None;
+        }
+    };
+    Some(DecodedPreview {
+        width: u32::from(pcx.width),
+        height: u32::from(pcx.height),
+        rgba: pcx.to_rgba(None),
+    })
+}
+
+/// Resolve the assigned start waypoints the marker layer draws for a selected map.
+fn selected_map_start_assignments(
+    launch_session: &SkirmishLaunchSession,
+    map: &crate::map::map_file::MapFile,
+) -> Vec<LoadingStartAssignment> {
+    let starts = crate::map::waypoints::multiplayer_start_waypoints(&map.waypoints);
+    crate::app_skirmish::original_launch_start_assignments(launch_session, &starts)
+        .into_iter()
+        .filter_map(|(participant_index, waypoint)| {
+            let (participant, color_priority) = if participant_index == 0 {
+                (
+                    LoadingParticipantId::Local,
+                    launch_session.local.color_index,
+                )
+            } else {
+                let opponent_index = participant_index - 1;
+                let opponent = launch_session.opponents.get(opponent_index)?;
+                (
+                    LoadingParticipantId::Opponent(opponent_index),
+                    opponent.color_index,
+                )
+            };
+            Some(LoadingStartAssignment {
+                start_index: waypoint.index,
+                participant,
+                color_priority,
+            })
+        })
+        .collect()
+}
+
+/// Build the loading composition for either map kind.
+///
+/// gamemd branches only the preview holder on the random-map flag; the four text
+/// layers sit after that branch and are drawn for both kinds. Splitting the
+/// snapshot on the branch (as this used to) dropped the country name, the
+/// special-unit line, the briefing and "Loading..." from every random-map load.
+fn ensure_loading_composition_snapshot(state: &mut AppState) {
     let snapshot = {
         let Some(session) = state.loading_session.as_ref() else {
             return;
@@ -839,52 +933,42 @@ fn ensure_selected_map_composition_snapshot(state: &mut AppState) {
         let Some(native) = session.native.as_ref() else {
             return;
         };
-        if native.composition.is_some()
-            || !native
-                .progress_cadence
-                .uses_prepared_selected_map_composition()
-        {
+        if native.composition.is_some() {
             return;
         }
-        let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase else {
-            return;
-        };
         let Some(launch_session) = session.request.skirmish_launch_session() else {
             return;
         };
-        let starts =
-            crate::map::waypoints::multiplayer_start_waypoints(&initial.map_data().waypoints);
-        let assignments =
-            crate::app_skirmish::original_launch_start_assignments(launch_session, &starts)
-                .into_iter()
-                .filter_map(|(participant_index, waypoint)| {
-                    let (participant, color_priority) = if participant_index == 0 {
-                        (
-                            LoadingParticipantId::Local,
-                            launch_session.local.color_index,
-                        )
-                    } else {
-                        let opponent_index = participant_index - 1;
-                        let opponent = launch_session.opponents.get(opponent_index)?;
-                        (
-                            LoadingParticipantId::Opponent(opponent_index),
-                            opponent.color_index,
-                        )
-                    };
-                    Some(LoadingStartAssignment {
-                        start_index: waypoint.index,
-                        participant,
-                        color_priority,
-                    })
-                })
-                .collect::<Vec<_>>();
-        build_loading_composition(
-            initial.map_data(),
-            launch_session,
-            state.csf.as_ref(),
-            [state.gpu.config.width, state.gpu.config.height],
-            &assignments,
-        )
+        let render_size = [state.gpu.config.width, state.gpu.config.height];
+        match native.progress_cadence {
+            NativeLoadingProgressCadence::SelectedMap => {
+                let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase else {
+                    return;
+                };
+                let assignments =
+                    selected_map_start_assignments(launch_session, initial.map_data());
+                build_loading_composition(
+                    initial.map_data(),
+                    launch_session,
+                    state.csf.as_ref(),
+                    render_size,
+                    &assignments,
+                )
+            }
+            NativeLoadingProgressCadence::RandomMapHalved => {
+                let preview = session
+                    .job
+                    .ra2_dir
+                    .as_deref()
+                    .and_then(decode_random_map_loading_preview);
+                build_random_map_loading_composition(
+                    launch_session,
+                    state.csf.as_ref(),
+                    render_size,
+                    preview,
+                )
+            }
+        }
     };
 
     if let Some(native) = state
@@ -961,7 +1045,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
         ));
     }
     prepare_selected_map_initial_before_first_frame(state)?;
-    ensure_selected_map_composition_snapshot(state);
+    ensure_loading_composition_snapshot(state);
     let Some(assets) = state
         .loading_session
         .as_ref()
@@ -1093,7 +1177,7 @@ pub(crate) fn render_loading_screen(
         &native.progress,
         native.backing_rgb,
         native.text_rgb,
-        state.gpu.config.width,
+        [state.gpu.config.width, state.gpu.config.height],
     );
     let instances = frame_plan.instances;
     let text_draws = frame_plan.text_draws;
@@ -1248,13 +1332,13 @@ fn native_loading_row_layout(
     font: &BitFont,
     atlas: &LoadingScreenAtlas,
     progress: &LoadingProgressState,
-    render_width: u32,
+    render_size: [u32; 2],
 ) -> Option<LoadingProgressRowLayout> {
     if progress.current_value() == 0.0 {
         return None;
     }
     Some(layout_standard_skirmish_progress_row(
-        render_width,
+        render_size,
         [
             atlas.progress_frame0.pixel_size[0] as i32,
             atlas.progress_frame0.pixel_size[1] as i32,
@@ -1420,19 +1504,26 @@ fn build_native_loading_instances(
     progress: &LoadingProgressState,
     backing_rgb: [f32; 3],
     row_layout: Option<&LoadingProgressRowLayout>,
+    base_origin: [i32; 2],
 ) -> Vec<SpriteInstance> {
     let mut instances = Vec::with_capacity(12);
+    // The art hangs off the same base origin as the progress row and the text
+    // layers, so an oversized window centers all three together.
     push_entry(
         &mut instances,
         atlas.background,
-        [0.0, 0.0],
+        [base_origin[0] as f32, base_origin[1] as f32],
         BACKGROUND_DEPTH,
     );
 
     if let Some(composition) = composition {
         if let (Some(prepared), Some(preview_entry)) = (composition.preview.as_ref(), atlas.preview)
         {
-            push_entry_sized(
+            // gamemd blits the source preview into the fitted destination rect,
+            // resampling the whole image. The aspect fit has already chosen a
+            // destination that preserves the source ratio, so both axes scale;
+            // clipping either one here would cut the map's edge off.
+            push_entry_scaled(
                 &mut instances,
                 preview_entry,
                 [
@@ -1441,19 +1532,26 @@ fn build_native_loading_instances(
                 ],
                 [prepared.fit.width as f32, prepared.fit.height as f32],
                 PREVIEW_DEPTH,
+                [1.0; 3],
             );
         }
-        for marker in &composition.markers {
-            let color_key = scheme_entry_for_priority(i32::from(marker.color_priority)) as u8;
-            let Some(entry) = atlas.mmpb_markers.get(&color_key).copied() else {
-                continue;
-            };
-            push_entry(
-                &mut instances,
-                entry,
-                [marker.anchor.screen_x as f32, marker.anchor.screen_y as f32],
-                MARKER_DEPTH,
-            );
+        // Markers only exist alongside a preview, and they are cropped to that
+        // preview's region for the same reason gamemd composes them into a
+        // region-sized surface before blitting it.
+        if let Some(prepared) = composition.preview.as_ref() {
+            for marker in &composition.markers {
+                let color_key = scheme_entry_for_priority(i32::from(marker.color_priority)) as u8;
+                let Some(entry) = atlas.mmpb_markers.get(&color_key).copied() else {
+                    continue;
+                };
+                push_entry_clipped(
+                    &mut instances,
+                    entry,
+                    [marker.anchor.screen_x, marker.anchor.screen_y],
+                    MARKER_DEPTH,
+                    prepared.region,
+                );
+            }
         }
     }
 
@@ -1489,11 +1587,11 @@ fn build_native_loading_instances(
     // player's 16-shade remap, so preserve its per-pixel colors.
     let progress_width = progress.fill_width_gamemd_ftol_positive_domain(bar_w as u32);
     if progress_width > 0 {
-        push_entry_sized(
+        push_progress_fill(
             &mut instances,
             atlas.progress_frame0,
             bar_origin,
-            [progress_width as f32, bar_h],
+            progress_width as f32,
             PROGRESS_DEPTH,
         );
     }
@@ -1521,15 +1619,16 @@ fn build_native_loading_frame_plan(
     progress: &LoadingProgressState,
     backing_rgb: [f32; 3],
     text_rgb: [f32; 3],
-    render_width: u32,
+    render_size: [u32; 2],
 ) -> NativeLoadingFramePlan {
-    let row_layout = native_loading_row_layout(font, atlas, progress, render_width);
+    let row_layout = native_loading_row_layout(font, atlas, progress, render_size);
     let instances = build_native_loading_instances(
         atlas,
         composition,
         progress,
         backing_rgb,
         row_layout.as_ref(),
+        loading_base_origin(render_size),
     );
     let text_draws = build_native_loading_text_draws(
         font,
@@ -1562,7 +1661,7 @@ fn present_native_loading(
     progress: &LoadingProgressState,
     backing_rgb: [f32; 3],
     text_rgb: [f32; 3],
-    render_width: u32,
+    render_size: [u32; 2],
 ) -> anyhow::Result<()> {
     let output = gpu
         .surface
@@ -1583,7 +1682,7 @@ fn present_native_loading(
         progress,
         backing_rgb,
         text_rgb,
-        render_width,
+        render_size,
     );
     let instances = frame_plan.instances;
     let text_draws = frame_plan.text_draws;
@@ -1667,7 +1766,7 @@ fn advance_and_present_native_progress(
     font: &BitFont,
     native: &mut NativeLoadingScreenState,
     raw_percent: u32,
-    render_width: u32,
+    render_size: [u32; 2],
 ) {
     let effective_percent = native.progress_cadence.effective_percent(raw_percent);
     if !native.progress.advance_progress(effective_percent) {
@@ -1687,7 +1786,7 @@ fn advance_and_present_native_progress(
         &native.progress,
         native.backing_rgb,
         native.text_rgb,
-        render_width,
+        render_size,
     ) {
         log::warn!(
             "Native loading repaint at raw milestone {raw_percent} \
@@ -1711,7 +1810,7 @@ struct RenderingProgressSink<'a> {
     composition: Option<&'a LoadingCompositionSnapshot>,
     backing_rgb: [f32; 3],
     text_rgb: [f32; 3],
-    render_width: u32,
+    render_size: [u32; 2],
     cadence: NativeLoadingProgressCadence,
 }
 
@@ -1730,7 +1829,7 @@ impl LoadingProgressSink for RenderingProgressSink<'_> {
                 self.progress,
                 self.backing_rgb,
                 self.text_rgb,
-                self.render_width,
+                self.render_size,
             ) {
                 log::warn!(
                     "Native loading repaint at raw milestone {raw_percent} \
@@ -1747,20 +1846,15 @@ fn push_entry(
     position: [f32; 2],
     depth: f32,
 ) {
-    push_entry_sized(out, entry, position, entry.pixel_size, depth);
+    push_entry_scaled(out, entry, position, entry.pixel_size, depth, [1.0; 3]);
 }
 
-fn push_entry_sized(
-    out: &mut Vec<SpriteInstance>,
-    entry: LoadingScreenEntry,
-    position: [f32; 2],
-    size: [f32; 2],
-    depth: f32,
-) {
-    push_entry_tinted(out, entry, position, size, depth, [1.0, 1.0, 1.0]);
-}
-
-fn push_entry_tinted(
+/// Push a quad that resamples the whole source into `size`.
+///
+/// This is the ordinary scaling blit: the full atlas slot is sampled across the
+/// destination rect, so a destination smaller than the source squashes the image
+/// instead of cutting pieces off it.
+fn push_entry_scaled(
     out: &mut Vec<SpriteInstance>,
     entry: LoadingScreenEntry,
     position: [f32; 2],
@@ -1772,12 +1866,93 @@ fn push_entry_tinted(
         position,
         size,
         uv_origin: entry.uv_origin,
+        uv_size: entry.uv_size,
+        depth,
+        tint,
+        alpha: 1.0,
+        draw_state: DrawState::default(),
+    });
+}
+
+/// Push a quad cropped to the preview region, dropping it when nothing is left.
+///
+/// gamemd composes the start markers into a surface exactly the size of the
+/// preview region and blits that surface, so a marker whose nudge pushes it past
+/// an edge is cut off there instead of spilling onto the loading art.
+fn push_entry_clipped(
+    out: &mut Vec<SpriteInstance>,
+    entry: LoadingScreenEntry,
+    position: [i32; 2],
+    depth: f32,
+    clip: MmpbRegionRect,
+) {
+    let width = entry.pixel_size[0] as i32;
+    let height = entry.pixel_size[1] as i32;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let left = position[0].max(clip.x);
+    let top = position[1].max(clip.y);
+    let right = (position[0] + width).min(clip.x + clip.width);
+    let bottom = (position[1] + height).min(clip.y + clip.height);
+    if right <= left || bottom <= top {
+        return;
+    }
+
+    let visible = [(right - left) as f32, (bottom - top) as f32];
+    let cropped = [(left - position[0]) as f32, (top - position[1]) as f32];
+    out.push(SpriteInstance {
+        position: [left as f32, top as f32],
+        size: visible,
+        uv_origin: [
+            entry.uv_origin[0] + entry.uv_size[0] * cropped[0] / entry.pixel_size[0],
+            entry.uv_origin[1] + entry.uv_size[1] * cropped[1] / entry.pixel_size[1],
+        ],
         uv_size: [
-            entry.uv_size[0] * (size[0] / entry.pixel_size[0]).clamp(0.0, 1.0),
+            entry.uv_size[0] * visible[0] / entry.pixel_size[0],
+            entry.uv_size[1] * visible[1] / entry.pixel_size[1],
+        ],
+        depth,
+        tint: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        draw_state: DrawState::default(),
+    });
+}
+
+fn push_entry_tinted(
+    out: &mut Vec<SpriteInstance>,
+    entry: LoadingScreenEntry,
+    position: [f32; 2],
+    size: [f32; 2],
+    depth: f32,
+    tint: [f32; 3],
+) {
+    push_entry_scaled(out, entry, position, size, depth, tint);
+}
+
+/// Push the progress bar's filled span: `PROGBARM.SHP` frame 0 revealed from the
+/// left, full height.
+///
+/// This is the one loading-screen layer that is *clipped* rather than scaled —
+/// the bar sweeps by uncovering more of the same frame, so the U axis is cut at
+/// the fill width while the V axis stays whole. Every other layer scales.
+fn push_progress_fill(
+    out: &mut Vec<SpriteInstance>,
+    entry: LoadingScreenEntry,
+    position: [f32; 2],
+    fill_width: f32,
+    depth: f32,
+) {
+    out.push(SpriteInstance {
+        position,
+        size: [fill_width, entry.pixel_size[1]],
+        uv_origin: entry.uv_origin,
+        uv_size: [
+            entry.uv_size[0] * (fill_width / entry.pixel_size[0]).clamp(0.0, 1.0),
             entry.uv_size[1],
         ],
         depth,
-        tint,
+        tint: [1.0, 1.0, 1.0],
         alpha: 1.0,
         draw_state: DrawState::default(),
     });
@@ -2327,6 +2502,141 @@ mod tests {
         assert_eq!(progress.current_value(), 0.0);
         assert!(progress.advance_progress(3));
         assert!(progress.current_value() > 0.0);
+    }
+
+    /// Synthetic `mmpb.shp` frame-0 atlas slot: 12x12 pixels somewhere inside a
+    /// shared atlas, so cropping has to move both the UV origin and the UV size.
+    fn marker_entry() -> LoadingScreenEntry {
+        LoadingScreenEntry {
+            uv_origin: [0.25, 0.5],
+            uv_size: [0.1, 0.2],
+            pixel_size: [12.0, 12.0],
+        }
+    }
+
+    #[test]
+    fn a_preview_wider_than_its_region_is_squashed_whole_not_cropped() {
+        use crate::app_loading_composition::{aspect_fit_preview, mmpb_region_rect};
+
+        // A stock map whose projected preview overruns the 800-wide region: the
+        // fit picks a destination narrower than the source, which is exactly the
+        // case the bar's left-to-right U clamp used to silently crop.
+        let region = mmpb_region_rect(800);
+        let fit = aspect_fit_preview(region, 400, 200).expect("valid fit");
+        assert!(fit.width < 400, "fixture must exercise a downscale");
+
+        let entry = LoadingScreenEntry {
+            uv_origin: [0.5, 0.25],
+            uv_size: [0.4, 0.2],
+            pixel_size: [400.0, 200.0],
+        };
+        let mut instances = Vec::new();
+        push_entry_scaled(
+            &mut instances,
+            entry,
+            [(region.x + fit.pad_x) as f32, (region.y + fit.pad_y) as f32],
+            [fit.width as f32, fit.height as f32],
+            PREVIEW_DEPTH,
+            [1.0; 3],
+        );
+
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].size, [fit.width as f32, fit.height as f32]);
+        // The whole source is sampled on both axes; nothing is cut off.
+        assert_eq!(instances[0].uv_origin, entry.uv_origin);
+        assert_eq!(instances[0].uv_size, entry.uv_size);
+    }
+
+    #[test]
+    fn the_progress_bar_is_the_only_layer_revealed_by_clipping_u() {
+        let entry = LoadingScreenEntry {
+            uv_origin: [0.0, 0.0],
+            uv_size: [0.4, 0.05],
+            pixel_size: [400.0, 10.0],
+        };
+        let mut instances = Vec::new();
+
+        push_progress_fill(&mut instances, entry, [24.0, 332.0], 100.0, PROGRESS_DEPTH);
+
+        assert_eq!(instances.len(), 1);
+        // A quarter of the frame is uncovered: a quarter of U, all of V.
+        assert_eq!(instances[0].size, [100.0, 10.0]);
+        assert_eq!(instances[0].uv_size, [0.4_f32 * 0.25, 0.05]);
+    }
+
+    #[test]
+    fn only_the_selected_map_cadence_preloads_the_scenario() {
+        assert!(NativeLoadingProgressCadence::SelectedMap.preloads_scenario_before_first_frame());
+        assert!(
+            !NativeLoadingProgressCadence::RandomMapHalved.preloads_scenario_before_first_frame()
+        );
+    }
+
+    #[test]
+    fn markers_inside_the_preview_region_draw_uncropped() {
+        let clip = MmpbRegionRect::new(499, 379, 216, 166);
+        let mut instances = Vec::new();
+
+        push_entry_clipped(
+            &mut instances,
+            marker_entry(),
+            [520, 400],
+            MARKER_DEPTH,
+            clip,
+        );
+
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].position, [520.0, 400.0]);
+        assert_eq!(instances[0].size, [12.0, 12.0]);
+        assert_eq!(instances[0].uv_origin, [0.25, 0.5]);
+        assert_eq!(instances[0].uv_size, [0.1, 0.2]);
+    }
+
+    #[test]
+    fn markers_overhanging_the_preview_region_are_cut_off_at_its_edge() {
+        let clip = MmpbRegionRect::new(499, 379, 216, 166);
+        let mut instances = Vec::new();
+
+        // 4 px past the region's right edge and 3 px above its top edge.
+        push_entry_clipped(
+            &mut instances,
+            marker_entry(),
+            [707, 376],
+            MARKER_DEPTH,
+            clip,
+        );
+
+        assert_eq!(instances.len(), 1);
+        let instance = instances[0];
+        assert_eq!(instance.position, [707.0, 379.0]);
+        assert_eq!(instance.size, [8.0, 9.0]);
+        // The three cropped top rows advance the UV origin; the four cropped
+        // right columns are simply never sampled.
+        assert_eq!(instance.uv_origin, [0.25_f32, 0.5 + 0.2 * 3.0 / 12.0]);
+        assert_eq!(instance.uv_size, [0.1_f32 * 8.0 / 12.0, 0.2 * 9.0 / 12.0]);
+    }
+
+    #[test]
+    fn markers_entirely_outside_the_preview_region_are_dropped() {
+        let clip = MmpbRegionRect::new(499, 379, 216, 166);
+        let mut instances = Vec::new();
+
+        push_entry_clipped(
+            &mut instances,
+            marker_entry(),
+            [715, 400],
+            MARKER_DEPTH,
+            clip,
+        );
+        push_entry_clipped(
+            &mut instances,
+            marker_entry(),
+            [520, 367],
+            MARKER_DEPTH,
+            clip,
+        );
+
+        assert!(instances.is_empty());
     }
 
     #[test]

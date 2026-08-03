@@ -208,8 +208,10 @@ fn check_local_player_match_end(state: &mut AppState) {
         };
         // `check_defeat` flags the last house standing as the winner, which in a
         // single-house sandbox is true from tick 0 — require a real opponent
-        // (>=2 houses) before announcing victory. Loss needs no such guard.
-        if house.has_won && sim.houses.len() > 1 {
+        // (>=2 contending houses) before announcing victory. Passive
+        // Civilian/JP houses do not count: they exist on nearly every roster and
+        // would make a one-player dev map look contested. Loss needs no guard.
+        if house.has_won && sim.contending_house_count() > 1 {
             Some((
                 "You are Victorious!",
                 "All enemy forces have been defeated.",
@@ -224,10 +226,189 @@ fn check_local_player_match_end(state: &mut AppState) {
         return;
     };
     log::info!("Match end for local player '{owner}': {title}");
+    state.finished_game_count = state.finished_game_count.saturating_add(1);
+    state.score_screen = Some(build_score_screen_model(state));
+    state.score_shell_state = Default::default();
     state.screen = GameScreen::MissionResult {
         title: title.to_string(),
         detail: detail.to_string(),
     };
+}
+
+/// The name one score row shows.
+///
+/// Native copies a stored per-house display name into every row, so no row ever
+/// shows the raw house key. The local player's is the handle they launched
+/// under; every other house shows its country's display name, which is what
+/// native derives that slot from.
+fn score_row_display_name(
+    owner_name: &str,
+    local_owner: &Option<String>,
+    local_handle: &Option<String>,
+    country_name: Option<&str>,
+) -> String {
+    let is_local = local_owner
+        .as_deref()
+        .is_some_and(|local| local.eq_ignore_ascii_case(owner_name));
+    if is_local && let Some(handle) = local_handle {
+        return handle.clone();
+    }
+    // The raw house key is the last resort: it only surfaces for a house with no
+    // resolvable country at all.
+    country_name.unwrap_or(owner_name).to_string()
+}
+
+/// Collect the end-of-match score screen's contents off the live houses.
+///
+/// gamemd builds the same table when the score dialog initialises: one row per
+/// house that is neither passive nor the scenario's special/neutral house, then
+/// sorts the rows by score, highest first.
+///
+/// Column sources, all read straight off the house the way gamemd's builder
+/// does: Kills and Losses from the destroyed-object counters, Built from the
+/// finished-production counter, and Score from the harvested-credits statistic
+/// (the same accumulator the ore deposit path feeds). A house that survived the
+/// match then has its displayed score raised by a randomised victory bonus, drawn
+/// from the scenario stream exactly as gamemd draws it at this moment.
+fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::ScoreScreenModel {
+    use crate::ui::score_shell::{ScoreRow, ScoreScreenModel};
+
+    let local_owner = crate::app_commands::preferred_local_owner_name(state);
+    // The launch handle the player typed in the skirmish shell; the same string
+    // the loading screen's progress row shows. Absent outside a skirmish launch,
+    // in which case the house's own name is displayed.
+    let local_handle = crate::app_loading::launch_player_name(state);
+    // Native fills each house's stored display name from its country's `UIName=`
+    // through the string table, falling back to the country's plain `Name=`, and
+    // the score screen copies that name into every row. Two computer opponents of
+    // different countries therefore read differently.
+    let country_names: std::collections::BTreeMap<String, String> = {
+        let rules = state.rules.as_ref();
+        let csf = state.csf.as_ref();
+        state
+            .simulation
+            .as_ref()
+            .map(|sim| {
+                sim.houses
+                    .iter()
+                    .filter_map(|(id, house)| {
+                        let owner = sim.interner.resolve(*id).to_string();
+                        let country = sim.interner.resolve(house.country?).to_string();
+                        let (ui_key, plain) = rules
+                            .map(|r| r.country_display_name_sources(&country))
+                            .unwrap_or((None, None));
+                        let localized = ui_key
+                            .zip(csf)
+                            .map(|(key, csf)| csf.text(key).into_owned())
+                            // An unresolved key comes back as the key itself; that
+                            // is not a name, so fall through to `Name=`.
+                            .filter(|text| Some(text.as_str()) != ui_key);
+                        let name = localized.or_else(|| plain.map(str::to_string))?;
+                        Some((owner, name))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // Resolve each contender's row colour up front: the ramps live on the rules
+    // and the loop below needs the simulation mutably (the victory bonus draws
+    // from the scenario stream), so the two borrows cannot overlap.
+    let row_colors: std::collections::BTreeMap<String, [u8; 3]> = {
+        let ramps = state.rules.as_ref().map(|rules| &rules.house_color_ramps);
+        state
+            .simulation
+            .as_ref()
+            .map(|sim| {
+                sim.houses
+                    .iter()
+                    .map(|(id, _)| {
+                        let owner = sim.interner.resolve(*id).to_string();
+                        let index = state
+                            .house_color_map
+                            .get(&owner)
+                            .copied()
+                            .unwrap_or(crate::rules::house_colors::NO_REMAP);
+                        // Shade 0 is the brightest band of the scheme ramp — the
+                        // same colour the radar draws this house's dots with.
+                        let rgb = ramps
+                            .map(|r| {
+                                let c = r.ramp(index)[0];
+                                [c.r, c.g, c.b]
+                            })
+                            .unwrap_or([0xFF, 0xFF, 0xFF]);
+                        (owner, rgb)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let elapsed_seconds = state
+        .simulation
+        .as_ref()
+        .map(|sim| (sim.session.tick / u64::from(crate::app_types::SIM_TICK_HZ)) as u32)
+        .unwrap_or(0);
+
+    let mut rows: Vec<ScoreRow> = Vec::new();
+    let Some(sim) = state.simulation.as_mut() else {
+        return ScoreScreenModel::default();
+    };
+    // House iteration order is the BTreeMap's, which is the deterministic order
+    // every peer shares — the same requirement gamemd's array walk satisfies, and
+    // it fixes the order in which the victory bonus consumes the scenario stream.
+    let contenders: Vec<crate::sim::intern::InternedId> = sim
+        .houses
+        .iter()
+        .filter(|(_, house)| !house.multiplay_passive)
+        .map(|(id, _)| *id)
+        .collect();
+    for owner_id in contenders {
+        let Some(house) = sim.houses.get(&owner_id) else {
+            continue;
+        };
+        let owner_name = sim.interner.resolve(owner_id).to_string();
+        let survived = !house.is_defeated;
+        let stats = house.stats;
+        // The native score field has two feeders — harvested ore and kill points.
+        let raw_score = stats.score(house.economy.harvested_credits);
+        let score = if survived && raw_score > 0 {
+            let half = raw_score / 2;
+            let bonus = sim
+                .score_bonus_rng()
+                .next_range_u32_inclusive(half.max(0) as u32, raw_score.max(0) as u32);
+            raw_score.saturating_add(half).saturating_add(bonus as i32)
+        } else {
+            raw_score
+        };
+        let display_name = score_row_display_name(
+            &owner_name,
+            &local_owner,
+            &local_handle,
+            country_names.get(&owner_name).map(String::as_str),
+        );
+        rows.push(ScoreRow {
+            name: display_name,
+            rgb: row_colors
+                .get(&owner_name)
+                .copied()
+                .unwrap_or([0xFF, 0xFF, 0xFF]),
+            kills: stats.kills(),
+            losses: stats.losses(),
+            built: stats.built,
+            score,
+        });
+    }
+    // Highest score first. A stable sort keeps ties in house order, so the table
+    // is reproducible across peers rather than depending on a sort's tie-break.
+    rows.sort_by(|a, b| b.score.cmp(&a.score));
+
+    ScoreScreenModel {
+        // A stock offline skirmish takes the skirmish heading; the networked
+        // heading belongs to the multiplayer session type.
+        title_key: "GUI:SkirmishScore",
+        game_number: state.finished_game_count,
+        elapsed_seconds,
+        rows,
+    }
 }
 
 fn anim_world_sound_screen(world: crate::sim::anim_class::AnimWorldCoord) -> (f32, f32) {
@@ -608,10 +789,18 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
         // Drain tank-bunker wall-anim events into SpecialAnim overlays the same
         // frame so the walls rise/fall in step with the install/teardown.
         crate::app_building_anim::consume_bunker_wall_events(state);
-        // Use real wall-clock delta (capped to prevent jumps after pauses/debugger).
-        // Previously this passed SIM_TICK_MS (66ms) per render frame, causing building
-        // idle animations to play ~3-4× too fast (60fps × 66ms = 3960ms/sec).
-        crate::app_building_anim::tick_crane_animations(state, 16);
+        // Two clocks. The 16ms is wall time for the terrain-overlay animations,
+        // which are not part of the building animation model. Building animation
+        // frame delays are counted in logic frames, so they take the number of
+        // sim frames actually committed this iteration — zero when the lockstep
+        // lane declined to advance, so they never step on a frame that did not
+        // happen.
+        let sim_frames_advanced: u32 = garrison_flash_elapsed_ticks as u32;
+        crate::app_building_anim::tick_crane_animations(state, 16, sim_frames_advanced);
+        // Looping slot animations are phased off the logic frame their building
+        // was placed, so the base has to be recorded on a sim frame boundary
+        // rather than on a render frame.
+        crate::app_building_anim::refresh_building_anim_phase_bases(state);
         crate::app_building_anim::tick_garrison_muzzle_flashes(
             state,
             garrison_flash_elapsed_ticks.saturating_mul(u64::from(SIM_TICK_MS)) as u32,
@@ -1390,17 +1579,9 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
         );
         return;
     };
-    let wp_z = state
-        .height_map
-        .get(&(waypoint.rx, waypoint.ry))
-        .copied()
-        .unwrap_or(0);
-    let (sx, sy) = terrain::iso_to_screen(waypoint.rx, waypoint.ry, wp_z);
-    let sw = state.render_width() as f32;
-    let sh = state.render_height() as f32;
-    let z = state.zoom_level;
-    state.camera_x = sx - sw / (2.0 * z);
-    state.camera_y = sy - sh / (2.0 * z);
+    let (rx, ry) = (waypoint.rx, waypoint.ry);
+    // Centres on the tactical viewport, not the window.
+    crate::app_camera::center_camera_on_cell(state, rx, ry);
 }
 
 /// Rebuild both terrain-derived navigation caches from one resolved-terrain
@@ -2181,7 +2362,7 @@ mod tests {
 
 #[cfg(test)]
 mod modal_pump_tests {
-    use super::{SessionMode, modal_pump_should_advance_sim};
+    use super::{SessionMode, modal_pump_should_advance_sim, score_row_display_name};
 
     #[test]
     fn session_mode_maps_writer_proofed_game_mode_values() {
@@ -2311,5 +2492,49 @@ mod modal_pump_tests {
         // build; proves the contract for when multiplayer lands).
         assert_eq!(pumped_world_delta(SessionMode::Lan), FRAMES);
         assert_eq!(pumped_world_delta(SessionMode::Wol), FRAMES);
+    }
+
+    #[test]
+    fn score_rows_never_show_the_raw_house_key() {
+        let local = Some("Americans".to_string());
+        let handle = Some("Commander".to_string());
+        // Local player: the handle they launched under.
+        assert_eq!(
+            score_row_display_name("Americans", &local, &handle, Some("Americans!")),
+            "Commander"
+        );
+        // Owner-key match is case-insensitive, as elsewhere in the owner paths.
+        assert_eq!(
+            score_row_display_name("AMERICANS", &local, &handle, Some("Americans!")),
+            "Commander"
+        );
+        // Every other house shows its country's display name. Two computer
+        // opponents of different countries read differently, as they do natively.
+        assert_eq!(
+            score_row_display_name("Russians", &local, &handle, Some("Russia")),
+            "Russia"
+        );
+        assert_eq!(
+            score_row_display_name("Africans", &local, &handle, Some("Libya")),
+            "Libya"
+        );
+    }
+
+    #[test]
+    fn score_row_name_falls_back_when_no_launch_handle_was_recorded() {
+        // Outside a skirmish launch there is no handle, so even the local row
+        // takes the country name.
+        assert_eq!(
+            score_row_display_name("Americans", &None, &None, Some("America")),
+            "America"
+        );
+    }
+
+    #[test]
+    fn score_row_name_uses_the_house_key_only_with_no_resolvable_country() {
+        assert_eq!(
+            score_row_display_name("Americans", &None, &None, None),
+            "Americans"
+        );
     }
 }

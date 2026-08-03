@@ -630,6 +630,13 @@ pub struct CellOccupant {
     pub layer: MovementLayer,
     /// Infantry sub-cell (2, 3, or 4). None for vehicles/structures.
     pub sub_cell: Option<u8>,
+    /// Whether this occupant is a structure, carried over from the insertion
+    /// category. gamemd's per-cell building lookup walks the object list and
+    /// returns only BuildingClass objects, so gates that ask "is there a
+    /// building in this cell" must not be satisfied by a tank parked on it.
+    /// Insertion order alone cannot answer that — a lone occupant carries no
+    /// ordering information — so the category is recorded per occupant.
+    pub is_building: bool,
 }
 
 /// Requested insertion order for a cell's selected gamemd object list.
@@ -688,6 +695,17 @@ impl CellOccupancy {
         self.occupants
             .iter()
             .any(|o| o.layer == layer && o.sub_cell.is_none())
+    }
+
+    /// Whether this cell holds a structure on the given layer.
+    ///
+    /// Strictly narrower than `has_blockers_on`, which also reports vehicles.
+    /// This is the predicate for gamemd's per-cell building lookup, which
+    /// returns only BuildingClass objects.
+    pub fn has_building_on(&self, layer: MovementLayer) -> bool {
+        self.occupants
+            .iter()
+            .any(|o| o.layer == layer && o.is_building)
     }
 
     /// Count occupants on a given layer.
@@ -807,6 +825,7 @@ impl OccupancyGrid {
             entity_id,
             layer,
             sub_cell,
+            is_building: insertion == CellListInsertion::AppendBuilding,
         };
         let occ = self.cells.entry((rx, ry)).or_default();
         match insertion {

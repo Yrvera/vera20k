@@ -32,17 +32,24 @@ pub(super) struct DrawPassData<'a> {
     pub unit_pages: &'a [usize],
     pub unit_transition_paged: &'a [Vec<SpriteInstance>],
     pub shp_paged: &'a [Vec<SpriteInstance>],
-    pub building_turret_pages: &'a [usize],
     pub particle_paged: &'a [Vec<SpriteInstance>],
+    pub top_unit_pages: &'a [usize],
     pub ghost_page: u8,
 }
 
 /// Create the main render pass and dispatch all draw calls in the correct order.
 ///
+/// The frame has two regions, matching the native composition: the **tactical
+/// viewport**, scissored to the window minus the sidebar column, and the
+/// **chrome**, which owns the whole window and goes down last. Steps 1–10 below
+/// are tactical; the screen-fixed block at the end releases the scissor first.
+///
 /// Draw order follows the original engine's layered rendering:
 /// 1. Terrain (zdepth) → 2. Bridge body (zdepth) → 3. Overlays (passthrough) →
-/// 4. Bridge entities (merge) → 5. Ground objects (merge) → 6. Turrets →
-/// 7. Cliff redraw (zdepth) → 8. Debug → 9. Shroud/fog → 10. UI/sidebar
+/// 4. Bridge entities (merge) → 5. Ground objects, building turrets included
+/// (merge) → 7. Cliff redraw (zdepth) → 7.6 Particles (layer 3) →
+/// 7.7 Bodies above the Ground band (layers 3–4) → 8. Debug → 9. Shroud/fog →
+/// 10. UI/sidebar
 pub(super) fn dispatch_draw_passes(
     state: &AppState,
     encoder: &mut wgpu::CommandEncoder,
@@ -53,6 +60,29 @@ pub(super) fn dispatch_draw_passes(
     let transition_cache = state.vxl_slope_transition_cache.borrow();
     let mut pass = begin_main_pass(encoder, view, &state.depth_view);
 
+    // Everything from here to the screen-fixed chrome block is battlefield: it
+    // belongs to the tactical viewport and must not be able to paint a pixel
+    // into the sidebar column. The native engine gets that for free — the
+    // battlefield composes into its own surface and every object draw is handed
+    // the intersection of its screen rect with the tactical rect as a clip. VERA
+    // composes into one target, so the scissor is what enforces it.
+    //
+    // Without it the guarantee degrades to "the sidebar art happens to cover
+    // it", and coverage is per-theme, not universal. Allied and Soviet do cover:
+    // side3 is drawn at its own SHP height, not the RON's `side3_height` (which
+    // is 0), and the top-housing panel follows it, so the stack runs past the
+    // window bottom and only a few pixels of the top strip are bare. Yuri does
+    // not. Its atlas is built from sidec02md.mix, whose seven entries are
+    // radary.shp, the three background plates, two palettes and key.ini — and
+    // the by-hash-ID lookups (`render_entry_by_id`, used for the top strips and
+    // the housing panel) have no asset-manager fallback, unlike the by-name
+    // ones. They all resolve to None, leaving the whole top-inset block and a
+    // strip below side3 unpainted. Those are the holes live terrain, units and
+    // any overhanging bracket or health bar were showing through. Clipped, the
+    // region reads black, which is what opaque chrome looks like there.
+    let (tac_x, tac_y, tac_w, tac_h) = crate::app_camera::tactical_viewport_px(state);
+    pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
+
     // --- Step 1: Terrain (Z-depth pipeline for per-pixel depth from TMP Z-data) ---
     draw_pooled_zdepth(
         &mut pass,
@@ -60,6 +90,20 @@ pub(super) fn dispatch_draw_passes(
         pool,
         state.tile_atlas.as_ref(),
         "terrain",
+    );
+
+    // --- Step 1.5: Smudges (static decals: craters + scorches) ---
+    // The native terrain-tile pass dispatches each cell's smudge right after
+    // blitting that cell's tile, so smudges land in the terrain layer — well
+    // before the cell-content layer that draws overlays. Drawing them after
+    // overlays instead put every crater and scorch mark on top of the ore and
+    // walls it should be lying under.
+    draw_pooled_passthrough_overlay(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        state.overlay_atlas.as_ref(),
+        "smudge",
     );
 
     // --- Step 2: Bridge body (Z-depth pipeline) ---
@@ -71,14 +115,10 @@ pub(super) fn dispatch_draw_passes(
         "overlay_bridge_body",
     );
 
-    // --- Step 2.5: Bridge body shadow (DISABLED) ---
-    // Phase D Task 8 wired this in, but bridge shadow SHP frames are not
-    // ordinary palette-indexed pixels — gamemd renders them via a translucent
-    // blitter that re-interprets the indices as shadow density. Passing them
-    // through the theater palette renders solid bright cyan instead of a
-    // shadow shape. Re-enable once a proper shadow blitter (or palette
-    // remap) lands. Pipeline plumbing — atlas pack, instance build, pooled
-    // upload — is preserved so the re-enable is a one-line draw call.
+    // (Bridge body shadows are NOT drawn here. The native cell-content layer
+    // runs two full sweeps — every overlay body, then every overlay shadow —
+    // so shadows belong after the overlay bodies at step 3.5, not between the
+    // bridge body and the overlays.)
 
     // --- Step 3: Overlays (no depth test — passthrough) ---
     // Overlays don't read the Z-buffer — the tile blitter skips Z-testing
@@ -97,19 +137,34 @@ pub(super) fn dispatch_draw_passes(
         "overlay",
     );
 
-    // --- Step 3.5: Smudges (static decals: craters + scorches) ---
-    // Drawn between overlays and entities so smudges sit on top of the
-    // ground but underneath any unit or building. Uses the same passthrough
-    // overlay pipeline as ordinary overlays. Buffer is empty until the
-    // SmudgeType SHP atlas registration follow-up lands; the helper returns
-    // early when the pooled buffer has count == 0.
-    draw_pooled_passthrough_overlay(
+    // --- Step 3.5: Overlay shadows — bridge decks ---
+    // Second sweep of the native cell-content layer: after every overlay body
+    // is down, each overlay-bearing cell draws its shadow half. The atlas bakes
+    // these as black texels whose alpha approximates the blitter's darken, so
+    // the ordinary passthrough pipeline gets the shape and the
+    // composite-on-overlap behaviour. The darken STRENGTH is a known drift —
+    // this pass blends in linear space against an sRGB target while the blitter
+    // halves the encoded word, leaving the shadow lighter than retail. See
+    // `render::bridge_atlas::SHADOW_DARKEN_ALPHA`.
+    //
+    // Only bridge decks are covered so far — ore, gem and wall shadows still
+    // need their own instance bucket and pooled buffer.
+    draw_pooled_bridge_passthrough(
         &mut pass,
         &state.batch_renderer,
         pool,
-        state.overlay_atlas.as_ref(),
-        "smudge",
+        state.bridge_atlas.as_ref(),
+        "overlay_bridge_body_shadow",
     );
+
+    // (Smudges are drawn back at step 1.5, inside the terrain layer, matching
+    // the native per-cell tile-then-smudge dispatch. Their screen position
+    // still ignores cell elevation, so a hilltop crater sits one height step
+    // too low per level; the native tile pass folds the cell's height into the
+    // smudge's Y. Not fixed here because `smudge::build_visible_instances` has
+    // no height source and adding one changes its signature and its caller in
+    // `build_instances.rs`. The instances' depth value is irrelevant either
+    // way — this pass neither reads nor writes the depth buffer.)
 
     // Building selection bracket back/left edges. Drawn before object bodies so
     // the normal SHP merge naturally occludes the hidden bracket edges.
@@ -181,25 +236,13 @@ pub(super) fn dispatch_draw_passes(
         );
     }
 
-    // --- Step 6: Building turrets ---
-    // Drawn AFTER all layer-2 objects (separate turret pass). Building turret
-    // VXLs go through the voxel sprite pipeline like regular vehicle voxels.
-    if let (Some(unit_atlas), Some(palette_set)) =
-        (state.unit_atlas.as_ref(), state.palette_set.as_ref())
-    {
-        if let Some((buf, count)) = pool.get("building_turret") {
-            merge_passes::draw_unit_atlas_page_runs(
-                &mut pass,
-                &state.batch_renderer,
-                unit_atlas,
-                palette_set,
-                buf,
-                data.building_turret_pages,
-                0,
-                count,
-            );
-        }
-    }
+    // (There is no separate building-turret pass. gamemd draws a building's
+    // voxel turret inside the building's own display call, in the sorted
+    // ground layer, right after the body — the pass that does run after
+    // layer 2 walks the building array to draw a production/ally overlay and
+    // never touches a turret. The turret instances are therefore emitted into
+    // the same UnitAtlas stream as the vehicles and interleave with them in
+    // step 5; see the note in build_instances.)
 
     // --- Step 7: Cliff redraw ---
     // Cliff terrain tiles redrawn AFTER sprites using zdepth shader + Less compare.
@@ -234,6 +277,59 @@ pub(super) fn dispatch_draw_passes(
     // and Y-sorted on the CPU, so no GPU depth read/write needed.
     const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
     for (i, key) in PARTICLE_KEYS.iter().enumerate() {
+        if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
+            if let Some((buf, count)) = pool.get(key) {
+                if count == 0 {
+                    continue;
+                }
+                state.batch_renderer.draw_passthrough_range(
+                    &mut pass,
+                    &page.texture,
+                    buf,
+                    0,
+                    count,
+                );
+            }
+        }
+    }
+
+    // --- Step 7.7: The band above Ground (gamemd layers 3 and 4) ---
+    // The native object loop walks its display layers in index order and only
+    // layer 2 is kept sorted, so everything an air locomotor puts in layers 3
+    // and 4 is drawn after every ground object, in submission order. That is
+    // the whole reason this pass exists: an aircraft off its pad must never be
+    // covered by a building or a unit, whatever iso row it happens to be over.
+    //
+    // Instance order inside the band is emission order, not depth — see the
+    // note on `top_unit` in build_instances.
+    //
+    // The SHP half goes through passthrough, which does no depth test at all —
+    // the same thing the native sprite blitters do for these layers. The voxel
+    // half is stuck with the voxel pipeline's LessEqual test against the
+    // terrain buffer; with the sort key now anchored on the body's own ground
+    // row (see helpers::ground_sort_row) that test passes for everything the
+    // body flies over, so the residual is a cliff face standing in a *nearer*
+    // iso row than the body's own cell, which its lifted sprite does not reach.
+    const TOP_SHP_KEYS: [&str; 4] = ["shp_top_p0", "shp_top_p1", "shp_top_p2", "shp_top_p3"];
+    if let (Some(unit_atlas), Some(palette_set)) =
+        (state.unit_atlas.as_ref(), state.palette_set.as_ref())
+    {
+        if let Some((buf, count)) = pool.get("unit_top") {
+            if count > 0 {
+                merge_passes::draw_unit_atlas_page_runs(
+                    &mut pass,
+                    &state.batch_renderer,
+                    unit_atlas,
+                    palette_set,
+                    buf,
+                    data.top_unit_pages,
+                    0,
+                    count,
+                );
+            }
+        }
+    }
+    for (i, key) in TOP_SHP_KEYS.iter().enumerate() {
         if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
             if let Some((buf, count)) = pool.get(key) {
                 if count == 0 {
@@ -448,6 +544,11 @@ pub(super) fn dispatch_draw_passes(
         "placement_invalid",
     );
     // --- Screen-fixed UI: sidebar, minimap, cursor — use UI camera (zoom=1.0) ---
+    // Chrome owns the whole window: the sidebar column, the message list that
+    // starts at the tactical origin, tooltips, and the cursor, which the native
+    // engine draws over both regions. Release the tactical scissor before any of
+    // it goes down.
+    pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());
     draw_pooled_ui(
         &mut pass,
         &state.batch_renderer,

@@ -13,9 +13,9 @@ use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
     OwnerDrawButton, RandomMapSetupLayout, RectPx, SETUP_COMBO_ROWS, SavedSeedLayout,
-    SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboItem, SkirmishCountryChoice,
-    SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState, SkirmishTrackbarId,
-    ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
+    SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboId, SkirmishComboItem,
+    SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState,
+    SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
     choose_map_listbox_row_rect, choose_map_listbox_row_rect as seed_row_rect,
     choose_map_listbox_visible_row_count, combo_dropdown_content_rect, combo_dropdown_rect,
     combo_dropdown_visible_row_count, combo_enabled, combo_items, combo_text_rect,
@@ -684,11 +684,14 @@ pub(super) fn build_shell_text_draws(
         layout.rows.start_combos[0],
         &covering_overlays,
     );
-    push_combo_face_label_draw(
+    push_combo_face_label_draw_with_color(
         &mut shell_draws,
         state,
         &team_label(state, shell.player_team),
         layout.rows.team_combos[0],
+        // The local Team combo greys with the mode's AlliesAllowed gate; every
+        // other local-row face is unconditionally live.
+        combo_face_text_color(!combo_enabled(shell, maps, SkirmishComboId::Team(0))),
         &covering_overlays,
     );
 
@@ -742,7 +745,9 @@ pub(super) fn build_shell_text_draws(
             state,
             &team_label(state, opponent.team),
             layout.rows.team_combos[row],
-            sibling_text_color,
+            // Row-active alone does not decide the Team face: the mode's
+            // AlliesAllowed gate greys it as well.
+            combo_face_text_color(!combo_enabled(shell, maps, SkirmishComboId::Team(row))),
             &covering_overlays,
         );
     }

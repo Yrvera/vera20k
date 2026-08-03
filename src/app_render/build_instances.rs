@@ -46,8 +46,12 @@ pub(super) struct WorldInstances {
     pub bridge_unit_transition_paged: Vec<Vec<SpriteInstance>>,
     pub shp_paged: Vec<Vec<SpriteInstance>>,
     pub bridge_shp_paged: Vec<Vec<SpriteInstance>>,
-    pub building_turret: Vec<SpriteInstance>,
-    pub building_turret_pages: Vec<usize>,
+    /// Bodies above the Ground band: voxel aircraft off their pads, missiles in
+    /// flight. Drawn after every ground object — see `top_unit` in draw_passes.
+    pub top_unit: Vec<SpriteInstance>,
+    pub top_unit_pages: Vec<usize>,
+    /// The SHP half of the same band — in stock YR, Rocketeers at hover height.
+    pub top_shp_paged: Vec<Vec<SpriteInstance>>,
     /// Per-particle SpriteInstances (Layer 3). Drawn at Step 7.5 — above
     /// all ground objects + cliffs, below debug/shroud/UI.
     pub particle_paged: Vec<Vec<SpriteInstance>>,
@@ -221,6 +225,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         .map_or(1, |a| a.page_count().max(1));
     let mut shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut bridge_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
+    let mut top_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut particle_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
 
     // VXL units (ground + bridge) — sorted by depth descending.
@@ -232,6 +237,13 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     unit_pages.clear();
     let mut bridge_unit: Vec<SpriteInstance> = Vec::new();
     let mut bridge_unit_pages: Vec<usize> = Vec::new();
+    // The band above Ground (gamemd layers 3 and 4). Deliberately NOT depth
+    // sorted: those layers append and render in submission order, so the
+    // engine's own intra-band order is "whichever object entered the layer
+    // first". We cannot reproduce that submission history from a per-frame
+    // rebuild, and emission order is as legitimate a submission order as any.
+    let mut top_unit: Vec<SpriteInstance> = Vec::new();
+    let mut top_unit_pages: Vec<usize> = Vec::new();
     let transition_page_count = state
         .vxl_slope_transition_cache
         .borrow()
@@ -245,13 +257,14 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         state,
         &mut unit,
         &mut unit_pages,
+        &mut top_unit,
+        &mut top_unit_pages,
         &mut bridge_unit,
         &mut bridge_unit_pages,
         &mut unit_transition_paged,
         &mut bridge_unit_transition_paged,
         &mut shp_paged,
     );
-    sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
     sort_by_depth_desc_with_pages(&mut bridge_unit, &mut bridge_unit_pages);
     for page in &mut unit_transition_paged {
         sort_by_depth_desc(page);
@@ -259,17 +272,28 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     for page in &mut bridge_unit_transition_paged {
         sort_by_depth_desc(page);
     }
-    // Building turret VXLs use the unit atlas texture but must draw AFTER all
-    // layer-2 objects (separate turret pass after layer 2).
-    let mut building_turret: Vec<SpriteInstance> = Vec::new();
-    let mut building_turret_pages: Vec<usize> = Vec::new();
+    // A building's voxel turret is drawn inside the building's own display
+    // call, in the sorted ground layer, immediately after its body — gamemd
+    // has no post-layer-2 turret pass. So the turrets join the same UnitAtlas
+    // stream as the vehicles and are sorted with it, at the building's own
+    // depth. That leaves the body and turret tied, and the merge resolves a tie
+    // in favour of the SHP group, so the body goes down first and the turret
+    // lands on top of it — the stacking the native single draw produces —
+    // while a vehicle standing at a nearer iso row still draws over both.
+    // Parachute canopies are composed into their body's draw, so they take the
+    // body's key rather than deriving one. Collected here, consumed by
+    // `build_parachute_instances` below — which is why it must run after this.
+    let mut parachute_body_depths = app_instances::ParachuteBodyDepths::new();
     app_instances::build_shp_instances(
         state,
         &mut shp_paged,
         &mut bridge_shp_paged,
-        &mut building_turret,
-        &mut building_turret_pages,
+        &mut top_shp_paged,
+        &mut unit,
+        &mut unit_pages,
+        &mut parachute_body_depths,
     );
+    sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
     app_instances::build_world_effect_instances(state, &mut shp_paged);
     // Damage fires Y-sort with buildings (Layer 2).
     app_instances::build_damage_fire_instances(state, &mut shp_paged);
@@ -280,8 +304,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // Garrison muzzle flashes (OccupantAnim) at fire port positions.
     app_instances::build_garrison_muzzle_flash_instances(state, &mut shp_paged);
     // Parachute SHPs above descending paradropped infantry (Layer 2 — sorts
-    // with the GI body).
-    app_instances::build_parachute_instances(state, &mut shp_paged);
+    // with the GI body, at the body's own key).
+    app_instances::build_parachute_instances(state, &mut shp_paged, &parachute_body_depths);
     for page in &mut shp_paged {
         sort_by_depth_desc(page);
     }
@@ -338,8 +362,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         bridge_unit_transition_paged,
         shp_paged,
         bridge_shp_paged,
-        building_turret,
-        building_turret_pages,
+        top_unit,
+        top_unit_pages,
+        top_shp_paged,
         particle_paged,
         cell_sparkles,
     }
@@ -766,18 +791,46 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .as_ref()
         .map(|csf| csf.text("TXT_READY"))
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("Ready"));
+    // gamemd's strip draw pairs TXT_READY with TXT_HOLD ("On Hold"), shown on
+    // the same cameo slot when production is suspended.
+    let hold_text = state
+        .csf
+        .as_ref()
+        .map(|csf| csf.text("TXT_HOLD"))
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("On Hold"));
     let ready_tint = {
         let theme = crate::app_sidebar_render::current_sidebar_theme(state);
         crate::render::sidebar_text::side_highlight_color(theme)
     };
     let (cameo, gclock, cameo_overlay) = view
         .as_ref()
-        .map(|v| build_sidebar_cameo_instances(state, v, ready_text.as_ref()))
+        .map(|v| build_sidebar_cameo_instances(state, v, ready_text.as_ref(), hold_text.as_ref()))
         .unwrap_or_default();
-    let text = view
+    let mut text = view
         .as_ref()
-        .map(|v| build_sidebar_text_instances(state, v, ready_text.as_ref(), ready_tint))
+        .map(|v| {
+            build_sidebar_text_instances(
+                state,
+                v,
+                ready_text.as_ref(),
+                hold_text.as_ref(),
+                ready_tint,
+            )
+        })
         .unwrap_or_default();
+    // Credits counter shares the GAME.FNT sidebar-text layer: gamemd draws it
+    // with the same BitFont on the sidebar surface, in the same packed side
+    // text colour as the cameo labels.
+    if let Some(v) = view.as_ref() {
+        let theme = crate::app_sidebar_render::current_sidebar_theme(state);
+        text.extend(crate::app_sidebar_text::build_sidebar_credits_instances(
+            &state.bit_font,
+            v,
+            state.ui_scale,
+            crate::app_sidebar_text::credits_tint(theme),
+            [state.camera_x, state.camera_y],
+        ));
+    }
 
     let radar_anim = build_radar_anim_instance(state);
 
@@ -914,6 +967,50 @@ mod tests {
             vec![20, 30, 10]
         );
         assert_eq!(pages, vec![0, 2, 1]);
+    }
+
+    /// Building turrets are appended to the voxel stream after every vehicle
+    /// body and then sorted with them, so they now interleave by iso row
+    /// instead of being flushed in a pass of their own. A vehicle at a nearer
+    /// row must end up after the turret; one at the same row must stay before
+    /// it, which is what leaves the turret sitting on its own building.
+    fn marker_instance(depth: f32, marker: u32) -> SpriteInstance {
+        SpriteInstance {
+            depth,
+            draw_state: crate::render::draw_state::DrawState {
+                fx_flags: marker,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn building_turrets_interleave_with_vehicles_by_depth_once_appended() {
+        const BEHIND: f32 = 0.8;
+        const SAME_ROW: f32 = 0.5;
+        const IN_FRONT: f32 = 0.2;
+        // fx_flags is only a marker here: 1 = vehicle body, 2 = building turret.
+        let mut instances = vec![
+            marker_instance(IN_FRONT, 1),
+            marker_instance(SAME_ROW, 1),
+            // Turrets are emitted after every vehicle body.
+            marker_instance(BEHIND, 2),
+            marker_instance(SAME_ROW, 2),
+        ];
+        let mut pages = vec![0usize, 1, 2, 3];
+
+        sort_by_depth_desc_with_pages(&mut instances, &mut pages);
+
+        assert_eq!(
+            instances
+                .iter()
+                .map(|i| (i.draw_state.fx_flags, i.depth))
+                .collect::<Vec<_>>(),
+            vec![(2, BEHIND), (1, SAME_ROW), (2, SAME_ROW), (1, IN_FRONT),],
+            "a turret behind draws first, a turret on the same row draws after \
+             the vehicle already there, and a vehicle in front draws over both"
+        );
     }
 
     #[test]

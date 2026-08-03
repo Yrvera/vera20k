@@ -319,6 +319,48 @@ pub fn atlas_covers_base_keys(
     true
 }
 
+/// Which of the two palettes a sprite's frames are baked against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpritePaletteChoice {
+    /// The theater unit palette — the atlas's default and the target of
+    /// `AltPalette=yes`.
+    Unit,
+    /// `anim.pal`, used for animation art that does not set `AltPalette=`.
+    Anim,
+}
+
+/// Pick the palette a sprite key's frames are baked against.
+///
+/// gamemd decides this per animation type, not per name list: the animation draw
+/// path reaches for the global ANIM.PAL conversion and swaps in the first colour
+/// scheme's converted unit palette when the type sets `AltPalette=yes`. So the art
+/// flag is consulted first and the world-effect name set only decides the types
+/// that leave the flag alone. 41 stock sections carry the flag — the Battle
+/// Bunker, the `CABUNK0x` bunkers, the Weather Storm clouds, the squid grapple and
+/// the parachute among them — and before this they were baked against `anim.pal`
+/// or the unit palette by whether their name happened to land in that set.
+///
+/// Types with no art entry keep the previous behaviour, so non-animation art
+/// (units, infantry, structures) is unaffected.
+pub(crate) fn sprite_palette_choice(
+    type_id: &str,
+    art: Option<&ArtRegistry>,
+    effect_type_ids: &HashSet<String>,
+) -> SpritePaletteChoice {
+    let alt_palette = art
+        .and_then(|registry| registry.anim_runtime_config(type_id))
+        .map(art_data::anim_draw_palette)
+        == Some(art_data::AnimDrawPalette::Unit);
+    if alt_palette {
+        return SpritePaletteChoice::Unit;
+    }
+    if effect_type_ids.contains(type_id) {
+        SpritePaletteChoice::Anim
+    } else {
+        SpritePaletteChoice::Unit
+    }
+}
+
 /// Build a SHP sprite atlas from all SpriteModel entities in the ECS world.
 ///
 /// Uses incremental rendering: if `existing` is provided, its cached rendered
@@ -402,11 +444,25 @@ pub fn build_sprite_atlas(
                     .unwrap_or_else(|| type_str.to_string());
                 // Look up per-type sequence definition from art.ini.
                 // Use it to collect exactly the SHP frames needed for each animation.
-                let seq_set: Option<crate::sim::animation::SequenceSet> = art
-                    .and_then(|a| a.get(&image_id))
+                let art_entry = art.and_then(|a| a.get(&image_id));
+                let seq_set: Option<crate::sim::animation::SequenceSet> = art_entry
                     .and_then(|e| e.sequence.as_deref())
                     .and_then(|name| infantry_sequences.get(&name.to_uppercase()))
-                    .map(|def| crate::rules::infantry_sequence::build_sequence_set(def));
+                    .map(|def| crate::rules::infantry_sequence::build_sequence_set(def))
+                    // SHP vehicles (DLPH/DRON/SQD) carry no `Sequence=` — their
+                    // frame blocks come from the WalkFrames/FiringFrames tags.
+                    // Same gate as build_animation_sequences, so the atlas holds
+                    // exactly the frames the sim can ask for. Without this the
+                    // firing block falls outside the hardcoded fallback range and
+                    // the sprite is dropped for every frame of an attack.
+                    .or_else(|| {
+                        if entity.category == EntityCategory::Infantry {
+                            return None;
+                        }
+                        art_entry
+                            .filter(|e| e.walk_frames.is_some() || e.firing_frames.is_some())
+                            .map(crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences)
+                    });
 
                 if let Some(ref set) = seq_set {
                     // Data-driven: iterate Stand + Walk sequences (and others)
@@ -803,11 +859,10 @@ pub fn build_sprite_atlas(
     }
 
     // Step 1e: Pre-load the parachute SHP (`[General] Parachute=`).
-    // Unlike the world-effect SHPs above, PARACH's `AltPalette=yes` means
-    // gamemd renders it with the unit palette (ColorScheme[0]'s ConvertPalette
-    // = our `palette`, NOT `effect_palette`). Register frames into `needed` so
-    // the atlas has entries, but DO NOT add to `effect_type_ids` — that would
-    // route us to anim.pal (wrong palette).
+    // The parachute is reached through `[General] Parachute=` rather than the
+    // animation closure, so its frames need registering here. Its palette is not
+    // decided by this registration: `sprite_palette_choice` reads the art type's
+    // `AltPalette=` flag, which PARACH sets, and that selects the unit palette.
     if let Some(r) = rules {
         if let Some(pc) = r.general.parachute_render.as_ref() {
             let lower: String = pc.shp_name.to_ascii_lowercase();
@@ -825,9 +880,6 @@ pub fn build_sprite_atlas(
                         });
                     }
                     active_anim_frame_counts.insert(pc.shp_name.clone(), frame_count);
-                    // Intentionally NOT inserted into effect_type_ids:
-                    // AltPalette=yes wants unit.pal, which is the default
-                    // for keys not in effect_type_ids.
                     log::info!(
                         "Parachute SHP {}: {} frames loaded (unit palette per AltPalette=yes)",
                         pc.shp_name,
@@ -881,11 +933,9 @@ pub fn build_sprite_atlas(
         if cached_keys.contains(key) {
             continue;
         }
-        // World effect SHPs use anim.pal; everything else uses unit.pal.
-        let pal: &Palette = if effect_type_ids.contains(&key.type_id) {
-            effect_palette.as_ref().unwrap_or(palette)
-        } else {
-            palette
+        let pal: &Palette = match sprite_palette_choice(&key.type_id, art, &effect_type_ids) {
+            SpritePaletteChoice::Anim => effect_palette.as_ref().unwrap_or(palette),
+            SpritePaletteChoice::Unit => palette,
         };
         match render_shp_sprite(
             asset_manager,
