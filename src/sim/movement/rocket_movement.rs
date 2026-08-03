@@ -25,6 +25,7 @@
 
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::intern::InternedId;
 use crate::sim::movement::facing_from_delta;
 use crate::util::fixed_math::{
     SIM_ONE, SIM_TWO, SIM_ZERO, SimFixed, int_distance_to_sim, native_movement_frame_fraction,
@@ -49,6 +50,22 @@ pub enum RocketPhase {
     Terminal,
     /// Impact — entity will be despawned this tick.
     Detonation,
+}
+
+/// What a spawn-manager missile detonates with when it reaches its target.
+///
+/// gamemd's `RocketLocomotion::Detonate` picks the warhead and damage from
+/// `RulesClass` by missile family and the launcher's elite flag, then calls
+/// `Apply_area_damage(Owner, warhead, …)`. Carrying those on the flight state
+/// keeps the impact independent of the launcher, which may already be dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct RocketPayload {
+    /// Interned warhead section name.
+    pub warhead: InternedId,
+    /// Impact damage before verses.
+    pub damage: i32,
+    /// Launcher stable id — kill credit and house attribution.
+    pub firer_id: u64,
 }
 
 /// State for an in-flight rocket/missile.
@@ -80,6 +97,10 @@ pub struct RocketState {
     /// Computed from the altitude change rate. Render system reads this for rotation.
     /// Render-only — stays as f32.
     pub pitch: f32,
+    /// Impact warhead/damage for spawn-manager missiles. `None` for rockets
+    /// whose damage is owned elsewhere.
+    #[serde(default)]
+    pub payload: Option<RocketPayload>,
 }
 
 /// Attach a rocket state to an entity at the given origin, targeting a destination cell.
@@ -92,6 +113,19 @@ pub fn attach_rocket_state(
     origin: (u16, u16),
     target: (u16, u16),
     speed: SimFixed,
+) -> bool {
+    attach_rocket_state_with_payload(entities, entity_id, origin, target, speed, None)
+}
+
+/// Same as [`attach_rocket_state`], but carries the impact warhead and damage
+/// used by spawn-manager missiles (V3ROCKET / DMISL / CMISL).
+pub fn attach_rocket_state_with_payload(
+    entities: &mut EntityStore,
+    entity_id: u64,
+    origin: (u16, u16),
+    target: (u16, u16),
+    speed: SimFixed,
+    payload: Option<RocketPayload>,
 ) -> bool {
     let Some(entity) = entities.get_mut(entity_id) else {
         return false;
@@ -113,6 +147,7 @@ pub fn attach_rocket_state(
         progress: SIM_ZERO,
         timer: LAUNCH_DURATION_S,
         pitch: std::f32::consts::FRAC_PI_2, // Nose up during launch.
+        payload,
     });
     entity.push_debug_event(
         0,
@@ -406,6 +441,7 @@ mod tests {
                 progress: SIM_ONE,
                 timer: SIM_ZERO,
                 pitch: 0.0,
+                payload: None,
             });
             live_entities.insert(entity.clone());
             stable_entities.insert(entity);

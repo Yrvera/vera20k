@@ -367,12 +367,21 @@ pub fn tick_aircraft_missions(
                 let out_of_ammo = ammo_current <= 0 && ammo_max > 0;
                 let spent_and_idle = !has_target && ammo_max > 0 && ammo_current < ammo_max;
 
+                // A spawn-manager child's base is its parent, not an airfield.
+                // Stock HORNET/ASW ship with `Dock=` commented out, so their
+                // rearm is driven entirely by the parent's SpawnManager
+                // (state 3 → 4 → 6). Letting them pick an unrelated helipad
+                // here would fight that recall.
+                let spawn_child = entity.spawn_owner_id.is_some();
+
                 if has_target && ammo_current > 0 {
                     m.new_mission = AircraftMission::Attack {
                         sub_state: 0,
                         has_fired: false,
                         is_strafe: false,
                     };
+                } else if spawn_child {
+                    // Hold station; the parent's manager issues the recall.
                 } else if out_of_ammo || spent_and_idle {
                     let nearest = find_nearest_airfield_for(
                         sim,
