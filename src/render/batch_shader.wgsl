@@ -21,6 +21,10 @@ struct Instance {
     @location(4) depth: f32,
     @location(5) tint: vec3f,
     @location(6) alpha: f32,
+    @location(7) remap_row: u32,
+    @location(8) fx_flags: u32,
+    @location(9) fx_params: vec4f,
+    @location(10) effect_tint: vec4f,
 };
 
 struct VertexOutput {
@@ -28,6 +32,9 @@ struct VertexOutput {
     @location(0) uv: vec2f,
     @location(1) tint: vec3f,
     @location(2) alpha: f32,
+    @location(3) @interpolate(flat) fx_flags: u32,
+    @location(4) fx_params: vec4f,
+    @location(5) effect_tint: vec4f,
 };
 
 @vertex
@@ -69,7 +76,19 @@ fn vs_main(
     output.uv = instance.uv_origin + quad_uv[idx] * instance.uv_size;
     output.tint = instance.tint;
     output.alpha = instance.alpha;
+    output.fx_flags = instance.fx_flags;
+    output.fx_params = instance.fx_params;
+    output.effect_tint = instance.effect_tint;
     return output;
+}
+
+fn apply_fx(color: vec4f, _flags: u32, params: vec4f, effect_tint: vec4f) -> vec4f {
+    // Original location: `RA2-GAME.EXE-IDB` canon,
+    // `rendering.drawStateEffects.ra2yr.json`; this representation-neutral
+    // branch mirrors the voxel shader so SHP and VXL share one DrawState ABI.
+    // YR resolves selector opacity and invulnerability brightness before either
+    // SHP or VXL submission. EMP and mirror deliberately remain no-op residuals.
+    return vec4f(color.rgb * effect_tint.rgb, color.a * params.x);
 }
 
 @fragment
@@ -80,7 +99,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     if (color.a < 0.01) {
         discard;
     }
-    // Apply map lighting tint and alpha. Tint (1,1,1) = no change.
-    // Alpha 1.0 = fully opaque, 0.5 = 50% translucent (chrono warp effect).
-    return vec4f(color.rgb * input.tint, color.a * input.alpha);
+    // Map lighting happens before the shared DrawState effect branch, matching
+    // the voxel fragment path. Alpha 1.0 = opaque; no draw state changes order.
+    return apply_fx(
+        vec4f(color.rgb * input.tint, color.a * input.alpha),
+        input.fx_flags,
+        input.fx_params,
+        input.effect_tint,
+    );
 }

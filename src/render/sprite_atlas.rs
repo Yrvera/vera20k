@@ -53,14 +53,32 @@ fn scan_building_anim_frame_count(
     );
     let data = candidates.iter().find_map(|c| asset_manager.get_ref(c))?;
     let shp = ShpFile::from_bytes(data).ok()?;
-    let real: u16 = (shp.frames.len() as u16) / 2;
-    Some(if real >= loop_end {
+    let raw_count = shp.frames.len() as u16;
+    let real: u16 = raw_count / 2;
+    let required_count = loop_end.max(1);
+    Some(if real > 0 && real >= required_count {
         real
-    } else if (shp.frames.len() as u16) >= loop_end {
-        loop_end
+    } else if raw_count >= required_count {
+        required_count
     } else {
-        shp.frames.len() as u16
+        raw_count
     })
+}
+
+fn insert_building_anim_frame_keys(
+    needed: &mut HashSet<ShpSpriteKey>,
+    anim_type: &str,
+    count: u16,
+    house_color: HouseColorIndex,
+) {
+    for frame in 0..count.max(1) {
+        needed.insert(ShpSpriteKey {
+            type_id: anim_type.to_string(),
+            facing: 0,
+            frame,
+            house_color,
+        });
+    }
 }
 
 /// Cache key: unique combination of object type, facing, and house color.
@@ -137,8 +155,9 @@ pub struct SpriteAtlas {
     /// Building type → number of make (build-up) animation frames.
     /// Key is the base type_id (e.g., "GACNST"), not the "_MAKE" suffixed key.
     pub make_frame_counts: HashMap<String, u16>,
-    /// ActiveAnim/ProductionAnim type → total frame count (non-shadow half).
-    /// Used by the renderer to cycle crane animations during production.
+    /// Building/world-animation type → available non-shadow frame count.
+    /// Building consumers use this only to ensure their live animation frame is
+    /// resident; world-effect systems also consume the same established map.
     pub active_anim_frame_counts: HashMap<String, u16>,
     /// Per-building-type bounding boxes for selection brackets and click picking.
     /// Computed by unioning all SHP frame rects for each building type.
@@ -489,9 +508,9 @@ pub fn build_sprite_atlas(
         }
     }
 
-    // Step 1b: Also collect building animation overlay SHPs (ActiveAnim, IdleAnim, etc.).
-    // IdleAnim/SuperAnim/SpecialAnim: only frame 0 (static or not yet animated).
-    // ActiveAnim/ProductionAnim: all frames (crane animation plays during production).
+    // Step 1b: Collect every declared building animation frame required by art
+    // metadata. Runtime owns timing; atlas construction only ensures that a
+    // live `BuildingAnimOverlays` frame is drawable.
     let mut active_anim_frame_counts: HashMap<String, u16> = HashMap::new();
     if let Some(art_reg) = art {
         let building_keys: Vec<ShpSpriteKey> = needed
@@ -508,127 +527,42 @@ pub fn build_sprite_atlas(
                 art_reg.resolve_metadata_entry(&key.type_id, &rules_image);
             if let Some(entry) = art_entry {
                 for anim in &entry.building_anims {
-                    let is_active: bool = matches!(
-                        anim.kind,
-                        crate::rules::art_data::BuildingAnimKind::Active
-                            | crate::rules::art_data::BuildingAnimKind::Production
-                    );
-                    if is_active {
-                        // Load all frames for active/production anims (crane, etc.).
-                        // Pre-scan the SHP to count frames, similar to make SHPs.
-                        let anim_upper: String = anim.anim_type.to_uppercase();
-                        if !active_anim_frame_counts.contains_key(&anim_upper) {
-                            let anim_image: String = art_reg
-                                .resolve_effective_image_id(&anim.anim_type, &anim.anim_type);
-                            let candidates: Vec<String> = art_data::anim_shp_candidates(
-                                Some(art_reg),
-                                &anim.anim_type,
-                                &anim_image,
-                                theater_ext,
-                                theater_name,
+                    // Original location: `RA2-GAME.EXE-IDB` canon,
+                    // `assets.unitShpFrameSelection.ra2yr.json` and
+                    // `assets.buildingDrawOffsets.ra2yr.json`: declared
+                    // Idle/Super/Special frames are chosen by the live object
+                    // animation state, not collapsed to atlas frame zero.
+                    let anim_upper: String = anim.anim_type.to_uppercase();
+                    if !active_anim_frame_counts.contains_key(&anim_upper) {
+                        if let Some(count) = scan_building_anim_frame_count(
+                            asset_manager,
+                            art_reg,
+                            &anim.anim_type,
+                            anim.loop_end,
+                            theater_ext,
+                            theater_name,
+                        ) {
+                            active_anim_frame_counts.insert(anim_upper.clone(), count);
+                            log::info!(
+                                "Building anim {} for {}: {} frames (kind={:?}, loop_end={})",
+                                anim.anim_type,
+                                key.type_id,
+                                count,
+                                anim.kind,
+                                anim.loop_end,
                             );
-                            if let Some(data) =
-                                candidates.iter().find_map(|c| asset_manager.get_ref(c))
-                            {
-                                if let Ok(shp) = ShpFile::from_bytes(data) {
-                                    // RA2 anim SHPs have shadow frames in second half.
-                                    let real: u16 = (shp.frames.len() as u16) / 2;
-                                    // Ensure we load at least loop_end frames so every
-                                    // frame in LoopStart..LoopEnd (exclusive) exists in
-                                    // the atlas. Guards against odd total frame counts
-                                    // where integer division would drop frames.
-                                    let count: u16 = if real >= anim.loop_end {
-                                        real
-                                    } else if (shp.frames.len() as u16) >= anim.loop_end {
-                                        anim.loop_end
-                                    } else {
-                                        shp.frames.len() as u16
-                                    };
-                                    active_anim_frame_counts.insert(anim_upper.clone(), count);
-                                    log::info!(
-                                        "ActiveAnim {} for {}: {} frames (shp total={}, shadow-split={}, loop_end={})",
-                                        anim.anim_type,
-                                        key.type_id,
-                                        count,
-                                        shp.frames.len(),
-                                        real,
-                                        anim.loop_end,
-                                    );
-                                }
-                            }
                         }
-                        let count: u16 = active_anim_frame_counts
-                            .get(&anim.anim_type.to_uppercase())
-                            .copied()
-                            .unwrap_or(1);
-                        for f in 0..count {
-                            needed.insert(ShpSpriteKey {
-                                type_id: anim.anim_type.clone(),
-                                facing: 0,
-                                frame: f,
-                                house_color: key.house_color,
-                            });
-                        }
-                    } else if matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Idle) {
-                        // IdleAnim loops continuously — load all frames (same as Active).
-                        let anim_upper: String = anim.anim_type.to_uppercase();
-                        if !active_anim_frame_counts.contains_key(&anim_upper) {
-                            let anim_image: String = art_reg
-                                .resolve_effective_image_id(&anim.anim_type, &anim.anim_type);
-                            let candidates: Vec<String> = art_data::anim_shp_candidates(
-                                Some(art_reg),
-                                &anim.anim_type,
-                                &anim_image,
-                                theater_ext,
-                                theater_name,
-                            );
-                            if let Some(data) =
-                                candidates.iter().find_map(|c| asset_manager.get_ref(c))
-                            {
-                                if let Ok(shp) = ShpFile::from_bytes(data) {
-                                    let real: u16 = (shp.frames.len() as u16) / 2;
-                                    // Same loop_end guard as ActiveAnim above.
-                                    let count: u16 = if real >= anim.loop_end {
-                                        real
-                                    } else if (shp.frames.len() as u16) >= anim.loop_end {
-                                        anim.loop_end
-                                    } else {
-                                        shp.frames.len() as u16
-                                    };
-                                    active_anim_frame_counts.insert(anim_upper.clone(), count);
-                                    log::info!(
-                                        "IdleAnim {} for {}: {} frames (shp total={}, shadow-split={}, loop_end={})",
-                                        anim.anim_type,
-                                        key.type_id,
-                                        count,
-                                        shp.frames.len(),
-                                        real,
-                                        anim.loop_end,
-                                    );
-                                }
-                            }
-                        }
-                        let count: u16 = active_anim_frame_counts
-                            .get(&anim.anim_type.to_uppercase())
-                            .copied()
-                            .unwrap_or(1);
-                        for f in 0..count {
-                            needed.insert(ShpSpriteKey {
-                                type_id: anim.anim_type.clone(),
-                                facing: 0,
-                                frame: f,
-                                house_color: key.house_color,
-                            });
-                        }
-                    } else {
-                        // Super/Special anims: frame 0 only (not yet animated).
-                        needed.insert(ShpSpriteKey {
-                            type_id: anim.anim_type.clone(),
-                            facing: 0,
-                            frame: 0,
-                            house_color: key.house_color,
-                        });
                     }
+                    let count = active_anim_frame_counts
+                        .get(&anim_upper)
+                        .copied()
+                        .unwrap_or(1);
+                    insert_building_anim_frame_keys(
+                        &mut needed,
+                        &anim.anim_type,
+                        count,
+                        key.house_color,
+                    );
 
                     for variant in [&anim.damaged_variant, &anim.garrisoned_variant] {
                         let Some(variant) = variant.as_ref() else {
@@ -659,14 +593,12 @@ pub fn build_sprite_atlas(
                             .get(&variant_upper)
                             .copied()
                             .unwrap_or(1);
-                        for f in 0..count {
-                            needed.insert(ShpSpriteKey {
-                                type_id: variant_type.to_string(),
-                                facing: 0,
-                                frame: f,
-                                house_color: key.house_color,
-                            });
-                        }
+                        insert_building_anim_frame_keys(
+                            &mut needed,
+                            variant_type,
+                            count,
+                            key.house_color,
+                        );
                     }
                 }
                 // BibShape: ground-level pad SHP (e.g., refinery dock GAREFNBB).

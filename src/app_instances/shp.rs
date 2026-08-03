@@ -20,6 +20,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::lighting;
 use crate::map::terrain::TILE_HEIGHT;
 use crate::render::batch::SpriteInstance;
+use crate::render::draw_state::DrawState;
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::{
     BlitPolicy, BuildingPieceKind, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalLayer,
@@ -105,6 +106,15 @@ pub(crate) fn build_shp_instances(
             .get(owner_str)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
+        let draw_decision = DrawState::for_entity(
+            entity,
+            sim.session.binary_frame,
+            super::units::house_color_to_remap_row(hc),
+        );
+        if !draw_decision.visible {
+            continue;
+        }
+        let draw_state = draw_decision.state;
         // Determine if this building is in its make/build-up or build-down animation.
         let is_building_up: bool =
             entity.category == EntityCategory::Structure && entity.building_up.is_some();
@@ -266,6 +276,7 @@ pub(crate) fn build_shp_instances(
             depth,
             tint,
             alpha: 1.0,
+            draw_state,
             ..Default::default()
         };
 
@@ -306,6 +317,7 @@ pub(crate) fn build_shp_instances(
                     interp_z,
                     depth,
                     tint,
+                    draw_state,
                 );
                 // Building anims render in the same pass as building bodies so they
                 // can sort together via depth. Anims use the building's entity depth
@@ -336,6 +348,7 @@ pub(crate) fn build_shp_instances(
                     is_player_owned,
                     entity.building_damage_state_active,
                     world_height,
+                    draw_state,
                 );
             }
             // Emit VXL turret on top of building (e.g., SAM site, Prism Tower).
@@ -358,6 +371,7 @@ pub(crate) fn build_shp_instances(
                             interp_z,
                             depth,
                             tint,
+                            draw_state,
                             rules_obj.turret_anim_x,
                             rules_obj.turret_anim_y,
                             rules_obj.turret_anim_z_adjust,
@@ -404,6 +418,7 @@ fn emit_building_turret_vxl(
     _z: u8,
     building_depth: f32,
     tint: [f32; 3],
+    draw_state: DrawState,
     anim_x: i32,
     anim_y: i32,
     z_adjust: i32,
@@ -446,6 +461,7 @@ fn emit_building_turret_vxl(
         depth: turret_depth,
         tint,
         alpha: 1.0,
+        draw_state,
         ..Default::default()
     });
     instance_pages.push(entry.page);
@@ -468,6 +484,7 @@ fn emit_building_bib(
     _z: u8,
     building_depth: f32,
     tint: [f32; 3],
+    draw_state: DrawState,
 ) {
     let rules_image: String = rules
         .and_then(|r| r.object(building_type))
@@ -510,6 +527,7 @@ fn emit_building_bib(
             depth: building_depth,
             tint,
             alpha: 1.0,
+            draw_state,
             ..Default::default()
         },
     });
@@ -626,6 +644,7 @@ fn emit_building_anims(
     is_player_owned: bool,
     building_damage_state_active: bool,
     world_height: f32,
+    draw_state: DrawState,
 ) {
     let rules_image: String = rules
         .and_then(|r| r.object(building_type))
@@ -767,6 +786,7 @@ fn emit_building_anims(
                 depth: anim_depth,
                 tint,
                 alpha: 1.0,
+                draw_state,
                 ..Default::default()
             },
         });

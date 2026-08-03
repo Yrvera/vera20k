@@ -655,7 +655,7 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
     };
 
     // House remap is no longer applied at bake time — the fragment shader
-    // does it via per-instance house_color_idx + house_ramp texture lookup.
+    // does it via per-instance DrawState::remap_row + house_ramp texture lookup.
     // The rasterizer outputs post-VPL palette indices directly.
 
     // Branch based on layer: Composite renders all parts together,

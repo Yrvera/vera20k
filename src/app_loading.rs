@@ -18,6 +18,7 @@ use crate::assets::pal_file::Color;
 use crate::match_bootstrap::{LoadingStartup, PreparedMatchStartup};
 use crate::render::batch::{BatchRenderer, SpriteInstance};
 use crate::render::bit_font::BitFont;
+use crate::render::draw_state::DrawState;
 use crate::render::gpu::GpuContext;
 use crate::render::loading_screen_chrome::{
     LoadingArtVariant, LoadingScreenAtlas, LoadingScreenCompositionAtlasInput, LoadingScreenEntry,
@@ -1778,10 +1779,7 @@ fn push_entry_tinted(
         depth,
         tint,
         alpha: 1.0,
-        house_color_idx: 0,
-        fx_flags: 0,
-        fx_params: [0.0; 4],
-        ic_tint: [0.0; 4],
+        draw_state: DrawState::default(),
     });
 }
 

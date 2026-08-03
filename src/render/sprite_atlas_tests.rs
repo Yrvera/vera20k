@@ -104,6 +104,22 @@ fn test_different_houses_create_separate_keys() {
 }
 
 #[test]
+fn declared_special_animation_frames_are_all_preloaded() {
+    let mut needed = HashSet::new();
+    insert_building_anim_frame_keys(&mut needed, "GAREFNOR", 3, HouseColorIndex(2));
+
+    for frame in 0..3 {
+        assert!(needed.contains(&ShpSpriteKey {
+            type_id: "GAREFNOR".to_string(),
+            facing: 0,
+            frame,
+            house_color: HouseColorIndex(2),
+        }));
+    }
+    assert_eq!(needed.len(), 3);
+}
+
+#[test]
 fn collect_effect_names_includes_weapon_anim_entries() {
     let ini = crate::rules::ini_parser::IniFile::from_str(
         "\

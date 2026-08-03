@@ -27,7 +27,7 @@ use super::PathGrid;
 use super::terrain_cost::TerrainCostGrid;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{self, HouseAllianceMap};
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::bump_crush;
@@ -97,12 +97,52 @@ pub enum TerrainCheckResult {
 
 /// Terrain-only result for native-shaped cell-entry checks above `PathGrid`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerrainEntryResult {
+pub enum CanEnterCellResult {
     Clear,
     HardBlocked,
 }
 
-impl TerrainEntryResult {
+/// Search-time interpretation of the YR `FootClass` cell predicate result.
+///
+/// This is deliberately not a terrain-speed percentage. `TerrainCostGrid` remains
+/// responsible for SpeedType movement rates; this value is the small native
+/// classification consumed by `NeighborStepCost` during A* expansion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchCellCostDecision {
+    /// The raw value returned by the per-Foot predicate.
+    pub raw_cost_class: u8,
+    /// The class supplied to the neighbor-cost routine when expansion continues.
+    pub effective_cost_class: Option<u8>,
+    /// Whether this neighbor may be expanded.
+    pub expands: bool,
+    /// Whether the normal NeighborStepCost path is reachable.
+    pub should_call_neighbor_step_cost: bool,
+}
+
+/// Apply the search-only cost-class gate used after YR's `FootClass` +0x1AC call.
+///
+/// Original: `FindPathRegular` (YR 1.001) coerces classes below 7 to zero when
+/// its bridge/coercion gate is set, then rejects effective classes at or above 7.
+pub fn search_cell_cost_decision(
+    raw_cost_class: u8,
+    coerce_to_zero_gate: bool,
+) -> SearchCellCostDecision {
+    let effective_cost_class = if coerce_to_zero_gate && raw_cost_class < 7 {
+        0
+    } else {
+        raw_cost_class
+    };
+    let expands = effective_cost_class < 7;
+
+    SearchCellCostDecision {
+        raw_cost_class,
+        effective_cost_class: expands.then_some(effective_cost_class),
+        expands,
+        should_call_neighbor_step_cost: expands,
+    }
+}
+
+impl CanEnterCellResult {
     pub fn is_clear(self) -> bool {
         matches!(self, Self::Clear)
     }
@@ -118,14 +158,15 @@ pub enum TerrainEntryMode {
     SpawnLike,
 }
 
-/// Native-shaped terrain context for the water/pier-critical entry slice.
+/// Native-shaped known-input context for the terrain/layer portion of cell entry.
 ///
-/// This is deliberately terrain/layer-only. Reduced-zone reachability and FNPC
-/// candidate selection stay outside this context because gamemd uses different
-/// callers and state for those questions.
+/// This deliberately stops before the unresolved search-only cost class and the
+/// runtime-only blocker response. The original evaluates those with different
+/// caller state; only the shared terrain/layer admission belongs here.
 #[derive(Debug, Clone, Copy)]
-pub struct CellEntryTerrainContext<'a> {
+pub struct CanEnterCellContext<'a> {
     pub target: (u16, u16),
+    pub terrain_layer: MovementLayer,
     pub movement_zone: Option<MovementZone>,
     pub speed_type: Option<SpeedType>,
     pub path_grid: Option<&'a PathGrid>,
@@ -135,19 +176,47 @@ pub struct CellEntryTerrainContext<'a> {
     pub mode: TerrainEntryMode,
 }
 
-/// Evaluate the terrain slice of cell entry for ground-layer movement.
+/// Evaluate the shared terrain/layer slice of Can_Enter_Cell.
 ///
 /// `PathGrid` is a coarse structural filter. Final terrain legality must also
 /// consult the mover's SpeedType against the resolved target LandType/speed row
 /// so a PathGrid-walkable water cell is still illegal for ordinary ground movers.
-pub fn evaluate_cell_entry_terrain(ctx: CellEntryTerrainContext<'_>) -> TerrainEntryResult {
+// Original: FootClass::EvaluateCellEnterabilityOrCost (YR 1.001 vfunc +0x1AC).
+pub fn evaluate_can_enter_cell(ctx: CanEnterCellContext<'_>) -> CanEnterCellResult {
+    match ctx.terrain_layer {
+        MovementLayer::Ground => evaluate_ground_cell_entry(ctx),
+        MovementLayer::Bridge => {
+            if ctx.path_grid.is_some_and(|grid| {
+                grid.is_walkable_on_layer(ctx.target.0, ctx.target.1, MovementLayer::Bridge)
+            }) {
+                CanEnterCellResult::Clear
+            } else {
+                CanEnterCellResult::HardBlocked
+            }
+        }
+        // Air and underground locomotors are admitted by their dedicated
+        // locomotion state machines, not this ground/bridge terrain slice.
+        MovementLayer::Air | MovementLayer::Underground => CanEnterCellResult::Clear,
+    }
+}
+
+fn evaluate_ground_cell_entry(ctx: CanEnterCellContext<'_>) -> CanEnterCellResult {
     let (x, y) = ctx.target;
+
+    if let Some(movement_zone) = ctx.movement_zone.filter(|zone| zone.is_water_mover()) {
+        return ctx
+            .resolved_terrain
+            .and_then(|terrain| terrain.cell(x, y))
+            .is_some_and(|cell| is_water_surface_cell_passable(cell, movement_zone))
+            .then_some(CanEnterCellResult::Clear)
+            .unwrap_or(CanEnterCellResult::HardBlocked);
+    }
 
     let grid_ok = ctx
         .path_grid
         .map_or(true, |grid| ctx.bypass_grid || grid.is_walkable(x, y));
     if !grid_ok {
-        return TerrainEntryResult::HardBlocked;
+        return CanEnterCellResult::HardBlocked;
     }
 
     if let Some(speed_type) = ctx.speed_type.or_else(|| {
@@ -159,10 +228,10 @@ pub fn evaluate_cell_entry_terrain(ctx: CellEntryTerrainContext<'_>) -> TerrainE
     }) {
         if let Some(terrain) = ctx.resolved_terrain {
             let Some(cell) = terrain.cell(x, y) else {
-                return TerrainEntryResult::HardBlocked;
+                return CanEnterCellResult::HardBlocked;
             };
             if !speed_type_allows_cell(cell, speed_type) {
-                return TerrainEntryResult::HardBlocked;
+                return CanEnterCellResult::HardBlocked;
             }
         }
     }
@@ -174,12 +243,25 @@ fn terrain_cost_result(
     terrain_costs: Option<&TerrainCostGrid>,
     x: u16,
     y: u16,
-) -> TerrainEntryResult {
+) -> CanEnterCellResult {
     if terrain_costs.is_some_and(|costs| costs.cost_at(x, y) == 0) {
-        TerrainEntryResult::HardBlocked
+        CanEnterCellResult::HardBlocked
     } else {
-        TerrainEntryResult::Clear
+        CanEnterCellResult::Clear
     }
+}
+
+/// Ship movement must use the reduced ZoneType matrix rather than PathGrid's
+/// ground walkability, with the confirmed coastal-water compatibility fallback.
+pub(crate) fn is_water_surface_cell_passable(
+    cell: &ResolvedTerrainCell,
+    movement_zone: MovementZone,
+) -> bool {
+    let matrix_ok = super::passability::is_passable_for_zone(cell.zone_type, movement_zone);
+    if matrix_ok || cell.is_water {
+        return true;
+    }
+    movement_zone == MovementZone::WaterBeach && cell.zone_type == zone_class::BEACH
 }
 
 fn speed_type_allows_cell(cell: &ResolvedTerrainCell, speed_type: SpeedType) -> bool {
@@ -395,17 +477,18 @@ pub fn check_terrain_with_layers(
     let (nx, ny) = target;
 
     // --- Terrain walkability ---
-    let terrain_walkable = match layers.terrain_layer {
-        MovementLayer::Ground => {
-            let grid_ok = path_grid.map_or(true, |g| g.is_walkable(nx, ny));
-            let cost_ok = cost_grid.map_or(true, |cg| cg.cost_at(nx, ny) > 0);
-            grid_ok && cost_ok
-        }
-        MovementLayer::Bridge => {
-            path_grid.is_some_and(|grid| grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge))
-        }
-        MovementLayer::Air | MovementLayer::Underground => true,
-    };
+    let terrain_walkable = evaluate_can_enter_cell(CanEnterCellContext {
+        target,
+        terrain_layer: layers.terrain_layer,
+        movement_zone: None,
+        speed_type: None,
+        path_grid,
+        resolved_terrain: None,
+        terrain_costs: cost_grid,
+        bypass_grid: false,
+        mode: TerrainEntryMode::RuntimeTransition,
+    })
+    .is_clear();
     if !terrain_walkable {
         return TerrainCheckResult::Impassable;
     }
@@ -1320,5 +1403,42 @@ mod tests {
         );
 
         assert_eq!(result, CellEntryResult::OccupiedEnemy { blocker_id: 20 });
+    }
+
+    #[test]
+    fn yr_search_cost_class_rejects_seven_without_neighbor_cost() {
+        assert_eq!(
+            search_cell_cost_decision(7, false),
+            SearchCellCostDecision {
+                raw_cost_class: 7,
+                effective_cost_class: None,
+                expands: false,
+                should_call_neighbor_step_cost: false,
+            }
+        );
+    }
+
+    #[test]
+    fn yr_search_cost_class_preserves_accepted_class_when_gate_is_off() {
+        let decision = search_cell_cost_decision(4, false);
+        assert_eq!(decision.effective_cost_class, Some(4));
+        assert!(decision.expands);
+        assert!(decision.should_call_neighbor_step_cost);
+    }
+
+    #[test]
+    fn yr_search_cost_class_coerces_accepted_class_when_gate_is_on() {
+        let decision = search_cell_cost_decision(6, true);
+        assert_eq!(decision.effective_cost_class, Some(0));
+        assert!(decision.expands);
+        assert!(decision.should_call_neighbor_step_cost);
+    }
+
+    #[test]
+    fn yr_search_cost_class_two_remains_an_accepted_special_case_input() {
+        let decision = search_cell_cost_decision(2, false);
+        assert_eq!(decision.effective_cost_class, Some(2));
+        assert!(decision.expands);
+        assert!(decision.should_call_neighbor_step_cost);
     }
 }
