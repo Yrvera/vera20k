@@ -383,11 +383,25 @@ pub fn build_sprite_atlas(
                     .unwrap_or_else(|| type_str.to_string());
                 // Look up per-type sequence definition from art.ini.
                 // Use it to collect exactly the SHP frames needed for each animation.
-                let seq_set: Option<crate::sim::animation::SequenceSet> = art
-                    .and_then(|a| a.get(&image_id))
+                let art_entry = art.and_then(|a| a.get(&image_id));
+                let seq_set: Option<crate::sim::animation::SequenceSet> = art_entry
                     .and_then(|e| e.sequence.as_deref())
                     .and_then(|name| infantry_sequences.get(&name.to_uppercase()))
-                    .map(|def| crate::rules::infantry_sequence::build_sequence_set(def));
+                    .map(|def| crate::rules::infantry_sequence::build_sequence_set(def))
+                    // SHP vehicles (DLPH/DRON/SQD) carry no `Sequence=` — their
+                    // frame blocks come from the WalkFrames/FiringFrames tags.
+                    // Same gate as build_animation_sequences, so the atlas holds
+                    // exactly the frames the sim can ask for. Without this the
+                    // firing block falls outside the hardcoded fallback range and
+                    // the sprite is dropped for every frame of an attack.
+                    .or_else(|| {
+                        if entity.category == EntityCategory::Infantry {
+                            return None;
+                        }
+                        art_entry
+                            .filter(|e| e.walk_frames.is_some() || e.firing_frames.is_some())
+                            .map(crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences)
+                    });
 
                 if let Some(ref set) = seq_set {
                     // Data-driven: iterate Stand + Walk sequences (and others)

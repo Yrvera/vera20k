@@ -1200,7 +1200,7 @@ fn snapshot_round_trip_mid_deploying() {
 #[test]
 fn combat_fires_during_deployed_attack() {
     use crate::sim::animation::{
-        Animation, LoopMode, SequenceDef, SequenceKind, SequenceSet, tick_animations,
+        Animation, FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet, tick_animations,
     };
 
     let _rules = make_rules_with_deploy();
@@ -1232,7 +1232,7 @@ fn combat_fires_during_deployed_attack() {
             frame_delay: 1,
             normalized: false,
             loop_mode: LoopMode::Loop,
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     set.insert(
@@ -1245,7 +1245,7 @@ fn combat_fires_during_deployed_attack() {
             frame_delay: 1,
             normalized: false,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Deployed),
-            clockwise_facings: false,
+            facing_slots: FacingSlots::InfantryTable,
         },
     );
     sequences.insert("E1".to_string(), set);
