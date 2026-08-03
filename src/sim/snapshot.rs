@@ -111,7 +111,14 @@ use crate::sim::world::Simulation;
 // `passive_scan_timer` is now armed at the construction frame instead of left
 // unarmed. All three are HASHED, so a v41 save written before this change
 // restores into a world whose hash differs from a v41 written after it.
-const SNAPSHOT_VERSION: u32 = 42;
+// Bumped 42 -> 43: `InfantryRuntime` gains `idle_action_timer` (two u32s), so
+// the component grows from 3 to 11 bytes. The encoding is bincode, which is not
+// self-describing — the decoder reads the next field's bytes unconditionally and
+// a `#[serde(default)]` never fires for a short record. A v42 save read by this
+// code would therefore pass the version check and then misread every byte after
+// the first infantry entity. The bump turns that silent corruption into a clean
+// rejection. The new field is also HASHED.
+const SNAPSHOT_VERSION: u32 = 43;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1304,8 +1311,8 @@ mod tests {
     /// hashed passive target-acquisition bookkeeping took 41 -> 42. This
     /// pins it so a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_42() {
-        assert_eq!(super::SNAPSHOT_VERSION, 42);
+    fn snapshot_version_is_43() {
+        assert_eq!(super::SNAPSHOT_VERSION, 43);
     }
 
     #[test]
@@ -1321,7 +1328,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            42
+            43
         );
 
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1382,7 +1389,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            42
+            43
         );
 
         let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1448,7 +1455,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            42
+            43
         );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         let cell = restored

@@ -346,3 +346,81 @@ Walk=8,6,6
     assert_eq!(registry.len(), 1);
     assert!(registry.contains_key("CONSEQUENCE"));
 }
+
+/// Every action id, against the engine's own 42-slot sequence-name array.
+///
+/// Kept as one exhaustive table rather than a handful of spot checks: the ids
+/// are only ever used to index the delay table, so a single wrong row is silent
+/// until someone notices an animation running at the wrong speed in game.
+#[test]
+fn action_ids_match_the_native_sequence_name_table() {
+    let expected: &[(SequenceKind, u8)] = &[
+        (SequenceKind::Stand, 0),
+        (SequenceKind::Prone, 2),
+        (SequenceKind::Walk, 3),
+        (SequenceKind::Attack, 4),
+        (SequenceKind::Down, 5),
+        (SequenceKind::Crawl, 6),
+        (SequenceKind::Up, 7),
+        (SequenceKind::FireProne, 8),
+        (SequenceKind::Idle1, 9),
+        (SequenceKind::Idle2, 10),
+        (SequenceKind::Die1, 11),
+        (SequenceKind::Die2, 12),
+        (SequenceKind::Die3, 13),
+        (SequenceKind::Die4, 14),
+        (SequenceKind::Die5, 15),
+        (SequenceKind::Tread, 16),
+        (SequenceKind::Swim, 17),
+        (SequenceKind::WetIdle1, 18),
+        (SequenceKind::WetIdle2, 19),
+        (SequenceKind::WetAttack, 22),
+        (SequenceKind::Hover, 23),
+        (SequenceKind::Fly, 24),
+        (SequenceKind::FireFly, 26),
+        (SequenceKind::Deploy, 27),
+        (SequenceKind::Deployed, 28),
+        (SequenceKind::DeployedFire, 29),
+        (SequenceKind::DeployedIdle, 30),
+        (SequenceKind::Undeploy, 31),
+        (SequenceKind::Cheer, 32),
+        (SequenceKind::Paradrop, 33),
+        (SequenceKind::Panic, 37),
+        (SequenceKind::SecondaryFire, 40),
+        (SequenceKind::SecondaryProne, 41),
+    ];
+    for &(kind, id) in expected {
+        assert_eq!(action_id(kind), id, "{kind:?} action id");
+    }
+}
+
+/// The playback speeds those ids actually buy, for the rows that were wrong.
+///
+/// `SecondaryFire` is the one with teeth: the shot leaves the weapon on a named
+/// frame of the sequence, so a delay of 3 instead of 1 tripled the time a Brute
+/// needed to land each building smash.
+#[test]
+fn corrected_action_ids_give_the_native_frame_delays() {
+    let expected: &[(SequenceKind, u16, bool)] = &[
+        (SequenceKind::SecondaryFire, 1, false),
+        (SequenceKind::SecondaryProne, 1, false),
+        (SequenceKind::WetAttack, 1, false),
+        (SequenceKind::WetIdle1, 3, true),
+        (SequenceKind::WetIdle2, 3, true),
+        (SequenceKind::Hover, 2, true),
+        (SequenceKind::Fly, 1, false),
+        (SequenceKind::FireFly, 1, false),
+        (SequenceKind::Cheer, 3, true),
+        (SequenceKind::Paradrop, 1, false),
+        (SequenceKind::Panic, 4, false),
+        // Unmoved rows, to catch a renumbering that overshoots.
+        (SequenceKind::Walk, 3, false),
+        (SequenceKind::Attack, 1, false),
+        (SequenceKind::Idle1, 3, true),
+        (SequenceKind::Idle2, 3, true),
+        (SequenceKind::Prone, 6, false),
+    ];
+    for &(kind, delay, normalized) in expected {
+        assert_eq!(action_timing(kind), (delay, normalized), "{kind:?} timing");
+    }
+}
