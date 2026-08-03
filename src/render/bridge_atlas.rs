@@ -380,7 +380,7 @@ fn pack_bridge_sprites(
     let texture: BatchTexture = batch.create_texture(gpu, &rgba, atlas_width, atlas_height);
     let depth_texture_view = create_r8_texture(
         gpu,
-        &vec![0u8; (atlas_width * atlas_height) as usize],
+        &neutral_deck_depth_plane(atlas_width, atlas_height),
         atlas_width,
         atlas_height,
     );
@@ -392,6 +392,35 @@ fn pack_bridge_sprites(
         zdepth_bind_group,
         entries,
     }
+}
+
+/// R8 texel meaning "this deck pixel contributes no depth offset of its own".
+///
+/// The zdepth fragment shader computes `base_depth - z_sample * scale`, so a
+/// zero texel leaves the instance's own sort depth untouched.
+const DECK_DEPTH_NEUTRAL: u8 = 0;
+
+/// Depth plane for the bridge-deck atlas: neutral everywhere, deliberately.
+///
+/// This is not a placeholder. gamemd draws a bridge deck through the cell
+/// overlay-body draw, and **every** branch of that draw passes a zero
+/// Z argument. The shape drawer only sets its "has Z data" draw bit when that
+/// argument is non-zero, and the blitter-family selector tests that bit first —
+/// so no Z-tested blitter is ever selected for an overlay body. A deck pixel
+/// therefore neither tests nor writes the native Z-buffer; under-deck occlusion
+/// comes from draw order inside the terrain layer, not from depth.
+///
+/// Giving these texels real per-pixel depth would hand the deck Z participation
+/// the native draw does not have, so the faithful content is a neutral plane.
+/// Verified by decompiling the cell overlay-body draw and hand-counting the
+/// argument pushes at each of its call sites into the shape drawer, plus the
+/// shape drawer's own Z-bit gate and the blitter selector's bit ordering.
+///
+/// SHP frames carry no depth channel at all, so there is nothing to blit here
+/// even in principle — the only per-pixel depth source in the engine is the
+/// terrain tile format's own depth plane, which decks do not use.
+fn neutral_deck_depth_plane(width: u32, height: u32) -> Vec<u8> {
+    vec![DECK_DEPTH_NEUTRAL; (width as usize) * (height as usize)]
 }
 
 fn create_r8_texture(gpu: &GpuContext, data: &[u8], width: u32, height: u32) -> wgpu::TextureView {
@@ -434,6 +463,25 @@ mod tests {
             kind: BridgeFrameKind::Shadow,
         };
         assert_ne!(body, shadow);
+    }
+
+    #[test]
+    fn gsi_13_09_deck_depth_plane_stays_neutral_so_the_deck_never_owns_a_z_pixel() {
+        // The native overlay-body draw passes a zero Z argument on every branch,
+        // which leaves the shape drawer's "has Z data" bit clear and keeps the
+        // blitter selector off its Z-tested families entirely. Any non-neutral
+        // texel here would give the deck per-pixel depth authority gamemd's
+        // overlay draw does not have, so this pins the plane rather than the
+        // absence of code.
+        let plane = neutral_deck_depth_plane(7, 5);
+        assert_eq!(plane.len(), 35);
+        assert!(
+            plane.iter().all(|&texel| texel == DECK_DEPTH_NEUTRAL),
+            "a bridge deck texel must not carry depth of its own"
+        );
+        // The shader reads this as `base_depth - z_sample * scale`; neutral must
+        // be the additive identity so the deck keeps exactly its instance depth.
+        assert_eq!(DECK_DEPTH_NEUTRAL, 0);
     }
 
     #[test]

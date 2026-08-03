@@ -15,6 +15,7 @@ use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::is_high_bridge_body_name;
 use crate::render::overlay_atlas::{CRATE_BODY_FRAME, OverlaySpriteKey};
 use crate::render::sprite_atlas::ShpSpriteKey;
+use crate::rules::art_data::{AnimTypeRuntimeConfig, anim_frame_source_alpha};
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::WeaponMuzzleFlash;
 use crate::sim::miner::ResourceType;
@@ -143,14 +144,13 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         };
         let depth_y: f32 = center_y + entry.offset_y + entry.pixel_size[1];
         let base_depth: f32 = compute_sprite_depth(state, depth_y, fx.z);
-        // Anim SHP draws carry the type's ZAdjust= sort bias plus the
-        // constant -2px anim bias (negative = toward camera).
-        let type_z_adjust: i32 = state
+        let cfg: Option<&AnimTypeRuntimeConfig> = state
             .art_registry
             .as_ref()
-            .and_then(|a| a.anim_runtime_config(shp_name))
-            .map(|c| c.z_adjust)
-            .unwrap_or(0);
+            .and_then(|a| a.anim_runtime_config(shp_name));
+        // Anim SHP draws carry the type's ZAdjust= sort bias plus the
+        // constant -2px anim bias (negative = toward camera).
+        let type_z_adjust: i32 = cfg.map(|c| c.z_adjust).unwrap_or(0);
         let world_height: f32 = state
             .terrain_grid
             .as_ref()
@@ -162,6 +162,10 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
             world_height,
         );
         let tint: [f32; 3] = state.lighting_grid.anim_tint_at((fx.rx, fx.ry));
+        // Source-pixel weight the native blitter family gives this frame:
+        // a fixed 25/50/75 stage from `Translucency=`, or the progressive
+        // `Translucent=yes` fade keyed on the frame against the type's End.
+        let alpha: f32 = anim_instance_alpha(cfg, i32::from(fx.frame), i32::from(fx.total_frames));
         paged[entry.page as usize].push(SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
             size: entry.pixel_size,
@@ -169,7 +173,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
             uv_size: entry.uv_size,
             depth,
             tint,
-            alpha: 1.0,
+            alpha,
             ..Default::default()
         });
     }
@@ -203,8 +207,9 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
                 continue;
             }
             let tint = state.lighting_grid.anim_tint_at((rx, ry));
+            let type_name: &str = sim.interner.resolve(anim.type_id);
             let key = ShpSpriteKey {
-                type_id: sim.interner.resolve(anim.type_id).to_string(),
+                type_id: type_name.to_string(),
                 facing: 0,
                 frame,
                 house_color: HouseColorIndex(0),
@@ -212,6 +217,22 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
             let Some(entry) = atlas.get(&key) else {
                 continue;
             };
+            // BURN-S/M/L carry a fixed `Translucency=25`, so their source
+            // weight is 3/4 regardless of frame; the frame-count argument only
+            // matters for `Translucent=yes` types that never bound their SHP.
+            let alpha: f32 = anim_instance_alpha(
+                state
+                    .art_registry
+                    .as_ref()
+                    .and_then(|a| a.anim_runtime_config(type_name)),
+                anim.runtime.current_frame,
+                i32::from(
+                    sim.effect_frame_counts
+                        .get(&anim.type_id)
+                        .copied()
+                        .unwrap_or(0),
+                ),
+            );
             let (origin_y, world_height) = state
                 .terrain_grid
                 .as_ref()
@@ -229,11 +250,51 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
                     world_height,
                 ),
                 tint,
-                alpha: 1.0,
+                alpha,
                 ..Default::default()
             });
         }
     }
+}
+
+/// Source-pixel weight one animation frame draws with.
+///
+/// gamemd picks a blitter family per draw from the art type's `Translucency=` /
+/// `Translucent=` keys; `anim_frame_source_alpha` reproduces that selection and
+/// returns the weight the family gives the incoming sprite pixel. An art type
+/// the registry does not know draws opaque, matching the resolver's own
+/// no-keys result.
+fn anim_instance_alpha(
+    config: Option<&AnimTypeRuntimeConfig>,
+    current_frame: i32,
+    shp_frame_count: i32,
+) -> f32 {
+    config
+        .map(|c| anim_frame_source_alpha(c, current_frame, shp_frame_count))
+        .unwrap_or(1.0)
+}
+
+/// SHP header frame count for an animation type, as the translucency resolver
+/// wants it.
+///
+/// `anim_frame_source_alpha` only consults this on the `Translucent=yes`
+/// progressive path, and only for a type that never went through asset binding
+/// (no `raw_shp_frame_count`, no explicit `End=`). The sim's effect frame-count
+/// map is the same source the spawn paths read, so it keeps the draw-time `End`
+/// consistent with the one the runtime animates against. Zero when the type is
+/// unknown there — which is also what an unbound, `End=`-less type would resolve
+/// to anyway.
+fn anim_shp_frame_count(state: &AppState, type_name: &str) -> i32 {
+    state
+        .simulation
+        .as_ref()
+        .and_then(|sim| {
+            sim.interner
+                .get(type_name)
+                .and_then(|id| sim.effect_frame_counts.get(&id).copied())
+        })
+        .map(i32::from)
+        .unwrap_or(0)
 }
 
 fn anim_world_render_coords(
@@ -597,10 +658,9 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         ) {
             continue;
         }
-        let start = art_reg
-            .anim_runtime_config(&flash.runtime.type_name)
-            .map(|config| config.start)
-            .unwrap_or(0);
+        let cfg: Option<&AnimTypeRuntimeConfig> =
+            art_reg.anim_runtime_config(&flash.runtime.type_name);
+        let start = cfg.map(|config| config.start).unwrap_or(0);
         let frame = (start + flash.runtime.current_frame).max(0) as u16;
         let key = ShpSpriteKey {
             type_id: flash.runtime.type_name.clone(),
@@ -623,6 +683,11 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         );
         // (flash.z_adjust carries the native occupied-building value, e.g. -200,
         // applied as a toward-camera sort bias inside garrison_flash_depth.)
+        let alpha: f32 = anim_instance_alpha(
+            cfg,
+            flash.runtime.current_frame,
+            anim_shp_frame_count(state, &flash.runtime.type_name),
+        );
         paged[entry.page as usize].push(SpriteInstance {
             position: [fx, fy],
             size: entry.pixel_size,
@@ -630,7 +695,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
             uv_size: entry.uv_size,
             depth,
             tint,
-            alpha: 1.0,
+            alpha,
             ..Default::default()
         });
     }
@@ -705,14 +770,13 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
             continue;
         };
         let tint = state.lighting_grid.anim_tint_at((flash.rx, flash.ry));
-        // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
-        // ZAdjust= as a sort bias plus the constant -2px anim bias.
-        let type_z_adjust: i32 = state
+        let cfg: Option<&AnimTypeRuntimeConfig> = state
             .art_registry
             .as_ref()
-            .and_then(|a| a.anim_runtime_config(&flash.shp_name))
-            .map(|c| c.z_adjust)
-            .unwrap_or(0);
+            .and_then(|a| a.anim_runtime_config(&flash.shp_name));
+        // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
+        // ZAdjust= as a sort bias plus the constant -2px anim bias.
+        let type_z_adjust: i32 = cfg.map(|c| c.z_adjust).unwrap_or(0);
         let base_depth =
             compute_sprite_depth_params(origin_y, world_height, flash.screen_y, flash.z);
         let depth = apply_shape_z_adjust(
@@ -720,6 +784,8 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
             type_z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
             world_height,
         );
+        let alpha: f32 =
+            anim_instance_alpha(cfg, i32::from(flash.frame), i32::from(flash.total_frames));
         paged[entry.page as usize].push(SpriteInstance {
             position: [
                 flash.screen_x + entry.offset_x,
@@ -730,7 +796,7 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
             uv_size: entry.uv_size,
             depth,
             tint,
-            alpha: 1.0,
+            alpha,
             ..Default::default()
         });
     }
@@ -909,11 +975,13 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
 #[cfg(test)]
 mod tests {
     use super::{
-        ANIM_DRAW_DEPTH_BIAS_PX, CRATE_BODY_FRAME, OverlayRenderBucket, apply_shape_z_adjust,
-        classify_overlay_render_bucket, garrison_flash_depth, overlay_body_frame,
-        terrain_object_is_render_visible, weapon_muzzle_flash_key, world_effect_screen_position,
+        ANIM_DRAW_DEPTH_BIAS_PX, CRATE_BODY_FRAME, OverlayRenderBucket, anim_instance_alpha,
+        apply_shape_z_adjust, classify_overlay_render_bucket, garrison_flash_depth,
+        overlay_body_frame, terrain_object_is_render_visible, weapon_muzzle_flash_key,
+        world_effect_screen_position,
     };
     use crate::map::overlay::TerrainObject;
+    use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
     use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash, WeaponMuzzleFlash};
@@ -1127,6 +1195,49 @@ mod tests {
     #[test]
     fn anim_draw_bias_constant_matches_native() {
         assert_eq!(ANIM_DRAW_DEPTH_BIAS_PX, -2);
+    }
+
+    #[test]
+    fn gsi_13_09_anim_emitters_carry_the_art_types_translucency_into_instance_alpha() {
+        // BURN-S/M/L (`Translucency=25`) and the wake/warp family
+        // (`Translucent=yes`) are the two stock shapes the emitters must honour.
+        let ini = IniFile::from_str(
+            "[BURNLIKE]\n\
+             Translucency=25\n\
+             [FIFTYLIKE]\n\
+             Translucency=50\n\
+             [WAKELIKE]\n\
+             Translucent=yes\n\
+             End=10\n\
+             [PLAIN]\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        // Translucency=N is N percent TRANSPARENT: 25 leaves three quarters of
+        // the source. A fire drawn at 0.25 would be nearly invisible.
+        let burn = reg.anim_runtime_config("BURNLIKE");
+        assert_eq!(anim_instance_alpha(burn, 0, 8), 0.75);
+        assert_eq!(anim_instance_alpha(burn, 7, 8), 0.75);
+        assert_eq!(
+            anim_instance_alpha(reg.anim_runtime_config("FIFTYLIKE"), 0, 8),
+            0.5
+        );
+
+        // Translucent=yes is a progressive fade against End: opaque through
+        // 0.2*End, then 3/4, 1/2, 1/4.
+        let wake = reg.anim_runtime_config("WAKELIKE");
+        assert_eq!(anim_instance_alpha(wake, 2, 10), 1.0);
+        assert_eq!(anim_instance_alpha(wake, 3, 10), 0.75);
+        assert_eq!(anim_instance_alpha(wake, 5, 10), 0.5);
+        assert_eq!(anim_instance_alpha(wake, 9, 10), 0.25);
+
+        // A type with neither key, and a type the registry never saw, draw
+        // opaque — wiring this in cannot dim an animation that was not marked.
+        assert_eq!(
+            anim_instance_alpha(reg.anim_runtime_config("PLAIN"), 4, 8),
+            1.0
+        );
+        assert_eq!(anim_instance_alpha(None, 4, 8), 1.0);
     }
 
     #[test]
