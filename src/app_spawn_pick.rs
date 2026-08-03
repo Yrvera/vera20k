@@ -121,19 +121,10 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     state.local_owner_override = seeded_owner;
     state.spawn_pick_pending = false;
 
-    // Center camera on the chosen spawn position.
+    // Center camera on the chosen spawn position, using the tactical viewport
+    // (window minus the sidebar column) rather than the whole window.
     let chosen_wp = starts[wp_idx];
-    let z: u8 = state
-        .height_map
-        .get(&(chosen_wp.rx, chosen_wp.ry))
-        .copied()
-        .unwrap_or(0);
-    let (sx, sy) = terrain::iso_to_screen(chosen_wp.rx, chosen_wp.ry, z);
-    let sw: f32 = state.render_width() as f32;
-    let sh: f32 = state.render_height() as f32;
-    let zm = state.zoom_level;
-    state.camera_x = sx - sw / (2.0 * zm);
-    state.camera_y = sy - sh / (2.0 * zm);
+    crate::app_camera::center_camera_on_cell(state, chosen_wp.rx, chosen_wp.ry);
 
     // Reset timing for clean InGame start.
     state.frame_pacer.reset_for_immediate_frame();
