@@ -1,8 +1,9 @@
-//! Pure preparation for the selected-map loading-screen composition.
+//! Pure preparation for the loading-screen composition.
 //!
 //! This app-level module turns parsed map and resolved launch data into an
-//! immutable CPU snapshot. GPU asset decoding, marker remaps, font rasterization,
-//! and presentation remain owned by the loading/render modules.
+//! immutable CPU snapshot, for both selected maps and random-map seed loads.
+//! GPU asset decoding, marker remaps, font rasterization, file reads, and
+//! presentation remain owned by the loading/render modules.
 
 use std::collections::HashMap;
 
@@ -19,6 +20,43 @@ const MARKER_FRACTION_SCALE: i64 = 1_000_000;
 const MMPB_OFFSET_X: i64 = -3;
 const MMPB_OFFSET_Y: i64 = -2;
 const START_INDICATOR_SIZE: i64 = 4;
+
+/// The one screen width that selects the narrow loading art. gamemd compares for
+/// equality here, not against a threshold, and the same comparison picks the
+/// narrow art size, the narrow text table and the narrow progress-row origin.
+pub(crate) const NARROW_LOADING_SCREEN_WIDTH: u32 = 640;
+const NARROW_ART_SIZE: [i32; 2] = [640, 480];
+const WIDE_ART_SIZE: [i32; 2] = [800, 600];
+
+/// Skirmish mode whose briefing block sits lower on the loading screen.
+const COOPERATIVE_MODE_OVERRIDE_FILE: &str = "MPCoopMD.ini";
+
+/// Bitmap the random-map setup dialog writes, and the only preview source the
+/// random-map loading branch has: at composition time the scenario has not been
+/// generated yet, so there is nothing to derive a preview from.
+pub(crate) const RANDOM_MAP_PREVIEW_FILE: &str = "RandMap.img";
+
+/// Loading-art viewport size for the current screen width.
+pub(crate) const fn loading_art_viewport_size(render_width: u32) -> [i32; 2] {
+    if render_width == NARROW_LOADING_SCREEN_WIDTH {
+        NARROW_ART_SIZE
+    } else {
+        WIDE_ART_SIZE
+    }
+}
+
+/// Origin that every loading-screen layer hangs off: the top-left corner of the
+/// centered art viewport.
+///
+/// gamemd computes this once when the load-progress manager is set up, and the
+/// background art, the progress row and all four text layers read it back from
+/// there. Deriving all three from this one helper is what keeps them from
+/// drifting apart when the window is not exactly the art size.
+pub(crate) const fn loading_base_origin(render_size: [u32; 2]) -> [i32; 2] {
+    let [width, height] = render_size;
+    let art = loading_art_viewport_size(width);
+    [(width as i32 - art[0]) / 2, (height as i32 - art[1]) / 2]
+}
 
 /// Native loading-preview destination rectangle, in `(x, y, width, height)` order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,42 +283,40 @@ pub(crate) struct LoadingTextRects {
     pub loading: RectPx,
 }
 
-/// Compute native 640, 800-base, centered-800+, and Cooperative text rectangles.
+/// Compute the native 640 and 800 text tables, offset by the shared base origin.
+///
+/// The Cooperative briefing Y only exists in the 800 table: gamemd's Cooperative
+/// branch collapses to the same values as the plain branch at exactly 640 wide.
 pub(crate) fn loading_text_rects(
     render_size: [u32; 2],
     mode: &SkirmishLaunchMode,
 ) -> LoadingTextRects {
-    let [width, height] = render_size;
-    if width == 640 {
-        return LoadingTextRects {
+    let [width, _] = render_size;
+    let table = if width == NARROW_LOADING_SCREEN_WIDTH {
+        LoadingTextRects {
             country_name: RectPx::new(385, 436, 200, 20),
             special_unit: RectPx::new(16, 72, 200, 20),
             load_brief: RectPx::new(16, 126, 318, 104),
             loading: RectPx::new(16, 235, 200, 20),
-        };
-    }
-
-    let cooperative = mode.override_file.eq_ignore_ascii_case("MPCoopMD.ini");
-    let base = LoadingTextRects {
-        country_name: RectPx::new(540, 310, 200, 20),
-        special_unit: RectPx::new(20, 90, 200, 20),
-        load_brief: RectPx::new(20, if cooperative { 380 } else { 158 }, 398, 130),
-        loading: RectPx::new(20, 300, 200, 20),
+        }
+    } else {
+        let cooperative = mode
+            .override_file
+            .eq_ignore_ascii_case(COOPERATIVE_MODE_OVERRIDE_FILE);
+        LoadingTextRects {
+            country_name: RectPx::new(540, 310, 200, 20),
+            special_unit: RectPx::new(20, 90, 200, 20),
+            load_brief: RectPx::new(20, if cooperative { 380 } else { 158 }, 398, 130),
+            loading: RectPx::new(20, 300, 200, 20),
+        }
     };
-    if width < 800 {
-        return base;
-    }
 
-    let dx = (i64::from(width) - 800) / 2;
-    let dy = (i64::from(height) - 600) / 2;
-    let (Ok(dx), Ok(dy)) = (i32::try_from(dx), i32::try_from(dy)) else {
-        return base;
-    };
+    let [dx, dy] = loading_base_origin(render_size);
     LoadingTextRects {
-        country_name: base.country_name.translate(dx, dy),
-        special_unit: base.special_unit.translate(dx, dy),
-        load_brief: base.load_brief.translate(dx, dy),
-        loading: base.loading.translate(dx, dy),
+        country_name: table.country_name.translate(dx, dy),
+        special_unit: table.special_unit.translate(dx, dy),
+        load_brief: table.load_brief.translate(dx, dy),
+        loading: table.loading.translate(dx, dy),
     }
 }
 
@@ -321,12 +357,6 @@ pub(crate) fn build_loading_composition(
     render_size: [u32; 2],
     assignments: &[LoadingStartAssignment],
 ) -> LoadingCompositionSnapshot {
-    let country = session.local.country;
-    let text = csf.map_or_else(
-        || LocalizedLoadingTextSnapshot::missing(country),
-        |csf| localize_loading_text(csf, country),
-    );
-    let text_rects = loading_text_rects(render_size, &session.mode);
     let region = mmpb_region_rect(render_size[0]);
     let prefix = native_loading_waypoint_prefix(&map.waypoints);
     let bounds = projected_playfield_bounds(map);
@@ -347,6 +377,56 @@ pub(crate) fn build_loading_composition(
             Some(PreparedLoadingPreview { image, region, fit })
         });
 
+    finish_loading_composition(session, csf, render_size, preview, markers)
+}
+
+/// Build the snapshot for a random-map seed load.
+///
+/// gamemd branches the *preview holder* on the scenario's random-map flag and
+/// nothing else: the preview comes from the `RandMap.img` bitmap the random-map
+/// setup dialog wrote — that dialog is where the map is generated — rather than
+/// from the scenario. The four text layers sit after that branch and are drawn
+/// exactly as they are for a selected map.
+///
+/// This produces no `mmpb` markers and no burned start indicators, and that is a
+/// **VERA-internal ordering difference, not gamemd's behavior**: gamemd calls
+/// the marker helper unconditionally on the same preview holder from both
+/// branches, with waypoints and start assignments already resolved, so it draws
+/// house-colored markers on the random-map loading screen too. VERA generates
+/// the map inside the loader, *after* this composition is built, so markers here
+/// would need the snapshot rebuilt once generation finishes.
+pub(crate) fn build_random_map_loading_composition(
+    session: &SkirmishLaunchSession,
+    csf: Option<&CsfFile>,
+    render_size: [u32; 2],
+    preview_image: Option<DecodedPreview>,
+) -> LoadingCompositionSnapshot {
+    let region = mmpb_region_rect(render_size[0]);
+    let preview = preview_image
+        .filter(valid_preview_buffer)
+        .and_then(|image| {
+            let fit = aspect_fit_preview(region, image.width, image.height)?;
+            Some(PreparedLoadingPreview { image, region, fit })
+        });
+
+    finish_loading_composition(session, csf, render_size, preview, Vec::new())
+}
+
+/// Attach the map-independent layers — the four localized text strings and their
+/// rectangles — to whichever preview and marker set the caller resolved.
+fn finish_loading_composition(
+    session: &SkirmishLaunchSession,
+    csf: Option<&CsfFile>,
+    render_size: [u32; 2],
+    preview: Option<PreparedLoadingPreview>,
+    markers: Vec<MmpbMarkerRecord>,
+) -> LoadingCompositionSnapshot {
+    let country = session.local.country;
+    let text = csf.map_or_else(
+        || LocalizedLoadingTextSnapshot::missing(country),
+        |csf| localize_loading_text(csf, country),
+    );
+    let text_rects = loading_text_rects(render_size, &session.mode);
     let layers = composition_layers(preview.is_some(), !markers.is_empty(), &text);
     LoadingCompositionSnapshot {
         preview,
@@ -817,6 +897,113 @@ mod tests {
         assert_eq!(text.special_unit.as_deref(), Some("PARADROP"));
         assert_eq!(text.load_brief.as_deref(), Some("A briefing."));
         assert_eq!(text.loading.as_deref(), Some("Loading..."));
+    }
+
+    fn test_launch_session() -> SkirmishLaunchSession {
+        use crate::skirmish_launch::{
+            LaunchStartPosition, LaunchTeam, SkirmishLaunchOptions, SkirmishLocalSlot,
+        };
+        SkirmishLaunchSession {
+            mode: mode("MPBattleMD.ini"),
+            selected_map_file: Some(RANDMAP_SED_FIXTURE.to_owned()),
+            player_name: "Player".to_owned(),
+            local: SkirmishLocalSlot {
+                country: LaunchCountry::America,
+                country_random: false,
+                color_index: 0,
+                color_random: false,
+                start_position: LaunchStartPosition::Position(0),
+                team: LaunchTeam::None,
+            },
+            opponents: Vec::new(),
+            options: SkirmishLaunchOptions::default(),
+        }
+    }
+
+    const RANDMAP_SED_FIXTURE: &str = "RandMap.Sed";
+
+    #[test]
+    fn base_origin_centers_the_art_viewport_for_each_native_width_branch() {
+        // Exactly 640 selects the 640x480 art; every other width uses 800x600.
+        assert_eq!(loading_base_origin([640, 480]), [0, 0]);
+        assert_eq!(loading_base_origin([800, 600]), [0, 0]);
+        assert_eq!(loading_base_origin([1024, 768]), [112, 84]);
+        assert_eq!(loading_base_origin([1920, 1080]), [560, 240]);
+        assert_eq!(loading_base_origin([640, 800]), [0, 160]);
+    }
+
+    #[test]
+    fn text_rects_shift_by_exactly_the_shared_base_origin() {
+        // The split-anchor bug this guards: the text layers moved with the
+        // window while the art and the progress row stayed at (0,0).
+        let battle = mode("MPBattleMD.ini");
+        let anchored = loading_text_rects([800, 600], &battle);
+        let maximized = loading_text_rects([1024, 768], &battle);
+        let [dx, dy] = loading_base_origin([1024, 768]);
+
+        assert_eq!(
+            maximized.country_name,
+            anchored.country_name.translate(dx, dy)
+        );
+        assert_eq!(
+            maximized.special_unit,
+            anchored.special_unit.translate(dx, dy)
+        );
+        assert_eq!(maximized.load_brief, anchored.load_brief.translate(dx, dy));
+        assert_eq!(maximized.loading, anchored.loading.translate(dx, dy));
+    }
+
+    #[test]
+    fn random_map_composition_keeps_every_text_layer_without_map_data() {
+        let csf = test_csf(&[
+            ("Name:Americans", "America"),
+            ("Name:Para", "paradrop"),
+            ("LoadBrief:USA", "A briefing."),
+            ("GUI:LoadingEx", "Loading..."),
+        ]);
+        let composition = build_random_map_loading_composition(
+            &test_launch_session(),
+            Some(&csf),
+            [800, 600],
+            None,
+        );
+
+        assert_eq!(composition.text.country_name.as_deref(), Some("America"));
+        assert_eq!(composition.text.special_unit.as_deref(), Some("PARADROP"));
+        assert_eq!(composition.text.load_brief.as_deref(), Some("A briefing."));
+        assert_eq!(composition.text.loading.as_deref(), Some("Loading..."));
+        assert_eq!(
+            composition.text_rects,
+            loading_text_rects([800, 600], &mode("MPBattleMD.ini"))
+        );
+        assert!(composition.preview.is_none());
+        assert!(composition.markers.is_empty());
+    }
+
+    #[test]
+    fn random_map_composition_aspect_fits_the_setup_dialog_bitmap() {
+        let image = DecodedPreview {
+            width: 200,
+            height: 80,
+            rgba: vec![255; 200 * 80 * 4],
+        };
+        let composition = build_random_map_loading_composition(
+            &test_launch_session(),
+            None,
+            [800, 600],
+            Some(image),
+        );
+
+        let preview = composition.preview.expect("valid bitmap fits the region");
+        assert_eq!(preview.region, mmpb_region_rect(800));
+        assert_eq!(
+            preview.fit,
+            aspect_fit_preview(mmpb_region_rect(800), 200, 80).expect("valid fit")
+        );
+        // The bitmap already carries the setup dialog's own start markers, so no
+        // black indicators are burned into it here.
+        assert!(preview.image.rgba.iter().all(|byte| *byte == 255));
+        assert!(composition.markers.is_empty());
     }
 
     #[test]
