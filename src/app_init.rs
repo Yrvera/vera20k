@@ -1054,16 +1054,15 @@ pub(crate) fn load_map_from_initial(
     }
 
     if let Some(sim) = &mut simulation {
-        // Seed TIBTRE-style ore-spawning terrain objects. Skip gracefully if
-        // rules failed to load (matches the ore_growth_config pattern below).
+        // Attach the TIBTRE ore-spawner animation index to the terrain objects
+        // constructed ahead of the map entities. Skip gracefully if rules failed
+        // to load (matches the ore_growth_config pattern below).
         if let Some(rules_for_terrain) = rules.as_ref() {
-            let seeded_terrain = crate::sim::terrain_spawn::seed_terrain_spawners(
+            let seeded_terrain = crate::sim::terrain_spawn::seed_terrain_spawner_animation(
                 sim,
-                &map_data.terrain_objects,
                 rules_for_terrain,
                 &overlay_names,
                 &terrain_frame_counts,
-                map_data.header.theater.eq_ignore_ascii_case("SNOW"),
             );
             if seeded_terrain > 0 {
                 log::info!(
@@ -1234,6 +1233,21 @@ pub(crate) fn load_map_from_initial(
 
     if let (Some(sim), Some(grid)) = (&mut simulation, path_grid.as_ref()) {
         sim.rebuild_zone_grid(grid);
+    }
+
+    // gamemd `Post_Map_Init` step 3: with the lobby Crates option on (the stock
+    // default), scatter `min(max(CrateMinimum, players), CrateMaximum)` crates
+    // over the map. Native runs this after the starting force and after the
+    // cell-attribute rebuild, which is exactly this point.
+    if let (Some(sim), Some(rules_for_crates)) = (&mut simulation, rules.as_ref()) {
+        let player_count = crate::sim::crates::human_player_count(sim);
+        crate::sim::crates::place_scenario_start_crates(
+            sim,
+            rules_for_crates,
+            &overlay_registry,
+            path_grid.as_ref(),
+            player_count,
+        );
     }
 
     // Prefer the first multiplayer start waypoint as the initial anchor when

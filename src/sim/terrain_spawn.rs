@@ -644,24 +644,21 @@ fn tiberium_overlay_id_for_new_cell(
     default_ore_overlay_id
 }
 
-/// Populate `production.terrain_spawners` from the map's terrain objects.
+/// `TerrainClass::Read_Map_Section` — construct one live terrain object per
+/// map `[Terrain]` entry.
 ///
-/// Terrain SHP frame counts are supplied by app/render-side asset loading before
-/// entering sim. Sim stores only the numeric count, preserving the layering
-/// boundary.
-pub fn seed_terrain_spawners(
+/// gamemd reads `[Terrain]` while the map sections are being walked, *before*
+/// `[Units]`, `[Aircraft]`, `[Infantry]` and `[Structures]`, so every tree
+/// already owns its cell (occupation bits committed) by the time the first map
+/// object is placed. Callers must run this before the map-entity spawn pass.
+///
+/// Returns the number of terrain objects constructed.
+pub fn construct_terrain_objects(
     sim: &mut crate::sim::world::Simulation,
     terrain_objects: &[crate::map::overlay::TerrainObject],
     rules: &crate::rules::ruleset::RuleSet,
-    overlay_names: &BTreeMap<u8, String>,
-    terrain_frame_counts: &BTreeMap<String, u16>,
     snow_theater: bool,
 ) -> usize {
-    sim.production.default_ore_overlay_id = overlay_names
-        .iter()
-        .find(|(_id, name)| name.to_ascii_uppercase().starts_with("TIB"))
-        .map(|(id, _)| *id);
-
     sim.production.terrain_spawners.clear();
     sim.production.terrain_objects.clear();
     sim.production.terrain_object_cells.clear();
@@ -669,7 +666,7 @@ pub fn seed_terrain_spawners(
     sim.production.next_terrain_object_id = 1;
     sim.production.tiberium_spawning_terrain_cells.clear();
 
-    let mut seeded = 0usize;
+    let mut constructed = 0usize;
     for obj in terrain_objects {
         let Some(t) = rules.terrain_object_type_case_insensitive(&obj.name) else {
             continue;
@@ -695,22 +692,68 @@ pub fn seed_terrain_spawners(
             (obj.rx, obj.ry),
             occupation_bits,
         );
-        if !t.spawns_tiberium {
+        if t.spawns_tiberium {
+            sim.production
+                .tiberium_spawning_terrain_cells
+                .insert((obj.rx, obj.ry));
+        }
+        constructed += 1;
+    }
+    constructed
+}
+
+/// Attach the ore-spawner animation index to already-constructed terrain objects.
+///
+/// Split out of construction because the animation frame count comes from the
+/// loaded terrain SHP, which app/render-side asset loading only knows after the
+/// overlay atlas is built. gamemd has the theater art resident from
+/// `Init_Theater`, so it needs no second pass; the split is VERA-internal and
+/// changes no ordering the sim can observe (the index is only read by the
+/// per-tick spawner walk). Sim stores only the numeric count, preserving the
+/// layering boundary.
+///
+/// Returns the number of spawners seeded.
+pub fn seed_terrain_spawner_animation(
+    sim: &mut crate::sim::world::Simulation,
+    rules: &crate::rules::ruleset::RuleSet,
+    overlay_names: &BTreeMap<u8, String>,
+    terrain_frame_counts: &BTreeMap<String, u16>,
+) -> usize {
+    sim.production.default_ore_overlay_id = overlay_names
+        .iter()
+        .find(|(_id, name)| name.to_ascii_uppercase().starts_with("TIB"))
+        .map(|(id, _)| *id);
+    sim.production.terrain_spawners.clear();
+
+    let candidates: Vec<(u64, (u16, u16), InternedId)> = sim
+        .production
+        .terrain_objects
+        .values()
+        .filter(|terrain| terrain.is_live())
+        .map(|terrain| (terrain.stable_id, terrain.cell(), terrain.type_ref))
+        .collect();
+
+    let mut seeded = 0usize;
+    for (stable_id, cell, type_ref) in candidates {
+        // Two entries can name the same cell; only the object the cell index
+        // points at owns that cell's spawner.
+        if sim.production.terrain_object_cells.get(&cell) != Some(&stable_id) {
             continue;
         }
-        sim.production
-            .tiberium_spawning_terrain_cells
-            .insert((obj.rx, obj.ry));
-        if !t.is_animated {
+        let name = sim.interner.resolve(type_ref).to_string();
+        let Some(t) = rules.terrain_object_type_case_insensitive(&name) else {
+            continue;
+        };
+        if !t.spawns_tiberium || !t.is_animated {
             continue;
         }
         let frame_count = terrain_frame_counts
-            .get(&obj.name)
-            .or_else(|| terrain_frame_counts.get(&obj.name.to_ascii_uppercase()))
+            .get(&name)
+            .or_else(|| terrain_frame_counts.get(&name.to_ascii_uppercase()))
             .copied()
             .unwrap_or(0);
         sim.production.terrain_spawners.insert(
-            (obj.rx, obj.ry),
+            cell,
             TerrainSpawnerState::new(
                 type_ref,
                 t.animation_probability_micros,
@@ -721,6 +764,23 @@ pub fn seed_terrain_spawners(
         seeded += 1;
     }
     seeded
+}
+
+/// Construct terrain objects and seed their spawner index in one call.
+///
+/// Convenience for callers that have the frame counts already (tests, the
+/// preview/spawn-pick path). The production load path calls the two halves
+/// separately so construction keeps its native position ahead of `[Units]`.
+pub fn seed_terrain_spawners(
+    sim: &mut crate::sim::world::Simulation,
+    terrain_objects: &[crate::map::overlay::TerrainObject],
+    rules: &crate::rules::ruleset::RuleSet,
+    overlay_names: &BTreeMap<u8, String>,
+    terrain_frame_counts: &BTreeMap<String, u16>,
+    snow_theater: bool,
+) -> usize {
+    construct_terrain_objects(sim, terrain_objects, rules, snow_theater);
+    seed_terrain_spawner_animation(sim, rules, overlay_names, terrain_frame_counts)
 }
 
 #[cfg(test)]
@@ -1459,6 +1519,170 @@ SpreadPercentage=.06
             BTreeSet::from([(5, 6), (1, 2)])
         );
         assert_eq!(sim.production.default_ore_overlay_id, Some(2));
+    }
+
+    /// A `[Terrain]` entry read straight out of a map INI must become a live
+    /// object that a player can force-fire, damage and destroy — the whole
+    /// chain from map section to `TerrainClass::Take_Damage`.
+    #[test]
+    fn gsi_17_01_map_terrain_entry_becomes_a_force_fireable_object() {
+        use crate::map::overlay::parse_terrain_objects;
+        use crate::sim::command::{Command, CommandEnvelope};
+        use crate::sim::components::Health;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::pathfinding::PathGrid;
+        use crate::sim::terrain_object::TerrainObjectLifecycle;
+        use crate::sim::world::Simulation;
+
+        // Stock-shaped rules: TREE01 declares no Strength, so it resolves
+        // through `[General] TreeStrength`, and no Immune/LegalTarget keys —
+        // exactly as `ini/rulesmd.ini` writes it. `Wood=yes` on the warhead is
+        // what lets a shot reach a terrain object at all.
+        let rules_ini = IniFile::from_str(
+            "[General]\nTreeStrength=200\n\
+             [InfantryTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [VehicleTypes]\n0=MTNK\n\
+             [TerrainTypes]\n0=TREE01\n\
+             [TREE01]\nName=Tree\nTemperateOccupationBits=4\nSnowOccupationBits=6\n\
+             [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\
+             [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\
+             [AP]\nWood=yes\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
+        );
+        let rules = RuleSet::from_ini(&rules_ini).expect("rules");
+
+        // Real map syntax: the `[Terrain]` key is `ry * 1000 + rx`.
+        let map_ini = IniFile::from_str("[Terrain]\n5010=TREE01\n");
+        let terrain_objects = parse_terrain_objects(&map_ini);
+        assert_eq!(terrain_objects.len(), 1);
+        assert_eq!((terrain_objects[0].rx, terrain_objects[0].ry), (10, 5));
+
+        // Build the attacker before snapshotting the shared test interner, so
+        // its owner/type ids resolve inside `sim.interner`.
+        let mut attacker = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        attacker.health = Health {
+            current: 300,
+            max: 300,
+        };
+        let owner_id = attacker.owner;
+
+        let mut sim = Simulation::new();
+        sim.interner = crate::sim::intern::test_interner();
+        sim.input_delay_ticks = 0;
+        sim.substrate.entities.insert(attacker);
+        assert!(matches!(
+            sim.reveal(1),
+            crate::sim::world::RevealOutcome::Revealed { .. }
+        ));
+
+        let constructed = construct_terrain_objects(&mut sim, &terrain_objects, &rules, false);
+        assert_eq!(constructed, 1, "the [Terrain] entry constructs a live object");
+        let stable_id = sim.production.terrain_object_cells[&(10, 5)];
+        assert_eq!(sim.production.terrain_objects[&stable_id].health, 200);
+        assert_eq!(sim.production.terrain_occupation_bits[&(10, 5)], 4);
+
+        let grid = PathGrid::test_all_passable(64, 64);
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        sim.pending_commands.push(CommandEnvelope::new(
+            owner_id,
+            sim.session.tick + 1,
+            Command::ForceAttackCell {
+                attacker_id: 1,
+                target_rx: 10,
+                target_ry: 5,
+            },
+        ));
+
+        let mut damaged = false;
+        let mut destroyed = false;
+        let mut shots = 0usize;
+        let mut targeted = false;
+        for _ in 0..600 {
+            let pending: Vec<CommandEnvelope> = std::mem::take(&mut sim.pending_commands);
+            sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
+            shots += sim.fire_events.len();
+            targeted |= sim
+                .substrate
+                .entities
+                .get(1)
+                .is_some_and(|e| e.attack_target.is_some());
+            let terrain = &sim.production.terrain_objects[&stable_id];
+            damaged |= terrain.health < 200;
+            if terrain.lifecycle == TerrainObjectLifecycle::Destroyed {
+                destroyed = true;
+                break;
+            }
+        }
+
+        assert!(
+            damaged,
+            "force-fire on the tree cell must damage the tree \
+             (targeted={targeted}, shots={shots}, health={})",
+            sim.production.terrain_objects[&stable_id].health
+        );
+        assert!(destroyed, "sustained force-fire must destroy the tree");
+        assert!(
+            !sim.production.terrain_object_cells.contains_key(&(10, 5)),
+            "a destroyed tree releases its cell"
+        );
+        assert!(
+            !sim.production
+                .terrain_occupation_bits
+                .contains_key(&(10, 5)),
+            "a destroyed tree releases its occupation bits"
+        );
+    }
+
+    /// The animation index is a decoration over already-constructed objects, so
+    /// running it alone (the production load order: construct with the map
+    /// entities, decorate after the atlas) can never resurrect terrain.
+    #[test]
+    fn gsi_17_01_spawner_animation_pass_only_decorates_constructed_objects() {
+        use crate::map::overlay::TerrainObject;
+        use crate::sim::world::Simulation;
+
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [TerrainTypes]\n0=TIBTRE01\n\
+             [TIBTRE01]\nSpawnsTiberium=yes\nIsAnimated=yes\n\
+             AnimationRate=3\nAnimationProbability=.003\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let mut frame_counts = BTreeMap::new();
+        frame_counts.insert("TIBTRE01".to_string(), STOCK_FRAME_COUNT);
+
+        let mut sim = Simulation::new();
+        assert_eq!(
+            seed_terrain_spawner_animation(&mut sim, &rules, &BTreeMap::new(), &frame_counts),
+            0,
+            "no constructed objects means no spawners"
+        );
+        assert!(sim.production.terrain_objects.is_empty());
+
+        construct_terrain_objects(
+            &mut sim,
+            &[TerrainObject {
+                rx: 5,
+                ry: 6,
+                name: "TIBTRE01".to_string(),
+            }],
+            &rules,
+            false,
+        );
+        assert!(
+            sim.production.terrain_spawners.is_empty(),
+            "construction alone leaves the animation index empty"
+        );
+        assert_eq!(
+            seed_terrain_spawner_animation(&mut sim, &rules, &BTreeMap::new(), &frame_counts),
+            1
+        );
+        assert_eq!(
+            sim.production.terrain_spawners[&(5, 6)].frame_count,
+            STOCK_FRAME_COUNT
+        );
     }
 
     #[test]

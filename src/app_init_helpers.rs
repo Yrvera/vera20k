@@ -571,6 +571,24 @@ pub(crate) fn spawn_entities(
         }
         sim.bridge_anim_sounds = bridge_anim_sounds;
     }
+    // gamemd `TerrainClass::Read_Map_Section` runs while the map sections are
+    // walked, ahead of `[Units]`/`[Aircraft]`/`[Infantry]`/`[Structures]`: every
+    // tree owns its cell before the first map object is placed on it. The
+    // ore-spawner animation index is attached later, once the terrain SHP frame
+    // counts are known.
+    if let Some(rules) = rules {
+        let constructed = crate::sim::terrain_spawn::construct_terrain_objects(
+            &mut sim,
+            &map_data.terrain_objects,
+            rules,
+            theater_name.eq_ignore_ascii_case("SNOW"),
+        );
+        if constructed > 0 {
+            log::info!("Constructed {constructed} map terrain objects before map entities");
+        }
+    } else {
+        log::warn!("No rules loaded — skipping terrain object construction");
+    }
     if !map_data.entities.is_empty() {
         let _count: u32 = sim.spawn_from_map_with_resolved(
             &map_data.entities,
