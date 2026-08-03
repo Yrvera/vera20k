@@ -135,6 +135,7 @@ impl Simulation {
 
             // Turret facing for voxel units with Turret=yes.
             let obj = rules.and_then(|r| r.object(&map_ent.type_id));
+            stamp_scoring_flags(&mut ge, obj);
             let has_turret = obj.map(|o| o.has_turret).unwrap_or(false);
             if has_turret {
                 let initial = crate::sim::movement::turret::body_facing_to_turret(map_ent.facing);
@@ -349,6 +350,7 @@ impl Simulation {
             ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
         }
 
+        stamp_scoring_flags(&mut ge, Some(obj));
         if obj.has_turret {
             let initial = crate::sim::movement::turret::body_facing_to_turret(facing);
             let rot_byte = obj.turret_rot.clamp(0, 0xFF) as u8;
@@ -504,6 +506,7 @@ impl Simulation {
             ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
         }
 
+        stamp_scoring_flags(&mut ge, Some(obj));
         if obj.has_turret {
             let initial = crate::sim::movement::turret::body_facing_to_turret(facing);
             let rot_byte = obj.turret_rot.clamp(0, 0xFF) as u8;
@@ -973,4 +976,14 @@ fn undeploy_target_for_building(type_id: &str, rules: &RuleSet) -> Option<String
 fn undeploy_center_cell(origin_rx: u16, origin_ry: u16, foundation: &str) -> (u16, u16) {
     let (width, height) = foundation_dimensions(foundation);
     (origin_rx + width / 2, origin_ry + height / 2)
+}
+
+/// Copy the rules-derived scoring flags onto a freshly built entity.
+///
+/// Every spawn path calls this, so a type that must not appear on the score
+/// screen is honored no matter how the object came into the world. The flag is
+/// copied rather than looked up later because the score bookkeeping runs in the
+/// lifecycle authority, which deliberately holds no `RuleSet` borrow.
+fn stamp_scoring_flags(ge: &mut GameEntity, obj: Option<&crate::rules::object_type::ObjectType>) {
+    ge.dont_score = obj.is_some_and(|o| o.dont_score);
 }

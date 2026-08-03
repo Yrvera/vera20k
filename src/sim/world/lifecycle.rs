@@ -835,7 +835,7 @@ impl Simulation {
 
     /// Existing Rust owner-count mutation with an explicit exactly-once guard.
     pub(crate) fn release_owned_count_once(&mut self, stable_id: u64) {
-        let Some((owner, category, already_released, destroyed, killed_by, award)) =
+        let Some((owner, category, already_released, destroyed, killed_by, award, dont_score)) =
             self.substrate.entities.get(stable_id).map(|entity| {
                 (
                     entity.owner,
@@ -844,6 +844,7 @@ impl Simulation {
                     entity.health.current == 0,
                     entity.killed_by,
                     entity.kill_award_points,
+                    entity.dont_score,
                 )
             })
         else {
@@ -857,7 +858,7 @@ impl Simulation {
         }
         let owner_name = self.interner.resolve(owner).to_string();
         self.decrement_owned_count(&owner_name, category);
-        if destroyed {
+        if destroyed && !dont_score {
             self.record_match_kill_and_loss(owner, category, killed_by, award);
         }
     }
@@ -870,6 +871,10 @@ impl Simulation {
     /// damage loop so it fires exactly once per object, but it does NOT
     /// re-derive the killer here — `killed_by` was captured at the instant of
     /// destruction, which is where gamemd records it.
+    ///
+    /// A `DontScore=` victim never reaches this recorder at all — its loss is
+    /// suppressed alongside its kill and points, matching the single early return
+    /// gamemd takes before any of the three.
     ///
     /// The kill is counted regardless of how the killer relates to the victim:
     /// gamemd increments the killing house's kill table for allied and

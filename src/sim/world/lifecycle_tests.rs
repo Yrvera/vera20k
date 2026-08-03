@@ -2045,6 +2045,40 @@ fn score_stats_count_a_self_inflicted_kill_but_award_no_points() {
 }
 
 #[test]
+fn dont_score_victims_book_no_kill_no_loss_and_no_points() {
+    // Stock `DontScore=yes` covers SLAV and the three spawner missiles
+    // (V3ROCKET/DMISL/CMISL). Slaves die and respawn all match and AA intercepts
+    // are routine, so a victim that native ignores entirely must not show up in
+    // any of the three columns.
+    let mut sim = Simulation::new();
+    let victim_owner = sim.interner.intern("Americans");
+    let killer_owner = sim.interner.intern("Russians");
+    sim.houses.insert(
+        victim_owner,
+        HouseState::new(victim_owner, 0, None, true, 0, 10),
+    );
+    sim.houses.insert(
+        killer_owner,
+        HouseState::new(killer_owner, 1, None, false, 0, 10),
+    );
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    let victim = sim.substrate.entities.get_mut(1).unwrap();
+    victim.health.current = 0;
+    victim.dont_score = true;
+    // Even with a credit already recorded, the loss half stays suppressed.
+    victim.killed_by = Some(killer_owner);
+    victim.kill_award_points = 500;
+
+    sim.uninit(1);
+
+    let victim_house = sim.houses.get(&victim_owner).unwrap();
+    assert_eq!(victim_house.stats.losses(), 0, "no phantom loss");
+    let killer = sim.houses.get(&killer_owner).unwrap();
+    assert_eq!(killer.stats.kills(), 0, "no phantom kill");
+    assert_eq!(killer.stats.score_points, 0, "no phantom points");
+}
+
+#[test]
 fn score_column_sums_the_harvest_and_kill_feeders() {
     // The native score field has two feeders. Drive the kill half through the
     // real award helper on stock costs rather than a hand-picked total: one

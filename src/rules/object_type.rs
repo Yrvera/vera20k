@@ -159,6 +159,13 @@ pub struct ObjectType {
     pub cost: i32,
     /// Hit points (health). 0 = invincible or not applicable.
     pub strength: i32,
+    /// `DontScore=` — this object's destruction is invisible to the end-of-match
+    /// score. gamemd's kill-record step returns on this byte before ANY
+    /// bookkeeping, so the victim contributes no kill, no loss and no points.
+    /// Stock sets it on exactly four types: `SLAV`, `V3ROCKET`, `DMISL`, `CMISL`
+    /// — the enslaved miners and the three spawner missiles, all of which die
+    /// constantly in ordinary play.
+    pub dont_score: bool,
     /// Armor type name (e.g., "heavy", "light", "wood"). Determines damage
     /// multipliers from warhead Verses= values.
     pub armor: String,
@@ -956,6 +963,7 @@ impl ObjectType {
                 .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
             strength: section.get_i32("Strength").unwrap_or(0),
+            dont_score: section.get_bool("DontScore").unwrap_or(false),
             armor: section.get("Armor").unwrap_or("none").to_string(),
             speed: section.get_i32("Speed").unwrap_or(0),
             weight: section

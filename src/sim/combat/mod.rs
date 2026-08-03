@@ -2293,6 +2293,13 @@ pub(crate) fn capture_kill_credit(
     rules: &crate::rules::ruleset::RuleSet,
     interner: &crate::sim::intern::StringInterner,
 ) {
+    // `DontScore=` victims are invisible to the score screen entirely. gamemd
+    // returns on this byte before any of its bookkeeping, so the kill and the
+    // points are both suppressed here and the loss is suppressed at the
+    // lifecycle recorder — the two halves of that one native early return.
+    if victim.dont_score {
+        return;
+    }
     if victim.health.current != 0 || victim.killed_by.is_some() {
         return;
     }
