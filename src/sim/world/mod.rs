@@ -3088,8 +3088,26 @@ impl Simulation {
             // deploy state and before combat consumes the prone bit.
             crate::sim::infantry::tick_fear_for_entities(
                 &mut self.substrate.entities,
+                &self.houses,
                 rules,
                 &self.interner,
+            );
+
+            // Idle fidgets, immediately after the stance pass so a man who just
+            // stood back up is not eligible on the same tick he was prone.
+            // Driven from the logic vector, not the entity store: limboed
+            // objects never reach this in the original.
+            // DEPENDS ON: prone bit, deploy phase, attack target, mission.
+            // PRODUCES: Idle1/Idle2 sequence switches, idle facing changes, and
+            //   scenario-RNG draws — the one idle path that moves the cursor.
+            crate::sim::infantry::tick_idle_actions(
+                &mut self.substrate.entities,
+                self.substrate.logic.as_slice(),
+                &self.houses,
+                rules,
+                &self.interner,
+                &mut self.scenario_rng,
+                self.session.binary_frame,
             );
 
             // --- Phase 5: Combat + Turret rotation ---

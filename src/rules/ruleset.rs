@@ -332,6 +332,15 @@ pub struct GeneralRules {
     /// `condition_red` pre-scaled to integer ×1000 for deterministic sim comparisons.
     /// Computed once at parse time: `(condition_red * 1000.0) as i64`.
     pub condition_red_x1000: i64,
+    /// `IdleActionFrequency=` from `[AudioVisual]`, pre-scaled to integer ×1000.
+    ///
+    /// Scales how long an idle infantryman waits between fidgets: the wait is
+    /// drawn from `frequency * 450` to `frequency * 1800` frames, so stock
+    /// `.15` gives 67 to 270 frames. Stored ×1000 because the sim may only do
+    /// integer arithmetic with it. gamemd's own constructor default (what it
+    /// would use if the key were missing) is UNCHECKED; stock `rulesmd.ini`
+    /// always supplies the key, so the fallback below only ever serves fixtures.
+    pub idle_action_frequency_x1000: i64,
     /// Exact integer cutoff used by ordinary-building damage fire after the
     /// startup validator certifies stock `ConditionYellow=50%`.
     pub damage_fire_ordinary_ratio: DamageFireHealthRatio,
@@ -699,6 +708,13 @@ pub(crate) fn damage_spark_spawn_threshold(band: f64) -> u32 {
 /// Matches gamemd constructor default: 1 game frame at 60fps ≈ 17ms.
 const DEFAULT_ANIM_FRAME_DELAY: u16 = 1;
 
+/// Stand-in for `[AudioVisual] IdleActionFrequency=` when the key is absent.
+///
+/// Stock `rulesmd.ini` sets `.15`, so this only serves fixtures that build a
+/// RuleSet without an `[AudioVisual]` section. gamemd's own constructor default
+/// is UNCHECKED.
+const STOCK_IDLE_ACTION_FREQUENCY_X1000: i64 = 150;
+
 /// Zip a parallel pair of paradrop INI keys (`Inf` + `Num`) into `(type, count)` pairs.
 /// `skip_count_assert` mirrors gamemd's Soviet branch which lacks the equality check.
 fn parse_paradrop_list(
@@ -796,6 +812,7 @@ impl Default for GeneralRules {
             condition_yellow_x1000: 500,
             condition_red: 0.25,
             condition_red_x1000: 250,
+            idle_action_frequency_x1000: STOCK_IDLE_ACTION_FREQUENCY_X1000,
             damage_fire_ordinary_ratio: DamageFireHealthRatio {
                 numerator: 1,
                 denominator: 2,
@@ -1299,6 +1316,15 @@ impl GeneralRules {
             condition_yellow_x1000: (condition_yellow_f32 as f64 * 1000.0) as i64,
             condition_red: condition_red_f32,
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
+            idle_action_frequency_x1000: (audio_visual
+                .map(|s| {
+                    s.read_double(
+                        "IdleActionFrequency",
+                        STOCK_IDLE_ACTION_FREQUENCY_X1000 as f64 / 1000.0,
+                    )
+                })
+                .unwrap_or(STOCK_IDLE_ACTION_FREQUENCY_X1000 as f64 / 1000.0)
+                * 1000.0) as i64,
             damage_fire_ordinary_ratio: DamageFireHealthRatio {
                 numerator: 1,
                 denominator: 2,

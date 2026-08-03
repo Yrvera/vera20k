@@ -199,6 +199,20 @@ pub fn sequence_kind_from_ini_key(key: &str) -> Option<SequenceKind> {
     }
 }
 
+/// Native action id for a sequence, i.e. its slot in the 42-entry action table.
+///
+/// The ids are the index order of the engine's own sequence-name array, not the
+/// alphabetical or INI order. They are only meaningful as indices into
+/// `ACTION_FRAME_DELAYS` / `NORMALIZED_ACTIONS`, so an id that is off by even one
+/// hands the sequence another action's playback speed. That is exactly what the
+/// water, flight, deploy-adjacent and secondary-weapon rows did before this
+/// table was walked out of the binary: `SecondaryFire` in particular ran three
+/// times slower than retail, and because an infantryman discharges his weapon on
+/// a specific frame of the fire sequence rather than at its start, that slowed
+/// the Brute's building-smash rate to a third.
+///
+/// Ids 20/21 (WetDie1/WetDie2), 25 (Tumble), 34–36 (AirDeath*) and 38/39
+/// (Shovel/Carry) have no `SequenceKind` yet and so are absent below.
 fn action_id(kind: SequenceKind) -> u8 {
     match kind {
         SequenceKind::Stand => 0,
@@ -218,22 +232,22 @@ fn action_id(kind: SequenceKind) -> u8 {
         SequenceKind::Die5 => 15,
         SequenceKind::Tread => 16,
         SequenceKind::Swim => 17,
-        SequenceKind::WetAttack => 18,
-        SequenceKind::WetIdle1 => 19,
-        SequenceKind::WetIdle2 => 20,
-        SequenceKind::Cheer => 26,
+        SequenceKind::WetIdle1 => 18,
+        SequenceKind::WetIdle2 => 19,
+        SequenceKind::WetAttack => 22,
+        SequenceKind::Hover => 23,
+        SequenceKind::Fly => 24,
+        SequenceKind::FireFly => 26,
         SequenceKind::Deploy => 27,
         SequenceKind::Deployed => 28,
         SequenceKind::DeployedFire => 29,
         SequenceKind::DeployedIdle => 30,
         SequenceKind::Undeploy => 31,
-        SequenceKind::Paradrop => 32,
-        SequenceKind::Fly => 33,
-        SequenceKind::FireFly => 34,
-        SequenceKind::Hover => 35,
-        SequenceKind::Panic => 36,
-        SequenceKind::SecondaryFire => 39,
-        SequenceKind::SecondaryProne => 40,
+        SequenceKind::Cheer => 32,
+        SequenceKind::Paradrop => 33,
+        SequenceKind::Panic => 37,
+        SequenceKind::SecondaryFire => 40,
+        SequenceKind::SecondaryProne => 41,
     }
 }
 

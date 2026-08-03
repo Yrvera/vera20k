@@ -847,6 +847,15 @@ impl Simulation {
                 1u8.hash(hasher);
                 infantry.fear_level.hash(hasher);
                 infantry.is_prone.hash(hasher);
+                // The idle-fidget countdown gates a scenario-RNG draw, so a
+                // divergence here becomes a divergence of every later draw.
+                // Folded in every schema variant rather than behind a gate: the
+                // Scenario RNG itself is folded before either gate, and the two
+                // provenance fixtures both hold infantry eligible on their first
+                // tick, so their legacy probes already move with the draws this
+                // timer schedules. Gating it would hide the field without
+                // buying those probes back.
+                infantry.idle_action_timer.hash(hasher);
             } else {
                 0u8.hash(hasher);
             }
@@ -1903,6 +1912,7 @@ mod infantry_hash_tests {
         a.infantry = Some(InfantryRuntime {
             fear_level: 10,
             is_prone: false,
+            ..InfantryRuntime::new()
         });
         sim_a.substrate.entities.insert(a);
         sim_b.substrate.entities.insert(b);
@@ -1915,6 +1925,7 @@ mod infantry_hash_tests {
         a.infantry = Some(InfantryRuntime {
             fear_level: 0,
             is_prone: true,
+            ..InfantryRuntime::new()
         });
         sim_a.substrate.entities.insert(a);
         sim_b.substrate.entities.insert(b);

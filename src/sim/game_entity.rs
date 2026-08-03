@@ -53,6 +53,14 @@ pub const PASSIVE_SCAN_CONSTRUCTION_DELAY_FRAMES: u32 = 45;
 pub struct InfantryRuntime {
     pub fear_level: u16,
     pub is_prone: bool,
+    /// Countdown to this man's next idle fidget.
+    ///
+    /// Re-armed to a fresh random wait every time the idle action fires, and
+    /// only then — the same one-shot timer gamemd keeps on the infantry object.
+    /// Its default is the unarmed sentinel, which reads as already due, so a
+    /// freshly built infantryman is eligible on his first idle turn.
+    #[serde(default)]
+    pub idle_action_timer: MissionTimer,
 }
 
 impl InfantryRuntime {
@@ -60,6 +68,7 @@ impl InfantryRuntime {
         Self {
             fear_level: 0,
             is_prone: false,
+            idle_action_timer: MissionTimer::default(),
         }
     }
 }
