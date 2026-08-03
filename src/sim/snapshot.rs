@@ -105,7 +105,12 @@ use crate::sim::world::Simulation;
 // Bumped 40 -> 41: persistent BulletClass-style projectile state is serialized.
 // Bumped 41 -> 42: persistent BulletClass collision policy is serialized.
 // Bumped 42 -> 43: TriggerRuntime latches now participate in the lockstep hash.
-const SNAPSHOT_VERSION: u32 = 43;
+// Bumped 43 -> 44: TeamClass raw actions, deferred advance, timers, attachment
+// identities, per-type counts, and non-CRC success state are authoritative.
+// Bumped 44 -> 45: piggyback persistence stores one complete nested locomotor runtime.
+// Bumped 45 -> 46: Tunnel and DropPod typed special-locomotor runtimes are
+// serialized on GameEntity, including their phase and landing state.
+const SNAPSHOT_VERSION: u32 = 46;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1295,11 +1300,13 @@ mod tests {
     /// Drive occupation footprints took 37 -> 38, and authoritative wall
     /// ownership took 38 -> 39, raw occupation bytes took 39 -> 40, and
     /// authoritative projectile collision policy took 41 -> 42, and trigger
-    /// runtime lockstep hashing took 42 -> 43. This
+    /// runtime lockstep hashing took 42 -> 43, TeamClass script state took
+    /// 43 -> 44, TeamClass success state took 44 -> 45, and typed special
+    /// locomotor state took 45 -> 46. This
     /// pins it so a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_43() {
-        assert_eq!(super::SNAPSHOT_VERSION, 43);
+    fn snapshot_version_is_46() {
+        assert_eq!(super::SNAPSHOT_VERSION, 46);
     }
 
     #[test]
@@ -1315,7 +1322,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            43
+            45
         );
 
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1376,7 +1383,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            43
+            45
         );
 
         let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1442,7 +1449,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            43
+            45
         );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         let cell = restored

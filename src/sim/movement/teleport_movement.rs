@@ -91,6 +91,18 @@ pub enum TeleportPhase {
     ChronoDelay,
 }
 
+/// Per-frame result returned by the special locomotor Process adapters.
+///
+/// The native Process vtable slot owns the completion return; keeping that
+/// result explicit prevents callers from inferring completion from an absent
+/// movement target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialMovementOutcome {
+    Continue,
+    Complete,
+    Abort,
+}
+
 /// State for an in-progress teleport.
 ///
 /// Set by `issue_teleport_command()` and cleared when the chrono delay
@@ -108,6 +120,25 @@ pub struct TeleportState {
     /// in the original engine: `delay = distance_leptons / ChronoDistanceFactor`,
     /// clamped to `ChronoMinimumDelay`.
     pub being_warped_ticks: u32,
+}
+
+impl TeleportState {
+    /// YR TeleportLocomotionClass::Process @ 0x007192f0 exposes separate
+    /// warp-out and warp-in producer bytes. Relocation is the departure
+    /// producer; the post-relocation delay is the arrival producer.
+    pub fn warp_out_active(&self) -> bool {
+        self.phase == TeleportPhase::Relocate
+    }
+
+    pub fn warp_in_active(&self) -> bool {
+        self.phase == TeleportPhase::ChronoDelay && self.being_warped_ticks > 0
+    }
+
+    /// The relocation frame is removed from normal targeting before its cell
+    /// and occupancy mutation; it becomes targetable again while materializing.
+    pub fn is_targetable(&self) -> bool {
+        self.phase == TeleportPhase::ChronoDelay
+    }
 }
 
 /// Compute the chrono warp delay in native gameplay frames from distance.
@@ -252,6 +283,26 @@ fn start_teleport_state(
     true
 }
 
+/// Drop attack locks that name `teleporting_id` before the relocation tick.
+///
+/// This is the available clean-room analogue of the native incoming-target
+/// release. Radio and presentation links remain root-owned integration work.
+fn release_incoming_target_locks(entities: &mut EntityStore, teleporting_id: u64) {
+    for id in entities.keys_sorted() {
+        if id == teleporting_id {
+            continue;
+        }
+        let Some(entity) = entities.get_mut(id) else {
+            continue;
+        };
+        if entity.attack_target.as_ref().is_some_and(|target| {
+            matches!(target.target, crate::sim::combat::TargetKind::Entity(id) if id == teleporting_id)
+        }) {
+            entity.attack_target = None;
+        }
+    }
+}
+
 /// Advance all in-progress teleport state machines.
 ///
 /// Called once per admitted simulation frame from `advance_tick()`.
@@ -263,7 +314,7 @@ pub fn tick_teleport_movement(
     live_order: &[u64],
     sim_tick: u64,
     mut visuals: Option<&mut TeleportVisuals<'_>>,
-) {
+) -> Vec<(u64, SpecialMovementOutcome)> {
     // Collect entity IDs that need cleanup after ticking.
     let mut finished: Vec<u64> = Vec::new();
 
@@ -275,7 +326,17 @@ pub fn tick_teleport_movement(
         live_order
     };
 
+    let mut outcomes = Vec::new();
     for &id in ordered_ids {
+        // Teleport removes incoming target locks before its owner is relocated.
+        // Do this before borrowing the owner mutably for the Process state.
+        let is_relocating = entities
+            .get(id)
+            .and_then(|entity| entity.teleport_state.as_ref())
+            .is_some_and(|state| state.phase == TeleportPhase::Relocate);
+        if is_relocating {
+            release_incoming_target_locks(entities, id);
+        }
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
@@ -324,8 +385,10 @@ pub fn tick_teleport_movement(
                 // frame (cleanup runs at end of this frame) — no post-warp lock.
                 if teleport.being_warped_ticks == 0 {
                     finished.push(id);
+                    outcomes.push((id, SpecialMovementOutcome::Complete));
                 } else {
                     teleport.phase = TeleportPhase::ChronoDelay;
+                    outcomes.push((id, SpecialMovementOutcome::Continue));
                 }
             }
             TeleportPhase::ChronoDelay => {
@@ -335,6 +398,9 @@ pub fn tick_teleport_movement(
                 }
                 if teleport.being_warped_ticks == 0 {
                     finished.push(id);
+                    outcomes.push((id, SpecialMovementOutcome::Complete));
+                } else {
+                    outcomes.push((id, SpecialMovementOutcome::Continue));
                 }
             }
         }
@@ -364,6 +430,7 @@ pub fn tick_teleport_movement(
             entity.push_debug_event(sim_tick as u32, DebugEventKind::SpecialMovementEnd);
         }
     }
+    outcomes
 }
 
 #[cfg(test)]
@@ -1069,5 +1136,51 @@ mod tests {
             .expect("still warping after Relocate");
         assert_eq!(ts.phase, TeleportPhase::ChronoDelay);
         assert_eq!(ts.being_warped_ticks, initial_ticks);
+    }
+
+    #[test]
+    fn relocation_releases_incoming_attack_locks_before_moving_the_target() {
+        let mut entities = EntityStore::new();
+        let target = GameEntity::test_default(1, "CLEG", "Americans", 5, 5);
+        let mut attacker = GameEntity::test_default(2, "MTNK", "Russians", 4, 5);
+        attacker.attack_target = Some(crate::sim::combat::AttackTarget::new(1));
+        entities.insert(target);
+        entities.insert(attacker);
+
+        assert!(issue_teleport_command(
+            &mut entities,
+            1,
+            (20, 20),
+            &default_rules(),
+            false,
+        ));
+        let outcomes =
+            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 0, None);
+
+        assert_eq!(outcomes, vec![(1, SpecialMovementOutcome::Continue)]);
+        assert!(entities.get(2).expect("attacker").attack_target.is_none());
+    }
+
+    #[test]
+    fn teleport_exposes_distinct_warp_and_targetability_producers() {
+        let relocate = TeleportState {
+            phase: TeleportPhase::Relocate,
+            target_rx: 1,
+            target_ry: 1,
+            being_warped_ticks: 10,
+        };
+        assert!(relocate.warp_out_active());
+        assert!(!relocate.warp_in_active());
+        assert!(!relocate.is_targetable());
+
+        let arrival = TeleportState {
+            phase: TeleportPhase::ChronoDelay,
+            target_rx: 1,
+            target_ry: 1,
+            being_warped_ticks: 10,
+        };
+        assert!(!arrival.warp_out_active());
+        assert!(arrival.warp_in_active());
+        assert!(arrival.is_targetable());
     }
 }

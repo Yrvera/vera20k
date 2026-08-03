@@ -124,9 +124,11 @@ pub(super) fn runtime_can_enter_cell_args(
     )
 }
 
-pub(super) fn evaluate_runtime_can_enter_cell(
+pub(super) fn evaluate_runtime_can_enter_cell_with_transition(
     path_grid: Option<&PathGrid>,
     next_layer: MovementLayer,
+    bridge_state: &mut super::movement_bridge::RuntimeBridgeTransitionState,
+    current_on_bridge: bool,
     args: RuntimeCanEnterCellArgs,
 ) -> RuntimeCanEnterCellEvaluation {
     let base = CanEnterLayerContext::single(next_layer);
@@ -144,6 +146,19 @@ pub(super) fn evaluate_runtime_can_enter_cell(
             bridge_traversal_allowed: true,
         };
     };
+    let runtime_policy = super::movement_bridge::evaluate_runtime_bridge_transition(
+        bridge_state,
+        candidate.has_structural_bridge(),
+        current_on_bridge,
+        || super::movement_bridge::RuntimeBridgePolicyResult::Continue,
+    );
+    if runtime_policy == super::movement_bridge::RuntimeBridgePolicyResult::Reject {
+        return RuntimeCanEnterCellEvaluation {
+            args,
+            layers: base,
+            bridge_traversal_allowed: false,
+        };
+    }
     let explicit_parent = args
         .parent_current_cell
         .and_then(|coord| grid.cell(coord.0, coord.1).map(|cell| (cell, coord)));
@@ -215,6 +230,16 @@ pub(super) fn evaluate_runtime_can_enter_cell(
         layers,
         bridge_traversal_allowed: true,
     }
+}
+
+#[cfg(test)]
+pub(super) fn evaluate_runtime_can_enter_cell(
+    path_grid: Option<&PathGrid>,
+    next_layer: MovementLayer,
+    args: RuntimeCanEnterCellArgs,
+) -> RuntimeCanEnterCellEvaluation {
+    let mut state = super::movement_bridge::RuntimeBridgeTransitionState::default();
+    evaluate_runtime_can_enter_cell_with_transition(path_grid, next_layer, &mut state, false, args)
 }
 
 pub(super) fn detect_deferred_cell_check(

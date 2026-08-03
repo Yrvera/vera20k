@@ -184,6 +184,7 @@ impl Simulation {
         // their camera/message outcomes stay app-owned and are not hashed.
         if include_master_frame_v43 {
             self.trigger_runtime.hash_state(&mut hasher);
+            self.team_script_vm.hash_state(&mut hasher);
         }
 
         // LogicClass active-object order — authoritative (drives reconciliation order).
@@ -819,7 +820,12 @@ impl Simulation {
                 0u8.hash(hasher);
             }
             entity.on_bridge.hash(hasher);
+            entity.runtime_bridge_transition.pending_mismatch.hash(hasher);
             entity.low_bridge_tube_state.hash(hasher);
+            hash_teleport_state(entity.teleport_state.as_ref(), hasher);
+            hash_tunnel_state(entity.tunnel_state.as_ref(), hasher);
+            hash_rocket_state(entity.rocket_state.as_ref(), hasher);
+            hash_drop_pod_state(entity.drop_pod_state.as_ref(), hasher);
 
             if let Some(ref inv) = entity.invulnerability {
                 1u8.hash(hasher);
@@ -1026,6 +1032,218 @@ impl Simulation {
             id.hash(hasher);
             anim.hash(hasher);
         }
+    }
+}
+
+/// TeleportLocomotionClass::Process @ 0x007192f0 owns this complete, named
+/// runtime state; its target and materialization timer must not escape lockstep.
+fn hash_teleport_state(
+    state: Option<&crate::sim::movement::teleport_movement::TeleportState>,
+    hasher: &mut impl Hasher,
+) {
+    match state {
+        None => 0u8.hash(hasher),
+        Some(state) => {
+            1u8.hash(hasher);
+            let phase = match state.phase {
+                crate::sim::movement::teleport_movement::TeleportPhase::Relocate => 0u8,
+                crate::sim::movement::teleport_movement::TeleportPhase::ChronoDelay => 1,
+            };
+            phase.hash(hasher);
+            state.target_rx.hash(hasher);
+            state.target_ry.hash(hasher);
+            state.being_warped_ticks.hash(hasher);
+        }
+    }
+}
+
+/// YR TunnelLocomotionClass keeps the phase byte in its locomotor runtime.
+/// Keep the projection explicit instead of relying on a Rust derived hash.
+fn hash_tunnel_state(
+    state: Option<&crate::sim::movement::tunnel_movement::TunnelState>,
+    hasher: &mut impl Hasher,
+) {
+    match state {
+        None => 0u8.hash(hasher),
+        Some(state) => {
+            1u8.hash(hasher);
+            (state.phase as u8).hash(hasher);
+        }
+    }
+}
+
+/// RocketLocomotionClass::Process @ 0x006622c0 owns the complete flight table
+/// selection and current flight state. `pitch` is render-only, so it is omitted.
+fn hash_rocket_state(
+    state: Option<&crate::sim::movement::rocket_movement::RocketState>,
+    hasher: &mut impl Hasher,
+) {
+    match state {
+        None => 0u8.hash(hasher),
+        Some(state) => {
+            1u8.hash(hasher);
+            let phase = match state.phase {
+                crate::sim::movement::rocket_movement::RocketPhase::Ignition => 0u8,
+                crate::sim::movement::rocket_movement::RocketPhase::Tilt => 1,
+                crate::sim::movement::rocket_movement::RocketPhase::Ascent => 2,
+                crate::sim::movement::rocket_movement::RocketPhase::Cruise => 3,
+                crate::sim::movement::rocket_movement::RocketPhase::Terminal => 4,
+                crate::sim::movement::rocket_movement::RocketPhase::Secondary => 5,
+            };
+            phase.hash(hasher);
+            state.origin_rx.hash(hasher);
+            state.origin_ry.hash(hasher);
+            state.target_rx.hash(hasher);
+            state.target_ry.hash(hasher);
+            state.speed.to_bits().hash(hasher);
+            state.current_speed.to_bits().hash(hasher);
+            state.altitude.to_bits().hash(hasher);
+            state.progress.to_bits().hash(hasher);
+            state.phase_frames.hash(hasher);
+            state.parameters.acceleration.to_bits().hash(hasher);
+            state.parameters.max_speed.to_bits().hash(hasher);
+            state.parameters.ascent_altitude.to_bits().hash(hasher);
+            state.parameters.tilt_rate.to_bits().hash(hasher);
+            state.parameters.relaunches.hash(hasher);
+        }
+    }
+}
+
+/// DropPodLocomotionClass flight state is lockstep state even while it has no
+/// surface occupation. This mirrors the typed serialized runtime exactly.
+fn hash_drop_pod_state(
+    state: Option<&crate::sim::movement::drop_pod_movement::DropPodState>,
+    hasher: &mut impl Hasher,
+) {
+    match state {
+        None => 0u8.hash(hasher),
+        Some(state) => {
+            1u8.hash(hasher);
+            let phase = match state.phase {
+                crate::sim::movement::drop_pod_movement::DropPodPhase::Descending => 0u8,
+                crate::sim::movement::drop_pod_movement::DropPodPhase::Landed => 1,
+                crate::sim::movement::drop_pod_movement::DropPodPhase::Destroyed => 2,
+            };
+            phase.hash(hasher);
+            state.target_rx.hash(hasher);
+            state.target_ry.hash(hasher);
+            state.altitude.to_bits().hash(hasher);
+            state.descent_speed.to_bits().hash(hasher);
+            state.elapsed_frames.hash(hasher);
+        }
+    }
+}
+
+#[cfg(test)]
+mod teleport_rocket_hash_tests {
+    use super::Simulation;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::rocket_movement::{
+        RocketFlightParameters, RocketPhase, RocketState,
+    };
+    use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
+    use crate::util::fixed_math::SimFixed;
+
+    fn teleport_state() -> TeleportState {
+        TeleportState {
+            phase: TeleportPhase::Relocate,
+            target_rx: 17,
+            target_ry: 29,
+            being_warped_ticks: 41,
+        }
+    }
+
+    fn rocket_state() -> RocketState {
+        RocketState {
+            phase: RocketPhase::Cruise,
+            origin_rx: 3,
+            origin_ry: 5,
+            target_rx: 17,
+            target_ry: 29,
+            speed: SimFixed::from_num(11),
+            current_speed: SimFixed::from_num(7),
+            altitude: SimFixed::from_num(400),
+            progress: SimFixed::from_num(0.5),
+            phase_frames: 13,
+            parameters: RocketFlightParameters {
+                acceleration: SimFixed::from_num(90),
+                max_speed: SimFixed::from_num(11),
+                ascent_altitude: SimFixed::from_num(400),
+                tilt_rate: SimFixed::from_num(0.35),
+                relaunches: 2,
+            },
+            pitch: 0.25,
+        }
+    }
+
+    fn hash_entity(mut entity: GameEntity) -> u64 {
+        let mut sim = Simulation::new();
+        entity.stable_id = 1;
+        sim.substrate.entities.insert(entity);
+        sim.state_hash()
+    }
+
+    fn hash_teleport(state: Option<TeleportState>) -> u64 {
+        let mut entity = GameEntity::test_default(1, "CHRP", "Americans", 5, 5);
+        entity.teleport_state = state;
+        hash_entity(entity)
+    }
+
+    fn hash_rocket(state: Option<RocketState>) -> u64 {
+        let mut entity = GameEntity::test_default(1, "V3RKT", "Soviet", 5, 5);
+        entity.rocket_state = state;
+        hash_entity(entity)
+    }
+
+    fn assert_teleport_change(change: impl FnOnce(&mut TeleportState)) {
+        let baseline = hash_teleport(Some(teleport_state()));
+        let mut changed = teleport_state();
+        change(&mut changed);
+        assert_ne!(baseline, hash_teleport(Some(changed)));
+    }
+
+    fn assert_rocket_change(change: impl FnOnce(&mut RocketState)) {
+        let baseline = hash_rocket(Some(rocket_state()));
+        let mut changed = rocket_state();
+        change(&mut changed);
+        assert_ne!(baseline, hash_rocket(Some(changed)));
+    }
+
+    #[test]
+    fn teleport_hash_projects_presence_phase_target_and_materialization_timer() {
+        assert_ne!(hash_teleport(None), hash_teleport(Some(teleport_state())));
+        assert_teleport_change(|state| state.phase = TeleportPhase::ChronoDelay);
+        assert_teleport_change(|state| state.target_rx += 1);
+        assert_teleport_change(|state| state.target_ry += 1);
+        assert_teleport_change(|state| state.being_warped_ticks += 1);
+    }
+
+    #[test]
+    fn rocket_hash_projects_complete_simulation_flight_runtime() {
+        assert_ne!(hash_rocket(None), hash_rocket(Some(rocket_state())));
+        assert_rocket_change(|state| state.phase = RocketPhase::Terminal);
+        assert_rocket_change(|state| state.origin_rx += 1);
+        assert_rocket_change(|state| state.origin_ry += 1);
+        assert_rocket_change(|state| state.target_rx += 1);
+        assert_rocket_change(|state| state.target_ry += 1);
+        assert_rocket_change(|state| state.speed += SimFixed::from_num(1));
+        assert_rocket_change(|state| state.current_speed += SimFixed::from_num(1));
+        assert_rocket_change(|state| state.altitude += SimFixed::from_num(1));
+        assert_rocket_change(|state| state.progress += SimFixed::from_num(0.1));
+        assert_rocket_change(|state| state.phase_frames += 1);
+        assert_rocket_change(|state| state.parameters.acceleration += SimFixed::from_num(1));
+        assert_rocket_change(|state| state.parameters.max_speed += SimFixed::from_num(1));
+        assert_rocket_change(|state| state.parameters.ascent_altitude += SimFixed::from_num(1));
+        assert_rocket_change(|state| state.parameters.tilt_rate += SimFixed::from_num(0.1));
+        assert_rocket_change(|state| state.parameters.relaunches += 1);
+    }
+
+    #[test]
+    fn rocket_hash_excludes_explicit_render_only_pitch() {
+        let baseline = hash_rocket(Some(rocket_state()));
+        let mut render_only_change = rocket_state();
+        render_only_change.pitch = 0.75;
+        assert_eq!(baseline, hash_rocket(Some(render_only_change)));
     }
 }
 
@@ -1814,6 +2032,46 @@ mod tube_movement_hash_tests {
         sim_b.substrate.entities.insert(entity_b);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+}
+
+#[cfg(test)]
+mod special_locomotor_hash_tests {
+    use super::Simulation;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::drop_pod_movement::{DropPodPhase, DropPodState};
+    use crate::sim::movement::tunnel_movement::{TunnelPhase, TunnelState};
+    use crate::util::fixed_math::SimFixed;
+
+    #[test]
+    fn tunnel_and_drop_pod_runtime_change_the_lockstep_hash() {
+        fn fixture() -> Simulation {
+            let mut sim = Simulation::new();
+            sim.substrate
+                .entities
+                .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+            sim
+        }
+
+        let base = fixture();
+        let hash_without_special_runtime = base.state_hash();
+
+        let mut tunnel = fixture();
+        tunnel.substrate.entities.get_mut(1).unwrap().tunnel_state = Some(TunnelState {
+            phase: TunnelPhase::UndergroundTravel,
+        });
+        assert_ne!(hash_without_special_runtime, tunnel.state_hash());
+
+        let mut pod = fixture();
+        pod.substrate.entities.get_mut(1).unwrap().drop_pod_state = Some(DropPodState {
+            phase: DropPodPhase::Descending,
+            target_rx: 7,
+            target_ry: 9,
+            altitude: SimFixed::from_num(100),
+            descent_speed: SimFixed::from_num(3),
+            elapsed_frames: 4,
+        });
+        assert_ne!(hash_without_special_runtime, pod.state_hash());
     }
 }
 

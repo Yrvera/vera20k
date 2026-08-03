@@ -24,6 +24,8 @@ mod world_spawn;
 
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(test)]
+mod team_script_vm_tests;
 
 pub(crate) use lifecycle::{
     ConcealOutcome, LifecycleOutput, PlacementEvidence, RevealOutcome, RevealPosition,
@@ -64,10 +66,12 @@ use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
 use crate::sim::movement::group_destination;
 use crate::sim::movement::homing_movement;
+use crate::sim::movement::drop_pod_movement::{self, DropPodLanding};
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::parachute_descent;
 use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
+use crate::sim::movement::tunnel_movement::{self, TunnelProcessContext};
 use crate::sim::movement::turret;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
@@ -84,6 +88,7 @@ use crate::sim::radar::{RadarEventQueue, RadarEventType};
 use crate::sim::replay::ReplayLog;
 use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
 use crate::sim::scenario_session::ScenarioSession;
+use crate::sim::team_script_vm::{TeamScriptEffect, TeamScriptVm};
 use crate::sim::tiberium::TiberiumPlacementObjectContext;
 use crate::sim::trigger_runtime::{TriggerEffect, TriggerRuntime};
 use crate::sim::vision::{self, FogState};
@@ -182,6 +187,7 @@ pub(crate) enum MasterFrameTestRung {
     Triggers,
     LogicVector,
     Houses,
+    TeamScript,
     FrameCommit,
     PendingDelete,
 }
@@ -506,6 +512,9 @@ pub struct Simulation {
     pub bunker_wall_events: Vec<crate::sim::components::BunkerWallAnimEvent>,
     /// Per-AI-owner state for computer-controlled players.
     pub ai_players: Vec<AiPlayerState>,
+    /// Resolved TeamClass/ScriptType runtime; scenario INI parsing remains a
+    /// separate refused boundary until its record grammar is evidenced.
+    pub team_script_vm: TeamScriptVm,
     /// Per-player state keyed by uppercase owner name. Deterministic iteration
     /// via BTreeMap. Equivalent to the original engine's HouseClass array.
     pub houses: BTreeMap<InternedId, HouseState>,
@@ -767,6 +776,7 @@ impl Simulation {
             bale_events: Vec::new(),
             bunker_wall_events: Vec::new(),
             ai_players: Vec::new(),
+            team_script_vm: TeamScriptVm::default(),
             houses: BTreeMap::new(),
             terrain_costs: BTreeMap::new(),
             zone_grid: None,
@@ -2703,6 +2713,40 @@ impl Simulation {
             self.check_defeat(rules);
         }
 
+        // gamemd.exe TeamClass::AI advances scenario teams after house defeat
+        // admission and before the generic HouseClass AI tail.
+        #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::TeamScript);
+        let mut team_script_vm = std::mem::take(&mut self.team_script_vm);
+        let team_tick = team_script_vm.tick_effects(execute_tick, |owner| {
+            !crate::sim::house_state::house_state_for_owner_id(&self.houses, owner)
+                .is_some_and(|house| house.is_defeated)
+        });
+        self.team_script_vm = team_script_vm;
+        for effect in team_tick.effects {
+            match effect {
+                // Original: TeamClass::AI action 19 walks TeamClass+0x54 and
+                // invokes FootClass's panic-family virtual in member order.
+                TeamScriptEffect::PanicMember { entity_id } => {
+                    let Some(rules) = rules else { continue };
+                    let Some(type_ref) = self
+                        .substrate
+                        .entities
+                        .get(entity_id)
+                        .map(|entity| entity.type_ref)
+                    else {
+                        continue;
+                    };
+                    let Some(object_type) = rules.object(self.interner.resolve(type_ref)) else {
+                        continue;
+                    };
+                    if let Some(entity) = self.substrate.entities.get_mut(entity_id) {
+                        crate::sim::infantry::apply_panic_force(object_type, entity);
+                    }
+                }
+            }
+        }
+
         // --- Phase 8 (cont.): AI ---
         // DEPENDS ON: all prior phases + the defeat status set just above (defeated
         // houses are gated out inside tick_ai).
@@ -3013,6 +3057,8 @@ impl Simulation {
                 &one,
                 sim.session.tick,
             );
+            sim.tick_tunnel_locomotor_one(stable_id, path_grid);
+            sim.tick_drop_pod_locomotor_one(stable_id);
             let _ = homing_movement::tick_homing_movement(
                 &mut sim.substrate.entities,
                 &one,
@@ -3680,6 +3726,174 @@ impl Simulation {
             ownership_changed: passenger_ownership_changed,
             bridge_state_changed,
             movement: movement_stats,
+        }
+    }
+
+    /// World owner for the dormant `TunnelLocomotionClass::Process` path.
+    ///
+    /// `TunnelLocomotionClass::Process @ 0x00728e30` removes the surface
+    /// object before it enters state 3, then restores that same object-list
+    /// membership before Foot's state-7 abort-motion cleanup.
+    fn tick_tunnel_locomotor_one(&mut self, stable_id: u64, path_grid: Option<&PathGrid>) {
+        let Some((mut state, position, movement_target, cell_marked, layer)) = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|entity| {
+                entity.tunnel_state.map(|state| {
+                    (
+                        state,
+                        (entity.position.rx, entity.position.ry),
+                        entity.movement_target.as_ref().map(|target| {
+                            (target.next_index, target.path.len())
+                        }),
+                        entity.lifecycle.cell_marked,
+                        entity.locomotor.as_ref().map(|locomotor| locomotor.layer),
+                    )
+                })
+            })
+        else {
+            return;
+        };
+
+        // The Burrow transition owns the remove-before-underground ordering.
+        if state.phase == tunnel_movement::TunnelPhase::Burrow && cell_marked {
+            self.remove_entity_occupancy(stable_id);
+        }
+
+        let destination_reached = movement_target
+            .map(|(next_index, path_len)| next_index.saturating_add(1) >= path_len)
+            .unwrap_or(true);
+        let surface_cell_available = path_grid.map_or(true, |grid| {
+            grid.is_walkable_on_layer(position.0, position.1, MovementLayer::Ground)
+        }) && self
+            .substrate
+            .occupancy
+            .is_empty_on_layer(position.0, position.1, MovementLayer::Ground);
+        let mut context = TunnelProcessContext {
+            destination_reached,
+            surface_cell_available,
+            layer: layer.unwrap_or(MovementLayer::Ground),
+            z: 0,
+            surface_occupied: cell_marked,
+            underground_occupied: false,
+            abort_motion_called: false,
+        };
+        let outcome = tunnel_movement::process_tunnel(&mut state, &mut context);
+
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.tunnel_state = Some(state);
+            if let Some(locomotor) = entity.locomotor.as_mut() {
+                locomotor.layer = context.layer;
+            }
+            if context.abort_motion_called {
+                entity.movement_target = None;
+            }
+        }
+
+        // State 6's surface mark happens before state 7 clears Foot motion.
+        if context.surface_occupied
+            && self
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|entity| !entity.lifecycle.cell_marked)
+        {
+            self.add_entity_occupancy(stable_id);
+        }
+        if outcome == teleport_movement::SpecialMovementOutcome::Complete
+            && self
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|entity| entity.tunnel_state.is_some())
+        {
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                entity.tunnel_state = None;
+            }
+        }
+    }
+
+    /// World owner for `DropPodLocomotionClass::Process` placement.
+    ///
+    /// Drop pods retain no cell-list membership while descending. On the
+    /// terminal frame this performs one atomic choice: unlimbo and mark the
+    /// target, or zero health and enqueue the common crush teardown.
+    fn tick_drop_pod_locomotor_one(&mut self, stable_id: u64) {
+        let Some(state) = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|entity| entity.drop_pod_state.clone())
+        else {
+            return;
+        };
+
+        if self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| entity.lifecycle.cell_marked)
+        {
+            self.remove_entity_occupancy(stable_id);
+        }
+
+        let reaches_ground = state.altitude <= state.descent_speed;
+        let landing = reaches_ground.then(|| {
+            if self.substrate.occupancy.is_empty_on_layer(
+                state.target_rx,
+                state.target_ry,
+                MovementLayer::Ground,
+            ) {
+                DropPodLanding::UnlimboSucceeded
+            } else {
+                DropPodLanding::Blocked
+            }
+        });
+        let result = {
+            let entity = self
+                .substrate
+                .entities
+                .get_mut(stable_id)
+                .expect("drop pod owner remained live during its Process visit");
+            let state = entity
+                .drop_pod_state
+                .as_mut()
+                .expect("drop pod state remained attached during its Process visit");
+            drop_pod_movement::process_drop_pod_state(state, landing)
+        };
+
+        match result.outcome {
+            rocket_movement::SpecialMovementOutcome::Continue => {}
+            rocket_movement::SpecialMovementOutcome::Complete => {
+                let target = self
+                    .substrate
+                    .entities
+                    .get(stable_id)
+                    .and_then(|entity| entity.drop_pod_state.as_ref())
+                    .map(|state| (state.target_rx, state.target_ry));
+                if let (Some((rx, ry)), Some(entity)) =
+                    (target, self.substrate.entities.get_mut(stable_id))
+                {
+                    entity.position.rx = rx;
+                    entity.position.ry = ry;
+                    entity.position.z = 0;
+                    if let Some(locomotor) = entity.locomotor.as_mut() {
+                        locomotor.layer = MovementLayer::Ground;
+                    }
+                    entity.drop_pod_state = None;
+                }
+                self.add_entity_occupancy(stable_id);
+            }
+            rocket_movement::SpecialMovementOutcome::Abort => {
+                if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                    entity.health.current = 0;
+                }
+                self.pending_lifecycle_requests.push(LifecycleRequest::Uninit {
+                    stable_id,
+                    reason: crate::sim::lifecycle_request::UninitReason::Crush,
+                });
+            }
         }
     }
 }
