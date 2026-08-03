@@ -371,17 +371,30 @@ pub fn combo_enabled(
     }
     match id {
         SkirmishComboId::AiType(_) => true,
-        SkirmishComboId::Side(0)
-        | SkirmishComboId::Color(0)
-        | SkirmishComboId::Start(0)
-        | SkirmishComboId::Team(0) => true,
-        SkirmishComboId::Side(row)
-        | SkirmishComboId::Color(row)
-        | SkirmishComboId::Start(row)
-        | SkirmishComboId::Team(row) => state
-            .opponents
-            .get(row.saturating_sub(1))
-            .is_some_and(SkirmishShellOpponent::is_active),
+        SkirmishComboId::Side(0) | SkirmishComboId::Color(0) | SkirmishComboId::Start(0) => true,
+        // The whole Team column follows the selected mode's `AlliesAllowed`,
+        // the local row included: the native refresh pass reads that byte once
+        // and hands it to every one of the eight team controls. With allying
+        // forbidden (stock Free For All and Cooperative) the column is dead, so
+        // the player cannot put themselves or an AI on a team the mode
+        // disallows.
+        SkirmishComboId::Team(0) => state.selected_mode_allies_allowed,
+        SkirmishComboId::Side(row) | SkirmishComboId::Color(row) | SkirmishComboId::Start(row) => {
+            state
+                .opponents
+                .get(row.saturating_sub(1))
+                .is_some_and(SkirmishShellOpponent::is_active)
+        }
+        // An opponent's team control needs both: the native pass reads the row's
+        // AI-type item data and greys the team combo when the row is closed,
+        // *and* ANDs in the same mode-wide `AlliesAllowed` byte.
+        SkirmishComboId::Team(row) => {
+            state.selected_mode_allies_allowed
+                && state
+                    .opponents
+                    .get(row.saturating_sub(1))
+                    .is_some_and(SkirmishShellOpponent::is_active)
+        }
     }
 }
 

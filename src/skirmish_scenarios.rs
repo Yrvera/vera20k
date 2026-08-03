@@ -22,6 +22,11 @@ pub const RANDOM_MAP_MAX_PLAYERS: u8 = 8;
 /// maps unselectable.
 pub const RANDOM_MAP_GENERATED_START_QUOTA: u8 = 4;
 
+/// Player-count bounds the PKT-entry record constructor seeds before reading
+/// the PKT section, so an entry that omits either key keeps these.
+pub const PKT_DEFAULT_MIN_PLAYERS: u8 = 2;
+pub const PKT_DEFAULT_MAX_PLAYERS: u8 = 4;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkirmishScenarioSource {
     MissionsMdPkt,
@@ -90,25 +95,29 @@ impl SkirmishScenarioRecord {
         }
     }
 
+    /// Build a PKT-backed row.
+    ///
+    /// The map payload supplies only what the chooser draws from the map itself
+    /// — preview, waypoints, capacity. Title, game-mode filter list and player
+    /// bounds come from `entry`, i.e. the PKT's own `[<MultiMaps entry>]`
+    /// section, because that is the INI and section the native record
+    /// constructor is handed. Stock map payloads carry none of those keys, so
+    /// reading them from the map is the same as reading nothing.
     pub fn pkt_from_ini(
         source_ordinal: usize,
         source: SkirmishScenarioSource,
         file_name: &str,
         ini: &IniFile,
-        display_name: impl Into<String>,
+        entry: PktEntryFields,
     ) -> Self {
         let mut record = Self::concrete_from_ini(source_ordinal, source, file_name, ini);
-        record.display_name = display_name.into();
-        if record.min_players.is_none() {
-            record.min_players = Some(2);
-        }
-        if record.max_players.is_none() {
-            record.max_players = Some(4);
-        }
-        record.official = ini
-            .section("Basic")
-            .and_then(|section| section.get_bool("Official"))
-            .unwrap_or(true);
+        record.display_name = entry.display_name;
+        record.game_modes = entry.game_modes;
+        record.min_players = Some(entry.min_players.unwrap_or(PKT_DEFAULT_MIN_PLAYERS));
+        record.max_players = Some(entry.max_players.unwrap_or(PKT_DEFAULT_MAX_PLAYERS));
+        // The constructor seeds the official flag true and never reads it back
+        // for a PKT entry; only the loose-map header path reads `[Basic]`.
+        record.official = true;
         record
     }
 
@@ -187,15 +196,43 @@ fn valid_player_count(value: i32) -> Option<u8> {
     (0..=u8::MAX as i32).contains(&value).then_some(value as u8)
 }
 
-pub fn parse_game_modes(ini: &IniFile) -> Vec<String> {
-    ini.section("Basic")
-        .and_then(|section| section.get_list("GameModes"))
-        .unwrap_or_default()
-        .into_iter()
+/// Split one `GameMode=` value into filter tokens.
+///
+/// Retail writes the list with a space after each comma (`standard, meatgrind`),
+/// and the native tokenizer trims each token from both ends against a
+/// single-space charset, so the space is not significant.
+///
+/// Divergence, recorded not fixed: `str::trim` strips all Unicode whitespace
+/// where native strips spaces only, so a custom PKT that separates its modes
+/// with a tab would match here and not in gamemd. No stock entry uses anything
+/// but a space.
+pub fn parse_game_mode_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
         .map(str::trim)
         .filter(|mode| !mode.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Read the loose-map header's mode filter list. The key is `GameMode`,
+/// singular — the only spelling the binary contains — read from `[Basic]` of
+/// the map file itself. PKT-backed rows do not come through here.
+pub fn parse_game_modes(ini: &IniFile) -> Vec<String> {
+    ini.section("Basic")
+        .and_then(|section| section.get("GameMode"))
+        .map(parse_game_mode_list)
+        .unwrap_or_default()
+}
+
+/// The record fields the PKT-entry constructor reads out of the PKT's own
+/// `[<MultiMaps entry>]` section.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PktEntryFields {
+    pub display_name: String,
+    pub game_modes: Vec<String>,
+    pub min_players: Option<u8>,
+    pub max_players: Option<u8>,
 }
 
 pub fn filter_records_for_mode(
@@ -307,8 +344,9 @@ mod tests {
     }
 
     fn record(source_ordinal: usize, name: &str, game_modes: &str) -> SkirmishScenarioRecord {
+        // Loose-map headers spell the key `GameMode`, singular.
         let ini = IniFile::from_str(&format!(
-            "[Basic]\nName={name}\nGameModes={game_modes}\nMinPlayers=2\nMaxPlayers=8\nOfficial=yes\n\
+            "[Basic]\nName={name}\nGameMode={game_modes}\nMinPlayers=2\nMaxPlayers=8\nOfficial=yes\n\
              [Waypoints]\n0=100011\n1=110012\n"
         ));
         SkirmishScenarioRecord::concrete_from_ini(
@@ -340,21 +378,73 @@ mod tests {
 
     #[test]
     fn pkt_record_uses_pkt_display_name_and_defaults() {
-        let ini = IniFile::from_str("[Basic]\nName=Basic Name\nGameModes=standard\n");
+        // A stock map payload carries none of the record keys, so an entry that
+        // supplies none of them falls back to the constructor's 2/4.
+        let ini = IniFile::from_str("[Basic]\nName=Basic Name\n");
         let rec = SkirmishScenarioRecord::pkt_from_ini(
             7,
             SkirmishScenarioSource::MissionsMdPkt,
             "Official.MAP",
             &ini,
-            "PKT Display",
+            PktEntryFields {
+                display_name: "PKT Display".to_string(),
+                ..PktEntryFields::default()
+            },
         );
 
         assert_eq!(rec.source_ordinal, 7);
         assert_eq!(rec.display_name, "PKT Display");
         assert_eq!(rec.file_name, "Official.MAP");
-        assert_eq!(rec.min_players, Some(2));
-        assert_eq!(rec.max_players, Some(4));
+        assert_eq!(rec.min_players, Some(PKT_DEFAULT_MIN_PLAYERS));
+        assert_eq!(rec.max_players, Some(PKT_DEFAULT_MAX_PLAYERS));
         assert!(rec.official);
+    }
+
+    #[test]
+    fn pkt_record_takes_mode_filter_and_bounds_from_the_entry_not_the_map() {
+        // The map payload here declares the opposite of the PKT entry to prove
+        // which file the record reads.
+        let ini = IniFile::from_str(
+            "[Basic]\nName=Basic Name\nGameMode=standard\nMinPlayers=6\nMaxPlayers=7\n",
+        );
+        let rec = SkirmishScenarioRecord::pkt_from_ini(
+            0,
+            SkirmishScenarioSource::MissionsMdPkt,
+            "XMP02T2.MAP",
+            &ini,
+            PktEntryFields {
+                display_name: "Dustbowl".to_string(),
+                game_modes: parse_game_mode_list("standard, meatgrind"),
+                min_players: Some(2),
+                max_players: Some(2),
+            },
+        );
+
+        assert_eq!(rec.game_modes, vec!["standard", "meatgrind"]);
+        assert_eq!(rec.min_players, Some(2));
+        assert_eq!(rec.max_players, Some(2));
+        assert!(record_matches_mode(&rec, &mode(7)), "meatgrind must match");
+        assert!(record_matches_mode(&rec, &mode(1)), "battle must match");
+        assert!(!record_matches_mode(&rec, &mode(6)), "duel must not match");
+    }
+
+    #[test]
+    fn pkt_entry_without_a_game_mode_key_matches_standard_only() {
+        let ini = IniFile::from_str("[Basic]\nName=Nameless\n");
+        let rec = SkirmishScenarioRecord::pkt_from_ini(
+            0,
+            SkirmishScenarioSource::MissionsMdPkt,
+            "Nameless.MAP",
+            &ini,
+            PktEntryFields {
+                display_name: "Nameless".to_string(),
+                ..PktEntryFields::default()
+            },
+        );
+
+        assert!(rec.game_modes.is_empty());
+        assert!(record_matches_mode(&rec, &mode(1)));
+        assert!(!record_matches_mode(&rec, &mode(9)));
     }
 
     #[test]
