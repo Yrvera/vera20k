@@ -244,6 +244,22 @@ pub struct AnimTypeRuntimeConfig {
     /// set it, including the Battle Bunker, the `CABUNK0x` bunkers, the Weather
     /// Storm clouds and the squid grapple.
     pub alt_palette: bool,
+    /// art.ini `UseNormalLight=`. The retail art.ini documents this as "does this
+    /// anim always draw at 100% brightness? (def=no)", and gamemd's animation draw
+    /// matches: it initialises the shape's brightness argument to full
+    /// (1000 = 1.0) and, in each of that function's branches, only replaces it
+    /// with a scalar read off the animation's cell when this flag is clear. So a
+    /// set flag makes the animation ignore map lighting entirely rather than
+    /// merely brightening it. At least one further native site reads the same
+    /// gate outside that function and was not traced, and the branch taken when
+    /// an animation instance carries its own palette convert takes brightness
+    /// from an instance field rather than a cell scalar — its stock reachability
+    /// is UNCHECKED.
+    /// 43 stock sections set it, all the explosion/fire/flash families —
+    /// `TWLT*`, `S_BANG*`, `S_BRNL*`, `S_CLSN*`, `S_TUMU*`, `BURN-S/M/L`, `FIRE3`,
+    /// `EXPLOSML/MED/LRG/LB`, `BRRLEXP*`, `CRIVEXP*`, `APOCEXP`, `VTEXPLOD`,
+    /// `KTSTLEXP`, `PULSEFX1/2`, `EMP_FX01`, `BEHIND`.
+    pub use_normal_light: bool,
     pub shadow: bool,
     pub ping_pong: bool,
     pub reverse: bool,
@@ -564,6 +580,10 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
         translucency_detail_level: section.get_i32("TranslucencyDetailLevel").unwrap_or(0),
         translucent: section.get_bool("Translucent").unwrap_or(false),
         alt_palette: section.get_bool("AltPalette").unwrap_or(false),
+        // AnimTypeClass's constructor zeroes this field before the INI read and
+        // the read passes the current field back as its own default, so an
+        // omitted key leaves it false.
+        use_normal_light: section.get_bool("UseNormalLight").unwrap_or(false),
         shadow: section.get_bool("Shadow").unwrap_or(false),
         ping_pong: section.get_bool("PingPong").unwrap_or(false),
         reverse: section.get_bool("Reverse").unwrap_or(false),
@@ -1819,6 +1839,47 @@ mod anim_runtime_metadata_tests {
         assert!(!reg.anim_runtime_config("DEFAULT").unwrap().normalized);
         assert!(reg.anim_runtime_config("YES").unwrap().normalized);
         assert!(!reg.anim_runtime_config("NO").unwrap().normalized);
+    }
+
+    #[test]
+    fn use_normal_light_defaults_false_and_parses_the_stock_explosion_families() {
+        // The first six sections carry their stock artmd.ini names and the stock
+        // spelling of the keys shown. Every one of the 43 stock hits is a bare
+        // `UseNormalLight=yes`; no stock section writes `=no`, so DEFAULTS_NO is
+        // synthetic and exists only to prove an explicit negative parses.
+        //
+        // TUNTOP01 is one of the twenty `Tile##Anim=` theater-tileset animations
+        // (four tunnel tops and sixteen waterfall frames across the six theater
+        // INIs). Those are the animations gamemd attaches to a cell, and the
+        // attached branch keeps the cell's convert even when the flag is set —
+        // so a cell-attached type that ever set the key would want the cell's
+        // hue at full brightness rather than a fully neutral tint. None of the
+        // twenty sets it, which is what makes the neutral return safe today.
+        let ini = IniFile::from_str(
+            "[TWLT070]\nUseNormalLight=yes\nNormalized=yes\n\
+             [S_BANG24]\nUseNormalLight=yes\nNormalized=yes\n\
+             [BURN-M]\nUseNormalLight=yes\nLayer=ground\n\
+             [EXPLOLRG]\nUseNormalLight=yes\nTranslucent=yes\n\
+             [TUNTOP01]\nTheater=yes\nNormalized=yes\n\
+             [GCMUZZLE]\nNormalized=yes\n\
+             [DEFAULTS_NO]\nUseNormalLight=no\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        for lit_at_full_brightness in ["TWLT070", "S_BANG24", "BURN-M", "EXPLOLRG"] {
+            assert!(
+                reg.anim_runtime_config(lit_at_full_brightness)
+                    .unwrap()
+                    .use_normal_light,
+                "{lit_at_full_brightness} must draw at full brightness"
+            );
+        }
+        for cell_lit in ["TUNTOP01", "GCMUZZLE", "DEFAULTS_NO"] {
+            assert!(
+                !reg.anim_runtime_config(cell_lit).unwrap().use_normal_light,
+                "{cell_lit} must stay on the cell-lit path"
+            );
+        }
     }
 
     #[test]

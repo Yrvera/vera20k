@@ -9,6 +9,7 @@
 
 use crate::app::AppState;
 use crate::app_fire_effects::ProjectileVisual;
+use crate::map::lighting::DEFAULT_TINT;
 use crate::map::overlay_types::is_bridge_overlay_index;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
@@ -161,7 +162,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
             type_z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
             world_height,
         );
-        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((fx.rx, fx.ry));
+        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((fx.rx, fx.ry), cfg);
         // Source-pixel weight the native blitter family gives this frame:
         // a fixed 25/50/75 stage from `Translucency=`, or the progressive
         // `Translucent=yes` fade keyed on the frame against the type's End.
@@ -206,7 +207,13 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
             ) {
                 continue;
             }
-            let tint = state.lighting_grid.anim_tint_at((rx, ry));
+            let tint = state.lighting_grid.anim_tint_at(
+                (rx, ry),
+                state
+                    .art_registry
+                    .as_ref()
+                    .and_then(|a| a.anim_runtime_config(sim.interner.resolve(anim.type_id))),
+            );
             let type_name: &str = sim.interner.resolve(anim.type_id);
             let key = ShpSpriteKey {
                 type_id: type_name.to_string(),
@@ -673,7 +680,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         };
         let fx: f32 = flash.screen_x + entry.offset_x;
         let fy: f32 = flash.screen_y + entry.offset_y;
-        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((flash.rx, flash.ry));
+        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
         let depth: f32 = garrison_flash_depth(
             origin_y,
             world_height,
@@ -769,11 +776,11 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         let Some(entry) = atlas.get(&key) else {
             continue;
         };
-        let tint = state.lighting_grid.anim_tint_at((flash.rx, flash.ry));
         let cfg: Option<&AnimTypeRuntimeConfig> = state
             .art_registry
             .as_ref()
             .and_then(|a| a.anim_runtime_config(&flash.shp_name));
+        let tint = state.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
         // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
         // ZAdjust= as a sort bias plus the constant -2px anim bias.
         let type_z_adjust: i32 = cfg.map(|c| c.z_adjust).unwrap_or(0);
@@ -846,15 +853,12 @@ pub(crate) fn build_projectile_visual_instances(
         let Some(entry) = atlas.get(&key) else {
             continue;
         };
-        let rx = (projectile.start_rx as f32
-            + (projectile.end_rx as f32 - projectile.start_rx as f32) * t)
-            .round()
-            .clamp(0.0, u16::MAX as f32) as u16;
-        let ry = (projectile.start_ry as f32
-            + (projectile.end_ry as f32 - projectile.start_ry as f32) * t)
-            .round()
-            .clamp(0.0, u16::MAX as f32) as u16;
-        let tint = state.lighting_grid.anim_tint_at((rx, ry));
+        // In-flight projectile shapes are not cell-lit at all. gamemd's bullet
+        // draw passes the literal full-brightness value in the same argument
+        // slot that the animation and techno draws fill from the cell, for both
+        // the shadow and the body pass, and the only cell it looks up is for a
+        // bridge-height flag bit. No interpolated cell is needed here.
+        let tint = DEFAULT_TINT;
         let depth = compute_sprite_depth_params(origin_y, world_height, screen_y, projectile.z);
         paged[entry.page as usize].push(SpriteInstance {
             position: [screen_x + entry.offset_x, screen_y + entry.offset_y],

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::map_file::MapCell;
+use crate::rules::art_data::AnimTypeRuntimeConfig;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 
@@ -335,7 +336,32 @@ impl CellLightGrid {
         self.tint_for_common_scalar_or_default(cell)
     }
 
-    pub fn anim_tint_at(&self, cell: (u16, u16)) -> [f32; 3] {
+    /// Tint for an animation drawn on `cell`.
+    ///
+    /// gamemd's animation draw starts the shape's brightness argument at full
+    /// (`LIGHT_UNIT`) and, in each of that function's branches, only replaces it
+    /// with a scalar read off the animation's cell when the type's
+    /// `UseNormalLight=` is clear. A set flag therefore skips the cell entirely,
+    /// which is why explosions and fires keep their own brightness on a darkened
+    /// or colour-shifted map. `None` means no animation art record was found for
+    /// the draw, which leaves the flag at its INI default of false.
+    ///
+    /// DRIFT, deferred, not a consequence of the flag: gamemd chooses the
+    /// palette convert *separately* from the brightness scalar, and an ordinary
+    /// animation uses the global animation convert allocated once at init
+    /// regardless of which cell it sits on — only the brightness comes from the
+    /// cell. This grid folds hue and brightness into one multiplier, so on the
+    /// unflagged path it also hue-shifts an animation where gamemd only dims it.
+    /// That fires on every muzzle flash, smoke, splash and death animation on
+    /// essentially every stock map, since almost all ship a non-unit `[Lighting]`
+    /// RGB channel. Deferred rather than fixed because what the native convert
+    /// table does internally is UNCHECKED, so the size of the pixel difference is
+    /// unknown; and because the correct repair is a per-consumer split of hue
+    /// from brightness, not a blanket change to this accessor.
+    pub fn anim_tint_at(&self, cell: (u16, u16), art: Option<&AnimTypeRuntimeConfig>) -> [f32; 3] {
+        if art.is_some_and(|config| config.use_normal_light) {
+            return DEFAULT_TINT;
+        }
         self.tint_or_default(cell)
     }
 
@@ -818,6 +844,7 @@ fn signed_div_1000(value: i64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::art_data::ArtRegistry;
 
     #[test]
     fn test_default_lighting_uses_yr_ground_subtraction() {
@@ -1008,8 +1035,72 @@ mod tests {
         assert_eq!(grid.aircraft_tint_at((4, 5)), [0.7, 0.8, 0.9]);
         assert_eq!(grid.overlay_tint_at((4, 5)), [0.7, 0.8, 0.9]);
         assert_eq!(grid.terrain_object_tint_at((4, 5)), [0.7, 0.8, 0.9]);
-        assert_eq!(grid.anim_tint_at((4, 5)), [0.7, 0.8, 0.9]);
+        assert_eq!(grid.anim_tint_at((4, 5), None), [0.7, 0.8, 0.9]);
         assert_eq!(grid.bridge_body_tint_at((4, 5)), [0.7, 0.8, 0.9]);
+    }
+
+    #[test]
+    fn use_normal_light_anim_ignores_a_colour_shifted_cell() {
+        // [Lighting] read verbatim out of the retail Dustbowl map: unit ambient
+        // with green and blue pulled down. That colour shift is exactly what
+        // reaches an explosion when the animation is drawn through cell light.
+        let config = LightingConfig {
+            ambient: 1.0,
+            red: 1.0,
+            green: 0.88,
+            blue: 0.88,
+            ground: 0.0,
+            level: 0.039,
+        };
+        let grid = build_cell_light_grid_from_heights([((7, 9), 0)], &config);
+
+        // TWLT070 is one of the 43 stock art sections that set the key.
+        // SMOKEY2 is an ordinary animation that does not.
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[TWLT070]\nUseNormalLight=yes\n[SMOKEY2]\nRate=600\n",
+        ));
+        let flagged = art.anim_runtime_config("TWLT070").expect("TWLT070 art");
+        let plain = art.anim_runtime_config("SMOKEY2").expect("SMOKEY2 art");
+        assert!(flagged.use_normal_light);
+        assert!(!plain.use_normal_light);
+
+        // Unflagged: the cell's normalized profile tints the animation, so the
+        // green and blue channels come out below red.
+        let lit = grid.anim_tint_at((7, 9), Some(plain));
+        assert_eq!(lit, [0.992, 0.864, 0.864]);
+        assert!(lit[1] < lit[0] && lit[2] < lit[0]);
+
+        // Flagged: full brightness through the unmodified animation palette, so
+        // none of the cell's colour or darkening reaches it.
+        assert_eq!(grid.anim_tint_at((7, 9), Some(flagged)), DEFAULT_TINT);
+        assert_ne!(grid.anim_tint_at((7, 9), Some(flagged)), lit);
+
+        // No art record found for the draw leaves the flag at its INI default
+        // of false, so the lit path still applies.
+        assert_eq!(grid.anim_tint_at((7, 9), None), lit);
+    }
+
+    #[test]
+    fn use_normal_light_anim_ignores_a_darkened_cell() {
+        // Ambient below 1.0 is the other half of the symptom: on a dark map an
+        // explosion drawn through cell light comes out dimmer than retail.
+        let config = LightingConfig {
+            ambient: 0.68,
+            red: 1.0,
+            green: 1.0,
+            blue: 1.0,
+            ground: 0.0,
+            level: 0.032,
+        };
+        let grid = build_cell_light_grid_from_heights([((7, 9), 0)], &config);
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[S_BANG24]\nUseNormalLight=yes\n[SMOKEY2]\nRate=600\n",
+        ));
+        let flagged = art.anim_runtime_config("S_BANG24").expect("S_BANG24 art");
+        let plain = art.anim_runtime_config("SMOKEY2").expect("SMOKEY2 art");
+
+        assert_eq!(grid.anim_tint_at((7, 9), Some(plain)), [0.68, 0.68, 0.68]);
+        assert_eq!(grid.anim_tint_at((7, 9), Some(flagged)), DEFAULT_TINT);
     }
 
     #[test]
