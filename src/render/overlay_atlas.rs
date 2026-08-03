@@ -30,6 +30,57 @@ use crate::rules::ini_parser::IniFile;
 /// Padding between sprites in the atlas to prevent texture bleeding.
 const SPRITE_PADDING: u32 = 1;
 
+/// Connectivity frames per wall damage stage.
+///
+/// A wall cell's render frame is the raw overlay-data byte
+/// `damage_level << 4 | connectivity_bitmask`, so every damage stage owns its
+/// own block of 16 neighbour-connection frames.
+const WALL_CONNECTIVITY_FRAMES: u32 = 16;
+
+/// Upper bound on any preloaded overlay frame range.
+///
+/// The cell's overlay-data byte is a `u8`, so no frame above 255 is
+/// addressable no matter how many damage stages art.ini declares.
+const MAX_OVERLAY_FRAME_COUNT: u32 = 256;
+
+/// Body frame drawn for `Crate=yes` overlays.
+///
+/// The native overlay-body draw takes a dedicated crate branch that forces the
+/// frame to 0 instead of reading the cell's overlay-data byte.
+pub const CRATE_BODY_FRAME: u8 = 0;
+
+/// Count of body frames a wall overlay type can request at runtime.
+///
+/// `DamageLevels=` (art.ini) is the number of damage stages the sim can step
+/// through, and each stage spans a full 16-frame connectivity block. Preloading
+/// only the first block is what makes a freshly scratched wall miss the atlas
+/// and fall back to frame 0 — a pristine, fully disconnected post.
+fn wall_body_frame_count(damage_levels: u16) -> u32 {
+    u32::from(damage_levels.max(1))
+        .saturating_mul(WALL_CONNECTIVITY_FRAMES)
+        .min(MAX_OVERLAY_FRAME_COUNT)
+}
+
+/// Leading SHP frames that are body art rather than shadow stencils.
+///
+/// Wall and bridge SHPs mirror every body frame with a 1-bit shadow stencil in
+/// the second half of the file (GAWALL.SHP: 48 body + 48 shadow). Resolving a
+/// frame out of the shadow half would blit a flat silhouette as the wall body.
+///
+/// The wall arm is VERA-internal with the gamemd equivalent UNCHECKED: the
+/// native overlay draw indexes the cell's overlay byte straight into the shape
+/// with no such cap. It cannot fire on stock content — every wall type's
+/// `16 * DamageLevels` reachable range lands inside its SHP's body half — so it
+/// is a guard against modded art/rules disagreeing, not a behaviour the engine
+/// relies on.
+fn body_frame_count(flags: &OverlayTypeFlags, total_frames: usize) -> usize {
+    if flags.bridge_deck || flags.wall {
+        total_frames / 2
+    } else {
+        total_frames
+    }
+}
+
 /// Namespace prefix for smudge atlas keys.
 ///
 /// Smudges share the OverlayAtlas (single texture, single bind group) but are
@@ -153,34 +204,60 @@ pub fn build_overlay_atlas(
         }
     }
 
-    // For ALL wall types in the registry, pre-load all 16 connectivity frames
-    // so player-built walls can use any bitmask frame even if they weren't
-    // present in the original map's OverlayPack.
+    // Overlay types the sim can create or mutate after this atlas is built are
+    // not discoverable from the map's [OverlayPack], so preload every frame
+    // they can reach:
+    //
+    // - Walls: player-built segments use any connectivity bitmask, and combat
+    //   damage steps the high nibble, so the reachable range is
+    //   `DamageLevels * 16`, not just the first connectivity block.
+    // - Crates: scenario-start and goodie crates are placed into the live
+    //   overlay grid well after map load, so no crate ever appears in the map
+    //   pack. The native crate branch always draws frame 0.
     let mut wall_names_loaded: HashSet<String> = HashSet::new();
+    let mut crate_names_loaded: HashSet<String> = HashSet::new();
+    let mut wall_frames_loaded: u32 = 0;
     for overlay_id in 0u8..=u8::MAX {
-        let is_wall: bool = overlay_registry
-            .flags(overlay_id)
-            .map(|f| f.wall)
-            .unwrap_or(false);
-        if !is_wall {
+        let Some(flags) = overlay_registry.flags(overlay_id) else {
+            continue;
+        };
+        if !flags.wall && !flags.crate_type {
             continue;
         }
-        if let Some(mapped_name) = resolve_overlay_name_for_render(overlay_registry, overlay_id) {
+        let Some(mapped_name) = resolve_overlay_name_for_render(overlay_registry, overlay_id)
+        else {
+            continue;
+        };
+        if flags.wall {
             if wall_names_loaded.insert(mapped_name.clone()) {
-                for frame in 0u8..16u8 {
+                let frame_count: u32 = wall_body_frame_count(flags.damage_levels);
+                wall_frames_loaded += frame_count;
+                for frame in 0..frame_count {
                     needed.insert(OverlaySpriteKey {
                         name: mapped_name.clone(),
-                        frame,
+                        frame: frame as u8,
                     });
                 }
             }
+        } else if crate_names_loaded.insert(mapped_name.clone()) {
+            needed.insert(OverlaySpriteKey {
+                name: mapped_name,
+                frame: CRATE_BODY_FRAME,
+            });
         }
     }
     if !wall_names_loaded.is_empty() {
         log::info!(
-            "Pre-loaded 16 connectivity frames for {} wall type(s): {:?}",
+            "Pre-loaded {} damage/connectivity frames for {} wall type(s): {:?}",
+            wall_frames_loaded,
             wall_names_loaded.len(),
             wall_names_loaded,
+        );
+    }
+    if !crate_names_loaded.is_empty() {
+        log::info!(
+            "Pre-loaded crate overlay body frame for {:?}",
+            crate_names_loaded,
         );
     }
 
@@ -439,14 +516,10 @@ fn render_overlay_sprite(
         return None;
     }
 
-    // Bridge SHPs contain shadow frames in the second half (e.g., frames
-    // 18-35 of a 36-frame file). Cap to the normal (non-shadow) range so
-    // we never accidentally render a shadow blob as the bridge surface.
-    let max_normal_frame: usize = if flags.bridge_deck {
-        shp.frames.len() / 2
-    } else {
-        shp.frames.len()
-    };
+    // Bridge and wall SHPs contain shadow frames in the second half (bridge:
+    // frames 18-35 of 36; GAWALL: frames 48-95 of 96). Cap to the normal
+    // (non-shadow) range so we never render a shadow stencil as the body.
+    let max_normal_frame: usize = body_frame_count(flags, shp.frames.len());
 
     // Select frame:
     // High bridge overlays (BRIDGE1/2, BRIDGEB1/2) share one SHP file
@@ -819,7 +892,10 @@ fn render_smudge_sprite(
 
 #[cfg(test)]
 mod tests {
-    use super::decrement_numeric_suffix;
+    use super::{
+        MAX_OVERLAY_FRAME_COUNT, OverlayTypeFlags, body_frame_count, decrement_numeric_suffix,
+        wall_body_frame_count,
+    };
 
     #[test]
     fn test_decrement_numeric_suffix_is_local_fallback() {
@@ -829,6 +905,54 @@ mod tests {
         );
         assert_eq!(decrement_numeric_suffix("FENCE00"), None);
         assert_eq!(decrement_numeric_suffix("BRIDGE"), None);
+    }
+
+    #[test]
+    fn wall_preload_spans_every_reachable_damage_stage() {
+        // [GAWALL] DamageLevels=3 (artmd.ini): the sim writes damage 0..2 into
+        // the high nibble, so a fully damaged, fully connected segment asks for
+        // frame 0x2F. Preloading only the first connectivity block (0..16) is
+        // what makes a scratched wall fall back to the pristine isolated post.
+        assert_eq!(wall_body_frame_count(3), 48);
+        assert!(
+            wall_body_frame_count(3) > 0x2F,
+            "GAWALL damage stage 2 + all four neighbours must be preloaded"
+        );
+        // [GASAND]/[CAFNCB]/[CAFNCW]/[CAKRMW]/[CAFNCP] DamageLevels=2.
+        assert_eq!(wall_body_frame_count(2), 32);
+        assert!(wall_body_frame_count(2) > 0x1F);
+        // An absent DamageLevels= still needs the whole connectivity block.
+        assert_eq!(wall_body_frame_count(1), 16);
+        assert_eq!(wall_body_frame_count(0), 16);
+        // The overlay-data byte is a u8 — nothing past 255 is addressable.
+        assert_eq!(wall_body_frame_count(u16::MAX), MAX_OVERLAY_FRAME_COUNT);
+    }
+
+    #[test]
+    fn wall_body_range_excludes_the_shadow_half() {
+        // GAWALL.SHP is 96 frames: 48 body (3 damage x 16 connectivity) plus
+        // 48 one-bit shadow stencils. A wall must never resolve a stencil as
+        // its body art.
+        let wall = OverlayTypeFlags {
+            wall: true,
+            ..OverlayTypeFlags::default()
+        };
+        assert_eq!(body_frame_count(&wall, 96), 48);
+        assert_eq!(
+            u32::try_from(body_frame_count(&wall, 96)).unwrap(),
+            wall_body_frame_count(3),
+            "GAWALL's body half and its DamageLevels-derived range must agree"
+        );
+
+        let bridge = OverlayTypeFlags {
+            bridge_deck: true,
+            ..OverlayTypeFlags::default()
+        };
+        assert_eq!(body_frame_count(&bridge, 36), 18);
+
+        // Ordinary overlays (ore, gems, tracks) keep every frame addressable.
+        let generic = OverlayTypeFlags::default();
+        assert_eq!(body_frame_count(&generic, 96), 96);
     }
 }
 

@@ -13,7 +13,7 @@ use crate::map::overlay_types::is_bridge_overlay_index;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::is_high_bridge_body_name;
-use crate::render::overlay_atlas::OverlaySpriteKey;
+use crate::render::overlay_atlas::{CRATE_BODY_FRAME, OverlaySpriteKey};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::WeaponMuzzleFlash;
@@ -73,6 +73,19 @@ pub(crate) fn world_effect_screen_position(
     z: u8,
 ) -> (f32, f32) {
     crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z)
+}
+
+/// Body frame the native overlay draw selects for a non-bridge overlay cell.
+///
+/// `Crate=yes` overlays take a dedicated branch that hardcodes frame 0; every
+/// other overlay draws its cell overlay-data byte directly (ore density, wall
+/// `damage << 4 | connectivity`).
+fn overlay_body_frame(is_crate: bool, overlay_data: u8) -> u8 {
+    if is_crate {
+        CRATE_BODY_FRAME
+    } else {
+        overlay_data
+    }
 }
 
 fn classify_overlay_render_bucket(is_wall: bool) -> OverlayRenderBucket {
@@ -336,6 +349,7 @@ pub(crate) fn build_overlay_instances(
             .as_ref()
             .and_then(|reg| reg.flags(entry.overlay_id));
         let is_wall: bool = overlay_flags.map(|f| f.wall).unwrap_or(false);
+        let is_crate: bool = overlay_flags.map(|f| f.crate_type).unwrap_or(false);
         let is_resource = upper.starts_with("TIB") || upper.starts_with("GEM");
 
         let render_frame: u8 = if let Some(overlay_grid) = state
@@ -375,6 +389,7 @@ pub(crate) fn build_overlay_instances(
                 entry.frame
             }
         };
+        let render_frame: u8 = overlay_body_frame(is_crate, render_frame);
 
         let bucket = classify_overlay_render_bucket(is_wall);
         // FA2 IsoView.cpp:5955-5956: track overlays render +CellHeight (15px) lower.
@@ -894,9 +909,9 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
 #[cfg(test)]
 mod tests {
     use super::{
-        ANIM_DRAW_DEPTH_BIAS_PX, OverlayRenderBucket, apply_shape_z_adjust,
-        classify_overlay_render_bucket, garrison_flash_depth, terrain_object_is_render_visible,
-        weapon_muzzle_flash_key, world_effect_screen_position,
+        ANIM_DRAW_DEPTH_BIAS_PX, CRATE_BODY_FRAME, OverlayRenderBucket, apply_shape_z_adjust,
+        classify_overlay_render_bucket, garrison_flash_depth, overlay_body_frame,
+        terrain_object_is_render_visible, weapon_muzzle_flash_key, world_effect_screen_position,
     };
     use crate::map::overlay::TerrainObject;
     use crate::rules::ini_parser::IniFile;
@@ -992,6 +1007,27 @@ mod tests {
             classify_overlay_render_bucket(false),
             OverlayRenderBucket::Generic
         );
+    }
+
+    #[test]
+    fn damaged_wall_keeps_its_overlay_data_byte_as_the_render_frame() {
+        // A GAWALL segment at damage stage 2 with all four neighbours joined
+        // stores 0x2F. The renderer must ask the atlas for exactly that frame;
+        // any collapse to 0 draws a pristine, isolated post.
+        assert_eq!(overlay_body_frame(false, 0x2F), 0x2F);
+        // Damage stage 1, N+E connected.
+        assert_eq!(overlay_body_frame(false, 0x13), 0x13);
+        // Undamaged, isolated.
+        assert_eq!(overlay_body_frame(false, 0x00), 0x00);
+    }
+
+    #[test]
+    fn crate_overlays_ignore_the_cell_byte_and_draw_frame_zero() {
+        // gamemd's overlay-body draw takes a Crate=yes branch that hardcodes
+        // the frame; the cell's overlay data never reaches the shape call.
+        assert_eq!(overlay_body_frame(true, 0), CRATE_BODY_FRAME);
+        assert_eq!(overlay_body_frame(true, 7), CRATE_BODY_FRAME);
+        assert_eq!(overlay_body_frame(true, 0x2F), CRATE_BODY_FRAME);
     }
 
     #[test]

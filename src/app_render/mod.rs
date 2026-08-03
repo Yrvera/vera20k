@@ -195,8 +195,8 @@ fn upload_to_gpu(
     );
     pool.upload(&state.gpu, "overlay_bridge_railing", &world.bridge_railing);
     pool.upload(&state.gpu, "overlay_wall", &world.wall);
-    // Smudges: drawn after overlays, before bridge entities. Empty until the
-    // SmudgeType SHP atlas registration follow-up lands.
+    // Smudges: drawn inside the terrain layer, before the bridge body and
+    // before overlays, matching the native per-cell tile-then-smudge dispatch.
     pool.upload(&state.gpu, "smudge", &world.smudge);
 
     // Entities (VXL + SHP)

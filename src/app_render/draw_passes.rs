@@ -63,6 +63,20 @@ pub(super) fn dispatch_draw_passes(
         "terrain",
     );
 
+    // --- Step 1.5: Smudges (static decals: craters + scorches) ---
+    // The native terrain-tile pass dispatches each cell's smudge right after
+    // blitting that cell's tile, so smudges land in the terrain layer — well
+    // before the cell-content layer that draws overlays. Drawing them after
+    // overlays instead put every crater and scorch mark on top of the ore and
+    // walls it should be lying under.
+    draw_pooled_passthrough_overlay(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        state.overlay_atlas.as_ref(),
+        "smudge",
+    );
+
     // --- Step 2: Bridge body (Z-depth pipeline) ---
     draw_pooled_bridge_zdepth(
         &mut pass,
@@ -72,14 +86,10 @@ pub(super) fn dispatch_draw_passes(
         "overlay_bridge_body",
     );
 
-    // --- Step 2.5: Bridge body shadow (DISABLED) ---
-    // Phase D Task 8 wired this in, but bridge shadow SHP frames are not
-    // ordinary palette-indexed pixels — gamemd renders them via a translucent
-    // blitter that re-interprets the indices as shadow density. Passing them
-    // through the theater palette renders solid bright cyan instead of a
-    // shadow shape. Re-enable once a proper shadow blitter (or palette
-    // remap) lands. Pipeline plumbing — atlas pack, instance build, pooled
-    // upload — is preserved so the re-enable is a one-line draw call.
+    // (Bridge body shadows are NOT drawn here. The native cell-content layer
+    // runs two full sweeps — every overlay body, then every overlay shadow —
+    // so shadows belong after the overlay bodies at step 3.5, not between the
+    // bridge body and the overlays.)
 
     // --- Step 3: Overlays (no depth test — passthrough) ---
     // Overlays don't read the Z-buffer — the tile blitter skips Z-testing
@@ -101,19 +111,34 @@ pub(super) fn dispatch_draw_passes(
         "overlay",
     );
 
-    // --- Step 3.5: Smudges (static decals: craters + scorches) ---
-    // Drawn between overlays and entities so smudges sit on top of the
-    // ground but underneath any unit or building. Uses the same passthrough
-    // overlay pipeline as ordinary overlays. Buffer is empty until the
-    // SmudgeType SHP atlas registration follow-up lands; the helper returns
-    // early when the pooled buffer has count == 0.
-    draw_pooled_passthrough_overlay(
+    // --- Step 3.5: Overlay shadows — bridge decks ---
+    // Second sweep of the native cell-content layer: after every overlay body
+    // is down, each overlay-bearing cell draws its shadow half. The atlas bakes
+    // these as black texels whose alpha approximates the blitter's darken, so
+    // the ordinary passthrough pipeline gets the shape and the
+    // composite-on-overlap behaviour. The darken STRENGTH is a known drift —
+    // this pass blends in linear space against an sRGB target while the blitter
+    // halves the encoded word, leaving the shadow lighter than retail. See
+    // `render::bridge_atlas::SHADOW_DARKEN_ALPHA`.
+    //
+    // Only bridge decks are covered so far — ore, gem and wall shadows still
+    // need their own instance bucket and pooled buffer.
+    draw_pooled_bridge_passthrough(
         &mut pass,
         &state.batch_renderer,
         pool,
-        state.overlay_atlas.as_ref(),
-        "smudge",
+        state.bridge_atlas.as_ref(),
+        "overlay_bridge_body_shadow",
     );
+
+    // (Smudges are drawn back at step 1.5, inside the terrain layer, matching
+    // the native per-cell tile-then-smudge dispatch. Their screen position
+    // still ignores cell elevation, so a hilltop crater sits one height step
+    // too low per level; the native tile pass folds the cell's height into the
+    // smudge's Y. Not fixed here because `smudge::build_visible_instances` has
+    // no height source and adding one changes its signature and its caller in
+    // `build_instances.rs`. The instances' depth value is irrelevant either
+    // way — this pass neither reads nor writes the depth buffer.)
 
     // Building selection bracket back/left edges. Drawn before object bodies so
     // the normal SHP merge naturally occludes the hidden bracket edges.
