@@ -792,10 +792,21 @@ pub fn build_visible_instances(
         let z_bias: f32 = signed_z * 0.0001;
         let depth: f32 = (1.0 - normalized - z_bias).clamp(0.001, 0.999);
 
-        // Bridge cells with baked damaged-variant TMP data ignore the FA2
+        // Bridge cells with baked damaged-variant TMP data ignore the
         // map-load PRNG variant and instead route to the per-frame
         // damaged_variant bool from the sim's BridgeRuntimeState. Variant 1
         // is the damaged baked art; variant 0 is the pristine art.
+        //
+        // Native ordering (verified from the tile draw entry point): the engine
+        // tests the tile's chain length FIRST — `total_file_count < 2` pins the
+        // variant to 0 and skips the damaged check entirely — and only then asks
+        // whether the sub-tile has damaged data. Every other case agrees with the
+        // branch below, so the single divergent input is a tile that advertises
+        // damaged data while owning exactly one TMP file: gamemd draws variant 0,
+        // VERA asks the atlas for variant 1 and the exact-key lookup drops the
+        // cell. Reachability in stock data is UNCHECKED — damaged art ships as a
+        // sibling file, so such a tile should not exist. Closing it needs the
+        // chain length at draw time, which this struct does not carry.
         let damaged_variant_swap: u8 = if cell.has_damaged_data {
             bridge_state
                 .and_then(|bs| bs.cell(cell.rx, cell.ry))
