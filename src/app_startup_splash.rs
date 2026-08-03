@@ -35,10 +35,37 @@ const TRADEMARK_BOTTOM_KEY: &str = "GUI:TradeMarkBottom";
 const TRADEMARK_BOTTOM_FALLBACK: &str =
     "trademarks of Electronic Arts Inc. in the U.S. and/or other countries.";
 
+/// The minimum on-screen hold, anchored at the first successful present.
+///
+/// Native anchors its timestamp *after* the blit and lets the rules/type
+/// initialization that follows run inside that window, so the hold is
+/// `max(work-after-present, MINIMUM_VISIBLE_TIME)` and never an added sleep.
+/// Arming exactly once is what makes that true: the per-frame re-present would
+/// otherwise push the deadline forward on every frame and hold the splash up
+/// forever.
+#[derive(Debug, Default)]
+struct VisibleHold {
+    deadline: Option<Instant>,
+}
+
+impl VisibleHold {
+    fn mark_presented(&mut self, now: Instant) {
+        if self.deadline.is_none() {
+            self.deadline = Some(now + MINIMUM_VISIBLE_TIME);
+        }
+    }
+
+    /// An unarmed hold is still active, so a first present that failed on a
+    /// transient surface acquisition is retried instead of skipped.
+    fn is_active(&self, now: Instant) -> bool {
+        self.deadline.is_none_or(|deadline| now < deadline)
+    }
+}
+
 pub(crate) struct StartupSplashPresentation {
     texture: BatchTexture,
     instance_buffer: wgpu::Buffer,
-    deadline: Option<Instant>,
+    hold: VisibleHold,
 }
 
 impl StartupSplashPresentation {
@@ -82,18 +109,16 @@ impl StartupSplashPresentation {
         Ok(Self {
             texture,
             instance_buffer,
-            deadline: None,
+            hold: VisibleHold::default(),
         })
     }
 
     pub(crate) fn mark_presented(&mut self, now: Instant) {
-        if self.deadline.is_none() {
-            self.deadline = Some(now + MINIMUM_VISIBLE_TIME);
-        }
+        self.hold.mark_presented(now);
     }
 
     pub(crate) fn is_active(&self, now: Instant) -> bool {
-        self.deadline.is_none_or(|deadline| now < deadline)
+        self.hold.is_active(now)
     }
 }
 
@@ -421,12 +446,24 @@ mod tests {
     }
 
     #[test]
-    fn deadline_arms_once_and_expires_after_five_seconds() {
-        // Exercise the deadline contract without constructing GPU resources.
+    fn the_hold_anchors_at_the_first_present_and_never_rearms() {
         let start = Instant::now();
-        let deadline = start + MINIMUM_VISIBLE_TIME;
-        assert!(start < deadline);
-        assert_eq!(deadline.duration_since(start), Duration::from_millis(5000));
-        assert!(!(deadline < deadline));
+        let mut hold = VisibleHold::default();
+        // Unarmed: still active, so a transient first-present failure retries
+        // rather than dropping the splash.
+        assert!(hold.is_active(start + Duration::from_secs(600)));
+
+        hold.mark_presented(start);
+        // The per-frame re-present calls this again on every frame; if it
+        // re-armed, the splash would never expire.
+        hold.mark_presented(start + Duration::from_secs(3));
+        hold.mark_presented(start + MINIMUM_VISIBLE_TIME);
+
+        assert!(hold.is_active(start));
+        assert!(hold.is_active(start + MINIMUM_VISIBLE_TIME - Duration::from_millis(1)));
+        // The hold is measured from the present, so initialization work that
+        // runs after it is spent inside the five seconds, not added to them.
+        assert!(!hold.is_active(start + MINIMUM_VISIBLE_TIME));
+        assert!(!hold.is_active(start + MINIMUM_VISIBLE_TIME + Duration::from_secs(1)));
     }
 }

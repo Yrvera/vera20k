@@ -31,6 +31,35 @@ fn main() -> Result<()> {
 
     let launch_mode = vera20k::app_launch::parse_launch_args(std::env::args_os().skip(1))?;
 
+    // A help switch terminates before anything else is created, matching the
+    // native switch parser returning a failure that makes WinMain bail.
+    if matches!(launch_mode, vera20k::app_launch::AppLaunchMode::Usage) {
+        println!("{}", vera20k::app_startup_options::usage_text());
+        return Ok(());
+    }
+
+    // Native claims its single-instance gate before it creates a window: a
+    // second copy raises and restores the running one and exits, so the two
+    // never both write RA2MD.INI on quit. Capture modes are automation-only and
+    // are deliberately left ungated so parallel captures still run —
+    // VERA-internal exemption, native has no capture mode.
+    let _instance_guard = match &launch_mode {
+        vera20k::app_launch::AppLaunchMode::Interactive(_) => {
+            match vera20k::util::single_instance::acquire() {
+                vera20k::util::single_instance::SingleInstance::Acquired(guard) => Some(guard),
+                vera20k::util::single_instance::SingleInstance::AlreadyRunning => {
+                    // Recorded gap: native also exits with a success status
+                    // here, so a live-smoke harness that only checks the exit
+                    // code reads "already running" as a clean run. Anything
+                    // asserting on a window must assert on the window.
+                    log::info!("RA2 Engine is already running — raised the existing window");
+                    return Ok(());
+                }
+            }
+        }
+        _ => None,
+    };
+
     // Create the OS event loop. This drives the entire application:
     // window events, input, redraws, lifecycle events.
     let event_loop: EventLoop<()> = EventLoop::builder().build()?;
@@ -38,7 +67,15 @@ fn main() -> Result<()> {
     // Create the app and hand control to the event loop.
     // This blocks until the window is closed.
     let mut app: vera20k::app::App = match launch_mode {
-        vera20k::app_launch::AppLaunchMode::Interactive => vera20k::app::App::new(),
+        vera20k::app_launch::AppLaunchMode::Usage => unreachable!("usage returned above"),
+        vera20k::app_launch::AppLaunchMode::Interactive(options) => {
+            // The switch table's results are process-global in native and are
+            // re-read where each one is consumed (the display owner for the
+            // screen size, AssetManager for `-CD`); logging them here records
+            // what the command line asked for.
+            log::info!("Retail startup switches: {options:?}");
+            vera20k::app::App::new()
+        }
         vera20k::app_launch::AppLaunchMode::ShellCapture(request) => {
             request.validate_runtime_environment()?;
             vera20k::app::App::new_shell_capture(request)

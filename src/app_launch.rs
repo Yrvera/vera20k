@@ -1,15 +1,17 @@
 //! Neutral top-level launch dispatch for interactive and capture modes.
 //!
-//! Every non-tactical argument vector is delegated byte-for-byte to the sealed
-//! shell parser. This module owns only mode routing and the strict tactical
-//! profile/contract/output boundary.
+//! The retail switch table is consumed first, then every remaining non-tactical
+//! argument is delegated byte-for-byte to the sealed shell parser. This module
+//! owns only mode routing and the strict tactical profile/contract/output
+//! boundary.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::app_shell_capture::{self, AppLaunchMode as ShellAppLaunchMode, ShellCaptureRequest};
+use crate::app_startup_options::{RetailStartupOptions, consume_retail_switches};
 use crate::app_tactical_capture::profile::{
     CHECKPOINT_RADAR_ONLINE_V1, SealedJsonFile, TacticalCaptureContract, TacticalCaptureProfile,
     validate_new_output_directory,
@@ -20,7 +22,11 @@ const TACTICAL_CAPTURE_FLAG: &str = "--tactical-capture";
 
 #[derive(Debug)]
 pub enum AppLaunchMode {
-    Interactive,
+    /// Ordinary launch, carrying whatever the retail switch table decided.
+    Interactive(RetailStartupOptions),
+    /// A help switch: print usage and terminate before any window is created,
+    /// exactly as native's switch parser makes `WinMain` bail.
+    Usage,
     ShellCapture(ShellCaptureRequest),
     TacticalCapture(TacticalCaptureRequest),
 }
@@ -93,29 +99,59 @@ impl TacticalCaptureRequest {
 
 /// Parse the neutral application launch boundary.
 ///
-/// Tactical mode is recognized only when its flag is the first argument. Every
-/// other vector, including an empty vector and malformed/non-UTF-8 shell
-/// vectors, is passed unchanged to the existing shell parser.
+/// Native's global switch table runs over every argument before launch
+/// dispatch, so it is consumed here first: without that, a player typing the
+/// one switch the community actually uses (`-WIN`) gets no window at all. Only
+/// the arguments native does not recognise reach the mode parsers, so the
+/// sealed capture contract — a misspelled automation flag must never open an
+/// interactive window — is untouched.
+///
+/// Tactical mode is then recognized only when its flag is the first remaining
+/// argument. Every other vector, including an empty vector and malformed or
+/// non-UTF-8 shell vectors, is passed unchanged to the existing shell parser.
 pub fn parse_launch_args<I>(args: I) -> Result<AppLaunchMode>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let mut args: Vec<OsString> = args.into_iter().collect();
-    // Retail scans every command-line argument case-insensitively for its
-    // global `-CD` media switch before normal launch dispatch. AssetManager
-    // reads the original process argv; remove the standalone switch here so
-    // the app's stricter capture/interactive parser does not reject it.
-    args.retain(|arg| {
-        arg.to_str()
-            .is_none_or(|arg| !arg.eq_ignore_ascii_case("-CD"))
-    });
-    if args.first() != Some(&OsString::from(TACTICAL_CAPTURE_FLAG)) {
+    let args: Vec<OsString> = args.into_iter().collect();
+    // Native's table scans every argument, which is safe there because native
+    // has no option that takes a following value. VERA's capture modes do, and
+    // the `-CD` search is a substring match, so an output path such as
+    // `--output out\shell-cd-compare` would have its value silently eaten and
+    // the capture parser would then fail pointing at the wrong argument. A
+    // capture invocation therefore bypasses the table entirely and reaches its
+    // sealed parser byte-for-byte.
+    if is_capture_invocation(&args) {
+        if args.first() == Some(&OsString::from(TACTICAL_CAPTURE_FLAG)) {
+            return parse_tactical_args(args);
+        }
         return match app_shell_capture::parse_launch_args(args)? {
-            ShellAppLaunchMode::Interactive => Ok(AppLaunchMode::Interactive),
+            ShellAppLaunchMode::Interactive => {
+                Ok(AppLaunchMode::Interactive(RetailStartupOptions::default()))
+            }
             ShellAppLaunchMode::ShellCapture(request) => Ok(AppLaunchMode::ShellCapture(request)),
         };
     }
-    parse_tactical_args(args)
+    // `AssetManager` reads the original process argv for `-CD` itself, using
+    // native's substring match; consuming the switch with the same predicate
+    // here keeps the two matchers from disagreeing about what `-CD` means.
+    let (retail_options, args) = consume_retail_switches(args);
+    if retail_options.usage_requested {
+        return Ok(AppLaunchMode::Usage);
+    }
+    match app_shell_capture::parse_launch_args(args)? {
+        ShellAppLaunchMode::Interactive => Ok(AppLaunchMode::Interactive(retail_options)),
+        ShellAppLaunchMode::ShellCapture(request) => Ok(AppLaunchMode::ShellCapture(request)),
+    }
+}
+
+/// Whether this vector is driving one of the capture harnesses, in which case
+/// its option values must reach the sealed parsers untouched.
+fn is_capture_invocation(args: &[OsString]) -> bool {
+    args.iter().any(|argument| {
+        argument == OsStr::new(app_shell_capture::CAPTURE_FLAG)
+            || argument == OsStr::new(TACTICAL_CAPTURE_FLAG)
+    })
 }
 
 fn parse_tactical_args(args: Vec<OsString>) -> Result<AppLaunchMode> {
@@ -243,7 +279,7 @@ mod tests {
     fn no_args_still_delegate_to_interactive_shell_launch() {
         assert!(matches!(
             parse_launch_args(Vec::<OsString>::new()).expect("parse"),
-            AppLaunchMode::Interactive
+            AppLaunchMode::Interactive(_)
         ));
     }
 
@@ -251,8 +287,59 @@ mod tests {
     fn retail_cd_switch_is_a_global_interactive_launch_option() {
         assert!(matches!(
             parse_launch_args([OsString::from("-cD")]).expect("parse"),
-            AppLaunchMode::Interactive
+            AppLaunchMode::Interactive(_)
         ));
+    }
+
+    #[test]
+    fn a_cd_superstring_launches_instead_of_aborting() {
+        // The asset layer already selects the wildcard media branch for any
+        // argument *containing* `-CD`, so the launch parser must accept the
+        // same set or an argument like `-CDROM` refuses to start the game.
+        let AppLaunchMode::Interactive(options) =
+            parse_launch_args([OsString::from("-CDROM")]).expect("parse")
+        else {
+            panic!("a -CD superstring must stay an interactive launch");
+        };
+        assert!(options.cd_media);
+    }
+
+    #[test]
+    fn the_windowed_switch_launches_instead_of_aborting() {
+        let AppLaunchMode::Interactive(options) =
+            parse_launch_args([OsString::from("-win")]).expect("parse")
+        else {
+            panic!("-WIN must stay an interactive launch");
+        };
+        assert!(options.windowed);
+    }
+
+    #[test]
+    fn help_switches_route_to_usage_without_a_window() {
+        for form in ["/?", "-?", "-h", "/h"] {
+            assert!(
+                matches!(
+                    parse_launch_args([OsString::from(form)]).expect("parse"),
+                    AppLaunchMode::Usage
+                ),
+                "{form} must print usage instead of launching"
+            );
+        }
+    }
+
+    #[test]
+    fn a_capture_option_value_containing_cd_is_not_stripped() {
+        // The retail table matches `-CD` as a substring, so a capture value
+        // like this would lose its `--output` argument if the table ran over
+        // capture vectors. The tactical parser must still see the path.
+        let parent = test_directory("cd-compare");
+        let output = parent.join("shell-cd-compare");
+        let launch = parse_launch_args(tactical_args(&output)).expect("parse");
+        let AppLaunchMode::TacticalCapture(request) = launch else {
+            panic!("a -CD-containing output path must stay a tactical capture");
+        };
+        assert_eq!(request.output_dir(), output);
+        std::fs::remove_dir(parent).expect("remove test directory");
     }
 
     #[test]
