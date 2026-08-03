@@ -387,7 +387,6 @@ mod tests {
             ui_name: None,
             cost: 0,
             strength: 100,
-            points: 0,
             armor: "none".to_string(),
             speed: 6,
             weight: SimFixed::lit("2.0"),

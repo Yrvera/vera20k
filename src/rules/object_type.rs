@@ -159,11 +159,6 @@ pub struct ObjectType {
     pub cost: i32,
     /// Hit points (health). 0 = invincible or not applicable.
     pub strength: i32,
-    /// `Points=` — what destroying this object is worth on the end-of-match
-    /// score. gamemd adds the victim's point value to the killing house's score
-    /// accumulator, the same field ore harvesting feeds. Stock rules set it on
-    /// 552 entries, mostly 5..50.
-    pub points: i32,
     /// Armor type name (e.g., "heavy", "light", "wood"). Determines damage
     /// multipliers from warhead Verses= values.
     pub armor: String,
@@ -961,7 +956,6 @@ impl ObjectType {
                 .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
             strength: section.get_i32("Strength").unwrap_or(0),
-            points: section.get_i32("Points").unwrap_or(0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
             speed: section.get_i32("Speed").unwrap_or(0),
             weight: section

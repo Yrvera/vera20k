@@ -239,26 +239,23 @@ fn check_local_player_match_end(state: &mut AppState) {
 ///
 /// Native copies a stored per-house display name into every row, so no row ever
 /// shows the raw house key. The local player's is the handle they launched
-/// under; a computer opponent gets the AI label. Rows are told apart by colour,
-/// which the table already carries, so identical AI labels are not ambiguous the
-/// way identical uncoloured text would be.
+/// under; every other house shows its country's display name, which is what
+/// native derives that slot from.
 fn score_row_display_name(
     owner_name: &str,
-    is_human: bool,
     local_owner: &Option<String>,
     local_handle: &Option<String>,
-    ai_label: &str,
+    country_name: Option<&str>,
 ) -> String {
     let is_local = local_owner
         .as_deref()
         .is_some_and(|local| local.eq_ignore_ascii_case(owner_name));
-    match (is_local, local_handle, is_human) {
-        (true, Some(handle), _) => handle.clone(),
-        // A human house that is not the local player (and the local player when
-        // no launch handle was recorded) keeps its own name.
-        (_, _, true) => owner_name.to_string(),
-        (_, _, false) => ai_label.to_string(),
+    if is_local && let Some(handle) = local_handle {
+        return handle.clone();
     }
+    // The raw house key is the last resort: it only surfaces for a house with no
+    // resolvable country at all.
+    country_name.unwrap_or(owner_name).to_string()
 }
 
 /// Collect the end-of-match score screen's contents off the live houses.
@@ -281,15 +278,38 @@ fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::Sco
     // the loading screen's progress row shows. Absent outside a skirmish launch,
     // in which case the house's own name is displayed.
     let local_handle = crate::app_loading::launch_player_name(state);
-    // Computer players carry the string table's AI label rather than the raw
-    // house key. Native stores a per-house display name and copies it into every
-    // row; what a skirmish AI house has in that slot is UNCHECKED, so the label
-    // the lobby uses for a computer opponent stands in.
-    let ai_label = state
-        .csf
-        .as_ref()
-        .map(|csf| csf.text("GUI:AI").into_owned())
-        .unwrap_or_else(|| "Computer".to_string());
+    // Native fills each house's stored display name from its country's `UIName=`
+    // through the string table, falling back to the country's plain `Name=`, and
+    // the score screen copies that name into every row. Two computer opponents of
+    // different countries therefore read differently.
+    let country_names: std::collections::BTreeMap<String, String> = {
+        let rules = state.rules.as_ref();
+        let csf = state.csf.as_ref();
+        state
+            .simulation
+            .as_ref()
+            .map(|sim| {
+                sim.houses
+                    .iter()
+                    .filter_map(|(id, house)| {
+                        let owner = sim.interner.resolve(*id).to_string();
+                        let country = sim.interner.resolve(house.country?).to_string();
+                        let (ui_key, plain) = rules
+                            .map(|r| r.country_display_name_sources(&country))
+                            .unwrap_or((None, None));
+                        let localized = ui_key
+                            .zip(csf)
+                            .map(|(key, csf)| csf.text(key).into_owned())
+                            // An unresolved key comes back as the key itself; that
+                            // is not a name, so fall through to `Name=`.
+                            .filter(|text| Some(text.as_str()) != ui_key);
+                        let name = localized.or_else(|| plain.map(str::to_string))?;
+                        Some((owner, name))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     // Resolve each contender's row colour up front: the ramps live on the rules
     // and the loop below needs the simulation mutably (the victory bonus draws
     // from the scenario stream), so the two borrows cannot overlap.
@@ -347,7 +367,6 @@ fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::Sco
         };
         let owner_name = sim.interner.resolve(owner_id).to_string();
         let survived = !house.is_defeated;
-        let is_human = house.is_human;
         let stats = house.stats;
         // The native score field has two feeders — harvested ore and kill points.
         let raw_score = stats.score(house.economy.harvested_credits);
@@ -362,10 +381,9 @@ fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::Sco
         };
         let display_name = score_row_display_name(
             &owner_name,
-            is_human,
             &local_owner,
             &local_handle,
-            &ai_label,
+            country_names.get(&owner_name).map(String::as_str),
         );
         rows.push(ScoreRow {
             name: display_name,
@@ -2472,32 +2490,40 @@ mod modal_pump_tests {
         let handle = Some("Commander".to_string());
         // Local player: the handle they launched under.
         assert_eq!(
-            score_row_display_name("Americans", true, &local, &handle, "Computer"),
+            score_row_display_name("Americans", &local, &handle, Some("Americans!")),
             "Commander"
         );
         // Owner-key match is case-insensitive, as elsewhere in the owner paths.
         assert_eq!(
-            score_row_display_name("AMERICANS", true, &local, &handle, "Computer"),
+            score_row_display_name("AMERICANS", &local, &handle, Some("Americans!")),
             "Commander"
         );
-        // Every computer opponent carries the string table's AI label, not
-        // "Russians"/"Africans"/the house key.
+        // Every other house shows its country's display name. Two computer
+        // opponents of different countries read differently, as they do natively.
         assert_eq!(
-            score_row_display_name("Russians", false, &local, &handle, "Computer"),
-            "Computer"
+            score_row_display_name("Russians", &local, &handle, Some("Russia")),
+            "Russia"
         );
         assert_eq!(
-            score_row_display_name("Africans", false, &local, &handle, "Computer"),
-            "Computer"
+            score_row_display_name("Africans", &local, &handle, Some("Libya")),
+            "Libya"
         );
     }
 
     #[test]
     fn score_row_name_falls_back_when_no_launch_handle_was_recorded() {
-        // Outside a skirmish launch there is no handle; a human house then keeps
-        // its own name rather than being labelled a computer player.
+        // Outside a skirmish launch there is no handle, so even the local row
+        // takes the country name.
         assert_eq!(
-            score_row_display_name("Americans", true, &None, &None, "Computer"),
+            score_row_display_name("Americans", &None, &None, Some("America")),
+            "America"
+        );
+    }
+
+    #[test]
+    fn score_row_name_uses_the_house_key_only_with_no_resolvable_country() {
+        assert_eq!(
+            score_row_display_name("Americans", &None, &None, None),
             "Americans"
         );
     }

@@ -1177,6 +1177,13 @@ fn handle_entity_deaths(
                             rules.general.condition_yellow_x1000,
                         );
                     }
+                    // A death explosion kills on behalf of the object that
+                    // carried it — a Demo Truck's owner is credited with what its
+                    // detonation destroys, and so is the owner of anything caught
+                    // in a chain reaction. This path subtracts damage inline
+                    // rather than going through the damage-event loop, so the
+                    // capture has to happen here too.
+                    capture_kill_credit(target, Some(*owner_id), rules, interner);
                 }
             }
             // Ore destruction from death explosion.
@@ -2076,19 +2083,7 @@ pub fn tick_combat_with_fog_and_main_rng(
                 // `last_attacker_id` unconditionally later this tick, and dying
                 // infantry stay in the logic vector through their death
                 // animation, so they would reach removal with no attacker left.
-                // Guarded on the field being empty so a second lethal hit in the
-                // same tick cannot re-credit the kill to a different house.
-                if target.killed_by.is_none() {
-                    target.killed_by = attacker_owner;
-                    target.kill_award_points = attacker_owner
-                        .map(|_| {
-                            score_points_for_victim(
-                                rules.object(interner.resolve(target.type_ref)),
-                                target.veterancy,
-                            )
-                        })
-                        .unwrap_or(0);
-                }
+                capture_kill_credit(target, attacker_owner, rules, interner);
             }
             // Under-attack ping: another house damaged a base structure or a
             // harvester. Owner-differs is the hostility gate — alliances are
@@ -2239,12 +2234,25 @@ const ELITE_VETERANCY: u16 = 200;
 /// Score value destroying `victim` is worth, before the allied-victim zeroing the
 /// caller applies.
 ///
-/// gamemd asks the victim's type for its point value, which is the type's
-/// `Points=` doubled at veteran and tripled at elite. A type with no `Points=`
-/// (or an unresolvable type) is worth nothing, which is the stock default.
-pub(crate) fn score_points_for_victim(victim: Option<&ObjectType>, veterancy: u16) -> i32 {
-    let points = victim.map_or(0, |obj| obj.points);
-    if points <= 0 {
+/// gamemd's kill-record step asks the victim's type for its value and that
+/// accessor returns the type's **`Cost=`** — the same field production charges —
+/// doubled at veteran and tripled at elite.
+///
+/// It is emphatically NOT `Points=`. `Points=` parses into its own type field
+/// that nothing in the binary ever reads back: the only references are the
+/// constructor zeroing it, the INI store, and the type-checksum walk. It is
+/// dormant Tiberian Sun legacy in YR, so this engine does not parse it at all.
+/// The two are not even proportional — a Rhino is `Cost=900 / Points=25` while a
+/// GI is `200 / 10` — so using `Points=` both shrinks the column and reorders the
+/// table.
+///
+/// gamemd passes the victim's house so its cost bonuses apply on top. This engine
+/// models no per-house cost modifier anywhere — production charges the raw
+/// `Cost=` too — so the award is the raw cost, consistent with what the player
+/// was actually charged. UNCHECKED against the native bonus set.
+pub(crate) fn score_award_for_victim(victim: Option<&ObjectType>, veterancy: u16) -> i32 {
+    let cost = victim.map_or(0, |obj| obj.cost);
+    if cost <= 0 {
         return 0;
     }
     let multiplier = if veterancy >= ELITE_VETERANCY {
@@ -2254,7 +2262,48 @@ pub(crate) fn score_points_for_victim(victim: Option<&ObjectType>, veterancy: u1
     } else {
         1
     };
-    points.saturating_mul(multiplier)
+    cost.saturating_mul(multiplier)
+}
+
+/// Record who destroyed `victim`, at the instant it happened.
+///
+/// Every lethal path funnels through here so there is one capture rather than a
+/// recording mechanism per death cause. Call it immediately after zeroing a
+/// victim's health, with the house that should be credited.
+///
+/// No-ops unless the victim is actually at zero health, and the first writer
+/// wins — a second lethal hit in the same tick cannot re-credit the kill to a
+/// different house. The award is resolved here because the rules are in hand and
+/// the veterancy is still the value the object died at.
+///
+/// Routed today: the projectile/damage-event loop, death-explosion area damage,
+/// and crushing. Spawner missiles arrive through the damage loop with the firer
+/// set to the launching object, so they credit the launcher's house; if the
+/// launcher itself dies during the missile's flight the firer no longer resolves
+/// and that kill goes uncredited.
+///
+/// NOT routed yet, because each site would need a `&RuleSet` threaded into a
+/// function that does not take one: the Iron Curtain and Genetic Mutator infantry
+/// kills, aircraft self-destruct, passengers dying with their transport
+/// (`world::lifecycle`) or with a collapsing bridge, and passengers ejected by a
+/// sell. Those victims book a Loss with no matching Kill.
+pub(crate) fn capture_kill_credit(
+    victim: &mut crate::sim::game_entity::GameEntity,
+    killer_owner: Option<InternedId>,
+    rules: &crate::rules::ruleset::RuleSet,
+    interner: &crate::sim::intern::StringInterner,
+) {
+    if victim.health.current != 0 || victim.killed_by.is_some() {
+        return;
+    }
+    let Some(killer_owner) = killer_owner else {
+        return;
+    };
+    victim.killed_by = Some(killer_owner);
+    victim.kill_award_points = score_award_for_victim(
+        rules.object(interner.resolve(victim.type_ref)),
+        victim.veterancy,
+    );
 }
 
 /// Resolve one attacker's Phase-2 fire decision + emission for the current tick.

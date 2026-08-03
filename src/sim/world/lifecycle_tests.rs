@@ -1951,7 +1951,8 @@ fn score_stats_credit_the_killer_and_charge_the_victim_once() {
     let victim = sim.substrate.entities.get_mut(1).unwrap();
     victim.health.current = 0;
     victim.killed_by = Some(killer_owner);
-    victim.kill_award_points = 25;
+    // A stock Rhino (HTNK) is Cost=900, and the award is the victim's cost.
+    victim.kill_award_points = 900;
 
     // A repeated uninit must not double-count: the exactly-once owned-count
     // guard covers the statistics too.
@@ -1966,7 +1967,7 @@ fn score_stats_credit_the_killer_and_charge_the_victim_once() {
         killer.stats.units_killed, 1,
         "a unit victim must land in the unit bucket, not the building one"
     );
-    assert_eq!(killer.stats.score_points, 25);
+    assert_eq!(killer.stats.score_points, 900);
 }
 
 #[test]
@@ -1989,7 +1990,8 @@ fn score_stats_survive_the_retaliation_pass_clearing_last_attacker() {
     let victim = sim.substrate.entities.get_mut(1).unwrap();
     victim.health.current = 0;
     victim.killed_by = Some(killer_owner);
-    victim.kill_award_points = 10;
+    // A stock GI (E1) is Cost=200.
+    victim.kill_award_points = 200;
     victim.last_attacker_id = None;
 
     sim.uninit(1);
@@ -1997,7 +1999,7 @@ fn score_stats_survive_the_retaliation_pass_clearing_last_attacker() {
     assert_eq!(sim.houses.get(&killer_owner).unwrap().stats.kills(), 1);
     assert_eq!(
         sim.houses.get(&killer_owner).unwrap().stats.score_points,
-        10
+        200
     );
 }
 
@@ -2029,7 +2031,7 @@ fn score_stats_count_a_self_inflicted_kill_but_award_no_points() {
     let victim = sim.substrate.entities.get_mut(1).unwrap();
     victim.health.current = 0;
     victim.killed_by = Some(owner);
-    victim.kill_award_points = 40;
+    victim.kill_award_points = 800;
 
     sim.uninit(1);
 
@@ -2044,12 +2046,42 @@ fn score_stats_count_a_self_inflicted_kill_but_award_no_points() {
 
 #[test]
 fn score_column_sums_the_harvest_and_kill_feeders() {
+    // The native score field has two feeders. Drive the kill half through the
+    // real award helper on stock costs rather than a hand-picked total: one
+    // Rhino (Cost=900) plus one veteran GI (Cost=200, doubled).
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::object_type::{ObjectCategory, ObjectType};
+    use crate::sim::combat::score_award_for_victim;
     use crate::sim::house_state::MatchStatistics;
+
+    let of = |body: &str, category| {
+        let ini = IniFile::from_str(&format!(
+            "[T]
+{body}"
+        ));
+        ObjectType::from_ini_section("T", ini.section("T").expect("section"), category)
+    };
+    let rhino = of(
+        "Cost=900
+",
+        ObjectCategory::Vehicle,
+    );
+    let gi = of(
+        "Cost=200
+",
+        ObjectCategory::Infantry,
+    );
+
+    let kill_half =
+        score_award_for_victim(Some(&rhino), 0) + score_award_for_victim(Some(&gi), 100);
+    assert_eq!(kill_half, 1_300);
+
     let stats = MatchStatistics {
-        score_points: 450,
+        score_points: kill_half,
         ..Default::default()
     };
-    assert_eq!(stats.score(1_200), 1_650);
+    // Harvest half: 240 bales deposited at the x5.0 statistics rate.
+    assert_eq!(stats.score(1_200), 2_500);
 }
 
 #[test]
