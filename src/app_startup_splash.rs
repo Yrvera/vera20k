@@ -16,9 +16,22 @@ use crate::render::batch::{BatchRenderer, BatchTexture, SpriteInstance};
 use crate::render::gpu::GpuContext;
 use crate::render::shell_surface_present::ShellSurfacePresenter;
 
-const SMALL_SPLASH_SHP: &str = "GLSSMD.SHP";
-const LARGE_SPLASH_SHP: &str = "GLSLMD.SHP";
-const SPLASH_PALETTE: &str = "GLSMD.PAL";
+// Startup splash art. The `MD` suffix marks the Yuri's Revenge variants
+// (`GLSSMD`/`GLSLMD`/`GLSMD`, in `langmd.mix`); these unsuffixed names are the
+// Red Alert 2 originals, in `ra2.mix -> local.mix`. Both sets exist in a retail
+// install and both are 640x480 / 800x600 single-frame SHPs with a matching
+// palette, so this is a straight substitution.
+//
+// Deliberate presentation choice, not a parity claim -- the project otherwise
+// takes YR over RA2. Restoring the Yuri splash is re-adding the `MD` suffixes.
+//
+// Note the strings drawn over the splash still come from the YR string table,
+// so the trademark line names Yuri's Revenge. Changing that means sourcing the
+// whole UI string table from RA2, which is a much larger change than swapping
+// three asset names.
+const SMALL_SPLASH_SHP: &str = "GLSS.SHP";
+const LARGE_SPLASH_SHP: &str = "GLSL.SHP";
+const SPLASH_PALETTE: &str = "GLS.PAL";
 const MINIMUM_VISIBLE_TIME: Duration = Duration::from_millis(5000);
 const TEXT_COLOR: [u8; 4] = [255, 255, 255, 255];
 
