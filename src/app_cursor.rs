@@ -201,7 +201,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if has_ore
         && best_id.is_some_and(|id| sim.entities().get(id).is_some_and(|e| e.miner.is_some()))
     {
-        return Some(CursorFeedbackKind::AttackMove);
+        return Some(CursorFeedbackKind::Harvest);
     }
     Some(match state.queued_order_mode {
         crate::app_render::OrderMode::Move => CursorFeedbackKind::Move,
@@ -724,16 +724,24 @@ fn select_best_for_action(
 /// Alias mappings live here: Pan→Move, Guard→Select, FriendlyUnit→Select, etc.
 pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorId> {
     match kind {
-        CursorFeedbackKind::FriendlyUnit
-        | CursorFeedbackKind::FriendlyStructure
-        | CursorFeedbackKind::Guard => Some(CursorId::Select),
+        CursorFeedbackKind::FriendlyUnit | CursorFeedbackKind::FriendlyStructure => {
+            Some(CursorId::Select)
+        }
+        // Guard-area has its own reticle (cursor row 22); it is not the select
+        // cursor, which is what VERA used to show while guard mode was armed.
+        CursorFeedbackKind::Guard => Some(CursorId::GuardArea),
         CursorFeedbackKind::Move => Some(CursorId::Move),
         CursorFeedbackKind::Pan => Some(CursorId::Pan),
         CursorFeedbackKind::AttackMove => Some(CursorId::AttackMove),
         CursorFeedbackKind::EnemyUnit | CursorFeedbackKind::EnemyStructure => {
             Some(CursorId::Attack)
         }
-        CursorFeedbackKind::EnemyOutOfRange => Some(CursorId::AttackOutOfRange),
+        // Harvest and out-of-range attack share cursor row 21 — the action
+        // switch falls through from the attack case straight into the harvest
+        // case, so both land on the same row.
+        CursorFeedbackKind::EnemyOutOfRange | CursorFeedbackKind::Harvest => {
+            Some(CursorId::AttackOutOfRange)
+        }
         CursorFeedbackKind::Invalid => Some(CursorId::NoMove),
         CursorFeedbackKind::PlaceValid | CursorFeedbackKind::PlaceInvalid => None,
         CursorFeedbackKind::Scroll(dir) => Some(scroll_dir_to_cursor_id(dir)),
@@ -769,22 +777,92 @@ fn scroll_dir_to_cursor_id(dir: ScrollDir) -> CursorId {
     }
 }
 
-pub(crate) fn current_software_cursor_frame(
+/// Phase of the animated software cursor.
+///
+/// The original keeps this in engine globals and the contract has two halves.
+/// Setting a new mouse shape zeroes the current frame and re-anchors the timer,
+/// so every cursor change restarts its sequence at frame 0 rather than dropping
+/// into the middle of a shared free-running phase. The per-frame update then
+/// advances by exactly **one** frame once the interval has elapsed and
+/// re-anchors again — never several — so a frame-rate stall makes the animation
+/// lag instead of skipping frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CursorAnimation {
+    shape: Option<CursorId>,
+    frame: usize,
+    anchor_ms: u64,
+}
+
+impl CursorAnimation {
+    pub(crate) const fn new() -> Self {
+        Self {
+            shape: None,
+            frame: 0,
+            anchor_ms: 0,
+        }
+    }
+
+    /// Resolve the frame index to draw for `id` at `now_ms`, updating the phase.
+    pub(crate) fn advance(
+        &mut self,
+        id: CursorId,
+        frame_count: usize,
+        interval_ms: u64,
+        now_ms: u64,
+    ) -> usize {
+        if self.shape != Some(id) {
+            self.shape = Some(id);
+            self.frame = 0;
+            self.anchor_ms = now_ms;
+            return 0;
+        }
+        if frame_count <= 1 || interval_ms == 0 {
+            return 0;
+        }
+        if now_ms.saturating_sub(self.anchor_ms) >= interval_ms {
+            self.frame = (self.frame + 1) % frame_count;
+            self.anchor_ms = now_ms;
+        }
+        self.frame
+    }
+}
+
+thread_local! {
+    static CURSOR_ANIMATION: std::cell::Cell<CursorAnimation> =
+        const { std::cell::Cell::new(CursorAnimation::new()) };
+}
+
+/// The frame of `sequence` to draw for cursor `id` right now.
+///
+/// The id is part of the query because the phase is keyed on it: asking for a
+/// different cursor than last frame restarts that cursor's animation.
+pub(crate) fn software_cursor_frame_for(
+    id: CursorId,
     sequence: &SoftwareCursorSequence,
 ) -> Option<&SoftwareCursorFrame> {
     if sequence.frames.is_empty() {
         return None;
     }
-    if sequence.frames.len() == 1 || sequence.interval_ms == 0 {
-        return sequence.frames.first();
-    }
-    let elapsed_ms: u64 = cursor_animation_start()
+    let now_ms: u64 = cursor_animation_start()
         .elapsed()
         .as_millis()
         .try_into()
-        .ok()?;
-    let frame_idx = ((elapsed_ms / sequence.interval_ms) % sequence.frames.len() as u64) as usize;
+        .unwrap_or(u64::MAX);
+    let frame_idx = CURSOR_ANIMATION.with(|cell| {
+        let mut animation = cell.get();
+        let idx = animation.advance(id, sequence.frames.len(), sequence.interval_ms, now_ms);
+        cell.set(animation);
+        idx
+    });
     sequence.frames.get(frame_idx)
+}
+
+/// Shell screens (menu, skirmish setup, score) only ever show the default
+/// arrow, which is a single static frame.
+pub(crate) fn current_software_cursor_frame(
+    sequence: &SoftwareCursorSequence,
+) -> Option<&SoftwareCursorFrame> {
+    software_cursor_frame_for(CursorId::Default, sequence)
 }
 
 fn cursor_animation_start() -> &'static Instant {
@@ -1253,6 +1331,104 @@ mod tests {
             best,
             Some(far),
             "sub-cell position decides the tie, not the cell index",
+        );
+    }
+}
+
+#[cfg(test)]
+mod cursor_animation_tests {
+    use super::CursorAnimation;
+    use crate::app_types::{CursorFeedbackKind, CursorId};
+
+    /// Retail interval for every animated cursor row: rate 4 x 16 ms.
+    const INTERVAL_MS: u64 = 64;
+
+    /// The first look at a cursor starts it at frame 0 and anchors the timer
+    /// there, instead of sampling a process-wide clock.
+    #[test]
+    fn a_new_cursor_shape_starts_at_frame_zero() {
+        let mut anim = CursorAnimation::new();
+        assert_eq!(anim.advance(CursorId::Move, 10, INTERVAL_MS, 5_000), 0);
+    }
+
+    /// One frame per elapsed interval, and exactly one — a long stall does not
+    /// skip ahead.
+    #[test]
+    fn animation_advances_one_frame_per_interval_and_never_skips() {
+        let mut anim = CursorAnimation::new();
+        anim.advance(CursorId::Move, 10, INTERVAL_MS, 0);
+        assert_eq!(anim.advance(CursorId::Move, 10, INTERVAL_MS, 63), 0);
+        assert_eq!(anim.advance(CursorId::Move, 10, INTERVAL_MS, 64), 1);
+        // A 1-second stall still yields a single step.
+        assert_eq!(anim.advance(CursorId::Move, 10, INTERVAL_MS, 1_064), 2);
+    }
+
+    #[test]
+    fn animation_wraps_at_the_end_of_the_sequence() {
+        let mut anim = CursorAnimation::new();
+        anim.advance(CursorId::Attack, 5, INTERVAL_MS, 0);
+        for step in 1..=4 {
+            assert_eq!(
+                anim.advance(CursorId::Attack, 5, INTERVAL_MS, step * INTERVAL_MS),
+                step as usize
+            );
+        }
+        assert_eq!(
+            anim.advance(CursorId::Attack, 5, INTERVAL_MS, 5 * INTERVAL_MS),
+            0
+        );
+    }
+
+    /// The clause a process-global phase cannot express: switching cursor
+    /// restarts the new sequence at frame 0 rather than dropping into whatever
+    /// phase the shared clock happened to be in.
+    #[test]
+    fn changing_cursor_restarts_the_sequence() {
+        let mut anim = CursorAnimation::new();
+        anim.advance(CursorId::Move, 10, INTERVAL_MS, 0);
+        assert_eq!(
+            anim.advance(CursorId::Move, 10, INTERVAL_MS, 3 * INTERVAL_MS),
+            1
+        );
+        assert_eq!(
+            anim.advance(CursorId::Attack, 5, INTERVAL_MS, 3 * INTERVAL_MS),
+            0
+        );
+        // And going back restarts again rather than resuming.
+        assert_eq!(
+            anim.advance(CursorId::Move, 10, INTERVAL_MS, 3 * INTERVAL_MS),
+            0
+        );
+    }
+
+    /// A rate-0 row is static however much time passes.
+    #[test]
+    fn static_rows_never_advance() {
+        let mut anim = CursorAnimation::new();
+        anim.advance(CursorId::IronCurtain, 5, 0, 0);
+        assert_eq!(anim.advance(CursorId::IronCurtain, 5, 0, 10_000), 0);
+    }
+
+    /// Guard mode shows the guard-area reticle, not the select cursor.
+    #[test]
+    fn guard_feedback_maps_to_the_guard_area_reticle() {
+        assert_eq!(
+            super::cursor_id_for_feedback(CursorFeedbackKind::Guard),
+            Some(CursorId::GuardArea)
+        );
+    }
+
+    /// Harvest shares cursor row 21 with an out-of-range attack, and is not the
+    /// attack-move reticle VERA used to show.
+    #[test]
+    fn harvest_feedback_maps_to_cursor_row_twenty_one() {
+        assert_eq!(
+            super::cursor_id_for_feedback(CursorFeedbackKind::Harvest),
+            Some(CursorId::AttackOutOfRange)
+        );
+        assert_ne!(
+            super::cursor_id_for_feedback(CursorFeedbackKind::Harvest),
+            Some(CursorId::AttackMove)
         );
     }
 }

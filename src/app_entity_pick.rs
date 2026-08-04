@@ -273,6 +273,13 @@ pub(crate) fn compute_click_selection_snapshot(
 /// bulk from the whole building array with no visibility test at all. A building
 /// under unexplored shroud therefore does make a rectangle non-empty, and an
 /// enemy unit under it does not.
+///
+/// The registration helper has exactly four call sites, and every one of them is
+/// the same virtual — the per-class "draw extras" override — reached once from
+/// the vehicle version, twice from the infantry version (its two draw paths) and
+/// once from the aircraft version. Nothing outside a draw routine registers an
+/// object, so the shroud filter above is complete: there is no second, unfiltered
+/// path by which a hidden enemy could enter the list.
 pub(crate) fn band_rect_contains_drawn_object(
     entities: &EntityStore,
     fog: Option<&FogState>,
@@ -524,6 +531,17 @@ fn can_be_selected_now(
 /// itself; VERA has no cell→occupier index on this path, so the building list is
 /// walked instead. It only runs for an object that already carries the dock
 /// flag, which is a handful of objects in a normal match.
+///
+/// A destroyed building is skipped as well as a limboed one: the native cell
+/// occupier is cleared the moment the building leaves the map, so a dead
+/// refinery must not keep the miner standing on its pad out of a band box.
+///
+/// The footprint is treated as the plain `Foundation=` rectangle. `Foundation=`
+/// is not free-form — it resolves through a fixed table — and every value that
+/// appears in stock `artmd.ini` is a plain `WxH` name, so the rectangle covers
+/// stock play. The table also carries named entries the stock art never selects
+/// (`3x3Refinery`); whether their native occupancy is the full rectangle is
+/// UNCHECKED, so a mod that selects one is the residual here, not stock YR.
 fn building_covers_cell(
     entities: &EntityStore,
     rules: Option<&RuleSet>,
@@ -532,7 +550,10 @@ fn building_covers_cell(
     ry: u16,
 ) -> bool {
     entities.values().any(|candidate| {
-        if candidate.category != EntityCategory::Structure || candidate.lifecycle.in_limbo {
+        if candidate.category != EntityCategory::Structure
+            || candidate.lifecycle.in_limbo
+            || !candidate.lifecycle.object_alive
+        {
             return false;
         }
         let type_str = interner.map_or("", |i| i.resolve(candidate.type_ref));
@@ -698,4 +719,78 @@ fn is_selectable_entity(
     let owner_id = local_owner_id.unwrap_or_default();
     fog.is_cell_revealed(owner_id, pos.rx, pos.ry)
         && !fog.is_cell_gap_covered(owner_id, pos.rx, pos.ry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::intern::StringInterner;
+
+    fn store_with_structure(alive: bool, in_limbo: bool) -> (EntityStore, StringInterner) {
+        let mut interner = StringInterner::new();
+        let owner = interner.intern("Americans");
+        let type_ref = interner.intern("NAREFN");
+        let mut entities = EntityStore::new();
+        let mut building = GameEntity::new_at_frame_zero_for_test(
+            1,
+            10,
+            10,
+            0,
+            0,
+            owner,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        building.lifecycle.object_alive = alive;
+        building.lifecycle.in_limbo = in_limbo;
+        entities.insert(building);
+        (entities, interner)
+    }
+
+    /// A dead building no longer occupies its cell.
+    ///
+    /// The native own-cell lookup answers with whatever currently occupies the
+    /// cell, and a destroyed building has already been taken off the map — so a
+    /// miner left standing where a refinery used to be must be band-selectable
+    /// again, exactly as it is when it drives clear of a live one.
+    #[test]
+    fn destroyed_and_limboed_buildings_stop_covering_their_cell() {
+        let (entities, interner) = store_with_structure(true, false);
+        assert!(building_covers_cell(
+            &entities,
+            None,
+            Some(&interner),
+            10,
+            10
+        ));
+        // A cell outside the footprint is never covered.
+        assert!(!building_covers_cell(
+            &entities,
+            None,
+            Some(&interner),
+            11,
+            10
+        ));
+
+        let (dead, interner) = store_with_structure(false, false);
+        assert!(!building_covers_cell(&dead, None, Some(&interner), 10, 10));
+
+        let (limboed, interner) = store_with_structure(true, true);
+        assert!(!building_covers_cell(
+            &limboed,
+            None,
+            Some(&interner),
+            10,
+            10
+        ));
+    }
 }

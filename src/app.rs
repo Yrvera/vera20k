@@ -483,6 +483,11 @@ pub(crate) struct AppState {
     pub(crate) queued_order_mode: app_render::OrderMode,
     /// Control group slots (0-9) storing stable entity ids.
     pub(crate) control_groups: Vec<Vec<u64>>,
+    /// Slot and wall-clock instant of the last plain control-group recall, for
+    /// the 800 ms double-tap that centres the camera. Wall clock, never sim
+    /// state: the original stamps `timeGetTime()` here and only a recall writes
+    /// it — assigning with Ctrl+digit never does.
+    pub(crate) last_control_group_press: Option<(usize, std::time::Instant)>,
     /// Match-scoped local player identity, pinned ONCE at match launch
     /// (skirmish session / spawn-pick) and never rewritten mid-match. All
     /// command/HUD owner resolution reads this first — selection must never
@@ -4468,6 +4473,7 @@ impl App {
             configured_input_delay_ticks: input_delay_ticks,
             queued_order_mode: app_render::OrderMode::Move,
             control_groups: vec![Vec::new(); 10],
+            last_control_group_press: None,
             local_player_owner: None,
             local_owner_override: None,
             eva_low_power_active: false,

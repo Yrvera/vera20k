@@ -5,7 +5,7 @@
 use crate::app::AppState;
 use crate::app_commands::preferred_local_owner_name;
 use crate::app_cursor::{
-    current_cursor_feedback_kind, current_software_cursor_frame, cursor_id_for_feedback,
+    current_cursor_feedback_kind, cursor_id_for_feedback, software_cursor_frame_for,
 };
 use crate::app_instances::in_view;
 use crate::app_types::{CursorId, HoverTargetKind, SoftwareCursorSequence};
@@ -44,7 +44,16 @@ fn condition_thresholds(state: &AppState) -> (f32, f32) {
         .unwrap_or((0.5, 0.25))
 }
 
-fn building_health_hover_target(state: &AppState, local_owner: Option<&str>) -> Option<u64> {
+/// The object under the cursor whose health bar the original draws on hover.
+///
+/// The per-object overlay pass calls the health-bar slot from exactly two arms:
+/// the object is selected, or the object carries the cursor's hover flag and is
+/// *not* selected. The hover flag is set from the cursor's resolved action
+/// target, so a shrouded enemy — which is never an action target — is excluded.
+fn health_bar_hover_target(
+    state: &AppState,
+    local_owner: Option<&str>,
+) -> Option<(u64, HoverTargetKind)> {
     let sim = state.simulation.as_ref()?;
     let local_owner = local_owner?;
     let (world_x, world_y) =
@@ -60,13 +69,47 @@ fn building_health_hover_target(state: &AppState, local_owner: Option<&str>) -> 
         Some(&state.tactical_bridge_inverse_map),
     )?;
     match hover.kind {
-        HoverTargetKind::FriendlyStructure | HoverTargetKind::EnemyStructure => {
-            Some(hover.stable_id)
-        }
-        HoverTargetKind::FriendlyUnit
-        | HoverTargetKind::EnemyUnit
-        | HoverTargetKind::HiddenEnemy => None,
+        HoverTargetKind::FriendlyStructure
+        | HoverTargetKind::EnemyStructure
+        | HoverTargetKind::FriendlyUnit
+        | HoverTargetKind::EnemyUnit => Some((hover.stable_id, hover.kind)),
+        HoverTargetKind::HiddenEnemy => None,
     }
+}
+
+/// The hovered *structure*, for the building pip pass.
+fn building_health_hover_target(state: &AppState, local_owner: Option<&str>) -> Option<u64> {
+    health_bar_hover_target(state, local_owner).and_then(|(id, kind)| {
+        matches!(
+            kind,
+            HoverTargetKind::FriendlyStructure | HoverTargetKind::EnemyStructure
+        )
+        .then_some(id)
+    })
+}
+
+/// The hovered *unit or infantry*, for the non-building health-bar pass.
+fn unit_health_hover_target(state: &AppState, local_owner: Option<&str>) -> Option<u64> {
+    health_bar_hover_target(state, local_owner).and_then(|(id, kind)| {
+        matches!(
+            kind,
+            HoverTargetKind::FriendlyUnit | HoverTargetKind::EnemyUnit
+        )
+        .then_some(id)
+    })
+}
+
+/// Whether a non-building draws its bracket background and its health pips.
+///
+/// Two separate rules in the original, and damage is not part of either. The
+/// health bar itself is drawn when the object is selected *or* hovered, while
+/// the PIPBRD bracket behind it is drawn only when the object is selected — so
+/// a hovered-but-unselected unit shows a bare pip strip with no bracket, and an
+/// unselected, unhovered unit shows nothing however badly damaged it is.
+///
+/// Returns `(draw_bracket_background, draw_health_pips)`.
+pub(crate) fn unit_status_visibility(selected: bool, hovered: bool) -> (bool, bool) {
+    (selected, selected || hovered)
 }
 
 /// Building health: discrete pips from pips.shp along the isometric NW foundation edge.
@@ -402,6 +445,7 @@ pub(crate) fn build_unit_status_bg_instances(
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
     let ignore_visibility = state.sandbox_full_visibility;
+    let hovered_unit_id = unit_health_hover_target(state, local_owner.as_deref());
     let mut instances = Vec::new();
     for e in sim.entities().values() {
         if e.category == EntityCategory::Structure {
@@ -410,8 +454,9 @@ pub(crate) fn build_unit_status_bg_instances(
         if e.passenger_role.is_inside_transport() {
             continue;
         }
-        let health = &e.health;
-        if !e.selected && health.current >= health.max {
+        let (draw_background, _) =
+            unit_status_visibility(e.selected, hovered_unit_id == Some(e.stable_id));
+        if !draw_background {
             continue;
         }
         if !status_entity_visible_plain(
@@ -490,6 +535,7 @@ pub(crate) fn build_unit_status_fill_instances(
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
     let ignore_visibility = state.sandbox_full_visibility;
     let (cond_y, cond_r) = condition_thresholds(state);
+    let hovered_unit_id = unit_health_hover_target(state, local_owner.as_deref());
     let mut instances = Vec::new();
     for e in sim.entities().values() {
         if e.category == EntityCategory::Structure {
@@ -499,7 +545,9 @@ pub(crate) fn build_unit_status_fill_instances(
             continue;
         }
         let health = &e.health;
-        if !e.selected && health.current >= health.max {
+        let (_, draw_pips) =
+            unit_status_visibility(e.selected, hovered_unit_id == Some(e.stable_id));
+        if !draw_pips {
             continue;
         }
         if !status_entity_visible_plain(
@@ -941,24 +989,26 @@ fn health_pip_variant(ratio: f32, condition_yellow: f32, condition_red: f32) -> 
     }
 }
 
-/// Resolve the active cursor sequence for the current game state.
+/// Resolve the active cursor id and sequence for the current game state.
 /// Maps game-state intent → CursorId → loaded sequence via HashMap lookup.
-fn active_cursor_sequence(state: &AppState) -> Option<&SoftwareCursorSequence> {
+/// The id travels with the sequence because the animation phase is keyed on it —
+/// changing shape restarts the sequence at frame 0.
+fn active_cursor_sequence(state: &AppState) -> Option<(CursorId, &SoftwareCursorSequence)> {
     let cursor = state.software_cursor.as_ref()?;
     let id: CursorId = current_cursor_feedback_kind(state)
         .and_then(cursor_id_for_feedback)
         .unwrap_or(CursorId::Default);
-    cursor.get(id)
+    cursor.get(id).map(|sequence| (id, sequence))
 }
 
 pub(crate) fn build_software_cursor_instances(state: &AppState) -> Vec<SpriteInstance> {
     if !state.use_software_cursor() {
         return Vec::new();
     }
-    let Some(sequence) = active_cursor_sequence(state) else {
+    let Some((id, sequence)) = active_cursor_sequence(state) else {
         return Vec::new();
     };
-    let Some(frame) = current_software_cursor_frame(sequence) else {
+    let Some(frame) = software_cursor_frame_for(id, sequence) else {
         return Vec::new();
     };
     // Cursor rendering: the hotspot pixel must sit exactly at the OS cursor position.
@@ -981,8 +1031,8 @@ pub(crate) fn build_software_cursor_instances(state: &AppState) -> Vec<SpriteIns
 }
 
 pub(crate) fn current_software_cursor_texture(state: &AppState) -> Option<&BatchTexture> {
-    let sequence = active_cursor_sequence(state)?;
-    Some(&current_software_cursor_frame(sequence)?.texture)
+    let (id, sequence) = active_cursor_sequence(state)?;
+    Some(&software_cursor_frame_for(id, sequence)?.texture)
 }
 
 fn status_entity_visible_plain(
@@ -1015,5 +1065,33 @@ pub(crate) fn health_fill_color(ratio: f32, condition_yellow: f32, condition_red
     } else {
         // Red — critical health (#FF0000).
         [1.0, 0.0, 0.0]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A selected object draws both halves — bracket and pips.
+    #[test]
+    fn selected_unit_draws_bracket_and_pips() {
+        assert_eq!(unit_status_visibility(true, false), (true, true));
+        assert_eq!(unit_status_visibility(true, true), (true, true));
+    }
+
+    /// The hover arm draws the pip strip with no bracket behind it: the
+    /// bracket blit sits under an is-selected test inside the health-bar
+    /// routine, while the pips do not.
+    #[test]
+    fn hovered_unselected_unit_draws_pips_without_the_bracket() {
+        assert_eq!(unit_status_visibility(false, true), (false, true));
+    }
+
+    /// The clause the old damage gate broke: an unselected, unhovered object
+    /// draws no health bar at all, whatever its health is. The overlay pass
+    /// reaches the health-bar slot only through the selected and hover arms.
+    #[test]
+    fn unselected_unhovered_unit_draws_nothing_regardless_of_damage() {
+        assert_eq!(unit_status_visibility(false, false), (false, false));
     }
 }

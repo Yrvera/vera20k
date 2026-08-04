@@ -34,12 +34,21 @@ enum CursorHotspot {
     CenterMiddle,
 }
 
-/// Animation interval: vanilla RA2 uses Interval=4 ticks at ~30 display FPS.
-/// 4 ticks × (1000ms / 30fps) ≈ 133ms per frame advance.
-const ANIM_INTERVAL_MS: u64 = 133;
+/// The cursor animation clock is wall-clock milliseconds shifted right by four,
+/// so one clock unit is 16 ms. Rates in the compiled cursor table are counted in
+/// these units, not in display frames.
+pub(crate) const CURSOR_TIMER_UNIT_MS: u64 = 16;
 
-/// Complete cursor definition table. Frame ranges are hardcoded in the vanilla RA2 exe
-/// (not INI-driven). Verified against ra2_cursors_reference.md §4.
+/// Every animated row of the compiled cursor table carries a rate of 4 clock
+/// units, so an animated cursor advances one frame every 64 ms. The previous
+/// 133 ms here came from a display-FPS guess and ran every animated cursor at
+/// roughly half speed.
+pub(crate) const ANIM_RATE_UNITS: u64 = 4;
+const ANIM_INTERVAL_MS: u64 = ANIM_RATE_UNITS * CURSOR_TIMER_UNIT_MS;
+
+/// Complete cursor definition table. Frame ranges and rates are compiled into
+/// the game executable (not INI-driven); rows carrying `0` are static in the
+/// original and must not animate.
 /// Format: (CursorId, start_frame, frame_count, interval_ms, hotspot).
 const CURSOR_DEFS: &[(CursorId, usize, usize, u64, CursorHotspot)] = &[
     // --- Core gameplay cursors ---
@@ -77,6 +86,14 @@ const CURSOR_DEFS: &[(CursorId, usize, usize, u64, CursorHotspot)] = &[
         CursorId::AttackMove,
         404,
         9,
+        ANIM_INTERVAL_MS,
+        CursorHotspot::CenterMiddle,
+    ),
+    // Guard-area reticle. Cursor table row 22: start 68, count 5, rate 4.
+    (
+        CursorId::GuardArea,
+        68,
+        5,
         ANIM_INTERVAL_MS,
         CursorHotspot::CenterMiddle,
     ),
@@ -255,18 +272,20 @@ const CURSOR_DEFS: &[(CursorId, usize, usize, u64, CursorHotspot)] = &[
         ANIM_INTERVAL_MS,
         CursorHotspot::CenterMiddle,
     ),
+    // Rows 58, 57 and 47 all carry rate 0 — these three reticles are single
+    // static frames in the original, not animations.
     (
         CursorId::Chronosphere,
         357,
         12,
-        ANIM_INTERVAL_MS,
+        0,
         CursorHotspot::CenterMiddle,
     ),
     (
         CursorId::IronCurtain,
         346,
         5,
-        ANIM_INTERVAL_MS,
+        0,
         CursorHotspot::CenterMiddle,
     ),
     (
@@ -276,13 +295,7 @@ const CURSOR_DEFS: &[(CursorId, usize, usize, u64, CursorHotspot)] = &[
         ANIM_INTERVAL_MS,
         CursorHotspot::CenterMiddle,
     ),
-    (
-        CursorId::Paradrop,
-        259,
-        10,
-        ANIM_INTERVAL_MS,
-        CursorHotspot::CenterMiddle,
-    ),
+    (CursorId::Paradrop, 259, 10, 0, CursorHotspot::CenterMiddle),
     (
         CursorId::ForceShield,
         450,
@@ -588,4 +601,66 @@ fn frame_to_canvas_rgba(shp: &ShpFile, frame_idx: usize, palette: &Palette) -> R
         frame.frame_y as u32,
     );
     Ok(canvas)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MOUSE.SHA carries 517 frames; no table row may point past it.
+    const MOUSE_SHA_FRAME_COUNT: usize = 517;
+
+    fn row(id: CursorId) -> (usize, usize, u64) {
+        CURSOR_DEFS
+            .iter()
+            .find(|(row_id, ..)| *row_id == id)
+            .map(|&(_, start, count, interval, _)| (start, count, interval))
+            .expect("cursor row")
+    }
+
+    /// The animation clock ticks every 16 ms and every animated row runs at
+    /// rate 4, so one frame advance is 64 ms — not the 133 ms that came from
+    /// assuming the rate was counted in 30 FPS display frames.
+    #[test]
+    fn animated_cursor_interval_is_sixty_four_milliseconds() {
+        assert_eq!(CURSOR_TIMER_UNIT_MS, 16);
+        assert_eq!(ANIM_RATE_UNITS, 4);
+        assert_eq!(ANIM_INTERVAL_MS, 64);
+    }
+
+    /// Spot-check the rows a player sees most: select, move, the two attack
+    /// reticles and attack-move all animate at the same 64 ms.
+    #[test]
+    fn common_gameplay_cursors_carry_the_retail_range_and_rate() {
+        assert_eq!(row(CursorId::Select), (18, 13, 64));
+        assert_eq!(row(CursorId::Move), (31, 10, 64));
+        assert_eq!(row(CursorId::Attack), (53, 5, 64));
+        assert_eq!(row(CursorId::AttackOutOfRange), (58, 5, 64));
+        assert_eq!(row(CursorId::AttackMove), (404, 9, 64));
+    }
+
+    /// Guard-area is its own cursor row (22), not the select cursor.
+    #[test]
+    fn guard_area_cursor_is_row_twenty_two() {
+        assert_eq!(row(CursorId::GuardArea), (68, 5, 64));
+    }
+
+    /// These three superweapon reticles carry rate 0 and must be static.
+    #[test]
+    fn static_superweapon_reticles_do_not_animate() {
+        assert_eq!(row(CursorId::IronCurtain), (346, 5, 0));
+        assert_eq!(row(CursorId::Chronosphere), (357, 12, 0));
+        assert_eq!(row(CursorId::Paradrop), (259, 10, 0));
+    }
+
+    #[test]
+    fn every_cursor_row_stays_inside_the_mouse_shape_file() {
+        for &(id, start, count, ..) in CURSOR_DEFS {
+            assert!(
+                start + count <= MOUSE_SHA_FRAME_COUNT,
+                "{id:?} runs to frame {} of {MOUSE_SHA_FRAME_COUNT}",
+                start + count
+            );
+        }
+    }
 }

@@ -213,6 +213,10 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     // Emit VoiceSelect for the first selected unit type.
                     emit_selection_voice(state, &snapshot);
                     queue_selection_snapshot_command(state, snapshot, shift);
+                    // Both selection arms of the band-box release open the
+                    // action-line window, so the units just picked up flash
+                    // whatever they are already doing.
+                    start_action_line_timer(state);
                 }
             }
         }
@@ -667,23 +671,56 @@ pub(crate) fn toggle_debug_pause(state: &mut AppState) {
 
 /// Handle one-shot gameplay hotkeys (called on key press, not held).
 ///
-/// Dev/debug functions all live behind the Ctrl+Shift chord (same base keys)
-/// so bare keys stay free for stock game hotkeys. The chord never collides
-/// with stock modifiers: stock uses bare keys, Ctrl+digit (team assign), and
-/// Ctrl/Alt/Ctrl+Shift as CLICK modifiers, not key chords.
+/// **Modifier matching is exact.** Every stock binding names a precise modifier
+/// set, and a bare-key command is rejected outright while Shift, Ctrl or Alt is
+/// held — so holding Ctrl to force-fire or Alt to force-move and tapping a
+/// letter does nothing instead of firing Stop or Deploy.
+///
+/// Dev/debug functions live behind the Ctrl+Shift chord, which stock binds
+/// nothing to, so bare keys stay free for stock game hotkeys.
 pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
+    let modifiers = KeyModifiers::from_state(state);
     if let Some(group_idx) = control_group_index(code) {
         handle_control_group_hotkey(state, group_idx);
         return;
     }
-    if code == KeyCode::KeyS && is_shift_held(state) && !is_ctrl_held(state) && !is_alt_held(state)
-    {
+    // ScreenCapture is a stock Shift chord (Shift+S).
+    if code == KeyCode::KeyS && modifiers.only_shift() {
         state.retail_screenshot_requested = true;
         state.window.request_redraw();
         return;
     }
-    if is_ctrl_held(state) && is_shift_held(state) {
+    // Additive select-same-type is VERA-internal: stock has no Shift+T row, so
+    // retail does nothing here. Kept as a deliberate extra, not parity.
+    if code == KeyCode::KeyT && modifiers.only_shift() {
+        select_same_type(state, true);
+        return;
+    }
+    if modifiers.dev_chord() {
         handle_dev_hotkey_pressed(state, code);
+        return;
+    }
+    // Camera bookmarks. Stock binds View1..View4 to F1..F4 and SetView1..4 to
+    // Ctrl+F1..F4 — the only two modifier states these keys answer to.
+    if matches!(code, KeyCode::F1 | KeyCode::F2 | KeyCode::F3 | KeyCode::F4)
+        && (modifiers.none() || modifiers.only_ctrl())
+    {
+        let slot = match code {
+            KeyCode::F1 => 0,
+            KeyCode::F2 => 1,
+            KeyCode::F3 => 2,
+            _ => 3,
+        };
+        if modifiers.only_ctrl() {
+            crate::app_camera::set_view_bookmark(state, slot);
+        } else {
+            crate::app_camera::recall_view_bookmark(state, slot);
+        }
+        return;
+    }
+    // Everything below is a bare-key binding, and a bare-key command is
+    // rejected outright while any modifier is held.
+    if modifiers.any() {
         return;
     }
     match code {
@@ -732,24 +769,11 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Infantry))
         }
         KeyCode::KeyR => apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Vehicle)),
-        KeyCode::KeyT => select_same_type(state, is_shift_held(state)),
-        // Camera bookmarks. Stock KEYBOARDMD.INI binds View1..View4 to F1..F4
-        // and SetView1..SetView4 to Ctrl+F1..Ctrl+F4 (the same 0x200 Ctrl bit
-        // the team-create bindings use). Ctrl+Shift never reaches here — the
-        // dev chord took it above — so plain Ctrl is unambiguous.
-        KeyCode::F1 | KeyCode::F2 | KeyCode::F3 | KeyCode::F4 => {
-            let slot = match code {
-                KeyCode::F1 => 0,
-                KeyCode::F2 => 1,
-                KeyCode::F3 => 2,
-                _ => 3,
-            };
-            if is_ctrl_held(state) {
-                crate::app_camera::set_view_bookmark(state, slot);
-            } else {
-                crate::app_camera::recall_view_bookmark(state, slot);
-            }
-        }
+        KeyCode::KeyT => select_same_type(state, false),
+        // ToggleRepair / ToggleSell — stock binds these to bare K and L, the
+        // same two sidebar mode flags the wrench and dollar buttons drive.
+        KeyCode::KeyK => apply_sidebar_action(state, SidebarAction::ToggleRepairMode),
+        KeyCode::KeyL => apply_sidebar_action(state, SidebarAction::ToggleSellMode),
         KeyCode::KeyH => {
             jump_camera_to_base(state);
         }
@@ -1204,6 +1228,59 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     log::info!("Load: restored simulation from {}", path.display());
 }
 
+/// The modifier bits a hotkey press carries.
+///
+/// The engine packs Shift, Ctrl and Alt into the key value as separate bits and
+/// the command dispatcher matches the whole value, so every binding names an
+/// exact modifier set. A command bound to a bare key is *rejected* while any
+/// modifier is held — the base "does this command accept a modified form?"
+/// predicate returns false for every stock command — and the dispatcher then
+/// looks for a binding of the full chord instead. That is why holding Ctrl to
+/// force-fire and tapping a letter does nothing in retail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct KeyModifiers {
+    pub(crate) shift: bool,
+    pub(crate) ctrl: bool,
+    pub(crate) alt: bool,
+}
+
+impl KeyModifiers {
+    fn from_state(state: &AppState) -> Self {
+        Self {
+            shift: is_shift_held(state),
+            ctrl: is_ctrl_held(state),
+            alt: is_alt_held(state),
+        }
+    }
+
+    /// No modifier held — the only state in which a bare-key binding fires.
+    pub(crate) fn none(self) -> bool {
+        !self.shift && !self.ctrl && !self.alt
+    }
+
+    pub(crate) fn any(self) -> bool {
+        !self.none()
+    }
+
+    pub(crate) fn only_shift(self) -> bool {
+        self.shift && !self.ctrl && !self.alt
+    }
+
+    pub(crate) fn only_ctrl(self) -> bool {
+        self.ctrl && !self.shift && !self.alt
+    }
+
+    pub(crate) fn only_alt(self) -> bool {
+        self.alt && !self.shift && !self.ctrl
+    }
+
+    /// The VERA-internal dev chord. Stock binds nothing to Ctrl+Shift, so it
+    /// collides with no retail hotkey.
+    pub(crate) fn dev_chord(self) -> bool {
+        self.ctrl && self.shift && !self.alt
+    }
+}
+
 pub(crate) fn is_shift_held(state: &AppState) -> bool {
     state.keys_held.contains(&KeyCode::ShiftLeft) || state.keys_held.contains(&KeyCode::ShiftRight)
 }
@@ -1327,46 +1404,227 @@ fn control_group_index(code: KeyCode) -> Option<usize> {
     }
 }
 
+/// Double-tap window for the centre-on-group shortcut, in milliseconds.
+/// The engine compares `timeGetTime()` against the last recall stamp, so this
+/// is wall clock and never sim state.
+const GROUP_DOUBLE_TAP_MS: u128 = 800;
+
+/// What a digit press resolves to before any state is touched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupPressAction {
+    /// Ctrl+digit — replace the slot's membership with the current selection.
+    Assign,
+    /// Shift+digit — add the slot's members to the current selection.
+    AddToSelection,
+    /// Alt+digit, or a bare double-tap — put the camera on the group.
+    Center,
+    /// Bare digit — clear the selection and select the slot's members.
+    Recall,
+}
+
+/// Resolve a control-group digit press.
+///
+/// The four team commands are separate bindings — bare digit, Shift+digit,
+/// Ctrl+digit, Alt+digit — and the dispatcher matches the modifier bits
+/// exactly, so a two-modifier chord matches no binding and does nothing.
+///
+/// The double-tap arm is the subtle one: the recall routine only centres when
+/// the current selection is *exactly* the group. It bails out on the first
+/// group member that is unselected and on the first selected object outside the
+/// group — two distinct tests, not "at least one member selected". After a
+/// plain recall that condition holds, which is why the familiar double-tap
+/// works; shift-clicking one extra unit between the taps makes the second tap
+/// recall instead of centre. Only a plain recall stamps the timer.
+fn control_group_press_action(
+    modifiers: KeyModifiers,
+    slot: usize,
+    group: &[u64],
+    selected: &[u64],
+    last_press: Option<(usize, std::time::Duration)>,
+) -> Option<GroupPressAction> {
+    if modifiers.only_ctrl() {
+        return Some(GroupPressAction::Assign);
+    }
+    if modifiers.only_shift() {
+        return Some(GroupPressAction::AddToSelection);
+    }
+    if modifiers.only_alt() {
+        return Some(GroupPressAction::Center);
+    }
+    if modifiers.any() {
+        // Two modifiers at once: no binding carries that key value.
+        return None;
+    }
+    let within_window = last_press.is_some_and(|(last_slot, elapsed)| {
+        last_slot == slot && elapsed.as_millis() < GROUP_DOUBLE_TAP_MS
+    });
+    let selection_is_exactly_the_group = !group.is_empty()
+        && group.iter().all(|id| selected.contains(id))
+        && selected.iter().all(|id| group.contains(id));
+    if within_window && selection_is_exactly_the_group {
+        return Some(GroupPressAction::Center);
+    }
+    Some(GroupPressAction::Recall)
+}
+
+/// Assign `ids` to `slot`, evicting them from every other slot.
+///
+/// Membership is a single group index stored on the object, so a unit belongs
+/// to at most one group and re-grouping it silently drops it from the old one.
+/// VERA keeps ten id lists, so the eviction is explicit here.
+fn assign_control_group(groups: &mut [Vec<u64>], slot: usize, ids: Vec<u64>) {
+    for (index, group) in groups.iter_mut().enumerate() {
+        if index != slot {
+            group.retain(|id| !ids.contains(id));
+        }
+    }
+    groups[slot] = ids;
+}
+
+/// Centre of a set of world points in leptons, with the single worst outlier
+/// dropped once there are more than two of them — the engine's centre-on-
+/// selection maths, which is a trimmed mean rather than a plain centroid so one
+/// straggler cannot drag the view off the main body.
+///
+/// Ties on "farthest" keep the first candidate (comparison is strictly greater);
+/// the original's tie-break is UNVERIFIED.
+fn trimmed_centroid_leptons(points: &[(i64, i64)]) -> Option<(i64, i64)> {
+    if points.is_empty() {
+        return None;
+    }
+    let count = points.len() as i64;
+    let sum = points
+        .iter()
+        .fold((0i64, 0i64), |acc, p| (acc.0 + p.0, acc.1 + p.1));
+    let mean = (sum.0 / count, sum.1 / count);
+    if points.len() <= 2 {
+        return Some(mean);
+    }
+    let mut farthest = points[0];
+    let mut farthest_dist = i64::MIN;
+    for p in points {
+        let (dx, dy) = (p.0 - mean.0, p.1 - mean.1);
+        let dist = dx * dx + dy * dy;
+        if dist > farthest_dist {
+            farthest_dist = dist;
+            farthest = *p;
+        }
+    }
+    Some((
+        (sum.0 - farthest.0) / (count - 1),
+        (sum.1 - farthest.1) / (count - 1),
+    ))
+}
+
+/// Leptons per cell.
+const LEPTONS_PER_CELL: i64 = 256;
+
+/// Live members of a control group, in the sim's iteration order.
+fn live_group_members(state: &AppState, group: &[u64]) -> Vec<u64> {
+    let Some(sim) = &state.simulation else {
+        return Vec::new();
+    };
+    group
+        .iter()
+        .copied()
+        .filter(|id| sim.entities().get(*id).is_some())
+        .collect()
+}
+
+/// Put the camera on a group's trimmed centroid. Emits no command — the centre
+/// arm must stay out of the lockstep stream.
+fn center_camera_on_group(state: &mut AppState, group: &[u64]) {
+    let points: Vec<(i64, i64)> = {
+        let Some(sim) = &state.simulation else { return };
+        group
+            .iter()
+            .filter_map(|id| sim.entities().get(*id))
+            .map(|e| {
+                (
+                    e.position.rx as i64 * LEPTONS_PER_CELL + e.position.sub_x.to_num::<i64>(),
+                    e.position.ry as i64 * LEPTONS_PER_CELL + e.position.sub_y.to_num::<i64>(),
+                )
+            })
+            .collect()
+    };
+    let Some((cx, cy)) = trimmed_centroid_leptons(&points) else {
+        return;
+    };
+    let rx = (cx / LEPTONS_PER_CELL).clamp(0, u16::MAX as i64) as u16;
+    let ry = (cy / LEPTONS_PER_CELL).clamp(0, u16::MAX as i64) as u16;
+    crate::app_camera::center_camera_on_cell(state, rx, ry);
+}
+
 fn handle_control_group_hotkey(state: &mut AppState, group_idx: usize) {
     if group_idx >= state.control_groups.len() {
         return;
     }
-    if is_ctrl_held(state) {
-        let ids = state
-            .simulation
-            .as_ref()
-            .map(|sim| selected_stable_ids_sorted(sim.entities()))
-            .unwrap_or_default();
-        state.control_groups[group_idx] = ids;
-        return;
-    }
-
+    let modifiers = KeyModifiers::from_state(state);
     let group = state.control_groups[group_idx].clone();
-    if group.is_empty() {
+    let selected = state
+        .simulation
+        .as_ref()
+        .map(|sim| selected_stable_ids_sorted(sim.entities()))
+        .unwrap_or_default();
+    // Only live members count towards "the selection is exactly the group" —
+    // membership is derived by scanning live objects, so a dead unit has
+    // already left its group.
+    let live_group = live_group_members(state, &group);
+    let last_press = state
+        .last_control_group_press
+        .map(|(slot, at)| (slot, at.elapsed()));
+    let Some(action) =
+        control_group_press_action(modifiers, group_idx, &live_group, &selected, last_press)
+    else {
         return;
-    }
-    let additive = is_shift_held(state);
-    let mut final_ids = if additive {
-        state
-            .simulation
-            .as_ref()
-            .map(|sim| selected_stable_ids_sorted(sim.entities()))
-            .unwrap_or_default()
-    } else {
-        Vec::new()
     };
-    final_ids.extend(group);
-    final_ids.sort_unstable();
-    final_ids.dedup();
-    let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
-    schedule_command(
-        state,
-        &owner,
-        Command::Select {
-            entity_ids: final_ids,
-            additive,
-        },
-    );
+
+    match action {
+        GroupPressAction::Assign => {
+            assign_control_group(&mut state.control_groups, group_idx, selected);
+        }
+        GroupPressAction::Center => {
+            // Alt+digit selects the group as well as centring; a bare
+            // double-tap centres on a selection that already is the group, so
+            // the same centring call covers both.
+            if modifiers.only_alt() && !live_group.is_empty() {
+                queue_selection_snapshot_command(state, live_group.clone(), false);
+            }
+            center_camera_on_group(state, &live_group);
+        }
+        GroupPressAction::AddToSelection => {
+            if live_group.is_empty() {
+                return;
+            }
+            let mut final_ids = selected;
+            final_ids.extend(live_group);
+            final_ids.sort_unstable();
+            final_ids.dedup();
+            queue_selection_snapshot_command(state, final_ids, true);
+        }
+        GroupPressAction::Recall => {
+            // A recall on an empty group still clears the selection: the
+            // deselect-all runs before the select loop, unconditionally.
+            state.last_control_group_press = Some((group_idx, std::time::Instant::now()));
+            let mut final_ids = live_group;
+            final_ids.sort_unstable();
+            final_ids.dedup();
+            queue_selection_snapshot_command(state, final_ids, false);
+            start_action_line_timer(state);
+        }
+    }
+}
+
+/// Open the action-line window on a selection event.
+///
+/// Band-box release, click-select and control-group recall all call the
+/// engine's start-timer helper unconditionally, so the freshly selected units
+/// flash their current orders for the 25-frame window.
+fn start_action_line_timer(state: &mut AppState) {
+    let Some(tick) = state.simulation.as_ref().map(|sim| sim.session.tick) else {
+        return;
+    };
+    state.target_lines.start_timer(tick);
 }
 
 fn select_same_type(state: &mut AppState, additive: bool) {
@@ -1495,5 +1753,236 @@ fn jump_camera_to_base(state: &mut AppState) {
         crate::app_camera::center_camera_on_cell(state, wp.rx, wp.ry);
     } else {
         log::info!("H: no base or start waypoint found");
+    }
+}
+
+#[cfg(test)]
+mod control_group_tests {
+    use super::{
+        GroupPressAction, KeyModifiers, assign_control_group, control_group_press_action,
+        trimmed_centroid_leptons,
+    };
+    use std::time::Duration;
+
+    fn mods(shift: bool, ctrl: bool, alt: bool) -> KeyModifiers {
+        KeyModifiers { shift, ctrl, alt }
+    }
+
+    const BARE: KeyModifiers = KeyModifiers {
+        shift: false,
+        ctrl: false,
+        alt: false,
+    };
+
+    #[test]
+    fn ctrl_assigns_shift_adds_alt_centers_bare_recalls() {
+        let group = [1u64, 2];
+        let selected = [1u64, 2];
+        assert_eq!(
+            control_group_press_action(mods(false, true, false), 0, &group, &selected, None),
+            Some(GroupPressAction::Assign)
+        );
+        assert_eq!(
+            control_group_press_action(mods(true, false, false), 0, &group, &selected, None),
+            Some(GroupPressAction::AddToSelection)
+        );
+        assert_eq!(
+            control_group_press_action(mods(false, false, true), 0, &group, &selected, None),
+            Some(GroupPressAction::Center)
+        );
+        assert_eq!(
+            control_group_press_action(BARE, 0, &group, &selected, None),
+            Some(GroupPressAction::Recall)
+        );
+    }
+
+    /// Two modifiers at once produce a key value no binding carries, so the
+    /// press does nothing at all — Ctrl+Shift+digit must not assign.
+    #[test]
+    fn two_modifiers_match_no_binding() {
+        let group = [1u64];
+        assert_eq!(
+            control_group_press_action(mods(true, true, false), 0, &group, &group, None),
+            None
+        );
+        assert_eq!(
+            control_group_press_action(mods(false, true, true), 0, &group, &group, None),
+            None
+        );
+    }
+
+    #[test]
+    fn double_tap_inside_the_window_centers() {
+        let group = [1u64, 2, 3];
+        assert_eq!(
+            control_group_press_action(
+                BARE,
+                2,
+                &group,
+                &group,
+                Some((2, Duration::from_millis(799)))
+            ),
+            Some(GroupPressAction::Center)
+        );
+    }
+
+    #[test]
+    fn double_tap_outside_the_window_recalls() {
+        let group = [1u64, 2, 3];
+        assert_eq!(
+            control_group_press_action(
+                BARE,
+                2,
+                &group,
+                &group,
+                Some((2, Duration::from_millis(800)))
+            ),
+            Some(GroupPressAction::Recall)
+        );
+    }
+
+    #[test]
+    fn a_different_slot_inside_the_window_recalls() {
+        let group = [1u64];
+        assert_eq!(
+            control_group_press_action(
+                BARE,
+                3,
+                &group,
+                &group,
+                Some((2, Duration::from_millis(10)))
+            ),
+            Some(GroupPressAction::Recall)
+        );
+    }
+
+    /// The centre arm needs the selection to be *exactly* the group. One extra
+    /// selected unit outside the group is one of the two bail-outs.
+    #[test]
+    fn an_extra_selected_unit_outside_the_group_recalls() {
+        let group = [1u64, 2];
+        let selected = [1u64, 2, 9];
+        assert_eq!(
+            control_group_press_action(
+                BARE,
+                1,
+                &group,
+                &selected,
+                Some((1, Duration::from_millis(100)))
+            ),
+            Some(GroupPressAction::Recall)
+        );
+    }
+
+    /// And the other bail-out: a group member that is not selected.
+    #[test]
+    fn a_group_member_left_unselected_recalls() {
+        let group = [1u64, 2, 3];
+        let selected = [1u64, 2];
+        assert_eq!(
+            control_group_press_action(
+                BARE,
+                1,
+                &group,
+                &selected,
+                Some((1, Duration::from_millis(100)))
+            ),
+            Some(GroupPressAction::Recall)
+        );
+    }
+
+    /// An empty group never centres, however fast the taps come.
+    #[test]
+    fn an_empty_group_recalls_rather_than_centering() {
+        assert_eq!(
+            control_group_press_action(BARE, 4, &[], &[], Some((4, Duration::from_millis(10)))),
+            Some(GroupPressAction::Recall)
+        );
+    }
+
+    /// Membership is one group index per object, so assigning evicts.
+    #[test]
+    fn assignment_evicts_the_units_from_their_previous_group() {
+        let mut groups = vec![vec![1u64, 2, 3], vec![4u64], Vec::new()];
+        assign_control_group(&mut groups, 1, vec![2, 4]);
+        assert_eq!(groups[0], vec![1, 3]);
+        assert_eq!(groups[1], vec![2, 4]);
+    }
+
+    #[test]
+    fn assigning_an_empty_selection_empties_the_slot() {
+        let mut groups = vec![vec![1u64, 2], Vec::new()];
+        assign_control_group(&mut groups, 0, Vec::new());
+        assert!(groups[0].is_empty());
+    }
+
+    /// One and two points are a plain mean; the outlier trim only kicks in
+    /// above two.
+    #[test]
+    fn centroid_of_one_or_two_points_is_the_plain_mean() {
+        assert_eq!(trimmed_centroid_leptons(&[(100, 200)]), Some((100, 200)));
+        assert_eq!(
+            trimmed_centroid_leptons(&[(0, 0), (100, 200)]),
+            Some((50, 100))
+        );
+    }
+
+    /// With more than two points the single farthest one is dropped, so a lone
+    /// straggler cannot drag the view off the main body.
+    #[test]
+    fn centroid_of_three_or_more_drops_the_farthest_point() {
+        let points = [(0i64, 0i64), (10, 0), (20, 0), (3000, 0)];
+        // Plain mean would be 757; dropping (3000,0) leaves 30/3 = 10.
+        assert_eq!(trimmed_centroid_leptons(&points), Some((10, 0)));
+    }
+
+    #[test]
+    fn centroid_of_nothing_is_nothing() {
+        assert_eq!(trimmed_centroid_leptons(&[]), None);
+    }
+}
+
+#[cfg(test)]
+mod modifier_tests {
+    use super::KeyModifiers;
+
+    /// A bare-key command fires only with no modifier held; the dispatcher
+    /// rejects it under Ctrl, Alt or Shift and then looks for a chord binding
+    /// that stock does not have.
+    #[test]
+    fn bare_key_bindings_require_no_modifier() {
+        let bare = KeyModifiers::default();
+        assert!(bare.none());
+        assert!(!bare.any());
+        for m in [
+            KeyModifiers {
+                shift: true,
+                ..Default::default()
+            },
+            KeyModifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            KeyModifiers {
+                alt: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(m.any(), "{m:?} should block a bare-key binding");
+            assert!(!m.none());
+        }
+    }
+
+    #[test]
+    fn exact_modifier_sets_do_not_overlap() {
+        let ctrl_shift = KeyModifiers {
+            shift: true,
+            ctrl: true,
+            alt: false,
+        };
+        assert!(!ctrl_shift.only_ctrl());
+        assert!(!ctrl_shift.only_shift());
+        assert!(!ctrl_shift.only_alt());
+        assert!(ctrl_shift.dev_chord());
     }
 }

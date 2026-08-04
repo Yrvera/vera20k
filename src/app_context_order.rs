@@ -91,9 +91,15 @@ pub(crate) fn resolve_order_modifiers(ctrl: bool, shift: bool, alt: bool) -> Ord
 /// branch that draws a random entry from the type's `VoiceSpecialAttack` list.
 ///
 /// Two retail slots have no VERA counterpart yet:
-/// * Capture plays `VoiceCapture` and falls back to the Enter slot when the type
-///   has no `VoiceCapture=`; VERA does not parse that key, so capture uses the
-///   fallback unconditionally.
+/// * Capture has its **own** slot, verified: it reads the type's `VoiceCapture=`
+///   sound and speaks it, and only when the key is absent does it call the Enter
+///   slot instead. VERA does not parse `VoiceCapture=`, so it takes the absent
+///   branch unconditionally — and every stock engineer ships the key, so every
+///   engineer capture order in ordinary play speaks the wrong line today
+///   (Allied `EngAllMove` instead of `EngAllAttackCommand`, Soviet `EngSovMove`
+///   instead of `EngSovAttackCommand`; Yuri's two keys happen to hold the same
+///   sound, so Yuri is unaffected). Recorded DRIFT, not equivalence: closing it
+///   needs a `VoiceCapture=` field on the object type.
 /// * Deploy/unload plays `VoiceDeploy` / `VoiceUndeploy`, neither of which VERA
 ///   parses — those orders stay silent.
 ///
@@ -223,31 +229,142 @@ fn finish_order(
     true
 }
 
-/// Every selected mobile can accept an attack-move order.
+/// The two spellings a weapon reference uses to mean "no weapon".
 ///
-/// The chord test walks the whole selection and fails the chord if *any*
-/// selected object answers the per-type "can attack move" predicate false.
-/// VERA's stand-in is the same armed-and-not-a-harvester test the force-fire
-/// terrain path uses. The predicate's result for selected *structures* is
-/// gamemd-UNCHECKED, so only mobiles are tested here.
+/// The retail weapon lookup compares the INI value against both before it ever
+/// searches the weapon table and answers null for either, so `Primary=none` is
+/// exactly the same as having no `Primary=` line at all.
+const NO_WEAPON_NAMES: [&str; 2] = ["none", "<none>"];
+
+/// Does this object accept an attack-move order?
+///
+/// Retail asks the object, and the object forwards the question straight to its
+/// *type*, where three answers live:
+///
+/// * a **building** type answers no, unconditionally;
+/// * an **aircraft** type answers no, unconditionally;
+/// * every other type answers "`Primary=` names a real weapon **and**
+///   `PreventAttackMove=` is off".
+///
+/// `Secondary=` is never consulted — a secondary-only type is refused — and
+/// there is no harvester clause anywhere. The Soviet War Miner and the Slave
+/// Miner both carry a real `Primary=`, so retail lets them attack-move along
+/// with the rest of a defended-expansion group; the Chrono Miner is refused by
+/// its `Primary=none` on its own.
+///
+/// One half of the type test is missing here: VERA does not parse
+/// `PreventAttackMove=`. Stock YR sets it on the three Engineers and the Spy,
+/// each of which carries a real `Primary=` (`DefuseKit` / `MakeupKit`) and so
+/// passes the weapon half; every other stock user of the key is an aircraft,
+/// which the aircraft rule already refuses. Until that key is parsed, a
+/// selection containing an Engineer or a Spy attack-moves here where retail
+/// leaves the chord inert — VERA-internal residual, gamemd rule itself verified.
+fn entity_can_attack_move(
+    sim: &crate::sim::world::Simulation,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    stable_id: u64,
+) -> bool {
+    let Some(entity) = sim.entities().get(stable_id) else {
+        return false;
+    };
+    if matches!(
+        entity.category,
+        EntityCategory::Structure | EntityCategory::Aircraft
+    ) {
+        return false;
+    }
+    rules
+        .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)))
+        .and_then(|obj| obj.primary.as_deref())
+        .is_some_and(|primary| {
+            let primary = primary.trim();
+            !primary.is_empty()
+                && !NO_WEAPON_NAMES
+                    .iter()
+                    .any(|none| primary.eq_ignore_ascii_case(none))
+        })
+}
+
+/// Every selected object has to accept an attack-move order for the chord to fire.
+///
+/// The chord test walks the *whole* current selection — buildings and aircraft
+/// included, not just the mobiles that would receive the order — and fails
+/// outright the moment one member answers no.
 fn selection_can_attack_move(
     sim: &crate::sim::world::Simulation,
     rules: Option<&crate::rules::ruleset::RuleSet>,
-    selected_units: &[u64],
+    selected_ids: &[u64],
 ) -> bool {
-    if selected_units.is_empty() {
+    if selected_ids.is_empty() {
         return false;
     }
-    selected_units.iter().all(|&sid| {
-        sim.entities().get(sid).is_some_and(|e| {
-            if e.miner.is_some() {
-                return false;
-            }
-            rules
-                .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
-                .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some())
-        })
-    })
+    selected_ids
+        .iter()
+        .all(|&sid| entity_can_attack_move(sim, rules, sid))
+}
+
+/// How far the passable-cell fallback searches when the clicked cell is blocked.
+const GOAL_FALLBACK_RADIUS: u16 = 12;
+
+/// Resolve a clicked cell to the cell a mover can actually stand on.
+///
+/// Retail resolves the click to a cell and then walks outward for a passable one
+/// rather than refusing the order, so an unwalkable goal — water, a cliff, a
+/// building's own footprint — becomes the nearest cell that works.
+fn nearest_reachable_goal(
+    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    goal: (u16, u16),
+) -> (u16, u16) {
+    let Some(grid) = path_grid else {
+        return goal;
+    };
+    if crate::app_sim_tick::is_any_layer_walkable(grid, goal.0, goal.1) {
+        return goal;
+    }
+    crate::app_sim_tick::nearest_walkable_cell_layered(grid, goal, GOAL_FALLBACK_RADIUS)
+        .unwrap_or(goal)
+}
+
+/// The command one selected unit commits for a tactical click on an object.
+///
+/// Retail resolves the object action, commits the mission, and only then
+/// promotes it: a committed **Attack** is promoted to attack-move exactly as
+/// readily as a committed **Move** is, and the promotion is gated per object on
+/// that object's own type predicate. So a chorded click on an enemy tank sends
+/// the selection walking toward it in fighting order rather than charging it,
+/// while a member whose type refuses attack-move still commits the plain attack.
+fn object_click_payload(
+    order_mode: OrderMode,
+    force_fire: bool,
+    can_attack_move: bool,
+    attacker_id: u64,
+    target_id: u64,
+    target_rx: u16,
+    target_ry: u16,
+    queue: bool,
+) -> Command {
+    if force_fire {
+        return Command::ForceAttack {
+            attacker_id,
+            target_id,
+        };
+    }
+    match order_mode {
+        OrderMode::AttackMove if can_attack_move => Command::AttackMove {
+            entity_id: attacker_id,
+            target_rx,
+            target_ry,
+            queue,
+        },
+        OrderMode::Guard => Command::Guard {
+            entity_id: attacker_id,
+            target_id: Some(target_id),
+        },
+        _ => Command::Attack {
+            attacker_id,
+            target_id,
+        },
+    }
 }
 
 /// Attempt to issue a context-sensitive order at the given screen point.
@@ -324,9 +441,10 @@ pub(crate) fn try_queue_context_order_at_screen_point(
         selected_units.sort_unstable();
 
         // The chord test fails — and the order resolves normally — unless every
-        // selected object can accept an attack-move order.
+        // selected object can accept an attack-move order. The walk covers the
+        // whole selection, so a selected building or aircraft kills the chord.
         if modifier == OrderModifier::AttackMove
-            && !selection_can_attack_move(sim, state.rules.as_ref(), &selected_units)
+            && !selection_can_attack_move(sim, state.rules.as_ref(), &selected_ids)
         {
             modifier = OrderModifier::Normal;
         }
@@ -899,22 +1017,27 @@ pub(crate) fn try_queue_context_order_at_screen_point(
 
             for stable_id in selected_units {
                 let payload = if let Some(target_id) = attack_target {
-                    if force_fire {
-                        Command::ForceAttack {
-                            attacker_id: stable_id,
-                            target_id,
-                        }
-                    } else if order_mode != OrderMode::Guard {
-                        Command::Attack {
-                            attacker_id: stable_id,
-                            target_id,
-                        }
-                    } else {
-                        Command::Guard {
-                            entity_id: stable_id,
-                            target_id: Some(target_id),
-                        }
-                    }
+                    // Retail promotes the *committed* mission and keeps the
+                    // object as the destination, so the attack-move goal is the
+                    // object's own cell — routed through the same passable-cell
+                    // fallback the Move payload uses, since a building's own
+                    // cell is never walkable.
+                    let (goal_rx, goal_ry) = sim
+                        .entities()
+                        .get(target_id)
+                        .map_or((target_rx, target_ry), |e| (e.position.rx, e.position.ry));
+                    let (goal_rx, goal_ry) =
+                        nearest_reachable_goal(state.path_grid.as_ref(), (goal_rx, goal_ry));
+                    object_click_payload(
+                        order_mode,
+                        force_fire,
+                        entity_can_attack_move(sim, state.rules.as_ref(), stable_id),
+                        stable_id,
+                        target_id,
+                        goal_rx,
+                        goal_ry,
+                        queue_mode,
+                    )
                 } else if force_fire && !cell_is_shrouded {
                     // Force-fire on empty terrain: per-unit dispatch matching
                     // gamemd What_Action_OnCell — armed mobile units fire at
@@ -990,7 +1113,13 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                 }
                                 g
                             };
-                            if order_mode == OrderMode::AttackMove {
+                            // The promotion to attack-move is per object: a unit
+                            // whose type refuses it keeps the plain Move it
+                            // committed, even when the rest of the group
+                            // attack-moves.
+                            if order_mode == OrderMode::AttackMove
+                                && entity_can_attack_move(sim, state.rules.as_ref(), stable_id)
+                            {
                                 Command::AttackMove {
                                     entity_id: stable_id,
                                     target_rx: goal.0,
@@ -1226,8 +1355,11 @@ mod tests {
              0=MTNK\n\
              1=HARV\n\
              2=SREF\n\
+             3=CMIN\n\
              [AircraftTypes]\n\
+             0=ORCA\n\
              [BuildingTypes]\n\
+             0=GAWEAP\n\
              [MTNK]\n\
              Strength=300\n\
              Primary=105mm\n\
@@ -1235,9 +1367,19 @@ mod tests {
              Strength=1000\n\
              Harvester=yes\n\
              Primary=105mm\n\
+             [CMIN]\n\
+             Strength=1000\n\
+             Harvester=yes\n\
+             Primary=none\n\
              [SREF]\n\
              Strength=200\n\
              Secondary=105mm\n\
+             [ORCA]\n\
+             Strength=200\n\
+             Primary=105mm\n\
+             [GAWEAP]\n\
+             Strength=1000\n\
+             Primary=105mm\n\
              [WeaponTypes]\n\
              0=105mm\n\
              [105mm]\n\
@@ -1247,10 +1389,44 @@ mod tests {
         crate::rules::ruleset::RuleSet::from_ini(&ini).expect("chord rules")
     }
 
-    /// The chord requires *every* selected object to accept attack-move; one
-    /// harvester in the selection makes it inert and the order resolves plainly.
+    /// Insert an entity of an explicit category, so the building and aircraft
+    /// halves of the type rule can be exercised directly.
+    fn insert_typed(
+        sim: &mut Simulation,
+        stable_id: u64,
+        type_name: &str,
+        category: EntityCategory,
+    ) -> u64 {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern(type_name);
+        sim.entities_mut()
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                stable_id,
+                5,
+                5,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 300,
+                    max: 300,
+                },
+                type_ref,
+                category,
+                0,
+                5,
+                true,
+            ));
+        stable_id
+    }
+
+    /// The retail per-type rule: a real `Primary=` and nothing else.
+    ///
+    /// `Secondary=` is not consulted, `Primary=none` counts as unarmed, and
+    /// being a harvester is irrelevant — the armed War Miner accepts the order
+    /// while the Chrono Miner is refused for having no primary weapon.
     #[test]
-    fn attack_move_chord_requires_every_selected_mobile() {
+    fn attack_move_eligibility_follows_the_primary_weapon() {
         let mut rules = chord_rules();
         let mut sim = Simulation::new();
         rules.resolve_bridge_warheads(&mut sim.interner);
@@ -1260,21 +1436,125 @@ mod tests {
         let tank = sim
             .spawn_object("MTNK", "Americans", 5, 5, 0, &rules, &height_map)
             .expect("tank");
-        let miner = sim
+        let war_miner = sim
             .spawn_object("HARV", "Americans", 6, 5, 0, &rules, &height_map)
-            .expect("miner");
-        // A secondary-only unit still counts as armed.
+            .expect("armed miner");
+        let chrono_miner = sim
+            .spawn_object("CMIN", "Americans", 8, 5, 0, &rules, &height_map)
+            .expect("unarmed miner");
         let arty = sim
             .spawn_object("SREF", "Americans", 7, 5, 0, &rules, &height_map)
             .expect("secondary-only unit");
 
-        assert!(selection_can_attack_move(&sim, Some(&rules), &[tank, arty]));
+        assert!(entity_can_attack_move(&sim, Some(&rules), tank));
+        // An armed harvester is an ordinary member of a defended-expansion group.
+        assert!(entity_can_attack_move(&sim, Some(&rules), war_miner));
+        // `Primary=none` resolves to no weapon at all.
+        assert!(!entity_can_attack_move(&sim, Some(&rules), chrono_miner));
+        // A secondary-only type is refused: the rule reads Primary only.
+        assert!(!entity_can_attack_move(&sim, Some(&rules), arty));
+    }
+
+    /// Buildings and aircraft answer no unconditionally, whatever they are armed
+    /// with.
+    #[test]
+    fn buildings_and_aircraft_never_attack_move() {
+        let rules = chord_rules();
+        let mut sim = Simulation::new();
+
+        let factory = insert_typed(&mut sim, 1, "GAWEAP", EntityCategory::Structure);
+        let orca = insert_typed(&mut sim, 2, "ORCA", EntityCategory::Aircraft);
+        let tank = insert_typed(&mut sim, 3, "MTNK", EntityCategory::Unit);
+
+        assert!(!entity_can_attack_move(&sim, Some(&rules), factory));
+        assert!(!entity_can_attack_move(&sim, Some(&rules), orca));
+        assert!(entity_can_attack_move(&sim, Some(&rules), tank));
+    }
+
+    /// The chord walks the whole selection — buildings included — and dies on
+    /// the first member that refuses.
+    #[test]
+    fn attack_move_chord_requires_every_selected_object() {
+        let mut rules = chord_rules();
+        let mut sim = Simulation::new();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let height_map: std::collections::BTreeMap<(u16, u16), u8> =
+            std::collections::BTreeMap::new();
+
+        let tank = sim
+            .spawn_object("MTNK", "Americans", 5, 5, 0, &rules, &height_map)
+            .expect("tank");
+        let war_miner = sim
+            .spawn_object("HARV", "Americans", 6, 5, 0, &rules, &height_map)
+            .expect("armed miner");
+        let chrono_miner = sim
+            .spawn_object("CMIN", "Americans", 8, 5, 0, &rules, &height_map)
+            .expect("unarmed miner");
+        let factory = insert_typed(&mut sim, 900, "GAWEAP", EntityCategory::Structure);
+
+        assert!(selection_can_attack_move(
+            &sim,
+            Some(&rules),
+            &[tank, war_miner]
+        ));
         assert!(!selection_can_attack_move(
             &sim,
             Some(&rules),
-            &[tank, miner]
+            &[tank, chrono_miner]
+        ));
+        // A selected structure kills the chord for the whole group.
+        assert!(!selection_can_attack_move(
+            &sim,
+            Some(&rules),
+            &[tank, factory]
         ));
         // An empty selection cannot attack-move either.
         assert!(!selection_can_attack_move(&sim, Some(&rules), &[]));
+    }
+
+    /// A chorded click on an enemy *object* attack-moves, because retail
+    /// promotes a committed Attack mission just as it promotes a committed Move.
+    /// The promotion is per object: a member whose type refuses attack-move
+    /// still commits the plain attack.
+    #[test]
+    fn chorded_click_on_an_enemy_object_attack_moves() {
+        assert_eq!(
+            object_click_payload(OrderMode::AttackMove, false, true, 1, 2, 9, 11, false),
+            Command::AttackMove {
+                entity_id: 1,
+                target_rx: 9,
+                target_ry: 11,
+                queue: false,
+            }
+        );
+        assert_eq!(
+            object_click_payload(OrderMode::AttackMove, false, false, 1, 2, 9, 11, false),
+            Command::Attack {
+                attacker_id: 1,
+                target_id: 2,
+            }
+        );
+        // Plain click, force fire and guard area are untouched by the promotion.
+        assert_eq!(
+            object_click_payload(OrderMode::Move, false, true, 1, 2, 9, 11, false),
+            Command::Attack {
+                attacker_id: 1,
+                target_id: 2,
+            }
+        );
+        assert_eq!(
+            object_click_payload(OrderMode::AttackMove, true, true, 1, 2, 9, 11, false),
+            Command::ForceAttack {
+                attacker_id: 1,
+                target_id: 2,
+            }
+        );
+        assert_eq!(
+            object_click_payload(OrderMode::Guard, false, true, 1, 2, 9, 11, false),
+            Command::Guard {
+                entity_id: 1,
+                target_id: Some(2),
+            }
+        );
     }
 }
