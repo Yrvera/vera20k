@@ -226,13 +226,10 @@ fn controls_panel(
             ui.add_space(6.0);
             labeled_credits_combo(ui, settings, palette);
 
-            ui.add_space(8.0);
-            ui.checkbox(
-                &mut settings.zoom_enabled,
-                egui::RichText::new("Allow Zoom")
-                    .size(16.0)
-                    .color(palette.text),
-            );
+            // The "Allow Zoom" checkbox is gone: stock YR has no world zoom and
+            // the mouse wheel is the sidebar strip scroll, so the setting no
+            // longer reaches anything. `SkirmishSettings::zoom_enabled` is kept
+            // for the settings round-trip until the zoom path finds a binding.
 
             ui.add_space(18.0);
             if ui

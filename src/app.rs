@@ -527,7 +527,17 @@ pub(crate) struct AppState {
     /// Sidebar, minimap, and other UI elements are scaled by this factor.
     pub(crate) ui_scale: f32,
     /// Scroll offset for the current sidebar tab's item list.
+    ///
+    /// gamemd's sidebar keeps this row per build strip, not one shared value —
+    /// its scroll command indexes the strip by column. This holds the live row
+    /// for the active tab; the parked rows for the other tabs live in
+    /// `sidebar_scroll_rows_parked` and swap in and out on a tab change, which
+    /// keeps every consumer reading one field while the position stops bleeding
+    /// across tabs.
     pub(crate) sidebar_scroll_rows: usize,
+    /// Parked scroll row per sidebar tab, indexed by `app_input::tab_scroll_slot`.
+    /// One entry per `SidebarTab` variant.
+    pub(crate) sidebar_scroll_rows_parked: [usize; 4],
     /// Asset manager — kept alive for music track lookups.
     pub(crate) asset_manager: Option<AssetManager>,
     /// Background music player (rodio).
@@ -3650,6 +3660,18 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Focused(active) => {
+                if !active {
+                    // Losing focus takes the mouse capture away, and gamemd
+                    // handles that explicitly: its capture-changed case drops
+                    // the button-held byte and tears the band rectangle down.
+                    // Without this the right-drag pan keeps applying its
+                    // anchor-relative step every frame and edge scroll stays
+                    // inhibited until the player right-clicks again.
+                    state.tactical_mouse = Default::default();
+                    state.selection_state.cancel_drag();
+                    state.middle_mouse_panning = false;
+                    state.minimap_dragging = false;
+                }
                 Self::set_window_active(state, active);
             }
             WindowEvent::Occluded(occluded) => {
@@ -4462,6 +4484,7 @@ impl App {
             sidebar_layout_spec_base: base_sidebar_layout_spec,
             ui_scale,
             sidebar_scroll_rows: 0,
+            sidebar_scroll_rows_parked: [0; 4],
             asset_manager: startup_asset_manager,
             music_player: MusicPlayer::new(),
             sfx_player: SfxPlayer::new(),

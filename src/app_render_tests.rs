@@ -238,38 +238,41 @@ fn test_box_over_only_ineligible_objects_still_clears_the_selection() {
     assert!(snapshot.is_empty());
 }
 
-#[test]
-fn test_box_skips_a_miner_docked_on_a_refinery() {
-    let mut store = EntityStore::new();
-    spawn_mobile(&mut store, 1, 10, 10, "Americans", false);
-    spawn_mobile(&mut store, 2, 11, 10, "Americans", false);
-    let mut refinery = GameEntity::new_at_frame_zero_for_test(
-        3,
-        11,
-        11,
+fn spawn_structure(
+    store: &mut EntityStore,
+    sid: u64,
+    rx: u16,
+    ry: u16,
+    type_id: &str,
+    owner: &str,
+) {
+    let mut building = GameEntity::new_at_frame_zero_for_test(
+        sid,
+        rx,
+        ry,
         0,
         0,
-        test_intern("Americans"),
+        test_intern(owner),
         Health {
             current: 100,
             max: 100,
         },
-        test_intern("GAREFN"),
+        test_intern(type_id),
         EntityCategory::Structure,
         0,
         5,
         false,
     );
-    refinery.lifecycle.in_limbo = false;
-    store.insert(refinery);
-    // Entity 2 is radio-docked on the refinery — the band-box-only
-    // CanBeSelectedNow gate refuses it while a direct click still would not.
-    store.get_mut(2).expect("miner").dock_entered_with = Some(3);
+    building.lifecycle.in_limbo = false;
+    store.insert(building);
+}
 
-    let (ax, ay) = screen_of(&store, 1);
-    let (bx, by) = screen_of(&store, 2);
-    let snapshot = compute_box_selection_snapshot(
-        &store,
+/// A box drawn around both units: `hi` is the id expected to survive the filter.
+fn box_over_two(store: &EntityStore, a: u64, b: u64) -> Option<Vec<u64>> {
+    let (ax, ay) = screen_of(store, a);
+    let (bx, by) = screen_of(store, b);
+    compute_box_selection_snapshot(
+        store,
         None,
         None,
         ax.min(bx) - 20.0,
@@ -281,8 +284,101 @@ fn test_box_skips_a_miner_docked_on_a_refinery() {
         None,
         None,
     )
-    .expect("snapshot");
+}
+
+#[test]
+fn test_box_skips_a_miner_docked_on_a_refinery() {
+    let mut store = EntityStore::new();
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", false);
+    spawn_mobile(&mut store, 2, 11, 10, "Americans", false);
+    // The miner sits on the refinery's own cell while it unloads. The native
+    // gate is the dock flag AND a building in that cell, so both halves hold.
+    spawn_structure(&mut store, 3, 11, 10, "GAREFN", "Americans");
+    store.get_mut(2).expect("miner").dock_entered_with = Some(3);
+
+    let snapshot = box_over_two(&store, 1, 2).expect("snapshot");
     assert_eq!(snapshot, vec![1]);
+}
+
+#[test]
+fn test_box_keeps_a_vehicle_that_drove_clear_of_its_factory() {
+    let mut store = EntityStore::new();
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", false);
+    spawn_mobile(&mut store, 2, 14, 10, "Americans", false);
+    // A vehicle leaving a war factory carries the same dock flag, but it is no
+    // longer standing on the factory — the cell half of the native gate fails,
+    // so it stays band-selectable. Without that half every freshly built
+    // vehicle would drop out of a box for the whole exit sequence.
+    spawn_structure(&mut store, 3, 11, 11, "GAWEAP", "Americans");
+    store.get_mut(2).expect("vehicle").dock_entered_with = Some(3);
+
+    let snapshot = box_over_two(&store, 1, 2).expect("snapshot");
+    assert_eq!(snapshot, vec![1, 2]);
+}
+
+/// The drawn-object list the native emptiness test walks is only partly
+/// visibility-filtered: mobile objects register from inside their own draw
+/// routine, so the shroud hides them from it, while buildings are appended in
+/// bulk from the building array with no visibility test at all.
+#[test]
+fn test_band_emptiness_ignores_a_shrouded_unit_but_not_a_shrouded_building() {
+    use crate::app_entity_pick::band_rect_contains_drawn_object;
+
+    let mut alliances = HouseAllianceMap::default();
+    alliances.insert(
+        "AMERICANS".to_string(),
+        BTreeSet::from(["AMERICANS".to_string()]),
+    );
+    let mut by_owner = BTreeMap::new();
+    // The local player has explored nothing.
+    by_owner.insert(
+        test_intern("Americans"),
+        crate::sim::vision::OwnerVisibility::new(64, 64),
+    );
+    let fog = FogState {
+        width: 64,
+        height: 64,
+        by_owner,
+        alliances,
+        ..Default::default()
+    };
+
+    // One store per case, both populated before the interner snapshot is taken
+    // (it is a clone of the shared test interner, so every name has to be in it).
+    let mut unit_only = EntityStore::new();
+    spawn_mobile(&mut unit_only, 1, 20, 20, "Soviet", false);
+    let mut building_only = EntityStore::new();
+    spawn_structure(&mut building_only, 2, 20, 20, "GAPOWR", "Soviet");
+    let interner = crate::sim::intern::test_interner();
+
+    let (ux, uy) = screen_of(&unit_only, 1);
+    let rect = (ux - 20.0, uy - 20.0, ux + 20.0, uy + 20.0);
+    assert!(
+        !band_rect_contains_drawn_object(
+            &unit_only,
+            Some(&fog),
+            Some("Americans"),
+            rect.0,
+            rect.1,
+            rect.2,
+            rect.3,
+            Some(&interner),
+        ),
+        "a shrouded enemy unit is not in the drawn-object list"
+    );
+    assert!(
+        band_rect_contains_drawn_object(
+            &building_only,
+            Some(&fog),
+            Some("Americans"),
+            rect.0,
+            rect.1,
+            rect.2,
+            rect.3,
+            Some(&interner),
+        ),
+        "a building is registered in bulk, shroud or no shroud"
+    );
 }
 
 #[test]

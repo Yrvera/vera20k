@@ -129,16 +129,22 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 let mut action: SelectAction = state
                     .selection_state
                     .end_drag(state.cursor_x, state.cursor_y);
+                let shift = is_shift_held(state);
                 // A band box that caught no drawn object leaves the selection
                 // exactly as it was, and the release is handled as an ordinary
                 // click at the release point — the native release only clears
                 // when something was inside the rectangle.
+                //
+                // The whole empty/clear/fall-through block sits inside the
+                // native "shift is not held" arm, and the fall-through flag is
+                // the only thing that lets control reach the click/action path.
+                // So a shift drag that catches nothing does nothing at all: it
+                // must not walk the army to the release point.
                 if let SelectAction::BoxSelect(min_x, min_y, max_x, max_y) = action {
-                    if !band_caught_drawn_object(state, min_x, min_y, max_x, max_y) {
+                    if !shift && !band_caught_drawn_object(state, min_x, min_y, max_x, max_y) {
                         action = SelectAction::Click(state.cursor_x, state.cursor_y);
                     }
                 }
-                let shift = is_shift_held(state);
                 // On a single click (not drag-box), try issuing a command first.
                 // If the click lands on a friendly unit/building, fall through to
                 // selection instead (select_friendly_clicks=true).
@@ -276,12 +282,20 @@ fn band_caught_drawn_object(
         return false;
     };
     let z = state.zoom_level;
+    let fog_ref = if state.sandbox_full_visibility {
+        None
+    } else {
+        Some(&sim.fog)
+    };
     crate::app_entity_pick::band_rect_contains_drawn_object(
         sim.entities(),
+        fog_ref,
+        preferred_local_owner_name(state).as_deref(),
         min_x / z + state.camera_x,
         min_y / z + state.camera_y,
         max_x / z + state.camera_x,
         max_y / z + state.camera_y,
+        Some(&sim.interner),
     )
 }
 
@@ -410,12 +424,30 @@ pub(crate) fn sidebar_wheel_scroll(state: &mut AppState, delta_lines: f32) {
     );
 }
 
+/// Index of a tab's parked scroll row. Exhaustive on purpose: a new tab must
+/// claim a slot rather than silently share one.
+pub(crate) fn tab_scroll_slot(tab: SidebarTab) -> usize {
+    match tab {
+        SidebarTab::Building => 0,
+        SidebarTab::Defense => 1,
+        SidebarTab::Infantry => 2,
+        SidebarTab::Vehicle => 3,
+    }
+}
+
 pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
     match action {
         SidebarAction::None => {}
         SidebarAction::SelectTab(tab) => {
-            state.active_sidebar_tab = tab;
-            state.sidebar_scroll_rows = 0;
+            // gamemd's scroll row is per build strip, so switching tabs must not
+            // carry the outgoing strip's position over — nor throw it away. Park
+            // the row we are leaving and restore the one we are entering.
+            if tab != state.active_sidebar_tab {
+                state.sidebar_scroll_rows_parked[tab_scroll_slot(state.active_sidebar_tab)] =
+                    state.sidebar_scroll_rows;
+                state.active_sidebar_tab = tab;
+                state.sidebar_scroll_rows = state.sidebar_scroll_rows_parked[tab_scroll_slot(tab)];
+            }
         }
         SidebarAction::BuildType(type_id) => {
             queue_build_by_type(state, &type_id);
@@ -1463,39 +1495,5 @@ fn jump_camera_to_base(state: &mut AppState) {
         crate::app_camera::center_camera_on_cell(state, wp.rx, wp.ry);
     } else {
         log::info!("H: no base or start waypoint found");
-    }
-}
-
-/// Emit an order-acknowledgement voice sound for the first selected unit; the
-/// specific voice (VoiceMove / VoiceAttack / VoiceHarvest / VoiceEnter) is
-/// chosen by `voice_field`.
-pub(crate) fn emit_order_voice(state: &mut AppState, voice_field: &str) {
-    let Some(sim) = &state.simulation else { return };
-    let Some(rules) = &state.rules else { return };
-
-    // Find first selected entity and get its voice sound.
-    let first_selected = sim.entities().values().find(|e| e.selected);
-    let Some(sel_entity) = first_selected else {
-        return;
-    };
-    if let Some(obj) = rules.object(sim.interner.resolve(sel_entity.type_ref)) {
-        let voice_id: Option<&String> = match voice_field {
-            "VoiceMove" => obj.voice_move.as_ref(),
-            "VoiceAttack" => obj.voice_attack.as_ref(),
-            "VoiceHarvest" => obj.voice_harvest.as_ref(),
-            "VoiceEnter" => obj.voice_enter.as_ref(),
-            _ => None,
-        };
-        if let Some(id) = voice_id {
-            let event = match voice_field {
-                "VoiceAttack" => GameSoundEvent::UnitAttackOrder {
-                    sound_id: id.clone(),
-                },
-                _ => GameSoundEvent::UnitMoveOrder {
-                    sound_id: id.clone(),
-                },
-            };
-            state.sound_events.push(event);
-        }
     }
 }
