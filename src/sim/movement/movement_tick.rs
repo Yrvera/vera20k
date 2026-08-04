@@ -1874,24 +1874,49 @@ fn tick_movement_with_grids_scoped(
                 path_grid,
             ) {
                 movement_step::AdvanceResult::DriveTrackActive => continue,
-                movement_step::AdvanceResult::DriveTrackCellJump => {
+                movement_step::AdvanceResult::DriveTrackCellJump { cell_dx, cell_dy } => {
                     // Drive track coordinates crossed a cell boundary.
-                    // Perform the cell transition: update rx/ry, advance next_index,
-                    // reserve destination, handle bridge state.
+                    // Perform the cell transition: move rx/ry by the delta the
+                    // coordinate actually applied, reserve destination, handle
+                    // bridge state, and consume the queued path node only once
+                    // the mover's cell has reached it.
                     if target.next_index < target.path.len() {
-                        let (nx, ny) = target.path[target.next_index];
-                        let dx_cell = nx as i32 - entity.position.rx as i32;
-                        let dy_cell = ny as i32 - entity.position.ry as i32;
+                        // gamemd keeps ONE absolute coordinate per object and
+                        // derives its cell from that coordinate, so the cell and
+                        // the sub-cell offset always move by the same delta and
+                        // the rendered position stays continuous. Taking the
+                        // cell from the path node instead lets the two disagree:
+                        // the straight NE/SW curves pass exactly through a cell
+                        // corner and cross one axis per point, which under the
+                        // old code moved the mover a whole cell (256 leptons)
+                        // sideways in a single frame and consumed two path nodes
+                        // for one diagonal step.
+                        let old_rx = entity.position.rx;
+                        let old_ry = entity.position.ry;
+                        let nx = old_rx.saturating_add_signed(cell_dx as i16);
+                        let ny = old_ry.saturating_add_signed(cell_dy as i16);
+                        // The queued node is reached by this crossing when the
+                        // cell we land in IS that node. The same-cell path step
+                        // below is the one exception: A* can emit a bridge-ramp
+                        // node that repeats the current cell on a different
+                        // layer, which no coordinate crossing can ever equal.
+                        // gamemd's queue holds direction octants and cannot
+                        // express a same-cell step at all, so this arm is
+                        // VERA-internal with the gamemd equivalent UNCHECKED; it
+                        // preserves the pre-existing consumption of such a node.
+                        let queued = target.path[target.next_index];
+                        let same_cell_path_step = queued == (old_rx, old_ry);
+                        let reaches_queued_node = queued == (nx, ny) || same_cell_path_step;
                         // DIAGNOSTIC: detect same-cell layer transition in drive track path
-                        if dx_cell == 0 && dy_cell == 0 {
+                        if same_cell_path_step {
                             let next_layer = target.layer_at(target.next_index);
                             log::warn!(
                                 "BRIDGE_DIAG entity={}: DriveTrackCellJump same-cell step! \
                                  cell=({},{}) path_layer={:?} active_layer={:?} z={} \
                                  next_index={}/{}",
                                 entity_id,
-                                nx,
-                                ny,
+                                old_rx,
+                                old_ry,
                                 next_layer,
                                 active_layer,
                                 entity.position.z,
@@ -1900,8 +1925,6 @@ fn tick_movement_with_grids_scoped(
                             );
                         }
                         // Update cell coordinates.
-                        let old_rx = entity.position.rx;
-                        let old_ry = entity.position.ry;
                         entity.position.rx = nx;
                         entity.position.ry = ny;
                         // GATE A2 verified order: capture the OLD (pre-transition)
@@ -1989,20 +2012,26 @@ fn tick_movement_with_grids_scoped(
                             occupancy.update_sub_cell(nx, ny, entity_id, entity.sub_cell);
                         }
                         stats.moved_steps = stats.moved_steps.saturating_add(1);
-                        // Advance next_index and update move_dir for after track finishes.
-                        // Don't initiate a new drive track — current one is still active.
-                        target.next_index += 1;
-                        if target.next_index < target.path.len() {
-                            let next = target.path[target.next_index];
-                            let ndx = next.0 as i32 - nx as i32;
-                            let ndy = next.1 as i32 - ny as i32;
-                            let (d_x, d_y, d_len) =
-                                crate::util::lepton::cell_delta_to_lepton_dir(ndx, ndy);
-                            target.move_dir_x = d_x;
-                            target.move_dir_y = d_y;
-                            target.move_dir_len = d_len;
+                        // Consume the queued path node only when the mover's own
+                        // cell has actually reached it. A curve that crosses one
+                        // axis at a time passes through an intermediate cell that
+                        // is not on the path; that crossing is a real object-list
+                        // move (gamemd performs it too) but it is not an arrival.
+                        // Update move_dir for after the track finishes. Don't
+                        // initiate a new drive track — current one is still active.
+                        if reaches_queued_node {
+                            target.next_index += 1;
+                            if target.next_index < target.path.len() {
+                                let next = target.path[target.next_index];
+                                let ndx = next.0 as i32 - nx as i32;
+                                let ndy = next.1 as i32 - ny as i32;
+                                let (d_x, d_y, d_len) =
+                                    crate::util::lepton::cell_delta_to_lepton_dir(ndx, ndy);
+                                target.move_dir_x = d_x;
+                                target.move_dir_y = d_y;
+                                target.move_dir_len = d_len;
+                            }
                         }
-                        let _ = (dx_cell, dy_cell); // used above for position update
                     }
                     // Apply bridge state and screen coords, then continue to next tick.
                     super::movement_bridge::apply_pending_bridge_render_state(

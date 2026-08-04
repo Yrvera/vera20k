@@ -3830,6 +3830,18 @@ pub struct DriveTrackAdvance {
     /// Detected by coordinate-based boundary checking — every step checks
     /// if the world position lands in a new cell.
     pub cell_jump: bool,
+    /// Cell delta the coordinate crossing actually applied, in cells
+    /// (+X = east, +Y = south). `(0, 0)` whenever `cell_jump` is false.
+    ///
+    /// The caller must move the mover's cell by exactly this delta: it is the
+    /// same value that shifted `cell_offset_*`, so `cell * 256 + sub` stays
+    /// continuous across the crossing. A curve's crossings do not always match
+    /// its path steps one for one — the straight diagonals whose transform puts
+    /// a point exactly on a cell corner cross one axis, then the other, on
+    /// consecutive points for a single path node.
+    pub cell_jump_dx: i32,
+    /// See `cell_jump_dx`.
+    pub cell_jump_dy: i32,
     /// True if the track reached the chain_index point. The caller should
     /// attempt to chain into the next track curve (check Can_Enter_Cell on
     /// the next-next cell, select new track if passable).
@@ -3947,8 +3959,12 @@ pub fn begin_forced_turn_track(
 /// **Coordinate-based cell detection**: after each step,
 /// the transformed track point is mapped to sub-cell coordinates. If the
 /// coordinates land in a different cell (sub_x outside [0,256) or sub_y
-/// outside [0,256)), a cell_jump is signaled and the loop breaks so the
-/// caller can handle the transition.
+/// outside [0,256)), a cell_jump is signaled with the applied `(dx, dy)` and
+/// the loop breaks so the caller can handle the transition. The original engine
+/// keeps one absolute coordinate per object and derives the cell from it by a
+/// sign-corrected shift, so the cell and the coordinate always move together;
+/// the caller must use the reported delta rather than its own path cursor, or
+/// the two disagree and the rendered position snaps.
 ///
 /// **Track chaining** at chain_index (binary +0x04): when the stepping loop
 /// reaches the chain_index point, chain_ready is set and the loop breaks
@@ -4002,6 +4018,8 @@ fn advance_drive_track_with_budget_mode(
     let points = raw_track_points(state.raw_track_index);
     let last_index = meta.points_count.saturating_sub(1);
     let mut cell_jump = false;
+    let mut cell_jump_dx = 0;
+    let mut cell_jump_dy = 0;
     let mut chain_ready = false;
 
     // Budget = this tick's speed + leftover from last tick.
@@ -4028,6 +4046,8 @@ fn advance_drive_track_with_budget_mode(
                 state.cell_offset_x -= cell_x * 256;
                 state.cell_offset_y -= cell_y * 256;
                 cell_jump = true;
+                cell_jump_dx = cell_x;
+                cell_jump_dy = cell_y;
                 break;
             }
         }
@@ -4079,6 +4099,8 @@ fn advance_drive_track_with_budget_mode(
             sub_y: SimFixed::from_num(state.head_offset_y + ty as i32 + state.cell_offset_y),
             facing: tf,
             cell_jump,
+            cell_jump_dx,
+            cell_jump_dy,
             chain_ready,
             finished,
             next_step_delta_x: next_dx,
@@ -4091,6 +4113,8 @@ fn advance_drive_track_with_budget_mode(
             sub_y: SimFixed::from_num(128),
             facing: 0,
             cell_jump: false,
+            cell_jump_dx: 0,
+            cell_jump_dy: 0,
             chain_ready: false,
             finished: true,
             next_step_delta_x: 0,

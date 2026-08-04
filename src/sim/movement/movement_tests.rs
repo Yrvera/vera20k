@@ -4887,3 +4887,170 @@ fn gsi_06_13_sharp_kink_fallback_still_drives_to_the_real_path_node() {
         "the mover must still take its real next path node: visited {visited:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Drive-track cell crossings are coordinate-derived, not path-derived
+// ---------------------------------------------------------------------------
+
+/// Half a cell in leptons. A mover at the fixture speed advances ~16 leptons
+/// per axis per frame; anything past half a cell in one frame is a teleport,
+/// not motion.
+const HALF_CELL_LEPTONS: i32 = 128;
+
+/// Straight NE diagonals must render as a continuous glide.
+///
+/// The NE straight curve has one point that lands exactly on a cell corner, so
+/// it makes *two* cell transitions — first east, then north — while consuming a
+/// single path node. gamemd derives the object's cell from its one absolute
+/// coordinate, so both the coordinate and the cell move by the same delta and
+/// the world position stays continuous. If the cell instead comes from the path
+/// node while the sub-cell offset comes from the coordinate, the two disagree
+/// and the mover snaps a full cell sideways for one frame.
+#[test]
+fn drive_track_ne_diagonal_world_position_never_teleports() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(20, 20);
+    let mut mover = gsi_06_13_fixture_mover(
+        (10, 10),
+        0x20,
+        vec![(10, 10), (11, 9), (12, 8), (13, 7)],
+        vec![1, 1, 1],
+    );
+    if let Some(target) = mover.movement_target.as_mut() {
+        target.speed = SimFixed::from_num(256);
+        target.current_speed = SimFixed::from_num(256);
+    }
+    entities.insert(mover);
+
+    let mut occupancy = OccupancyGrid::new();
+    let mut rng = SimRng::new(0);
+    let mut lifecycle_requests = Vec::new();
+    let mut previous: Option<(i32, i32)> = None;
+    let mut worst = (0i32, 0i32, 0usize);
+    let mut trace: Vec<(usize, i32, i32)> = Vec::new();
+    let mut reached = false;
+
+    for tick in 0..400u64 {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            tick,
+            &mut test_interner(),
+            &mut lifecycle_requests,
+        );
+        let Some(entity) = entities.get(1) else { break };
+        let world_x = entity.position.rx as i32 * 256 + entity.position.sub_x.to_num::<i32>();
+        let world_y = entity.position.ry as i32 * 256 + entity.position.sub_y.to_num::<i32>();
+        trace.push((tick as usize, world_x, world_y));
+        if let Some((px, py)) = previous {
+            let dx = world_x - px;
+            let dy = world_y - py;
+            if dx.abs().max(dy.abs()) > worst.0.abs().max(worst.1.abs()) {
+                worst = (dx, dy, tick as usize);
+            }
+        }
+        previous = Some((world_x, world_y));
+        if (entity.position.rx, entity.position.ry) == (13, 7) {
+            reached = true;
+            break;
+        }
+    }
+
+    assert!(
+        reached,
+        "mover must reach (13,7); trace tail {:?}",
+        &trace[trace.len().saturating_sub(6)..]
+    );
+    assert!(
+        worst.0.abs() <= HALF_CELL_LEPTONS && worst.1.abs() <= HALF_CELL_LEPTONS,
+        "world position jumped ({}, {}) leptons at tick {} \
+         (= {:.2}, {:.2} cells) on a straight NE diagonal; trace {:?}",
+        worst.0,
+        worst.1,
+        worst.2,
+        worst.0 as f32 / 256.0,
+        worst.1 as f32 / 256.0,
+        &trace[worst.2.saturating_sub(3)..(worst.2 + 2).min(trace.len())]
+    );
+}
+
+/// NE diagonals must not run at double speed.
+///
+/// The NE straight curve reports two coordinate crossings for one path step.
+/// When each crossing consumed a path node, a single 31-point curve ate two
+/// nodes, so NE and SW legs covered two cells in the time the other six
+/// directions covered one. The mover also skipped the node it was supposed to
+/// arrive at. SE is the clean orientation of the same curve and is the control.
+#[test]
+fn drive_track_ne_diagonal_costs_the_same_ticks_per_cell_as_se() {
+    fn run(path: Vec<(u16, u16)>, facing: u8, dir: u8) -> (u64, Vec<(u16, u16)>) {
+        let start = path[0];
+        let goal = *path.last().unwrap();
+        let steps = path.len() - 1;
+        let mut entities = EntityStore::new();
+        let grid: PathGrid = PathGrid::new(24, 24);
+        let mut mover = gsi_06_13_fixture_mover(start, facing, path, vec![dir; steps]);
+        if let Some(target) = mover.movement_target.as_mut() {
+            target.speed = SimFixed::from_num(256);
+            target.current_speed = SimFixed::from_num(256);
+        }
+        entities.insert(mover);
+
+        let mut occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(0);
+        let mut lifecycle_requests = Vec::new();
+        let mut visited: Vec<(u16, u16)> = vec![start];
+        let mut ticks = 0u64;
+        for tick in 0..400u64 {
+            tick_movement_with_grid(
+                &mut entities,
+                Some(&grid),
+                &Default::default(),
+                &Default::default(),
+                &mut occupancy,
+                &mut rng,
+                tick,
+                &mut test_interner(),
+                &mut lifecycle_requests,
+            );
+            let Some(entity) = entities.get(1) else { break };
+            let cell = (entity.position.rx, entity.position.ry);
+            if visited.last() != Some(&cell) {
+                visited.push(cell);
+            }
+            ticks = tick + 1;
+            if cell == goal {
+                break;
+            }
+        }
+        (ticks, visited)
+    }
+
+    let (ne_ticks, ne_visited) = run(
+        vec![(10, 10), (11, 9), (12, 8), (13, 7)],
+        0x20,
+        1, // NE octant
+    );
+    let (se_ticks, se_visited) = run(
+        vec![(10, 10), (11, 11), (12, 12), (13, 13)],
+        0x60,
+        3, // SE octant
+    );
+
+    for node in [(11, 9), (12, 8), (13, 7)] {
+        assert!(
+            ne_visited.contains(&node),
+            "NE mover must occupy every path node; visited {ne_visited:?}"
+        );
+    }
+    assert!(
+        ne_ticks * 2 > se_ticks * 3 / 2,
+        "NE ({ne_ticks} ticks) must not run at roughly double the SE rate \
+         ({se_ticks} ticks) over the same 3-cell diagonal; \
+         NE visited {ne_visited:?}, SE visited {se_visited:?}"
+    );
+}

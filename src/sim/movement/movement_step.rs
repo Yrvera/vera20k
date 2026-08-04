@@ -462,9 +462,14 @@ pub(super) enum AdvanceResult {
     /// Drive track is active — caller should `continue` (skip cell crossings).
     DriveTrackActive,
     /// Drive track crossed a cell boundary — caller must handle the cell
-    /// transition (update rx/ry, advance next_index, reserve destination),
+    /// transition (move rx/ry by `cell_dx`/`cell_dy`, reserve destination),
     /// then continue the track on the next tick.
-    DriveTrackCellJump,
+    ///
+    /// The delta is the one the coordinate actually applied, not the next path
+    /// step: the original engine derives the cell from its single absolute
+    /// coordinate, so the path cursor advances only once the mover's cell has
+    /// actually reached the queued node.
+    DriveTrackCellJump { cell_dx: i32, cell_dy: i32 },
     /// Drive track reached the chain_index — caller should attempt to chain
     /// into a follow-on track curve (check passability of the next-next cell,
     /// select new track if OK). If chaining fails, the current track continues
@@ -1107,7 +1112,10 @@ fn advance_drive_track_retry_after_selection(
     if advance.cell_jump && target.next_index < target.path.len() {
         position.sub_x = advance.sub_x;
         position.sub_y = advance.sub_y;
-        return AdvanceResult::DriveTrackCellJump;
+        return AdvanceResult::DriveTrackCellJump {
+            cell_dx: advance.cell_jump_dx,
+            cell_dy: advance.cell_jump_dy,
+        };
     }
 
     if advance.chain_ready && target.next_index < target.path.len() {
@@ -1209,8 +1217,12 @@ pub(super) fn advance_lepton_position(
             position.sub_x = advance.sub_x;
             position.sub_y = advance.sub_y;
             // Signal the caller to handle the actual cell transition
-            // (update rx/ry, reserve destination, bridge state, etc.).
-            return AdvanceResult::DriveTrackCellJump;
+            // (move rx/ry by the applied delta, reserve destination, bridge
+            // state, etc.).
+            return AdvanceResult::DriveTrackCellJump {
+                cell_dx: advance.cell_jump_dx,
+                cell_dy: advance.cell_jump_dy,
+            };
         }
 
         if advance.chain_ready && target.next_index < target.path.len() {

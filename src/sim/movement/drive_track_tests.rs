@@ -1184,3 +1184,107 @@ fn gsi_06_13_selected_curve_starts_at_the_movers_own_cell_centre() {
     );
     assert_eq!(lf, FACE_S, "and on the table's target facing");
 }
+
+/// Retail contract pin: the NE straight curve crosses TWO cell boundaries.
+///
+/// RawTrack 2 point 15 transforms to `(-128, +128)`, which against the NE head
+/// reference `(384, -128)` lands on sub `(256, 0)` — exactly the shared corner
+/// of four cells. Floor-dividing that coordinate puts the mover one cell east;
+/// the next point moves it one cell north. gamemd sees the same two transitions
+/// because it derives the cell by arithmetic-shifting its single absolute
+/// coordinate. The SE orientation of the same curve crosses both axes on one
+/// point and therefore reports a single boundary.
+///
+/// This pins the *coordinate* behaviour. The path node is consumed once for
+/// either orientation — that is the caller's job, covered in movement_tests.
+#[test]
+fn advance_drive_track_2_ne_crosses_two_boundaries_se_crosses_one() {
+    fn count_boundaries(transform_flags: u8, head_dx: i32, head_dy: i32, facing: u8) -> u32 {
+        let mut state = begin_drive_track(2, transform_flags, head_dx, head_dy, facing).unwrap();
+        let dt = SimFixed::lit("0.066");
+        let speed = SimFixed::from_num(256);
+        let mut jumps = 0;
+        for _ in 0..200 {
+            let result = advance_drive_track(&mut state, speed, dt);
+            if result.cell_jump {
+                jumps += 1;
+            }
+            if result.finished {
+                break;
+            }
+        }
+        jumps
+    }
+
+    assert_eq!(
+        count_boundaries(0, 1, -1, 0x20),
+        2,
+        "NE straight passes exactly through a cell corner, so it reports east then north"
+    );
+    assert_eq!(
+        count_boundaries(1, -1, 1, 0xA0),
+        2,
+        "SW straight is the mirrored split of the same curve"
+    );
+    assert_eq!(
+        count_boundaries(4, 1, 1, 0x60),
+        1,
+        "SE straight crosses both axes on one point"
+    );
+    assert_eq!(
+        count_boundaries(2, -1, -1, 0xE0),
+        1,
+        "NW straight crosses both axes on one point"
+    );
+}
+
+/// The reported cell delta is the one the coordinate applied, and the crossings
+/// of a curve always sum to its head delta.
+///
+/// This is the contract the caller relies on: moving the mover's cell by the
+/// reported delta keeps `cell * 256 + sub` continuous, because the same delta
+/// is what shifted `cell_offset_*` inside the stepping loop. Split diagonals
+/// report one axis at a time; the sum is still the single path step.
+#[test]
+fn advance_drive_track_reported_cell_deltas_sum_to_the_head_delta() {
+    fn deltas(
+        raw: u8,
+        transform_flags: u8,
+        head_dx: i32,
+        head_dy: i32,
+        facing: u8,
+    ) -> Vec<(i32, i32)> {
+        let mut state = begin_drive_track(raw, transform_flags, head_dx, head_dy, facing).unwrap();
+        let dt = SimFixed::lit("0.066");
+        let speed = SimFixed::from_num(256);
+        let mut out = Vec::new();
+        for _ in 0..400 {
+            let result = advance_drive_track(&mut state, speed, dt);
+            if result.cell_jump {
+                out.push((result.cell_jump_dx, result.cell_jump_dy));
+            } else {
+                assert_eq!(
+                    (result.cell_jump_dx, result.cell_jump_dy),
+                    (0, 0),
+                    "no crossing must report a zero delta"
+                );
+            }
+            if result.finished {
+                break;
+            }
+        }
+        out
+    }
+
+    // NE and SW split across two consecutive points; the sum is one diagonal step.
+    assert_eq!(deltas(2, 0, 1, -1, 0x20), vec![(1, 0), (0, -1)]);
+    assert_eq!(deltas(2, 1, -1, 1, 0xA0), vec![(0, 1), (-1, 0)]);
+    // SE and NW cross both axes on a single point.
+    assert_eq!(deltas(2, 4, 1, 1, 0x60), vec![(1, 1)]);
+    assert_eq!(deltas(2, 2, -1, -1, 0xE0), vec![(-1, -1)]);
+    // The cardinals are single-axis by construction.
+    assert_eq!(deltas(1, 0, 0, -1, 0x00), vec![(0, -1)]);
+    assert_eq!(deltas(1, 3, 1, 0, 0x40), vec![(1, 0)]);
+    assert_eq!(deltas(1, 4, 0, 1, 0x80), vec![(0, 1)]);
+    assert_eq!(deltas(1, 1, -1, 0, 0xC0), vec![(-1, 0)]);
+}
