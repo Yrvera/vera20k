@@ -33,6 +33,92 @@ const FLAG_GAP_FOG: u8 = 0x08;
 /// in the original engine — we clamp to this limit for compatibility.
 pub const MAX_SIGHT_RANGE: u16 = 10;
 
+/// World height of one terrain level, in leptons. Same retail value the
+/// coordinate-Z evaluator uses (`util::lepton::LEPTONS_PER_LEVEL`); kept local
+/// because the reveal kernel's input is a height, not a bridge or range query.
+const LEPTONS_PER_HEIGHT_LEVEL: i32 = 104;
+
+/// Screen height of one isometric cell, in pixels. The reveal centre is pushed
+/// toward isometric north by however many whole cells of screen lift the
+/// viewer's height buys, so the revealed disc sits under the sprite rather than
+/// under its ground shadow.
+const CELL_HEIGHT_PX: i32 = 30;
+
+/// Upward screen lift per lepton of height, as an exact rational so the sim
+/// stays integer-only. The engine resolves this once at startup from its camera
+/// model (`sin(60°) * 60 / (256 * sqrt(2))`, taken off an 8192-entry sine
+/// table); `render::locomotor_visual` carries the same number as an `f32` for
+/// sprite placement, and the two must not drift apart.
+const HEIGHT_LIFT_PX_NUMERATOR: i64 = 1_435_032;
+const HEIGHT_LIFT_PX_DENOMINATOR: i64 = 10_000_000;
+
+/// Height at or above which the engine's height→screen conversion adds one
+/// extra pixel of lift before truncating.
+const EXTRA_LIFT_PIXEL_HEIGHT_LEPTONS: i32 = 728;
+
+/// Percentage of base sight added per elevation step. The engine multiplies
+/// `Sight` by `1 + 0.01 * (10 * steps)`, so one step is +10%.
+const ELEVATION_SIGHT_PERCENT_PER_STEP: i32 = 10;
+
+/// Screen lift, in whole pixels, for an object at `height_leptons` above the
+/// map plane. Reproduces the engine's height→screen conversion including its
+/// extra-pixel threshold and the `+0.5` that precedes a truncating float→int.
+fn height_lift_px(height_leptons: i32) -> i32 {
+    if height_leptons <= 0 {
+        return 0;
+    }
+    let extra: i64 = if height_leptons >= EXTRA_LIFT_PIXEL_HEIGHT_LEPTONS {
+        HEIGHT_LIFT_PX_DENOMINATOR
+    } else {
+        0
+    };
+    let scaled: i64 = i64::from(height_leptons) * HEIGHT_LIFT_PX_NUMERATOR
+        + extra
+        + HEIGHT_LIFT_PX_DENOMINATOR / 2;
+    (scaled / HEIGHT_LIFT_PX_DENOMINATOR) as i32
+}
+
+/// Cells the reveal spiral's centre is shifted toward isometric north.
+///
+/// For a ground object standing on terrain level `L` this is `L / 2`, matching
+/// the shorthand this used to be written as; for an airborne object it is
+/// driven by its lepton altitude instead, which at stock `FlightLevel=1500`
+/// works out to 7 cells — the same distance its sprite is drawn above its
+/// ground cell.
+fn iso_height_shift_cells(height_leptons: i32) -> i32 {
+    height_lift_px(height_leptons) / CELL_HEIGHT_PX
+}
+
+/// Height above the map plane, in leptons, for one entity.
+///
+/// The engine keeps a single 3-D world coordinate per object and feeds its Z to
+/// both the reveal-centre shift and the line-of-sight viewer level, so terrain
+/// elevation and flight altitude are one quantity here too. The precedence
+/// between the three things that can hold an object up mirrors
+/// `render::locomotor_visual` exactly, so the shroud and the sprite cannot
+/// disagree about where the object is.
+fn entity_height_leptons(entity: &crate::sim::game_entity::GameEntity) -> i32 {
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::movement::locomotor::MovementLayer;
+
+    let terrain: i32 = i32::from(entity.position.z) * LEPTONS_PER_HEIGHT_LEVEL;
+    let above_ground: i32 = if let Some(state) = entity.parachute_state.as_ref() {
+        state.altitude.to_num::<i32>()
+    } else if let Some(state) = entity.rocket_state.as_ref() {
+        state.altitude.to_num::<i32>()
+    } else {
+        match entity.locomotor.as_ref() {
+            Some(loco)
+                if loco.layer == MovementLayer::Air && loco.kind != LocomotorKind::Rocket =>
+            {
+                loco.altitude.to_num::<i32>()
+            }
+            _ => 0,
+        }
+    };
+    terrain + above_ground
+}
+
 /// Per-owner visibility stored as a flat grid of flag bytes.
 ///
 /// Indexed by `ry * width + rx`. Each byte holds FLAG_REVEALED and/or
@@ -527,30 +613,42 @@ pub fn recompute_owner_visibility_in_place(
             .entry(entity.owner)
             .or_insert_with(|| OwnerVisibility::new(width, height));
 
-        // Apply veteran and elevation sight bonuses, clamped to MAX_SIGHT_RANGE.
+        let height_leptons: i32 = entity_height_leptons(entity);
+
+        // Elevation raises sight MULTIPLICATIVELY, off the object's world Z in
+        // leptons, not additively off its terrain level:
+        //   sight = trunc(Sight * (1 + 0.10 * trunc(Z_leptons / LeptonsPerSightIncrease)))
+        // At the stock LeptonsPerSightIncrease=2000 no reachable height — not a
+        // level-15 plateau, not stock FlightLevel — produces a single step, so
+        // this is inert in an ordinary match. It is written as the engine's
+        // mechanism rather than folded to a constant because a map or mode INI
+        // can lower the key. Guarded against a zero divisor, which the engine
+        // does not do (VERA-internal; gamemd equivalent UNCHECKED).
         let base_range: i32 = entity.vision_range as i32;
+        let elev_steps: i32 = if config.leptons_per_sight_increase > 0 {
+            height_leptons / config.leptons_per_sight_increase
+        } else {
+            0
+        };
+        let with_elevation: i32 =
+            (base_range * (100 + ELEVATION_SIGHT_PERCENT_PER_STEP * elev_steps)) / 100;
+        // Veterancy is multiplicative in the engine and gated on the type owning
+        // the sight promotion ability; VERA carries an additive stand-in because
+        // the parsed rules value is an integer. Both are inert at the stock
+        // `VeteranSight=0.0`, so this only diverges under a mod/map override.
         let vet_bonus: i32 = if entity.veterancy >= 100 {
             config.veteran_sight_bonus
         } else {
             0
         };
-        // Elevation bonus: each z-level = 256 leptons; integer division truncates.
-        // At LeptonsPerSightIncrease=2000 (vanilla): z=8 → +1 cell, z=16 → +2.
-        // Disabled when leptons_per_sight_increase <= 0.
-        let elev_bonus: i32 = if config.leptons_per_sight_increase > 0 {
-            (entity.position.z as i32 * 256) / config.leptons_per_sight_increase
-        } else {
-            0
-        };
-        let effective: u16 =
-            ((base_range + vet_bonus + elev_bonus).max(0) as u16).min(MAX_SIGHT_RANGE);
+        let effective: u16 = ((with_elevation + vet_bonus).max(0) as u16).min(MAX_SIGHT_RANGE);
 
         reveal_radius_into(
             vis,
             entity.position.rx,
             entity.position.ry,
             effective,
-            entity.position.z,
+            height_leptons,
             config.reveal_by_height,
             height_grid,
             width,
@@ -581,40 +679,48 @@ fn resolve_bounds(entities: &EntityStore, path_grid: Option<&PathGrid>) -> (u16,
 
 /// Mark all cells within `range` of `(center_rx, center_ry)` as visible+revealed.
 ///
-/// Uses the reveal spiral table from the original engine.
-/// For sight 0-9, iterates the pre-built (dx, dy) offsets matching the original
-/// spiral iteration. For sight 10, falls back to the spiral entries for sight 9
-/// plus a sqrt-based check for the outer ring.
+/// Iterates the engine's reveal spiral table — `REVEAL_SPIRAL[0 .. RING_SIZES[sight]]`
+/// — with no special case at any radius. Every entry, ring 10 included, passes
+/// through the same height line-of-sight gate.
 ///
 /// ## Elevation Z-shift
-/// The spiral is centered on the unit's *screen* cell, not its raw foot cell.
-/// An elevated unit's sprite renders ~15px upward (toward isometric north) per
-/// height level, so the original engine shifts the reveal center by `-z_level/2`
-/// on each axis to keep the revealed footprint under the sprite. Without this an
-/// elevated unit would over-reveal toward isometric south. The shift is applied
-/// unconditionally (independent of `reveal_by_height`).
+/// The spiral is centered on the viewer's *screen* cell, not its raw foot cell.
+/// A raised object's sprite renders toward isometric north, so the engine shifts
+/// the reveal center by the same whole number of cells to keep the revealed
+/// footprint under the sprite. Without this an elevated unit over-reveals toward
+/// isometric south, and an aircraft lifts shroud under its shadow instead of
+/// under itself. The shift is applied unconditionally (independent of
+/// `reveal_by_height`).
 ///
 /// The height-LOS obstruction check is *not* affected by the shift: in the
-/// original engine the shift cancels out of the obstruction-cell math, leaving it
+/// engine the shift cancels out of the obstruction-cell math, leaving it
 /// relative to the raw foot cell. We reproduce that by adding `z_shift` back when
 /// computing the obstruction cell below.
+///
+/// `viewer_height_leptons` is the viewer's world Z — terrain elevation plus any
+/// flight altitude — because that is the single quantity the engine feeds to
+/// both the shift and the LOS viewer level.
 fn reveal_radius_into(
     vis: &mut OwnerVisibility,
     center_rx: u16,
     center_ry: u16,
     range: u16,
-    viewer_z: u8,
+    viewer_height_leptons: i32,
     reveal_by_height: bool,
     height_grid: Option<&[u8]>,
     width: u16,
     height: u16,
 ) {
-    // Z-shift the spiral center toward isometric north by z_level/2 cells. Rust's
-    // `position.z` is the integer height level, so this is the exact integer form
-    // of the original's screen-projection shift (each level is a multiple of 15
-    // leptons, so the float rounding fixups never change the cell result).
-    let viewer_level = viewer_z as i32;
-    let z_shift = viewer_level / 2;
+    // Sight 0 reveals nothing at all — not even the viewer's own cell. The
+    // engine's reveal kernel returns before the spiral, and its per-object entry
+    // point returns earlier still, so the 36 stock `Sight=0` types (fences, map
+    // lamps, spy/cargo/paradrop planes) never open a hole in the shroud.
+    if range == 0 {
+        return;
+    }
+
+    let viewer_level = viewer_height_leptons / LEPTONS_PER_HEIGHT_LEVEL;
+    let z_shift = iso_height_shift_cells(viewer_height_leptons);
     let cx = i32::from(center_rx) - z_shift;
     let cy = i32::from(center_ry) - z_shift;
     let w = i32::from(width);
@@ -622,14 +728,7 @@ fn reveal_radius_into(
 
     // Clamp range to MAX_SIGHT_RANGE (the original also clamps to 10).
     let clamped = (range as usize).min(MAX_SIGHT_RANGE as usize);
-
-    // For sight 0–9, use the exact spiral table.
-    let spiral_end = if clamped <= 9 {
-        REVEAL_RING_SIZES[clamped]
-    } else {
-        // Sight 10: use all 253 spiral entries (sight 0–9), then extend below.
-        REVEAL_RING_SIZES[9]
-    };
+    let spiral_end = REVEAL_RING_SIZES[clamped];
 
     for i in 0..spiral_end {
         let (dx, dy) = REVEAL_SPIRAL[i];
@@ -660,37 +759,21 @@ fn reveal_radius_into(
             vis.mark_visible(rx as u16, ry as u16);
         }
     }
-
-    // Sight 10 outer ring: the original's entries 253–308 use FUN_0042d470
-    // for coordinate conversion. Fall back to sqrt check for the extra cells.
-    if clamped >= 10 {
-        let rr = clamped as i32;
-        // Squared-distance comparison avoids f32 sqrt entirely.
-        // dist <= rr + 0.5  ↔  dist² <= (rr + 0.5)²  ↔  4*dist² <= (2*rr + 1)²
-        let diameter = 2 * rr + 1;
-        let range_sq_x4: i32 = diameter * diameter;
-        let min_x = (cx - rr).max(0);
-        let max_x = (cx + rr).min(w - 1);
-        let min_y = (cy - rr).max(0);
-        let max_y = (cy + rr).min(h - 1);
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                let dx = x - cx;
-                let dy = y - cy;
-                let dist_sq_x4: i32 = 4 * (dx * dx + dy * dy);
-                if dist_sq_x4 <= range_sq_x4 {
-                    vis.mark_visible(x as u16, y as u16);
-                }
-            }
-        }
-    }
 }
 
 /// Reveal spiral table extracted from the original engine.
 /// Each (dx, dy) is a cell offset from the revealing unit's position.
 /// Entries are ordered in expanding rings by sight radius.
+///
+/// Recovered whole from the engine's table initialiser, which writes every
+/// entry as a literal `(dy << 16) | dx` store or a two-argument coordinate
+/// call — the table itself lives in zero-initialised data, so reading the
+/// image gives nothing. Ring membership is exactly
+/// `max(|dx|,|dy|) + min(|dx|,|dy|)/2 == r` (truncating division), which
+/// independently reproduces all twelve cumulative counts in
+/// [`REVEAL_RING_SIZES`].
 #[rustfmt::skip]
-const REVEAL_SPIRAL: [(i8, i8); 253] = [
+const REVEAL_SPIRAL: [(i8, i8); 309] = [
     // Sight 0: 1 entry
     (0, 0),
     // Sight 1: entries 1..9 (8 new)
@@ -731,10 +814,21 @@ const REVEAL_SPIRAL: [(i8, i8); 253] = [
     (-8, -2), (8, -2), (-9, -1), (9, -1), (-9, 0), (9, 0), (-9, 1), (9, 1), (-8, 2), (8, 2),
     (-8, 3), (8, 3), (-7, 4), (7, 4), (-7, 5), (7, 5), (-6, 6), (6, 6), (-5, 7), (-4, 7),
     (4, 7), (5, 7), (-3, 8), (-2, 8), (2, 8), (3, 8), (-1, 9), (0, 9), (1, 9),
+    // Sight 10: entries 253..309 (56 new)
+    (-1, -10), (0, -10), (1, -10), (-3, -9), (-2, -9), (2, -9), (3, -9), (-5, -8), (-4, -8),
+    (4, -8), (5, -8), (-7, -7), (-6, -7), (6, -7), (7, -7), (-7, -6), (7, -6), (-8, -5), (8, -5),
+    (-8, -4), (8, -4), (-9, -3), (9, -3), (-9, -2), (9, -2), (-10, -1), (10, -1), (-10, 0),
+    (10, 0), (-10, 1), (10, 1), (-9, 2), (9, 2), (-9, 3), (9, 3), (-8, 4), (8, 4), (-8, 5),
+    (8, 5), (-7, 6), (7, 6), (-7, 7), (-6, 7), (6, 7), (7, 7), (-5, 8), (-4, 8), (4, 8), (5, 8),
+    (-3, 9), (-2, 9), (2, 9), (3, 9), (-1, 10), (0, 10), (1, 10),
 ];
 
-/// Cumulative entry count for each sight radius 0–10.
-/// To reveal cells for sight N, iterate `REVEAL_SPIRAL[0..REVEAL_RING_SIZES[N]]`.
+/// Cumulative entry count for each sight radius 0–10, read from the engine's
+/// read-only data. To reveal cells for sight N, iterate
+/// `REVEAL_SPIRAL[0..REVEAL_RING_SIZES[N]]`.
+///
+/// The table continues past this with 369 for sight 11, which the kernel's
+/// clamp to 10 makes unreachable for object reveals.
 const REVEAL_RING_SIZES: [usize; 11] = [1, 9, 21, 37, 61, 89, 121, 161, 205, 253, 309];
 
 /// Mirror/direction table for height-based LOS checks (RevealByHeight).
@@ -743,8 +837,12 @@ const REVEAL_RING_SIZES: [usize; 11] = [1, 9, 21, 37, 61, 89, 121, 161, 205, 253
 /// offset is added to the target cell position to find the obstruction cell — the
 /// cell one step closer to the viewer along the line of sight. If that cell's
 /// terrain Level exceeds `viewer_level + 3`, LOS is blocked.
+///
+/// Recovered from the engine's mirror-table initialiser the same way as
+/// [`REVEAL_SPIRAL`]. That table stops at 309 entries — one per spiral entry
+/// the sight clamp can reach — which is why this one does too.
 #[rustfmt::skip]
-const REVEAL_MIRROR: [(i8, i8); 253] = [
+const REVEAL_MIRROR: [(i8, i8); 309] = [
     // Sight 0: 1 entry
     (0, 0),
     // Sight 1: entries 1..9 (8 new)
@@ -785,6 +883,13 @@ const REVEAL_MIRROR: [(i8, i8); 253] = [
     (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0),
     (-1, 0), (1, -1), (-1, -1), (1, -1), (-1, -1), (1, -1), (-1, -1), (1, -1), (1, -1), (-1, -1),
     (-1, -1), (0, -1), (0, -1), (0, -1), (0, -1), (0, -1), (0, -1), (0, -1),
+    // Sight 10: entries 253..309 (56 new)
+    (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (1, 1), (1, 1), (-1, 1),
+    (-1, 1), (1, 1), (1, 1), (-1, 1), (-1, 1), (1, 1), (-1, 1), (1, 1), (-1, 1), (1, 1),
+    (-1, 1), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0),
+    (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, -1), (-1, -1), (1, -1), (-1, -1), (1, -1),
+    (-1, -1), (1, -1), (1, -1), (-1, -1), (-1, -1), (1, -1), (1, -1), (-1, -1), (-1, -1),
+    (0, -1), (0, -1), (0, -1), (0, -1), (0, -1), (0, -1), (0, -1),
 ];
 
 /// Public version of reveal_radius for use by external systems (e.g., RevealOnFire).
@@ -804,17 +909,31 @@ pub fn reveal_radius(
         .by_owner
         .entry(owner)
         .or_insert_with(|| OwnerVisibility::new(width, height));
-    // Fire-reveal events don't use height-based LOS (matches gamemd).
+    // Fire-reveal events don't use height-based LOS (matches gamemd), and the
+    // event carries no height of its own, so the centre is unshifted.
     reveal_radius_into(
         vis, center_rx, center_ry, range, 0, false, None, width, height,
     );
 }
 
-/// Apply SpySat full-map reveal: if any alive SpySat building exists for an owner,
-/// mark ALL cells visible+revealed for that owner. Call after normal vision recompute.
+/// Apply the SpySat map reveal: if any qualifying SpySat building exists for an
+/// owner, mark ALL cells **revealed** for that owner. Call after the normal
+/// vision recompute.
 ///
-/// Takes a list of owner names for each powered SpySat building currently alive.
-/// Power state filtering is done by the caller (see `refresh_fog`).
+/// gamemd's whole-map reveal sets only the explored bit on every cell. It does
+/// not create a "currently in sight" state — with `FogOfWar=no` no such per-cell
+/// state exists at all — so the uplink lifts the shroud and nothing more. It
+/// must not mark cells *visible* here: that layer is VERA-internal and gates
+/// combat target acquisition, so writing it map-wide would let every unit
+/// acquire across the whole map, which the engine never does.
+///
+/// Because the explored bit is monotonic, writing it repeatedly is idempotent:
+/// the reveal survives a power dip and outlives the tick that set it, matching
+/// the engine's edge-triggered one-shot. The reveal is withdrawn by
+/// `reset_explored_for_owner` when the last uplink dies or is sold.
+///
+/// Takes a list of owner names for each SpySat building currently qualifying.
+/// Qualification filtering is done by the caller (see `refresh_fog`).
 pub fn apply_spy_sat(
     fog: &mut FogState,
     spy_sat_owners: &[InternedId],
@@ -828,7 +947,7 @@ pub fn apply_spy_sat(
             .entry(owner_id)
             .or_insert_with(|| OwnerVisibility::new(width, height));
         for cell in &mut vis.cells {
-            *cell |= FLAG_VISIBLE | FLAG_REVEALED;
+            *cell |= FLAG_REVEALED;
         }
     }
 }

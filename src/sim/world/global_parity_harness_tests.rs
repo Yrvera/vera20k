@@ -270,8 +270,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // still reproduces BOTH of its legacy probes unchanged across the whole slice —
 // its 16-tick fixture never reaches the first scan — so the composition half
 // remains isolated and behaviour-free, and everything moving here is behaviour.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x82CB_DEB6_D420_C87D;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xDEE3_A8DD_07F3_ACF5;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x0AD5_2F42_50DD_A207;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x45AF_4B06_DD1F_DDB0;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -363,7 +363,20 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xDEE3_A8DD_07F3_ACF5;
 /// determinism assertion passes, so no draw was added, removed or rescheduled;
 /// this is a route/position change. `POSITION_FINGERPRINT` and the slice6
 /// constants also held.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xE57B_CA55_CBF8_957E;
+/// Re-baselined 2026-08-04, FOURTH time this session, for the final Phase 5
+/// batch. ATTRIBUTION IS COARSE and deliberately recorded as such: three
+/// file-disjoint builders landed together, so the shift carries the infantry
+/// A* wiring (which made the terrain sub-cell fix reach the search for the
+/// first time), the terrain-speed clamp removal and re-ordering, the Move
+/// arrival hook, and the Sight=0 reveal gate. No single-cause experiment was
+/// run. What IS established: `FINAL_STREAM_STATES` is byte-identical across
+/// all three streams and the intra-run determinism assertion passes, so RNG
+/// routing is unchanged and this is a route/position shift.
+/// A reviewer flagged that four prose-justified re-baselines in one session
+/// erodes the ratchet. That criticism is recorded and stands: these constants
+/// are a Rust-vs-prior-Rust regression ratchet, not parity evidence, and they
+/// need a machine-derived oracle before they can carry more weight than that.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x246B_C2E2_4BD9_BB9B;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -769,7 +782,7 @@ fn dense_converging_setup() -> (
 /// written up at `FINAL_STREAM_STATES`.
 /// Re-baselined 2026-08-04 with FINAL_STREAM_STATES for the same
 /// constructed-`Rate` change; see the provenance note there.
-const POSITION_FINGERPRINT: u64 = 0xAAFD_8C9A_DACA_C22C;
+const POSITION_FINGERPRINT: u64 = 0xDAB1_2FB8_5CC1_2C93;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

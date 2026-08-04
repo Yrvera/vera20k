@@ -569,6 +569,13 @@ const PASSIVE_TARGET_CLEAR_MISSIONS: [MissionType; 12] = [
 /// even with `OpportunityFire=no`, which is why idle units and base defences
 /// engage at all (no stock base defence carries `OpportunityFire`).
 ///
+/// The three-mission admission is the caller's, and it is exhaustive: the
+/// original tests the mission slot against 2, then 10, then 5, and skips the
+/// whole block otherwise. **Area Guard is not in that set on purpose** — its
+/// own handler owns its acquisition (see `evaluate_foot_area_guard`), so
+/// widening this predicate would scan such an object twice per cadence and
+/// double its scanner RNG draw.
+///
 /// Deferred, deliberately (recorded, not approximated): the AI-team Move
 /// shortcut at the head of the original's gate (needs a live team; there is no
 /// AI opponent yet), the two Move sub-branches whose INI keys are unresolved,
@@ -657,8 +664,14 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
                     MissionType::Move,
                 ))
             } else {
-                // FootClass::Mission_Move returns one frame after an unqueued arrival.
-                MissionHandlerEvaluation::cadence(1)
+                // The arrival branch. `FootClass::Mission_Move` calls the class
+                // arrival hook and returns one frame; the hook is the ONLY
+                // thing that takes an object back off Move. Without it a
+                // finished move order leaves the unit on Move for the rest of
+                // the match, re-dispatched every single frame instead of
+                // settling onto Guard's cadence — and never eligible for the
+                // Guard-only arm of the passive-acquire gate.
+                move_arrival_evaluation(rules, input)
             }
         }
         // `UnitClass::Mission_Attack @ 0x007447A0` is a tail jump to
@@ -677,6 +690,7 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
                 delay,
                 clear_stale_attack_target: input.has_attack_target
                     && attack_target_is_stale(sim, id),
+                clear_attack_target: false,
                 queue: None,
             }
         }
@@ -703,6 +717,14 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Sticky)) => {
             evaluate_foot_guard_cadence(sim, rules, MissionType::Sticky, input.bunker_delegate)
         }
+        // Area Guard is NOT a Guard alias — it has its own slot and its own
+        // handler, and that handler owns its acquisition. The common Techno AI
+        // body's passive-acquire block admits missions {Move, Harvest, Guard}
+        // and nothing else, so an Area Guard object is deliberately never
+        // scanned there; this arm is its single acquisition route.
+        (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::AreaGuard)) => {
+            evaluate_foot_area_guard(sim, id, rules)
+        }
         // `FootClass::Mission_Hunt`: the observed Capture/Sabotage/Move routes
         // need an authoritative selector. Until one exists, retain its cadence
         // and do not manufacture a target or queued mission.
@@ -728,9 +750,12 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
         },
     };
 
-    if evaluation.clear_stale_attack_target {
+    if evaluation.clear_stale_attack_target || evaluation.clear_attack_target {
         if let Some(entity) = sim.substrate.entities.get_mut(id) {
             entity.attack_target = None;
+            if evaluation.clear_attack_target {
+                entity.passively_acquired_target = false;
+            }
         }
     }
     if let Some(queued_mission) = evaluation.queue {
@@ -771,6 +796,9 @@ struct MissionHandlerInput {
 struct MissionHandlerEvaluation {
     delay: i32,
     clear_stale_attack_target: bool,
+    /// The handler itself dropped the shoot-at target (the arrival hook's
+    /// `Assign_Target(NULL)`), as opposed to the stale-handle cleanup above.
+    clear_attack_target: bool,
     queue: Option<MissionType>,
 }
 
@@ -779,6 +807,7 @@ impl MissionHandlerEvaluation {
         Self {
             delay,
             clear_stale_attack_target: false,
+            clear_attack_target: false,
             queue: None,
         }
     }
@@ -787,9 +816,128 @@ impl MissionHandlerEvaluation {
         Self {
             delay,
             clear_stale_attack_target: false,
+            clear_attack_target: false,
             queue: Some(mission),
         }
     }
+}
+
+/// The Move handler's arrival hook, reduced to the parts VERA can commit.
+///
+/// `UnitClass`'s override, ordinary-vehicle arm: drop the shoot-at target,
+/// clear the destination, then queue **Guard**. `InfantryClass`'s override: a
+/// live target queues **Attack** and the target is *kept*; otherwise Guard —
+/// and the whole infantry selector is skipped when the *current* mission's
+/// control entry carries `Zombie=` or `Paralyzed=` (both absent from `[Move]`,
+/// so on this path they never fire; they are read anyway because the gate is on
+/// the object's own mission slot and a later caller may arrive on another one).
+///
+/// The destination clear is a no-op here by construction — this branch is only
+/// taken when nothing is moving or queued, which is exactly the state
+/// `Set_Destination(NULL, true)` produces.
+///
+/// Deliberately NOT represented, each recorded rather than guessed:
+/// - the vehicle Unload / Harvest arms and the Area-Guard promotion, which key
+///   off house-threat, deploy and harvester type fields VERA does not model;
+/// - the infantry Guard-vs-Area-Guard choice, same reason — the ordinary arm
+///   for a player-controlled infantryman with no veteran self-heal ability is
+///   Guard, which is what this returns;
+/// - the vehicle suppression byte that skips the queue entirely (its writer is
+///   UNKNOWN, so modelling it would be inventing a gate);
+/// - the base hook's two EARLY returns, which suppress the whole selector for
+///   that arrival: a NavQueue pop, and a locomotor piggyback unwind. Both are
+///   inert here — `nav_queue` still has no production writer, and the piggyback
+///   unwind runs in the movement phase — but a future NavQueue writer must
+///   restore the early return or a waypointed unit will fall to Guard at the
+///   first leg instead of continuing to the next one.
+fn move_arrival_evaluation(
+    rules: &RuleSet,
+    input: MissionHandlerInput,
+) -> MissionHandlerEvaluation {
+    let infantry = input.category == EntityCategory::Infantry;
+    if infantry {
+        let frozen = rules
+            .mission_control
+            .entry(MissionType::Move)
+            .is_some_and(|entry| entry.zombie || entry.paralyzed);
+        if frozen {
+            return MissionHandlerEvaluation::cadence(1);
+        }
+        let next = if input.has_attack_target {
+            MissionType::Attack
+        } else {
+            MissionType::Guard
+        };
+        return MissionHandlerEvaluation::queue(1, next);
+    }
+    MissionHandlerEvaluation {
+        delay: 1,
+        clear_stale_attack_target: false,
+        clear_attack_target: true,
+        queue: Some(MissionType::Guard),
+    }
+}
+
+/// Smallest value of the Area Guard cadence jitter draw (`RandomRanged(1, 5)`).
+/// Every other absorbed handler draws `(0, 2)`; this one does not.
+const AREA_GUARD_CADENCE_JITTER_MIN: u32 = 1;
+/// Largest value of the Area Guard cadence jitter draw (`RandomRanged(1, 5)`).
+const AREA_GUARD_CADENCE_JITTER_MAX: u32 = 5;
+
+/// `FootClass::Mission_AreaGuard` — "hold this spot and cover it".
+///
+/// With no target installed and the base can-acquire predicate satisfied, the
+/// handler runs the SAME shared target scanner the common AI body runs for
+/// Move/Guard/Harvest, but with the Area Guard threat mask (which is what
+/// widens the acquisition radius — see `combat::threat_range`). If that
+/// installs a target the handler returns one frame. Otherwise the cadence is
+/// the object's own `[Area Guard] Rate` plus a `RandomRanged(1, 5)` draw.
+///
+/// Deliberately NOT represented, recorded:
+/// - **the guard post.** The original anchors the scan on a stored guard-post
+///   target, defaulting it to the object's own cell the first time the handler
+///   runs with none. VERA has no such field, so the scan is always anchored on
+///   the object — identical while the object is standing on its post, which is
+///   the state Area Guard exists to hold.
+/// - **the post leash.** When the object drifts further from its post than its
+///   own area-guard range, the original drops the target and sends it home.
+///   Nothing in VERA moves an Area Guard object off its post today.
+/// - **the aircraft cadence doubling** (the original doubles the rate for
+///   aircraft only, and aircraft never reach this arm) and the extra
+///   short-range close-band divisor, whose second gate is an unresolved
+///   infantry type flag.
+/// - one further per-object predicate the original checks between can-acquire
+///   and the scan, whose identity is UNKNOWN.
+fn evaluate_foot_area_guard(
+    sim: &mut Simulation,
+    id: u64,
+    rules: &RuleSet,
+) -> MissionHandlerEvaluation {
+    let needs_target = sim
+        .substrate
+        .entities
+        .get(id)
+        .is_some_and(|entity| entity.attack_target.is_none());
+    if needs_target && can_acquire_target(sim, id, rules) {
+        passive_target_scan(sim, id, rules, MissionType::AreaGuard);
+        let acquired = sim
+            .substrate
+            .entities
+            .get(id)
+            .is_some_and(|entity| entity.attack_target.is_some());
+        if acquired {
+            // The original returns one frame the moment the scan installs a
+            // target, ahead of the cadence tail — so this path draws the
+            // scanner's jitter and NOT the `(1, 5)` cadence jitter.
+            return MissionHandlerEvaluation::cadence(1);
+        }
+    }
+    let base = mission_cadence(rules, MissionType::AreaGuard);
+    let jitter = sim
+        .scenario_rng
+        .next_range_u32_inclusive(AREA_GUARD_CADENCE_JITTER_MIN, AREA_GUARD_CADENCE_JITTER_MAX)
+        as i32;
+    MissionHandlerEvaluation::cadence(base.saturating_add(jitter))
 }
 
 /// `FootClass::Mission_Guard`, the body Guard(5) and Sticky(6) share.
@@ -2170,11 +2318,12 @@ mod tests {
 
     #[test]
     fn a_unit_that_finished_a_move_order_still_acquires_and_shoots() {
-        // The dominant case in real play, and the one every other test here
-        // misses: a unit is ordered somewhere, arrives, and sits. VERA commits
-        // the Move selector on the way in and nothing writes it back, so read
-        // literally the unit would be deaf for the rest of the match — five
-        // Grizzlies sent to a chokepoint would watch an enemy drive past.
+        // The dominant case in real play: a unit is ordered somewhere, arrives,
+        // and sits. Five Grizzlies sent to a chokepoint must not watch an enemy
+        // drive past. Since the Move handler's arrival hook landed, the unit
+        // gets there the way retail does — the hook drops the target, queues
+        // Guard, and the host promotes it — rather than by the derived-reading
+        // bridge that used to carry it while the selector stayed stuck on Move.
         let rules = passive_rules();
         let heights: std::collections::BTreeMap<(u16, u16), u8> = std::collections::BTreeMap::new();
         let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
@@ -2213,8 +2362,8 @@ mod tests {
         let tank = sim.substrate.entities.get(1).expect("tank present");
         assert_eq!(
             tank.mission.current().known(),
-            Some(MissionType::Move),
-            "precondition: the committed selector really does stay Move after arrival"
+            Some(MissionType::Guard),
+            "the arrival hook committed Guard — the unit must not be left on Move"
         );
         assert!(
             tank.movement_target.is_none(),
@@ -3267,10 +3416,17 @@ mod tests {
     /// second timer where the original installs its own, much shorter one.
     #[test]
     fn overridden_leaf_handlers_are_left_alone_by_the_default_arm() {
+        // Area Guard used to sit in this list; it now has an absorbed handler
+        // arm of its own, so the dispatcher reaches it and re-arms its timer.
+        // `base_mission_handler_delay` still reports `None` for it — the two
+        // facts are independent.
+        assert_eq!(
+            base_mission_handler_delay(EntityCategory::Unit, Some(MissionType::AreaGuard)),
+            None
+        );
         for (category, mission) in [
             (EntityCategory::Unit, MissionType::Enter),
             (EntityCategory::Unit, MissionType::Unload),
-            (EntityCategory::Unit, MissionType::AreaGuard),
             // Repair overrides on Units even though it is a stub on Infantry.
             (EntityCategory::Unit, MissionType::Repair),
             (EntityCategory::Infantry, MissionType::Enter),
@@ -3338,6 +3494,166 @@ mod tests {
         assert_eq!(
             sim.scenario_rng.logical_state(),
             expected_rng.logical_state()
+        );
+    }
+
+    /// A vehicle that finishes a move order drops its shoot-at target and
+    /// queues Guard — the arrival hook's ordinary-vehicle arm. Without this the
+    /// unit stays on Move for the rest of the match.
+    #[test]
+    fn move_arrival_drops_the_vehicle_target_and_queues_guard() {
+        let mut sim = Simulation::with_seed(0x7389);
+        let rules = move_cadence_rules();
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        unit.attack_target = Some(AttackTarget::new(2));
+        unit.passively_acquired_target = true;
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Move);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, unit);
+        let before_rng = sim.scenario_rng.logical_state();
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        let entity = sim.substrate.entities.get(1).expect("fixture entity");
+        assert_eq!(
+            entity.mission.queued(),
+            MissionId::from_known(MissionType::Guard)
+        );
+        assert!(
+            entity.attack_target.is_none(),
+            "Assign_Target(NULL) on arrival"
+        );
+        assert!(!entity.passively_acquired_target);
+        assert_eq!(
+            entity.mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 1),
+            "the arrival branch still returns one frame"
+        );
+        // The arrival branch draws nothing: the jitter belongs to the still-
+        // moving branch only.
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    /// Infantry's arrival selector is NOT the vehicle one: a live target queues
+    /// Attack and the target is kept, where a vehicle would drop it and fall to
+    /// Guard.
+    #[test]
+    fn move_arrival_promotes_an_infantry_target_to_attack() {
+        let mut sim = Simulation::with_seed(0x51CB);
+        let rules = move_cadence_rules();
+        let mut man = entity_of(1, EntityCategory::Infantry);
+        man.attack_target = Some(AttackTarget::new(2));
+        update_mission_test_fixture(&mut man.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Move);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, man);
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        let entity = sim.substrate.entities.get(1).expect("fixture entity");
+        assert_eq!(
+            entity.mission.queued(),
+            MissionId::from_known(MissionType::Attack)
+        );
+        assert!(
+            entity.attack_target.is_some(),
+            "the infantry arm keeps the target it promotes"
+        );
+    }
+
+    /// A targetless infantryman arriving falls to Guard, same as a vehicle.
+    #[test]
+    fn move_arrival_queues_guard_for_a_targetless_infantryman() {
+        let mut sim = Simulation::with_seed(0x51CC);
+        let rules = move_cadence_rules();
+        let mut man = entity_of(1, EntityCategory::Infantry);
+        update_mission_test_fixture(&mut man.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Move);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, man);
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .expect("fixture entity")
+                .mission
+                .queued(),
+            MissionId::from_known(MissionType::Guard)
+        );
+    }
+
+    /// The infantry arrival selector is skipped entirely when the mission the
+    /// object arrived ON carries `Zombie=` or `Paralyzed=`. `[Move]` carries
+    /// neither in stock rules, so this uses a fixture that sets one.
+    #[test]
+    fn move_arrival_infantry_selector_is_skipped_by_a_paralyzed_move_entry() {
+        let mut sim = Simulation::with_seed(0x51CD);
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\n\n[Move]\nRate=.016\nParalyzed=yes\n",
+        ))
+        .expect("paralyzed move rules parse");
+        let mut man = entity_of(1, EntityCategory::Infantry);
+        update_mission_test_fixture(&mut man.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Move);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, man);
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        let entity = sim.substrate.entities.get(1).expect("fixture entity");
+        assert_eq!(entity.mission.queued(), MissionId::NONE);
+        assert_eq!(
+            entity.mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 1)
+        );
+    }
+
+    /// Area Guard has its own handler and its own cadence: `[Area Guard]
+    /// Rate=.040` is 36 frames, and the jitter draw is `RandomRanged(1, 5)` —
+    /// NOT the `(0, 2)` every other absorbed handler takes. The fixture type
+    /// carries no weapon, so the can-acquire predicate fails and the scan (with
+    /// its own separate draw) never runs.
+    #[test]
+    fn area_guard_rearms_at_its_own_rate_with_a_one_to_five_jitter() {
+        let mut sim = Simulation::with_seed(0x4D6A);
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\n\n[Guard]\nRate=.030\n\n[Area Guard]\nRate=.040\nAARate=.032\n",
+        ))
+        .expect("area guard cadence rules parse");
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::AreaGuard);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, unit);
+        let mut expected_rng = sim.clone_scenario_rng();
+        let jitter = expected_rng.next_range_u32_inclusive(1, 5) as i32;
+        assert!((1..=5).contains(&jitter));
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .expect("fixture entity")
+                .mission
+                .dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 36 + jitter),
+            "[Area Guard] Rate=.040 is 36 frames; [Guard] Rate=.030 would be 27"
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state(),
+            "exactly one RandomRanged(1, 5) and nothing else"
         );
     }
 

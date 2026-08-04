@@ -3799,7 +3799,11 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
         e1_id,
         EntityCategory::Infantry,
         0,
-        0,
+        // Sight=1. This test used to pass 0 and lean on VERA revealing a
+        // sight-0 object's own cell; gamemd reveals nothing at all for
+        // Sight=0 (36 stock types carry it), so a zero here would test the
+        // sight gate rather than fog persistence.
+        1,
         false,
     );
     sim.substrate.entities.insert(ge);
@@ -3811,14 +3815,15 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
     assert!(sim.fog.is_cell_revealed(americans, 1, 1));
 
     let _ = (sx, sy); // suppress unused warning
+    // Far enough that (1,1) leaves a Sight=1 reveal disc entirely.
     if let Some(e) = sim.substrate.entities.get_mut(1) {
-        e.position.rx = 2;
+        e.position.rx = 6;
         e.position.ry = 1;
     }
     let _ = sim.advance_tick(&[], None, &empty_heights(), Some(&grid), None, 33);
     assert!(!sim.fog.is_cell_visible(americans, 1, 1));
     assert!(sim.fog.is_cell_revealed(americans, 1, 1));
-    assert!(sim.fog.is_cell_visible(americans, 2, 1));
+    assert!(sim.fog.is_cell_visible(americans, 6, 1));
 }
 
 #[test]
@@ -4173,6 +4178,7 @@ fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
         None,
         0,
         false,
+        false,
     );
     assert!(
         path_initial.is_some(),
@@ -4196,6 +4202,7 @@ fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
         None,
         None,
         0,
+        false,
         false,
     );
     assert!(

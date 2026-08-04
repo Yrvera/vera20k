@@ -232,3 +232,83 @@ fn pursuit_uses_same_range_as_combat_no_oscillation() {
         "at exactly weapon range, pursuit must halt (matches combat tick range check)"
     );
 }
+
+/// **Sticky never chases.** Guard(5) and Sticky(6) share one mission handler,
+/// and the single place the engine tells them apart is here: when the object
+/// cannot already fire at its target, a Sticky object drops both the target and
+/// the destination and produces no pursuit cell — ahead of the fallthrough that
+/// lets a Guard-family object pursue. That is the whole of `[Sticky]`'s "just
+/// like guard mode, but cannot move". Stock skirmish maps park neutral civilian
+/// traffic on this mission (46 authored placements across the stock MP bundle,
+/// 17 on one map), so without it a shot-at civilian truck drives at the shooter.
+#[test]
+fn sticky_drops_the_target_instead_of_chasing_it() {
+    let mut civilian = make_unit(1, "MTNK", "Americans", 0, 0, 300);
+    civilian.attack_target = Some(AttackTarget::new(2));
+    civilian
+        .mission
+        .apply_test_fixture(crate::sim::mission::state::MissionTestFixture {
+            current: crate::sim::mission::MissionId::from_known(
+                crate::sim::mission::MissionType::Sticky,
+            ),
+            suspended: crate::sim::mission::MissionId::NONE,
+            queued: crate::sim::mission::MissionId::NONE,
+            movement_bypass_latch: 0,
+            handler_state: 0,
+            mission_start_frame: 0,
+            ai_counter: 0,
+            dispatch_timer: crate::sim::mission::MissionDispatchTimer::at_frame(0),
+        });
+    // 105mm Range=6; the Rhino sits at 10 cells, so the can-fire-at query fails.
+    let rhino = make_unit(2, "HTNK", "Soviet", 10, 0, 400);
+    let (mut sim, grid) = make_sim(vec![civilian, rhino]);
+    let rules = pursuit_rules();
+
+    sim.tick_attack_pursuit(&rules, Some(&grid));
+
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert!(
+        entity.attack_target.is_none(),
+        "Sticky drops the target it cannot shoot"
+    );
+    assert!(
+        entity.movement_target.is_none(),
+        "Sticky produces no pursuit cell"
+    );
+    assert!(entity.navigation.nav_com.is_none());
+}
+
+/// The same object on Guard — the mission Sticky shares its handler with —
+/// still pursues. This is the tripwire proving the clause keys on the mission
+/// id and not on something both missions share.
+#[test]
+fn guard_still_chases_where_sticky_would_not() {
+    let mut guard = make_unit(1, "MTNK", "Americans", 0, 0, 300);
+    guard.attack_target = Some(AttackTarget::new(2));
+    guard
+        .mission
+        .apply_test_fixture(crate::sim::mission::state::MissionTestFixture {
+            current: crate::sim::mission::MissionId::from_known(
+                crate::sim::mission::MissionType::Guard,
+            ),
+            suspended: crate::sim::mission::MissionId::NONE,
+            queued: crate::sim::mission::MissionId::NONE,
+            movement_bypass_latch: 0,
+            handler_state: 0,
+            mission_start_frame: 0,
+            ai_counter: 0,
+            dispatch_timer: crate::sim::mission::MissionDispatchTimer::at_frame(0),
+        });
+    let rhino = make_unit(2, "HTNK", "Soviet", 10, 0, 400);
+    let (mut sim, grid) = make_sim(vec![guard, rhino]);
+    let rules = pursuit_rules();
+
+    sim.tick_attack_pursuit(&rules, Some(&grid));
+
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert!(entity.attack_target.is_some());
+    assert!(
+        entity.movement_target.is_some(),
+        "Guard is not short-circuited"
+    );
+}

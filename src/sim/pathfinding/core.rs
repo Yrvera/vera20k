@@ -895,7 +895,17 @@ pub fn astar_search(
     };
 
     let goal_cell = grid.cell(goal.0, goal.1).unwrap_or(&DEFAULT_BLOCKED_CELL);
-    let goal_height = if !options.is_infantry && goal_bridge_ok {
+    // Bridge-deck destinations resolve to the deck height for every mover.
+    //
+    // This deliberately does NOT except infantry. A former `!is_infantry` guard
+    // here ("infantry always target ground level at bridge destinations") was
+    // inert for as long as the flag was never set by any production caller, and
+    // it carries no source: stock YR infantry walk over high bridges on every
+    // bridge map, so forcing an infantry move order onto a deck cell to aim at
+    // the ground beneath it would break ordinary bridge crossings. The flag now
+    // reaches this function, so the guard is removed rather than silently
+    // switched on.
+    let goal_height = if goal_bridge_ok {
         goal_cell.bridge_deck_level
     } else {
         goal_cell.ground_level
@@ -2445,6 +2455,7 @@ pub fn find_path_with_costs(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     find_path_with_costs_marker(
         grid,
@@ -2458,6 +2469,7 @@ pub fn find_path_with_costs(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -2474,6 +2486,7 @@ pub fn find_path_with_costs_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     let steps = astar_search(
         grid,
@@ -2487,6 +2500,7 @@ pub fn find_path_with_costs_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             movement_zone,
             resolved_terrain,
             ..Default::default()
@@ -2509,6 +2523,7 @@ pub fn find_path_with_costs_corridor(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     find_path_with_costs_corridor_marker(
         grid,
@@ -2524,6 +2539,7 @@ pub fn find_path_with_costs_corridor(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -2542,6 +2558,7 @@ pub fn find_path_with_costs_corridor_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     let steps = astar_search(
         grid,
@@ -2556,6 +2573,7 @@ pub fn find_path_with_costs_corridor_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             movement_zone,
             resolved_terrain,
             ..Default::default()
@@ -2581,6 +2599,7 @@ pub(crate) fn find_path_with_costs_hierarchy_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     Some(
         find_path_with_costs_hierarchy_marker_progress(
@@ -2599,6 +2618,7 @@ pub(crate) fn find_path_with_costs_hierarchy_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
         )?
         .path,
     )
@@ -2628,6 +2648,7 @@ pub(crate) fn find_path_with_costs_hierarchy_marker_progress(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<HierarchyMarkerPathResult> {
     let progress = HierarchyProgressTracker::new(start, level0_path);
     let steps = astar_search(
@@ -2648,6 +2669,7 @@ pub(crate) fn find_path_with_costs_hierarchy_marker_progress(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             movement_zone,
             resolved_terrain,
             ..Default::default()
@@ -2679,6 +2701,7 @@ pub(crate) fn find_layered_path_hierarchy_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<LayeredPathStep>> {
     if !matches!(start_layer, MovementLayer::Ground | MovementLayer::Bridge) {
         return None;
@@ -2704,6 +2727,7 @@ pub(crate) fn find_layered_path_hierarchy_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             movement_zone,
             ..Default::default()
         },
@@ -2766,6 +2790,7 @@ pub fn find_layered_path(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<LayeredPathStep>> {
     find_layered_path_marker(
         grid,
@@ -2780,6 +2805,7 @@ pub fn find_layered_path(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -2797,6 +2823,7 @@ pub fn find_layered_path_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<LayeredPathStep>> {
     if !matches!(start_layer, MovementLayer::Ground | MovementLayer::Bridge) {
         return None;
@@ -2815,6 +2842,7 @@ pub fn find_layered_path_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             ..Default::default()
         },
     )

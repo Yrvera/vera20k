@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 
 use crate::map::terrain::{HEIGHT_STEP, iso_to_screen, screen_to_iso};
 use crate::render::gpu::GpuContext;
+use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
 
 const SHADER_SRC: &str = include_str!("shroud_multiply.wgsl");
@@ -26,13 +27,62 @@ const NEUTRAL: u8 = 0x7F;
 /// ABuffer black value — 0x00 = fully shrouded.
 const BLACK: u8 = 0x00;
 
-/// ABuffer half-bright value (~0.5 * NEUTRAL) — friendly gap generator fog.
-const FOG_HALF: u8 = 0x3F;
-
 /// SHP transparent pixel marker — skip (don't overwrite buffer).
 const TRANSPARENT: u8 = 0xFE;
 const SHROUD_CELL_PAD: i32 = 8;
 const SHROUD_HEIGHT_PAD_LEVELS: f32 = 16.0;
+
+/// What the shroud brightness buffer writes for one cell.
+///
+/// Split out of the rebuild loop so the decision can be tested without a GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CellFill {
+    /// Leave the neutral value — nothing to darken here.
+    None,
+    /// Blit this SHROUD.SHP frame.
+    Frame(usize),
+    /// Fill the computed diamond with the fully-shrouded value.
+    Dark,
+}
+
+/// Decide what one cell contributes to the shroud brightness buffer.
+///
+/// The original engine picks a SHROUD.SHP frame from one cell field — the
+/// explored bit — and from nothing else. Its shroud renderer never sees gap
+/// coverage: an exhaustive program-wide scan for the instruction that clears
+/// the explored bits finds it only in the three map-wide shroud resets and in
+/// the dormant shroud-regrow path, none of them reachable from a gap
+/// generator.
+///
+/// Gap coverage is nevertheless still darkened here for *hostile* viewers. The
+/// retail bubble does black out the victim's view — through a separate overlay
+/// subsystem that has not been decompiled — so removing it would lose real
+/// behaviour; it is composited through this buffer as an approximation, and
+/// that residual belongs to the gap-generator row. What is gone is the
+/// half-bright fill that used to be painted over the generator's **own**
+/// territory: no such constant exists anywhere in the retail shroud path, and
+/// it dimmed the owner's own base by half for the rest of the match.
+pub(crate) fn cell_fill(
+    fog: &FogState,
+    owner: InternedId,
+    rx: u16,
+    ry: u16,
+    lut: &[u8; 256],
+) -> CellFill {
+    // Unexplored, or under a hostile gap generator -> full black.
+    if !fog.is_cell_revealed(owner, rx, ry) || fog.is_cell_gap_covered(owner, rx, ry) {
+        return CellFill::Dark;
+    }
+    let bitmask = fog.shroud_edge_mask_8bit(owner, rx, ry);
+    if bitmask == 0 {
+        return CellFill::None; // Fully revealed — already bright.
+    }
+    match lut[bitmask as usize] {
+        0xFF => CellFill::None,
+        0xFE => CellFill::Frame(15),
+        idx => CellFill::Frame(idx as usize),
+    }
+}
 
 /// Warn once if `height_grid` is `None` after world init. The app normally
 /// derives this from the current `PathGrid`; missing data falls back to z=0
@@ -354,34 +404,14 @@ impl ShroudBuffer {
                     continue;
                 }
 
-                // Unexplored OR under a hostile gap generator -> full black.
-                if !fog.is_cell_revealed(owner, rx, ry) || fog.is_cell_gap_covered(owner, rx, ry) {
-                    self.blit_dark_diamond(vx, vy, vp_w, vp_h);
-                    continue;
-                }
-
-                // Friendly (own/allied) gap generator -> half-bright fog.
-                if fog.is_cell_gap_fog(owner, rx, ry) {
-                    self.blit_diamond(vx, vy, vp_w, vp_h, FOG_HALF);
-                    continue;
-                }
-
-                let bitmask = fog.shroud_edge_mask_8bit(owner, rx, ry);
-                if bitmask == 0 {
-                    continue; // Fully revealed — already bright.
-                }
-                let lut_val = self.lut[bitmask as usize];
-                match lut_val {
-                    0xFF => continue,
-                    0xFE => {
-                        // Fully surrounded by shroud — use SHP frame 15
-                        // (full 60x30 black diamond). Adjacent cells' frames
-                        // cover frame 15's missing row-0 tip.
-                        self.blit_frame(15, vx, vy, vp_w, vp_h);
-                    }
-                    idx => {
-                        self.blit_frame(idx as usize, vx, vy, vp_w, vp_h);
-                    }
+                let fill = cell_fill(fog, owner, rx, ry, &self.lut);
+                match fill {
+                    CellFill::None => continue,
+                    CellFill::Dark => self.blit_dark_diamond(vx, vy, vp_w, vp_h),
+                    // Fully surrounded by shroud resolves to SHP frame 15 (a
+                    // full 60x30 diamond). Adjacent cells' frames cover frame
+                    // 15's missing row-0 tip.
+                    CellFill::Frame(idx) => self.blit_frame(idx, vx, vy, vp_w, vp_h),
                 }
             }
         }
@@ -515,6 +545,93 @@ impl ShroudBuffer {
         }
         let idx = vy as usize * self.row_stride as usize + vx as usize;
         self.pixels.get(idx).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::intern;
+    use crate::sim::vision::apply_gap_generators;
+
+    /// A 5x5 explored block so the centre cell has all eight neighbours
+    /// explored and therefore needs no edge frame of its own.
+    fn explored_block(fog: &mut FogState, owner: InternedId) {
+        for ry in 4..=8u16 {
+            for rx in 4..=8u16 {
+                fog.mark_visible_for_owner(owner, rx, ry);
+            }
+        }
+    }
+
+    fn fog_16() -> FogState {
+        FogState {
+            width: 16,
+            height: 16,
+            ..Default::default()
+        }
+    }
+
+    /// The generator's own ground stays at full brightness.
+    ///
+    /// VERA painted a flat half-bright field over it — a constant with no
+    /// counterpart anywhere in the retail shroud path, which dimmed the
+    /// owner's own base by roughly half over a radius-11 circle for the rest
+    /// of the match.
+    #[test]
+    fn a_friendly_gap_generator_does_not_darken_its_owners_ground() {
+        let owner = intern::test_intern("Americans");
+        let interner = intern::test_interner();
+        let mut fog = fog_16();
+        explored_block(&mut fog, owner);
+        apply_gap_generators(&mut fog, &[(owner, 6, 6, 2)], &interner);
+
+        assert!(
+            fog.is_cell_gap_fog(owner, 6, 6),
+            "the sim still records friendly gap coverage for other consumers"
+        );
+        assert_eq!(
+            cell_fill(&fog, owner, 6, 6, &SHROUD_EDGE_LUT),
+            CellFill::None,
+            "the shroud buffer must leave the generator's own ground alone"
+        );
+    }
+
+    /// The victim's half of the bubble is unchanged. Retail darkens it through
+    /// a different subsystem; compositing it here is an approximation this row
+    /// deliberately leaves in place rather than removing behaviour blind.
+    #[test]
+    fn a_hostile_gap_generator_still_blacks_the_cell_out() {
+        let victim = intern::test_intern("Soviet");
+        let gapper = intern::test_intern("Americans");
+        let interner = intern::test_interner();
+        let mut fog = fog_16();
+        explored_block(&mut fog, victim);
+        apply_gap_generators(&mut fog, &[(gapper, 6, 6, 2)], &interner);
+
+        assert_eq!(
+            cell_fill(&fog, victim, 6, 6, &SHROUD_EDGE_LUT),
+            CellFill::Dark
+        );
+    }
+
+    #[test]
+    fn unexplored_ground_is_dark_and_a_shroud_boundary_picks_a_frame() {
+        let owner = intern::test_intern("Americans");
+        let mut fog = fog_16();
+        explored_block(&mut fog, owner);
+
+        assert_eq!(
+            cell_fill(&fog, owner, 12, 12, &SHROUD_EDGE_LUT),
+            CellFill::Dark,
+            "never-explored ground is fully shrouded"
+        );
+        // A corner of the explored block borders shroud on five sides, so it
+        // takes an edge frame rather than the full diamond.
+        match cell_fill(&fog, owner, 4, 4, &SHROUD_EDGE_LUT) {
+            CellFill::Frame(idx) => assert!(idx < 48, "frame {idx} is outside SHROUD.SHP"),
+            other => panic!("a shroud boundary cell must take a frame, got {other:?}"),
+        }
     }
 }
 

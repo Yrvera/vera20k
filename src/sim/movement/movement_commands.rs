@@ -317,6 +317,10 @@ pub(crate) fn issue_move_command_with_layered(
     let start_rx: u16 = entity.position.rx;
     let start_ry: u16 = entity.position.ry;
     let current_layer = entity.movement_layer_or_ground();
+    // The original engine dispatches its cell-entry predicate by object class,
+    // so terrain-object occupation is read at sub-cell granularity for infantry
+    // and whole-cell for everything else. The search has to know which.
+    let is_infantry: bool = entity.category == EntityCategory::Infantry;
     let locomotor_kind = entity.locomotor.as_ref().map(|locomotor| locomotor.kind);
     let uses_drive_locomotor = locomotor_kind == Some(LocomotorKind::Drive);
     let uses_ship_locomotor = locomotor_kind == Some(LocomotorKind::Ship);
@@ -420,6 +424,7 @@ pub(crate) fn issue_move_command_with_layered(
                     entity_block_map,
                     0, // urgency=0: initial move command
                     mover_is_crusher,
+                    is_infantry,
                 ) else {
                     return false;
                 };
@@ -468,6 +473,7 @@ pub(crate) fn issue_move_command_with_layered(
             entity_block_map,
             0, // urgency=0: initial move command
             mover_is_crusher,
+            is_infantry,
         )
     };
     // Order-time reachability recovery. Gamemd runs `Can_Reach_Zone` before it

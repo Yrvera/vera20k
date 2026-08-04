@@ -407,6 +407,82 @@ pub fn allocate_sub_cell_with_preference(
     None
 }
 
+/// Sub-cell placement for a mover whose mission carries placement priority.
+///
+/// The original engine's placement function takes a `priority` byte; when it is
+/// set, control jumps straight past every gate to the offset table and returns
+/// `offset[quadrant]` — **no occupancy test, no vehicle/structure blocker test,
+/// no garrison test, and no random draw**, because the random row selection sits
+/// on the branch the jump skips. Quadrant 0 resolves to the cell *centre* slot,
+/// which the ordinary path can never assign.
+///
+/// The flag is raised for missions Enter, Capture, Eaten, Area Guard and Patrol
+/// when the mover's NavCom sits in the cell being entered — an engineer walking
+/// into the building it is capturing, a spy into an enemy structure, an
+/// infantryman into a garrison, a dog onto the man it is running down.
+pub fn priority_sub_cell(sub_x: SimFixed, sub_y: SimFixed) -> u8 {
+    get_subcell_quadrant(sub_x, sub_y)
+}
+
+/// Recover the functional sub-cell slot a stored lepton destination names.
+///
+/// The three functional slots sit at distinct lepton offsets, so this is an
+/// exact inverse of the slot → offset mapping over `FUNCTIONAL_SUB_CELLS`.
+/// Returns `None` for the cell centre and for any other offset.
+pub fn functional_sub_cell_from_offset(dest: (SimFixed, SimFixed)) -> Option<u8> {
+    FUNCTIONAL_SUB_CELLS
+        .iter()
+        .copied()
+        .find(|&slot| crate::util::lepton::subcell_lepton_offset(Some(slot)) == dest)
+}
+
+/// Claim the sub-cell an infantryman already reserved while walking toward this
+/// cell — the arrival side of the sub-cell handshake.
+///
+/// The original engine does **no** sub-cell selection on arrival: the arrival
+/// branch passes a null coordinate to the sub-cell chooser, which stores the
+/// null destination and returns before reaching the placement function. The slot
+/// the man ends up standing in was decided one cell earlier, by the look-ahead
+/// placement that ran while he was still in the previous cell. So arrival costs
+/// **zero random draws** and re-runs no preference table.
+///
+/// This mirrors that contract: take the pre-reserved slot when it is still free,
+/// otherwise fall back to the deterministic first-free scan. `self_id` is
+/// excluded from the occupancy test because the caller has already moved the
+/// mover into this cell carrying its previous slot. Neither path touches the RNG
+/// — that is the point of the function.
+pub fn claim_reserved_sub_cell(
+    occ: Option<&CellOccupancy>,
+    layer: MovementLayer,
+    self_id: u64,
+    preferred: Option<u8>,
+) -> Option<u8> {
+    if let Some(o) = occ
+        && o.has_blockers_on(layer)
+    {
+        return None;
+    }
+    let others: Vec<u8> = occ.map_or_else(Vec::new, |o| {
+        o.infantry(layer)
+            .filter(|&(id, _)| id != self_id)
+            .map(|(_, slot)| slot)
+            .collect()
+    });
+    if let Some(slot) = preferred
+        && FUNCTIONAL_SUB_CELLS.contains(&slot)
+        && !others.contains(&slot)
+    {
+        return Some(slot);
+    }
+    if others.len() >= MAX_INFANTRY_PER_CELL {
+        return None;
+    }
+    FUNCTIONAL_SUB_CELLS
+        .iter()
+        .copied()
+        .find(|spot| !others.contains(spot))
+}
+
 // ---------------------------------------------------------------------------
 // Crush logic
 // ---------------------------------------------------------------------------
@@ -1797,6 +1873,150 @@ mod tests {
             get_subcell_quadrant(SimFixed::from_num(200), SimFixed::from_num(200)),
             4
         );
+    }
+
+    // -- arrival-side claim: the zero-draw half of the sub-cell handshake --
+
+    /// GSI-06.14 G3. The retail arrival branch hands its sub-cell chooser a null
+    /// coordinate, which returns before the placement function runs — so arrival
+    /// consumes **no** random draw, whatever the mover's sub-position. A mover
+    /// standing at the cell centre is the case that would draw on the look-ahead
+    /// path, so it is the load-bearing fixture here.
+    #[test]
+    fn gsi_06_14_arrival_claim_consumes_no_rng() {
+        let rng = SimRng::new(42);
+        let before = rng.state();
+        // Centre sub-position: the look-ahead allocator draws here, the arrival
+        // claim must not. `claim_reserved_sub_cell` takes no RNG at all, so the
+        // guarantee is structural — this pins that it stays that way.
+        let claimed = claim_reserved_sub_cell(None, MovementLayer::Ground, 1, None);
+        assert_eq!(claimed, Some(2), "empty cell falls to the first free slot");
+        assert_eq!(rng.state(), before, "arrival must not advance the stream");
+    }
+
+    /// The slot reserved by the look-ahead one cell earlier is the slot the man
+    /// stands in on arrival — retail never re-selects.
+    #[test]
+    fn gsi_06_14_arrival_claims_the_pre_reserved_slot() {
+        let grid = make_occ(&[(5, 5, 2, MovementLayer::Ground, Some(2))]);
+        let occ = grid.get(5, 5);
+        assert_eq!(
+            claim_reserved_sub_cell(occ, MovementLayer::Ground, 1, Some(4)),
+            Some(4),
+            "the reserved slot wins over the first-free scan",
+        );
+        // Taken by someone else meanwhile: fall back deterministically.
+        assert_eq!(
+            claim_reserved_sub_cell(occ, MovementLayer::Ground, 1, Some(2)),
+            Some(3),
+        );
+    }
+
+    /// The mover has already been inserted into the new cell carrying its old
+    /// slot, so it must not count against itself — three men still fit.
+    #[test]
+    fn gsi_06_14_arrival_claim_excludes_the_mover_itself() {
+        let grid = make_occ(&[
+            (5, 5, 1, MovementLayer::Ground, Some(2)),
+            (5, 5, 2, MovementLayer::Ground, Some(3)),
+            (5, 5, 3, MovementLayer::Ground, Some(4)),
+        ]);
+        let occ = grid.get(5, 5);
+        assert_eq!(
+            claim_reserved_sub_cell(occ, MovementLayer::Ground, 1, Some(2)),
+            Some(2),
+            "self-occupancy must not refuse the mover its own slot",
+        );
+        // A genuine fourth man finds nothing.
+        assert_eq!(
+            claim_reserved_sub_cell(occ, MovementLayer::Ground, 9, None),
+            None,
+        );
+    }
+
+    /// The lepton-offset inverse used to recover the reserved slot is exact over
+    /// the three functional slots and rejects the centre.
+    #[test]
+    fn gsi_06_14_functional_sub_cell_offset_inverse_is_exact() {
+        for slot in FUNCTIONAL_SUB_CELLS {
+            let offset = crate::util::lepton::subcell_lepton_offset(Some(slot));
+            assert_eq!(functional_sub_cell_from_offset(offset), Some(slot));
+        }
+        let centre = crate::util::lepton::subcell_lepton_offset(Some(0));
+        assert_eq!(functional_sub_cell_from_offset(centre), None);
+    }
+
+    // -- priority placement --
+
+    /// GSI-06.14 G1. With the priority byte set, the retail placement function
+    /// jumps past every gate straight to `offset[quadrant]`: no occupancy test,
+    /// no vehicle/structure blocker test, no garrison test, and — because the
+    /// random row selection sits on the branch that jump skips — no draw.
+    /// Quadrant 0 resolves to the cell-centre slot, which the ordinary path can
+    /// never assign.
+    #[test]
+    fn gsi_06_14_priority_placement_ignores_occupancy_and_takes_no_draw() {
+        let rng = SimRng::new(7);
+        let before = rng.state();
+        // NE approach → slot 2, even though the ordinary allocator would refuse.
+        assert_eq!(
+            priority_sub_cell(SimFixed::from_num(200), SimFixed::from_num(40)),
+            2,
+        );
+        assert_eq!(
+            priority_sub_cell(SimFixed::from_num(40), SimFixed::from_num(200)),
+            3,
+        );
+        assert_eq!(
+            priority_sub_cell(SimFixed::from_num(200), SimFixed::from_num(200)),
+            4,
+        );
+        // Centre request → slot 0, the centre offset.
+        assert_eq!(
+            priority_sub_cell(SimFixed::from_num(128), SimFixed::from_num(128)),
+            0,
+        );
+        assert_eq!(rng.state(), before, "priority placement draws nothing");
+    }
+
+    /// The ordinary allocator refuses exactly the cases priority must accept —
+    /// a full cell and a cell holding a vehicle or structure.
+    #[test]
+    fn gsi_06_14_priority_accepts_what_the_ordinary_allocator_refuses() {
+        let full = make_occ(&[
+            (5, 5, 1, MovementLayer::Ground, Some(2)),
+            (5, 5, 2, MovementLayer::Ground, Some(3)),
+            (5, 5, 3, MovementLayer::Ground, Some(4)),
+        ]);
+        let blocked = make_occ(&[(6, 6, 4, MovementLayer::Ground, None)]);
+        let mut rng = SimRng::new(1);
+        let ne = (SimFixed::from_num(200), SimFixed::from_num(40));
+
+        assert_eq!(
+            allocate_sub_cell_with_preference(
+                full.get(5, 5),
+                MovementLayer::Ground,
+                None,
+                ne.0,
+                ne.1,
+                &mut rng,
+            ),
+            None,
+        );
+        assert_eq!(
+            allocate_sub_cell_with_preference(
+                blocked.get(6, 6),
+                MovementLayer::Ground,
+                None,
+                ne.0,
+                ne.1,
+                &mut rng,
+            ),
+            None,
+            "a structure or vehicle closes the cell to the ordinary path",
+        );
+        // Priority reads neither cell's occupancy.
+        assert_eq!(priority_sub_cell(ne.0, ne.1), 2);
     }
 
     // -- preference-aware allocation tests --

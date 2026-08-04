@@ -1,14 +1,27 @@
 //! Runtime per-cell speed modifiers applied during movement execution.
 //!
 //! The original engine applies terrain speed as a runtime modifier (not an
-//! A* cost weight). Three multiplicative factors are combined each tick:
+//! A* cost weight). The stages are combined each tick in this exact order —
+//! the order is load-bearing, because stage 3 tests for *exact* zero and stages
+//! 2 and 4 can both move a value off zero:
 //!
-//! 1. **Terrain type** — from rules.ini land-type sections ([Clear] Foot=100%, etc.)
+//! 1. **Terrain type** — from rules.ini land-type sections ([Clear] Foot=100%,
+//!    etc.), read for the *destination* cell. The only clamp here is an upper
+//!    one: a value strictly above 1.0 is replaced by 1.0. There is **no lower
+//!    clamp on the raw land-row value** — a 0% row stays 0.0 through stage 2.
 //! 2. **Slope** — vehicles moving up/down a grade, chosen by SpeedType (Track vs
 //!    other) and travel direction. Vanilla: uphill ×1.0 (no change), downhill
 //!    ×1.2 (faster).
-//! 3. **Damaged mover** — ×0.75 when the owner's health ratio is at or below
+//! 3. **Zero substitution** — if the terrain × slope product is *exactly* 0.0 it
+//!    is replaced by 0.5. This is a substitution on the combined value, not a
+//!    floor: it is the reason a 0%-land-row mover moves at half speed instead of
+//!    freezing, and it must run after the slope multiply, or a 0% row going
+//!    downhill would yield 0.6 instead of 0.5.
+//! 4. **Damaged mover** — ×0.75 when the owner's health ratio is at or below
 //!    `[AudioVisual] ConditionYellow` (vanilla 50%). The test is `<=`.
+//!
+//! The original engine applies **no clamp to the combined value** at any point
+//! in this chain.
 //!
 //! **Only the Drive and Ship locomotors run this chain.** In the original engine
 //! the land-type × SpeedType table has exactly two speed consumers, both inside
@@ -32,18 +45,17 @@ use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SimFixed};
 
 // --- Constants from the original engine ---
 
-/// Original engine boosts 0% terrain speed to 50% so passable terrain never
-/// fully immobilizes a unit. Applied when the INI percentage is exactly 0.
-const TERRAIN_SPEED_MIN: SimFixed = SIM_HALF;
-
 /// Original engine clamps terrain speed multipliers above 1.0 to exactly 1.0.
+/// This is the *only* clamp the land-row read performs — the compare is `<= 1.0
+/// keep, else 1.0`, so a 0% row is passed through untouched.
 const TERRAIN_SPEED_MAX: SimFixed = SIM_ONE;
 
-/// Maximum allowed combined speed modifier (downhill on road can exceed 1.0).
-const COMBINED_MAX: SimFixed = SimFixed::lit("1.2");
-
-/// Minimum combined speed modifier — prevents near-zero crawl.
-const COMBINED_MIN: SimFixed = SimFixed::lit("0.3");
+/// Substituted for the terrain × slope product when that product is *exactly*
+/// zero. The original engine tests the combined value against 0.0 and, on
+/// equality, overwrites it with this constant — it is a substitution, not a
+/// floor, and it runs after the slope multiply and before the damaged-mover
+/// factor.
+const ZERO_COMBINED_SUBSTITUTE: SimFixed = SIM_HALF;
 
 /// Speed penalty applied to a mover whose health ratio is at or below
 /// `[AudioVisual] ConditionYellow` (vanilla `50%`).
@@ -155,7 +167,28 @@ pub fn compute_cell_speed_modifier(
         config,
     );
 
-    let combined = (terrain_factor * slope_factor).clamp(COMBINED_MIN, COMBINED_MAX);
+    combine_speed_stages(terrain_factor, slope_factor, below_condition_yellow)
+}
+
+/// Stages 2–4 of the per-cell multiplier chain, isolated so the ordering can be
+/// pinned without building a terrain grid.
+///
+/// `terrain_factor` has already had its `> 1.0 → 1.0` cap applied and may be
+/// exactly zero.
+fn combine_speed_stages(
+    terrain_factor: SimFixed,
+    slope_factor: SimFixed,
+    below_condition_yellow: bool,
+) -> SimFixed {
+    // Stage 3: exact-zero substitution on the *combined* value. Ordering
+    // matters — a 0% land row multiplied by the 1.2 downhill coefficient is
+    // still exactly 0, so the substitution yields 0.5 here where a pre-slope
+    // floor would have yielded 0.6.
+    let mut combined = terrain_factor * slope_factor;
+    if combined == SimFixed::from_num(0) {
+        combined = ZERO_COMBINED_SUBSTITUTE;
+    }
+    // Stage 4: damaged mover. No clamp follows it in the original engine.
     if below_condition_yellow {
         combined * DAMAGED_MOVER_SPEED_FACTOR
     } else {
@@ -171,7 +204,9 @@ fn cell_level(cell: (u16, u16), terrain: &ResolvedTerrainGrid) -> u8 {
 /// Factor 1: terrain type speed from INI land-type percentages.
 ///
 /// Looks up the *destination* cell's terrain speed for the unit's SpeedType.
-/// Matches original engine: 0% → 50%, >100% → clamped to 100%, missing → 100%.
+/// Matches original engine: `> 100%` → 100%, missing → 100%, and **0% passes
+/// through as 0.0** — the 50% rescue happens later, on the combined value, in
+/// [`compute_cell_speed_modifier`].
 fn terrain_speed_factor(
     speed_type: SpeedType,
     next_cell: (u16, u16),
@@ -181,7 +216,11 @@ fn terrain_speed_factor(
         return SIM_ONE;
     };
     let multiplier = cell.speed_costs.speed_multiplier_for(speed_type);
-    multiplier.clamp(TERRAIN_SPEED_MIN, TERRAIN_SPEED_MAX)
+    if multiplier > TERRAIN_SPEED_MAX {
+        TERRAIN_SPEED_MAX
+    } else {
+        multiplier
+    }
 }
 
 /// Pick the slope coefficient for a mover stepping from `cur_level` to `next_level`.
@@ -298,6 +337,50 @@ mod tests {
         assert!(!is_at_or_below_condition_yellow(100, 100, STOCK));
         // A zero-max entity has no ratio to compare.
         assert!(!is_at_or_below_condition_yellow(0, 0, STOCK));
+    }
+
+    /// GSI-06.13 gap 7 — the `0.0 → 0.5` rescue is a substitution on the
+    /// *combined* value, applied after the slope multiply. A 0% land row going
+    /// downhill must yield exactly 0.5, not `0.5 * 1.2 = 0.6`, which is what a
+    /// pre-slope floor produced.
+    #[test]
+    fn gsi_06_13_zero_land_row_substitution_runs_after_slope() {
+        let zero = SimFixed::from_num(0);
+        let downhill = SimFixed::lit("1.2");
+        assert_eq!(
+            combine_speed_stages(zero, downhill, false),
+            SimFixed::lit("0.5"),
+        );
+        assert_eq!(
+            combine_speed_stages(zero, SIM_ONE, false),
+            SimFixed::lit("0.5")
+        );
+        // A non-zero row is untouched by the substitution. Compare against the
+        // same fixed-point product the implementation performs — `lit("0.6")`
+        // differs by 1 ULP because 0.6 is not exactly representable.
+        let half = SimFixed::lit("0.5");
+        assert_eq!(combine_speed_stages(half, downhill, false), half * downhill);
+        assert!(combine_speed_stages(half, downhill, false) > half);
+    }
+
+    /// GSI-06.13 gap 8 — the damaged-mover factor is the *last* operation and
+    /// there is no combined clamp after it. `[Clear]` (1.0) downhill (1.2) at or
+    /// below ConditionYellow is `1.2 * 0.75 = 0.9`; a `[0.3, 1.2]` clamp applied
+    /// before the multiply would have produced the same 0.9 here but 0.225 for a
+    /// 0.3-floored product, which the engine never yields.
+    #[test]
+    fn gsi_06_13_damaged_factor_is_last_and_uncapped() {
+        assert_eq!(
+            combine_speed_stages(SIM_ONE, SimFixed::lit("1.2"), true),
+            SimFixed::lit("0.9"),
+        );
+        // The zero substitution feeds the damaged multiply: 0.5 * 0.75.
+        assert_eq!(
+            combine_speed_stages(SimFixed::from_num(0), SimFixed::lit("1.2"), true),
+            SimFixed::lit("0.375"),
+        );
+        // Undamaged downhill on a full-speed row exceeds 1.0 — no upper clamp.
+        assert!(combine_speed_stages(SIM_ONE, SimFixed::lit("1.2"), false) > SIM_ONE);
     }
 
     #[test]

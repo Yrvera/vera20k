@@ -2496,6 +2496,7 @@ fn test_friendly_passable_path_goes_through_moving_friendly() {
         None,
         0,
         false,
+        false,
     );
     assert!(
         path.is_some(),

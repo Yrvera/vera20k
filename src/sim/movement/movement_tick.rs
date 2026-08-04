@@ -291,7 +291,29 @@ fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapsho
             .as_ref()
             .map(|mt| mt.bypass_grid)
             .unwrap_or(false),
+        sub_cell_priority_mission: SUB_CELL_PRIORITY_MISSIONS.contains(&e.mission.current().raw()),
+        nav_com_cell: e
+            .navigation
+            .nav_com
+            .as_ref()
+            .and_then(|nav| nav_target_cell(entities, nav)),
     })
+}
+
+/// Missions whose sub-cell placement bypasses the occupancy, blocker and
+/// garrison checks in the original engine: Enter (7), Capture (8), Eaten (9),
+/// Area Guard (11), Patrol (25). Anything outside this set takes the ordinary
+/// gated placement.
+const SUB_CELL_PRIORITY_MISSIONS: [i32; 5] = [7, 8, 9, 11, 25];
+
+/// Resolve a nav target to the cell it currently occupies.
+fn nav_target_cell(entities: &EntityStore, nav: &NavTargetRef) -> Option<(u16, u16)> {
+    match *nav {
+        NavTargetRef::Cell { rx, ry } => Some((rx, ry)),
+        NavTargetRef::Entity { id }
+        | NavTargetRef::Object { id }
+        | NavTargetRef::Building { id } => entities.get(id).map(|t| (t.position.rx, t.position.ry)),
+    }
 }
 
 /// Rebuild one owner's pathfinding entity-block snapshot iff occupancy has
@@ -433,6 +455,7 @@ fn handle_path_exhaustion(
                                 | MovementZone::CrusherAll
                         )
                     ),
+                snap.category == EntityCategory::Infantry,
             ) {
                 if new_path.len() >= 2 {
                     // DIAGNOSTIC: detect layer mismatch after repath
@@ -676,6 +699,7 @@ fn process_pending_drive_arrivals(
                         | MovementZone::AmphibiousCrusher
                         | MovementZone::CrusherAll
                 ),
+            entity.category == EntityCategory::Infantry,
         ) else {
             // VERA-internal retry policy: pathfinding failed, so re-arm the
             // deferred flag (cleared by `set_destination_internal_cell`
@@ -1940,6 +1964,7 @@ fn tick_movement_with_grids_scoped(
                         // Reserve destination cell.
                         super::movement_reservation::reserve_destination_after_transition(
                             entity.category,
+                            entity_id,
                             &mut entity.locomotor,
                             &mut entity.drive_track,
                             &mut entity.position,
@@ -1949,7 +1974,7 @@ fn tick_movement_with_grids_scoped(
                             nx,
                             ny,
                             occupancy,
-                            rng,
+                            snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
                         );
                         // After reservation, infantry sub_cell may have changed.
                         if entity.category == EntityCategory::Infantry {
@@ -2708,6 +2733,8 @@ mod drive_track_chain_tests {
             locomotor: Some(locomotor),
             rot: 5,
             bypass_grid: false,
+            sub_cell_priority_mission: false,
+            nav_com_cell: None,
         }
     }
 

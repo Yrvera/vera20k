@@ -226,6 +226,19 @@ pub(super) struct MoverSnapshot {
     /// occupants are skipped during the foundation-cross occupancy check
     /// (harvester dock drive: buildings are not scatter targets).
     pub bypass_grid: bool,
+    /// Whether this mover's current mission is one of the five the original
+    /// engine lets bypass sub-cell occupancy: Enter (7), Capture (8), Eaten
+    /// (9), Area Guard (11), Patrol (25).
+    ///
+    /// Half of the "priority" placement condition; the other half is the
+    /// NavCom sitting in the cell being entered, which can only be tested per
+    /// crossing (see [`MoverSnapshot::nav_com_cell`]).
+    pub sub_cell_priority_mission: bool,
+    /// Cell currently occupied by this mover's NavCom target, when it has one.
+    ///
+    /// Resolved once per tick from the entity store: a cell target is itself,
+    /// an object/building/entity target is that entity's anchor cell.
+    pub nav_com_cell: Option<(u16, u16)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

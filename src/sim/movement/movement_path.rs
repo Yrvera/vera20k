@@ -278,6 +278,7 @@ pub(super) fn find_move_path(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
     find_move_path_with_marker(
         ctx,
@@ -296,6 +297,7 @@ pub(super) fn find_move_path(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -317,6 +319,7 @@ pub(super) fn find_move_path_with_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
     let grid = ctx.path_grid?;
     let zone_grid = ctx.zone_grid;
@@ -350,6 +353,7 @@ pub(super) fn find_move_path_with_marker(
             ctx.blocker_neighbor_counts,
             urgency,
             mover_is_crusher,
+            is_infantry,
         );
         let Some(path) = layered_result else {
             log::trace!(
@@ -418,6 +422,7 @@ pub(super) fn find_move_path_with_marker(
         ctx.blocker_neighbor_counts,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )?;
 
     if contains_non_adjacent_step(&path) {
@@ -572,6 +577,7 @@ pub(super) fn try_repath_after_block(
         marker_overlay,
         effective_urgency,
         mover_is_crusher,
+        is_infantry,
     );
     let Some((new_path, new_layers)) = path_result else {
         target.movement_delay = mcfg.path_delay_ticks;
@@ -758,6 +764,7 @@ mod tests {
             None,
             0,
             false,
+            false,
         )
         .expect("movement path should use explicit tube despite disconnected zones");
 
@@ -794,6 +801,7 @@ mod tests {
             None,
             Some(&marker_overlay),
             0,
+            false,
             false,
         )
         .expect("marker overlay should still allow a path");
@@ -896,6 +904,7 @@ mod tests {
             None,
             0,
             false,
+            false,
         )
         .expect("fixture must prove the removed ground-only retry could succeed");
         assert_eq!(flat.0.last().copied(), Some((2, 0)));
@@ -920,6 +929,7 @@ mod tests {
             false,
             None,
             0,
+            false,
             false,
         );
 

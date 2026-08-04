@@ -383,6 +383,66 @@ mod tests {
         assert_eq!(grid.terrain_object_cell_bits_at(0, 0), 0x1C);
     }
 
+    /// The relaxed Foot cost row is worthless unless the search is told the
+    /// mover is infantry: the neighbour gate short-circuits on `is_walkable`,
+    /// which is false for a partially-occupied tree cell, before the cost grid
+    /// is ever consulted. This drives the production entry point end to end on a
+    /// 3x1 corridor whose only middle cell is a `bits=4` tree — an infantryman
+    /// must walk through it, a vehicle must fail outright.
+    #[test]
+    fn infantry_astar_routes_through_a_partially_occupied_tree_cell() {
+        use crate::sim::pathfinding::{PathGrid, find_path_with_costs};
+        let terrain = ResolvedTerrainGrid::from_cells(
+            3,
+            1,
+            vec![
+                make_resolved_cell(0, 0),
+                tree_cell(1, 0, 4),
+                make_resolved_cell(2, 0),
+            ],
+        );
+        let grid = PathGrid::from_resolved_terrain(&terrain);
+        let foot = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Foot);
+        let track = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Track);
+
+        let infantry_path = find_path_with_costs(
+            &grid,
+            (0, 0),
+            (2, 0),
+            Some(&foot),
+            None,
+            None,
+            Some(&terrain),
+            None,
+            0,
+            false,
+            true,
+        );
+        assert_eq!(
+            infantry_path,
+            Some(vec![(0, 0), (1, 0), (2, 0)]),
+            "infantry must path through a single-sub-cell tree",
+        );
+
+        let vehicle_path = find_path_with_costs(
+            &grid,
+            (0, 0),
+            (2, 0),
+            Some(&track),
+            None,
+            None,
+            Some(&terrain),
+            None,
+            0,
+            false,
+            false,
+        );
+        assert_eq!(
+            vehicle_path, None,
+            "a vehicle has no route: the tree closes the whole cell",
+        );
+    }
+
     #[test]
     fn terrain_occupation_five_and_six_leave_one_subcell_for_infantry() {
         use crate::sim::pathfinding::PathGrid;

@@ -710,6 +710,13 @@ impl GameEntity {
             // what a map placement authored as Sleep, Sticky or Harmless means,
             // and without it every such neutral object scans and opens fire.
             Some(known) if known.holds_until_retasked() => known,
+            // Area Guard is a job that never finishes: "hold this spot and
+            // cover it" is the standing state, not a leftover selector. It also
+            // has its own handler, which owns its target acquisition, and the
+            // passive-acquire block admits {Move, Harvest, Guard} only. Letting
+            // the finished-job bridge read it as Guard would put the object
+            // through BOTH scanners on the same cadence.
+            Some(MissionType::AreaGuard) => MissionType::AreaGuard,
             // A committed mission still doing something wins; one whose work is
             // finished defers to what the object is actually doing (nothing).
             Some(known) if !self.committed_mission_is_finished() => known,
@@ -1446,6 +1453,38 @@ mod mission_shadow_tests {
         });
         assert!(e.committed_mission_is_finished());
         assert_eq!(e.passive_acquire_mission(), MissionType::Guard);
+    }
+
+    /// Area Guard is a job that never finishes AND has its own handler, which
+    /// owns its acquisition. The finished-job bridge must not read it as Guard,
+    /// or the object would be admitted to the passive-acquire block as well and
+    /// scan twice per cadence. This is the state AI-slot starting units spawn
+    /// in, so it is every non-human unit in every skirmish.
+    #[test]
+    fn committed_area_guard_is_never_bridged_to_guard() {
+        for category in [
+            crate::map::entities::EntityCategory::Unit,
+            crate::map::entities::EntityCategory::Infantry,
+        ] {
+            let mut e = GameEntity::test_default(1, "MTNK", "Americans", 3, 3);
+            e.category = category;
+            assert!(e.committed_mission_is_finished());
+            e.mission.apply_test_fixture(MissionTestFixture {
+                current: MissionId::from_known(MissionType::AreaGuard),
+                suspended: MissionId::NONE,
+                queued: MissionId::NONE,
+                movement_bypass_latch: 0,
+                handler_state: 0,
+                mission_start_frame: 0,
+                ai_counter: 0,
+                dispatch_timer: MissionDispatchTimer::at_frame(0),
+            });
+            assert_eq!(
+                e.passive_acquire_mission(),
+                MissionType::AreaGuard,
+                "{category:?} committed to Area Guard"
+            );
+        }
     }
 
     #[test]

@@ -92,6 +92,38 @@ impl Simulation {
         );
     }
 
+    /// **Open: what a miner does when a Move order it was given finishes.**
+    ///
+    /// The carried-over finding said "a miner retasked onto Move or Attack
+    /// still resumes harvesting when the order ends; retail does not". Read off
+    /// the binary, that is only half right, and the half it gets wrong is the
+    /// common case. `UnitClass`'s arrival hook has a dedicated harvester arm,
+    /// and for a **player-controlled** miner arriving from a Move it decides on
+    /// the arrival cell's own contents:
+    ///
+    /// - arrival cell carries the miner's ore kind → `Queue_Mission(Harvest)`;
+    /// - it does not → `Queue_Mission(Guard)`;
+    /// - and before either, `Assign_Target(NULL)` + `Set_Destination(NULL, true)`.
+    ///
+    /// Two earlier exits skip the decision entirely: a path that still has
+    /// steps left, and a miner already on (or already queued onto) Harvest.
+    ///
+    /// So "send the miner to that other ore field" — much the commonest miner
+    /// order — legitimately resumes harvesting in retail, and VERA's current
+    /// behaviour is right there. The genuinely wrong case is the *park* order:
+    /// pulling a miner out of a raid or onto a non-ore cell leaves retail's on
+    /// Guard and VERA's back at work.
+    ///
+    /// Not closed here, deliberately. Closing it needs (a) the harvest dispatch
+    /// to decline a Move-mission miner — that gate lives in `sim/miner`, not in
+    /// this module — and (b) an ore-kind test on the arrival cell threaded into
+    /// the Move handler's arrival arm. Landing (a) without (b) would turn every
+    /// "move the miner to that ore field" order into a permanent stop, which is
+    /// worse than the current drift.
+    ///
+    /// Frequency of the residual: park/retreat orders on miners — a few times
+    /// per match for an active player, zero for a passive one.
+    ///
     /// The ore-miner arm of the Stop command.
     ///
     /// Retail's IDLE event handler ends with, for a `UnitClass` carrying the

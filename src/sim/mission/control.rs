@@ -58,12 +58,35 @@ pub struct MissionControlEntry {
     /// Frozen forever, never recovers (`Zombie=`, def no).
     pub zombie: bool,
     /// Can be recruited into a team / base defence (`Recruitable=`, def yes).
+    ///
+    /// **No consumer, either side.** Its only retail readers are team
+    /// recruitment, and VERA has no AI opponent to run a team. `[Sticky]` and
+    /// `[Area Guard]` are the two stock sections that set it explicitly.
     pub recruitable: bool,
     /// Frozen in place but can still fire and function (`Paralyzed=`, def no).
+    ///
+    /// Two verified consumer families, both indexing the object's **own
+    /// current** mission slot:
+    /// 1. the Unit and Infantry arrival selectors — modelled, on the infantry
+    ///    side, in the Move handler's arrival arm. Note the vehicle side reads
+    ///    it only on the Area-Guard-promotion branch, not on the ordinary Guard
+    ///    fall, so a `Paralyzed=` mission does not stop a vehicle falling to
+    ///    Guard;
+    /// 2. the scatter paths, which live in `sim/movement` — **not consumed
+    ///    there yet**. That is where `[Sticky] Paralyzed=yes` would actually
+    ///    bite: a Sticky civilian can currently be shoved off its cell, which
+    ///    is the opposite of the section comment's "cannot move".
     pub paralyzed: bool,
     /// Allowed to retaliate while on this mission (`Retaliate=`, def yes).
     pub retaliate: bool,
     /// Allowed to scatter from threats (`Scatter=`, def yes).
+    ///
+    /// Verified consumers are the Infantry, Unit and aircraft scatter paths
+    /// plus the damage handler — all in `sim/movement` / `sim/combat` damage,
+    /// none of which read this table yet. `Scatter=no` covers Sleep, Sticky,
+    /// Attack, Capture, **Harvest**, Unload, Construction and Selling in stock
+    /// rules, so the live gap is on every miner in every match, not just on
+    /// Sticky.
     pub scatter: bool,
 }
 

@@ -54,6 +54,19 @@ pub enum MissionType {
     Sleep = 0,
     Attack = 1,
     Move = 2,
+    /// Index 3, `"QMove"`. **Dormant in stock YR, proven — do not write a
+    /// handler for it.** The dispatcher has no case for it (it falls through
+    /// the jump table's `default` arm to the same 450-frame base stub `Sleep(0)`
+    /// uses), and a whole-image sweep of the mission-assign, mission-queue and
+    /// player-order call sites found no writer and no reader of the id
+    /// anywhere: the client's own order verb emits only
+    /// {Attack, Move, Enter, Capture, Eaten, Harvest, Area Guard, Unload,
+    /// Sabotage, Patrol}. Stock YR's queued/deferred movement is **Planning
+    /// Mode** — a separate bindable command class that commits over its own
+    /// network events and parks each unit on `Deliberate`(28, `"Wait"` in the
+    /// INI table) plus a planning-token route. `[QMove] Rate=.016` is parsed and
+    /// never consumed, exactly as in the original. Round-trips for map-INI name
+    /// fidelity only.
     QMove = 3,
     Retreat = 4,
     Guard = 5,

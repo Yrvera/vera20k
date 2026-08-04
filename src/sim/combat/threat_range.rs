@@ -24,6 +24,34 @@
 //! The doubling applies to `GuardRange=` too, not just to the weapon-range
 //! fallback.
 //!
+//! ## Why plain Guard really is `CanFireAt` — the mask literals
+//!
+//! This has now been challenged twice, so the chain is written down here.
+//!
+//! The threat scan takes a bitmask, and the radius formula is selected from it:
+//! **bit0 set → the narrow formula; bit0 clear and bit1 set → the doubled one**
+//! (with a Patrol-only third variant). Nobody chooses that mask at the scan —
+//! the *caller* supplies it as a literal, and there are exactly two callers:
+//!
+//! - The common Techno AI body, which is the ONLY route to the scan for
+//!   missions {Move, Harvest, Guard} — those three ids and no others — pushes
+//!   the literal **1** together with the object's own coordinates.
+//! - `FootClass::Mission_AreaGuard`, which pushes the literal **2** together
+//!   with the guard post's coordinates.
+//!
+//! So Guard's mask cannot carry bit1: it is a hardcoded `1` in the caller.
+//! Guard therefore takes the narrow formula, which for a type with no
+//! `GuardRange=` computes zero — and radius zero is what defers acceptance to
+//! the attacker's own can-fire-at query. The doubling belongs to Area Guard
+//! (and Patrol) alone.
+//!
+//! The counter-argument — "the FootClass override that rewrites the mask only
+//! makes sense if Guard's mask carried bit1" — does not hold: that override
+//! reads `mask & ~bit1 | bit0`, i.e. it can only ever *downgrade* a bit1 caller
+//! to the narrow formula, never add bit1 to a bit0 one. Its purpose is the
+//! freshly-moved latch below, whose only bit1 callers are Area Guard and
+//! Patrol. The same override clears the latch when a scan comes back empty.
+//!
 //! ## What is deliberately NOT modelled
 //!
 //! **The freshly-moved latch.** Mobile objects (not buildings) carry a flag the
@@ -37,6 +65,13 @@
 //! means writes from the locomotors plus a snapshot field, so it is recorded
 //! here rather than modelled: units acquire at the wide radius one cadence
 //! sooner than retail after they stop moving.
+//!
+//! **The unarmed-Guard override.** When the scanning object has no usable
+//! weapon at all *and* its mission is exactly Guard, retail forces the radius
+//! to a flat 2 cells instead of computing one. VERA never reaches this: the
+//! base can-acquire predicate already requires a weapon slot, so an unarmed
+//! object never scans. Recorded because it is the only other place the Guard
+//! mission id is read inside the scan.
 //!
 //! Retail has a third radius formula, reached only when the scanning object is
 //! on **Patrol**: the same doubled-and-capped value as Area Guard but with a
@@ -196,6 +231,35 @@ GuardRange=9\n\n\
         assert_eq!(
             scan_range(&rules, obj(&rules, "NOGUARD"), 0, ScanMission::Guard),
             ScanRange::CanFireAt
+        );
+    }
+
+    /// The mask literals are the whole argument, so pin the consequence: for
+    /// one and the same type, Guard and Area Guard must NOT resolve to the same
+    /// filter. Guard's caller pushes mask 1 (narrow formula → radius 0 for a
+    /// type with no `GuardRange=` → defer to can-fire-at); Area Guard's pushes
+    /// mask 2 (doubled formula → a hard cutoff). A regression that made plain
+    /// Guard take the doubled radius would collapse these two into one value.
+    #[test]
+    fn guard_and_area_guard_do_not_share_a_filter() {
+        let rules = test_rules();
+        for type_id in ["NOGUARD", "WITHGUARD", "ONLYPRIMARY"] {
+            let guard = scan_range(&rules, obj(&rules, type_id), 0, ScanMission::Guard);
+            let area = scan_range(&rules, obj(&rules, type_id), 0, ScanMission::AreaGuard);
+            assert_ne!(
+                guard, area,
+                "{type_id}: Guard (mask 1) and Area Guard (mask 2) select different formulas"
+            );
+            assert!(
+                matches!(area, ScanRange::Hard(_)),
+                "{type_id}: Area Guard is always a hard cutoff"
+            );
+        }
+        // And the doubling is Area Guard's alone: a type WITH GuardRange keeps
+        // it undoubled on Guard.
+        assert_eq!(
+            scan_range(&rules, obj(&rules, "WITHGUARD"), 0, ScanMission::Guard),
+            ScanRange::Hard(SimFixed::from_num(9))
         );
     }
 

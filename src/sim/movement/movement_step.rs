@@ -1859,6 +1859,7 @@ pub(super) fn process_cell_crossings(
         }
         if !reserve_destination_after_transition(
             category,
+            entity_id,
             locomotor,
             drive_track_state,
             position,
@@ -1868,7 +1869,7 @@ pub(super) fn process_cell_crossings(
             nx,
             ny,
             occupancy,
-            rng,
+            snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
         ) {
             break;
         }
@@ -1900,14 +1901,25 @@ pub(super) fn process_cell_crossings(
         // cell's occupancy rather than carrying the current cell's.
         if category == EntityCategory::Infantry && target.next_index < target.path.len() {
             let next_cell = target.path[target.next_index];
-            if let Some(pre_sub) = bump_crush::allocate_sub_cell_with_preference(
-                occupancy.get(next_cell.0, next_cell.1),
-                active_layer,
-                None,
-                position.sub_x,
-                position.sub_y,
-                rng,
-            ) {
+            // Missions Enter / Capture / Eaten / Area Guard / Patrol whose
+            // NavCom sits in the cell being reserved place unconditionally,
+            // skipping the occupancy, blocker and garrison gates and taking no
+            // random draw — matching the original engine's priority branch.
+            let pre_priority =
+                snap.sub_cell_priority_mission && snap.nav_com_cell == Some(next_cell);
+            let pre_slot = if pre_priority {
+                Some(bump_crush::priority_sub_cell(position.sub_x, position.sub_y))
+            } else {
+                bump_crush::allocate_sub_cell_with_preference(
+                    occupancy.get(next_cell.0, next_cell.1),
+                    active_layer,
+                    None,
+                    position.sub_x,
+                    position.sub_y,
+                    rng,
+                )
+            };
+            if let Some(pre_sub) = pre_slot {
                 let (sc_x, sc_y) = crate::util::lepton::subcell_lepton_offset(Some(pre_sub));
                 if let Some(loco) = locomotor {
                     loco.subcell_dest = Some((sc_x, sc_y));

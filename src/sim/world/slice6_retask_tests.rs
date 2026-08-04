@@ -132,8 +132,8 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// `slice6_rules()` declares no mission sections, so every mission in this
 /// fixture left the zero sentinel. Provenance note in
 /// global_parity_harness_tests.rs at FINAL_STREAM_STATES.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x389B_98DB_DFB0_C20B;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9859_7B6E_5E43_4629;
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x802A_20C2_3BD3_E781;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9BA2_F3E0_33F0_10E6;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -209,7 +209,7 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9859_7B6E_5E43_4629;
 // fields moving off their old values — `passive_scan_timer` armed at the
 // construction frame instead of left unarmed, plus the two new fields folded at
 // their defaults. Rust regression ratchet, not gamemd evidence.
-const SLICE6_BASELINE_HASH: u64 = 0x1E9E_6746_99F9_F3A9;
+const SLICE6_BASELINE_HASH: u64 = 0x9C1E_4959_41F6_4854;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

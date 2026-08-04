@@ -191,6 +191,14 @@ fn test_sight_capped_at_max_range() {
     assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 31, 20));
 }
 
+/// Pins VERA's additive veteran-sight stand-in, NOT the engine's mechanism.
+///
+/// gamemd multiplies `Sight` by `VeteranSight` (a double) and only when the
+/// type owns the sight promotion ability. Stock `VeteranSight=0.0` makes the
+/// engine skip the multiply entirely and makes VERA's parsed integer 0, so the
+/// two agree in every unmodded match; they would diverge under a map or mod INI
+/// that sets the key. Recorded DRIFT — the fix needs a fractional rules value,
+/// which is not this module's to parse.
 #[test]
 fn test_veteran_sight_bonus() {
     let mut store = EntityStore::new();
@@ -232,10 +240,16 @@ fn test_veteran_sight_bonus() {
     assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 18, 10));
 }
 
+/// A level-8 plateau buys no extra sight, because the engine measures elevation
+/// in leptons of world height and multiplies rather than adding cells.
+///
+/// Level 8 is 8*104 = 832 leptons, and `trunc(832 / 2000)` is 0 steps, so the
+/// multiplier is exactly 1.0. VERA used to convert the level with the *cells*
+/// factor of 256 and add whole cells, handing every unit on high ground a free
+/// ring of vision the engine never grants.
 #[test]
-fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
+fn elevation_grants_no_sight_bonus_at_any_reachable_terrain_level() {
     let mut store = EntityStore::new();
-    // z=8, LeptonsPerSightIncrease=2000: bonus = 8*256/2000 = 1 (integer division).
     let entity = GameEntity::new_at_frame_zero_for_test(
         1,
         10,
@@ -266,11 +280,14 @@ fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
         &config,
         &ti(),
     );
-    // Effective = 5 + 1 = 6. The z=8 unit also shifts its reveal center by
-    // z/2 = 4 cells toward iso-north, so the foot cell (10,10) reveals around
-    // (6,6). Cell at distance 6 east of the shifted center (12,6) is visible; 7 (13,6) not.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 12, 6));
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 13, 6));
+    // Effective sight stays 5. The z=8 unit still shifts its reveal center by
+    // 4 cells toward iso-north, so the foot cell (10,10) reveals around (6,6):
+    // (11,6) is 5 east of the shifted center and visible, (12,6) is 6 and is not.
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 11, 6));
+    assert!(
+        !fog.is_cell_visible(intern::test_intern("Americans"), 12, 6),
+        "level 8 must not buy a sixth cell of sight"
+    );
 }
 
 #[test]
@@ -462,25 +479,62 @@ fn test_shroud_edge_mask_ne_uses_correct_neighbor() {
 
 // -- SpySat tests --
 
+/// The uplink lifts the shroud off the whole map and does nothing else.
+///
+/// gamemd's whole-map reveal writes only the explored bit; with `FogOfWar=no`
+/// there is no per-cell "currently in sight" state for it to write. VERA used
+/// to set its visible bit map-wide as well, which fed the combat acquisition
+/// gates and let every unit target across the entire map while the uplink
+/// stood.
 #[test]
-fn test_spy_sat_reveals_all_cells() {
+fn spy_sat_reveals_the_map_without_making_it_currently_visible() {
     let mut fog = FogState {
         width: 20,
         height: 20,
         ..Default::default()
     };
-    // Initially nothing is visible.
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 10, 10));
+    assert!(!fog.is_cell_revealed(intern::test_intern("Americans"), 10, 10));
 
     let americans_id = intern::test_intern("Americans");
     let interner = ti();
     apply_spy_sat(&mut fog, &[americans_id], &interner);
 
-    // After SpySat, all cells should be visible and revealed.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 0, 0));
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 10, 10));
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 19, 19));
-    assert!(fog.is_cell_revealed(intern::test_intern("Americans"), 15, 15));
+    for (rx, ry) in [(0u16, 0u16), (10, 10), (19, 19), (15, 15)] {
+        assert!(
+            fog.is_cell_revealed(intern::test_intern("Americans"), rx, ry),
+            "({rx},{ry}) must be explored"
+        );
+        assert!(
+            !fog.is_cell_visible(intern::test_intern("Americans"), rx, ry),
+            "({rx},{ry}) must not be in current sight"
+        );
+    }
+}
+
+/// The reveal outlives the tick that set it, so a brownout cannot blink the
+/// map back to black. gamemd's is edge-triggered and power-independent; here
+/// the explored bit is monotonic, which gets the same result.
+#[test]
+fn spy_sat_reveal_survives_the_owner_dropping_off_the_qualifying_list() {
+    let owner = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 20,
+        height: 20,
+        ..Default::default()
+    };
+    apply_spy_sat(&mut fog, &[owner], &interner);
+    assert!(fog.is_cell_revealed(owner, 19, 19));
+
+    // Next tick: visibility is cleared and the owner no longer qualifies.
+    if let Some(vis) = fog.by_owner.get_mut(&owner) {
+        vis.clear_all_visible();
+    }
+    apply_spy_sat(&mut fog, &[], &interner);
+    assert!(
+        fog.is_cell_revealed(owner, 19, 19),
+        "the map stays lifted until the last uplink is gone"
+    );
 }
 
 // -- Gap Generator tests --
@@ -786,10 +840,11 @@ fn test_height_los_high_viewer_sees_past_cliff() {
     reveal_radius_into(&mut low, 5, 5, 5, 0, true, Some(&hg), width, height);
     assert!(!low.is_visible(8, 5), "low viewer is blocked by the cliff");
 
-    // High viewer (z=4, shift=2): index-29 reveal cell shifts to (6,3); the SAME
-    // obstruction (9,7) is checked, but 4+3 = 7 >= 5 → LOS passes.
+    // High viewer (level 4 = 4*104 leptons, shift=2): index-29 reveal cell
+    // shifts to (6,3); the SAME obstruction (9,7) is checked, but 4+3 = 7 >= 5
+    // → LOS passes.
     let mut high = OwnerVisibility::new(width, height);
-    reveal_radius_into(&mut high, 5, 5, 5, 4, true, Some(&hg), width, height);
+    reveal_radius_into(&mut high, 5, 5, 5, 4 * 104, true, Some(&hg), width, height);
     assert!(
         high.is_visible(6, 3),
         "high viewer sees past the cliff (reveal cell shifted to (6,3))"
@@ -816,10 +871,21 @@ fn test_reveal_center_z_shift() {
         "ground reveal does not reach (8,8)"
     );
 
-    // Elevated unit (z=4): center shifts to (8,8). The raw foot cell (10,10) is
-    // offset (2,2) from the shifted center → outside the sight-1 footprint.
+    // Elevated unit (level 4 = 4*104 leptons): center shifts to (8,8). The raw
+    // foot cell (10,10) is offset (2,2) from the shifted center → outside the
+    // sight-1 footprint.
     let mut elevated = OwnerVisibility::new(width, height);
-    reveal_radius_into(&mut elevated, 10, 10, 1, 4, false, None, width, height);
+    reveal_radius_into(
+        &mut elevated,
+        10,
+        10,
+        1,
+        4 * 104,
+        false,
+        None,
+        width,
+        height,
+    );
     assert!(
         elevated.is_visible(8, 8),
         "elevated reveal centers on the Z-shifted cell (8,8)"
@@ -1068,4 +1134,220 @@ fn distant_terrain_cannot_block_nearby_sight() {
         differing.len(),
         &differing[..differing.len().min(20)]
     );
+}
+
+// -- Reveal footprint: the engine's spiral table --
+
+/// The engine's ring membership rule, recovered from its table initialiser:
+/// a cell belongs to ring `r` when `max(|dx|,|dy|) + min(|dx|,|dy|)/2 == r`,
+/// with truncating division. This is the classic C&C distance approximation.
+fn ring_of(dx: i32, dy: i32) -> usize {
+    let far = dx.abs().max(dy.abs());
+    let near = dx.abs().min(dy.abs());
+    (far + near / 2) as usize
+}
+
+/// Every spiral entry sits in the ring the cumulative table says it does.
+///
+/// This is what makes the table checkable rather than a wall of magic numbers:
+/// the same rule that places each of the 309 offsets also reproduces all twelve
+/// of the engine's cumulative counts, so a transcription slip in any single
+/// entry fails here.
+#[test]
+fn spiral_ring_membership_matches_the_engines_distance_rule() {
+    let mut start = 0usize;
+    for ring in 0..=MAX_SIGHT_RANGE as usize {
+        let end = super::REVEAL_RING_SIZES[ring];
+        for i in start..end {
+            let (dx, dy) = super::REVEAL_SPIRAL[i];
+            assert_eq!(
+                ring_of(i32::from(dx), i32::from(dy)),
+                ring,
+                "spiral[{i}] = ({dx},{dy}) is not in ring {ring}"
+            );
+        }
+        start = end;
+    }
+}
+
+/// The three tables are indexed in lockstep, so they must not drift apart.
+#[test]
+fn spiral_and_mirror_tables_cover_every_reachable_sight() {
+    assert_eq!(super::REVEAL_SPIRAL.len(), super::REVEAL_RING_SIZES[10]);
+    assert_eq!(super::REVEAL_MIRROR.len(), super::REVEAL_RING_SIZES[10]);
+    let mut seen: Vec<(i8, i8)> = super::REVEAL_SPIRAL.to_vec();
+    seen.sort_unstable();
+    let before = seen.len();
+    seen.dedup();
+    assert_eq!(before, seen.len(), "the spiral table repeats a cell");
+}
+
+/// Sight 10 reveals exactly the 309 cells the engine's ring table names.
+///
+/// VERA used to abandon the table at sight 10 and sweep a `d <= 10.5` bounding
+/// disc instead: 349 cells, ~40 more than the engine ever reveals, around every
+/// naval yard, radar, Grand Cannon, Psychic Sensor, Gattling Cannon/Tank and
+/// Magnetron for the whole match.
+#[test]
+fn sight_ten_reveals_the_retail_cell_count() {
+    let (w, h) = (64u16, 64u16);
+    let mut vis = OwnerVisibility::new(w, h);
+    super::reveal_radius_into(&mut vis, 32, 32, 10, 0, false, None, w, h);
+
+    let revealed = (0..h)
+        .flat_map(|ry| (0..w).map(move |rx| (rx, ry)))
+        .filter(|&(rx, ry)| vis.is_revealed(rx, ry))
+        .count();
+    assert_eq!(
+        revealed, 309,
+        "sight 10 is the ring table's cumulative count"
+    );
+    // Boundary members and non-members of the outermost ring.
+    assert!(vis.is_revealed(42, 32), "(10,0) is in ring 10");
+    assert!(vis.is_revealed(39, 39), "(7,7) is in ring 10");
+    assert!(!vis.is_revealed(40, 39), "(8,7) is ring 11 — out of reach");
+    assert!(!vis.is_revealed(43, 32), "(11,0) is ring 11 — out of reach");
+}
+
+/// Ring 10 goes through the same terrain height gate as every inner ring.
+///
+/// The old bounding-disc sweep re-marked every cell it touched with no
+/// line-of-sight test at all, so a Sight=10 building next to a cliff
+/// permanently lit ground the engine leaves black — and it overwrote the
+/// rejections the spiral pass had just made.
+#[test]
+fn sight_ten_outer_ring_is_still_blocked_by_terrain_height() {
+    let (w, h) = (64u16, 64u16);
+    let flat: Vec<u8> = vec![0; usize::from(w) * usize::from(h)];
+    let mut open = OwnerVisibility::new(w, h);
+    super::reveal_radius_into(&mut open, 32, 32, 10, 0, true, Some(&flat), w, h);
+    assert!(open.is_revealed(42, 32), "flat ground hides nothing");
+
+    // Ring-10 target (42,32) is spiral offset (10,0), whose mirror is (-1,0);
+    // the engine samples target + mirror + (2,2) = (43,34). A cliff there is
+    // more than the viewer's level + 3, so the target must stay dark.
+    let mut heights = flat.clone();
+    heights[usize::from(34u16) * usize::from(w) + usize::from(43u16)] = 8;
+    let mut blocked = OwnerVisibility::new(w, h);
+    super::reveal_radius_into(&mut blocked, 32, 32, 10, 0, true, Some(&heights), w, h);
+    assert!(
+        !blocked.is_revealed(42, 32),
+        "a ring-10 cell must be gated by the same height test as ring 9"
+    );
+    assert!(
+        blocked.is_revealed(42, 31),
+        "the neighbouring ring-10 cell samples a different obstruction and stays lit"
+    );
+}
+
+/// `Sight=0` reveals nothing at all — not even the cell the object stands on.
+///
+/// 36 stock types carry it: fences and walls, the 24 map lamp posts, and the
+/// spy/cargo/paradrop planes that cross the map while airborne.
+#[test]
+fn sight_zero_reveals_nothing() {
+    let (w, h) = (16u16, 16u16);
+    let mut vis = OwnerVisibility::new(w, h);
+    super::reveal_radius_into(&mut vis, 8, 8, 0, 0, false, None, w, h);
+    let any = (0..h).any(|ry| (0..w).any(|rx| vis.is_revealed(rx, ry)));
+    assert!(!any, "a Sight=0 object must not open a hole in the shroud");
+}
+
+// -- Reveal centre height shift --
+
+/// The shift is derived from a lepton height, and for every terrain level a
+/// retail map can carry it still lands on the old `level / 2` shorthand.
+#[test]
+fn the_height_shift_reduces_to_half_the_terrain_level() {
+    for level in 0..=19i32 {
+        assert_eq!(
+            super::iso_height_shift_cells(level * 104),
+            level / 2,
+            "terrain level {level}"
+        );
+    }
+}
+
+/// An airborne viewer's reveal disc sits under its sprite, not under its ground
+/// shadow.
+///
+/// The engine feeds the object's world Z — flight altitude included — to the
+/// same shift a hill uses. At stock `FlightLevel=1500` that is 216px of screen
+/// lift, i.e. 7 whole cells toward isometric north, which is exactly how far
+/// above its ground cell the renderer draws the aircraft.
+#[test]
+fn an_airborne_viewer_reveals_under_its_sprite() {
+    let (w, h) = (64u16, 64u16);
+    let mut vis = OwnerVisibility::new(w, h);
+    super::reveal_radius_into(&mut vis, 30, 30, 1, 1500, false, None, w, h);
+    assert!(
+        vis.is_revealed(23, 23),
+        "centre shifts 7 cells toward iso-north"
+    );
+    assert!(
+        !vis.is_revealed(30, 30),
+        "the aircraft's ground cell is 7 cells from the centre of a sight-1 disc"
+    );
+}
+
+/// A cliff cannot hide anything from an aircraft flying over it: the LOS viewer
+/// level is the object's world Z in height levels, which at cruise altitude is
+/// far above any terrain.
+#[test]
+fn an_airborne_viewer_sees_past_a_cliff() {
+    let (w, h) = (64u16, 64u16);
+    // Level-12 ground everywhere: more than 3 above a viewer standing at level
+    // 0, and far below one cruising at 1500 leptons (level 14).
+    let heights: Vec<u8> = vec![12; usize::from(w) * usize::from(h)];
+    let mut grounded = OwnerVisibility::new(w, h);
+    super::reveal_radius_into(&mut grounded, 30, 30, 5, 0, true, Some(&heights), w, h);
+    let mut flying = OwnerVisibility::new(w, h);
+    super::reveal_radius_into(&mut flying, 30, 30, 5, 1500, true, Some(&heights), w, h);
+
+    let count = |vis: &OwnerVisibility| {
+        (0..h)
+            .flat_map(|ry| (0..w).map(move |rx| (rx, ry)))
+            .filter(|&(rx, ry)| vis.is_revealed(rx, ry))
+            .count()
+    };
+    assert_eq!(
+        count(&grounded),
+        0,
+        "the terrain towers over a ground viewer"
+    );
+    assert_eq!(
+        count(&flying),
+        89,
+        "nothing blocks a viewer above the terrain"
+    );
+}
+
+/// The altitude actually reaches the reveal from a live entity, not just from a
+/// direct call to the kernel.
+#[test]
+fn an_aircrafts_altitude_moves_its_revealed_disc() {
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+    use crate::util::fixed_math::SimFixed;
+
+    let mut store = EntityStore::new();
+    let mut entity = GameEntity::test_default(1, "BEAG", "Americans", 30, 30);
+    entity.category = EntityCategory::Aircraft;
+    entity.vision_range = 1;
+    let mut loco = LocomotorState::for_test_kind(LocomotorKind::Fly);
+    loco.layer = MovementLayer::Air;
+    loco.altitude = SimFixed::from_num(1500);
+    entity.locomotor = Some(loco);
+    store.insert(entity);
+
+    let fog = recompute_owner_visibility(
+        &store,
+        Some(&PathGrid::new(64, 64)),
+        &Default::default(),
+        &default_config(),
+        &ti(),
+    );
+    let owner = intern::test_intern("Americans");
+    assert!(fog.is_cell_visible(owner, 23, 23));
+    assert!(!fog.is_cell_visible(owner, 30, 30));
 }
