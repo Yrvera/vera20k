@@ -582,7 +582,7 @@ pub(crate) fn issue_move_command_with_layered(
 
     // Attach the MovementTarget and update facing on the entity.
     // All units start at full speed — acceleration/deceleration is disabled.
-    let mut movement: MovementTarget = MovementTarget {
+    let movement: MovementTarget = MovementTarget {
         path,
         path_layers,
         next_index: 1, // Index 0 is the current position, 1 is the first target.
@@ -654,65 +654,48 @@ pub(crate) fn issue_move_command_with_layered(
         let mut drive_track_started = false;
         let mut track_occupation_target: Option<DriveOccupationFootprint> = None;
         let mut accepted_path_reference: Option<(i16, i16)> = None;
+        let mut accepted_path_nodes: usize = 1;
+        // Set when the body is not yet on the head path node's octant: gamemd
+        // commands that turn and installs no curve until the body reaches it.
+        let mut turn_first: Option<u8> = None;
         if let Some(f) = new_facing {
             if entity_mut.category != EntityCategory::Infantry
                 && uses_shared_tracks
                 && let Some((dx, dy)) = initial_step_delta
             {
-                if let Some(sel) = drive_track::select_shared_ordinary_track(
-                    entity_mut.facing,
-                    f,
-                    uses_ship_locomotor,
-                ) {
-                    entity_mut.drive_track = drive_track::begin_drive_track(
-                        sel.raw_track_index,
-                        sel.flags,
-                        dx,
-                        dy,
-                        sel.target_facing,
-                    );
-                    drive_track_started = entity_mut.drive_track.is_some();
-                    if drive_track_started
-                        && let Some(&(rx, ry)) = movement.path.get(1)
-                        && movement.layer_at(1)
-                            == crate::sim::movement::locomotor::MovementLayer::Ground
-                    {
-                        track_occupation_target = Some(DriveOccupationFootprint {
-                            rx,
-                            ry,
-                            layer: crate::sim::movement::locomotor::MovementLayer::Ground,
+                let to_delta =
+                    movement
+                        .path
+                        .get(1)
+                        .zip(movement.path.get(2))
+                        .map(|(&(hx, hy), &(ax, ay))| {
+                            (i32::from(ax) - i32::from(hx), i32::from(ay) - i32::from(hy))
                         });
-                    }
-                    if drive_track_started {
-                        accepted_path_reference =
-                            movement.path.get(1).map(|&(rx, ry)| (rx as i16, ry as i16));
-                    }
-                } else if let Some(fb) = drive_track::build_shared_sharp_turn_fallback(
+                match drive_track::plan_drive_track_from_path(
                     entity_mut.facing,
+                    (dx, dy),
+                    to_delta,
                     uses_ship_locomotor,
                 ) {
-                    let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity_mut.facing);
-                    entity_mut.drive_track = drive_track::begin_drive_track(
-                        fb.raw_track_index,
-                        fb.flags,
-                        cdx,
-                        cdy,
-                        fb.target_facing,
-                    );
-                    if entity_mut.drive_track.is_some() {
-                        movement.next_index += 1;
-                        let (d_x, d_y, d_len) =
-                            crate::util::lepton::cell_delta_to_lepton_dir(cdx, cdy);
-                        movement.move_dir_x = d_x;
-                        movement.move_dir_y = d_y;
-                        movement.move_dir_len = d_len;
-                        drive_track_started = true;
-                        if entity_mut.movement_layer_or_ground()
-                            == crate::sim::movement::locomotor::MovementLayer::Ground
-                        {
-                            let rx = i32::from(entity_mut.position.rx) + cdx;
-                            let ry = i32::from(entity_mut.position.ry) + cdy;
-                            if let (Ok(rx), Ok(ry)) = (u16::try_from(rx), u16::try_from(ry)) {
+                    drive_track::DriveTrackDecision::TurnFirst { desired_facing } => {
+                        turn_first = Some(desired_facing);
+                    }
+                    drive_track::DriveTrackDecision::Select(plan) => {
+                        entity_mut.drive_track = drive_track::begin_selected_drive_track(&plan);
+                        drive_track_started = entity_mut.drive_track.is_some();
+                        if drive_track_started {
+                            // `next_index` starts at 1, so the head node index is
+                            // exactly the number of nodes the curve spans.
+                            let head_index = plan.nodes;
+                            accepted_path_nodes = plan.nodes;
+                            let head_rx = i32::from(entity_mut.position.rx) + plan.head_dx;
+                            let head_ry = i32::from(entity_mut.position.ry) + plan.head_dy;
+                            accepted_path_reference = Some((head_rx as i16, head_ry as i16));
+                            if movement.layer_at(head_index)
+                                == crate::sim::movement::locomotor::MovementLayer::Ground
+                                && let (Ok(rx), Ok(ry)) =
+                                    (u16::try_from(head_rx), u16::try_from(head_ry))
+                            {
                                 track_occupation_target = Some(DriveOccupationFootprint {
                                     rx,
                                     ry,
@@ -720,11 +703,8 @@ pub(crate) fn issue_move_command_with_layered(
                                 });
                             }
                         }
-                        accepted_path_reference = Some((
-                            (i32::from(entity_mut.position.rx) + cdx) as i16,
-                            (i32::from(entity_mut.position.ry) + cdy) as i16,
-                        ));
                     }
+                    drive_track::DriveTrackDecision::Unavailable => {}
                 }
             }
 
@@ -732,7 +712,7 @@ pub(crate) fn issue_move_command_with_layered(
                 entity_mut.facing_target = None;
             } else if uses_shared_tracks {
                 entity_mut.drive_track = None;
-                entity_mut.facing_target = None;
+                entity_mut.facing_target = turn_first;
                 if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
                     ship.head_to = None;
                 }
@@ -755,7 +735,11 @@ pub(crate) fn issue_move_command_with_layered(
                 .unwrap_or(crate::sim::movement::locomotor::MovementLayer::Ground);
             if let Some(drive) = entity_mut.drive_locomotion.as_mut() {
                 if let Some(reference) = accepted_path_reference {
-                    super::path_markers::accept_path_replay(&mut drive.path, reference, 1);
+                    super::path_markers::accept_path_replay(
+                        &mut drive.path,
+                        reference,
+                        accepted_path_nodes,
+                    );
                 }
                 match (track_occupation_target, cell_occupation.as_deref_mut()) {
                     (Some(next), Some(occupation)) => {
@@ -785,7 +769,11 @@ pub(crate) fn issue_move_command_with_layered(
             let fallback_z = entity_mut.position.z;
             if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
                 if let Some(reference) = accepted_path_reference {
-                    super::path_markers::accept_path_replay(&mut ship.path, reference, 1);
+                    super::path_markers::accept_path_replay(
+                        &mut ship.path,
+                        reference,
+                        accepted_path_nodes,
+                    );
                     let endpoint = (reference.0 as u16, reference.1 as u16);
                     let layer = movement
                         .path

@@ -50,6 +50,20 @@ fn shared_track_kind(locomotor: &Option<LocomotorState>) -> Option<LocomotorKind
         .filter(|kind| matches!(kind, LocomotorKind::Drive | LocomotorKind::Ship))
 }
 
+/// Cell delta of the path step *after* the head node — gamemd's `path[1]`
+/// direction, the second index term of the turn table.
+///
+/// `None` at the last step of a path, which the selector normalises to the head
+/// node's own direction (gamemd's `-1` queue terminator does the same).
+fn path_window_to_delta(target: &MovementTarget) -> Option<(i32, i32)> {
+    let head = target.path.get(target.next_index)?;
+    let after = target.path.get(target.next_index + 1)?;
+    Some((
+        i32::from(after.0) - i32::from(head.0),
+        i32::from(after.1) - i32::from(head.1),
+    ))
+}
+
 fn resolved_track_endpoint(
     path_grid: Option<&PathGrid>,
     cell: (u16, u16),
@@ -208,93 +222,61 @@ pub(super) fn configure_motion_after_transition(
         let shared_kind = shared_track_kind(locomotor);
         let uses_drive_tracks = shared_kind.is_some();
         let is_ship = shared_kind == Some(LocomotorKind::Ship);
-        let mut substituted_delta: Option<(i32, i32)> = None;
-        let track_initiated = if uses_drive_tracks {
-            if let Some(sel) = drive_track::select_shared_ordinary_track(*facing, new_face, is_ship)
-            {
-                *drive_track = drive_track::begin_drive_track(
-                    sel.raw_track_index,
-                    sel.flags,
-                    ndx,
-                    ndy,
-                    sel.target_facing,
-                );
-                drive_track.is_some()
-            } else if let Some(fb) = drive_track::build_shared_sharp_turn_fallback(*facing, is_ship)
-            {
-                // Sharp-turn substitute: no precomputed curve exists for this
-                // turn angle, so drive straight ahead in the current facing for
-                // one cell instead of curving.
-                //
-                // This consumes exactly ONE path node — the same single node any
-                // straight step consumes, already accounted for by the advance at
-                // the top of this function. The substitute is not a special case
-                // in the node-consumption sense: native selection substitutes the
-                // straight track and then falls into the shared no-cell-crossing
-                // tail, which shifts the path queue by one like every other
-                // non-crossing step. Dropping a second node here strands the unit
-                // one waypoint further off-route on every sharp turn.
-                // See docs/research/DRIVE_SHARP_TURN_FALLBACK_RE.md §3.2 — and note
-                // its Q2 wording describes that shared shift as though it were
-                // specific to the substitute, which is what this code read as a
-                // licence to drop an extra node.
-                let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(*facing);
-                *drive_track = drive_track::begin_drive_track(
-                    fb.raw_track_index,
-                    fb.flags,
-                    cdx,
-                    cdy,
-                    fb.target_facing,
-                );
-                if drive_track.is_some() {
-                    // Movement direction follows the straight-ahead delta, not the
-                    // unreachable node's delta; node bookkeeping is unchanged.
-                    substituted_delta = Some((cdx, cdy));
-                    true
-                } else {
-                    false
+        let mut turn_first: Option<u8> = None;
+        let mut accepted_plan: Option<drive_track::DriveTrackPlan> = None;
+        if uses_drive_tracks {
+            match drive_track::plan_drive_track_from_path(
+                *facing,
+                (ndx, ndy),
+                path_window_to_delta(target),
+                is_ship,
+            ) {
+                drive_track::DriveTrackDecision::TurnFirst { desired_facing } => {
+                    *drive_track = None;
+                    turn_first = Some(desired_facing);
                 }
-            } else {
-                false
+                drive_track::DriveTrackDecision::Select(plan) => {
+                    *drive_track = drive_track::begin_selected_drive_track(&plan);
+                    if drive_track.is_some() {
+                        accepted_plan = Some(plan);
+                    }
+                }
+                drive_track::DriveTrackDecision::Unavailable => {}
             }
         } else {
             *drive_track = None;
-            false
-        };
+        }
 
-        if track_initiated {
+        if let Some(plan) = accepted_plan {
             *facing_target = None;
             if let Some(kind) = shared_kind {
-                let (accepted_dx, accepted_dy) = substituted_delta.unwrap_or((ndx, ndy));
                 let endpoint = (
-                    (i32::from(current_cell.0) + accepted_dx) as i16,
-                    (i32::from(current_cell.1) + accepted_dy) as i16,
+                    (i32::from(current_cell.0) + plan.head_dx) as i16,
+                    (i32::from(current_cell.1) + plan.head_dy) as i16,
                 );
                 let endpoint_cell = (endpoint.0 as u16, endpoint.1 as u16);
-                let endpoint_layer = if substituted_delta.is_some() {
-                    locomotor
-                        .as_ref()
-                        .map_or(MovementLayer::Ground, |locomotor| locomotor.layer)
-                } else {
-                    target.layer_at(target.next_index)
-                };
+                let endpoint_layer = target.layer_at(target.next_index + plan.nodes - 1);
                 accept_shared_track(
                     kind,
                     drive_locomotion,
                     ship_locomotion,
                     endpoint,
                     resolved_track_endpoint(path_grid, endpoint_cell, endpoint_layer, current_z),
-                    1,
+                    plan.nodes,
                 );
             }
         } else {
             if is_ship && let Some(ship) = ship_locomotion.as_mut() {
                 ship.head_to = None;
             }
+            // The exact-facing precondition takes precedence over the ordinary
+            // step facing: the body must reach the head node's octant before any
+            // curve may be selected, and it takes no step meanwhile.
+            let wanted = turn_first.unwrap_or(new_face);
             if category == EntityCategory::Infantry || mover_rot <= 0 {
-                *facing = new_face;
+                *facing = wanted;
             } else {
-                *facing_target = Some(new_face);
+                *facing_target = Some(wanted);
             }
         }
 
@@ -314,8 +296,7 @@ pub(super) fn configure_motion_after_transition(
             target.move_dir_y = dy;
             target.move_dir_len = fixed_distance(dx, dy);
         } else {
-            let (eff_dx, eff_dy) = substituted_delta.unwrap_or((ndx, ndy));
-            let (d_x, d_y, d_len) = crate::util::lepton::cell_delta_to_lepton_dir(eff_dx, eff_dy);
+            let (d_x, d_y, d_len) = crate::util::lepton::cell_delta_to_lepton_dir(ndx, ndy);
             target.move_dir_x = d_x;
             target.move_dir_y = d_y;
             target.move_dir_len = d_len;
@@ -596,6 +577,51 @@ mod tests {
         let mut ship_locomotion = None;
         let mut locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
 
+        let result = advance_lepton_position(
+            &mut target,
+            &mut position,
+            &mut facing,
+            &mut facing_target,
+            &mut drive_track_state,
+            &mut drive_locomotion,
+            &mut ship_locomotion,
+            &mut locomotor,
+            EntityCategory::Unit,
+            SimFixed::from_num(300),
+            movement_frame_budget_from_current_speed(SimFixed::from_num(300)),
+            SimFixed::from_num(1) / SimFixed::from_num(15),
+            1,
+            None,
+            MovementLayer::Ground,
+            None,
+        );
+
+        // The finishing curve leaves the hull on its last point's facing (0xBC
+        // for this raw track), which is not the east octant the head path node
+        // needs, so the exact-facing precondition fires first: no new curve, and
+        // the whole leftover budget is still on the owner.
+        assert!(matches!(result, AdvanceResult::DriveTrackActive));
+        assert!(
+            drive_track_state.is_none(),
+            "no curve while the hull is off-octant"
+        );
+        assert_eq!(
+            facing_target,
+            Some(0x40),
+            "turn commanded onto the head node"
+        );
+        assert_eq!(
+            drive_locomotion
+                .as_ref()
+                .expect("drive runtime")
+                .residual_budget,
+            13
+        );
+
+        // Once the hull is on the octant, the fresh selection runs and enters the
+        // new curve on the carried residual alone — a selection costs no budget.
+        facing = 0x40;
+        facing_target = None;
         let result = advance_lepton_position(
             &mut target,
             &mut position,
@@ -932,6 +958,103 @@ fn install_drive_head_to_occupation(
     }
 }
 
+/// Outcome of a fresh selection made while the mover stands on its current cell
+/// — the position `Process_Movement` runs from.
+enum FreshTrackOutcome {
+    /// A curve was installed and the head cell reserved.
+    Installed,
+    /// The body is not on the head node's octant. gamemd commands the turn and
+    /// returns without consuming a node or taking a step.
+    TurnFirst(u8),
+    /// No curve available; the caller keeps its non-track behaviour.
+    None,
+}
+
+/// Run the fresh Drive/Ship curve selection for a mover standing on its own
+/// cell: index the turn table by the two leading path directions, install the
+/// curve at cursor 0, and reserve its head cell (two cells ahead for a turning
+/// curve).
+#[allow(clippy::too_many_arguments)]
+fn select_fresh_drive_track_at_current_cell(
+    target: &mut MovementTarget,
+    position: &Position,
+    facing: u8,
+    facing_target: &mut Option<u8>,
+    drive_track_state: &mut Option<DriveTrackState>,
+    drive_locomotion: &mut Option<DriveLocomotionRuntime>,
+    ship_locomotion: &mut Option<ShipLocomotionRuntime>,
+    cell_occupation: &mut Option<&mut CellOccupationGrid>,
+    entity_id: u64,
+    current_occupation_layer: MovementLayer,
+    path_grid: Option<&PathGrid>,
+    shared_kind: LocomotorKind,
+) -> FreshTrackOutcome {
+    let Some(next) = target.path.get(target.next_index).copied() else {
+        return FreshTrackOutcome::None;
+    };
+    let ndx = i32::from(next.0) - i32::from(position.rx);
+    let ndy = i32::from(next.1) - i32::from(position.ry);
+    let is_ship = shared_kind == LocomotorKind::Ship;
+    let plan = match drive_track::plan_drive_track_from_path(
+        facing,
+        (ndx, ndy),
+        path_window_to_delta(target),
+        is_ship,
+    ) {
+        drive_track::DriveTrackDecision::TurnFirst { desired_facing } => {
+            return FreshTrackOutcome::TurnFirst(desired_facing);
+        }
+        drive_track::DriveTrackDecision::Select(plan) => plan,
+        drive_track::DriveTrackDecision::Unavailable => return FreshTrackOutcome::None,
+    };
+    let Some(new_track) = drive_track::begin_selected_drive_track(&plan) else {
+        return FreshTrackOutcome::None;
+    };
+
+    let (d_x, d_y, d_len) = crate::util::lepton::cell_delta_to_lepton_dir(ndx, ndy);
+    target.move_dir_x = d_x;
+    target.move_dir_y = d_y;
+    target.move_dir_len = d_len;
+    *drive_track_state = Some(new_track);
+    *facing_target = None;
+
+    // The reserved head is the curve's endpoint: the head node for a straight
+    // run, the node after it for a turning curve.
+    let head_index = target.next_index + plan.nodes - 1;
+    let endpoint = (
+        (i32::from(position.rx) + plan.head_dx) as i16,
+        (i32::from(position.ry) + plan.head_dy) as i16,
+    );
+    let endpoint_cell = (endpoint.0 as u16, endpoint.1 as u16);
+    let endpoint_layer = target.layer_at(head_index);
+    accept_shared_track(
+        shared_kind,
+        drive_locomotion,
+        ship_locomotion,
+        endpoint,
+        resolved_track_endpoint(path_grid, endpoint_cell, endpoint_layer, position.z),
+        plan.nodes,
+    );
+    let next_occupation = (endpoint_layer == MovementLayer::Ground)
+        .then(|| {
+            Some(DriveOccupationFootprint {
+                rx: u16::try_from(endpoint.0).ok()?,
+                ry: u16::try_from(endpoint.1).ok()?,
+                layer: MovementLayer::Ground,
+            })
+        })
+        .flatten();
+    install_drive_head_to_occupation(
+        drive_locomotion,
+        cell_occupation,
+        entity_id,
+        (position.rx, position.ry),
+        current_occupation_layer,
+        next_occupation,
+    );
+    FreshTrackOutcome::Installed
+}
+
 fn advance_drive_track_retry_after_selection(
     target: &mut MovementTarget,
     position: &mut Position,
@@ -1108,116 +1231,46 @@ pub(super) fn advance_lepton_position(
             let is_ship = shared_kind == Some(LocomotorKind::Ship);
             if uses_drive_tracks
                 && category != EntityCategory::Infantry
-                && let Some(next) = target.path.get(target.next_index).copied()
+                && let Some(kind) = shared_kind
             {
-                let ndx = next.0 as i32 - position.rx as i32;
-                let ndy = next.1 as i32 - position.ry as i32;
-                let next_face = facing_from_delta(ndx, ndy);
-                let mut substituted_delta: Option<(i32, i32)> = None;
-                let new_track = if let Some(sel) =
-                    drive_track::select_shared_ordinary_track(*facing, next_face, is_ship)
-                {
-                    drive_track::begin_drive_track(
-                        sel.raw_track_index,
-                        sel.flags,
-                        ndx,
-                        ndy,
-                        sel.target_facing,
-                    )
-                } else if let Some(fb) =
-                    drive_track::build_shared_sharp_turn_fallback(*facing, is_ship)
-                {
-                    let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(*facing);
-                    substituted_delta = Some((cdx, cdy));
-                    drive_track::begin_drive_track(
-                        fb.raw_track_index,
-                        fb.flags,
-                        cdx,
-                        cdy,
-                        fb.target_facing,
-                    )
-                } else {
-                    None
-                };
-                if let Some(new_track) = new_track {
-                    if substituted_delta.is_some() {
-                        target.next_index += 1;
+                match select_fresh_drive_track_at_current_cell(
+                    target,
+                    position,
+                    *facing,
+                    facing_target,
+                    drive_track_state,
+                    drive_locomotion,
+                    ship_locomotion,
+                    &mut cell_occupation,
+                    entity_id,
+                    current_occupation_layer,
+                    path_grid,
+                    kind,
+                ) {
+                    FreshTrackOutcome::Installed => {
+                        return advance_drive_track_retry_after_selection(
+                            target,
+                            position,
+                            facing,
+                            facing_target,
+                            drive_track_state,
+                            drive_locomotion,
+                            &mut cell_occupation,
+                            entity_id,
+                            current_occupation_layer,
+                        );
                     }
-                    let (eff_dx, eff_dy) = substituted_delta.unwrap_or((ndx, ndy));
-                    let (d_x, d_y, d_len) =
-                        crate::util::lepton::cell_delta_to_lepton_dir(eff_dx, eff_dy);
-                    target.move_dir_x = d_x;
-                    target.move_dir_y = d_y;
-                    target.move_dir_len = d_len;
-                    *drive_track_state = Some(new_track);
-                    *facing_target = None;
-                    let endpoint = (
-                        (i32::from(position.rx) + eff_dx) as i16,
-                        (i32::from(position.ry) + eff_dy) as i16,
-                    );
-                    let endpoint_cell = (endpoint.0 as u16, endpoint.1 as u16);
-                    let endpoint_layer = if substituted_delta.is_some() {
-                        current_occupation_layer
-                    } else {
-                        target.layer_at(target.next_index)
-                    };
-                    accept_shared_track(
-                        shared_kind.expect("shared track kind"),
-                        drive_locomotion,
-                        ship_locomotion,
-                        endpoint,
-                        resolved_track_endpoint(
-                            path_grid,
-                            endpoint_cell,
-                            endpoint_layer,
-                            position.z,
-                        ),
-                        1,
-                    );
-                    let next_occupation = if substituted_delta.is_some() {
-                        substituted_delta.and_then(|(dx, dy)| {
-                            if current_occupation_layer != MovementLayer::Ground {
-                                return None;
-                            }
-                            let rx = u16::try_from(i32::from(position.rx) + dx).ok()?;
-                            let ry = u16::try_from(i32::from(position.ry) + dy).ok()?;
-                            Some(DriveOccupationFootprint {
-                                rx,
-                                ry,
-                                layer: MovementLayer::Ground,
-                            })
-                        })
-                    } else {
-                        (target.layer_at(target.next_index) == MovementLayer::Ground).then_some(
-                            DriveOccupationFootprint {
-                                rx: next.0,
-                                ry: next.1,
-                                layer: MovementLayer::Ground,
-                            },
-                        )
-                    };
-                    install_drive_head_to_occupation(
-                        drive_locomotion,
-                        &mut cell_occupation,
-                        entity_id,
-                        (position.rx, position.ry),
-                        current_occupation_layer,
-                        next_occupation,
-                    );
-                    return advance_drive_track_retry_after_selection(
-                        target,
-                        position,
-                        facing,
-                        facing_target,
-                        drive_track_state,
-                        drive_locomotion,
-                        &mut cell_occupation,
-                        entity_id,
-                        current_occupation_layer,
-                    );
-                }
-                if is_ship && let Some(ship) = ship_locomotion.as_mut() {
-                    ship.head_to = None;
+                    FreshTrackOutcome::TurnFirst(desired_facing) => {
+                        // No curve, no node, no step until the body is on the
+                        // head node's octant.
+                        *facing_target = Some(desired_facing);
+                        return AdvanceResult::DriveTrackActive;
+                    }
+                    FreshTrackOutcome::None => {
+                        if is_ship && let Some(ship) = ship_locomotion.as_mut() {
+                            ship.head_to = None;
+                        }
+                    }
                 }
             }
             // Track complete — snap to cell center so standard movement resumes.
@@ -1266,116 +1319,43 @@ pub(super) fn advance_lepton_position(
             let uses_drive_tracks = shared_kind.is_some();
             if uses_drive_tracks
                 && category != EntityCategory::Infantry
-                && let Some(next) = target.path.get(target.next_index).copied()
+                && let Some(kind) = shared_kind
             {
-                let ndx = next.0 as i32 - position.rx as i32;
-                let ndy = next.1 as i32 - position.ry as i32;
-                let next_face = facing_from_delta(ndx, ndy);
-                let mut substituted_delta: Option<(i32, i32)> = None;
-                let new_track = if let Some(sel) =
-                    drive_track::select_shared_ordinary_track(*facing, next_face, is_ship)
-                {
-                    drive_track::begin_drive_track(
-                        sel.raw_track_index,
-                        sel.flags,
-                        ndx,
-                        ndy,
-                        sel.target_facing,
-                    )
-                } else if let Some(fb) =
-                    drive_track::build_shared_sharp_turn_fallback(*facing, is_ship)
-                {
-                    let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(*facing);
-                    substituted_delta = Some((cdx, cdy));
-                    drive_track::begin_drive_track(
-                        fb.raw_track_index,
-                        fb.flags,
-                        cdx,
-                        cdy,
-                        fb.target_facing,
-                    )
-                } else {
-                    None
-                };
-                if let Some(new_track) = new_track {
-                    if substituted_delta.is_some() {
-                        target.next_index += 1;
+                match select_fresh_drive_track_at_current_cell(
+                    target,
+                    position,
+                    *facing,
+                    facing_target,
+                    drive_track_state,
+                    drive_locomotion,
+                    ship_locomotion,
+                    &mut cell_occupation,
+                    entity_id,
+                    current_occupation_layer,
+                    path_grid,
+                    kind,
+                ) {
+                    FreshTrackOutcome::Installed => {
+                        return advance_drive_track_retry_after_selection(
+                            target,
+                            position,
+                            facing,
+                            facing_target,
+                            drive_track_state,
+                            drive_locomotion,
+                            &mut cell_occupation,
+                            entity_id,
+                            current_occupation_layer,
+                        );
                     }
-                    let (eff_dx, eff_dy) = substituted_delta.unwrap_or((ndx, ndy));
-                    let (d_x, d_y, d_len) =
-                        crate::util::lepton::cell_delta_to_lepton_dir(eff_dx, eff_dy);
-                    target.move_dir_x = d_x;
-                    target.move_dir_y = d_y;
-                    target.move_dir_len = d_len;
-                    *drive_track_state = Some(new_track);
-                    *facing_target = None;
-                    let endpoint = (
-                        (i32::from(position.rx) + eff_dx) as i16,
-                        (i32::from(position.ry) + eff_dy) as i16,
-                    );
-                    let endpoint_cell = (endpoint.0 as u16, endpoint.1 as u16);
-                    let endpoint_layer = if substituted_delta.is_some() {
-                        current_occupation_layer
-                    } else {
-                        target.layer_at(target.next_index)
-                    };
-                    accept_shared_track(
-                        shared_kind.expect("shared track kind"),
-                        drive_locomotion,
-                        ship_locomotion,
-                        endpoint,
-                        resolved_track_endpoint(
-                            path_grid,
-                            endpoint_cell,
-                            endpoint_layer,
-                            position.z,
-                        ),
-                        1,
-                    );
-                    let next_occupation = if substituted_delta.is_some() {
-                        substituted_delta.and_then(|(dx, dy)| {
-                            if current_occupation_layer != MovementLayer::Ground {
-                                return None;
-                            }
-                            let rx = u16::try_from(i32::from(position.rx) + dx).ok()?;
-                            let ry = u16::try_from(i32::from(position.ry) + dy).ok()?;
-                            Some(DriveOccupationFootprint {
-                                rx,
-                                ry,
-                                layer: MovementLayer::Ground,
-                            })
-                        })
-                    } else {
-                        (target.layer_at(target.next_index) == MovementLayer::Ground).then_some(
-                            DriveOccupationFootprint {
-                                rx: next.0,
-                                ry: next.1,
-                                layer: MovementLayer::Ground,
-                            },
-                        )
-                    };
-                    install_drive_head_to_occupation(
-                        drive_locomotion,
-                        &mut cell_occupation,
-                        entity_id,
-                        (position.rx, position.ry),
-                        current_occupation_layer,
-                        next_occupation,
-                    );
-                    return advance_drive_track_retry_after_selection(
-                        target,
-                        position,
-                        facing,
-                        facing_target,
-                        drive_track_state,
-                        drive_locomotion,
-                        &mut cell_occupation,
-                        entity_id,
-                        current_occupation_layer,
-                    );
-                }
-                if is_ship && let Some(ship) = ship_locomotion.as_mut() {
-                    ship.head_to = None;
+                    FreshTrackOutcome::TurnFirst(desired_facing) => {
+                        *facing_target = Some(desired_facing);
+                    }
+                    FreshTrackOutcome::None => {
+                        if is_ship && let Some(ship) = ship_locomotion.as_mut() {
+                            ship.head_to = None;
+                        }
+                    }
                 }
             }
             return AdvanceResult::DriveTrackActive;
@@ -1915,7 +1895,10 @@ pub(super) fn process_cell_crossings(
             let pre_priority =
                 snap.sub_cell_priority_mission && snap.nav_com_cell == Some(next_cell);
             let pre_slot = if pre_priority {
-                Some(bump_crush::priority_sub_cell(position.sub_x, position.sub_y))
+                Some(bump_crush::priority_sub_cell(
+                    position.sub_x,
+                    position.sub_y,
+                ))
             } else {
                 bump_crush::allocate_sub_cell_with_preference(
                     occupancy.get(next_cell.0, next_cell.1),

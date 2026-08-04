@@ -740,7 +740,7 @@ fn process_pending_drive_arrivals(
         let dy = path[1].1 as i32 - path[0].1 as i32;
         let (move_dir_x, move_dir_y, move_dir_len) =
             crate::util::lepton::cell_delta_to_lepton_dir(dx, dy);
-        let mut movement = MovementTarget {
+        let movement = MovementTarget {
             path,
             path_layers,
             next_index: 1,
@@ -757,59 +757,46 @@ fn process_pending_drive_arrivals(
         };
         let mut track_occupation_target = None;
         let mut accepted_path_reference = None;
+        let mut accepted_path_nodes: usize = 1;
         if matches!(
             loco_kind,
             crate::rules::locomotor_type::LocomotorKind::Drive
         ) {
-            if let Some(sel) = super::drive_track::select_drive_track(
+            let to_delta =
+                movement
+                    .path
+                    .get(1)
+                    .zip(movement.path.get(2))
+                    .map(|(&(hx, hy), &(ax, ay))| {
+                        (i32::from(ax) - i32::from(hx), i32::from(ay) - i32::from(hy))
+                    });
+            match super::drive_track::plan_drive_track_from_path(
                 entity.facing,
-                facing_from_delta(dx, dy),
+                (dx, dy),
+                to_delta,
                 false,
             ) {
-                entity.drive_track = super::drive_track::begin_drive_track(
-                    sel.raw_track_index,
-                    sel.flags,
-                    dx,
-                    dy,
-                    sel.target_facing,
-                );
-                if entity.drive_track.is_some() {
-                    entity.facing_target = None;
-                    accepted_path_reference =
-                        Some((movement.path[1].0 as i16, movement.path[1].1 as i16));
-                    if movement.layer_at(1) == MovementLayer::Ground {
-                        track_occupation_target = Some(DriveOccupationFootprint {
-                            rx: movement.path[1].0,
-                            ry: movement.path[1].1,
-                            layer: MovementLayer::Ground,
-                        });
-                    }
+                super::drive_track::DriveTrackDecision::TurnFirst { desired_facing } => {
+                    // Exact-facing precondition: no curve and no step until the
+                    // body reaches the head node's octant.
+                    entity.drive_track = None;
+                    entity.facing_target = Some(desired_facing);
                 }
-            } else if let Some(fb) = super::drive_track::build_sharp_turn_fallback(entity.facing) {
-                let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity.facing);
-                entity.drive_track = super::drive_track::begin_drive_track(
-                    fb.raw_track_index,
-                    fb.flags,
-                    cdx,
-                    cdy,
-                    fb.target_facing,
-                );
-                if entity.drive_track.is_some() {
-                    movement.next_index += 1;
-                    let (move_dir_x, move_dir_y, move_dir_len) =
-                        crate::util::lepton::cell_delta_to_lepton_dir(cdx, cdy);
-                    movement.move_dir_x = move_dir_x;
-                    movement.move_dir_y = move_dir_y;
-                    movement.move_dir_len = move_dir_len;
-                    entity.facing_target = None;
-                    accepted_path_reference = Some((
-                        (i32::from(entity.position.rx) + cdx) as i16,
-                        (i32::from(entity.position.ry) + cdy) as i16,
-                    ));
-                    if current_layer == MovementLayer::Ground {
-                        let rx = u16::try_from(i32::from(entity.position.rx) + cdx).ok();
-                        let ry = u16::try_from(i32::from(entity.position.ry) + cdy).ok();
-                        if let (Some(rx), Some(ry)) = (rx, ry) {
+                super::drive_track::DriveTrackDecision::Select(plan) => {
+                    entity.drive_track = super::drive_track::begin_selected_drive_track(&plan);
+                    if entity.drive_track.is_some() {
+                        entity.facing_target = None;
+                        accepted_path_nodes = plan.nodes;
+                        // `next_index` is 1 here, so the head node index equals
+                        // the number of nodes the curve spans.
+                        let head_index = plan.nodes;
+                        let head_rx = i32::from(entity.position.rx) + plan.head_dx;
+                        let head_ry = i32::from(entity.position.ry) + plan.head_dy;
+                        accepted_path_reference = Some((head_rx as i16, head_ry as i16));
+                        if movement.layer_at(head_index) == MovementLayer::Ground
+                            && let (Ok(rx), Ok(ry)) =
+                                (u16::try_from(head_rx), u16::try_from(head_ry))
+                        {
                             track_occupation_target = Some(DriveOccupationFootprint {
                                 rx,
                                 ry,
@@ -818,12 +805,17 @@ fn process_pending_drive_arrivals(
                         }
                     }
                 }
+                super::drive_track::DriveTrackDecision::Unavailable => {}
             }
         }
         if let Some(drive) = entity.drive_locomotion.as_mut() {
             super::path_markers::install_path_replay(&mut drive.path, current, &movement.path, 1);
             if let Some(reference) = accepted_path_reference {
-                super::path_markers::accept_path_replay(&mut drive.path, reference, 1);
+                super::path_markers::accept_path_replay(
+                    &mut drive.path,
+                    reference,
+                    accepted_path_nodes,
+                );
             }
             match track_occupation_target {
                 Some(next) => crate::sim::occupancy::replace_drive_head_to_occupation(
@@ -2030,12 +2022,18 @@ fn tick_movement_with_grids_scoped(
                     // changes, and replace the drive track state.
                     // If chaining fails, the current track continues normally.
                     if target.next_index < target.path.len() {
-                        let cur_cell = target.path[target.next_index];
-                        // Need at least one more path step after the current target.
-                        if target.next_index + 1 < target.path.len() {
-                            let after = target.path[target.next_index + 1];
-                            let ndx = after.0 as i32 - cur_cell.0 as i32;
-                            let ndy = after.1 as i32 - cur_cell.1 as i32;
+                        // The chain window is (current curve's exit direction,
+                        // the queue head's direction) — gamemd's
+                        // `path[0]_dir + octant(target_facing) * 8`, taken from
+                        // the mover's own cell, not one node further on. Its
+                        // eligibility test is the same inequality, which can
+                        // only be true once the curve has already consumed the
+                        // node it turns into.
+                        let cur_cell = (entity.position.rx, entity.position.ry);
+                        let head_cell = target.path[target.next_index];
+                        let ndx = head_cell.0 as i32 - cur_cell.0 as i32;
+                        let ndy = head_cell.1 as i32 - cur_cell.1 as i32;
+                        if ndx != 0 || ndy != 0 {
                             let next_face = super::facing_from_delta(ndx, ndy);
                             // Use the active track's post-turn facing as the
                             // chain "from-dir." By the time the chain attempt
@@ -2052,19 +2050,26 @@ fn tick_movement_with_grids_scoped(
                                 .unwrap_or(entity.facing);
                             // Only chain if the direction changes (otherwise
                             // the current track finishes into straight movement).
-                            if next_face != cur_face {
+                            // The comparison is between direction octants, as in
+                            // the binary: a computed step facing is not always
+                            // the exact octant byte (east is 63, not 64), so
+                            // comparing raw bytes chains a curve into its own
+                            // continuation.
+                            if crate::util::direction::direction_from_facing(next_face)
+                                != crate::util::direction::direction_from_facing(cur_face)
+                            {
                                 // Runtime Can_Enter_Cell tuple for the chained
                                 // lookahead: target, direction, current height,
                                 // null parent, arg5=1.
-                                let next_layer = target.layer_at(target.next_index + 1);
+                                let next_layer = target.layer_at(target.next_index);
                                 let runtime_entry = evaluate_runtime_can_enter_cell_with_transition(
                                     path_grid,
                                     next_layer,
                                     &mut entity.runtime_bridge_transition,
                                     entity.on_bridge,
                                     super::movement_occupancy::RuntimeCanEnterCellArgs::runtime(
-                                        after,
-                                        runtime_can_enter_direction(cur_cell, after),
+                                        head_cell,
+                                        runtime_can_enter_direction(cur_cell, head_cell),
                                         runtime_current_effective_height(
                                             path_grid,
                                             (entity.position.rx, entity.position.ry),
@@ -2074,7 +2079,7 @@ fn tick_movement_with_grids_scoped(
                                     ),
                                 );
                                 deferred_drive_track_chain = Some(DeferredDriveTrackChain {
-                                    target_cell: after,
+                                    target_cell: head_cell,
                                     layers: runtime_entry.layers,
                                     bridge_traversal_allowed: runtime_entry
                                         .bridge_traversal_allowed,

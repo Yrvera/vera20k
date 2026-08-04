@@ -129,7 +129,7 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // passive acquire + spawner; foundations: Move cadence + hashed runtime
 // state). Neither side's values describe the merged tree; re-derived below
 // from the merged tree's own output in the same merge commit.
-    11884622656630731959,
+    3450507931353894124,
     4175722561206807420,
     2082941527059030371,
 );
@@ -270,8 +270,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // still reproduces BOTH of its legacy probes unchanged across the whole slice —
 // its 16-tick fixture never reaches the first scan — so the composition half
 // remains isolated and behaviour-free, and everything moving here is behaviour.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x0AD5_2F42_50DD_A207;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x45AF_4B06_DD1F_DDB0;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xFE3D_5874_DD44_FD7E;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2F73_22C6_2FC3_AF0C;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -376,7 +376,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x45AF_4B06_DD1F_DDB0;
 /// erodes the ratchet. That criticism is recorded and stands: these constants
 /// are a Rust-vs-prior-Rust regression ratchet, not parity evidence, and they
 /// need a machine-derived oracle before they can carry more weight than that.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x246B_C2E2_4BD9_BB9B;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xF370_B6DA_AF1C_60BB;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -782,7 +782,7 @@ fn dense_converging_setup() -> (
 /// written up at `FINAL_STREAM_STATES`.
 /// Re-baselined 2026-08-04 with FINAL_STREAM_STATES for the same
 /// constructed-`Rate` change; see the provenance note there.
-const POSITION_FINGERPRINT: u64 = 0xDAB1_2FB8_5CC1_2C93;
+const POSITION_FINGERPRINT: u64 = 0x0FC6_3769_AADD_1F8A;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

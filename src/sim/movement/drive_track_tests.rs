@@ -1007,3 +1007,180 @@ fn end_to_end_sub_step_smoothness_no_stalls() {
         tick_count
     );
 }
+
+// ---------------------------------------------------------------------------
+// GSI-06.13 — the path-window selection basis
+// ---------------------------------------------------------------------------
+
+/// Facing bytes used by the fixtures. `0x00`=N, `0x40`=E, `0x80`=S, `0xC0`=W.
+const FACE_E: u8 = 0x40;
+const FACE_S: u8 = 0x80;
+const FACE_W: u8 = 0xC0;
+
+fn expect_plan(body_facing: u8, from: (i32, i32), to: Option<(i32, i32)>) -> DriveTrackPlan {
+    match plan_drive_track_from_path(body_facing, from, to, false) {
+        DriveTrackDecision::Select(plan) => plan,
+        other => panic!("expected a curve, got {other:?}"),
+    }
+}
+
+/// Fixture A. Tank at (10,10) facing E, path [(10,10), (11,10), (11,11)].
+/// gamemd indexes `path[1]_dir + path[0]_dir * 8` = S + E*8 = 4 + 16 = 20, whose
+/// flags carry the "turns" bit, so the curve spans two cells and reserves
+/// (11,11) — not the straight-east entry 18 with a one-cell head that the body
+/// facing would have produced.
+#[test]
+fn gsi_06_13_path_window_indexes_from_the_two_leading_path_directions() {
+    let plan = expect_plan(FACE_E, (1, 0), Some((0, 1)));
+    assert_eq!(plan.selection.turn_track_index, 20, "E->S turn table entry");
+    assert_eq!(plan.selection.raw_track_index, 4, "90 degree curve");
+    assert_eq!(plan.selection.flags, 11);
+    assert_eq!(plan.selection.target_facing, FACE_S);
+    assert_eq!(
+        (plan.head_dx, plan.head_dy),
+        (1, 1),
+        "the reserved head is the two-cell endpoint (11,11)"
+    );
+    assert!(
+        plan.spans_two_nodes(),
+        "turning curve consumes two path nodes"
+    );
+}
+
+/// Fixture B. Tank at (20,20) facing E, path [(20,20), (21,20), (22,21)] —
+/// a 45 degree kink. Entry 19 (E->SE), raw track 3, head two cells at (22,21).
+#[test]
+fn gsi_06_13_forty_five_degree_kink_uses_entry_19_and_a_two_cell_head() {
+    let plan = expect_plan(FACE_E, (1, 0), Some((1, 1)));
+    assert_eq!(plan.selection.turn_track_index, 19);
+    assert_eq!(plan.selection.raw_track_index, 3);
+    assert_eq!(plan.selection.flags, 11);
+    assert_eq!((plan.head_dx, plan.head_dy), (2, 1));
+    assert!(plan.spans_two_nodes());
+}
+
+/// Fixture C. Tank at (30,30) facing E, path [(30,30), (31,30), (30,31)] —
+/// a three-octant kink. Entry 21 (E->SW) is a null curve, so gamemd falls back
+/// to `path[0]_dir * 9` = 18: a straight run along the *head node's* direction,
+/// one node, head (31,30). The mover still drives to its real next cell.
+#[test]
+fn gsi_06_13_null_curve_falls_back_to_head_node_direction_not_body_facing() {
+    let plan = expect_plan(FACE_E, (1, 0), Some((-1, 1)));
+    assert_eq!(plan.selection.turn_track_index, 18, "E*9 straight entry");
+    assert_eq!(plan.selection.raw_track_index, 1);
+    assert_eq!(plan.selection.target_facing, FACE_E);
+    assert_eq!(
+        (plan.head_dx, plan.head_dy),
+        (1, 0),
+        "fallback still heads for the real path node, never a synthesized cell"
+    );
+    assert!(!plan.spans_two_nodes());
+}
+
+/// The last step of a path has no successor direction; gamemd's `-1` queue
+/// terminator normalises `to := from`, giving the straight entry.
+#[test]
+fn gsi_06_13_last_step_normalises_to_the_straight_entry() {
+    let plan = expect_plan(FACE_E, (1, 0), None);
+    assert_eq!(plan.selection.turn_track_index, 18);
+    assert!(!plan.spans_two_nodes());
+    assert_eq!((plan.head_dx, plan.head_dy), (1, 0));
+}
+
+/// The exact-facing precondition. gamemd compares the body facing against
+/// `path[0]_dir << 13` with zero tolerance and, on any difference, commands the
+/// turn and returns without selecting a curve or consuming a node.
+#[test]
+fn gsi_06_13_body_off_the_head_octant_turns_before_any_selection() {
+    match plan_drive_track_from_path(FACE_W, (1, 0), Some((0, 1)), false) {
+        DriveTrackDecision::TurnFirst { desired_facing } => {
+            assert_eq!(desired_facing, FACE_E, "turn onto the head node's octant");
+        }
+        other => panic!("expected TurnFirst, got {other:?}"),
+    }
+    // One facing unit off is still off — the comparison has no tolerance.
+    assert!(matches!(
+        plan_drive_track_from_path(FACE_E + 1, (1, 0), Some((0, 1)), false),
+        DriveTrackDecision::TurnFirst { .. }
+    ));
+}
+
+/// Every entry the selector can pick agrees with the table: the "turns" flag is
+/// set exactly when the two path directions differ, and the head is two cells
+/// exactly then.
+#[test]
+fn gsi_06_13_turns_flag_and_head_span_agree_across_all_direction_pairs() {
+    for from_dir in 0..8usize {
+        let from = OCTANT_CELL_DELTA[from_dir];
+        let body = (from_dir as u8) * 0x20;
+        for to_dir in 0..8usize {
+            let plan = expect_plan(body, from, Some(OCTANT_CELL_DELTA[to_dir]));
+            let turn = &TURN_TRACKS[plan.selection.turn_track_index];
+            let turns = turn.flags & TURN_TRACK_TURNS_FLAG != 0;
+            assert_eq!(
+                turns,
+                plan.spans_two_nodes(),
+                "from {from_dir} to {to_dir}: flag 8 must drive the node count"
+            );
+            let (to_dx, to_dy) = OCTANT_CELL_DELTA[to_dir];
+            let expected_head = if turns {
+                (from.0 + to_dx, from.1 + to_dy)
+            } else {
+                from
+            };
+            assert_eq!(
+                (plan.head_dx, plan.head_dy),
+                expected_head,
+                "from {from_dir} to {to_dir}: head cell"
+            );
+            // Every selection either uses the ordinary entry or the from*9
+            // straight; nothing else is reachable.
+            assert!(
+                plan.selection.turn_track_index == from_dir * 8 + to_dir
+                    || plan.selection.turn_track_index == from_dir * 9
+            );
+        }
+    }
+}
+
+/// The selection finalize resets the track cursor to 0. The lead-in points are
+/// what carry the mover from its own cell centre into the arc: with the two-cell
+/// head the first point of the E->S curve lands inside the mover's current cell,
+/// which is only true at cursor 0.
+#[test]
+fn gsi_06_13_selected_curve_starts_at_the_movers_own_cell_centre() {
+    let plan = expect_plan(FACE_E, (1, 0), Some((0, 1)));
+    let state = begin_selected_drive_track(&plan).expect("curve installed");
+    assert_eq!(state.point_index, 0, "fresh selection starts at cursor 0");
+    let points = raw_track_points(state.raw_track_index);
+    let (tx, ty, tf) = transform_track_point(
+        points[0].x,
+        points[0].y,
+        points[0].facing,
+        state.transform_flags,
+    );
+    let sub_x = state.head_offset_x + i32::from(tx);
+    let sub_y = state.head_offset_y + i32::from(ty);
+    assert!(
+        (0..256).contains(&sub_x) && (0..256).contains(&sub_y),
+        "curve point 0 must sit in the mover's own cell, got ({sub_x},{sub_y})"
+    );
+    assert_eq!(tf, FACE_E, "the curve begins on the entry facing");
+    // ... and its last point lands on the head cell, two cells away.
+    let last = points.len() - 1;
+    let (lx, ly, lf) = transform_track_point(
+        points[last].x,
+        points[last].y,
+        points[last].facing,
+        state.transform_flags,
+    );
+    assert_eq!(
+        (
+            (state.head_offset_x + i32::from(lx)).div_euclid(256),
+            (state.head_offset_y + i32::from(ly)).div_euclid(256),
+        ),
+        (1, 1),
+        "the curve ends on the two-cell endpoint"
+    );
+    assert_eq!(lf, FACE_S, "and on the table's target facing");
+}

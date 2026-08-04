@@ -1252,11 +1252,14 @@ fn test_issue_move_command_starts_drive_track_for_initial_drive_turn() {
     ));
 
     let entity = entities.get(1).expect("entity exists");
+    // The hull faces east but the first path node is south-east. gamemd's
+    // exact-facing precondition commands that turn and selects no curve until
+    // the hull is on the node's octant — the curve does not start mid-turn.
     assert!(
-        entity.drive_track.is_some(),
-        "Drive initial turn should begin a DriveTrack instead of pre-rotating"
+        entity.drive_track.is_none(),
+        "an off-octant hull must turn before any curve is selected"
     );
-    assert_eq!(entity.facing_target, None);
+    assert_eq!(entity.facing_target, Some(0x60));
 }
 
 #[test]
@@ -3883,6 +3886,9 @@ fn on_bridge_clears_at_ramp_to_ground_only() {
     let mut e = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
     e.position.z = 4;
     e.on_bridge = true;
+    // The mover is already driving east along the deck; the hull has to be on
+    // the head node's octant or selection stops to turn it there first.
+    e.facing = 0x40;
     e.bridge_occupancy = Some(BridgeOccupancy { deck_level: 4 });
     e.locomotor = Some(make_drive_loco(MovementLayer::Bridge));
     e.movement_target = Some(MovementTarget {
@@ -4422,21 +4428,19 @@ fn hover_units_float_and_bob_vertically() {
 
 // --- Sharp-turn substitute: path-node accounting ---
 
-/// A turn too sharp for any precomputed curve substitutes a straight-ahead
-/// drive track. That substitute must consume exactly ONE path node — the same
-/// single node any straight step consumes — never two.
+/// The null-curve substitute consumes exactly ONE path node — the same single
+/// node any straight step consumes — never two.
 ///
-/// Native track selection substitutes the straight `cur_dir * 9` entry and then
-/// converges with the ordinary path into the shared no-cell-crossing tail, which
-/// shifts the path queue by one exactly as every other non-crossing step does.
-/// The substitute is not special in its node accounting. Consuming a second node
-/// left the vehicle one waypoint further off-route on every sharp turn, and it
-/// was the producer of the non-adjacent step that the since-removed tube abort
-/// used to cancel move orders over.
+/// gamemd substitutes the straight `path[0]_dir * 9` entry, whose flags carry no
+/// "turns" bit, and then converges with the ordinary path into the one-node
+/// queue shift that every non-turning step takes. The substitute is not special
+/// in its node accounting. Consuming a second node left the vehicle one waypoint
+/// further off-route on every sharp turn, and it was the producer of the
+/// non-adjacent step that the since-removed tube abort used to cancel move
+/// orders over.
 ///
-/// Evidence: `docs/research/DRIVE_SHARP_TURN_FALLBACK_RE.md` §3.2, plus the
-/// branch-convergence check recorded in
-/// `docs/plans/2026-07-29-locomotion-substrate-design.md`.
+/// Retail: null-curve test and `path[0]_dir * 9` substitution immediately before
+/// the queue-width test; one-node shift on the clear-flag branch.
 ///
 /// Parity status: UNCHECKED. The node count is derived from the native contract,
 /// not from a gamemd-derived executable check.
@@ -4445,16 +4449,18 @@ fn sharp_turn_preserves_path_node_count() {
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::movement::locomotor::LocomotorState;
 
-    // Precondition: N -> SE is a 135° turn with no precomputed curve. If this
-    // ever yields Some, this test has stopped exercising the substitute branch
-    // and the assertion below would pass for the wrong reason.
-    assert!(
-        super::drive_track::select_drive_track(0, 96, false).is_none(),
-        "N->SE (135°) must have no precomputed curve for this test to exercise the substitute"
+    // Precondition: E -> SW is a three-octant kink with no precomputed curve. If
+    // this ever yields a curve, the test has stopped exercising the substitute.
+    assert_eq!(
+        super::drive_track::TURN_TRACKS[2 * 8 + 5].normal_track,
+        0,
+        "E->SW must be a null table entry for this test to exercise the substitute"
     );
 
+    // Route (10,10) -> (11,10) -> (10,11): the mover is on the head node's
+    // octant (east), so selection runs and takes the substitute.
     let mut target = MovementTarget {
-        path: vec![(10, 10), (11, 11), (12, 12)],
+        path: vec![(10, 10), (11, 10), (10, 11)],
         path_layers: vec![MovementLayer::Ground; 3],
         next_index: 0,
         ..MovementTarget::default()
@@ -4463,7 +4469,7 @@ fn sharp_turn_preserves_path_node_count() {
     let mut drive_track_state = None;
     let mut drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime::default());
     let mut ship_locomotion = None;
-    let mut facing: u8 = 0; // north
+    let mut facing: u8 = 0x40; // east, the head node's octant
     let mut facing_target = None;
 
     super::movement_step::configure_motion_after_transition(
@@ -4484,10 +4490,243 @@ fn sharp_turn_preserves_path_node_count() {
 
     assert!(
         drive_track_state.is_some(),
-        "the sharp-turn substitute should have started a straight drive track"
+        "the null-curve substitute should have started a straight drive track"
     );
     assert_eq!(
         target.next_index, 1,
         "the substitute must consume exactly one path node, not two"
     );
+    let track = drive_track_state.as_ref().expect("substitute curve");
+    assert_eq!(track.raw_track_index, 1, "the straight cardinal curve");
+    assert_eq!(
+        (track.head_offset_x, track.head_offset_y),
+        (1 * 256 + 128, 128),
+        "the substitute heads for the real path node one cell east, \
+         never a cell synthesized from the hull facing"
+    );
 }
+
+/// The exact-facing precondition: a hull that is not on the head path node's
+/// octant selects nothing, consumes nothing, and is commanded to turn.
+#[test]
+fn off_octant_hull_turns_before_any_curve_is_selected() {
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::movement::locomotor::LocomotorState;
+
+    let mut target = MovementTarget {
+        path: vec![(10, 10), (11, 11), (12, 12)],
+        path_layers: vec![MovementLayer::Ground; 3],
+        next_index: 0,
+        ..MovementTarget::default()
+    };
+    let locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    let mut drive_track_state = None;
+    let mut drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime::default());
+    let mut ship_locomotion = None;
+    let mut facing: u8 = 0; // north, three octants off the SE head node
+    let mut facing_target = None;
+
+    super::movement_step::configure_motion_after_transition(
+        &mut target,
+        &locomotor,
+        &mut drive_track_state,
+        &mut drive_locomotion,
+        &mut ship_locomotion,
+        &mut facing,
+        &mut facing_target,
+        EntityCategory::Unit,
+        5, // ROT=5, the stock ground-vehicle rate
+        (10, 10),
+        (SIM_ZERO, SIM_ZERO),
+        None,
+        0,
+    );
+
+    assert!(
+        drive_track_state.is_none(),
+        "no curve while the hull is off-octant"
+    );
+    assert_eq!(
+        facing_target,
+        Some(0x60),
+        "the commanded turn lands on the head node's exact octant (SE)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// GSI-06.13 — drive-track curve selection basis, end to end
+// ---------------------------------------------------------------------------
+
+/// Build the fixture mover: a Drive vehicle with an explicit path and the
+/// matching direction replay, so the curve selection runs on the fixture's
+/// route instead of whatever A* would produce for the same endpoints.
+fn gsi_06_13_fixture_mover(
+    start: (u16, u16),
+    facing: u8,
+    path: Vec<(u16, u16)>,
+    directions: Vec<u8>,
+) -> GameEntity {
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", start.0, start.1);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.facing = facing;
+    let goal = *path.last().expect("non-empty path");
+    let layers = vec![MovementLayer::Ground; path.len()];
+    e.movement_target = Some(MovementTarget {
+        path,
+        path_layers: layers,
+        next_index: 1,
+        speed: SimFixed::from_num(768),
+        current_speed: SimFixed::from_num(768),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some(goal),
+        ..Default::default()
+    });
+    e.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
+        path: crate::sim::components::DrivePathQueue {
+            directions,
+            cursor: 0,
+            reference_cell: Some((start.0 as i16, start.1 as i16)),
+        },
+        target_speed_fraction: SIM_ONE,
+        current_speed_fraction: SIM_ONE,
+        ..Default::default()
+    });
+    e
+}
+
+/// Fixture A, end to end. Tank at (10,10) facing E, route (10,10) → (11,10) →
+/// (11,11). gamemd selects the E->S curve *before leaving (10,10)*, so the hull
+/// is already turning when it enters (11,10) and the cell it reserves is the
+/// two-cell endpoint (11,11).
+///
+/// Before this change VERA selected the straight-east curve first and only
+/// began the arc after arriving at (11,10) — the hull was still exactly on E at
+/// that moment and the reserved head was (11,10).
+#[test]
+fn gsi_06_13_turn_begins_before_the_corner_cell_and_reserves_two_cells() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(20, 20);
+    entities.insert(gsi_06_13_fixture_mover(
+        (10, 10),
+        0x40,
+        vec![(10, 10), (11, 10), (11, 11)],
+        vec![2, 4],
+    ));
+
+    let mut occupancy = OccupancyGrid::new();
+    let mut rng = SimRng::new(0);
+    let mut lifecycle_requests = Vec::new();
+    let mut reserved_head_at_selection: Option<(u16, u16)> = None;
+    let mut facing_entering_corner: Option<u8> = None;
+    let mut reached_endpoint = false;
+    let mut final_facing = 0u8;
+
+    for tick in 0..200u64 {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            tick,
+            &mut test_interner(),
+            &mut lifecycle_requests,
+        );
+        let Some(entity) = entities.get(1) else { break };
+        if reserved_head_at_selection.is_none()
+            && let Some(drive) = entity.drive_locomotion.as_ref()
+            && let Some(head) = drive.occupation_head_to
+        {
+            reserved_head_at_selection = Some((head.rx, head.ry));
+        }
+        let cell = (entity.position.rx, entity.position.ry);
+        if cell == (11, 10) && facing_entering_corner.is_none() {
+            facing_entering_corner = Some(entity.facing);
+        }
+        final_facing = entity.facing;
+        if cell == (11, 11) {
+            reached_endpoint = true;
+            if entity.drive_track.is_none() {
+                break;
+            }
+        }
+    }
+
+    assert_eq!(
+        reserved_head_at_selection,
+        Some((11, 11)),
+        "a turning curve reserves its two-cell endpoint, not the first node"
+    );
+    let corner_facing = facing_entering_corner.expect("mover must pass through (11,10)");
+    assert_ne!(
+        corner_facing, 0x40,
+        "the hull must already be turning when it enters (11,10); \
+         staying exactly on east means the curve was applied a cell late"
+    );
+    assert!(
+        corner_facing > 0x40 && corner_facing < 0x80,
+        "hull facing entering (11,10) should sit between east and south, got {corner_facing:#04x}"
+    );
+    assert!(reached_endpoint, "mover must reach (11,11)");
+    assert_eq!(
+        final_facing, 0x80,
+        "the curve ends on the table's south facing"
+    );
+}
+
+/// Fixture C, end to end. Tank at (30,30) facing E, route (30,30) → (31,30) →
+/// (30,31): a three-octant kink. gamemd's null-curve fallback is keyed on the
+/// *head node's* direction, so the mover still drives east onto (31,30) and only
+/// then deals with the kink. The old body-facing-keyed substitute synthesized a
+/// cell in the hull's direction and drove to (32,30) instead, off the route.
+#[test]
+fn gsi_06_13_sharp_kink_fallback_still_drives_to_the_real_path_node() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(40, 40);
+    entities.insert(gsi_06_13_fixture_mover(
+        (30, 30),
+        0x40,
+        vec![(30, 30), (31, 30), (30, 31)],
+        vec![2, 5],
+    ));
+
+    let mut occupancy = OccupancyGrid::new();
+    let mut rng = SimRng::new(0);
+    let mut lifecycle_requests = Vec::new();
+    let mut visited: Vec<(u16, u16)> = Vec::new();
+
+    for tick in 0..200u64 {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            tick,
+            &mut test_interner(),
+            &mut lifecycle_requests,
+        );
+        let Some(entity) = entities.get(1) else { break };
+        let cell = (entity.position.rx, entity.position.ry);
+        if visited.last() != Some(&cell) {
+            visited.push(cell);
+        }
+        if cell == (30, 31) {
+            break;
+        }
+    }
+
+    assert!(
+        !visited.contains(&(32, 30)),
+        "the sharp-kink fallback must not drive past the path node: visited {visited:?}"
+    );
+    assert!(
+        visited.contains(&(31, 30)),
+        "the mover must still take its real next path node: visited {visited:?}"
+    );
+}
+
