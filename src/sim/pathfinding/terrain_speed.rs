@@ -55,6 +55,12 @@ const TERRAIN_SPEED_MAX: SimFixed = SIM_ONE;
 /// equality, overwrites it with this constant — it is a substitution, not a
 /// floor, and it runs after the slope multiply and before the damaged-mover
 /// factor.
+///
+/// Original: `DriveLocomotionClass::Process_Movement`. The zero compare reloads
+/// the value the slope multiply just stored, and all three height branches
+/// (uphill / downhill / level) join at that reload, so the test never sees the
+/// pre-slope row. The 0.5 is an immediate in the substitution branch, not a
+/// table constant. Verified against the live binary 2026-08-04.
 const ZERO_COMBINED_SUBSTITUTE: SimFixed = SIM_HALF;
 
 /// Speed penalty applied to a mover whose health ratio is at or below

@@ -234,10 +234,13 @@ pub(super) struct MoverSnapshot {
     /// NavCom sitting in the cell being entered, which can only be tested per
     /// crossing (see [`MoverSnapshot::nav_com_cell`]).
     pub sub_cell_priority_mission: bool,
-    /// Cell currently occupied by this mover's NavCom target, when it has one.
+    /// Cell currently occupied by this mover's NavCom target, when that target
+    /// is an **object**.
     ///
-    /// Resolved once per tick from the entity store: a cell target is itself,
-    /// an object/building/entity target is that entity's anchor cell.
+    /// Resolved once per tick from the entity store as the target entity's
+    /// anchor cell. A bare-cell NavCom yields `None`: the original tests its
+    /// destination as an object pointer, so a cell destination never satisfies
+    /// the priority condition.
     pub nav_com_cell: Option<(u16, u16)>,
 }
 

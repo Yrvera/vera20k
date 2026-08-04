@@ -2866,6 +2866,214 @@ fn drive_speed_test_cell(
     }
 }
 
+/// A cell holding a terrain object whose INI occupation bits are `bits`.
+/// Resolved terrain folds the object into `ground_walk_blocked`;
+/// `base_ground_walk_blocked` is the same cell without it.
+fn tree_speed_test_cell(
+    rx: u16,
+    ry: u16,
+    bits: u8,
+) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+    crate::map::resolved_terrain::ResolvedTerrainCell {
+        terrain_object_occupation: Some(bits),
+        terrain_object_blocks: bits != 0,
+        ground_walk_blocked: bits != 0,
+        base_ground_walk_blocked: false,
+        ..drive_speed_test_cell(rx, ry, Default::default())
+    }
+}
+
+/// A 3x1 corridor whose only middle cell is a terrain object with a single
+/// occupation bit — the shape of 56 of the 60 stock temperate terrain types.
+fn tree_corridor() -> (crate::map::resolved_terrain::ResolvedTerrainGrid, PathGrid) {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        3,
+        1,
+        vec![
+            drive_speed_test_cell(0, 0, Default::default()),
+            tree_speed_test_cell(1, 0, 4),
+            drive_speed_test_cell(2, 0, Default::default()),
+        ],
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    (terrain, grid)
+}
+
+/// Order one infantryman from (0,0) to (2,0) on a 3x1 corridor and tick until
+/// he settles. Returns the distinct cells he stood in, in order.
+fn walk_infantry_corridor(grid: &PathGrid) -> (Vec<(u16, u16)>, Vec<(u16, u16)>) {
+    let mut entities = EntityStore::new();
+    let mut walker = GameEntity::test_default(1, "E1", "Americans", 0, 0);
+    walker.category = EntityCategory::Infantry;
+    walker.lifecycle.in_limbo = false;
+    walker.lifecycle.cell_marked = true;
+    // A live infantryman always stands in a functional sub-cell; without one he
+    // registers as a whole-cell blocker and the arrival claim refuses him.
+    walker.sub_cell = Some(2);
+    let mut loco = LocomotorState::for_test_kind(LocomotorKind::Walk);
+    loco.speed_type = SpeedType::Foot;
+    walker.locomotor = Some(loco);
+    entities.insert(walker);
+
+    assert!(
+        issue_move_command(
+            &mut entities,
+            grid,
+            1,
+            (2, 0),
+            SimFixed::from_num(1024),
+            false,
+            None,
+            None,
+            None,
+            false,
+        ),
+        "infantry must get a route down the corridor",
+    );
+    let planned = entities
+        .get(1)
+        .and_then(|e| e.movement_target.as_ref())
+        .map(|mt| mt.path.clone())
+        .expect("walker has a movement target");
+
+    let mut lifecycle_requests = Vec::new();
+    let mut occupancy = OccupancyGrid::new();
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    let mut visited: Vec<(u16, u16)> = vec![(0, 0)];
+    for tick in 0..400u64 {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            tick,
+            &mut interner,
+            &mut lifecycle_requests,
+        );
+        let e = entities.get(1).expect("walker exists");
+        let p = (e.position.rx, e.position.ry);
+        if visited.last() != Some(&p) {
+            visited.push(p);
+        }
+    }
+    (planned, visited)
+}
+
+/// Control: the same corridor with no terrain object at all. This pins the
+/// harness itself, so a failure in the tree case below can only be the terrain
+/// predicate and not the test setup.
+#[test]
+fn infantry_walks_a_plain_corridor_end_to_end() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        3,
+        1,
+        vec![
+            drive_speed_test_cell(0, 0, Default::default()),
+            drive_speed_test_cell(1, 0, Default::default()),
+            drive_speed_test_cell(2, 0, Default::default()),
+        ],
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    let (planned, visited) = walk_infantry_corridor(&grid);
+    assert_eq!(
+        visited.last().copied(),
+        Some((2, 0)),
+        "control walker must cross a corridor with no terrain object. \
+         planned={planned:?} visited={visited:?}",
+    );
+}
+
+/// The search and the runtime step-in have to be ONE predicate, the way the
+/// original reaches its cell gate through a single per-class slot.
+///
+/// A* plans an infantryman straight through a partially-occupied tree cell. If
+/// the runtime crossing still asks the whole-cell question, the walker reaches
+/// the tree, refuses to enter, repaths onto the identical route — tree cells are
+/// terrain, so they never enter the dynamic block set — and block/repath-loops
+/// until the stuck counter aborts the order. Every temperate retail map carries
+/// hundreds of such cells, so this fires on ordinary infantry movement.
+#[test]
+fn infantry_traverses_a_partially_occupied_tree_cell_at_runtime() {
+    let (_terrain, grid) = tree_corridor();
+
+    // Precondition: this corridor is exactly the split the fix is about.
+    assert!(
+        !grid.is_walkable(1, 0),
+        "the tree closes the cell to the whole-cell view",
+    );
+    assert!(
+        grid.is_walkable_for_infantry(1, 0),
+        "one occupation bit leaves sub-cells free for infantry",
+    );
+
+    let (planned, visited) = walk_infantry_corridor(&grid);
+    assert!(
+        visited.contains(&(1, 0)),
+        "the walker never entered the tree cell: the runtime step-in refused a \
+         cell the search planned. planned={planned:?} visited={visited:?}",
+    );
+    assert_eq!(
+        visited.last().copied(),
+        Some((2, 0)),
+        "the walker must come out the far side of the tree cell. \
+         planned={planned:?} visited={visited:?}",
+    );
+}
+
+/// The companion half: threading the category must not relax the gate for
+/// everyone. A tracked vehicle handed the same corridor as an explicit path —
+/// its own search refuses to plan one — must still be stopped by the tree.
+#[test]
+fn vehicle_still_blocked_by_the_same_partially_occupied_tree_cell() {
+    let (_terrain, grid) = tree_corridor();
+
+    let mut entities = EntityStore::new();
+    let mut tank = GameEntity::test_default(1, "HTNK", "Americans", 0, 0);
+    tank.category = EntityCategory::Unit;
+    tank.locomotor = Some(make_drive_loco_for_test());
+    tank.drive_locomotion = Some(Default::default());
+    tank.movement_target = Some(MovementTarget {
+        path: vec![(0, 0), (1, 0), (2, 0)],
+        path_layers: vec![MovementLayer::Ground; 3],
+        next_index: 1,
+        speed: SimFixed::from_num(1024),
+        current_speed: SimFixed::from_num(1024),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((2, 0)),
+        ..Default::default()
+    });
+    entities.insert(tank);
+
+    let mut lifecycle_requests = Vec::new();
+    let mut occupancy = OccupancyGrid::new();
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    for tick in 0..120u64 {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            tick,
+            &mut interner,
+            &mut lifecycle_requests,
+        );
+        let p = &entities.get(1).expect("tank exists").position;
+        assert_ne!(
+            (p.rx, p.ry),
+            (1, 0),
+            "a tracked vehicle must never enter a terrain-object cell",
+        );
+    }
+}
+
 #[test]
 fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed() {
     let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(

@@ -296,7 +296,7 @@ fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapsho
             .navigation
             .nav_com
             .as_ref()
-            .and_then(|nav| nav_target_cell(entities, nav)),
+            .and_then(|nav| nav_target_object_cell(entities, nav)),
     })
 }
 
@@ -306,10 +306,19 @@ fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapsho
 /// gated placement.
 const SUB_CELL_PRIORITY_MISSIONS: [i32; 5] = [7, 8, 9, 11, 25];
 
-/// Resolve a nav target to the cell it currently occupies.
-fn nav_target_cell(entities: &EntityStore, nav: &NavTargetRef) -> Option<(u16, u16)> {
+/// Resolve the cell of a nav target that is an **object**, for the priority
+/// sub-cell placement test only.
+///
+/// The original reads its destination field as an object pointer and asks the
+/// object what it is; priority is granted only when that pointer is live and
+/// names a unit-like or building type. A bare destination *cell* is not an
+/// object there and never grants priority, so `Cell` resolves to `None` here —
+/// otherwise Area Guard and Patrol infantry, which routinely hold cell
+/// destinations, would get the occupancy-free, blocker-free, garrison-free
+/// placement the original denies them.
+fn nav_target_object_cell(entities: &EntityStore, nav: &NavTargetRef) -> Option<(u16, u16)> {
     match *nav {
-        NavTargetRef::Cell { rx, ry } => Some((rx, ry)),
+        NavTargetRef::Cell { .. } => None,
         NavTargetRef::Entity { id }
         | NavTargetRef::Object { id }
         | NavTargetRef::Building { id } => entities.get(id).map(|t| (t.position.rx, t.position.ry)),
@@ -868,17 +877,21 @@ fn classify_drive_track_chain_entry(
 
     let (x, y) = chain.target_cell;
     let terrain_clear = match chain.layers.terrain_layer {
+        // Category-aware for the same reason as the plain runtime crossing: the
+        // search and the step-in gate must be one predicate.
         MovementLayer::Ground => path_grid.map_or(true, |grid| {
-            crate::sim::pathfinding::is_cell_passable_for_mover_with_speed(
+            crate::sim::pathfinding::is_cell_passable_for_category_on_layer(
                 grid,
                 x,
                 y,
+                MovementLayer::Ground,
                 Some(snap.movement_zone),
                 snap.speed_type,
                 resolved_terrain,
                 entity_cost_grid,
                 snap.bypass_grid,
                 TerrainEntryMode::RuntimeTransition,
+                snap.category == EntityCategory::Infantry,
             )
         }),
         MovementLayer::Bridge => path_grid.is_some_and(|grid| {

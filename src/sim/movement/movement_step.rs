@@ -1608,17 +1608,24 @@ pub(super) fn process_cell_crossings(
                 } else {
                     entity_cost_grid
                 };
+                // Same predicate the search ran. The original reaches its cell
+                // gate through a single per-class slot, so an infantryman's
+                // sub-cell view of terrain objects has to hold here too —
+                // otherwise A* plans through a tree cell the step-in refuses
+                // and the mover block/repath-loops onto the identical route.
                 let grid_ok: bool = match path_grid {
-                    Some(grid) => crate::sim::pathfinding::is_cell_passable_for_mover_with_speed(
+                    Some(grid) => crate::sim::pathfinding::is_cell_passable_for_category_on_layer(
                         grid,
                         nx,
                         ny,
+                        MovementLayer::Ground,
                         Some(snap.movement_zone),
                         snap.speed_type,
                         resolved_terrain,
                         cost_grid,
                         target.bypass_grid,
                         crate::sim::pathfinding::cell_entry::TerrainEntryMode::RuntimeTransition,
+                        category == EntityCategory::Infantry,
                     ),
                     None => true,
                 };
