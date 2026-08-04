@@ -259,6 +259,10 @@ pub(crate) struct AppState {
     pub(crate) zoom_anchor_screen: [f32; 2],
     /// Mouse edge auto-scroll ramp state (gamemd's CoastLevel and its 16 ms timer).
     pub(crate) edge_scroll: crate::app_camera::EdgeScrollState,
+    /// Tactical mouse capture and right-drag pan anchor.
+    pub(crate) tactical_mouse: crate::app_camera::TacticalMouseState,
+    /// The four camera bookmarks (View1..4 / SetView1..4).
+    pub(crate) view_bookmarks: crate::app_camera::ViewBookmarks,
     pub(crate) cursor_x: f32,
     pub(crate) cursor_y: f32,
     pub(crate) keys_held: HashSet<KeyCode>,
@@ -3908,13 +3912,11 @@ impl ApplicationHandler for App {
                 if !egui_consumed
                     && (state.screen == GameScreen::InGame || state.screen == GameScreen::SpawnPick)
                 {
-                    // Scroll sidebar when cursor is over the sidebar panel,
-                    // otherwise zoom the game viewport (if enabled in settings).
-                    if !app_input::try_sidebar_scroll(state, lines)
-                        && state.skirmish_settings.zoom_enabled
-                    {
-                        crate::app_camera::apply_zoom(state, lines);
-                    }
+                    // Every wheel notch scrolls the active build strip by one
+                    // row, wherever the cursor is. gamemd routes the wheel
+                    // message straight to the SidebarUp / SidebarDown commands
+                    // and has no world zoom for it to reach.
+                    app_input::sidebar_wheel_scroll(state, lines);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -4330,6 +4332,8 @@ impl App {
             zoom_anchor_world: [0.0, 0.0],
             zoom_anchor_screen: [0.0, 0.0],
             edge_scroll: crate::app_camera::EdgeScrollState::default(),
+            tactical_mouse: crate::app_camera::TacticalMouseState::default(),
+            view_bookmarks: crate::app_camera::ViewBookmarks::default(),
             cursor_x: 0.0,
             cursor_y: 0.0,
             keys_held: HashSet::new(),

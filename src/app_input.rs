@@ -23,9 +23,9 @@ use crate::app_sidebar_render::current_sidebar_view;
 use crate::app_types::OrderMode;
 use crate::audio::events::GameSoundEvent;
 use crate::map::entities::EntityCategory;
-use crate::sidebar::{self, SidebarAction, SidebarTab};
+use crate::sidebar::{SidebarAction, SidebarTab};
 use crate::sim::command::Command;
-use crate::sim::selection::{DragTransition, SelectAction};
+use crate::sim::selection::SelectAction;
 
 /// Click radius for single-click selection (pixels in world space).
 pub(crate) const CLICK_SELECT_RADIUS: f32 = 30.0;
@@ -52,6 +52,15 @@ pub(crate) fn handle_mouse_input(
     // Back here and CONSUME the click so it never reaches the tactical viewport or
     // a gadget (no unit orders behind the overlay). KD-6.
     if state.paused {
+        // VERA-internal (gamemd has no pause overlay; gamemd equivalent
+        // UNCHECKED): a release that arrives while the overlay owns the mouse
+        // never reaches the tactical body, so the capture is dropped here.
+        // Leaving it set would freeze edge auto-scroll for the rest of the match.
+        if !pressed {
+            state.tactical_mouse.left_held = false;
+            state.tactical_mouse.right_held = false;
+            state.tactical_mouse.release();
+        }
         crate::app_in_game_options_input::in_game_options_mouse(state, button, pressed);
         return;
     }
@@ -85,6 +94,12 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
     match button {
         MouseButton::Left => {
             if btn_state.is_pressed() {
+                // gamemd takes the mouse capture on the press edge whether or
+                // not the band drag arms: the modal gates live inside the
+                // drag-arm helper, not around the capture. The capture is what
+                // freezes edge auto-scroll for the length of the gesture.
+                state.tactical_mouse.left_held = true;
+                state.tactical_mouse.captured = true;
                 if state.targeting_mode.is_some()
                     || state.sidebar_gadget_state.repair_mode_on
                     || state.sidebar_gadget_state.sell_mode_on
@@ -95,6 +110,8 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     .selection_state
                     .begin_drag(state.cursor_x, state.cursor_y);
             } else {
+                state.tactical_mouse.left_held = false;
+                state.tactical_mouse.captured = false;
                 // Repair / Sell cursor modes consume the click — toggle repair or
                 // sell the own building under the cursor. The mode stays active
                 // (sticky) so the player can act on several buildings in a row.
@@ -109,9 +126,18 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     place_ready_building_at_cursor(state, &type_id);
                     return;
                 }
-                let action: SelectAction = state
+                let mut action: SelectAction = state
                     .selection_state
                     .end_drag(state.cursor_x, state.cursor_y);
+                // A band box that caught no drawn object leaves the selection
+                // exactly as it was, and the release is handled as an ordinary
+                // click at the release point — the native release only clears
+                // when something was inside the rectangle.
+                if let SelectAction::BoxSelect(min_x, min_y, max_x, max_y) = action {
+                    if !band_caught_drawn_object(state, min_x, min_y, max_x, max_y) {
+                        action = SelectAction::Click(state.cursor_x, state.cursor_y);
+                    }
+                }
                 let shift = is_shift_held(state);
                 // On a single click (not drag-box), try issuing a command first.
                 // If the click lands on a friendly unit/building, fall through to
@@ -184,27 +210,79 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 }
             }
         }
-        MouseButton::Right if btn_state.is_pressed() => {
-            // Right-click = cancel / deselect only.
-            if state.targeting_mode.is_some() {
-                state.targeting_mode = None;
-                state.building_placement_preview = None;
-                return;
+        MouseButton::Right => {
+            if btn_state.is_pressed() {
+                state.tactical_mouse.right_held = true;
+                // The native right press has no game effect at all: it records
+                // the pan anchor and takes the capture, and only does that when
+                // no other button already holds it. Everything the player sees
+                // happens on the release edge.
+                if !state.tactical_mouse.captured {
+                    state
+                        .tactical_mouse
+                        .begin_right_drag((state.cursor_x, state.cursor_y));
+                }
+            } else {
+                state.tactical_mouse.right_held = false;
+                if state.tactical_mouse.captured {
+                    // The cancel ladder runs only when the drag threshold was
+                    // never crossed. A right drag that panned the map ends
+                    // silently — the selection survives it.
+                    let run_cancel_ladder = !state.tactical_mouse.right_threshold_crossed;
+                    state.tactical_mouse.release();
+                    if run_cancel_ladder {
+                        right_click_cancel_ladder(state);
+                    }
+                    // The native release tears the band rectangle down too.
+                    state.selection_state.cancel_drag();
+                }
             }
-            // Right-click first dismisses an active repair/sell cursor mode
-            // (matches gamemd — the special cursor is cancelled before any
-            // deselect), leaving the current selection intact.
-            if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on
-            {
-                state.sidebar_gadget_state.repair_mode_on = false;
-                state.sidebar_gadget_state.sell_mode_on = false;
-                return;
-            }
-            // Clear the current selection.
-            queue_selection_snapshot_command(state, Vec::new(), false);
         }
         _ => {}
     }
+}
+
+/// The right-release cancel ladder: cancel exactly one armed cursor mode, and
+/// clear the selection only when nothing was armed.
+///
+/// gamemd walks seven mode flags in a fixed order and returns after the first
+/// one it cancels; VERA models the two it has (a targeting/placement cursor and
+/// the repair/sell cursor). The final rung — clear the selection — is retail
+/// behaviour, not a VERA deviation.
+fn right_click_cancel_ladder(state: &mut AppState) {
+    if state.targeting_mode.is_some() {
+        state.targeting_mode = None;
+        state.building_placement_preview = None;
+        return;
+    }
+    if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on {
+        state.sidebar_gadget_state.repair_mode_on = false;
+        state.sidebar_gadget_state.sell_mode_on = false;
+        return;
+    }
+    queue_selection_snapshot_command(state, Vec::new(), false);
+}
+
+/// Did the band rectangle cover any drawn object? Screen-space rectangle in, the
+/// native "is the box empty" answer out.
+fn band_caught_drawn_object(
+    state: &AppState,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+) -> bool {
+    let Some(sim) = &state.simulation else {
+        return false;
+    };
+    let z = state.zoom_level;
+    crate::app_entity_pick::band_rect_contains_drawn_object(
+        sim.entities(),
+        min_x / z + state.camera_x,
+        min_y / z + state.camera_y,
+        max_x / z + state.camera_x,
+        max_y / z + state.camera_y,
+    )
 }
 
 /// Minimap mouse body (routed here when the minimap ClickRegion consumes the
@@ -275,34 +353,61 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     let drag_x = state.cursor_x.clamp(0.0, viewport_w - 1.0);
     let drag_y = state.cursor_y.clamp(0.0, viewport_h - 1.0);
 
-    let transition = state.selection_state.update_drag(drag_x, drag_y);
+    // Activation arms the rectangle and nothing else. The call gamemd makes at
+    // that moment is a cursor-shape setter, not an unselect — the selection is
+    // only replaced on the release, and only when the box caught something.
+    state.selection_state.update_drag(drag_x, drag_y);
+}
 
-    // Clear selection when band-box activates (threshold crossed), not when
-    // the mouse button is released.
-    if transition == DragTransition::Activated {
-        if let Some(sim) = &mut state.simulation {
-            crate::sim::selection::deselect_all(sim.entities_mut());
-        }
+/// The sidebar command one wheel notch resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WheelAction {
+    /// Scroll the active build strip up one row.
+    SidebarUp,
+    /// Scroll the active build strip down one row.
+    SidebarDown,
+}
+
+/// Resolve a wheel notch to its sidebar command.
+///
+/// gamemd's window procedure intercepts every wheel message and executes the
+/// command named `SidebarDown` when the delta is negative and `SidebarUp`
+/// otherwise — a zero delta goes up, because the test is a signed less-than.
+/// Magnitude is not a multiplier: one message is one command is one row.
+pub(crate) fn wheel_action(delta_lines: f32) -> WheelAction {
+    if delta_lines < 0.0 {
+        WheelAction::SidebarDown
+    } else {
+        WheelAction::SidebarUp
     }
 }
 
-/// Try to scroll the sidebar panel. Returns true if the cursor was over the
-/// sidebar and the scroll was consumed, false if it should be handled as zoom.
-pub(crate) fn try_sidebar_scroll(state: &mut AppState, delta_lines: f32) -> bool {
+/// Apply one wheel notch to a strip's scroll row.
+///
+/// The native scroll refuses to move above row 0 or past the strip's computed
+/// visible capacity, so both ends saturate rather than wrap.
+pub(crate) fn wheel_scrolled_row(current: usize, max_rows: usize, action: WheelAction) -> usize {
+    match action {
+        WheelAction::SidebarUp => current.saturating_sub(1),
+        WheelAction::SidebarDown => (current + 1).min(max_rows),
+    }
+}
+
+/// Scroll the active build strip by one row.
+///
+/// The cursor position is deliberately not consulted. The retail binding is a
+/// window message routed straight to a command, not a hit-tested gadget, so the
+/// wheel scrolls the sidebar from anywhere on the screen — and there is no world
+/// zoom in gamemd for the wheel to reach instead.
+pub(crate) fn sidebar_wheel_scroll(state: &mut AppState, delta_lines: f32) {
     let Some(view) = current_sidebar_view(state) else {
-        return false;
+        return;
     };
-    if !view.panel_rect.contains(state.cursor_x, state.cursor_y) {
-        return false;
-    }
-    if delta_lines > 0.0 {
-        let step = delta_lines.ceil().max(1.0) as usize;
-        state.sidebar_scroll_rows = state.sidebar_scroll_rows.saturating_sub(step);
-    } else if delta_lines < 0.0 {
-        let step = (-delta_lines).ceil().max(1.0) as usize;
-        state.sidebar_scroll_rows = (state.sidebar_scroll_rows + step).min(view.max_scroll_rows);
-    }
-    true
+    state.sidebar_scroll_rows = wheel_scrolled_row(
+        state.sidebar_scroll_rows,
+        view.max_scroll_rows,
+        wheel_action(delta_lines),
+    );
 }
 
 pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
@@ -596,8 +701,22 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
         }
         KeyCode::KeyR => apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Vehicle)),
         KeyCode::KeyT => select_same_type(state, is_shift_held(state)),
-        KeyCode::F1 => {
-            state.show_hotkey_help = !state.show_hotkey_help;
+        // Camera bookmarks. Stock KEYBOARDMD.INI binds View1..View4 to F1..F4
+        // and SetView1..SetView4 to Ctrl+F1..Ctrl+F4 (the same 0x200 Ctrl bit
+        // the team-create bindings use). Ctrl+Shift never reaches here — the
+        // dev chord took it above — so plain Ctrl is unambiguous.
+        KeyCode::F1 | KeyCode::F2 | KeyCode::F3 | KeyCode::F4 => {
+            let slot = match code {
+                KeyCode::F1 => 0,
+                KeyCode::F2 => 1,
+                KeyCode::F3 => 2,
+                _ => 3,
+            };
+            if is_ctrl_held(state) {
+                crate::app_camera::set_view_bookmark(state, slot);
+            } else {
+                crate::app_camera::recall_view_bookmark(state, slot);
+            }
         }
         KeyCode::KeyH => {
             jump_camera_to_base(state);
@@ -623,6 +742,12 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
 /// shadowed stock functions like Scatter and Beacon).
 fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
     match code {
+        // The hotkey-help overlay is VERA-only and used to sit on bare F1, which
+        // stock YR binds to the first camera bookmark. Moved onto the dev chord,
+        // which stock binds nothing to.
+        KeyCode::F1 => {
+            state.show_hotkey_help = !state.show_hotkey_help;
+        }
         KeyCode::KeyM => {
             quicksave(state);
         }
@@ -831,6 +956,44 @@ fn sanitize_save_name(raw: &str) -> String {
     }
     out.truncate(64);
     out
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    use super::{WheelAction, wheel_action, wheel_scrolled_row};
+
+    /// One notch is one row, whichever way it turns and however large the OS
+    /// reports the delta. gamemd tests only the sign of the wheel delta and then
+    /// executes a command that moves the strip by exactly one.
+    #[test]
+    fn magnitude_never_scales_the_step() {
+        for up in [0.5_f32, 1.0, 3.0, 120.0] {
+            assert_eq!(wheel_action(up), WheelAction::SidebarUp, "delta {up}");
+        }
+        for down in [-0.5_f32, -1.0, -3.0, -120.0] {
+            assert_eq!(wheel_action(down), WheelAction::SidebarDown, "delta {down}");
+        }
+    }
+
+    /// The native test is a signed less-than against zero, so a zero delta goes
+    /// up rather than doing nothing.
+    #[test]
+    fn zero_delta_scrolls_up() {
+        assert_eq!(wheel_action(0.0), WheelAction::SidebarUp);
+    }
+
+    #[test]
+    fn rows_move_one_at_a_time_and_saturate_at_both_ends() {
+        assert_eq!(wheel_scrolled_row(0, 4, WheelAction::SidebarDown), 1);
+        assert_eq!(wheel_scrolled_row(3, 4, WheelAction::SidebarDown), 4);
+        // Refuses to move past the strip's computed capacity.
+        assert_eq!(wheel_scrolled_row(4, 4, WheelAction::SidebarDown), 4);
+        assert_eq!(wheel_scrolled_row(2, 4, WheelAction::SidebarUp), 1);
+        // Refuses to move above row 0.
+        assert_eq!(wheel_scrolled_row(0, 4, WheelAction::SidebarUp), 0);
+        // A strip that fits entirely on screen cannot scroll at all.
+        assert_eq!(wheel_scrolled_row(0, 0, WheelAction::SidebarDown), 0);
+    }
 }
 
 #[cfg(test)]

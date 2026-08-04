@@ -253,6 +253,46 @@ pub(crate) fn compute_click_selection_snapshot(
     Some(out)
 }
 
+/// Did the band box catch anything at all?
+///
+/// gamemd asks this before it clears the selection, and the question is far
+/// looser than "which objects join the selection": it walks the drawn-object
+/// list and accepts any live object inside the rectangle — no owner filter, no
+/// `Selectable=`, no limbo or docked test. A rectangle holding nothing but enemy
+/// units, or a single building, still counts as caught and still replaces the
+/// selection. A rectangle holding nothing at all leaves the selection untouched
+/// and the release falls through to the ordinary click/action path.
+///
+/// Limbo is the one exclusion, and it is a registration property rather than a
+/// filter: an object without map presence is never in the drawn-object list, so
+/// a passenger inside a transport cannot make a rectangle "non-empty".
+pub(crate) fn band_rect_contains_drawn_object(
+    entities: &EntityStore,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+) -> bool {
+    entities.values().any(|entity| {
+        if !entity.lifecycle.object_alive || entity.lifecycle.in_limbo {
+            return false;
+        }
+        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
+        sx >= min_x && sx <= max_x && sy >= min_y && sy <= max_y
+    })
+}
+
+/// Resolve a band-box release into the selection snapshot to commit.
+///
+/// Three outcomes, matching the native release:
+/// * `None` — the rectangle caught no drawn object (or a shift-drag added
+///   nothing). The selection is left exactly as it was.
+/// * `Some(list)` — the rectangle caught something. A plain drag replaces the
+///   selection with the eligible members; a shift drag **adds** them.
+///
+/// A rectangle that caught something but nothing eligible — a box over an enemy
+/// patrol, say — returns an empty list, because the native clear runs before the
+/// per-object filter does.
 pub(crate) fn compute_box_selection_snapshot(
     entities: &EntityStore,
     fog: Option<&FogState>,
@@ -266,6 +306,9 @@ pub(crate) fn compute_box_selection_snapshot(
     houses: Option<&HouseStates>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<Vec<u64>> {
+    if !band_rect_contains_drawn_object(entities, min_x, min_y, max_x, max_y) {
+        return None;
+    }
     let current: Vec<u64> = selected_stable_ids_sorted_from_store(entities);
     let candidates = entities_in_rect(
         entities,
@@ -279,31 +322,26 @@ pub(crate) fn compute_box_selection_snapshot(
         houses,
         interner,
     );
-    if candidates.is_empty() && additive {
-        return None;
-    }
-    let mut out = if additive {
-        current.clone()
-    } else {
-        Vec::new()
-    };
-    let mut changed = false;
     if additive {
+        // The native band callback only ever calls Select — there is no Deselect
+        // anywhere on this path, and the shift branch merely skips the clear. So
+        // a shift drag across units already in the group keeps them.
+        let mut out = current;
+        let mut added = false;
         for sid in candidates {
-            if let Some(idx) = out.iter().position(|v| *v == sid) {
-                out.remove(idx);
-                changed = true;
-            } else {
+            if !out.contains(&sid) {
                 out.push(sid);
-                changed = true;
+                added = true;
             }
         }
-        if !changed {
+        if !added {
             return None;
         }
-    } else {
-        out.extend(candidates);
+        out.sort_unstable();
+        out.dedup();
+        return Some(out);
     }
+    let mut out = candidates;
     out.sort_unstable();
     out.dedup();
     Some(out)
@@ -336,6 +374,12 @@ fn entities_in_rect(
     entities
         .values()
         .filter_map(|entity| {
+            // Rectangle first, the way the native walk does it: the per-object
+            // filter only runs for objects the box actually covers.
+            let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
+            if !(sx >= min_x && sx <= max_x && sy >= min_y && sy <= max_y) {
+                return None;
+            }
             let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
             let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
             if !is_selectable_entity(
@@ -354,10 +398,56 @@ fn entities_in_rect(
             if entity.category == EntityCategory::Structure {
                 return None;
             }
-            let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
-            (sx >= min_x && sx <= max_x && sy >= min_y && sy <= max_y).then_some(entity.stable_id)
+            if !can_be_selected_now(entity, entities) {
+                return None;
+            }
+            Some(entity.stable_id)
         })
         .collect()
+}
+
+/// The band-box-only half of the eligibility chain.
+///
+/// A single click reaches an object through a shorter chain than a band box
+/// does: only the band path asks `CanBeSelectedNow`, which refuses an object
+/// that is enslaved, mid-way through a deploy transition, linked into a bunker,
+/// or radio-docked on a building. The docked clause is the one players feel — it
+/// keeps the miner unloading on the refinery pad out of a box dragged across the
+/// base, while a direct click on that same miner still selects it.
+///
+/// Two native clauses are approximated rather than reproduced, because VERA has
+/// no matching state:
+/// * The native enslaved test reads a slave-owner pointer that every slave
+///   carries. VERA's nearest state is the slave-harvester component, which only
+///   the Slave Miner's slaves own; a mind-controlled unit is a different field
+///   in the original and is deliberately not tested here.
+/// * The native bunker test reads one link field. VERA splits the link into an
+///   approach marker and an installed link, and only the installed link is
+///   treated as linked.
+fn can_be_selected_now(
+    entity: &crate::sim::game_entity::GameEntity,
+    entities: &EntityStore,
+) -> bool {
+    use crate::sim::deploy::DeployPhase;
+    if entity.slave_harvester.is_some() {
+        return false;
+    }
+    if matches!(
+        entity.deploy_state,
+        Some(DeployPhase::Deploying { .. } | DeployPhase::Undeploying { .. })
+    ) {
+        return false;
+    }
+    if entity.bunker_link.installed_in().is_some() {
+        return false;
+    }
+    // Radio-docked, and the dock partner is a building — the native pair of a
+    // dock flag plus a building lookup in the object's own cell.
+    entity.dock_entered_with.is_none_or(|dock_id| {
+        entities
+            .get(dock_id)
+            .is_none_or(|partner| partner.category != EntityCategory::Structure)
+    })
 }
 
 /// Check if a world-space click point falls on a building's foundation cells.

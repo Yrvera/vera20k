@@ -50,11 +50,15 @@ pub struct SelectionState {
 const MIN_DRAG_DISTANCE: f32 = 4.0;
 
 /// Returned by `update_drag` when the drag crosses the activation threshold.
+///
+/// Activation is presentation-only: the rectangle starts being drawn and
+/// nothing else happens. The selection is replaced on the release, and only when
+/// the rectangle caught something.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DragTransition {
     /// No state change — still pending or already active.
     NoChange,
-    /// Band-box just activated — caller should deselect all entities.
+    /// Band-box just activated — the rectangle is now live.
     Activated,
 }
 
@@ -88,8 +92,7 @@ impl SelectionState {
     ///
     /// If in `Pending` phase and the mouse has moved > 4px from start,
     /// transitions to `BandBoxActive` and returns `DragTransition::Activated`
-    /// so the caller can clear the current selection (deselect happens on
-    /// band-box activation, not on mouse-up).
+    /// so the caller knows the rectangle is now live.
     pub fn update_drag(&mut self, screen_x: f32, screen_y: f32) -> DragTransition {
         match self.phase {
             DragPhase::Pending { start_x, start_y } => {
@@ -176,6 +179,11 @@ pub enum SelectAction {
 }
 
 /// Clear all Selected markers from the entity store.
+///
+/// Kept as the sim-side primitive for a wholesale unselect. The band-box path no
+/// longer calls it: the native release replaces the selection through the
+/// selection command instead, and an empty box clears nothing at all.
+#[allow(dead_code)]
 pub fn deselect_all(entities: &mut EntityStore) {
     let selected_ids: Vec<u64> = entities
         .values()

@@ -150,7 +150,7 @@ fn test_click_additive_toggles_membership() {
 }
 
 #[test]
-fn test_box_additive_toggles_and_excludes_structures() {
+fn test_box_additive_adds_only_and_excludes_structures() {
     let mut store = EntityStore::new();
     spawn_mobile(&mut store, 1, 10, 10, "Americans", true);
     spawn_mobile(&mut store, 2, 12, 10, "Americans", true);
@@ -176,24 +176,113 @@ fn test_box_additive_toggles_and_excludes_structures() {
     store.insert(building);
 
     // The box covers all four: the units span (0,315)..(120,375) and the
-    // building sits at (0,345).
+    // building sits at (0,345). The native band callback only ever calls
+    // Select — a shift drag over units already in the group keeps them, so the
+    // two selected units stay and the third joins.
     let snapshot = compute_box_selection_snapshot(
         &store, None, None, -40.0, 300.0, 160.0, 400.0, true, None, None, None,
     )
     .expect("snapshot");
-    assert_eq!(snapshot, vec![3]);
+    assert_eq!(snapshot, vec![1, 2, 3]);
 }
 
 #[test]
-fn test_box_replace_can_clear_selection_when_empty() {
+fn test_empty_box_leaves_the_selection_alone() {
     let mut store = EntityStore::new();
     spawn_mobile(&mut store, 1, 10, 10, "Americans", true);
 
+    // gamemd clears the selection only when the rectangle caught a drawn
+    // object; an empty rectangle queues no selection change at all and the
+    // release falls through to the ordinary click action.
     let snapshot = compute_box_selection_snapshot(
         &store, None, None, 300.0, 300.0, 340.0, 340.0, false, None, None, None,
+    );
+    assert_eq!(snapshot, None);
+}
+
+#[test]
+fn test_box_over_only_ineligible_objects_still_clears_the_selection() {
+    let mut store = EntityStore::new();
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", true);
+    spawn_mobile(&mut store, 2, 30, 30, "Soviet", false);
+
+    let mut houses: BTreeMap<crate::sim::intern::InternedId, crate::sim::house_state::HouseState> =
+        BTreeMap::new();
+    for (name, is_human) in [("Americans", true), ("Soviet", false)] {
+        let id = test_intern(name);
+        houses.insert(
+            id,
+            crate::sim::house_state::HouseState::new(id, 0, None, is_human, 0, 10),
+        );
+    }
+
+    // The rectangle holds one AI-owned tank and nothing else. The native
+    // "did the box catch anything" test has no owner filter, so the box counts
+    // as non-empty, the clear runs, and the per-object filter then admits
+    // nobody — the selection ends up empty rather than untouched.
+    let (ex, ey) = screen_of(&store, 2);
+    let snapshot = compute_box_selection_snapshot(
+        &store,
+        None,
+        None,
+        ex - 20.0,
+        ey - 20.0,
+        ex + 20.0,
+        ey + 20.0,
+        false,
+        None,
+        Some(&houses),
+        None,
     )
     .expect("snapshot");
     assert!(snapshot.is_empty());
+}
+
+#[test]
+fn test_box_skips_a_miner_docked_on_a_refinery() {
+    let mut store = EntityStore::new();
+    spawn_mobile(&mut store, 1, 10, 10, "Americans", false);
+    spawn_mobile(&mut store, 2, 11, 10, "Americans", false);
+    let mut refinery = GameEntity::new_at_frame_zero_for_test(
+        3,
+        11,
+        11,
+        0,
+        0,
+        test_intern("Americans"),
+        Health {
+            current: 100,
+            max: 100,
+        },
+        test_intern("GAREFN"),
+        EntityCategory::Structure,
+        0,
+        5,
+        false,
+    );
+    refinery.lifecycle.in_limbo = false;
+    store.insert(refinery);
+    // Entity 2 is radio-docked on the refinery — the band-box-only
+    // CanBeSelectedNow gate refuses it while a direct click still would not.
+    store.get_mut(2).expect("miner").dock_entered_with = Some(3);
+
+    let (ax, ay) = screen_of(&store, 1);
+    let (bx, by) = screen_of(&store, 2);
+    let snapshot = compute_box_selection_snapshot(
+        &store,
+        None,
+        None,
+        ax.min(bx) - 20.0,
+        ay.min(by) - 20.0,
+        ax.max(bx) + 20.0,
+        ay.max(by) + 20.0,
+        false,
+        None,
+        None,
+        None,
+    )
+    .expect("snapshot");
+    assert_eq!(snapshot, vec![1]);
 }
 
 #[test]
