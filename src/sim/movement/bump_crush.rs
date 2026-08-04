@@ -535,10 +535,21 @@ fn entity_crush_coord(entity: &GameEntity) -> (i32, i32) {
 }
 
 /// Cell-entry legality is classified where the sim frame is not threaded, so the
-/// Iron Curtain gate cannot be evaluated there. Recorded residual: a curtained
-/// infantryman still reads as crushable for path legality, so the crusher enters
-/// the cell and then fails to kill. gamemd applies the same gate in
-/// `UnitClass::Can_Enter_Cell`, so this is a known narrowing, not a rule.
+/// Iron Curtain gate cannot be evaluated there.
+///
+/// **Recorded residual, and the binary side is now settled rather than assumed.**
+/// `UnitClass::Can_Enter_Cell` reaches the crush predicate from two sites, and
+/// both call the same shared `CanCrushCheck` the kill site uses — the one whose
+/// last gate, on the omni path *and* the ordinary path, is the Iron Curtain
+/// slot. So retail refuses entry to a curtained infantryman's cell and the tank
+/// routes around; VERA reads it as crushable for path legality, enters, and then
+/// fails to kill.
+///
+/// Closing it means threading a sim frame down through the whole cell-entry
+/// classifier, which is also the frame-independent path-planning predicate, so
+/// it is left unfunded here rather than half-plumbed. Frequency: only while an
+/// Iron Curtain is up over infantry a vehicle is pathing through — a few seconds
+/// per curtain use, several times a match for a Soviet player, never otherwise.
 const IRON_CURTAIN_UNAVAILABLE: bool = false;
 
 /// The victim-side inputs of the native crush predicate.
@@ -603,9 +614,15 @@ impl CrushTarget {
 /// The Iron Curtain test is the **last** gate of each block, after the ally
 /// test, which is why it cannot be hoisted to the top.
 ///
-/// Structures are excluded by the native `WhatAmI != Building` test; aircraft
-/// are excluded because they are not in the ground occupant list at all —
-/// VERA-internal mechanism, same outcome.
+/// The category exclusions below are **VERA-internal, gamemd equivalent
+/// UNCHECKED**. The original's class test sits in the omni block only; the
+/// ordinary block reads the type's crushable byte, an abstract flag, the deploy
+/// byte, the ally test and the Iron Curtain slot, and nothing else. Stock
+/// `rulesmd` marks sandbags and all three fence walls `Crushable=yes`, so a
+/// retail Crusher flattens them and VERA's category gate does not. That gate
+/// predates this function; it is recorded here rather than credited to the
+/// original. Aircraft never appear in the ground occupant list, so excluding
+/// them is outcome-identical.
 pub fn can_crush(capability: CrushCapability, target: CrushTarget) -> bool {
     // Structures and aircraft are never crushed.
     if matches!(
@@ -819,7 +836,9 @@ impl ScatterEligibility {
 /// been resolved to a `VeteranAbilities=` string, and no stock type is known to
 /// carry it. Omitting it can only make the gate tighter than retail.
 ///
-/// Consumes no RNG — the whole native body contains no random draw.
+/// No random draw was found in the native body. The census behind that covered
+/// its DIRECT calls only, and the kill path also dispatches through several
+/// virtual slots, so "consumes no RNG" is UNVERIFIED rather than proven.
 pub fn scatter_dispatch_allowed(
     eligibility: ScatterEligibility,
     forced: bool,
@@ -832,15 +851,18 @@ pub fn scatter_dispatch_allowed(
         || occupant_house_iq >= eligibility.iq_scatter
 }
 
-/// The per-cell elite pre-scan: does any occupant of this list carry elite rank?
+/// The per-cell elite pre-scan: does any occupant of this cell carry elite rank?
 ///
 /// The native pre-scan runs only for an unforced scatter and breaks on the first
-/// elite it finds.
-pub fn cell_has_elite_occupant(occupants: &[u64], entities: &EntityStore) -> bool {
+/// elite it finds. It walks the *cell's* occupants, so the vehicle doing the
+/// scattering is not one of them — an elite crusher must not release the cell's
+/// own dispatch gate, which is why `skip_id` exists.
+pub fn cell_has_elite_occupant(occupants: &[u64], skip_id: u64, entities: &EntityStore) -> bool {
     occupants.iter().any(|&id| {
-        entities
-            .get(id)
-            .is_some_and(|entity| entity.veterancy >= ELITE_VETERANCY)
+        id != skip_id
+            && entities
+                .get(id)
+                .is_some_and(|entity| entity.veterancy >= ELITE_VETERANCY)
     })
 }
 
@@ -876,7 +898,7 @@ pub fn classify_drive_crush_phase(
     let crusher_owner = interner.resolve(crusher.owner);
     // Per-cell pre-scan, exactly once, before the dispatch walk.
     let elite_in_cell = match phase {
-        DriveCrushPhase::EnteringCell => cell_has_elite_occupant(occ, entities),
+        DriveCrushPhase::EnteringCell => cell_has_elite_occupant(occ, crusher_id, entities),
         DriveCrushPhase::FullyInCell => false,
     };
     let mut selected = Vec::new();
@@ -938,43 +960,12 @@ pub fn classify_drive_crush_phase(
 /// which is a different (60-frame) timer with a different consumer.
 pub const POST_SCATTER_WAIT_FRAMES: u16 = 10;
 
-/// Whether all three functional infantry sub-cells of a cell are taken by
-/// someone other than the arriving man.
-///
-/// The native test is `cell.OccupancyBits & 0x1C == 0x1C` on the selected layer
-/// — the three infantry slot bits. When it holds, `InfantryClass::PerCellProcess`
-/// force-scatters the whole cell so the arriving infantryman has somewhere to
-/// stand; VERA's allocators instead return `None` and the man jams.
-pub fn infantry_sub_cells_full(
-    occ: Option<&CellOccupancy>,
-    layer: MovementLayer,
-    arriving_id: u64,
-) -> bool {
-    occ.is_some_and(|o| {
-        o.infantry(layer)
-            .filter(|&(id, _)| id != arriving_id)
-            .count()
-            >= MAX_INFANTRY_PER_CELL
-    })
-}
-
-/// The occupants a full infantry cell force-scatters, in cell-list order.
-///
-/// The native call passes `force = 1`, so the dispatch gate of
-/// [`scatter_dispatch_allowed`] is bypassed entirely and every occupant of the
-/// selected list is asked to move — not just the three infantry.
-pub fn full_infantry_cell_scatter_targets(
-    occ: Option<&CellOccupancy>,
-    layer: MovementLayer,
-    arriving_id: u64,
-) -> Vec<u64> {
-    occ.map_or_else(Vec::new, |o| {
-        o.iter_layer(layer)
-            .map(|occupant| occupant.entity_id)
-            .filter(|&id| id != arriving_id)
-            .collect()
-    })
-}
+// The full-infantry-cell force-scatter helpers used to live here and are gone
+// with the clause that called them: the three-infantry-bit test is real but the
+// block around it is dominated by a radio-tether byte VERA does not model, and
+// the original scatters the man's OWN cell on arrival rather than the
+// destination cell of a blocked step. See the note at the head of
+// `movement_occupancy::handle_deferred_occupancy`.
 
 /// Whether an already-moving blocker still accepts a forced scatter.
 ///
@@ -1712,35 +1703,6 @@ mod tests {
         assert_eq!(POST_SCATTER_WAIT_FRAMES, 10);
     }
 
-    #[test]
-    fn full_infantry_cell_reports_and_lists_every_occupant() {
-        let grid = make_occ(&[
-            (5, 5, 1, MovementLayer::Ground, Some(2)),
-            (5, 5, 2, MovementLayer::Ground, Some(3)),
-            (5, 5, 3, MovementLayer::Ground, Some(4)),
-        ]);
-        let occ = grid.get(5, 5);
-        assert!(infantry_sub_cells_full(occ, MovementLayer::Ground, 99));
-        // The arriving man never counts against his own cell.
-        assert!(!infantry_sub_cells_full(occ, MovementLayer::Ground, 3));
-        let mut targets = full_infantry_cell_scatter_targets(occ, MovementLayer::Ground, 99);
-        targets.sort_unstable();
-        assert_eq!(targets, vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn two_infantry_do_not_make_a_full_cell() {
-        let grid = make_occ(&[
-            (5, 5, 1, MovementLayer::Ground, Some(2)),
-            (5, 5, 2, MovementLayer::Ground, Some(3)),
-        ]);
-        assert!(!infantry_sub_cells_full(
-            grid.get(5, 5),
-            MovementLayer::Ground,
-            99
-        ));
-    }
-
     // -- sub-cell allocation tests --
 
     #[test]
@@ -1904,54 +1866,6 @@ mod tests {
     }
 
     // -- scatter_blocker tests --
-
-    #[test]
-    fn full_infantry_cell_force_scatters_all_three_sitting_men() {
-        // The native arrival path force-scatters the whole cell when the three
-        // infantry sub-cell bits are all set, so a fourth man has somewhere to
-        // stand. force = 1, so the unforced dispatch gate never applies and each
-        // scattered man costs exactly one direction draw.
-        let path_grid = PathGrid::new(10, 10);
-        let occupancy = make_occ(&[
-            (5, 5, 1, MovementLayer::Ground, Some(2)),
-            (5, 5, 2, MovementLayer::Ground, Some(3)),
-            (5, 5, 3, MovementLayer::Ground, Some(4)),
-        ]);
-        let mut store = EntityStore::new();
-        for id in 1..=3u64 {
-            store.insert(infantry(id, 5, 5, (id + 1) as u8));
-        }
-        let arriving_id = 4;
-        assert!(infantry_sub_cells_full(
-            occupancy.get(5, 5),
-            MovementLayer::Ground,
-            arriving_id
-        ));
-
-        let mut rng = SimRng::new(7);
-        let mut draws = 0;
-        for blocker_id in full_infantry_cell_scatter_targets(
-            occupancy.get(5, 5),
-            MovementLayer::Ground,
-            arriving_id,
-        ) {
-            let before = rng.clone();
-            assert!(scatter_blocker(
-                &mut store,
-                blocker_id,
-                Some(&path_grid),
-                &occupancy,
-                MovementLayer::Ground,
-                &mut rng,
-                None,
-                false,
-            ));
-            assert_ne!(rng.state(), before.state(), "one direction draw per man");
-            draws += 1;
-            assert!(store.get(blocker_id).unwrap().movement_target.is_some());
-        }
-        assert_eq!(draws, 3, "all three sitting men are told to move");
-    }
 
     #[test]
     fn test_scatter_blocker_issues_movement() {

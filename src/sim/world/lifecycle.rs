@@ -1039,6 +1039,21 @@ impl Simulation {
     ///    the target.** A successful Restore re-installs the archived target, and
     ///    the null-out then does not run.
     ///
+    /// **ONLY ONE OF SIX NATIVE ENTRY POINTS IS WIRED.** The sweep is reached
+    /// from six distinct functions in the original — area damage (six call
+    /// sites in one function), building sale, an unnamed pair, the building
+    /// occupy-map placement, the owner change, and the teleport locomotor's
+    /// state machine. VERA calls it only from the owner change. The earlier
+    /// "1 of 3 Restore sites" framing counted CALL sites through the Restore
+    /// vtable slot, which is a different and smaller set than the sweep's own
+    /// callers, and read more complete than it was. Consequence: an attacker
+    /// stays latched onto a target that is being sold or chrono-teleported
+    /// until the target is actually removed and the pointer-expiry broadcast
+    /// catches it. Frequency: every building sale and every Chrono
+    /// Legionnaire / Chronosphere use — tens of times a match — though the
+    /// window is short and the blast radius today is limited to objects that
+    /// went through a blocked-step Override.
+    ///
     /// RESIDUALS, recorded rather than guessed:
     /// - The native suppression clause skips the whole block for a listener
     ///   whose manager sub-object points at the detaching object while that

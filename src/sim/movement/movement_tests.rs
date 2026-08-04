@@ -1490,6 +1490,139 @@ fn gsi_06_01_code_two_grace_window_still_repaths_at_urgency_one() {
     );
 }
 
+/// GSI-07.03: the walk locomotor's blocked-step Override fires exactly ONCE per
+/// block, and the mover stops where it stood.
+///
+/// The original's blocking-object body runs `Override_Mission(Attack, blocker,
+/// NULL)` and then falls into the shared tail — clear the stored path array,
+/// drive the applied speed fraction to zero, call the locomotor's own
+/// `Stop_Moving` — and returns. With the Override's NULL destination the walk
+/// step has neither a destination nor a path, so it cannot re-enter the arm.
+///
+/// This is the whole reason the trigger needs the stop. A second Override with
+/// an empty queue archives the CURRENT mission, so a mover that re-entered on
+/// tick two would overwrite its archived Move with Attack and every later
+/// Restore would hand it back Attack instead of its order — a unit losing its
+/// move order every time an enemy blocks it.
+#[test]
+fn gsi_07_03_blocked_infantry_overrides_onto_attack_exactly_once() {
+    use crate::rules::locomotor_type::LocomotorKind;
+    use crate::sim::combat::TargetKind;
+    use crate::sim::mission::leaf::MissionLeafState;
+    use crate::sim::mission::state::MissionTestFixture;
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(10, 10);
+    let mut occupancy = OccupancyGrid::new();
+
+    let mut mover = GameEntity::test_default(1, "E1", "Americans", 1, 1);
+    mover.category = EntityCategory::Infantry;
+    mover.mission_leaf = MissionLeafState::for_entity_category(EntityCategory::Infantry);
+    mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
+    let timer = mover.mission.dispatch_timer();
+    mover.mission.apply_test_fixture(MissionTestFixture {
+        current: MissionId::from_known(MissionType::Move),
+        suspended: MissionId::NONE,
+        queued: MissionId::NONE,
+        movement_bypass_latch: 0,
+        handler_state: 0,
+        mission_start_frame: 0,
+        ai_counter: 0,
+        dispatch_timer: timer,
+    });
+    mover.movement_target = Some(MovementTarget {
+        path: vec![(1, 1), (2, 1), (3, 1)],
+        path_layers: vec![MovementLayer::Ground; 3],
+        next_index: 1,
+        speed: SimFixed::from_num(1024),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((3, 1)),
+        ..Default::default()
+    });
+    mover.facing = 64;
+    entities.insert(mover);
+    occupancy.add(
+        1,
+        1,
+        1,
+        MovementLayer::Ground,
+        Some(2),
+        CellListInsertion::PrependNonBuilding,
+    );
+
+    // A stationary enemy infantryman standing in the next cell: native
+    // cell-entry class 5, blocking-object arm.
+    let mut blocker = GameEntity::test_default(2, "E1", "Soviets", 2, 1);
+    blocker.category = EntityCategory::Infantry;
+    blocker.mission_leaf = MissionLeafState::for_entity_category(EntityCategory::Infantry);
+    blocker.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
+    entities.insert(blocker);
+    occupancy.add(
+        2,
+        1,
+        2,
+        MovementLayer::Ground,
+        Some(2),
+        CellListInsertion::PrependNonBuilding,
+    );
+
+    let mut lifecycle_requests = Vec::new();
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    for native_frame in 0..24 {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            native_frame,
+            &mut interner,
+            &mut lifecycle_requests,
+        );
+    }
+
+    let mover = entities.get(1).expect("mover survives");
+    assert_eq!(
+        mover.mission.current(),
+        MissionId::from_known(MissionType::Attack),
+        "the blocked step overrides onto Attack"
+    );
+    assert_eq!(
+        mover.mission.suspended(),
+        MissionId::from_known(MissionType::Move),
+        "a second Override would have archived Attack over the Move — the \
+         Override must fire exactly once per block"
+    );
+    assert_eq!(
+        mover.attack_target.as_ref().map(|target| target.target),
+        Some(TargetKind::Entity(2)),
+        "the blocker is the installed target"
+    );
+    assert!(
+        mover.movement_target.is_none(),
+        "the tail clears the stored path and the mover stops where it stood"
+    );
+    assert!(
+        mover.navigation.nav_com.is_none(),
+        "the Override passes a NULL destination"
+    );
+    assert_eq!(
+        mover.navigation.suspended_nav_com,
+        Some(NavTargetRef::cell(3, 1)),
+        "the archived destination is what a later Restore hands back"
+    );
+    assert_eq!(
+        (mover.position.rx, mover.position.ry),
+        (1, 1),
+        "the mover never entered the blocked cell"
+    );
+}
+
 /// GSI-06.06 G1: gamemd clears the owner's `path_blocked` impatience flag on the
 /// first paid track point of a segment and again at track termination — real
 /// forward progress, not repath success. VERA cleared it only for infantry, so a

@@ -618,62 +618,31 @@ pub(super) fn handle_deferred_occupancy(
         );
     }
 
-    // An infantryman arriving at a cell whose three sub-cell slots are already
-    // taken does not simply stop in the original: `InfantryClass::PerCellProcess`
-    // force-scatters the whole cell so a slot frees up. force = 1 bypasses the
-    // unforced dispatch gate, so every occupant of the selected list is asked to
-    // move.
+    // BACKED OUT — the full-infantry-cell force-scatter used to live here.
     //
-    // The original reaches this once per cell *entry*; VERA re-evaluates the
-    // blocked step every tick, so the mover's post-scatter wait rate-limits it
-    // to the same cadence the locomotor scatter uses. Without the limiter a
-    // jammed infantry group would draw from the scenario stream every frame.
-    let cell_full_scatter_ready = is_infantry
-        && entities
-            .get(entity_id)
-            .and_then(|entity| entity.movement_target.as_ref())
-            .is_some_and(|target| target.blocked_delay == 0)
-        && bump_crush::infantry_sub_cells_full(
-            occupancy.get(nx, ny),
-            occupancy_bits_layer,
-            entity_id,
-        );
-    if cell_full_scatter_ready {
-        let mut scattered_any = false;
-        for blocker_id in bump_crush::full_infantry_cell_scatter_targets(
-            occupancy.get(nx, ny),
-            object_list_layer,
-            entity_id,
-        ) {
-            if already_scattered.contains(&blocker_id) {
-                continue;
-            }
-            let blocker_fraidycat =
-                bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
-            if bump_crush::scatter_blocker(
-                entities,
-                blocker_id,
-                path_grid,
-                occupancy,
-                object_list_layer,
-                rng,
-                rules.map(|r| &r.mission_control),
-                blocker_fraidycat,
-            ) {
-                already_scattered.insert(blocker_id);
-                scattered_any = true;
-                stats.scatter_successes = stats.scatter_successes.saturating_add(1);
-            }
-        }
-        if scattered_any
-            && let Some(target) = entities
-                .get_mut(entity_id)
-                .and_then(|entity| entity.movement_target.as_mut())
-        {
-            target.path_blocked = true;
-            target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
-        }
-    }
+    // The instruction range it was built on is real: the infantry per-cell entry
+    // body does test the three infantry occupancy bits and then call the cell
+    // scatter with force = 1. But the whole block is dominated by an earlier
+    // byte test on the infantryman himself, and every path into that block goes
+    // through it — when the byte is zero the code jumps clean past the scatter
+    // call. That byte is the radio tether: cleared by the `TechnoClass`
+    // constructor, raised on one radio message and cleared on its partner. So
+    // the original force-scatters a cell only for a *tethered* infantryman, and
+    // VERA models no tether term at all.
+    //
+    // It was also re-sited. The cell the original scatters is the man's OWN
+    // cell, resolved at the top of the per-cell entry body, so his own sub-cell
+    // bit is one of the three that satisfy the test. VERA tested the
+    // DESTINATION cell of a blocked step and explicitly excluded the arriver —
+    // a fourth man stopped before entry, which is a different situation.
+    //
+    // Consequence of leaving it in: any ordinary infantryman routed into a cell
+    // already holding three force-scattered all of them and drew from the
+    // scenario RNG where the original makes no draw, bounded only by a
+    // VERA-invented wait. That is deterministic state, and it fires on every
+    // squad funnelling through a chokepoint. Re-siting it faithfully means
+    // moving it to the arrival body and modelling the tether byte first, so the
+    // clause is out until both exist rather than half-gated.
 
     match entry_result {
         CellEntryResult::Clear => {
@@ -936,32 +905,52 @@ pub(super) fn handle_deferred_occupancy(
             // arm and only the body arm. A future wall-overlay producer must NOT
             // route into this arm without a Restore path for cell targets.
             //
-            // NOT WIRED YET, and the reason is load-bearing. The Override
-            // itself is landed and tested
-            // (`mission::authority::override_mission_on_blocked_step`); what is
-            // missing is this arm's other half.
+            // ONLY THE WALK LOCOMOTOR TAKES THIS ARM IN THE ORIGINAL. An
+            // exhaustive search of the Override vtable slot returns ten call
+            // sites; the walk locomotor owns two of them (a blocking *object*
+            // and a wall), while the drive and ship locomotors each own exactly
+            // one — the wall — and have no blocking-object arm at all. So a
+            // blocked vehicle never overrides onto Attack; it repaths. Vehicles
+            // keep the pre-existing behaviour below, unchanged.
             //
-            // After the class-4/5 body, the original falls straight into its
-            // "not class 1, not class 7" tail: it clears the path array, stops
-            // the locomotor and resets facing, then RETURNS. Together with the
-            // Override's own NULL destination that leaves the mover with no
-            // destination and no path, so the walk step cannot re-enter this arm
-            // — the Override fires ONCE per block.
+            // After the body, the original falls straight into its "not class 1,
+            // not class 7" tail and RETURNS: it clears the stored path array,
+            // drives the applied speed fraction to zero, and calls the walk
+            // locomotor's own Stop_Moving. Together with the Override's NULL
+            // destination that leaves the mover with no destination and no path,
+            // so the walk step cannot re-enter this arm — the Override fires
+            // ONCE per block. Reproducing that stop is what makes the trigger
+            // safe: without it VERA re-entered every tick, and because a second
+            // Override with an empty queue archives the *current* mission, tick
+            // two overwrote the archived Move with Attack and every later
+            // Restore returned the unit to Attack instead of its order. The
+            // clobber is native and must not be gated away; the re-entry is the
+            // defect.
             //
-            // This arm instead keeps `movement_target` and hands off to
-            // `handle_blocked_tick` with code-2-style grace, so it re-enters
-            // every tick. Measured on the current tree: one mover re-entered 78
-            // times against a single blocker. Because a second Override with an
-            // empty queue archives the *current* mission, the second tick
-            // overwrites the archived Move with Attack and every later Restore
-            // returns the unit to Attack instead of its original order. That
-            // clobber is native and must not be gated away; what is not native
-            // is re-entering the arm at all.
-            //
-            // Wiring the call here without the stop would cost a unit its move
-            // order every time an enemy blocks it — continuous during a squad
-            // advance. Resolve the stop first, then add the call.
-            if let Some(entity) = entities.get_mut(entity_id) {
+            // Class 5 also covers an *enemy wall* natively, and that arm targets
+            // a cell rather than an object, which neither detach sweep can see;
+            // an object overridden onto a wall would strand. It cannot arrive
+            // here: `OccupiedEnemy` is built at exactly one place, inside the
+            // blocker classifier, which has already resolved a live entity, and
+            // `FriendlyWall` has no producer at all because VERA does not
+            // classify wall overlays at cell entry yet. So this site is the body
+            // arm and only the body arm. A future wall-overlay producer must NOT
+            // route into this arm without a Restore path for cell targets.
+            if mover_loco_kind == LocomotorKind::Walk {
+                crate::sim::mission::authority::override_mission_on_blocked_step(
+                    entities, alliances, interner, entity_id, blocker_id,
+                );
+                if let Some(entity) = entities.get_mut(entity_id) {
+                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                }
+                // The tail. `finalize_finished_entities` is VERA's single stop
+                // path: it drops the path executor (the stored path array), puts
+                // the locomotor back in its idle phase and returns the drive
+                // runtime — including its speed fraction — to rest.
+                if !finished_entities.contains(&entity_id) {
+                    finished_entities.push(entity_id);
+                }
+            } else if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 if entity.attack_target.is_none() {
                     entity.attack_target = Some(AttackTarget::new(blocker_id));
@@ -1011,19 +1000,21 @@ pub(super) fn handle_deferred_occupancy(
                 CellEntryResult::TemporaryOccupation => None,
                 _ => unreachable!(),
             };
-            // Moving friendly — wait, then scatter the BLOCKER.
+            // Moving friendly — scatter the BLOCKER, then wait.
             // Original engine: locomotor calls CellClass::Scatter_Objects with
-            // force=1 regardless of whether blocker is moving or stationary.
-            // The blocker is told to scatter; the mover waits.
+            // force=1 regardless of whether blocker is moving or stationary,
+            // and writes its 10-frame wait into the mover *immediately after*
+            // that call. So the nudge comes first and the wait is what follows
+            // it; arming the wait before the first scatter would delay the first
+            // nudge by the whole wait, which has no source in the original.
             let mut has_target = false;
             let mut grace_expired = false;
+            let mut first_block = false;
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 if let Some(ref mut target) = entity.movement_target {
-                    if !target.path_blocked {
-                        target.path_blocked = true;
-                        target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
-                    }
+                    first_block = !target.path_blocked;
+                    target.path_blocked = true;
                     has_target = true;
                     grace_expired = target.blocked_delay == 0;
                 }
@@ -1038,8 +1029,9 @@ pub(super) fn handle_deferred_occupancy(
                 // Set_Destination_Internal, both of which store zero). Only the
                 // blocker scatter and the peer refresh below wait for the timer.
                 let mut refreshed_marker_peers = None;
-                if grace_expired {
-                    // Wait expired — try scattering the blocker, then repath.
+                if first_block || grace_expired {
+                    // Scatter first — on the tick the block is detected, and
+                    // again once the wait has run out.
                     if let Some(blocker_id) = blocker_id
                         && !already_scattered.contains(&blocker_id)
                     {
@@ -1059,6 +1051,17 @@ pub(super) fn handle_deferred_occupancy(
                             already_scattered.insert(blocker_id);
                             stats.scatter_successes = stats.scatter_successes.saturating_add(1);
                         }
+                    }
+                    if first_block
+                        && let Some(target) = entities
+                            .get_mut(entity_id)
+                            .and_then(|entity| entity.movement_target.as_mut())
+                    {
+                        // The wait the original writes right after the scatter
+                        // call. Only on entry: re-arming it after the expiry
+                        // scatter as well would pin the repath urgency at 1 and
+                        // a boxed-in mover would never escalate to route-around.
+                        target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
                     }
                     // Retail reads peer paths immediately before A*. Refresh
                     // only at this seam because the scatter attempt above is

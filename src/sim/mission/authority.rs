@@ -85,13 +85,39 @@ pub(crate) fn override_mission_on_blocked_step(
     // Save order is NavCom, then TarCom, then the mission fields, then the two
     // concrete setters. The archived destination is what the mover gets back
     // when something later restores it.
-    entity.navigation.suspended_nav_com = entity.navigation.nav_com;
+    entity.navigation.suspended_nav_com = blocked_step_archived_destination(entity);
     entity.suspended_attack_target = entity.attack_target.as_ref().map(|target| target.target);
     verb::override_base(&mut entity.mission, MISSION_ATTACK);
     super::concrete_effects::represented_assign_target(entity, Some(TargetKind::Entity(blocker)));
     // NULL destination: the mover stops where it is.
     super::concrete_effects::represented_assign_destination_mode_one(entity, None);
     true
+}
+
+/// The destination the blocked-step Override archives.
+///
+/// The original stores one destination per object and the Override saves it
+/// wholesale. VERA splits that single field in two: `navigation.nav_com` carries
+/// it for the track-driven movers (Drive and Ship), while a walking infantryman
+/// — the only class whose locomotor reaches this Override at all — carries its
+/// destination on the path executor it is currently running, and never writes
+/// `nav_com`. Reading only `nav_com` would archive nothing for exactly the
+/// movers this fires for, and the later Restore would hand the object its order
+/// back with nowhere to go.
+///
+/// VERA-internal bridge over VERA's split representation; the original has a
+/// single field, so it has no equivalent to check against.
+fn blocked_step_archived_destination(
+    entity: &crate::sim::game_entity::GameEntity,
+) -> Option<NavTargetRef> {
+    if let Some(nav_com) = entity.navigation.nav_com {
+        return Some(nav_com);
+    }
+    let target = entity.movement_target.as_ref()?;
+    // Same goal resolution the blocked-step handler uses: the recorded final
+    // goal, or the last cell of the path still being walked.
+    let goal = target.final_goal.or_else(|| target.path.last().copied())?;
+    Some(NavTargetRef::cell(goal.0, goal.1))
 }
 
 const AIRCRAFT_ACTION_EXCEPTION: MissionId = MissionId::from_raw(0x1e);
@@ -909,6 +935,20 @@ impl Simulation {
         effects.apply_target(self, &prepared, saved_target);
         if category != EntityCategory::Structure {
             effects.apply_destination_mode_one(self, &prepared, saved_destination);
+            if saved_destination.is_some()
+                && let Some(entity) = self.substrate.entities.get_mut(receiver)
+            {
+                // The original's destination setter drives the locomotor's path
+                // timer to already-expired on every path it takes, so the next
+                // locomotor step re-runs its path search toward the destination
+                // just installed — the stored path array is never archived, only
+                // the destination is. VERA's equivalent re-path hook is the
+                // deferred process-entry pass at the top of the movement tick,
+                // and this flag is what arms it. Without it a restored object
+                // holds its order and never builds a path for it, which is
+                // exactly the state a blocked-step Override leaves it in.
+                entity.navigation.pending_arrival_clear = true;
+            }
         }
         Ok(true)
     }
