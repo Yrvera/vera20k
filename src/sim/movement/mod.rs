@@ -312,15 +312,45 @@ pub fn tick_locomotor_piggyback_restore(entities: &mut EntityStore) -> usize {
     restored
 }
 
+/// Build the `Is_Ok_To_End` inputs for one entity.
+///
+/// gamemd's END gate reads the ACTIVE locomotor's own `Is_Moving` (ILocomotion
+/// slot 4) — `Drive::Is_Ok_To_End` calls it on the object's own ILocomotion,
+/// which inspects the Drive locomotor's destination and head-to coordinates
+/// against the owner's exact position, never the owner's path queue. Drive now
+/// has that predicate; the remaining classes keep the VERA-internal
+/// owner-path approximation, gamemd equivalent UNCHECKED.
+pub(crate) fn locomotor_end_gate_context(
+    entity: &crate::sim::game_entity::GameEntity,
+) -> locomotion::piggyback::EndGateContext {
+    let active_is_drive = entity.locomotor.as_ref().is_some_and(|loco| {
+        loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive
+    });
+    let owner_moving = if active_is_drive {
+        drive_locomotion::drive_locomotor_is_moving(entity) || entity.forced_drive_track.is_some()
+    } else {
+        entity.movement_target.is_some() || entity.forced_drive_track.is_some()
+    };
+    locomotion::piggyback::EndGateContext {
+        owner_moving,
+        owner_teleporting: entity.teleport_state.is_some(),
+        owner_deploying: entity.building_up.is_some()
+            || entity.building_down.is_some()
+            || entity.deploy_state.is_some(),
+    }
+}
+
 pub(crate) fn tick_locomotor_piggyback_restore_one(entities: &mut EntityStore, id: u64) -> bool {
+    let Some(entity) = entities.get(id) else {
+        return false;
+    };
+    let gate = locomotor_end_gate_context(entity);
     let Some(entity) = entities.get_mut(id) else {
         return false;
     };
-    let owner_moving = entity.movement_target.is_some() || entity.forced_drive_track.is_some();
-    let owner_teleporting = entity.teleport_state.is_some();
-    let owner_deploying = entity.building_up.is_some()
-        || entity.building_down.is_some()
-        || entity.deploy_state.is_some();
+    let owner_moving = gate.owner_moving;
+    let owner_teleporting = gate.owner_teleporting;
+    let owner_deploying = gate.owner_deploying;
     let mut retired_drive = false;
     let restored_now = if let Some(ref mut loco) = entity.locomotor {
         retired_drive = loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive;

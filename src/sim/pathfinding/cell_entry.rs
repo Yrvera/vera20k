@@ -174,6 +174,10 @@ pub struct CanEnterCellContext<'a> {
     pub terrain_costs: Option<&'a TerrainCostGrid>,
     pub bypass_grid: bool,
     pub mode: TerrainEntryMode,
+    /// Selects the infantry view of terrain-object occupation. Retail terrain
+    /// objects occupy sub-cells, and only the infantry entry gate reads that
+    /// mask; vehicles stay blocked by the whole cell.
+    pub is_infantry: bool,
 }
 
 /// Evaluate the shared terrain/layer slice of Can_Enter_Cell.
@@ -212,9 +216,14 @@ fn evaluate_ground_cell_entry(ctx: CanEnterCellContext<'_>) -> CanEnterCellResul
             .unwrap_or(CanEnterCellResult::HardBlocked);
     }
 
-    let grid_ok = ctx
-        .path_grid
-        .map_or(true, |grid| ctx.bypass_grid || grid.is_walkable(x, y));
+    let grid_ok = ctx.path_grid.map_or(true, |grid| {
+        ctx.bypass_grid
+            || if ctx.is_infantry {
+                grid.is_walkable_for_infantry(x, y)
+            } else {
+                grid.is_walkable(x, y)
+            }
+    });
     if !grid_ok {
         return CanEnterCellResult::HardBlocked;
     }
@@ -487,6 +496,7 @@ pub fn check_terrain_with_layers(
         terrain_costs: cost_grid,
         bypass_grid: false,
         mode: TerrainEntryMode::RuntimeTransition,
+        is_infantry: mover_category == EntityCategory::Infantry,
     })
     .is_clear();
     if !terrain_walkable {
@@ -615,7 +625,12 @@ pub fn classify_occupied_cell_with_layers_and_ignored(
     alliances: &HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
 ) -> CellEntryResult {
-    // --- Crush check ---
+    let _ = mover_bypass_grid;
+    // --- Crush candidates ---
+    // Crushability is a latch, not an early exit: gamemd sets it while walking
+    // the cell list and consults it only after the walk, when nothing else
+    // raised the running code above 0. An occupant the mover can crush does not
+    // contribute a code; one it cannot crush raises the code like any blocker.
     let victims = bump_crush::collect_crush_victims(
         target,
         occupancy,
@@ -623,7 +638,56 @@ pub fn classify_occupied_cell_with_layers_and_ignored(
         crush_capability,
         entities,
     );
-    if !victims.is_empty()
+    let crushable: BTreeSet<u64> = victims.iter().copied().collect();
+
+    // --- Walk the WHOLE selected cell list, worst occupant wins ---
+    // gamemd keeps a running code across every occupant of the selected list
+    // (`if (code < N) code = N;`) and only the hard cases return early. Taking
+    // the first occupant instead loses to whichever entity happens to be at the
+    // list head, which is wrong in any mixed-occupancy cell.
+    let mut worst = CellEntryResult::Clear;
+    let mut saw_candidate = false;
+    if let Some(occ) = occupancy.get(target.0, target.1) {
+        for occupant in occ.iter_layer(layers.object_list_layer) {
+            if occupant.entity_id == mover_id {
+                continue;
+            }
+            if ignored_blockers.is_some_and(|ids| ids.contains(&occupant.entity_id)) {
+                continue;
+            }
+            saw_candidate = true;
+            if crushable.contains(&occupant.entity_id) {
+                continue;
+            }
+            let candidate = classify_blocker(
+                occupant.entity_id,
+                mover_owner,
+                entities,
+                alliances,
+                interner,
+            );
+            if candidate.yr_code() >= CellEntryResult::Impassable.yr_code() {
+                return apply_overrides(CellEntryResult::Impassable, mover_locomotor);
+            }
+            if candidate.yr_code() > worst.yr_code() {
+                worst = candidate;
+            }
+        }
+    }
+
+    if !saw_candidate {
+        // No identifiable blocker. With bypass_grid, this means the cell
+        // contained only structures that we're permitted to drive through —
+        // treat as Clear. Without bypass_grid, this is unexpected (Phase 1
+        // would have returned Clear if the cell were truly empty).
+        if ignored_blockers.is_some() {
+            return apply_overrides(CellEntryResult::Clear, mover_locomotor);
+        }
+        return apply_overrides(CellEntryResult::Impassable, mover_locomotor);
+    }
+
+    if worst == CellEntryResult::Clear
+        && !victims.is_empty()
         && bump_crush::cell_passable_after_crush(
             target,
             occupancy,
@@ -635,30 +699,7 @@ pub fn classify_occupied_cell_with_layers_and_ignored(
         return apply_overrides(CellEntryResult::Crushable { victims }, mover_locomotor);
     }
 
-    // --- Find primary blocker ---
-    let blocker_id = find_primary_blocker(
-        target,
-        layers.object_list_layer,
-        mover_id,
-        mover_bypass_grid,
-        ignored_blockers,
-        occupancy,
-        entities,
-    );
-    let Some(bid) = blocker_id else {
-        // No identifiable blocker. With bypass_grid, this means the cell
-        // contained only structures that we're permitted to drive through —
-        // treat as Clear. Without bypass_grid, this is unexpected (Phase 1
-        // would have returned Clear if the cell were truly empty).
-        if ignored_blockers.is_some() {
-            return apply_overrides(CellEntryResult::Clear, mover_locomotor);
-        }
-        return apply_overrides(CellEntryResult::Impassable, mover_locomotor);
-    };
-
-    // --- Classify blocker ---
-    let result = classify_blocker(bid, mover_owner, entities, alliances, interner);
-    apply_overrides(result, mover_locomotor)
+    apply_overrides(worst, mover_locomotor)
 }
 
 /// Phase-2 classification including the independent Unit occupation plane.
@@ -708,11 +749,15 @@ pub(crate) fn classify_occupied_cell_with_layers_and_ignored_and_occupation(
     }
 }
 
-/// Find the primary blocker entity in a cell using the current local
-/// approximation's first-match rule over the selected occupancy layer.
+/// First blocker entity in the selected layer's cell list.
+///
+/// The production classifier no longer stops at this entity — it walks the whole
+/// list and keeps the worst code, matching the native predicate. This helper is
+/// retained only to pin the list ordering and the ignore/self-skip rules.
 ///
 /// Live building exceptions are supplied through `ignored_blockers`; bypassing
 /// the static path grid does not suppress structure occupants by itself.
+#[cfg(test)]
 fn find_primary_blocker(
     target: (u16, u16),
     layer: MovementLayer,
@@ -758,6 +803,16 @@ fn classify_blocker(
         return CellEntryResult::ScatterRequired {
             blocker_id: Some(blocker_id),
         };
+    }
+    // Friendly and not moving. A BuildingClass occupant is a HARD block here,
+    // not code 6: the ally/not-moving arm of the native predicate tests the
+    // blocker's class first and returns impassable for a building. Code 6 would
+    // otherwise send the mover down the scatter-and-wait path, which asks a
+    // *structure* to move out of the way and hands out a grace period the
+    // native code-7 path never gives. The runtime consumer treats a Structure
+    // blocker as a hard block to match; do not add a second gate on top of it.
+    if blocker.category == EntityCategory::Structure {
+        return CellEntryResult::Impassable;
     }
     // Friendly: moving -> temporary block, stationary -> code 6.
     if blocker.movement_target.is_some() {
@@ -987,6 +1042,147 @@ mod tests {
             }
         );
         assert_eq!(result.yr_code(), 3);
+    }
+
+    #[test]
+    fn allied_stationary_building_is_hard_blocked_not_code_6() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut entities = EntityStore::new();
+        let mut refinery = GameEntity::test_default(200, "GAREFN", "Americans", 5, 5);
+        refinery.category = EntityCategory::Structure;
+        entities.insert(refinery);
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+
+        let result = classify_blocker(200, "Americans", &entities, &alliances, &interner);
+        assert_eq!(result, CellEntryResult::Impassable);
+        assert_eq!(result.yr_code(), 7);
+    }
+
+    #[test]
+    fn allied_stationary_unit_still_returns_code_6() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut entities = EntityStore::new();
+        let mut tank = GameEntity::test_default(201, "GTNK", "Americans", 5, 5);
+        tank.category = EntityCategory::Unit;
+        entities.insert(tank);
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+
+        let result = classify_blocker(201, "Americans", &entities, &alliances, &interner);
+        assert_eq!(
+            result,
+            CellEntryResult::FriendlyStationary { blocker_id: 201 }
+        );
+        assert_eq!(result.yr_code(), 6);
+    }
+
+    #[test]
+    fn whole_cell_list_is_classified_and_the_worst_occupant_wins() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        // Two occupants: a friendly stationary unit at the list head (code 6)
+        // and an enemy behind it. gamemd walks the whole list and raises the
+        // running code, so the enemy must not be lost to list order — but code 6
+        // outranks code 5, so the friendly still wins here. The reverse ordering
+        // must give the same answer.
+        let mut entities = EntityStore::new();
+        let mut ally = GameEntity::test_default(300, "GTNK", "Americans", 5, 5);
+        ally.category = EntityCategory::Unit;
+        entities.insert(ally);
+        let mut foe = GameEntity::test_default(301, "HTNK", "Soviets", 5, 5);
+        foe.category = EntityCategory::Unit;
+        entities.insert(foe);
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+
+        for order in [[300u64, 301u64], [301, 300]] {
+            let mut occ = OccupancyGrid::new();
+            for id in order {
+                occ.add(
+                    5,
+                    5,
+                    id,
+                    MovementLayer::Ground,
+                    None,
+                    CellListInsertion::AppendBuilding,
+                );
+            }
+            let result = classify_occupied_cell(
+                (5, 5),
+                MovementLayer::Ground,
+                999,
+                bump_crush::CrushCapability::new(false, false),
+                "Americans",
+                LocomotorKind::Drive,
+                false,
+                &occ,
+                &entities,
+                &alliances,
+                &interner,
+            );
+            assert_eq!(
+                result,
+                CellEntryResult::FriendlyStationary { blocker_id: 300 },
+                "order={order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_structure_behind_a_unit_still_hard_blocks_the_cell() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        // Taking only the list head would report code 6 and send the mover into
+        // the scatter/grace path; the whole-list walk finds the structure.
+        let mut entities = EntityStore::new();
+        let mut ally = GameEntity::test_default(310, "GTNK", "Americans", 5, 5);
+        ally.category = EntityCategory::Unit;
+        entities.insert(ally);
+        let mut refinery = GameEntity::test_default(311, "GAREFN", "Americans", 5, 5);
+        refinery.category = EntityCategory::Structure;
+        entities.insert(refinery);
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+
+        let mut occ = OccupancyGrid::new();
+        occ.add(
+            5,
+            5,
+            310,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        occ.add(
+            5,
+            5,
+            311,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+
+        let result = classify_occupied_cell(
+            (5, 5),
+            MovementLayer::Ground,
+            999,
+            bump_crush::CrushCapability::new(false, false),
+            "Americans",
+            LocomotorKind::Drive,
+            false,
+            &occ,
+            &entities,
+            &alliances,
+            &interner,
+        );
+        assert_eq!(result, CellEntryResult::Impassable);
     }
 
     #[test]

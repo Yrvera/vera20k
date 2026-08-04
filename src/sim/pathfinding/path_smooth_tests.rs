@@ -290,3 +290,82 @@ fn full_pipeline_zigzag_then_drift() {
     assert_eq!(*optimized.first().unwrap(), (0, 0));
     assert_eq!(*optimized.last().unwrap(), (3, 3));
 }
+
+// ---- Pass 1: run-based replacement (Path_smooth_single_segment) ----
+
+#[test]
+fn smooth_replaces_two_times_min_run_and_zigzag() {
+    // 3 x NE then 2 x SE. m = min(3, 2) = 2, mid = E, write offset = run - m = 1,
+    // write count = 2m = 4. gamemd re-lays the whole run pair; replacing a single
+    // cell would leave the first two NE steps and only move one interior cell.
+    let path = vec![(5, 10), (6, 9), (7, 8), (8, 7), (9, 8), (10, 9)];
+    let result = smooth_path(path.clone(), &all_walkable);
+    assert_eq!(
+        result,
+        vec![(5, 10), (6, 9), (7, 9), (8, 9), (9, 9), (10, 9)]
+    );
+    // Step count and endpoint are preserved by construction.
+    assert_eq!(result.len(), path.len());
+    assert_eq!(result.last(), path.last());
+    assert_eq!(result.first(), path.first());
+}
+
+#[test]
+fn smooth_degrades_to_fewer_pairs_when_full_replacement_is_blocked() {
+    // Same geometry; (7,9) is the first cell the m = 2 replacement needs, so that
+    // attempt fails and gamemd retries with m = 1 starting one step later:
+    // offset becomes 2 and the replacement covers (8,8), (9,8).
+    let path = vec![(5, 10), (6, 9), (7, 8), (8, 7), (9, 8), (10, 9)];
+    let blocked = blocked_set(&[(7, 9)]);
+    let result = smooth_path(path.clone(), &blocked);
+    assert_eq!(
+        result,
+        vec![(5, 10), (6, 9), (7, 8), (8, 8), (9, 8), (10, 9)]
+    );
+    assert_eq!(result.len(), path.len());
+    assert_eq!(result.last(), path.last());
+}
+
+#[test]
+fn smooth_keeps_zigzag_when_every_replacement_size_is_blocked() {
+    // Blocking the first cell of both the m = 2 and the m = 1 attempt exhausts
+    // the degrade loop, and the original zigzag stands.
+    let path = vec![(5, 10), (6, 9), (7, 8), (8, 7), (9, 8), (10, 9)];
+    let blocked = blocked_set(&[(7, 9), (8, 8)]);
+    let result = smooth_path(path.clone(), &blocked);
+    assert_eq!(result, path);
+}
+
+#[test]
+fn smooth_preserves_step_count_and_endpoint_for_equal_runs() {
+    // 2 x SE then 2 x NE. m = 2, mid = E, offset = 0, 4 replacement steps.
+    let path = vec![(2, 2), (3, 3), (4, 4), (5, 3), (6, 2)];
+    let result = smooth_path(path.clone(), &all_walkable);
+    assert_eq!(result, vec![(2, 2), (3, 2), (4, 2), (5, 2), (6, 2)]);
+    assert_eq!(result.len(), path.len());
+    assert_eq!(result.last(), path.last());
+}
+
+#[test]
+fn segment_midpoint_dir_matches_reference_midpoint() {
+    // The literal native form and the wheel-average reference agree on all four
+    // legal diagonal pairs, including the {NW, NE} wrap that folds to N.
+    for &(a, b) in &[
+        (1u8, 3u8),
+        (3, 1),
+        (3, 5),
+        (5, 3),
+        (5, 7),
+        (7, 5),
+        (7, 1),
+        (1, 7),
+    ] {
+        assert_eq!(
+            segment_midpoint_dir(a, b),
+            midpoint_dir(a, b),
+            "a={a} b={b}"
+        );
+        assert!(!is_diagonal_dir(segment_midpoint_dir(a, b)));
+        assert_eq!(dir_diff(a, b), 2);
+    }
+}

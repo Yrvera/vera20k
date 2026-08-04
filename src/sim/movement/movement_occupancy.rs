@@ -667,6 +667,7 @@ pub(super) fn handle_deferred_occupancy(
                         mover_is_crusher,
                         is_infantry,
                         false,
+                        true,
                         marker_context,
                         occupancy,
                     );
@@ -707,6 +708,8 @@ pub(super) fn handle_deferred_occupancy(
                     if kill_set.contains(&blocker_id) {
                         continue;
                     }
+                    let blocker_fraidycat =
+                        bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
                     if !already_scattered.contains(&blocker_id)
                         && bump_crush::scatter_blocker(
                             entities,
@@ -716,6 +719,7 @@ pub(super) fn handle_deferred_occupancy(
                             object_list_layer,
                             rng,
                             rules.map(|r| &r.mission_control),
+                            blocker_fraidycat,
                         )
                     {
                         already_scattered.insert(blocker_id);
@@ -761,12 +765,22 @@ pub(super) fn handle_deferred_occupancy(
             }
         }
         CellEntryResult::FriendlyStationary { blocker_id } => {
+            // An allied occupant that is NOT moving and IS a building is a hard
+            // block in gamemd: the ally-and-not-moving branch of
+            // `UnitClass::Can_Enter_Cell` returns 7 outright before the running
+            // code can be raised to 6. Code 7 gets no scatter attempt and no
+            // BlockagePathDelay grace — the mover stops and repaths at once.
+            let blocker_is_structure = entities
+                .get(blocker_id)
+                .is_some_and(|blocker| blocker.category == EntityCategory::Structure);
             // Scatter the stationary friendly blocker out of the way.
             // Matches original engine: CellClass::Scatter_Objects with force=1
             // tells the BLOCKER to move, not the mover. The blocker receives a
             // movement command to walk to an adjacent cell.
             let mut scattered = false;
-            if !already_scattered.contains(&blocker_id) {
+            if !blocker_is_structure && !already_scattered.contains(&blocker_id) {
+                let blocker_fraidycat =
+                    bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
                 scattered = bump_crush::scatter_blocker(
                     entities,
                     blocker_id,
@@ -775,6 +789,7 @@ pub(super) fn handle_deferred_occupancy(
                     object_list_layer,
                     rng,
                     rules.map(|r| &r.mission_control),
+                    blocker_fraidycat,
                 );
                 if scattered {
                     already_scattered.insert(blocker_id);
@@ -822,7 +837,11 @@ pub(super) fn handle_deferred_occupancy(
                             PATH_STUCK_INIT,
                             mover_is_crusher,
                             is_infantry,
-                            false, // friendly stationary: keep code-2 grace
+                            // Allied building occupant is native code 7 (no
+                            // grace); any other stationary friendly keeps the
+                            // code-2 grace.
+                            blocker_is_structure,
+                            true,
                             marker_context,
                             occupancy,
                         );
@@ -868,6 +887,7 @@ pub(super) fn handle_deferred_occupancy(
                         mover_is_crusher,
                         is_infantry,
                         false, // enemy blocker (code-5): keep code-2-style grace
+                        true,
                         marker_context,
                         occupancy,
                     );
@@ -886,6 +906,8 @@ pub(super) fn handle_deferred_occupancy(
             // Original engine: locomotor calls CellClass::Scatter_Objects with
             // force=1 regardless of whether blocker is moving or stationary.
             // The blocker is told to scatter; the mover waits.
+            let mut has_target = false;
+            let mut grace_expired = false;
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 if let Some(ref mut target) = entity.movement_target {
@@ -893,79 +915,96 @@ pub(super) fn handle_deferred_occupancy(
                         target.path_blocked = true;
                         target.blocked_delay = blockage_path_delay_ticks;
                     }
-                    if target.blocked_delay > 0 {
-                        // Still waiting — do nothing this tick.
-                    } else {
-                        // Wait expired — try scattering the blocker, then repath.
-                        if let Some(blocker_id) = blocker_id
-                            && !already_scattered.contains(&blocker_id)
-                        {
-                            let scattered = bump_crush::scatter_blocker(
-                                entities,
-                                blocker_id,
-                                path_grid,
-                                occupancy,
-                                object_list_layer,
-                                rng,
-                                rules.map(|r| &r.mission_control),
-                            );
-                            if scattered {
-                                already_scattered.insert(blocker_id);
-                                stats.scatter_successes = stats.scatter_successes.saturating_add(1);
-                            }
+                    has_target = true;
+                    grace_expired = target.blocked_delay == 0;
+                }
+            }
+            if has_target {
+                // The grace timer selects the repath URGENCY; it never
+                // suppresses the repath. gamemd's code-2 dispatch falls through
+                // to `FootClass::Find_Path(dest, 0, expired ? 2 : 1)` on every
+                // tick the movement-delay rate limiter allows, and that limiter
+                // is permanently open for Drive movers (the only writers of the
+                // tick field are the FootClass constructor and
+                // Set_Destination_Internal, both of which store zero). Only the
+                // blocker scatter and the peer refresh below wait for the timer.
+                let mut refreshed_marker_peers = None;
+                if grace_expired {
+                    // Wait expired — try scattering the blocker, then repath.
+                    if let Some(blocker_id) = blocker_id
+                        && !already_scattered.contains(&blocker_id)
+                    {
+                        let blocker_fraidycat =
+                            bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
+                        let scattered = bump_crush::scatter_blocker(
+                            entities,
+                            blocker_id,
+                            path_grid,
+                            occupancy,
+                            object_list_layer,
+                            rng,
+                            rules.map(|r| &r.mission_control),
+                            blocker_fraidycat,
+                        );
+                        if scattered {
+                            already_scattered.insert(blocker_id);
+                            stats.scatter_successes = stats.scatter_successes.saturating_add(1);
                         }
-                        // Retail reads peer paths immediately before A*. Refresh
-                        // only at this seam because the scatter attempt above is
-                        // the sole mutation between the tick snapshot and this
-                        // immediate blocked repath.
-                        let refreshed_marker_peers = marker_context.map(|_| {
-                            crate::sim::movement::path_markers::snapshot_bridge_marker_peers(
-                                entities, rules, interner,
-                            )
-                        });
-                        let refreshed_marker_context =
-                            marker_context.zip(refreshed_marker_peers.as_ref()).map(
-                                |(context, peers)| bridge_marker_context_with_peers(context, peers),
-                            );
-                        // Re-borrow the mover since scatter_blocker and the live
-                        // marker snapshot both released it.
-                        if let Some(entity) = entities.get_mut(entity_id) {
-                            let cur_pos = (entity.position.rx, entity.position.ry);
-                            let body_facing = entity.body_facing;
-                            if let Some(ref mut target) = entity.movement_target {
-                                let mut aborted_for_stuck = false;
-                                let evts = handle_blocked_tick(
-                                    target,
-                                    &mut entity.facing,
-                                    body_facing,
-                                    &snap.locomotor,
-                                    &mut entity.drive_locomotion,
-                                    &mut entity.ship_locomotion,
-                                    entity_id,
-                                    cur_pos,
-                                    active_layer,
-                                    snap.on_bridge,
-                                    stats,
-                                    finished_entities,
-                                    &mut aborted_for_stuck,
-                                    ctx,
-                                    entity_cost_grid,
-                                    mover_entity_blocks,
-                                    mover_entity_block_map,
-                                    snap.too_big_to_fit_under_bridge,
-                                    mcfg,
-                                    rng,
-                                    sim_tick,
-                                    PATH_STUCK_INIT,
-                                    mover_is_crusher,
-                                    is_infantry,
-                                    false, // temp block (moving friendly): keep grace
-                                    refreshed_marker_context,
-                                    occupancy,
-                                );
-                                debug_events.extend(evts);
-                            }
-                        }
+                    }
+                    // Retail reads peer paths immediately before A*. Refresh
+                    // only at this seam because the scatter attempt above is
+                    // the sole mutation between the tick snapshot and this
+                    // immediate blocked repath.
+                    refreshed_marker_peers = marker_context.map(|_| {
+                        crate::sim::movement::path_markers::snapshot_bridge_marker_peers(
+                            entities, rules, interner,
+                        )
+                    });
+                }
+                let effective_marker_context = match refreshed_marker_peers.as_ref() {
+                    Some(peers) => marker_context
+                        .map(|context| bridge_marker_context_with_peers(context, peers)),
+                    None => marker_context,
+                };
+                // Re-borrow the mover since scatter_blocker and the live
+                // marker snapshot both released it.
+                if let Some(entity) = entities.get_mut(entity_id) {
+                    let cur_pos = (entity.position.rx, entity.position.ry);
+                    let body_facing = entity.body_facing;
+                    if let Some(ref mut target) = entity.movement_target {
+                        let mut aborted_for_stuck = false;
+                        let evts = handle_blocked_tick(
+                            target,
+                            &mut entity.facing,
+                            body_facing,
+                            &snap.locomotor,
+                            &mut entity.drive_locomotion,
+                            &mut entity.ship_locomotion,
+                            entity_id,
+                            cur_pos,
+                            active_layer,
+                            snap.on_bridge,
+                            stats,
+                            finished_entities,
+                            &mut aborted_for_stuck,
+                            ctx,
+                            entity_cost_grid,
+                            mover_entity_blocks,
+                            mover_entity_block_map,
+                            snap.too_big_to_fit_under_bridge,
+                            mcfg,
+                            rng,
+                            sim_tick,
+                            PATH_STUCK_INIT,
+                            mover_is_crusher,
+                            is_infantry,
+                            false, // temp block (moving friendly): keep grace
+                            // Native code 2 has no CloseEnough give-up.
+                            false,
+                            effective_marker_context,
+                            occupancy,
+                        );
+                        debug_events.extend(evts);
                     }
                 }
             }
@@ -1004,6 +1043,7 @@ pub(super) fn handle_deferred_occupancy(
                         mover_is_crusher,
                         is_infantry,
                         true, // wall/impassable (code-7): skip grace
+                        true,
                         marker_context,
                         occupancy,
                     );

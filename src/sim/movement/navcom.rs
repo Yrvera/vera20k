@@ -9,9 +9,7 @@ use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, NavTargetRef};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::MissionType;
-use crate::util::fixed_math::SimFixed;
-
-const DRIVE_STOP_SPEED_CLAMP: SimFixed = SimFixed::lit("0.3");
+use crate::util::fixed_math::SIM_ZERO;
 
 fn is_drive_locomotor(entity: &GameEntity) -> bool {
     entity
@@ -230,16 +228,81 @@ fn drive_stop_moving(entity: &mut GameEntity) {
     let drive = entity
         .drive_locomotion
         .get_or_insert_with(DriveLocomotionRuntime::default);
-    if drive.current_speed_fraction > DRIVE_STOP_SPEED_CLAMP {
-        drive.current_speed_fraction = DRIVE_STOP_SPEED_CLAMP;
-    }
     drive.destination = None;
+    // Drive rest state. The gamemd Drive `Process` tail drives the applied speed
+    // fraction to exactly 0.0 once the drive destination coord, the head-to
+    // coord and the owner path head are all empty and the fraction is still
+    // above zero — there is no rest clamp on this path. The 0.3 an earlier
+    // revision used here is the destination-brake FLOOR (a different branch),
+    // and the 0.2 it was modelled on belongs to the unrelated bump/rock clamp
+    // inside `Process_Drive_Track`. Every `Accelerates=true` departure therefore
+    // ramps up from zero; in stock YR that set is the Ore Miner and both MCVs,
+    // which omit `Accelerates=` and take the constructor default.
+    if drive.head_to.is_none() && drive.current_speed_fraction > SIM_ZERO {
+        drive.current_speed_fraction = SIM_ZERO;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotor::LocomotorState;
+    use crate::util::fixed_math::{SIM_HALF, SIM_ONE};
+
+    fn resting_drive_miner() -> GameEntity {
+        let mut entity = GameEntity::test_default(1, "HARV", "Americans", 3, 3);
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+        entity.drive_locomotion = Some(DriveLocomotionRuntime {
+            destination: Some(DriveCoord::cell(3, 3, 0)),
+            current_speed_fraction: SIM_ONE,
+            ..Default::default()
+        });
+        entity
+    }
+
+    /// GSI-06.11 G1: the gamemd Drive `Process` tail drives the applied speed
+    /// fraction to exactly 0.0 at rest. There is no 0.3 clamp on this path, so
+    /// every `Accelerates=true` departure — the Ore Miner and both MCVs in stock
+    /// YR — ramps up from zero rather than launching at 30% speed.
+    #[test]
+    fn gsi_06_11_drive_rest_speed_fraction_returns_to_zero_not_a_stop_clamp() {
+        let mut entity = resting_drive_miner();
+
+        set_destination_internal_null(&mut entity);
+
+        let drive = entity.drive_locomotion.as_ref().expect("drive state");
+        assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+        assert_eq!(drive.destination, None);
+    }
+
+    /// The reset is gated, not unconditional: gamemd requires the head-to coord
+    /// to be empty too, so a mover still committed to a head keeps its fraction.
+    #[test]
+    fn gsi_06_11_drive_rest_reset_requires_an_empty_head_to() {
+        let mut entity = resting_drive_miner();
+        entity
+            .drive_locomotion
+            .as_mut()
+            .expect("drive state")
+            .head_to = Some(DriveCoord::cell(4, 3, 0));
+        entity
+            .drive_locomotion
+            .as_mut()
+            .expect("drive state")
+            .current_speed_fraction = SIM_HALF;
+
+        set_destination_internal_null(&mut entity);
+
+        assert_eq!(
+            entity
+                .drive_locomotion
+                .as_ref()
+                .expect("drive state")
+                .current_speed_fraction,
+            SIM_HALF
+        );
+    }
 
     #[test]
     fn resolve_nav_target_drive_coord_tracks_moving_entity() {

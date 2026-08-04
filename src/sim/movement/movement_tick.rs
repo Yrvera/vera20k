@@ -46,9 +46,9 @@ use super::movement_bridge::{
 };
 use super::movement_occupancy::{
     DeferredCellCheck, build_live_building_entry_skip_map,
-    evaluate_runtime_can_enter_cell_with_transition,
-    handle_deferred_occupancy, has_unignored_runtime_occupants_on_layers,
-    runtime_can_enter_direction, runtime_current_effective_height,
+    evaluate_runtime_can_enter_cell_with_transition, handle_deferred_occupancy,
+    has_unignored_runtime_occupants_on_layers, runtime_can_enter_direction,
+    runtime_current_effective_height,
 };
 use super::movement_path::{find_move_path, supports_layered_bridge_pathing};
 use super::movement_step;
@@ -112,14 +112,22 @@ fn tick_forced_drive_tracks(
         };
 
         let current_cell = (entity.position.rx, entity.position.ry);
-        if paid_point && let Some(drive) = entity.drive_locomotion.as_mut() {
-            crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
-                drive,
-                cell_occupation,
-                entity_id,
-                current_cell,
-                MovementLayer::Ground,
-            );
+        if paid_point {
+            // Forward progress on a forced curve clears the impatience flag
+            // exactly as it does on an ordinary track — gamemd's paid-point
+            // block is shared by both.
+            if let Some(target) = entity.movement_target.as_mut() {
+                target.path_blocked = false;
+            }
+            if let Some(drive) = entity.drive_locomotion.as_mut() {
+                crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
+                    drive,
+                    cell_occupation,
+                    entity_id,
+                    current_cell,
+                    MovementLayer::Ground,
+                );
+            }
         }
         if let Some(drive) = entity.drive_locomotion.as_mut() {
             drive.point_index = point_index;
@@ -147,6 +155,11 @@ fn tick_forced_drive_tracks(
         stats.moved_steps = stats.moved_steps.saturating_add(1);
 
         if advance.finished {
+            // Track termination is gamemd's second unconditional reset of the
+            // impatience flag, written before the terminal cell commit.
+            if let Some(target) = entity.movement_target.as_mut() {
+                target.path_blocked = false;
+            }
             let head = entity
                 .drive_locomotion
                 .as_ref()
@@ -1032,6 +1045,8 @@ fn handle_deferred_drive_track_chain(
             }));
         }
         CellEntryResult::FriendlyStationary { blocker_id } => {
+            let blocker_fraidycat =
+                bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
             if !already_scattered.contains(&blocker_id)
                 && bump_crush::scatter_blocker(
                     entities,
@@ -1041,6 +1056,7 @@ fn handle_deferred_drive_track_chain(
                     chain.layers.object_list_layer,
                     rng,
                     rules.map(|r| &r.mission_control),
+                    blocker_fraidycat,
                 )
             {
                 already_scattered.insert(blocker_id);

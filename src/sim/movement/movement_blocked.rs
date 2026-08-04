@@ -57,6 +57,7 @@ pub(super) fn handle_blocked_tick(
     mover_is_crusher: bool,
     is_infantry: bool,
     skip_grace_period: bool,
+    close_enough_abort: bool,
     marker_context: Option<BridgeMarkerContext<'_>>,
     occupancy: &crate::sim::occupancy::OccupancyGrid,
 ) -> Vec<(u32, DebugEventKind)> {
@@ -90,7 +91,14 @@ pub(super) fn handle_blocked_tick(
         target.blocked_delay = 0;
     }
 
-    if mcfg.close_enough > SIM_ZERO {
+    // The `CloseEnough` give-up radius is not consulted by every block code.
+    // All five `Rules+0x1718` compares in the Drive movement body sit outside
+    // the code-2 dispatch, so a mover blocked by a moving friendly never
+    // abandons its approach on that ground — it just repaths. Callers on the
+    // code-2 arm pass `false`. (The remaining arms keep VERA's single shared
+    // site; whether each of them maps onto one of the five native compares is
+    // UNCHECKED and recorded separately.)
+    if close_enough_abort && mcfg.close_enough > SIM_ZERO {
         let dx = (goal.0 as i32 - current_pos.0 as i32).abs();
         let dy = (goal.1 as i32 - current_pos.1 as i32).abs();
         let dist = SimFixed::from_num((dx + dy) * 256);
@@ -218,11 +226,13 @@ pub(super) fn handle_blocked_tick(
             stats.stuck_recoveries = stats.stuck_recoveries.saturating_add(1);
             finished_entities.push(entity_id);
             *aborted_for_stuck = true;
-        } else {
-            // Urgency=2 failed — restart blocked_delay so the next cycle
-            // begins a new grace period rather than thrashing.
-            target.blocked_delay = mcfg.blockage_path_delay_ticks;
         }
+        // gamemd never restarts the grace timer on a failed route-around. The
+        // only writers of the blocked-delay start/length pair are the
+        // `path_blocked` 0 -> 1 transition inside the code-2 dispatch and
+        // `FootClass::Set_Destination_Internal`, so a boxed-in unit stays at
+        // urgency 2 until it actually moves (which clears `path_blocked`) or
+        // receives a new order.
     } else {
         // urgency=1 grace-period failure: set a short movement_delay to
         // rate-limit A* calls while the blocked_delay counter keeps ticking.

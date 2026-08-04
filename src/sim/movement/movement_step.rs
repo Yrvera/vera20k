@@ -23,7 +23,8 @@ use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::movement::movement_bridge::resolve_cell_transition_bridge_state;
 use crate::sim::movement::movement_occupancy::{
     DeferredCellCheck, LiveBuildingEntrySkipMap, detect_deferred_cell_check,
-    evaluate_runtime_can_enter_cell_with_transition, naval_terrain_diag, runtime_can_enter_cell_args,
+    evaluate_runtime_can_enter_cell_with_transition, naval_terrain_diag,
+    runtime_can_enter_cell_args,
 };
 use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
 use crate::sim::occupancy::{CellListInsertion, CellOccupationGrid, OccupancyGrid};
@@ -958,17 +959,24 @@ fn advance_drive_track_retry_after_selection(
     } else {
         drive_track::advance_drive_track(track_state, SIM_ZERO, SIM_ONE)
     };
-    if track_state.point_index != prior_point_index
-        && let (Some(drive), Some(occupation)) =
+    if track_state.point_index != prior_point_index {
+        // Real forward progress clears the owner's impatience flag. gamemd does
+        // this on the first paid track point of a segment, in the same block
+        // that clears the raw occupation bit and the cell-occupation-enabled
+        // byte — repath success alone never clears it. Clearing here is what
+        // buys the mover a fresh BlockagePathDelay grace on its next block.
+        target.path_blocked = false;
+        if let (Some(drive), Some(occupation)) =
             (drive_locomotion.as_mut(), cell_occupation.as_deref_mut())
-    {
-        crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
-            drive,
-            occupation,
-            entity_id,
-            (position.rx, position.ry),
-            current_occupation_layer,
-        );
+        {
+            crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
+                drive,
+                occupation,
+                entity_id,
+                (position.rx, position.ry),
+                current_occupation_layer,
+            );
+        }
     }
     *facing = advance.facing;
     *facing_target = None;
@@ -1050,17 +1058,23 @@ pub(super) fn advance_lepton_position(
         } else {
             drive_track::advance_drive_track(track_state, effective_speed, dt)
         };
-        if track_state.point_index != prior_point_index
-            && let (Some(drive), Some(occupation)) =
+        if track_state.point_index != prior_point_index {
+            // Same forward-progress clear as the retry path above: gamemd's
+            // paid-track-point block resets the owner's impatience flag, so a
+            // vehicle that actually moved a cell earns a fresh grace window on
+            // its next block instead of inheriting a stale timer.
+            target.path_blocked = false;
+            if let (Some(drive), Some(occupation)) =
                 (drive_locomotion.as_mut(), cell_occupation.as_deref_mut())
-        {
-            crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
-                drive,
-                occupation,
-                entity_id,
-                (position.rx, position.ry),
-                current_occupation_layer,
-            );
+            {
+                crate::sim::occupancy::clear_current_drive_occupation_for_paid_point(
+                    drive,
+                    occupation,
+                    entity_id,
+                    (position.rx, position.ry),
+                    current_occupation_layer,
+                );
+            }
         }
         *facing = advance.facing;
         *facing_target = None; // track handles facing
@@ -1575,6 +1589,7 @@ pub(super) fn process_cell_crossings(
                 mover_is_crusher,
                 category == EntityCategory::Infantry,
                 true,
+                true,
                 marker_context,
                 occupancy,
             );
@@ -1679,6 +1694,7 @@ pub(super) fn process_cell_crossings(
                 mover_is_crusher,
                 category == EntityCategory::Infantry,
                 true, // terrain block: skip code-2 grace period
+                true,
                 marker_context,
                 occupancy,
             );
@@ -1728,6 +1744,7 @@ pub(super) fn process_cell_crossings(
                         mover_is_crusher,
                         category == EntityCategory::Infantry,
                         true, // cliff block: skip code-2 grace period
+                        true,
                         marker_context,
                         occupancy,
                     );

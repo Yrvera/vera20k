@@ -70,9 +70,23 @@ impl TerrainCostGrid {
                 continue;
             }
             let ramp_passable = cell.canonical_ramp.is_some();
+            // Retail terrain-object occupation is a sub-cell mask on the ground
+            // occupation plane, and only the infantry entry gate reads it: the
+            // cell closes to infantry only when every functional sub-cell bit is
+            // set. Vehicles keep the whole-cell block, so the relaxation is
+            // scoped to the Foot row.
+            let terrain_object_blocked = if speed_type == SpeedType::Foot {
+                cell.terrain_object_occupation.is_some_and(|ini_bits| {
+                    super::core::terrain_object_blocks_infantry(
+                        super::core::terrain_object_cell_bits_from_ini(ini_bits),
+                    )
+                })
+            } else {
+                cell.terrain_object_blocks
+            };
             let hard_blocked = (cell.is_cliff_like && !ramp_passable)
                 || cell.overlay_blocks
-                || cell.terrain_object_blocks;
+                || terrain_object_blocked;
             // Bridge deck overrides underlying terrain (water/cliff) for ground units.
             // Units walk on the bridge surface, not the terrain below.
             let cost = if cell.has_bridge_deck && !cell.overlay_blocks {
@@ -90,7 +104,13 @@ impl TerrainCostGrid {
                 classify_terrain_cost(
                     speed_type,
                     cell.is_water,
-                    cell.ground_walk_blocked,
+                    // `ground_walk_blocked` folds in the terrain object; for the
+                    // Foot row the sub-cell rule above already decided that.
+                    if speed_type == SpeedType::Foot {
+                        cell.base_ground_walk_blocked || cell.overlay_blocks
+                    } else {
+                        cell.ground_walk_blocked
+                    },
                     cell.is_rough,
                     cell.is_road,
                 )
@@ -314,6 +334,79 @@ mod tests {
         let track = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Track);
 
         assert_eq!(track.cost_at(0, 0), COST_NORMAL);
+    }
+
+    /// A terrain object with `TemperateOccupationBits` short of the full
+    /// sub-cell mask blocks vehicles but not infantry. 56 of 60 stock temperate
+    /// terrain types are `=4`, i.e. a single sub-cell bit.
+    fn tree_cell(rx: u16, ry: u16, bits: u8) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            terrain_object_occupation: Some(bits),
+            terrain_object_blocks: bits != 0,
+            // resolved terrain folds the terrain object into ground_walk_blocked;
+            // base_ground_walk_blocked is the value without it.
+            ground_walk_blocked: bits != 0,
+            base_ground_walk_blocked: false,
+            ..make_resolved_cell(rx, ry)
+        }
+    }
+
+    #[test]
+    fn partial_terrain_occupation_blocks_vehicles_but_not_infantry() {
+        use crate::sim::pathfinding::PathGrid;
+        let terrain = ResolvedTerrainGrid::from_cells(
+            2,
+            1,
+            vec![tree_cell(0, 0, 4), make_resolved_cell(1, 0)],
+        );
+        let foot = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Foot);
+        let track = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Track);
+        assert_ne!(foot.cost_at(0, 0), COST_BLOCKED);
+        assert_eq!(track.cost_at(0, 0), COST_BLOCKED);
+
+        let grid = PathGrid::from_resolved_terrain(&terrain);
+        assert!(grid.is_walkable_for_infantry(0, 0));
+        assert!(!grid.is_walkable(0, 0));
+        assert_eq!(grid.terrain_object_cell_bits_at(0, 0), 0x10);
+    }
+
+    #[test]
+    fn full_terrain_occupation_blocks_infantry_too() {
+        use crate::sim::pathfinding::PathGrid;
+        let terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![tree_cell(0, 0, 7)]);
+        let foot = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Foot);
+        assert_eq!(foot.cost_at(0, 0), COST_BLOCKED);
+
+        let grid = PathGrid::from_resolved_terrain(&terrain);
+        assert!(!grid.is_walkable_for_infantry(0, 0));
+        assert!(!grid.is_walkable(0, 0));
+        assert_eq!(grid.terrain_object_cell_bits_at(0, 0), 0x1C);
+    }
+
+    #[test]
+    fn terrain_occupation_five_and_six_leave_one_subcell_for_infantry() {
+        use crate::sim::pathfinding::PathGrid;
+        for bits in [5u8, 6u8] {
+            let terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![tree_cell(0, 0, bits)]);
+            let foot = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Foot);
+            assert_ne!(foot.cost_at(0, 0), COST_BLOCKED, "bits={bits}");
+            let grid = PathGrid::from_resolved_terrain(&terrain);
+            assert!(grid.is_walkable_for_infantry(0, 0), "bits={bits}");
+            assert!(!grid.is_walkable(0, 0), "bits={bits}");
+        }
+    }
+
+    #[test]
+    fn terrain_relaxation_never_reopens_a_cliff_cell() {
+        use crate::sim::pathfinding::PathGrid;
+        let cliff_with_tree = ResolvedTerrainCell {
+            is_cliff_like: true,
+            base_ground_walk_blocked: true,
+            ..tree_cell(0, 0, 4)
+        };
+        let terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![cliff_with_tree]);
+        let grid = PathGrid::from_resolved_terrain(&terrain);
+        assert!(!grid.is_walkable_for_infantry(0, 0));
     }
 
     fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {

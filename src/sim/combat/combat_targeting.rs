@@ -10,6 +10,11 @@
 //! by threat class (armed units > unarmed > buildings) and stable entity ID
 //! (for deterministic replay).
 //!
+//! ## Scan radius
+//! How far the scan reaches is a property of the attacker and the mission it is
+//! on, not of the candidate — see [`super::threat_range`]. A unit on Area Guard
+//! acquires roughly twice as far out as the same unit on plain Guard.
+//!
 //! ## Auto-deploy on target acquisition
 //! Targeting NEVER initiates a deploy transition. A walking GGI that acquires
 //! an air target uses its Secondary weapon in place — it does not auto-deploy.
@@ -23,6 +28,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use super::combat_weapon::{VersesGate, select_weapon_with_override, verses_gate};
+use super::threat_range::{ScanMission, ScanRange, scan_mission_for, scan_range};
 use super::{combat_target_category, is_within_range_leptons, lepton_distance_sq_raw};
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -81,6 +87,9 @@ pub(crate) struct AttackerSnapshot {
     pub weapon_override: Option<super::combat_weapon::WeaponOverride>,
     /// Garrison state — present only for garrisoned buildings (IsOccupied).
     pub garrison: Option<GarrisonSnapshot>,
+    /// Which acquisition mission the attacker is on. Selects the scan radius
+    /// formula — Area Guard reaches roughly twice as far as plain Guard.
+    pub scan_mission: ScanMission,
 }
 
 /// Acquire the best currently valid target for one attacker entity.
@@ -138,6 +147,7 @@ pub fn acquire_best_target_for_entity(
         burst_delay_ticks: 0,
         weapon_override: entity.weapon_override,
         garrison: None,
+        scan_mission: scan_mission_for(entity),
     };
     acquire_best_target(
         entities, rules, interner, &snapshot, obj, fog, None, terrain,
@@ -161,9 +171,9 @@ fn threat_class(rules: &RuleSet, interner: &StringInterner, type_id: InternedId)
 /// flags + Verses > 0%), and range. Ranks by distance, threat class, stable ID.
 /// Returns the target's stable entity ID.
 ///
-/// `scan_range_override`: when `Some`, replaces the computed guard_range/weapon_range
-/// for the distance check. Used by garrisoned buildings whose scan range is
-/// derived from foundation size + OccupyWeaponRange.
+/// `scan_range_override`: when `Some`, replaces the mission-derived radius with
+/// a hard cutoff. Used by garrisoned buildings whose scan range is derived from
+/// foundation size + OccupyWeaponRange.
 pub(crate) fn acquire_best_target(
     entities: &EntityStore,
     rules: &RuleSet,
@@ -175,6 +185,18 @@ pub(crate) fn acquire_best_target(
     terrain: Option<&ResolvedTerrainGrid>,
 ) -> Option<u64> {
     let mut best: Option<(i64, u8, u64)> = None;
+
+    // The radius is a property of the scanning object and its mission, not of
+    // any one candidate, so it is resolved once outside the loop.
+    let effective_scan_range = match scan_range_override {
+        Some(cells) => ScanRange::Hard(cells),
+        None => scan_range(
+            rules,
+            attacker_obj,
+            attacker.veterancy,
+            attacker.scan_mission,
+        ),
+    };
 
     for candidate in entities.values() {
         if candidate.stable_id == attacker.stable_id {
@@ -228,29 +250,6 @@ pub(crate) fn acquire_best_target(
             continue;
         }
 
-        // Use override (garrison), guard_range, or weapon range for the distance check.
-        //
-        // The per-candidate weapon range here is CORRECT, and the tempting
-        // "widen it" fix is refuted — recording it because the reading that
-        // suggests widening is easy to arrive at and expensive to act on.
-        //
-        // The original's threat scan does compute a wider number, `weapon
-        // cells + 1 + AirRangeBonus cells`, but that is the bound of its
-        // expanding-ring **cell walk**, not an acceptance radius: it decides how
-        // far out to look for cells, and the ring walk is a Chebyshev square, so
-        // it never clips a candidate that the acceptance test would have taken.
-        // Acceptance is a separate per-candidate test one level down, and when
-        // the walk is running on the degenerate (no `GuardRange=`) path it
-        // passes a range of zero, which makes that test fall through to the
-        // attacker's own can-fire-at-this-target query — i.e. the range of the
-        // weapon selected against that very candidate. That is exactly what
-        // this line computes, and `compute_in_range` below is the same query.
-        //
-        // (With `GuardRange=` set the range argument is non-zero and the test is
-        // a straight Euclidean `distance <= GuardRange`, which is also what this
-        // line computes.)
-        let scan_range = scan_range_override
-            .unwrap_or_else(|| attacker_obj.guard_range.unwrap_or(selected.weapon.range));
         // 2D dist_sq still feeds the ranking key below; the in-range boolean
         // is computed separately via 3D when possible.
         let dist_sq = lepton_distance_sq_raw(
@@ -263,9 +262,18 @@ pub(crate) fn acquire_best_target(
             candidate.position.sub_x,
             candidate.position.sub_y,
         );
-        let in_range = if scan_range == selected.weapon.range {
-            // Standard scan range — 3D check when terrain + attacker entity available.
-            match (terrain, entities.get(attacker.stable_id)) {
+        let in_range = match effective_scan_range {
+            // A hard cutoff — garrison override, `GuardRange=` on plain Guard,
+            // or the doubled Area Guard radius. The retail acceptance test
+            // applies this distance test and does NOT then ask whether the
+            // weapon can reach, so neither does this. Kept 2D until later
+            // stages thread an explicit radius through `compute_in_range`.
+            ScanRange::Hard(cells) => is_within_range_leptons(dist_sq, cells),
+            // Radius zero — acceptance defers to the attacker's own
+            // can-fire-at-this-target query, which is the range of the weapon
+            // selected against this very candidate. 3D when terrain and the
+            // attacker entity are available.
+            ScanRange::CanFireAt => match (terrain, entities.get(attacker.stable_id)) {
                 (Some(t), Some(attacker_entity)) => {
                     let Some(source_z) = super::in_range::effective_z_leptons(attacker_entity, t)
                     else {
@@ -287,12 +295,8 @@ pub(crate) fn acquire_best_target(
                         t,
                     )
                 }
-                _ => is_within_range_leptons(dist_sq, scan_range),
-            }
-        } else {
-            // Override path (guard_range / garrison) — keep 2D until later stages
-            // refine override threading through compute_in_range.
-            is_within_range_leptons(dist_sq, scan_range)
+                _ => is_within_range_leptons(dist_sq, selected.weapon.range),
+            },
         };
         if !in_range {
             continue;

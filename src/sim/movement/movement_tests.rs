@@ -1391,6 +1391,172 @@ fn test_tick_movement_repaths_when_next_cell_becomes_blocked() {
     );
 }
 
+/// GSI-06.01 G1: gamemd's code-2 dispatch calls `FootClass::Find_Path` on every
+/// tick the movement-delay rate limiter allows — the `BlockagePathDelay` timer
+/// selects the URGENCY (1 while running, 2 once expired), it does not suppress
+/// the call. VERA used to do nothing at all for the whole grace window, which
+/// made urgency 1 dead code.
+#[test]
+fn gsi_06_01_code_two_grace_window_still_repaths_at_urgency_one() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(10, 10);
+    let mut occupancy = OccupancyGrid::new();
+
+    let mut mover = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
+    mover.movement_target = Some(MovementTarget {
+        path: vec![(1, 1), (2, 1), (3, 1)],
+        path_layers: vec![MovementLayer::Ground; 3],
+        next_index: 1,
+        speed: SimFixed::from_num(1024),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((3, 1)),
+        ..Default::default()
+    });
+    mover.facing = 64;
+    entities.insert(mover);
+    occupancy.add(
+        1,
+        1,
+        1,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+
+    // A friendly that is itself moving occupies the mover's next cell — the
+    // native moving-ally branch, code 2. It crawls so it stays in the way.
+    let mut blocker = GameEntity::test_default(2, "HTNK", "Americans", 2, 1);
+    blocker.movement_target = Some(MovementTarget {
+        path: vec![(2, 1), (2, 4)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 1,
+        speed: SimFixed::from_num(15),
+        move_dir_x: SIM_ZERO,
+        move_dir_y: SimFixed::from_num(256),
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((2, 4)),
+        ..Default::default()
+    });
+    blocker.facing = 128;
+    entities.insert(blocker);
+    occupancy.add(
+        2,
+        1,
+        2,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+
+    let mut lifecycle_requests = Vec::new();
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    let mut repaths_on_first_blocked_tick = None;
+    let mut grace_on_first_blocked_tick = 0u16;
+    for native_frame in 0..12 {
+        let stats = tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            native_frame,
+            &mut interner,
+            &mut lifecycle_requests,
+        );
+        let blocked = entities
+            .get(1)
+            .and_then(|e| e.movement_target.as_ref())
+            .map(|t| (t.path_blocked, t.blocked_delay));
+        if let Some((true, delay)) = blocked
+            && repaths_on_first_blocked_tick.is_none()
+        {
+            repaths_on_first_blocked_tick = Some(stats.repath_attempts);
+            grace_on_first_blocked_tick = delay;
+        }
+    }
+
+    let repaths = repaths_on_first_blocked_tick.expect("mover must hit the moving-ally block");
+    assert!(
+        grace_on_first_blocked_tick > 0,
+        "the BlockagePathDelay grace must still be running on the first blocked tick"
+    );
+    assert!(
+        repaths >= 1,
+        "gamemd repaths on the very first code-2 tick at urgency 1; got {repaths} attempts"
+    );
+}
+
+/// GSI-06.06 G1: gamemd clears the owner's `path_blocked` impatience flag on the
+/// first paid track point of a segment and again at track termination — real
+/// forward progress, not repath success. VERA cleared it only for infantry, so a
+/// vehicle carried a stale grace timer into its next block.
+#[test]
+fn gsi_06_06_vehicle_clears_path_blocked_on_forward_progress() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(10, 10);
+    let mut occupancy = OccupancyGrid::new();
+
+    let mut mover = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
+    mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    // `[HTNK] Accelerates=false` — the tank snaps to its target fraction, so
+    // the fixture does not depend on a rules-supplied AccelerationFactor.
+    mover.drive_accelerates = false;
+    mover.facing = 64;
+    entities.insert(mover);
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (6, 1),
+        SimFixed::from_num(1024),
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+    // Pretend a block already happened: the mover is impatient with a full
+    // grace window still to run, and the lane ahead is now clear.
+    {
+        let target = entities
+            .get_mut(1)
+            .and_then(|e| e.movement_target.as_mut())
+            .expect("movement target");
+        target.path_blocked = true;
+        target.blocked_delay = 60;
+    }
+
+    let mut lifecycle_requests = Vec::new();
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    for native_frame in 0..4 {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            native_frame,
+            &mut interner,
+            &mut lifecycle_requests,
+        );
+    }
+
+    let target = entities
+        .get(1)
+        .and_then(|e| e.movement_target.as_ref())
+        .expect("mover still moving");
+    assert!(
+        !target.path_blocked,
+        "a vehicle that paid a track point must have its impatience flag cleared"
+    );
+}
+
 #[test]
 fn test_tick_movement_no_stacking_same_target_cell() {
     let mut entities = EntityStore::new();

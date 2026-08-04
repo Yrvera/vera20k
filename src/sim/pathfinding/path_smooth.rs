@@ -44,7 +44,9 @@ fn direction_between(from: (u16, u16), to: (u16, u16)) -> u8 {
 }
 
 /// Minimum angular distance between two directions on the 8-direction wheel.
-/// Returns 0–4 (0 = same direction, 4 = opposite).
+/// Returns 0–4 (0 = same direction, 4 = opposite). Pass 1 uses the native
+/// `(new - anchor) & 7` form directly; this stays as a test-side reference.
+#[cfg(test)]
 fn dir_diff(a: u8, b: u8) -> u8 {
     let raw = a.abs_diff(b);
     raw.min(8 - raw)
@@ -57,6 +59,9 @@ fn is_diagonal_dir(d: u8) -> bool {
 
 /// Average of two directions that differ by exactly 2 (the diagonal between them).
 /// E.g. N(0) and E(2) → NE(1). Handles wraparound (NW(7) and N(0) → still works).
+/// Pass 1 uses `segment_midpoint_dir`, the literal native form; this stays as a
+/// test-side reference the two are cross-checked against.
+#[cfg(test)]
 fn midpoint_dir(a: u8, b: u8) -> u8 {
     // The midpoint on the 8-direction wheel. We need the one that's between them,
     // not the one on the opposite side.
@@ -72,96 +77,232 @@ fn midpoint_dir(a: u8, b: u8) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Pass 1: Zigzag smoothing (matches original SmoothPath)
+// Pass 1: Zigzag smoothing (matches original Path_smooth_corners)
 // ---------------------------------------------------------------------------
 
-/// Smooths 90-degree zigzag patterns in a path by replacing them with diagonal
-/// shortcuts when the shortcut cell is walkable.
+/// Sentinel for the tube/bridge jump entry in a native direction list.
+/// VERA never produces one here — paths containing a non-adjacent step skip
+/// smoothing upstream — but the run walker mirrors the native exclusions.
+const DIR_TUBE: u8 = 8;
+
+/// Convert a cell list into the native direction list Pass 1 operates on.
+/// Returns `None` when any step is not 8-connected (a tube hop).
+fn path_to_directions(path: &[(u16, u16)]) -> Option<Vec<u8>> {
+    let mut dirs = Vec::with_capacity(path.len().saturating_sub(1));
+    for pair in path.windows(2) {
+        let d = direction_between(pair[0], pair[1]);
+        if d == DIR_INVALID {
+            return None;
+        }
+        dirs.push(d);
+    }
+    Some(dirs)
+}
+
+/// Rebuild a cell list from a start cell and a direction list.
+fn directions_to_path(start: (u16, u16), dirs: &[u8]) -> Vec<(u16, u16)> {
+    let mut out = Vec::with_capacity(dirs.len() + 1);
+    out.push(start);
+    let mut pos = (start.0 as i32, start.1 as i32);
+    for &d in dirs {
+        let (dx, dy) = DIR_DELTAS[(d & 7) as usize];
+        pos = (pos.0 + dx, pos.1 + dy);
+        out.push((pos.0 as u16, pos.1 as u16));
+    }
+    out
+}
+
+fn step_pos(pos: (i32, i32), dir: u8) -> (i32, i32) {
+    let (dx, dy) = DIR_DELTAS[(dir & 7) as usize];
+    (pos.0 + dx, pos.1 + dy)
+}
+
+/// The cardinal direction lying between two directions 90 degrees apart.
 ///
-/// A zigzag is two consecutive steps whose directions differ by exactly 2
-/// (a 90-degree turn). For example, N then E could be replaced by a single NE
-/// step if the diagonal cell is reachable.
+/// Native form: `mid = (a + b) >> 1`, sanity-checked against both endpoints and
+/// falling back to index 0 for the wrap pair `{1,7}`.
+fn segment_midpoint_dir(a: u8, b: u8) -> u8 {
+    let mid = (a as u32 + b as u32) >> 1;
+    if mid + 1 != b as u32 && mid + 1 != a as u32 {
+        0
+    } else {
+        mid as u8
+    }
+}
+
+/// Replace one anchor-run / zigzag-run pair, matching `Path_smooth_single_segment`.
+///
+/// `dirs` starts at the segment base. A run of `run_len` steps of direction `a`
+/// followed by `zig_len` steps of `b` (90 degrees apart, both diagonal) becomes
+/// `a x (run_len - m)`, `mid x 2m`, `b x (zig_len - m)` with
+/// `m = min(run_len, zig_len)` — the step count and the endpoint are preserved,
+/// only the interior cells move. Displacement holds because `a + b == 2 * mid`
+/// for every legal pair. Every one of the `2m` replacement cells must validate;
+/// if any fails, the attempt degrades to `m - 1` pairs starting one step later
+/// and retries, down to a single pair, and only then gives up and leaves the
+/// zigzag standing.
+///
+/// Returns the number of leading `dirs` entries the caller's segment base should
+/// advance by, and advances `seg_pos` past exactly those entries.
+fn smooth_single_segment(
+    dirs: &mut [u8],
+    run_len: usize,
+    zig_len: usize,
+    seg_pos: &mut (i32, i32),
+    walkable: &dyn Fn(u16, u16) -> bool,
+) -> usize {
+    let a = dirs[0];
+    let b = dirs[run_len];
+
+    // Tube hops are never smoothed; walk the whole pair and consume it.
+    if a == DIR_TUBE || b == DIR_TUBE {
+        let consumed = run_len + zig_len;
+        for &d in dirs.iter().take(consumed) {
+            *seg_pos = step_pos(*seg_pos, d);
+        }
+        return consumed;
+    }
+
+    let mid = segment_midpoint_dir(a, b);
+    let base = *seg_pos;
+    let max_pairs = run_len.min(zig_len);
+
+    for pairs in (1..=max_pairs).rev() {
+        let prefix = run_len - pairs;
+        let mut repl_start = base;
+        for _ in 0..prefix {
+            repl_start = step_pos(repl_start, a);
+        }
+        let mut cursor = repl_start;
+        let mut ok = true;
+        for _ in 0..(pairs * 2) {
+            cursor = step_pos(cursor, mid);
+            if cursor.0 < 0 || cursor.1 < 0 || !walkable(cursor.0 as u16, cursor.1 as u16) {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+        for slot in dirs.iter_mut().skip(prefix).take(pairs * 2) {
+            *slot = mid;
+        }
+        *seg_pos = repl_start;
+        return prefix;
+    }
+
+    // No replacement size validated: the zigzag stands and the caller resumes at
+    // the first entry of the zigzag run.
+    let mut pos = base;
+    for &d in dirs.iter().take(run_len) {
+        pos = step_pos(pos, d);
+    }
+    *seg_pos = pos;
+    run_len
+}
+
+/// Pass 1 over a direction list — the run tracker of `Path_smooth_corners`.
+///
+/// A zigzag is a +/-90 degree turn between the tracked anchor direction and the
+/// new one, with tube steps excluded on both sides. The anchor tracker is blanked
+/// after any cardinal step, so only diagonal-to-diagonal corners are ever
+/// collapsed and the replacement is the cardinal between them. Runs, not pairs,
+/// are tracked: the segment helper is called once per run pair with both lengths.
+/// The anchor re-seed after a completed smoothing attempt is deliberately NOT
+/// parity-filtered — a corner immediately following a smoothed run can anchor on
+/// a cardinal.
+fn smooth_direction_runs(start: (u16, u16), dirs: &mut [u8], walkable: &dyn Fn(u16, u16) -> bool) {
+    let n = dirs.len();
+    if n == 0 {
+        return;
+    }
+
+    let mut anchor = DIR_INVALID;
+    let mut run = 0usize;
+    let mut base = 0usize;
+    let mut zig_dir = DIR_INVALID;
+    let mut zig_start = 0usize;
+    let mut zig_run = 0usize;
+    let mut in_zig = false;
+    let mut pos = (start.0 as i32, start.1 as i32);
+    let mut base_pos = pos;
+
+    loop {
+        // Native top-of-loop guard. The zigzag cursor is the one tested, and it
+        // keeps its last value while no zigzag is open.
+        if zig_start + zig_run >= n {
+            break;
+        }
+        if in_zig {
+            if dirs[zig_start + zig_run] == zig_dir {
+                zig_run += 1;
+            } else {
+                let consumed =
+                    smooth_single_segment(&mut dirs[base..], run, zig_run, &mut base_pos, walkable);
+                base += consumed;
+                run = 1;
+                in_zig = false;
+                anchor = dirs[base];
+                pos = step_pos(base_pos, anchor);
+            }
+        } else {
+            let idx = base + run;
+            let d = dirs[idx];
+            let diff = d.wrapping_sub(anchor) & 7;
+            if d == anchor {
+                run += 1;
+            } else if (diff == 2 || diff == 6)
+                && anchor != DIR_INVALID
+                && anchor != DIR_TUBE
+                && d != DIR_TUBE
+            {
+                in_zig = true;
+                zig_run = 1;
+                zig_start = idx;
+                zig_dir = d;
+            } else {
+                run = 1;
+                anchor = if d & 1 == 0 { DIR_INVALID } else { d };
+                base_pos = pos;
+                base = idx;
+            }
+            pos = step_pos(pos, d);
+        }
+        if base + run >= n {
+            break;
+        }
+    }
+
+    // Tail flush: an open zigzag at the end of the array is still smoothed.
+    if in_zig {
+        smooth_single_segment(&mut dirs[base..], run, zig_run, &mut base_pos, walkable);
+    }
+}
+
+/// Smooths 90-degree zigzag runs in a path, replacing `2 * min(run, zigzag)`
+/// interior steps with the cardinal between the two diagonals.
+///
+/// Step count and endpoint are preserved; only the interior cells change.
 ///
 /// `walkable(x, y)` must return true if the cell is passable for this unit.
 pub fn smooth_path(path: Vec<(u16, u16)>, walkable: &dyn Fn(u16, u16) -> bool) -> Vec<(u16, u16)> {
-    // Need at least 3 cells (2 steps) to have a zigzag.
+    // A zigzag needs at least two steps.
     if path.len() < 3 {
         return path;
     }
-
-    let mut result = path;
-    let mut i = 0;
-
-    // Iterate through consecutive direction pairs.
-    while i + 2 < result.len() {
-        let d0 = direction_between(result[i], result[i + 1]);
-        let d1 = direction_between(result[i + 1], result[i + 2]);
-
-        // Skip non-adjacent or invalid direction pairs.
-        if d0 == DIR_INVALID || d1 == DIR_INVALID || dir_diff(d0, d1) != 2 {
-            i += 1;
-            continue;
-        }
-
-        // Binary-fidelity: only diagonal directions anchor zigzags. gamemd.exe's
-        // Path_smooth_corners resets prev_dir to -1 after any cardinal step, so
-        // cardinal→cardinal 90° turns (e.g. N→E) are never smoothed. Only
-        // diagonal→diagonal pairs (e.g. NE→SE) collapse to a cardinal midpoint.
-        if !is_diagonal_dir(d0) {
-            i += 1;
-            continue;
-        }
-
-        // Compute the diagonal shortcut direction.
-        let shortcut_dir = midpoint_dir(d0, d1);
-        let (sdx, sdy) = DIR_DELTAS[shortcut_dir as usize];
-        let sx = (result[i].0 as i32 + sdx) as u16;
-        let sy = (result[i].1 as i32 + sdy) as u16;
-
-        // The shortcut cell must be walkable.
-        if !walkable(sx, sy) {
-            i += 1;
-            continue;
-        }
-
-        // Diagonal corner-cutting check: both adjacent cardinal cells must be walkable.
-        // The two cardinals are the directions d0 and d1 applied from result[i].
-        if is_diagonal_dir(shortcut_dir) {
-            let (c0x, c0y) = DIR_DELTAS[d0 as usize];
-            let (c1x, c1y) = DIR_DELTAS[d1 as usize];
-            let card_a = (
-                (result[i].0 as i32 + c0x) as u16,
-                (result[i].1 as i32 + c0y) as u16,
-            );
-            let card_b = (
-                (result[i].0 as i32 + c1x) as u16,
-                (result[i].1 as i32 + c1y) as u16,
-            );
-            if !walkable(card_a.0, card_a.1) || !walkable(card_b.0, card_b.1) {
-                i += 1;
-                continue;
-            }
-        }
-
-        // Replace: remove the intermediate cell (result[i+1]), replace with shortcut.
-        // path[i] → shortcut → path[i+2]  instead of  path[i] → path[i+1] → path[i+2]
-        result[i + 1] = (sx, sy);
-
-        // The shortcut cell IS the diagonal, so check if result[i] → shortcut → result[i+2]
-        // collapses to a single step. If shortcut == result[i+2], remove the duplicate.
-        if result[i + 1] == result[i + 2] {
-            result.remove(i + 2);
-        }
-
-        // Don't advance — the new cell at i+1 might form another zigzag with i+2.
-        // But do advance at least once to avoid infinite loops on unchanged paths.
-        i += 1;
-    }
-
-    result
+    let start = path[0];
+    let Some(mut dirs) = path_to_directions(&path) else {
+        return path;
+    };
+    smooth_direction_runs(start, &mut dirs, walkable);
+    directions_to_path(start, &dirs)
 }
 
-/// Smooths a layered path, skipping any zigzag that crosses a layer transition.
+/// Smooths a layered path. Layer transitions split Pass 1 — each
+/// layer-homogeneous run is smoothed independently, so no replacement crosses a
+/// bridge boundary. Pass 1 preserves step count, so the layer vector is carried
+/// through unchanged.
 pub fn smooth_layered_path(
     path: Vec<(u16, u16)>,
     layers: Vec<MovementLayer>,
@@ -173,68 +314,28 @@ pub fn smooth_layered_path(
     }
 
     let mut coords = path;
-    let mut lyrs = layers;
-    let mut i = 0;
-
-    while i + 2 < coords.len() {
-        // Never smooth across layer transitions.
-        if lyrs[i] != lyrs[i + 1] || lyrs[i + 1] != lyrs[i + 2] {
-            i += 1;
-            continue;
+    let mut seg_start = 0usize;
+    while seg_start < coords.len() {
+        let layer = layers[seg_start];
+        let mut seg_end = seg_start;
+        while seg_end + 1 < coords.len() && layers[seg_end + 1] == layer {
+            seg_end += 1;
         }
-        let layer = lyrs[i];
-
-        let d0 = direction_between(coords[i], coords[i + 1]);
-        let d1 = direction_between(coords[i + 1], coords[i + 2]);
-
-        if d0 == DIR_INVALID || d1 == DIR_INVALID || dir_diff(d0, d1) != 2 {
-            i += 1;
-            continue;
-        }
-
-        // Binary-fidelity: only diagonal anchors trigger zigzag smoothing.
-        if !is_diagonal_dir(d0) {
-            i += 1;
-            continue;
-        }
-
-        let shortcut_dir = midpoint_dir(d0, d1);
-        let (sdx, sdy) = DIR_DELTAS[shortcut_dir as usize];
-        let sx = (coords[i].0 as i32 + sdx) as u16;
-        let sy = (coords[i].1 as i32 + sdy) as u16;
-
-        if !walkable(sx, sy, layer) {
-            i += 1;
-            continue;
-        }
-
-        if is_diagonal_dir(shortcut_dir) {
-            let (c0x, c0y) = DIR_DELTAS[d0 as usize];
-            let (c1x, c1y) = DIR_DELTAS[d1 as usize];
-            let card_a = (
-                (coords[i].0 as i32 + c0x) as u16,
-                (coords[i].1 as i32 + c0y) as u16,
-            );
-            let card_b = (
-                (coords[i].0 as i32 + c1x) as u16,
-                (coords[i].1 as i32 + c1y) as u16,
-            );
-            if !walkable(card_a.0, card_a.1, layer) || !walkable(card_b.0, card_b.1, layer) {
-                i += 1;
-                continue;
+        if seg_end - seg_start >= 2 {
+            let segment: Vec<(u16, u16)> = coords[seg_start..=seg_end].to_vec();
+            let segment_start = segment[0];
+            if let Some(mut dirs) = path_to_directions(&segment) {
+                let layer_check = |x: u16, y: u16| walkable(x, y, layer);
+                smooth_direction_runs(segment_start, &mut dirs, &layer_check);
+                let rebuilt = directions_to_path(segment_start, &dirs);
+                debug_assert_eq!(rebuilt.len(), segment.len());
+                coords[seg_start..=seg_end].copy_from_slice(&rebuilt);
             }
         }
-
-        coords[i + 1] = (sx, sy);
-        if coords[i + 1] == coords[i + 2] {
-            coords.remove(i + 2);
-            lyrs.remove(i + 2);
-        }
-
-        i += 1;
+        seg_start = seg_end + 1;
     }
 
-    (coords, lyrs)
+    (coords, layers)
 }
 
 // ---------------------------------------------------------------------------

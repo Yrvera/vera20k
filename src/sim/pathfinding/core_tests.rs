@@ -750,11 +750,36 @@ fn test_find_path_blocked_start_all_neighbors_blocked_returns_none() {
 }
 
 #[test]
-fn test_find_path_blocked_goal() {
+fn test_find_path_blocked_goal_returns_path_to_adjacent_cell() {
+    // An impassable destination does not abort the search. gamemd runs it, and
+    // the first time a reached cell has the blocked goal as a neighbour it
+    // leaves the loop and returns the path to that adjacent cell.
     let mut grid: PathGrid = PathGrid::new(10, 10);
     grid.set_blocked(5, 5, true);
-    let path: Option<Vec<(u16, u16)>> = find_path(&grid, (0, 0), (5, 5));
-    assert!(path.is_none(), "Blocked goal should return None");
+    let path: Vec<(u16, u16)> = find_path(&grid, (0, 0), (5, 5))
+        .expect("blocked goal must still produce the path to a cell adjacent to it");
+    assert!(path.len() >= 2, "path must contain at least one real step");
+    assert_eq!(path[0], (0, 0));
+    let last = *path.last().unwrap();
+    assert_ne!(last, (5, 5), "the blocked goal itself is never entered");
+    assert!(
+        last.0.abs_diff(5) <= 1 && last.1.abs_diff(5) <= 1,
+        "path must end adjacent to the blocked goal, ended at {last:?}"
+    );
+}
+
+#[test]
+fn test_find_path_blocked_goal_adjacent_to_start_fails() {
+    // The success tail requires the aborting node to be at least one real step
+    // from the start (node depth >= 2). A mover already standing next to the
+    // blocked cell therefore gets no path at all.
+    let mut grid: PathGrid = PathGrid::new(10, 10);
+    grid.set_blocked(5, 5, true);
+    let path: Option<Vec<(u16, u16)>> = find_path(&grid, (4, 4), (5, 5));
+    assert!(
+        path.is_none(),
+        "start-adjacent blocked goal fails the search outright"
+    );
 }
 
 #[test]

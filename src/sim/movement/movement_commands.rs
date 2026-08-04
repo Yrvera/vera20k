@@ -189,12 +189,29 @@ pub fn set_destination_for_teleporter_entity(
         );
     }
 
-    if let Some(entity) = entities.get_mut(entity_id) {
+    if let Some(entity) = entities.get(entity_id) {
         let should_restore = entity.locomotor.as_ref().is_some_and(|loco| {
             loco.effective_kind() == LocomotorKind::Teleport
                 && loco.active_kind() != LocomotorKind::Teleport
         });
-        if should_restore && let Some(ref mut loco) = entity.locomotor {
+        // gamemd's Set_Destination unwinds a piggyback through the same gated
+        // protocol as FootClass::AI — `Is_Ok_To_End` first, and the transfer
+        // only when it returns true. There is no ungated END anywhere in the
+        // binary, so a Chrono Miner still driving keeps Drive installed and the
+        // per-tick restore picks it up on the frame the drive actually stops.
+        let gate = super::locomotor_end_gate_context(entity);
+        let may_end = entity.locomotor.as_ref().is_some_and(|loco| {
+            loco.can_restore_primary_from_piggyback(
+                gate.owner_moving,
+                gate.owner_teleporting,
+                gate.owner_deploying,
+            )
+        });
+        if should_restore
+            && may_end
+            && let Some(entity) = entities.get_mut(entity_id)
+            && let Some(ref mut loco) = entity.locomotor
+        {
             loco.restore_primary_from_piggyback();
         }
     }
