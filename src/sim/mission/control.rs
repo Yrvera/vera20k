@@ -19,6 +19,19 @@ use std::collections::BTreeMap;
 /// expressed in minutes; multiply by this and truncate (ftol) to get integer frames.
 const FRAMES_PER_MINUTE: f64 = 900.0;
 
+/// The `Rate=`/`AARate=` value a mission-control slot holds *before* any INI is
+/// read: 0.016 minutes, i.e. `ftol(0.016 x 900) = 14` frames.
+///
+/// The original's `MissionControlClass` constructor stores this same double
+/// into both the `Rate` and `AARate` fields of all 32 slots at process start;
+/// its reader then passes the *current* double as the `Rate` default (so an
+/// absent `Rate=` keeps it) and returns without touching the slot at all when
+/// the `[<MissionName>]` section is absent. Eleven stock missions — Return,
+/// Stop, Ambush, Construction, Selling, both Paradrop legs, Wait, Attack Move
+/// and both Spyplane legs — reach their cadence through one of those two paths
+/// and therefore resolve to 14 frames, never 0.
+const CONSTRUCTED_RATE_MINUTES: f64 = 0.016;
+
 /// Convert an INI rate (minutes between processings) to integer frames,
 /// modelling gamemd's `Math::ftol(Rate * 900)` truncate-toward-zero (the
 /// per-minute domain is non-negative, so `as u32` == floor == ftol here).
@@ -55,12 +68,15 @@ pub struct MissionControlEntry {
 }
 
 impl Default for MissionControlEntry {
-    /// The documented INI header defaults — the values each table slot holds
-    /// before its section is read (so an absent key keeps these).
+    /// The constructed defaults — the values each table slot holds before its
+    /// section is read (so an absent key, or an absent section, keeps these).
+    /// The six bools match the `; def=` comments in the RULESMD header block;
+    /// the rate pair has no INI comment and comes from the constructor
+    /// (see [`CONSTRUCTED_RATE_MINUTES`]).
     fn default() -> Self {
         Self {
-            rate_frames: 0,
-            aa_rate_frames: 0,
+            rate_frames: rate_to_frames(CONSTRUCTED_RATE_MINUTES),
+            aa_rate_frames: rate_to_frames(CONSTRUCTED_RATE_MINUTES),
             no_threat: false,
             zombie: false,
             recruitable: true,
@@ -130,6 +146,20 @@ impl MissionControl {
     #[inline]
     pub fn rate_frames(&self, mission: MissionType) -> u32 {
         self.entries.get(&mission).map_or(0, |e| e.rate_frames)
+    }
+
+    /// Anti-air processing cadence in frames for a mission (0 if unknown).
+    ///
+    /// This is a *different* number from [`MissionControl::rate_frames`] on the
+    /// two stock missions that declare both: Guard resolves 27 / **14** and
+    /// Area Guard 36 / **28**. The original's building Guard handler re-arms
+    /// from `AARate` on its no-target return path, not from `Rate`, so a
+    /// building-cadence consumer that reaches for `rate_frames` picks the wrong
+    /// field by a factor of two. No `sim/` caller reads this yet — VERA has no
+    /// building mission-handler cadence (recorded gap GSI-07.02 G2).
+    #[inline]
+    pub fn aa_rate_frames(&self, mission: MissionType) -> u32 {
+        self.entries.get(&mission).map_or(0, |e| e.aa_rate_frames)
     }
 
     /// Number of populated mission entries.
@@ -212,14 +242,63 @@ mod tests {
 
     #[test]
     fn no_carry_forward_between_missions() {
-        // Guard sets AARate/Rate; a keyless mission must NOT inherit them.
+        // Guard sets AARate/Rate; a keyless mission must NOT inherit them —
+        // it keeps its own constructed values, which for the rate pair is
+        // 0.016 minutes = 14 frames, NOT zero.
         let mc = MissionControl::from_ini(&ini("[Guard]\nRate=.030\nAARate=.016\n"));
         let stop = mc.entry(MissionType::Stop).unwrap(); // no [Stop] section
-        assert_eq!(stop.rate_frames, 0);
-        assert_eq!(stop.aa_rate_frames, 0);
+        assert_eq!(stop.rate_frames, 14);
+        assert_eq!(stop.aa_rate_frames, 14);
         assert!(stop.recruitable); // documented defaults, not Guard's values
         assert!(stop.retaliate);
         assert!(stop.scatter);
+    }
+
+    #[test]
+    fn constructed_rate_is_fourteen_frames_not_zero() {
+        // The constructor stores 0.016 minutes into Rate and AARate alike, and
+        // neither the absent-section path nor the absent-key path overwrites
+        // it. Both must therefore land on ftol(0.016 * 900) = 14.
+        assert_eq!(rate_to_frames(CONSTRUCTED_RATE_MINUTES), 14);
+
+        // Absent section (rows 26-31 in stock: the paradrop/spyplane legs,
+        // Wait and Attack Move declare no `[<MissionName>]` section at all).
+        let absent_section = MissionControl::from_ini(&ini("[Guard]\nRate=.030\nAARate=.016\n"));
+        for mission in [
+            MissionType::ParadropApproach,
+            MissionType::ParadropOverfly,
+            MissionType::Deliberate,
+            MissionType::AttackMove,
+            MissionType::SpyplaneApproach,
+            MissionType::SpyplaneOverfly,
+        ] {
+            let entry = absent_section.entry(mission).unwrap();
+            assert_eq!(entry.rate_frames, 14, "{mission:?} Rate");
+            assert_eq!(entry.aa_rate_frames, 14, "{mission:?} AARate");
+        }
+
+        // Present-but-Rate-less section (rows 12/13/14/18/19 in stock:
+        // Return, Stop, Ambush, Construction, Selling).
+        let rate_less = MissionControl::from_ini(&ini("[Selling]\nNoThreat=yes\nRetaliate=no\n"));
+        let selling = rate_less.entry(MissionType::Selling).unwrap();
+        assert_eq!(selling.rate_frames, 14);
+        assert_eq!(selling.aa_rate_frames, 14);
+        assert!(selling.no_threat);
+        assert!(!selling.retaliate);
+    }
+
+    #[test]
+    fn guard_and_area_guard_keep_distinct_rate_and_aa_rate() {
+        // The two stock missions whose AARate differs from Rate. A building
+        // cadence must read AARate (14 / 28), not Rate (27 / 36).
+        let mc = MissionControl::from_ini(&ini(
+            "[Guard]\nRate=.030\nAARate=.016\n[Area Guard]\nRate=.040\nAARate=.032\n",
+        ));
+        assert_eq!(mc.rate_frames(MissionType::Guard), 27);
+        assert_eq!(mc.aa_rate_frames(MissionType::Guard), 14);
+        // .032 * 900 = 28.8; ftol truncates toward zero -> 28 (round gives 29).
+        assert_eq!(mc.rate_frames(MissionType::AreaGuard), 36);
+        assert_eq!(mc.aa_rate_frames(MissionType::AreaGuard), 28);
     }
 
     #[test]

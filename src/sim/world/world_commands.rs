@@ -154,6 +154,11 @@ impl Simulation {
                 {
                     return false;
                 }
+                // Native order admission: a dead, zero-strength or in-limbo
+                // actor abandons the whole order and keeps its previous one.
+                if !self.order_actor_admits(*entity_id) {
+                    return false;
+                }
                 // Drop any dock reservation (depot + aircraft + docked-idle) and
                 // retask onto a fresh Move via the verb API. The legacy field
                 // clears below stay authoritative in Slice 6.
@@ -303,6 +308,10 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
+                // Native order admission (actor half).
+                if !self.order_actor_admits(*entity_id) {
+                    return false;
+                }
                 // Cancel any depot dock reservation, then retask onto Stop.
                 self.queue_mission_with_teardown(
                     *entity_id,
@@ -384,6 +393,16 @@ impl Simulation {
                 if !self.can_attack_target_by_id(*attacker_id, *target_id) {
                     return false;
                 }
+                // Native order admission: BOTH the actor and the clicked Target
+                // object are gated, and a failure on either abandons the whole
+                // order. A victim that dies in the same tick is still resolvable
+                // in the store, so without the Target half the attacker would
+                // retask onto a corpse instead of keeping its previous order.
+                if !self.order_actor_admits(*attacker_id)
+                    || !self.order_object_token_admits(*target_id)
+                {
+                    return false;
+                }
                 // Cancel aircraft RTB/wait + docked-idle (not depot), then retask
                 // onto Attack keeping the interrupt stack (combat sets the target).
                 self.queue_mission_with_teardown(
@@ -413,6 +432,13 @@ impl Simulation {
                 if !self.substrate.entities.contains(*target_id) {
                     return false;
                 }
+                // Native order admission (actor + Target token). Force-fire
+                // bypasses the alliance test, not the liveness gate.
+                if !self.order_actor_admits(*attacker_id)
+                    || !self.order_object_token_admits(*target_id)
+                {
+                    return false;
+                }
                 // Force-attack bypasses friendship check (Ctrl+click). Release a
                 // docked-idle aircraft only, then retask onto Attack keeping fields.
                 self.queue_mission_with_teardown(
@@ -437,6 +463,11 @@ impl Simulation {
                 target_ry,
             } => {
                 if !self.entity_owned_by_id(command_owner, *attacker_id) {
+                    return false;
+                }
+                // Native order admission (actor half only — a cell token names
+                // no object, so the Target/Destination gates do not apply).
+                if !self.order_actor_admits(*attacker_id) {
                     return false;
                 }
                 // No target-entity existence check — cells always "exist". Release
@@ -474,6 +505,11 @@ impl Simulation {
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
+                    return false;
+                }
+                // Native order admission (actor half only — attack-move carries
+                // a cell token).
+                if !self.order_actor_admits(*entity_id) {
                     return false;
                 }
                 // Release a docked-idle aircraft only, then retask onto AttackMove
@@ -900,6 +936,17 @@ impl Simulation {
                 if !entity_ok {
                     return false;
                 }
+                // Native order admission (actor + Destination token).
+                if !self.order_actor_admits(*entity_id)
+                    || !self.order_object_token_admits(*depot_id)
+                {
+                    return false;
+                }
+                // Duplicate Enter onto the building this unit is already linked
+                // to is consumed without touching anything.
+                if self.duplicate_enter_is_noop(*entity_id, *depot_id) {
+                    return true;
+                }
                 // Cancel any existing depot reservation, then retask onto Enter.
                 self.queue_mission_with_teardown(
                     *entity_id,
@@ -1012,6 +1059,20 @@ impl Simulation {
                 });
                 if pax_ok.is_none() {
                     return false;
+                }
+                // Native order admission (actor + Destination token).
+                if !self.order_actor_admits(*passenger_id)
+                    || !self.order_object_token_admits(*transport_id)
+                {
+                    return false;
+                }
+                // Duplicate Enter onto a *building* transport (garrison,
+                // Grinder, bunker) the passenger is already linked to is
+                // consumed without touching anything — no fresh Boarding role
+                // and no re-path, so the unit walks in instead of backing off.
+                // Vehicle transports never take this branch.
+                if self.duplicate_enter_is_noop(*passenger_id, *transport_id) {
+                    return true;
                 }
                 // Retask onto Enter (no dock reservation touched); the legacy
                 // field clears below stay authoritative.
@@ -1197,6 +1258,12 @@ impl Simulation {
                 ) {
                     return false;
                 }
+                // Native order admission (actor + Destination token).
+                if !self.order_actor_admits(*attacker_id)
+                    || !self.order_object_token_admits(*target_building_id)
+                {
+                    return false;
+                }
                 // Retask onto Sabotage (no dock reservation touched); the legacy
                 // field clears below stay authoritative.
                 self.queue_mission_with_teardown(
@@ -1315,6 +1382,12 @@ impl Simulation {
                     command_owner,
                     self.interner.resolve(target_owner),
                 ) {
+                    return false;
+                }
+                // Native order admission (actor + Destination token).
+                if !self.order_actor_admits(*engineer_id)
+                    || !self.order_object_token_admits(*target_building_id)
+                {
                     return false;
                 }
                 // Retask onto Capture (no dock reservation touched); the legacy
@@ -1507,6 +1580,18 @@ impl Simulation {
                     .is_some_and(|b| b.bunker_runtime.is_some());
                 if !is_bunker || !self.entity_owned_by_id(command_owner, *bunker_id) {
                     return false;
+                }
+                // Native order admission (actor + Destination token), ahead of
+                // any radio traffic.
+                if !self.order_actor_admits(*unit_id) || !self.order_object_token_admits(*bunker_id)
+                {
+                    return false;
+                }
+                // Duplicate Enter onto the bunker this unit is already linked to
+                // is consumed without touching anything — no CanEnter/DockNow
+                // round trip and no re-approach.
+                if self.duplicate_enter_is_noop(*unit_id, *bunker_id) {
+                    return true;
                 }
                 // Rules-gated weapon/Bunkerable check (the bus stays rules-free).
                 if !crate::sim::docking::bunker_link::can_auto_deploy_here(self, *unit_id, rules) {
@@ -1796,6 +1881,74 @@ impl Simulation {
             .is_some_and(|e| command_owner.eq_ignore_ascii_case(self.interner.resolve(e.owner)))
     }
 
+    /// The acting object's half of the native order-admission gate.
+    ///
+    /// Before the synchronized order path touches anything it requires the
+    /// acting object to be present, natively alive, above zero strength and out
+    /// of limbo. Any failure abandons the **whole** order, so the object keeps
+    /// the mission, target and destination it already had rather than being
+    /// retasked. `in_limbo` is a genuinely independent byte here — an object
+    /// riding inside a transport, sitting in a tank bunker or garrisoning a
+    /// building is alive and at full strength but still refuses orders.
+    ///
+    /// Note the strength test is `> 0` for the actor and merely `!= 0` for a
+    /// target/destination token (see [`Simulation::order_object_token_admits`]);
+    /// the two collapse to the same predicate on VERA's unsigned HP but the
+    /// asymmetry is preserved so a future signed-HP change keeps the native
+    /// meaning.
+    pub(crate) fn order_actor_admits(&self, stable_id: u64) -> bool {
+        self.substrate.entities.get(stable_id).is_some_and(|e| {
+            e.lifecycle.object_alive && e.health.current > 0 && !e.lifecycle.in_limbo
+        })
+    }
+
+    /// The Target/Destination half of the native order-admission gate.
+    ///
+    /// When the order names an object, that object is subjected to the same
+    /// three tests as the actor, and a failure abandons the whole order. This
+    /// is what keeps an attacker on its previous order when the unit it was
+    /// clicked onto dies in the same tick, instead of retasking it onto a
+    /// corpse that is still resolvable in the store.
+    pub(crate) fn order_object_token_admits(&self, stable_id: u64) -> bool {
+        self.substrate.entities.get(stable_id).is_some_and(|e| {
+            e.lifecycle.object_alive && e.health.current != 0 && !e.lifecycle.in_limbo
+        })
+    }
+
+    /// Whether a re-issued Enter order onto `destination_id` is the native
+    /// duplicate-Enter no-op: the receiver's committed mission is already
+    /// `Enter`, the destination is a Building, and the receiver is already
+    /// radio-linked to that same building. The synchronized order path returns
+    /// without touching a single field in that case — no radio break, no queued
+    /// mission, no re-path — so a player who re-clicks a garrison, service
+    /// depot, Grinder or bunker while the unit is already at the door does not
+    /// see it stall and re-approach.
+    ///
+    /// Structures never take this branch (it is gated on the Foot bit), and the
+    /// link tested is contact slot 0, the same slot the original reads.
+    pub(crate) fn duplicate_enter_is_noop(&self, receiver_id: u64, destination_id: u64) -> bool {
+        let Some(receiver) = self.substrate.entities.get(receiver_id) else {
+            return false;
+        };
+        if receiver.category == crate::map::entities::EntityCategory::Structure {
+            return false;
+        }
+        if receiver.mission.current()
+            != crate::sim::mission::MissionId::from_known(MissionType::Enter)
+        {
+            return false;
+        }
+        let destination_is_building = self
+            .substrate
+            .entities
+            .get(destination_id)
+            .is_some_and(|d| d.category == crate::map::entities::EntityCategory::Structure);
+        if !destination_is_building {
+            return false;
+        }
+        receiver.radio_contacts.slot(0) == Some(destination_id)
+    }
+
     /// Validate an explicit refinery selected by a player miner-return order.
     fn valid_explicit_miner_refinery(
         &self,
@@ -1963,6 +2116,10 @@ mod tests {
         entity.regular_crusher = obj.crusher;
         entity.drive_accelerates = obj.accelerates;
         entity.omni_crusher = obj.omni_crusher;
+        // A directly-inserted GameEntity keeps the constructed `in_limbo`
+        // byte; production spawns clear it through Reveal. Order admission
+        // reads that byte, so the fixture must model a revealed object.
+        entity.lifecycle.in_limbo = false;
         sim.substrate.entities.insert(entity);
     }
 
@@ -2049,6 +2206,183 @@ mod tests {
 
         assert!(applied);
         assert!(crate::sim::movement::path_search_used_zone_grid_marker());
+    }
+
+    // ===== Order admission (GSI-07.01): liveness, strength and limbo =====
+
+    /// A Move onto a live, revealed unit is the control case for the three
+    /// admission tests below: it must be admitted.
+    #[test]
+    fn move_order_is_admitted_for_a_live_revealed_actor() {
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+        let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+
+        assert!(sim.order_actor_admits(1));
+        assert!(sim.apply_command(
+            "Americans",
+            &Command::Move {
+                entity_id: 1,
+                target_rx: 25,
+                target_ry: 20,
+                queue: false,
+                group_id: None,
+            },
+            Some(&rules),
+            Some(&grid),
+            &BTreeMap::new(),
+        ));
+        assert!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .movement_target
+                .is_some()
+        );
+    }
+
+    /// An in-limbo actor — inside a transport, a tank bunker or a garrison —
+    /// abandons the whole order: no queued mission, no path.
+    #[test]
+    fn move_order_is_dropped_when_the_actor_is_in_limbo() {
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .lifecycle
+            .in_limbo = true;
+        let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+
+        assert!(!sim.order_actor_admits(1));
+        assert!(!sim.apply_command(
+            "Americans",
+            &Command::Move {
+                entity_id: 1,
+                target_rx: 25,
+                target_ry: 20,
+                queue: false,
+                group_id: None,
+            },
+            Some(&rules),
+            Some(&grid),
+            &BTreeMap::new(),
+        ));
+        let actor = sim.substrate.entities.get(1).unwrap();
+        assert!(actor.movement_target.is_none());
+        assert_eq!(actor.mission.queued(), MissionId::NONE);
+    }
+
+    /// A not-natively-alive or zero-strength actor is rejected on the same
+    /// clause, independently of store presence.
+    #[test]
+    fn move_order_is_dropped_for_a_dead_or_zero_strength_actor() {
+        let rules = amcv_move_rules();
+
+        for kill in [
+            |e: &mut GameEntity| e.lifecycle.object_alive = false,
+            |e: &mut GameEntity| e.health.current = 0,
+        ] {
+            let mut sim = Simulation::new();
+            spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+            kill(sim.substrate.entities.get_mut(1).unwrap());
+            let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+
+            assert!(!sim.order_actor_admits(1));
+            assert!(!sim.apply_command(
+                "Americans",
+                &Command::Move {
+                    entity_id: 1,
+                    target_rx: 25,
+                    target_ry: 20,
+                    queue: false,
+                    group_id: None,
+                },
+                Some(&rules),
+                Some(&grid),
+                &BTreeMap::new(),
+            ));
+            assert!(
+                sim.substrate
+                    .entities
+                    .get(1)
+                    .unwrap()
+                    .movement_target
+                    .is_none()
+            );
+        }
+    }
+
+    /// The Target half: a victim that hit zero strength this tick is still
+    /// resolvable in the store, and the whole order is abandoned rather than
+    /// retasking the attacker onto it. Store presence alone is not admission.
+    #[test]
+    fn attack_order_is_dropped_when_the_clicked_target_is_already_dead() {
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+        spawn_structure_for_owner(&mut sim, 2, "AMCV", "Soviet", 24, 20);
+
+        // Control: a live enemy target passes the token gate.
+        assert!(sim.order_object_token_admits(2));
+
+        // Now the same target at zero strength, still present in the store.
+        sim.substrate.entities.get_mut(2).unwrap().health.current = 0;
+        assert!(
+            sim.substrate.entities.contains(2),
+            "target stays resolvable"
+        );
+        assert!(!sim.order_object_token_admits(2));
+        assert!(!sim.apply_command(
+            "Americans",
+            &Command::Attack {
+                attacker_id: 1,
+                target_id: 2,
+            },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        ));
+        let attacker = sim.substrate.entities.get(1).unwrap();
+        assert!(attacker.attack_target.is_none());
+        assert_eq!(attacker.mission.queued(), MissionId::NONE);
+    }
+
+    // ===== Duplicate Enter on a building is a no-op (GSI-07.01 C1) =====
+
+    /// All four clauses must hold — committed mission already Enter, receiver
+    /// is not a structure, destination IS a structure, and contact slot 0
+    /// already names that destination.
+    #[test]
+    fn duplicate_enter_predicate_requires_all_four_clauses() {
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+        spawn_structure_for_owner(&mut sim, 2, "AMCV", "Americans", 24, 20);
+        spawn_rule_backed_unit(&mut sim, 3, "AMCV", &rules); // a non-building
+
+        // No mission, no link.
+        assert!(!sim.duplicate_enter_is_noop(1, 2));
+
+        // Linked but the committed mission is not Enter.
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .mark_live_contact_with(2);
+        assert!(!sim.duplicate_enter_is_noop(1, 2));
+
+        // Committed Enter + link to that building: the no-op.
+        sim.mission_assign_exact(1, MissionId::from_known(MissionType::Enter), 0)
+            .expect("receiver present");
+        assert!(sim.duplicate_enter_is_noop(1, 2));
+
+        // Same mission and link, but the destination is not a building.
+        assert!(!sim.duplicate_enter_is_noop(1, 3));
     }
 
     fn miner_return_rules() -> RuleSet {
@@ -2154,25 +2488,25 @@ mod tests {
     ) {
         let owner = sim.interner.intern(owner_name);
         let type_ref = sim.interner.intern(type_id);
-        sim.substrate
-            .entities
-            .insert(GameEntity::new_at_frame_zero_for_test(
-                sid,
-                rx,
-                ry,
-                0,
-                0,
-                owner,
-                Health {
-                    current: 1000,
-                    max: 1000,
-                },
-                type_ref,
-                EntityCategory::Structure,
-                0,
-                5,
-                false,
-            ));
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            sid,
+            rx,
+            ry,
+            0,
+            0,
+            owner,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        entity.lifecycle.in_limbo = false;
+        sim.substrate.entities.insert(entity);
     }
 
     #[test]
@@ -2368,6 +2702,8 @@ mod tests {
             false,
         );
         ge.bunker_runtime = Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
+        // Revealed object: order admission reads the limbo byte.
+        ge.lifecycle.in_limbo = false;
         sim.substrate.entities.insert(ge);
     }
 
@@ -2381,7 +2717,7 @@ mod tests {
     ) {
         let owner_id = sim.interner.intern(owner);
         let type_id = sim.interner.intern(type_name);
-        let ge = GameEntity::new_at_frame_zero_for_test(
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
             sid,
             rx,
             ry,
@@ -2398,6 +2734,8 @@ mod tests {
             5,
             true,
         );
+        // Revealed object: order admission reads the limbo byte.
+        ge.lifecycle.in_limbo = false;
         sim.substrate.entities.insert(ge);
     }
 

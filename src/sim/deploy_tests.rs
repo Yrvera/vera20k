@@ -179,7 +179,7 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
     let type_id = sim.interner.intern(type_str);
     let id = sim.substrate.next_stable_object_id;
     sim.substrate.next_stable_object_id += 1;
-    let e = GameEntity::new_at_frame_zero_for_test(
+    let mut e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -196,6 +196,9 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
         5,
         false,
     );
+    // A directly-inserted GameEntity keeps the constructed `in_limbo` byte;
+    // production spawns clear it through Reveal, and order admission reads it.
+    e.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(e);
     id
 }

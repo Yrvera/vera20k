@@ -149,6 +149,13 @@ impl MissionType {
     }
 
     /// The `[<MissionName>]` INI section header for this mission's control entry.
+    ///
+    /// These are the literal strings from the original's mission-name pointer
+    /// table, which is what its `MissionControl` reader hands to the section
+    /// lookup. Six of the 32 contain a space — `Area Guard`, `Paradrop
+    /// Approach`, `Paradrop Overfly`, `Attack Move`, `Spyplane Approach`,
+    /// `Spyplane Overfly` — and must be spelled with it or a mod/map INI
+    /// declaring one is silently ignored.
     pub fn ini_section(self) -> &'static str {
         match self {
             Self::Sleep => "Sleep",
@@ -177,12 +184,12 @@ impl MissionType {
             Self::Harmless => "Harmless",
             Self::Open => "Open",
             Self::Patrol => "Patrol",
-            Self::ParadropApproach => "ParadropApproach",
-            Self::ParadropOverfly => "ParadropOverfly",
+            Self::ParadropApproach => "Paradrop Approach",
+            Self::ParadropOverfly => "Paradrop Overfly",
             Self::Deliberate => "Wait",
-            Self::AttackMove => "AttackMove",
-            Self::SpyplaneApproach => "SpyplaneApproach",
-            Self::SpyplaneOverfly => "SpyplaneOverfly",
+            Self::AttackMove => "Attack Move",
+            Self::SpyplaneApproach => "Spyplane Approach",
+            Self::SpyplaneOverfly => "Spyplane Overfly",
             Self::None => "None",
         }
     }
@@ -243,5 +250,43 @@ mod tests {
         assert_eq!(MissionType::AreaGuard.ini_section(), "Area Guard");
         assert_eq!(MissionType::Deliberate.ini_section(), "Wait");
         assert_eq!(MissionType::Sleep.ini_section(), "Sleep");
+    }
+
+    /// Every mission name the original's table spells with a space must be
+    /// spelled with it here, or the `[<MissionName>]` lookup misses.
+    #[test]
+    fn spaced_section_names_keep_their_space() {
+        assert_eq!(MissionType::AreaGuard.ini_section(), "Area Guard");
+        assert_eq!(
+            MissionType::ParadropApproach.ini_section(),
+            "Paradrop Approach"
+        );
+        assert_eq!(
+            MissionType::ParadropOverfly.ini_section(),
+            "Paradrop Overfly"
+        );
+        assert_eq!(MissionType::AttackMove.ini_section(), "Attack Move");
+        assert_eq!(
+            MissionType::SpyplaneApproach.ini_section(),
+            "Spyplane Approach"
+        );
+        assert_eq!(
+            MissionType::SpyplaneOverfly.ini_section(),
+            "Spyplane Overfly"
+        );
+    }
+
+    /// The 32 section names are distinct — a duplicate would make two missions
+    /// share one control slot.
+    #[test]
+    fn section_names_are_unique() {
+        let mut seen = std::collections::BTreeSet::new();
+        for mission in MissionType::all() {
+            assert!(
+                seen.insert(mission.ini_section()),
+                "duplicate section name for {mission:?}"
+            );
+        }
+        assert_eq!(seen.len(), MISSION_COUNT);
     }
 }

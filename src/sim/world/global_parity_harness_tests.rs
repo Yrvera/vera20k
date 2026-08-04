@@ -114,12 +114,22 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// call the Unit leaf does). This fixture's two E1 riflemen now scan on the
 /// same cadence, adding their draws. Streams 1 and 2 are still byte-identical
 /// to the pre-slice baseline.
+/// Re-baselined 2026-08-04 for the GSI-07.02 constructed-`Rate` default (0 ->
+/// 0.016 min = 14 frames, the value gamemd's MissionControl ctor stores when a
+/// `[<MissionName>]` section or its `Rate=` key is absent). `harness_rules()`
+/// declares no mission sections at all, so every mission in this fixture moved
+/// off the zero sentinel and the per-object dispatch timer now arms on a
+/// different schedule. Streams 1 and 2 below are byte-identical to the previous
+/// baseline -- only stream 0, the scenario stream the cadence jitter draws
+/// from, moved -- and the intra-run determinism assertion still passes, so this
+/// is a changed schedule, not an RNG misroute. No draw site was added or
+/// removed.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // MERGE 2026-08-03: both branches re-baselined these independently (dev:
 // passive acquire + spawner; foundations: Move cadence + hashed runtime
 // state). Neither side's values describe the merged tree; re-derived below
 // from the merged tree's own output in the same merge commit.
-    16681026125836176425,
+    11884622656630731959,
     4175722561206807420,
     2082941527059030371,
 );
@@ -260,8 +270,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // still reproduces BOTH of its legacy probes unchanged across the whole slice —
 // its 16-tick fixture never reaches the first scan — so the composition half
 // remains isolated and behaviour-free, and everything moving here is behaviour.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x3A67_AEDE_00FF_1225;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x956F_3C99_481C_0E99;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xFC1F_0AB5_CD69_2849;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xF90E_8399_7801_CE58;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -334,7 +344,9 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x956F_3C99_481C_0E99;
 /// hash, and only the scenario RNG stream moved.
 /// Re-measured in the same slice when the passive block was extended to the
 /// Infantry leaf — same rationale, same ceremony, still a lone stream-0 shift.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xE639_0C80_C27A_DEFF;
+/// Re-baselined 2026-08-04 with FINAL_STREAM_STATES for the same
+/// constructed-`Rate` change; see the provenance note there.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x7D5F_8FC5_E9D6_4DE7;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -737,7 +749,9 @@ fn dense_converging_setup() -> (
 /// combatants sit on the `NONE` selector and were already scanning before this
 /// change. The per-tick observations, and the one cause left UNCHECKED, are
 /// written up at `FINAL_STREAM_STATES`.
-const POSITION_FINGERPRINT: u64 = 0x2543_25C4_9102_818F;
+/// Re-baselined 2026-08-04 with FINAL_STREAM_STATES for the same
+/// constructed-`Rate` change; see the provenance note there.
+const POSITION_FINGERPRINT: u64 = 0xAAFD_8C9A_DACA_C22C;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

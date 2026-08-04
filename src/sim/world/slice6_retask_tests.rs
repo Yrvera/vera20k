@@ -126,8 +126,13 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // from the merged tree's own output in the same merge commit.
 // Native Move mission cadence now advances MissionCom and Scenario RNG.
 // Re-baselined after hashing the newly persisted YR runtime-contract state.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xFF25_F56A_6E1E_2A46;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xEE98_241E_37BE_6CFE;
+/// Re-baselined 2026-08-04 for the GSI-07.02 constructed-`Rate` default
+/// (0 -> 14 frames when a mission section or its `Rate=` key is absent).
+/// `slice6_rules()` declares no mission sections, so every mission in this
+/// fixture left the zero sentinel. Provenance note in
+/// global_parity_harness_tests.rs at FINAL_STREAM_STATES.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x72A4_8DED_FB84_CFD5;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8E4E_ED09_42AD_1920;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -203,7 +208,7 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xEE98_241E_37BE_6CFE;
 // fields moving off their old values — `passive_scan_timer` armed at the
 // construction frame instead of left unarmed, plus the two new fields folded at
 // their defaults. Rust regression ratchet, not gamemd evidence.
-const SLICE6_BASELINE_HASH: u64 = 0x6763_3A9A_A228_3C22;
+const SLICE6_BASELINE_HASH: u64 = 0x24E4_4288_18FB_10DE;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
