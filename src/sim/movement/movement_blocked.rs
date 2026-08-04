@@ -227,12 +227,22 @@ pub(super) fn handle_blocked_tick(
             finished_entities.push(entity_id);
             *aborted_for_stuck = true;
         }
-        // gamemd never restarts the grace timer on a failed route-around. The
-        // only writers of the blocked-delay start/length pair are the
-        // `path_blocked` 0 -> 1 transition inside the code-2 dispatch and
-        // `FootClass::Set_Destination_Internal`, so a boxed-in unit stays at
-        // urgency 2 until it actually moves (which clears `path_blocked`) or
-        // receives a new order.
+        // gamemd does not restart the grace timer *here*, on a failed
+        // route-around — this arm writes nothing.
+        //
+        // It does restart it in the code-2 dispatch, on every pass and not just
+        // on the `path_blocked` 0 -> 1 transition: the original's store of the
+        // wait sits straight-line after its blocker-scatter call with no branch
+        // between them. An earlier revision of this comment claimed the
+        // transition was the only writer, and the code was gated to match; that
+        // left the timer at zero forever once it first expired, so the blocker
+        // scatter — and its scenario-stream draw — fired every tick instead of
+        // once per span. See
+        // `movement_tests::code_two_post_scatter_wait_rearms_on_every_pass_while_the_block_holds`.
+        //
+        // So a boxed-in unit does not sit at urgency 2 continuously; it
+        // escalates to 2 once per span, then drops back to 1 when the wait
+        // re-arms.
     } else {
         // urgency=1 grace-period failure: set a short movement_delay to
         // rate-limit A* calls while the blocked_delay counter keeps ticking.

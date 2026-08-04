@@ -1052,15 +1052,20 @@ pub(super) fn handle_deferred_occupancy(
                             stats.scatter_successes = stats.scatter_successes.saturating_add(1);
                         }
                     }
-                    if first_block
-                        && let Some(target) = entities
-                            .get_mut(entity_id)
-                            .and_then(|entity| entity.movement_target.as_mut())
+                    if let Some(target) = entities
+                        .get_mut(entity_id)
+                        .and_then(|entity| entity.movement_target.as_mut())
                     {
                         // The wait the original writes right after the scatter
-                        // call. Only on entry: re-arming it after the expiry
-                        // scatter as well would pin the repath urgency at 1 and
-                        // a boxed-in mover would never escalate to route-around.
+                        // call, on EVERY pass through the block: the store sits
+                        // straight-line after the scatter with no branch between
+                        // them. Re-arming does not pin the repath urgency at 1 —
+                        // the wait expires again after its full span, so urgency
+                        // escalates to 2 once per span exactly as it does in the
+                        // original. Gating this on entry instead left the timer
+                        // at zero forever once it first expired, which made the
+                        // blocker scatter — and its scenario-stream draw — fire
+                        // every tick instead of once per span.
                         target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
                     }
                     // Retail reads peer paths immediately before A*. Refresh

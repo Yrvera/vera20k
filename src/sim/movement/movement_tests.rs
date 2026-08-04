@@ -1493,6 +1493,164 @@ fn gsi_06_01_code_two_grace_window_still_repaths_at_urgency_one() {
     );
 }
 
+/// The 10-frame post-scatter wait is re-armed on EVERY pass through the code-2
+/// blocked dispatch, not only on the tick the block is first detected.
+///
+/// The original writes the wait straight-line after its cell-scatter call with
+/// no branch between the two, so a mover that stays blocked cycles
+/// 10 → 9 → … → 1 → 10 → … for as long as the block holds. Nothing else clears
+/// the expired value, so gating the write on first entry pinned the timer at
+/// zero once it had run out: the blocker scatter — which draws a direction from
+/// the scenario RNG — then fired on every tick instead of once per span, a
+/// deterministic-state divergence at ten times the original's cadence.
+///
+/// Reaching the expiry path at all is what the fixture is for. On an open grid
+/// the mover repaths around the blocker within a couple of ticks and the wait
+/// never runs out. Here the map is a TWO-cell corridor holding a head-on
+/// friendly pair: there is no route around, and each unit's only walkable
+/// neighbour is the other one, so every scatter attempt fails to find a
+/// destination and neither unit can vacate. Both stay classified as a moving
+/// ally (code 2) indefinitely.
+///
+/// The observed span also pins the wait to the hardcoded 10 frames rather than
+/// `[AI] BlockagePathDelay` (60 in this harness) — a different timer with a
+/// different consumer, and the value `handle_blocked_tick` would have written
+/// had the code-2 dispatch not already raised `path_blocked` itself.
+#[test]
+fn code_two_post_scatter_wait_rearms_on_every_pass_while_the_block_holds() {
+    const WAIT: u16 = crate::sim::movement::bump_crush::POST_SCATTER_WAIT_FRAMES;
+    // `[AI] BlockagePathDelay` as this harness supplies it. `handle_blocked_tick`
+    // writes this value on a `path_blocked` 0 -> 1 transition, but the code-2
+    // dispatch raises the flag itself before calling in, so a mover blocked by a
+    // moving ally runs the post-scatter constant instead. Watching which of the
+    // two shows up in the timer is the observable form of that claim.
+    const HARNESS_BLOCKAGE_PATH_DELAY: u16 = 60;
+    // Three full spans plus one sample, so a single re-arm cannot satisfy it.
+    const REQUIRED_SAMPLES: usize = (WAIT as usize) * 3 + 1;
+    const TICKS: u32 = 60;
+
+    let mut grid: PathGrid = PathGrid::new(4, 3);
+    for y in 0..3 {
+        for x in 0..4 {
+            grid.set_blocked(x, y, true);
+        }
+    }
+    grid.set_blocked(1, 1, false);
+    grid.set_blocked(2, 1, false);
+
+    let mut entities = EntityStore::new();
+    let mut occupancy = OccupancyGrid::new();
+
+    // Mover at the west end, stepping east into the corridor's other cell.
+    let mut mover = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
+    mover.movement_target = Some(MovementTarget {
+        path: vec![(1, 1), (2, 1)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 1,
+        speed: SimFixed::from_num(1024),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((2, 1)),
+        ..Default::default()
+    });
+    mover.facing = 64;
+    entities.insert(mover);
+    occupancy.add(
+        1,
+        1,
+        1,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+
+    // Friendly at the east end, stepping west into the mover's cell. It keeps a
+    // live movement target for the whole run — its repath through the mover's
+    // cell (a code-2 soft block, not a hard one) succeeds every time, so it
+    // never exhausts its stuck counter and never reverts to a stationary ally.
+    let mut blocker = GameEntity::test_default(2, "HTNK", "Americans", 2, 1);
+    blocker.movement_target = Some(MovementTarget {
+        path: vec![(2, 1), (1, 1)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 1,
+        speed: SimFixed::from_num(1024),
+        move_dir_x: SimFixed::from_num(-256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((1, 1)),
+        ..Default::default()
+    });
+    blocker.facing = 192;
+    entities.insert(blocker);
+    occupancy.add(
+        2,
+        1,
+        2,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+
+    let mut lifecycle_requests = Vec::new();
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    // Post-tick wait readings, collected from the first blocked tick onward.
+    let mut waits: Vec<u16> = Vec::new();
+    for native_frame in 0..TICKS {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            native_frame as u64,
+            &mut interner,
+            &mut lifecycle_requests,
+        );
+        let blocked = entities
+            .get(1)
+            .and_then(|e| e.movement_target.as_ref())
+            .map(|t| (t.path_blocked, t.blocked_delay));
+        match blocked {
+            Some((true, delay)) => waits.push(delay),
+            // Once the run has started, any gap means the fixture stopped
+            // holding the block and the samples below would be meaningless.
+            _ if !waits.is_empty() => break,
+            _ => {}
+        }
+        assert_eq!(
+            entities.get(1).map(|e| (e.position.rx, e.position.ry)),
+            Some((1, 1)),
+            "the corridor must hold the mover in place; waits so far: {waits:?}"
+        );
+    }
+
+    assert!(
+        waits.len() >= REQUIRED_SAMPLES,
+        "the mover must stay blocked for at least three post-scatter spans; \
+         got {} readings: {waits:?}",
+        waits.len()
+    );
+    assert!(
+        !waits.contains(&HARNESS_BLOCKAGE_PATH_DELAY),
+        "the code-2 wait must be the post-scatter constant, never BlockagePathDelay; \
+         series: {waits:?}"
+    );
+    for (i, &wait) in waits.iter().take(REQUIRED_SAMPLES).enumerate() {
+        // Each pass through the block re-arms the wait, so the reading is a
+        // sawtooth with period WAIT that never rests at zero. Gating the write
+        // on first entry gives 10, 9, … 1, 0, 0, 0, … instead.
+        let expected = WAIT - (i as u16 % WAIT);
+        assert_eq!(
+            wait, expected,
+            "post-scatter wait at blocked tick {i} should be {expected}; \
+             full series: {waits:?}"
+        );
+    }
+}
+
 /// GSI-07.03: the walk locomotor's blocked-step Override fires exactly ONCE per
 /// block, and the mover stops where it stood.
 ///
@@ -4729,4 +4887,3 @@ fn gsi_06_13_sharp_kink_fallback_still_drives_to_the_real_path_node() {
         "the mover must still take its real next path node: visited {visited:?}"
     );
 }
-

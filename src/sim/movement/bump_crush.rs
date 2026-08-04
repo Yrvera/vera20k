@@ -1698,10 +1698,13 @@ mod tests {
         assert_eq!(rng.state(), before.state());
     }
 
-    #[test]
-    fn post_scatter_wait_is_ten_frames_not_blockage_path_delay() {
-        assert_eq!(POST_SCATTER_WAIT_FRAMES, 10);
-    }
+    // `post_scatter_wait_is_ten_frames_not_blockage_path_delay` used to sit
+    // here asserting `POST_SCATTER_WAIT_FRAMES == 10` — a constant against
+    // itself, which no behavioural regression could break. The claim it was
+    // reaching for is now pinned by observation in
+    // `movement_tests::code_two_post_scatter_wait_rearms_on_every_pass_while_the_block_holds`,
+    // which watches a blocked mover's timer and sees the 10-frame sawtooth
+    // rather than a `BlockagePathDelay` span.
 
     // -- sub-cell allocation tests --
 
