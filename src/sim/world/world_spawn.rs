@@ -252,12 +252,46 @@ impl Simulation {
             if has_spawn_manager && let Some(ruleset) = rules {
                 crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, ruleset);
             }
-            self.commit_spawn_harvest_mission(stable_id);
+            self.commit_map_placement_mission(stable_id, map_ent.mission);
             count += 1;
         }
 
         log::info!("Spawned {} entities", count);
         count
+    }
+
+    /// Commit the `MISSION=` column a map placement authored, at the position
+    /// the scenario reader does it: immediately after the object is unlimboed
+    /// onto the map.
+    ///
+    /// Retail runs `Queue_Mission(<name>, 0)` and then its readiness check plus
+    /// `Commence` on the same line, and `Queue` refuses the `-1` sentinel — so
+    /// an absent or unrecognised name leaves the object on the mission it was
+    /// born with. Because the queue slot is empty at birth, `Commence`'s field
+    /// writes are exactly `Assign`'s, which is the verb used here; the residual
+    /// is that retail's Unit path can leave the promotion one tick late when
+    /// its readiness predicate says no, and this cannot.
+    ///
+    /// Dispatchable miners keep their spawn-time Harvest override — the native
+    /// creation-mission family is its own recorded UNCHECKED and the harvest
+    /// FSM needs a truthful `current` from birth.
+    fn commit_map_placement_mission(
+        &mut self,
+        stable_id: u64,
+        authored: Option<crate::sim::mission::MissionType>,
+    ) {
+        if self.commit_spawn_harvest_mission(stable_id) {
+            return;
+        }
+        let Some(mission) = authored else {
+            return;
+        };
+        let now = self.session.binary_frame;
+        let _ = self.mission_assign_exact(
+            stable_id,
+            crate::sim::mission::MissionId::from_known(mission),
+            now,
+        );
     }
 
     /// Commit the spawn-time Harvest mission for a freshly stored miner so the
@@ -267,7 +301,10 @@ impl Simulation {
     /// initial-unit assigns, roadmap Track B1) is unverified — this preserves
     /// the legacy spawn-into-SearchOre behavior. Slave Miners are excluded
     /// (their own system drives them; never Harvest-dispatched).
-    fn commit_spawn_harvest_mission(&mut self, stable_id: u64) {
+    ///
+    /// Returns whether the object was a dispatchable miner, i.e. whether this
+    /// call owns its spawn mission.
+    fn commit_spawn_harvest_mission(&mut self, stable_id: u64) -> bool {
         let is_dispatchable_miner = self
             .substrate
             .entities
@@ -275,7 +312,7 @@ impl Simulation {
             .and_then(|e| e.miner.as_ref())
             .is_some_and(|m| m.kind != crate::sim::miner::MinerKind::Slave);
         if !is_dispatchable_miner {
-            return;
+            return false;
         }
         let now = self.session.binary_frame;
         let _ = self.mission_assign_exact(
@@ -283,6 +320,7 @@ impl Simulation {
             crate::sim::mission::MissionId::from_known(crate::sim::mission::MissionType::Harvest),
             now,
         );
+        true
     }
 
     /// Spawn one object instance (used by production). Returns the stable_id on success.

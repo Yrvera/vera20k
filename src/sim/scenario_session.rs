@@ -175,6 +175,7 @@ mod tests {
                 sub_cell: 0,
                 veterancy: 0,
                 high: false,
+                mission: None,
             };
             sim.spawn_from_map(&[entity], None, &BTreeMap::new());
             sim

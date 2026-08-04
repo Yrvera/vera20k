@@ -229,6 +229,26 @@ pub(crate) fn acquire_best_target(
         }
 
         // Use override (garrison), guard_range, or weapon range for the distance check.
+        //
+        // The per-candidate weapon range here is CORRECT, and the tempting
+        // "widen it" fix is refuted — recording it because the reading that
+        // suggests widening is easy to arrive at and expensive to act on.
+        //
+        // The original's threat scan does compute a wider number, `weapon
+        // cells + 1 + AirRangeBonus cells`, but that is the bound of its
+        // expanding-ring **cell walk**, not an acceptance radius: it decides how
+        // far out to look for cells, and the ring walk is a Chebyshev square, so
+        // it never clips a candidate that the acceptance test would have taken.
+        // Acceptance is a separate per-candidate test one level down, and when
+        // the walk is running on the degenerate (no `GuardRange=`) path it
+        // passes a range of zero, which makes that test fall through to the
+        // attacker's own can-fire-at-this-target query — i.e. the range of the
+        // weapon selected against that very candidate. That is exactly what
+        // this line computes, and `compute_in_range` below is the same query.
+        //
+        // (With `GuardRange=` set the range argument is non-zero and the test is
+        // a straight Euclidean `distance <= GuardRange`, which is also what this
+        // line computes.)
         let scan_range = scan_range_override
             .unwrap_or_else(|| attacker_obj.guard_range.unwrap_or(selected.weapon.range));
         // 2D dist_sq still feeds the ranking key below; the in-range boolean

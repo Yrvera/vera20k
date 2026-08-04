@@ -598,16 +598,29 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
         let Some(entity) = sim.substrate.entities.get(id) else {
             return;
         };
-        if entity.dying || entity.miner.is_some() {
+        if entity.dying {
             return;
         }
         let category = entity.category;
         if !matches!(category, EntityCategory::Unit | EntityCategory::Infantry) {
             return;
         }
-        let Some(mission) = entity.mission.current().known() else {
+        let mission = entity.mission.current().known();
+        // A miner's dispatch is owned by the absorbed Harvest handler, which
+        // writes its own epilogue — except on Guard, which the Harvest handler
+        // now declines. That is the native split: a vehicle on Guard enters the
+        // harvester Guard override, which layers the slave/refinery checks and
+        // then tail-calls the same FootClass Guard handler every other unit
+        // uses; a vehicle on Harvest enters the Harvest handler. Exactly one of
+        // the two runs, so the timer keeps a single writer.
+        //
+        // RESIDUAL, not modelled: the harvester Guard override's player arm
+        // re-queues Harvest when a Refinery the house owns sits in one of the
+        // eight neighbouring cells, so a retail miner stopped next to its
+        // refinery goes back to work on its own. VERA's stays put.
+        if entity.miner.is_some() && mission != Some(MissionType::Guard) {
             return;
-        };
+        }
         let moving = entity.movement_target.is_some()
             || entity.navigation.nav_com.is_some()
             || entity.drive_track.is_some()
@@ -636,7 +649,7 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
     let evaluation = match (input.category, input.mission) {
         // `FootClass::Mission_Move` is the native named location for this
         // handler-return cadence; movement execution remains in movement/.
-        (EntityCategory::Unit | EntityCategory::Infantry, MissionType::Move) => {
+        (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Move)) => {
             if input.moving_or_queued {
                 MissionHandlerEvaluation::cadence(jittered_mission_cadence(
                     sim,
@@ -650,7 +663,7 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
         }
         // `UnitClass::Mission_Attack @ 0x007447A0` is a tail jump to
         // `FootClass::Mission_Attack`; keep both categories on this one path.
-        (EntityCategory::Unit | EntityCategory::Infantry, MissionType::Attack) => {
+        (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Attack)) => {
             let cadence = jittered_mission_cadence(sim, rules, MissionType::Attack);
             let delay = if foot_attack_in_half_cadence_band(sim, id) {
                 cadence / 2
@@ -667,38 +680,52 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
                 queue: None,
             }
         }
-        (EntityCategory::Unit, MissionType::Guard) => {
-            // `UnitClass::Mission_Guard @ 0x00740810`: the two Unit-local
-            // deploy latches queue before the FootClass delegate and return 1.
+        (EntityCategory::Unit, Some(MissionType::Guard)) => {
+            // `UnitClass`'s Guard override: the two Unit-local deploy latches
+            // queue before the FootClass delegate and return 1.
             if input.unit_deploy_begin_active {
                 MissionHandlerEvaluation::queue(1, MissionType::Harvest)
             } else if input.unit_deploy_reverse_active {
                 MissionHandlerEvaluation::queue(1, MissionType::Unload)
             } else {
-                evaluate_foot_guard_cadence(sim, rules, input.bunker_delegate)
+                evaluate_foot_guard_cadence(sim, rules, MissionType::Guard, input.bunker_delegate)
             }
         }
-        (EntityCategory::Infantry, MissionType::Guard) => {
-            evaluate_foot_guard_cadence(sim, rules, input.bunker_delegate)
+        (EntityCategory::Infantry, Some(MissionType::Guard)) => {
+            evaluate_foot_guard_cadence(sim, rules, MissionType::Guard, input.bunker_delegate)
+        }
+        // Sticky dispatches through the SAME slot as Guard — one handler, two
+        // selectors — so it runs the Guard body. The cadence still comes from
+        // the object's own mission slot (the timer lookup indexes on the
+        // committed mission id, not on the handler's identity), and `[Sticky]
+        // Rate=.016` is 14 frames against Guard's 27. Stock skirmish maps park
+        // neutral civilian traffic on this.
+        (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Sticky)) => {
+            evaluate_foot_guard_cadence(sim, rules, MissionType::Sticky, input.bunker_delegate)
         }
         // `FootClass::Mission_Hunt`: the observed Capture/Sabotage/Move routes
         // need an authoritative selector. Until one exists, retain its cadence
         // and do not manufacture a target or queued mission.
-        (EntityCategory::Infantry, MissionType::Hunt) => {
-            MissionHandlerEvaluation::cadence(jittered_mission_cadence(
-                sim,
-                rules,
-                MissionType::Hunt,
-            ))
-        }
-        // `UnitClass::Mission_Hunt @ 0x00740EF0` retries the strict target
-        // probe, then queues Enter only if its separate approach virtual
-        // returns one. Neither producer exists here, so preserve its exact
-        // no-jitter fallback rather than infer arrival from target presence.
-        (EntityCategory::Unit, MissionType::Hunt) => {
+        (EntityCategory::Infantry, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
+            jittered_mission_cadence(sim, rules, MissionType::Hunt),
+        ),
+        // The `UnitClass` Hunt override retries the strict target probe, then
+        // queues Enter only if its separate approach virtual returns one.
+        // Neither producer exists here, so preserve its exact no-jitter
+        // fallback rather than infer arrival from target presence.
+        (EntityCategory::Unit, Some(MissionType::Hunt)) => {
             MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Hunt))
         }
-        _ => return,
+        // Everything else: the object still reaches a handler and still re-arms
+        // its timer. Where that handler is the un-overridden base one, the
+        // return value is a verified constant and no RNG is drawn; where the
+        // leaf class overrides the slot with a real handler VERA has not
+        // absorbed yet, leave the timer alone rather than install a value the
+        // original never writes.
+        (category, mission) => match base_mission_handler_delay(category, mission) {
+            Some(delay) => MissionHandlerEvaluation::cadence(delay),
+            None => return,
+        },
     };
 
     if evaluation.clear_stale_attack_target {
@@ -725,7 +752,11 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
 #[derive(Debug, Clone, Copy)]
 struct MissionHandlerInput {
     category: EntityCategory,
-    mission: MissionType,
+    /// The committed selector, or `None` for the idle sentinel. The native
+    /// dispatcher's bounds test on the mission id is UNSIGNED, so the sentinel
+    /// and every out-of-range id take the switch's default arm rather than
+    /// being skipped.
+    mission: Option<MissionType>,
     timer_due: bool,
     moving_or_queued: bool,
     bunker_delegate: bool,
@@ -761,22 +792,82 @@ impl MissionHandlerEvaluation {
     }
 }
 
+/// `FootClass::Mission_Guard`, the body Guard(5) and Sticky(6) share.
+///
+/// `mission` is the object's OWN committed selector, not the handler's: the
+/// native timer lookup indexes the control table on the committed mission id,
+/// so the same handler re-arms a Guard object at `[Guard] Rate` and a Sticky
+/// object at `[Sticky] Rate`.
+///
+/// Bunker delegation returns the base cadence; all represented local-guard
+/// paths take exactly one `RandomRanged(0, 2)`.
 fn evaluate_foot_guard_cadence(
     sim: &mut Simulation,
     rules: &RuleSet,
+    mission: MissionType,
     bunker_delegate: bool,
 ) -> MissionHandlerEvaluation {
-    // `FootClass::Mission_Guard`: bunker delegation returns the base cadence;
-    // all represented local-guard paths take exactly one RandomRanged(0, 2).
     if bunker_delegate {
-        MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Guard))
+        MissionHandlerEvaluation::cadence(mission_cadence(rules, mission))
     } else {
-        MissionHandlerEvaluation::cadence(jittered_mission_cadence(
-            sim,
-            rules,
-            MissionType::Guard,
-        ))
+        MissionHandlerEvaluation::cadence(jittered_mission_cadence(sim, rules, mission))
     }
+}
+
+/// The un-overridden `MissionClass` handler's return value, in frames.
+///
+/// Every base mission stub in the original is the same two instructions —
+/// load 450, return — so a slot no leaf class overrides does nothing and comes
+/// back in 30 seconds at 15 fps. It reads no INI: `[Sleep] Rate=1` would be 900
+/// frames and is dead data for this path.
+const BASE_MISSION_HANDLER_FRAMES: i32 = 450;
+
+/// Which committed missions still sit on the un-overridden base handler for a
+/// given category, i.e. which ones re-arm with the flat
+/// [`BASE_MISSION_HANDLER_FRAMES`] and consume no RNG.
+///
+/// Read directly out of the `UnitClass` and `InfantryClass` mission-handler
+/// vtable blocks (the slots holding the shared 450-frame stubs), so this is a
+/// per-category fact, not an inference: `Repair` is a base stub for Infantry
+/// and a real override for Units.
+///
+/// `None` — the idle sentinel — belongs here because the dispatcher's bounds
+/// test is unsigned: the sentinel takes the switch default, which calls the
+/// same slot `Sleep(0)` does.
+///
+/// A mission that is NOT in this set has a real leaf handler VERA has not
+/// absorbed; returning `None` leaves its timer untouched rather than writing a
+/// cadence the original never produces.
+fn base_mission_handler_delay(
+    category: EntityCategory,
+    mission: Option<MissionType>,
+) -> Option<i32> {
+    let Some(mission) = mission else {
+        // The `-1` idle sentinel takes the unsigned default arm.
+        return Some(BASE_MISSION_HANDLER_FRAMES);
+    };
+    let shared_base_stub = matches!(
+        mission,
+        MissionType::Sleep
+            | MissionType::QMove
+            | MissionType::Return
+            | MissionType::Stop
+            | MissionType::Ambush
+            | MissionType::Construction
+            | MissionType::Selling
+            | MissionType::Missile
+            | MissionType::Harmless
+            | MissionType::Open
+            | MissionType::ParadropApproach
+            | MissionType::ParadropOverfly
+            | MissionType::Deliberate
+            | MissionType::AttackMove
+            | MissionType::SpyplaneApproach
+            | MissionType::SpyplaneOverfly
+    );
+    // Repair is the one slot the two categories disagree on.
+    let category_base_stub = category == EntityCategory::Infantry && mission == MissionType::Repair;
+    (shared_base_stub || category_base_stub).then_some(BASE_MISSION_HANDLER_FRAMES)
 }
 
 #[inline]
@@ -829,13 +920,11 @@ fn attack_target_is_stale(sim: &Simulation, id: u64) -> bool {
     else {
         return false;
     };
-    !sim
-        .substrate
+    !sim.substrate
         .entities
         .get(*target_id)
         .is_some_and(|target| !target.dying && target.is_alive())
 }
-
 
 /// The base can-acquire check every passive path sits behind.
 ///
@@ -1675,6 +1764,7 @@ mod tests {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         }
     }
 
@@ -2904,10 +2994,18 @@ mod tests {
         sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
 
         assert_eq!(
-            sim.substrate.entities.get(1).unwrap().mission.dispatch_timer(),
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer(),
             MissionDispatchTimer::from_raw(0, expected_delay)
         );
-        assert_eq!(sim.scenario_rng.logical_state(), expected_rng.logical_state());
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
     }
 
     #[test]
@@ -2973,7 +3071,10 @@ mod tests {
 
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.mission.queued().known(), Some(MissionType::Harvest));
-        assert_eq!(unit.mission.dispatch_timer(), MissionDispatchTimer::from_raw(0, 1));
+        assert_eq!(
+            unit.mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 1)
+        );
         assert_eq!(sim.scenario_rng.logical_state(), before_rng);
     }
 
@@ -2994,7 +3095,10 @@ mod tests {
 
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.mission.queued().known(), Some(MissionType::Unload));
-        assert_eq!(unit.mission.dispatch_timer(), MissionDispatchTimer::from_raw(0, 1));
+        assert_eq!(
+            unit.mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 1)
+        );
         assert_eq!(sim.scenario_rng.logical_state(), before_rng);
     }
 
@@ -3075,8 +3179,166 @@ mod tests {
 
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.mission.queued(), MissionId::NONE);
-        assert_eq!(unit.mission.dispatch_timer(), MissionDispatchTimer::from_raw(0, 14));
+        assert_eq!(
+            unit.mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 14)
+        );
         assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    // ===== The base (un-overridden) mission handler =====
+
+    /// A mission whose slot no leaf class overrides re-arms with a flat 450
+    /// frames and draws nothing. Without this arm the dispatch timer stayed at
+    /// whatever Commence wrote — `{now, 0}`, i.e. permanently due — so the
+    /// mission timer gated nothing for those objects.
+    #[test]
+    fn base_stub_missions_rearm_450_frames_without_touching_rng() {
+        for (category, mission) in [
+            (EntityCategory::Unit, MissionType::Stop),
+            (EntityCategory::Unit, MissionType::Selling),
+            (EntityCategory::Unit, MissionType::Sleep),
+            (EntityCategory::Unit, MissionType::Harmless),
+            (EntityCategory::Infantry, MissionType::Stop),
+            // Repair is a base stub for Infantry only.
+            (EntityCategory::Infantry, MissionType::Repair),
+        ] {
+            let mut sim = Simulation::with_seed(0x5B2E);
+            let rules = representative_foot_handler_rules();
+            let mut unit = entity_of(1, category);
+            update_mission_test_fixture(&mut unit.mission, |fixture| {
+                fixture.current = MissionId::from_known(mission);
+                fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+            });
+            register_entity(&mut sim, unit);
+            let before_rng = sim.scenario_rng.logical_state();
+
+            sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+            assert_eq!(
+                sim.substrate
+                    .entities
+                    .get(1)
+                    .unwrap()
+                    .mission
+                    .dispatch_timer(),
+                MissionDispatchTimer::from_raw(0, BASE_MISSION_HANDLER_FRAMES),
+                "{category:?} on {mission:?} must re-arm the base handler's flat delay"
+            );
+            assert_eq!(
+                sim.scenario_rng.logical_state(),
+                before_rng,
+                "{category:?} on {mission:?} must draw no RNG — the base stub touches nothing"
+            );
+        }
+    }
+
+    /// The dispatcher's bounds test on the mission id is unsigned, so the idle
+    /// sentinel takes the switch default — the same base handler `Sleep(0)` uses
+    /// — rather than being skipped.
+    #[test]
+    fn the_idle_sentinel_takes_the_default_arm() {
+        let mut sim = Simulation::with_seed(0x5B34);
+        let rules = representative_foot_handler_rules();
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::NONE;
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, unit);
+        let before_rng = sim.scenario_rng.logical_state();
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, BASE_MISSION_HANDLER_FRAMES)
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+    }
+
+    /// A mission whose leaf class DOES override the slot with a real handler
+    /// must not be given the base handler's value — that would install a 30
+    /// second timer where the original installs its own, much shorter one.
+    #[test]
+    fn overridden_leaf_handlers_are_left_alone_by_the_default_arm() {
+        for (category, mission) in [
+            (EntityCategory::Unit, MissionType::Enter),
+            (EntityCategory::Unit, MissionType::Unload),
+            (EntityCategory::Unit, MissionType::AreaGuard),
+            // Repair overrides on Units even though it is a stub on Infantry.
+            (EntityCategory::Unit, MissionType::Repair),
+            (EntityCategory::Infantry, MissionType::Enter),
+        ] {
+            assert_eq!(
+                base_mission_handler_delay(category, Some(mission)),
+                None,
+                "{category:?} on {mission:?} has a real leaf handler"
+            );
+            let mut sim = Simulation::with_seed(0x5B2F);
+            let rules = representative_foot_handler_rules();
+            let mut unit = entity_of(1, category);
+            update_mission_test_fixture(&mut unit.mission, |fixture| {
+                fixture.current = MissionId::from_known(mission);
+                fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+            });
+            register_entity(&mut sim, unit);
+
+            sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+            assert_eq!(
+                sim.substrate
+                    .entities
+                    .get(1)
+                    .unwrap()
+                    .mission
+                    .dispatch_timer(),
+                MissionDispatchTimer::at_frame(0),
+                "{category:?} on {mission:?} must keep its untouched timer"
+            );
+        }
+    }
+
+    /// Sticky and Guard dispatch through the same slot, so Sticky runs the
+    /// Guard handler — but the cadence comes from the object's OWN mission
+    /// slot, so `[Sticky] Rate` (14) applies, not `[Guard] Rate` (27).
+    #[test]
+    fn sticky_runs_the_guard_handler_at_its_own_rate() {
+        let mut sim = Simulation::with_seed(0x21C0);
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\n\n[Guard]\nRate=.030\n\n[Sticky]\nRate=.016\n",
+        ))
+        .expect("sticky cadence rules parse");
+        let mut unit = entity_of(1, EntityCategory::Unit);
+        update_mission_test_fixture(&mut unit.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Sticky);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, unit);
+        let mut expected_rng = sim.clone_scenario_rng();
+        let jitter = expected_rng.next_range_u32_inclusive(0, 2) as i32;
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, 14 + jitter),
+            "[Sticky] Rate=.016 is 14 frames; [Guard] Rate=.030 would be 27"
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
     }
 
     fn capture_live_host_witness(sim: &Simulation, id: u64) -> LiveHostWitness {

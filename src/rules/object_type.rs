@@ -270,6 +270,21 @@ pub struct ObjectType {
     /// Sound ID played when a harvester is manually ordered to return to a
     /// friendly refinery (right-click own refinery).
     pub voice_enter: Option<String>,
+    /// Sound ID played when this unit is ordered to capture a building.
+    ///
+    /// Retail gives capture its own order-ack slot and falls back to the Enter
+    /// slot only when this key is absent. Stock YR ships it on every engineer
+    /// (`EngAllAttackCommand` / `EngSovAttackCommand`), so the fallback is not
+    /// the ordinary-play path.
+    pub voice_capture: Option<String>,
+    /// `PreventAttackMove=` — the type refuses attack-move orders even when it
+    /// carries a real `Primary=`.
+    ///
+    /// Retail's attack-move eligibility predicate is
+    /// `Primary != null && !PreventAttackMove`; stock YR sets the key on
+    /// ENGINEER / SENGINEER / YENGINEER / SPY, all of which carry a real
+    /// `Primary=` and would otherwise pass. Default false.
+    pub prevent_attack_move: bool,
     /// Ordered voice-sound choices for a human-controlled entity's fatal result.
     pub voice_die: Vec<String>,
     /// Ordered sound choices played when this entity dies or is destroyed.
@@ -1030,6 +1045,8 @@ impl ObjectType {
             voice_attack: section.get("VoiceAttack").map(|s| s.to_string()),
             voice_harvest: section.get("VoiceHarvest").map(|s| s.to_string()),
             voice_enter: section.get("VoiceEnter").map(|s| s.to_string()),
+            voice_capture: section.get("VoiceCapture").map(|s| s.to_string()),
+            prevent_attack_move: section.get_bool("PreventAttackMove").unwrap_or(false),
             voice_die: parse_csv_string_list(section.get("VoiceDie")),
             die_sounds: parse_csv_string_list(section.get("DieSound")),
             move_sound: section.get("MoveSound").map(|s| s.to_string()),
@@ -1483,6 +1500,59 @@ mod tests {
         );
         assert_eq!(none_obj.voice_harvest, None);
         assert_eq!(none_obj.voice_enter, None);
+    }
+
+    /// GSI-06.04 carry-over: retail's capture order-ack reads the type's own
+    /// `VoiceCapture=` slot and only falls back to Enter when the key is absent.
+    /// Stock engineers ship the key, so it must round-trip through the parse.
+    #[test]
+    fn gsi_06_parses_voice_capture_slot() {
+        let ini: IniFile = IniFile::from_str(
+            "[ENGINEER]\nName=Engineer\nVoiceMove=EngAllMove\n\
+             VoiceEnter=EngAllMove\nVoiceCapture=EngAllAttackCommand\n",
+        );
+        let obj = ObjectType::from_ini_section(
+            "ENGINEER",
+            ini.section("ENGINEER").unwrap(),
+            ObjectCategory::Infantry,
+        );
+        assert_eq!(obj.voice_capture, Some("EngAllAttackCommand".to_string()));
+
+        // Absent key stays None, which is the retail "fall back to Enter" case.
+        let none_ini: IniFile = IniFile::from_str("[E1]\nName=GI\n");
+        let none_obj = ObjectType::from_ini_section(
+            "E1",
+            none_ini.section("E1").unwrap(),
+            ObjectCategory::Infantry,
+        );
+        assert_eq!(none_obj.voice_capture, None);
+    }
+
+    /// GSI-06.04 carry-over: retail's attack-move eligibility is
+    /// `Primary != null && !PreventAttackMove`. Stock engineers carry both a
+    /// real `Primary=` and the key, so the flag has to survive the parse for
+    /// the predicate to refuse them.
+    #[test]
+    fn gsi_06_parses_prevent_attack_move_flag() {
+        let ini: IniFile = IniFile::from_str(
+            "[ENGINEER]\nName=Engineer\nPrimary=DefuseKit\nPreventAttackMove=yes\n",
+        );
+        let obj = ObjectType::from_ini_section(
+            "ENGINEER",
+            ini.section("ENGINEER").unwrap(),
+            ObjectCategory::Infantry,
+        );
+        assert!(obj.prevent_attack_move);
+        assert_eq!(obj.primary.as_deref(), Some("DefuseKit"));
+
+        // Absent key defaults to false — an ordinary tank still attack-moves.
+        let none_ini: IniFile = IniFile::from_str("[MTNK]\nName=Grizzly\nPrimary=90mm\n");
+        let none_obj = ObjectType::from_ini_section(
+            "MTNK",
+            none_ini.section("MTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(!none_obj.prevent_attack_move);
     }
 
     #[test]

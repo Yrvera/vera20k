@@ -703,12 +703,51 @@ pub fn classify_drive_crush_phase(
 // Our implementation: find a walkable, unoccupied adjacent cell and issue
 // the blocker a 1-cell movement command via `issue_direct_move`.
 
+/// Whether an already-moving blocker still accepts a forced scatter.
+///
+/// The two native Scatter bodies do NOT agree with each other, and VERA's
+/// former blanket "already moving → refuse" gate matched neither:
+///
+/// * **Vehicles.** `UnitClass::Scatter` never asks its locomotor whether it is
+///   moving — the whole body contains no `Is_Moving` call. Its only gate before
+///   the displacement is `missionEntry.Scatter || forced`, and every locomotor
+///   blocked-cell caller passes `forced = 1`, so a moving vehicle is scattered
+///   unconditionally.
+/// * **Infantry.** `InfantryClass::Scatter` loads its OWN locomotor, calls
+///   `Is_Moving`, and on a positive answer demotes the caller's force byte to
+///   zero — and only then applies the same `missionEntry.Scatter || forced`
+///   gate. So a moving infantryman still scatters whenever the mission it is
+///   currently running has `Scatter=yes`.
+///
+/// An absent mission-control table resolves to the constructed `Scatter=yes`
+/// default, which is what an unread table slot holds in the original engine.
+fn moving_blocker_accepts_forced_scatter(
+    blocker: &GameEntity,
+    mission_control: Option<&crate::sim::mission::MissionControl>,
+) -> bool {
+    // Vehicles: no locomotor query at all, so the force byte survives.
+    if blocker.category != EntityCategory::Infantry {
+        return true;
+    }
+    let mission = blocker.mission.current().known();
+    match (mission, mission_control) {
+        (Some(mission), Some(control)) => {
+            control.entry(mission).map_or(true, |entry| entry.scatter)
+        }
+        _ => true,
+    }
+}
+
 /// Try to scatter a blocker to an adjacent cell by issuing a movement command.
 ///
 /// Matches the original engine's movement scatter (Branch A — NullCoord):
 /// search 8 neighbors starting from a random direction, pick the first
 /// walkable + unoccupied cell, issue the blocker a movement order to walk
 /// there.
+///
+/// `mission_control` supplies the current mission's `Scatter=` flag, which the
+/// infantry body consults once its own locomotor reports moving (see
+/// [`moving_blocker_accepts_forced_scatter`]).
 ///
 /// Returns `true` if the blocker was given a scatter movement command.
 pub fn scatter_blocker(
@@ -718,6 +757,7 @@ pub fn scatter_blocker(
     occupancy: &OccupancyGrid,
     layer: MovementLayer,
     rng: &mut SimRng,
+    mission_control: Option<&crate::sim::mission::MissionControl>,
 ) -> bool {
     // Read blocker properties (immutable borrow).
     let Some(blocker) = entities.get(blocker_id) else {
@@ -728,8 +768,12 @@ pub fn scatter_blocker(
     if blocker.category == EntityCategory::Structure {
         return false;
     }
-    // Don't scatter a blocker that's already moving.
-    if blocker.movement_target.is_some() {
+    // A blocker that is already moving is NOT refused outright. VERA has no
+    // per-locomotor `Is_Moving` query yet, so an installed movement target
+    // stands in for it — VERA-internal, gamemd equivalent UNCHECKED.
+    if blocker.movement_target.is_some()
+        && !moving_blocker_accepts_forced_scatter(blocker, mission_control)
+    {
         return false;
     }
     let bpos = (blocker.position.rx, blocker.position.ry);
@@ -1262,6 +1306,7 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
+            None,
         );
         assert!(result, "scatter_blocker should succeed with open cells");
 
@@ -1305,39 +1350,161 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
+            None,
         );
         assert!(!result, "scatter_blocker should fail when all blocked");
         assert!(store.get(1).unwrap().movement_target.is_none());
     }
 
-    #[test]
-    fn test_scatter_blocker_skips_already_moving() {
-        let grid = PathGrid::new(10, 10);
-        let occupancy = OccupancyGrid::new();
-        let mut rng = SimRng::new(42);
-
-        let mut store = EntityStore::new();
-        let mut v = vehicle(1, 5, 5);
-        v.movement_target = Some(crate::sim::components::MovementTarget {
+    fn moving_target() -> crate::sim::components::MovementTarget {
+        crate::sim::components::MovementTarget {
             path: vec![(5, 5), (6, 5)],
             path_layers: vec![MovementLayer::Ground; 2],
             next_index: 1,
             speed: crate::util::fixed_math::SimFixed::from_num(1024),
             ..Default::default()
-        });
+        }
+    }
+
+    fn set_mission(entity: &mut GameEntity, mission: crate::sim::mission::MissionType) {
+        entity
+            .mission
+            .apply_test_fixture(crate::sim::mission::state::MissionTestFixture {
+                current: crate::sim::mission::MissionId::from_known(mission),
+                suspended: crate::sim::mission::MissionId::NONE,
+                queued: crate::sim::mission::MissionId::NONE,
+                movement_bypass_latch: 0,
+                handler_state: 0,
+                mission_start_frame: 0,
+                ai_counter: 0,
+                dispatch_timer: crate::sim::mission::MissionDispatchTimer::at_frame(0),
+            });
+    }
+
+    /// Stock mission control: `[Move] Scatter=` keeps the constructed yes,
+    /// `[Sleep] Scatter=no`.
+    fn scatter_mission_control() -> crate::sim::mission::MissionControl {
+        crate::sim::mission::MissionControl::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[Move]\nRate=.016\n\n[Sleep]\nScatter=no\n",
+        ))
+    }
+
+    /// `UnitClass::Scatter` never queries its locomotor — with the force byte
+    /// the locomotor blocked-cell path always passes, a MOVING vehicle is
+    /// displaced. VERA previously refused every moving blocker outright.
+    #[test]
+    fn scatter_blocker_displaces_a_moving_vehicle_under_force() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+        let control = scatter_mission_control();
+
+        let mut store = EntityStore::new();
+        let mut v = vehicle(1, 5, 5);
+        v.movement_target = Some(moving_target());
+        set_mission(&mut v, crate::sim::mission::MissionType::Move);
         store.insert(v);
 
-        let result = scatter_blocker(
-            &mut store,
-            1,
-            Some(&grid),
-            &occupancy,
-            MovementLayer::Ground,
-            &mut rng,
-        );
         assert!(
-            !result,
-            "scatter_blocker should not scatter already-moving unit"
+            scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+            ),
+            "a moving vehicle must still be scattered — the vehicle body has no Is_Moving gate"
+        );
+    }
+
+    /// `InfantryClass::Scatter` demotes the force byte when its own locomotor
+    /// reports moving, then applies `missionEntry.Scatter || forced`. A moving
+    /// infantryman on a `Scatter=yes` mission (the constructed default, kept by
+    /// Move) therefore still scatters.
+    #[test]
+    fn scatter_blocker_displaces_a_moving_infantryman_on_a_scatter_yes_mission() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+        let control = scatter_mission_control();
+
+        let mut store = EntityStore::new();
+        let mut i = infantry(1, 5, 5, 0);
+        i.movement_target = Some(moving_target());
+        set_mission(&mut i, crate::sim::mission::MissionType::Move);
+        store.insert(i);
+
+        assert!(
+            scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+            ),
+            "Move keeps the constructed Scatter=yes, so the demoted force byte still scatters"
+        );
+    }
+
+    /// ...and the same infantryman on a `Scatter=no` mission is refused, because
+    /// the demotion left `forced == 0` and the mission flag is the only other
+    /// way through the gate.
+    #[test]
+    fn scatter_blocker_refuses_a_moving_infantryman_on_a_scatter_no_mission() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+        let control = scatter_mission_control();
+
+        let mut store = EntityStore::new();
+        let mut i = infantry(1, 5, 5, 0);
+        i.movement_target = Some(moving_target());
+        set_mission(&mut i, crate::sim::mission::MissionType::Sleep);
+        store.insert(i);
+
+        assert!(
+            !scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+            ),
+            "[Sleep] Scatter=no and the force byte was demoted, so the gate refuses"
+        );
+    }
+
+    /// A STATIONARY infantryman never reaches the demotion, so the caller's
+    /// force byte survives and the mission flag cannot refuse it.
+    #[test]
+    fn scatter_blocker_displaces_a_stationary_infantryman_on_a_scatter_no_mission() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+        let control = scatter_mission_control();
+
+        let mut store = EntityStore::new();
+        let mut i = infantry(1, 5, 5, 0);
+        set_mission(&mut i, crate::sim::mission::MissionType::Sleep);
+        store.insert(i);
+
+        assert!(
+            scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+            ),
+            "forced=1 survives when the object is not moving"
         );
     }
 
@@ -1357,6 +1524,7 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
+            None,
         );
 
         assert!(
@@ -1397,6 +1565,7 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng1,
+            None,
         );
 
         let mut store2 = EntityStore::new();
@@ -1409,6 +1578,7 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng2,
+            None,
         );
 
         let t1 = store1.get(1).unwrap().movement_target.as_ref().unwrap();

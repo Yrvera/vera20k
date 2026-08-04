@@ -60,19 +60,29 @@ impl ZoneEdge {
     }
 }
 
+/// Whether the path entry may answer reachability from the reduced per-row zone
+/// map before running A*.
+///
+/// Gamemd gates every row: `Can_Reach_Zone` short-circuits to "reachable" only on
+/// `mzRow == -1`, and the A*-entry precheck reads whatever row the type's
+/// `MovementZone=` gives. Stock rulesmd puts every main battle tank in
+/// `Destroyer`, every ore miner in `Crusher` and the Battle Fortress in
+/// `CrusherAll`, so excluding those rows bypassed the gate for the majority of
+/// all path searches in a match.
+///
+/// `Water` / `WaterBeach` remain excluded — VERA-internal, gamemd equivalent
+/// UNCHECKED. The terrain-aware zone builder's water/beach surface legality is
+/// still coarser than the runtime water-surface predicate, so hard-gating naval
+/// movers here would refuse orders gamemd accepts. Remove the exception once the
+/// naval surface classes are pinned.
 fn can_use_reduced_zone_precheck(movement_zone: Option<MovementZone>) -> bool {
     match movement_zone {
         None => true,
-        Some(
-            MovementZone::Normal
-            | MovementZone::Amphibious
-            | MovementZone::Infantry
-            | MovementZone::Fly,
-        ) => true,
-        // TODO(RE): naval water/beach surface legality in the current terrain-aware zone
-        // builder is still coarser than the runtime water-surface predicate, so do not
-        // hard-gate those movers on reduced-zone reachability yet.
-        Some(_) => false,
+        // `mzRow == -1` short-circuits to "reachable" in the engine, so the
+        // reduced zone gate must NOT be allowed to refuse the search.
+        Some(MovementZone::Invalid) => false,
+        Some(MovementZone::Water | MovementZone::WaterBeach) => false,
+        Some(_) => true,
     }
 }
 

@@ -270,8 +270,8 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // still reproduces BOTH of its legacy probes unchanged across the whole slice —
 // its 16-tick fixture never reaches the first scan — so the composition half
 // remains isolated and behaviour-free, and everything moving here is behaviour.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xFC1F_0AB5_CD69_2849;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xF90E_8399_7801_CE58;
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xF145_2D77_77CC_AEB2;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x8E46_7613_D016_26FC;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -346,7 +346,15 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xF90E_8399_7801_CE58;
 /// Infantry leaf — same rationale, same ceremony, still a lone stream-0 shift.
 /// Re-baselined 2026-08-04 with FINAL_STREAM_STATES for the same
 /// constructed-`Rate` change; see the provenance note there.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x7D5F_8FC5_E9D6_4DE7;
+/// Re-baselined again 2026-08-04 for the GSI-07.04 base-mission default arm:
+/// objects on a mission whose native slot is the 450-frame `Mission_Default`
+/// stub now write a dispatch-timer pair that VERA previously left untouched.
+/// `FINAL_STREAM_STATES` passes UNCHANGED across this shift -- all three
+/// streams byte-identical -- so no draw was added, removed or rescheduled;
+/// this is hashed dispatch-timer state only. Attribution measured, not argued:
+/// forcing the default arm to write nothing, with every other change in the
+/// batch live, turns all six constants green again.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xF476_A88B_D264_47C6;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -383,6 +391,7 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
         sub_cell: 0,
         veterancy: 0,
         high: false,
+        mission: None,
     }
 }
 

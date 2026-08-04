@@ -715,6 +715,7 @@ pub(super) fn handle_deferred_occupancy(
                             occupancy,
                             object_list_layer,
                             rng,
+                            rules.map(|r| &r.mission_control),
                         )
                     {
                         already_scattered.insert(blocker_id);
@@ -773,6 +774,7 @@ pub(super) fn handle_deferred_occupancy(
                     occupancy,
                     object_list_layer,
                     rng,
+                    rules.map(|r| &r.mission_control),
                 );
                 if scattered {
                     already_scattered.insert(blocker_id);
@@ -905,6 +907,7 @@ pub(super) fn handle_deferred_occupancy(
                                 occupancy,
                                 object_list_layer,
                                 rng,
+                                rules.map(|r| &r.mission_control),
                             );
                             if scattered {
                                 already_scattered.insert(blocker_id);

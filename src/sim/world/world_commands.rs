@@ -312,12 +312,13 @@ impl Simulation {
                 if !self.order_actor_admits(*entity_id) {
                     return false;
                 }
-                // Cancel any depot dock reservation, then retask onto Stop.
-                self.queue_mission_with_teardown(
-                    *entity_id,
-                    MissionType::Stop,
-                    DockTeardown::Depot,
-                );
+                // Retail breaks EVERY radio contact on Stop (it broadcasts the
+                // break message to the whole contact list), so the refinery,
+                // airfield and service-depot links all go at once. Cancelling
+                // only the depot reservation left an aircraft that was told to
+                // stop while inbound to a helipad holding that pad for the rest
+                // of the match — a permanent leak that compounds.
+                self.queue_mission_with_teardown(*entity_id, MissionType::Stop, DockTeardown::All);
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     let committed_drive_head = e.drive_track.as_ref().and_then(|_| {
                         e.drive_locomotion
@@ -378,6 +379,15 @@ impl Simulation {
                         }
                     }
                 }
+                // Ore-miner arm, last — retail runs it after the radio break,
+                // the navigation clear, the target clear and the path-cursor
+                // reset. A vehicle carrying the miner type flag whose committed
+                // mission is Harvest or Return is force-assigned Guard and
+                // commenced in the same command, so it is off the harvest loop
+                // until it is re-ordered. Without it the miner halts for a beat
+                // and then drives straight back to the ore field, ignoring the
+                // order outright.
+                self.commit_stop_miner_guard(*entity_id);
                 true
             }
             Command::Attack {

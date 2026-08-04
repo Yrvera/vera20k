@@ -9,9 +9,12 @@
 //! Each line: `INDEX=OWNER,TYPE_ID,HEALTH,X,Y,...` with category-specific trailing fields.
 //!
 //! ## Dependency rules
-//! - Part of map/ — depends on rules/ (IniFile/IniSection for parsing).
+//! - Part of map/ — depends on rules/ (IniFile/IniSection for parsing) and on
+//!   the mission selector vocabulary in sim/mission (the `MISSION=` column is
+//!   the same 32-name table the scenario reader resolves through).
 
 use crate::rules::ini_parser::IniFile;
+use crate::sim::mission::MissionType;
 
 /// Which category of game object this entity represents.
 /// Determines rendering approach and available behaviors.
@@ -54,6 +57,28 @@ pub struct MapEntity {
     pub veterancy: u16,
     /// Spawn on the bridge deck / high layer when the map placement marks it.
     pub high: bool,
+    /// The authored `MISSION=` column, resolved through the engine's mission
+    /// name table. `None` is the `-1` idle sentinel the scenario reader gets
+    /// for an absent or unrecognised name — a *distinct* selector from
+    /// `Sleep(0)`, so the two must not be folded together. `[Structures]` has
+    /// no MISSION column at all and is always `None`.
+    pub mission: Option<MissionType>,
+}
+
+/// Field index of the `MISSION=` column in `[Units]`, `[Infantry]` and
+/// `[Aircraft]` map lines. `[Units]`/`[Aircraft]` are
+/// `OWNER,ID,HEALTH,X,Y,FACING,MISSION,TAG,…`; `[Infantry]` is
+/// `OWNER,ID,HEALTH,X,Y,SUB_CELL,MISSION,FACING,TAG,…` — the neighbours
+/// differ, the index does not.
+const MISSION_FIELD_INDEX: usize = 6;
+
+/// Resolve the `MISSION=` field at [`MISSION_FIELD_INDEX`], if the line is
+/// long enough to have one.
+fn parse_mission_field(fields: &[&str]) -> Option<MissionType> {
+    fields
+        .get(MISSION_FIELD_INDEX)
+        .copied()
+        .and_then(MissionType::from_map_name)
 }
 
 /// Parse all entity placements from a map's INI data.
@@ -182,6 +207,7 @@ fn parse_infantry_section(
             sub_cell,
             veterancy,
             high: parse_boolish_field(fields.get(11).copied()),
+            mission: parse_mission_field(&fields),
         });
     }
 }
@@ -276,6 +302,13 @@ fn parse_common_fields(fields: &[&str], category: EntityCategory, key: &str) -> 
         0
     };
 
+    // `[Structures]` lines have no MISSION column — a building cannot be
+    // map-authored onto a mission, and index 6 there is the trigger TAG.
+    let mission: Option<MissionType> = match category {
+        EntityCategory::Unit | EntityCategory::Aircraft => parse_mission_field(fields),
+        EntityCategory::Structure | EntityCategory::Infantry => None,
+    };
+
     Some(MapEntity {
         owner,
         type_id,
@@ -288,6 +321,7 @@ fn parse_common_fields(fields: &[&str], category: EntityCategory, key: &str) -> 
         veterancy,
         high: matches!(category, EntityCategory::Unit)
             && parse_atoi_bool_field(fields.get(10).copied()),
+        mission,
     })
 }
 
@@ -418,6 +452,87 @@ mod tests {
         assert!(entities[2].high, "High=-1 parses as nonzero");
         assert!(!entities[3].high, "missing High defaults false");
         assert!(!entities[4].high, "nonnumeric High parses as atoi 0");
+    }
+
+    /// Literal retail lines: `[Units]` from `EB4.mmx` and `[Infantry]` from
+    /// `Arena.mmx`, both `GameMode=standard` skirmish maps. The facing and
+    /// sub-cell assertions are the tripwire proving the column indices did not
+    /// shift when MISSION started being read.
+    #[test]
+    fn retail_lines_resolve_their_authored_mission() {
+        let ini: IniFile = IniFile::from_str(
+            "[Units]\n\
+             0=Neutral,PTRUCK,256,123,85,0,Sticky,None,0,-1,0,-1,1,1\n\
+             1=Neutral,TRUCKA,256,69,101,0,Guard,None,0,-1,0,-1,1,1\n\
+             [Infantry]\n\
+             0=Neutral,CIVBTM,256,113,68,2,Sticky,192,None,0,-1,0,1,1\n",
+        );
+        let entities: Vec<MapEntity> = parse_map_entities(&ini);
+        assert_eq!(entities.len(), 3);
+
+        assert_eq!(entities[0].type_id, "PTRUCK");
+        assert_eq!(entities[0].mission, Some(MissionType::Sticky));
+        assert_eq!(entities[0].facing, 0);
+        assert_eq!(entities[1].mission, Some(MissionType::Guard));
+
+        let infantry = &entities[2];
+        assert_eq!(infantry.category, EntityCategory::Infantry);
+        assert_eq!(infantry.mission, Some(MissionType::Sticky));
+        assert_eq!(infantry.sub_cell, 2);
+        assert_eq!(infantry.facing, 192);
+    }
+
+    /// `Mission_From_Name` is a case-insensitive table scan returning `-1` for
+    /// anything absent or unrecognised — and `-1` is not `Sleep(0)`. The
+    /// spaced `Area Guard` is the name a naive lookup drops.
+    #[test]
+    fn map_mission_column_matches_mission_from_name() {
+        let ini: IniFile = IniFile::from_str(
+            "[Units]\n\
+             0=Neutral,HTNK,256,50,50,0,Sleep,None,0,-1,0,-1,1,1\n\
+             1=Neutral,HTNK,256,51,50,0,Area Guard,None,0,-1,0,-1,1,1\n\
+             2=Neutral,HTNK,256,52,50,0,Nonsense,None,0,-1,0,-1,1,1\n\
+             3=Neutral,HTNK,256,53,50,0,sticky,None,0,-1,0,-1,1,1\n\
+             4=Neutral,HTNK,256,54,50,0\n\
+             [Aircraft]\n\
+             0=Soviet,DRON,256,60,60,0,Sleep,None,0,-1,false,false\n\
+             [Structures]\n\
+             0=Americans,GAPOWR,256,15,25,0,None,true,false,true,0,0,None,None,None,false,true\n",
+        );
+        let entities: Vec<MapEntity> = parse_map_entities(&ini);
+
+        let units: Vec<&MapEntity> = entities
+            .iter()
+            .filter(|e| e.category == EntityCategory::Unit)
+            .collect();
+        assert_eq!(units.len(), 5);
+        assert_eq!(units[0].mission, Some(MissionType::Sleep));
+        assert_eq!(
+            units[1].mission,
+            Some(MissionType::AreaGuard),
+            "the spaced name must resolve"
+        );
+        assert_eq!(
+            units[2].mission, None,
+            "an unknown name is the -1 sentinel, not Sleep(0)"
+        );
+        assert_eq!(units[3].mission, Some(MissionType::Sticky));
+        assert_eq!(units[4].mission, None, "a line with no MISSION field");
+
+        let aircraft = entities
+            .iter()
+            .find(|e| e.category == EntityCategory::Aircraft)
+            .expect("aircraft parsed");
+        assert_eq!(aircraft.mission, Some(MissionType::Sleep));
+
+        let structure = entities
+            .iter()
+            .find(|e| e.category == EntityCategory::Structure)
+            .expect("structure parsed");
+        assert_eq!(
+            structure.mission, None,
+            "[Structures] has no MISSION column; index 6 there is the TAG"
+        );
     }
 
     #[test]

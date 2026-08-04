@@ -152,11 +152,36 @@ impl MissionControl {
     ///
     /// This is a *different* number from [`MissionControl::rate_frames`] on the
     /// two stock missions that declare both: Guard resolves 27 / **14** and
-    /// Area Guard 36 / **28**. The original's building Guard handler re-arms
-    /// from `AARate` on its no-target return path, not from `Rate`, so a
-    /// building-cadence consumer that reaches for `rate_frames` picks the wrong
-    /// field by a factor of two. No `sim/` caller reads this yet — VERA has no
-    /// building mission-handler cadence (recorded gap GSI-07.02 G2).
+    /// Area Guard 36 / **28**, so a consumer that reaches for the wrong field
+    /// is wrong by a factor of two.
+    ///
+    /// **Who actually reads it, and when** (resolved from the building Guard
+    /// handler — the function at the BuildingClass vtable slot the mission
+    /// dispatcher's Guard and Sticky cases call; slot identity proven by
+    /// reading that vtable entry, not by a label. Ghidra leaves the function
+    /// unnamed and its plate comment guesses a different mission; ignore it):
+    ///
+    /// The handler branches once, at the top, on the object's "has a weapon"
+    /// query, and that single branch selects the field. It reaches the control
+    /// table on three paths, and all three are accounted for:
+    ///
+    /// - **Armed** (a base defence) → the timer return reads `AARate` and
+    ///   yields `ftol(AARate x 900) + RandomRanged(0, 2)`. This path is taken
+    ///   whenever the defence did not commit Attack this dispatch.
+    /// - **Unarmed**, repair-depot-flagged → reads `Rate`, same shape.
+    /// - **Unarmed**, otherwise → reads `Rate` and returns **three times** it,
+    ///   plus the same jitter.
+    ///
+    /// So the selector is *the building is weapon-equipped*, NOT "the current
+    /// target is an aircraft" — which is what the key's name suggests and what
+    /// an earlier note here assumed. An armed structure re-arms at `AARate`
+    /// against ground and air alike.
+    ///
+    /// Whether any non-building handler reads `AARate` is UNCHECKED; a
+    /// binary-wide scan found only building-side readers.
+    ///
+    /// No `sim/` caller reads this yet — VERA has no building mission-handler
+    /// cadence (recorded gap GSI-07.02 G2).
     #[inline]
     pub fn aa_rate_frames(&self, mission: MissionType) -> u32 {
         self.entries.get(&mission).map_or(0, |e| e.aa_rate_frames)

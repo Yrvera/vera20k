@@ -91,4 +91,38 @@ impl Simulation {
             &EntityReadyInputProvider,
         );
     }
+
+    /// The ore-miner arm of the Stop command.
+    ///
+    /// Retail's IDLE event handler ends with, for a `UnitClass` carrying the
+    /// ore-miner type flag whose committed mission is `Harvest` or `Return`:
+    /// `Queue_Mission(Guard, 0); Commence();` — an unconditional promotion, not
+    /// the readiness-gated one the per-object AI host performs. So the miner is
+    /// on Guard with a zero dispatch delay on the same tick, and the Harvest
+    /// handler stops being dispatched for it.
+    ///
+    /// Everything else Stop touches is left alone; this is the only mission
+    /// write retail's Stop performs on any object.
+    pub fn commit_stop_miner_guard(&mut self, id: u64) {
+        let is_stoppable_miner = self.substrate.entities.get(id).is_some_and(|entity| {
+            entity.category == crate::map::entities::EntityCategory::Unit
+                && entity.miner.is_some()
+                && matches!(
+                    entity.mission.current().known(),
+                    Some(MissionType::Harvest) | Some(MissionType::Return)
+                )
+        });
+        if !is_stoppable_miner {
+            return;
+        }
+        let now = self.session.binary_frame;
+        let _ = self.mission_queue_exact(
+            id,
+            MissionId::from_known(MissionType::Guard),
+            0,
+            now,
+            &EntityReadyInputProvider,
+        );
+        let _ = self.mission_commence_exact(id, now);
+    }
 }

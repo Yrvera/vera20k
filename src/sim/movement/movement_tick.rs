@@ -1040,6 +1040,7 @@ fn handle_deferred_drive_track_chain(
                     occupancy,
                     chain.layers.object_list_layer,
                     rng,
+                    rules.map(|r| &r.mission_control),
                 )
             {
                 already_scattered.insert(blocker_id);
@@ -1589,9 +1590,17 @@ fn tick_movement_with_grids_scoped(
                 }
             }
 
-            // Per-cell terrain speed modifier: terrain type + slope.
-            // Computed from the unit's current cell and next path step. Applied to
-            // both drive-track and straight-line movement below.
+            // Per-cell speed modifier: terrain type × slope × damaged-mover.
+            // Computed from the unit's current cell and next path step. Gamemd
+            // builds this fraction inside Drive/Ship Process_Movement only, so
+            // the helper returns 1.0 for every other locomotor.
+            let below_condition_yellow = rules.is_some_and(|r| {
+                crate::sim::pathfinding::terrain_speed::is_at_or_below_condition_yellow(
+                    entity.health.current as i64,
+                    entity.health.max as i64,
+                    r.general.condition_yellow_x1000,
+                )
+            });
             let cell_speed_mod: SimFixed = {
                 let next_cell = target.path.get(target.next_index).copied();
                 match (
@@ -1608,6 +1617,7 @@ fn tick_movement_with_grids_scoped(
                             nc,
                             terrain,
                             terrain_speed_config,
+                            below_condition_yellow,
                         )
                     }
                     _ => SIM_ONE,

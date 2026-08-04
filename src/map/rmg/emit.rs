@@ -157,6 +157,7 @@ pub fn populate(
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         });
     }
 

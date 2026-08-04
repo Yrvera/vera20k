@@ -634,6 +634,120 @@ fn gsi_04_05_production_finish_promotes_endpoint_without_clearing_bit() {
     );
 }
 
+// --- GSI-06.02: order-time reachability gate + zone-constrained substitution ---
+
+/// A 5x1 corridor blocked at x=2, so `(0,0)/(1,0)` and `(3,0)/(4,0)` are two
+/// disconnected zones for a ground mover.
+fn split_corridor_fixture() -> (PathGrid, crate::sim::pathfinding::zone_map::ZoneGrid) {
+    let mut grid = PathGrid::new(5, 1);
+    grid.set_blocked(2, 0, true);
+    let zone_grid = crate::sim::pathfinding::zone_map::ZoneGrid::build(
+        &grid,
+        &std::collections::BTreeMap::new(),
+        5,
+        1,
+    );
+    (grid, zone_grid)
+}
+
+fn resolve_split_goal(
+    grid: &PathGrid,
+    zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
+    goal: (u16, u16),
+) -> Option<(u16, u16)> {
+    super::movement_path::resolve_reachable_move_goal(
+        grid,
+        zone_grid,
+        None,
+        (0, 0),
+        MovementLayer::Ground,
+        goal,
+        MovementZone::Normal,
+        crate::rules::locomotor_type::SpeedType::Track,
+    )
+}
+
+/// Gamemd's destination resolver ACCEPTS an order whose destination is in
+/// another zone: `Can_Reach_Zone` fails, it takes the mover's own zone id and
+/// runs the nearby-passable-cell search seeded at the click requiring that zone,
+/// so the unit drives to the near bank instead of standing still.
+#[test]
+fn gsi_06_02_unreachable_move_goal_retargets_into_the_movers_own_zone() {
+    let (grid, zone_grid) = split_corridor_fixture();
+    let cell = resolve_split_goal(&grid, Some(&zone_grid), (4, 0))
+        .expect("the order is accepted with a substituted near-side cell");
+    assert_ne!(cell, (4, 0), "the far-side cell must not survive the gate");
+    assert!(
+        cell.0 <= 1,
+        "substitute must lie in the mover's own zone, got {cell:?}"
+    );
+}
+
+/// When `Can_Reach_Zone` succeeds the clicked cell is used verbatim — no
+/// substitution, no retarget.
+#[test]
+fn gsi_06_02_reachable_move_goal_is_used_verbatim() {
+    let (grid, zone_grid) = split_corridor_fixture();
+    assert_eq!(
+        resolve_split_goal(&grid, Some(&zone_grid), (1, 0)),
+        Some((1, 0))
+    );
+}
+
+/// Gamemd's `mzRow == -1` short-circuit returns "reachable"; the Rust
+/// equivalent is "no zone data", which must not refuse the order.
+#[test]
+fn gsi_06_02_missing_zone_data_short_circuits_to_reachable() {
+    let (grid, _zone_grid) = split_corridor_fixture();
+    assert_eq!(resolve_split_goal(&grid, None, (4, 0)), Some((4, 0)));
+}
+
+/// End-to-end: a cross-zone ground move order is accepted and the mover is sent
+/// to its own side of the split. Previously the command was refused and the unit
+/// did not move at all.
+#[test]
+fn gsi_06_02_cross_zone_move_order_is_accepted_and_moves_the_unit() {
+    let (grid, zone_grid) = split_corridor_fixture();
+    let mut entities = EntityStore::new();
+    let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 0, 0);
+    mover.category = EntityCategory::Unit;
+    mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    mover.drive_locomotion = Some(Default::default());
+    entities.insert(mover);
+
+    assert!(
+        issue_move_command_with_layered(
+            &mut entities,
+            &grid,
+            1,
+            (4, 0),
+            SimFixed::from_num(1024),
+            false,
+            None,
+            None,
+            None,
+            Some(&zone_grid),
+            None,
+            false,
+            None,
+            None,
+        ),
+        "gamemd accepts a ground move order across a disconnected boundary"
+    );
+    let target = entities
+        .get(1)
+        .and_then(|entity| entity.movement_target.as_ref())
+        .expect("an accepted order installs a movement target");
+    let goal = target
+        .final_goal
+        .or_else(|| target.path.last().copied())
+        .expect("the installed target names a destination");
+    assert!(
+        goal.0 <= 1,
+        "the unit must be sent to its own side of the split, got {goal:?}"
+    );
+}
+
 #[test]
 fn gsi_04_05_second_mover_cannot_adopt_reserved_head_to_endpoint() {
     let mut entities = EntityStore::new();

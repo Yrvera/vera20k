@@ -22,7 +22,8 @@ use crate::sim::pathfinding::{BlockerNeighborCounts, LayeredEntityBlockMap};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 use super::movement_path::{
-    find_move_path, merge_path_blocks, resolve_requested_move_goal, supports_layered_bridge_pathing,
+    find_move_path, merge_path_blocks, resolve_reachable_move_goal, resolve_requested_move_goal,
+    supports_layered_bridge_pathing,
 };
 use super::{PathfindingContext, facing_from_delta};
 use crate::rules::locomotor_type::MovementZone;
@@ -305,6 +306,7 @@ pub(crate) fn issue_move_command_with_layered(
     let uses_shared_tracks = uses_drive_locomotor || uses_ship_locomotor;
     // Derive movement_zone from the entity's locomotor — no parameter needed.
     let movement_zone: Option<MovementZone> = entity.locomotor.as_ref().map(|l| l.movement_zone);
+    let speed_type = entity.locomotor.as_ref().map(|l| l.speed_type);
     let too_big_to_fit_under_bridge = entity.too_big_to_fit_under_bridge;
     let layered_pathing = entity
         .locomotor
@@ -423,31 +425,73 @@ pub(crate) fn issue_move_command_with_layered(
         }
     }
     let zone_mz = movement_zone.unwrap_or(MovementZone::Normal);
-    let Some((path, path_layers)) = find_move_path(
-        PathfindingContext {
-            path_grid: Some(grid),
+    let ctx = PathfindingContext {
+        path_grid: Some(grid),
+        zone_grid,
+        resolved_terrain,
+        blocker_neighbor_counts,
+    };
+    let search = |goal: (u16, u16)| {
+        find_move_path(
+            ctx,
+            layered_pathing,
+            (start_rx, start_ry),
+            current_layer,
+            goal,
+            terrain_costs,
+            // Pass the merged entity_blocks set to both layered slots so the
+            // layered A* sees building footprints regardless of which layer
+            // it expands. Mirrors the try_repath_after_block fix.
+            merged_entity_blocks_ref,
+            merged_entity_blocks_ref,
+            merged_entity_blocks_ref,
+            zone_mz,
+            movement_zone,
+            too_big_to_fit_under_bridge,
+            entity_block_map,
+            0, // urgency=0: initial move command
+            mover_is_crusher,
+        )
+    };
+    // Order-time reachability recovery. Gamemd runs `Can_Reach_Zone` before it
+    // installs the mission and, when it fails, retargets to the nearest cell in
+    // the mover's OWN zone rather than dropping the order — the unit drives to
+    // the near bank. VERA evaluates it only after the search has already failed:
+    // the reduced per-row zone map alone under-reports reachability relative to
+    // the hierarchy-backed layered search (a high-bridge route the search finds
+    // can read as cross-zone), so gating ahead of the search would refuse
+    // destinations gamemd accepts. The recovered set is the same; only the
+    // evaluation order differs.
+    let mut effective_target = effective_target;
+    let mut found = search(effective_target);
+    if found.is_none()
+        && let Some(st) = speed_type
+    {
+        match resolve_reachable_move_goal(
+            grid,
             zone_grid,
             resolved_terrain,
-            blocker_neighbor_counts,
-        },
-        layered_pathing,
-        (start_rx, start_ry),
-        current_layer,
-        effective_target,
-        terrain_costs,
-        // Pass the merged entity_blocks set to both layered slots so the
-        // layered A* sees building footprints regardless of which layer
-        // it expands. Mirrors the try_repath_after_block fix.
-        merged_entity_blocks_ref,
-        merged_entity_blocks_ref,
-        merged_entity_blocks_ref,
-        zone_mz,
-        movement_zone,
-        too_big_to_fit_under_bridge,
-        entity_block_map,
-        0, // urgency=0: initial move command
-        mover_is_crusher,
-    ) else {
+            (start_rx, start_ry),
+            current_layer,
+            effective_target,
+            zone_mz,
+            st,
+        ) {
+            Some(near_bank) if near_bank != effective_target => {
+                log::info!(
+                    "Move: ({},{}) is out of the mover's zone, retargeting to ({},{})",
+                    effective_target.0,
+                    effective_target.1,
+                    near_bank.0,
+                    near_bank.1,
+                );
+                effective_target = near_bank;
+                found = search(effective_target);
+            }
+            _ => {}
+        }
+    }
+    let Some((path, path_layers)) = found else {
         let eb_count = merged_entity_blocks_ref.map_or(0, |s| s.len());
         log::warn!(
             "No path from ({},{}) to ({},{}) [entity_blocks={}, start_walkable={}, goal_walkable={}]",
