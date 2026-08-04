@@ -639,6 +639,11 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
             moving_or_queued: moving || entity.mission.queued() != MissionId::NONE,
             bunker_delegate: entity.bunker_link.installed_in().is_some(),
             has_attack_target: entity.attack_target.is_some(),
+            // The destination slot alone, NOT the wider "is this object in
+            // motion" test above: the idle-mode selector branches on exactly
+            // that one field.
+            has_destination: entity.navigation.nav_com.is_some(),
+            effective_mission: entity.mission.effective().known(),
             unit_deploy_begin_active: entity
                 .mission_leaf
                 .as_unit()
@@ -683,15 +688,37 @@ fn dispatch_supported_foot_mission_cadence(sim: &mut Simulation, id: u64, rules:
             } else {
                 cadence
             };
-            // Stale entity IDs are an authoritative target-loss input. The
-            // native next-mission selector is not closed, so only clear this
-            // invalid handle; do not guess a Guard/Move transition.
+            // The handler's ONLY exit. With no shoot-at target installed it
+            // runs the idle-mode selector, which picks a replacement mission
+            // and queues it; with one installed it takes the firing step
+            // instead, which the combat phase already owns.
+            //
+            // This is NOT an "is my target still reachable" or "is my target
+            // dead" test — the original has neither. A blocker that simply
+            // walks away and stays alive never releases its attacker, by any
+            // route: the attacker keeps Attack, keeps closing, and only stops
+            // when something outside the handler nulls its target. What does
+            // null it is the two detach sweeps (target destroyed, target
+            // detached alive) and a fresh player order.
+            //
+            // Without this arm an object parked on Attack never returns to a
+            // mission the passive-acquire gate admits, so it stops scanning for
+            // targets permanently. Both branches draw the cadence jitter, so
+            // this adds no RNG draw; the half-cadence band needs a live target
+            // and is already skipped here.
+            let idle_queue = (!input.has_attack_target)
+                .then(|| foot_enter_idle_mode_queue(rules, input))
+                .flatten();
             MissionHandlerEvaluation {
                 delay,
+                // Stale entity IDs are an authoritative target-loss input, and
+                // clearing an invalid handle is not the native selector: the
+                // clear lands this dispatch, the idle exit reads the target as
+                // it stood at entry and fires on the next one.
                 clear_stale_attack_target: input.has_attack_target
                     && attack_target_is_stale(sim, id),
                 clear_attack_target: false,
-                queue: None,
+                queue: idle_queue,
             }
         }
         (EntityCategory::Unit, Some(MissionType::Guard)) => {
@@ -786,6 +813,12 @@ struct MissionHandlerInput {
     moving_or_queued: bool,
     bunker_delegate: bool,
     has_attack_target: bool,
+    /// The destination slot on its own. The idle-mode selector reads this one
+    /// field, not the broader in-motion test [`Self::moving_or_queued`] uses.
+    has_destination: bool,
+    /// Current when present, otherwise queued — the selector the idle-mode
+    /// early returns and the control-entry lookups read.
+    effective_mission: Option<MissionType>,
     unit_deploy_begin_active: bool,
     unit_deploy_reverse_active: bool,
 }
@@ -876,6 +909,85 @@ fn move_arrival_evaluation(
         clear_attack_target: true,
         queue: Some(MissionType::Guard),
     }
+}
+
+/// The idle-mode selector reached from the Attack handler's no-target exit.
+///
+/// `Enter_Idle_Mode` is the shared "you have nothing to do; commit the mission
+/// that says so" virtual, and both leaf overrides on this path — the Infantry
+/// one and the Unit one — begin by running the base arrival hook and then pick
+/// a replacement selector. VERA already models the *arrival* entry into it as
+/// [`move_arrival_evaluation`]; this is the same virtual entered from the other
+/// direction, so only the arms that differ are re-derived here.
+///
+/// Reached only with no shoot-at target, so the two leaves agree on the whole
+/// remaining selection and it collapses to one function:
+/// - **a destination is installed** → `Move`. Both leaves take it; the Infantry
+///   one substitutes Capture or Sabotage when that is the effective selector,
+///   which cannot happen from the Attack handler.
+/// - **no destination** → `Guard`, after two early returns that suppress the
+///   assignment entirely.
+///
+/// The Unit leaf additionally nulls its (already null) target and destination
+/// on the no-destination arm, and the Infantry leaf's own already-null
+/// destination write is likewise inert.
+///
+/// The early returns, each read from the leaf bodies rather than assumed:
+/// - the effective selector is already `Guard` or `Area Guard` — the object is
+///   idle, and re-assigning would restart its mission timer for free;
+/// - the effective selector's control entry carries `Zombie=` or `Paralyzed=`.
+///   `[Attack]` carries neither in stock rules, so this cannot fire from the
+///   Attack handler; it is read anyway because the gate is on the object's own
+///   selector and the same virtual is entered from other missions.
+/// - the *committed* selector is `Patrol` or `Area Guard` (the Unit leaf also
+///   excludes `Unload` and `Eaten`) — the tail gate that skips the assign.
+///
+/// Deliberately NOT represented, recorded rather than guessed:
+/// - the head gate both leaves share, an early return on a Foot field whose
+///   writer and meaning are UNKNOWN. Modelling it would be inventing a gate;
+///   leaving it out can only make the selector run where the original skipped
+///   it, and the skip case is unidentified.
+/// - the `Area Guard` arm of the no-destination branch. Choosing it over
+///   `Guard` turns on a weapon-ability flag and a type flag that are both
+///   unresolved; the ordinary arm for a player-controlled object is `Guard`,
+///   which is what [`move_arrival_evaluation`] already commits for the same
+///   unresolved branch. Keeping the two consistent matters more than guessing.
+/// - the AI-only sub-arms, which need a live team and a house-threat field.
+fn foot_enter_idle_mode_queue(rules: &RuleSet, input: MissionHandlerInput) -> Option<MissionType> {
+    // The tail gate, evaluated on the committed selector.
+    let committed_blocks_assign = matches!(
+        input.mission,
+        Some(MissionType::Patrol) | Some(MissionType::AreaGuard)
+    ) || (input.category == EntityCategory::Unit
+        && matches!(
+            input.mission,
+            Some(MissionType::Unload) | Some(MissionType::Eaten)
+        ));
+    if committed_blocks_assign {
+        return None;
+    }
+
+    if input.has_destination {
+        return Some(MissionType::Move);
+    }
+
+    if matches!(
+        input.effective_mission,
+        Some(MissionType::Guard) | Some(MissionType::AreaGuard)
+    ) {
+        return None;
+    }
+    let frozen = input.effective_mission.is_some_and(|mission| {
+        rules
+            .mission_control
+            .entry(mission)
+            .is_some_and(|entry| entry.zombie || entry.paralyzed)
+    });
+    if frozen {
+        return None;
+    }
+
+    Some(MissionType::Guard)
 }
 
 /// Smallest value of the Area Guard cadence jitter draw (`RandomRanged(1, 5)`).
@@ -3154,6 +3266,219 @@ mod tests {
         assert_eq!(
             sim.scenario_rng.logical_state(),
             expected_rng.logical_state()
+        );
+    }
+
+    /// The Attack handler's only exit. With the shoot-at target gone and no
+    /// destination left, the idle-mode selector commits Guard — and Guard is
+    /// inside the passive-acquire gate, so the object starts scanning again.
+    /// Without this arm an object parked on Attack never scans for a target
+    /// for the rest of the match.
+    #[test]
+    fn attack_handler_with_no_target_enters_idle_mode_and_regains_passive_acquire() {
+        let mut sim = Simulation::with_seed(0xA774);
+        let rules = representative_foot_handler_rules();
+        let mut infantry = entity_of(1, EntityCategory::Infantry);
+        infantry.attack_target = None;
+        update_mission_test_fixture(&mut infantry.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Attack);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, infantry);
+
+        let mut expected_rng = sim.clone_scenario_rng();
+        // Both arms of the target branch reach the cadence tail, so the idle
+        // exit adds no draw; the half-cadence band needs a live target.
+        let expected_delay = 14 + expected_rng.next_range_u32_inclusive(0, 2) as i32;
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        let infantry = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(
+            infantry.mission.queued().known(),
+            Some(MissionType::Guard),
+            "the idle selector queued a replacement instead of leaving it on Attack"
+        );
+        assert_eq!(
+            infantry.mission.dispatch_timer(),
+            MissionDispatchTimer::from_raw(0, expected_delay)
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state(),
+            "the idle exit consumes no extra RNG"
+        );
+        assert!(
+            passive_acquire_gate(MissionType::Guard, true, false),
+            "the replacement mission is one the passive-acquire gate admits"
+        );
+        assert!(
+            !passive_acquire_gate(MissionType::Attack, true, true),
+            "Attack itself is not, which is why the exit is load-bearing"
+        );
+    }
+
+    /// Same exit, but the object still has somewhere to be — the destination a
+    /// Restore just gave back. The idle selector picks Move, not Guard.
+    #[test]
+    fn attack_handler_with_no_target_but_a_destination_enters_move() {
+        let mut sim = Simulation::with_seed(0xA775);
+        let rules = representative_foot_handler_rules();
+        let mut infantry = entity_of(1, EntityCategory::Infantry);
+        infantry.attack_target = None;
+        infantry.navigation.nav_com =
+            Some(crate::sim::components::NavTargetRef::Cell { rx: 20, ry: 21 });
+        update_mission_test_fixture(&mut infantry.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Attack);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        register_entity(&mut sim, infantry);
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .mission
+                .queued()
+                .known(),
+            Some(MissionType::Move)
+        );
+    }
+
+    /// The idle selector's whole decision table, driven directly so the arms the
+    /// Attack handler cannot reach are still pinned.
+    #[test]
+    fn enter_idle_mode_selector_matches_the_leaf_decision_table() {
+        let rules = representative_foot_handler_rules();
+        let base = MissionHandlerInput {
+            category: EntityCategory::Infantry,
+            mission: Some(MissionType::Attack),
+            timer_due: true,
+            moving_or_queued: false,
+            bunker_delegate: false,
+            has_attack_target: false,
+            has_destination: false,
+            effective_mission: Some(MissionType::Attack),
+            unit_deploy_begin_active: false,
+            unit_deploy_reverse_active: false,
+        };
+
+        assert_eq!(
+            foot_enter_idle_mode_queue(&rules, base),
+            Some(MissionType::Guard),
+            "no destination: Guard"
+        );
+        assert_eq!(
+            foot_enter_idle_mode_queue(
+                &rules,
+                MissionHandlerInput {
+                    has_destination: true,
+                    ..base
+                }
+            ),
+            Some(MissionType::Move),
+            "a destination is installed: Move"
+        );
+        for already_idle in [MissionType::Guard, MissionType::AreaGuard] {
+            assert_eq!(
+                foot_enter_idle_mode_queue(
+                    &rules,
+                    MissionHandlerInput {
+                        mission: Some(MissionType::Hunt),
+                        effective_mission: Some(already_idle),
+                        ..base
+                    }
+                ),
+                None,
+                "{already_idle:?} is already idle, so nothing is assigned"
+            );
+        }
+        assert_eq!(
+            foot_enter_idle_mode_queue(
+                &rules,
+                MissionHandlerInput {
+                    mission: Some(MissionType::Patrol),
+                    effective_mission: Some(MissionType::Patrol),
+                    has_destination: true,
+                    ..base
+                }
+            ),
+            None,
+            "the committed-selector tail gate blocks the assign"
+        );
+        for blocked in [MissionType::Unload, MissionType::Eaten] {
+            assert_eq!(
+                foot_enter_idle_mode_queue(
+                    &rules,
+                    MissionHandlerInput {
+                        category: EntityCategory::Unit,
+                        mission: Some(blocked),
+                        effective_mission: Some(blocked),
+                        has_destination: true,
+                        ..base
+                    }
+                ),
+                None,
+                "the Unit tail gate also excludes {blocked:?}"
+            );
+            assert_eq!(
+                foot_enter_idle_mode_queue(
+                    &rules,
+                    MissionHandlerInput {
+                        mission: Some(blocked),
+                        effective_mission: Some(blocked),
+                        has_destination: true,
+                        ..base
+                    }
+                ),
+                Some(MissionType::Move),
+                "but the Infantry tail gate does not"
+            );
+        }
+    }
+
+    /// The `Zombie=`/`Paralyzed=` early return, read off the object's own
+    /// control entry. Neither key is present in stock `[Attack]`, so this cannot
+    /// fire from the Attack handler; the gate is modelled because the same
+    /// virtual is entered from other missions.
+    #[test]
+    fn enter_idle_mode_selector_honours_frozen_control_entries() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\n\n[Attack]\nRate=.016\n\n[Hunt]\nRate=.016\nParalyzed=yes\n\n[Sticky]\nRate=.016\nZombie=yes\n",
+        ))
+        .expect("frozen control rules parse");
+        let base = MissionHandlerInput {
+            category: EntityCategory::Infantry,
+            mission: Some(MissionType::Attack),
+            timer_due: true,
+            moving_or_queued: false,
+            bunker_delegate: false,
+            has_attack_target: false,
+            has_destination: false,
+            effective_mission: Some(MissionType::Attack),
+            unit_deploy_begin_active: false,
+            unit_deploy_reverse_active: false,
+        };
+
+        for frozen in [MissionType::Hunt, MissionType::Sticky] {
+            assert_eq!(
+                foot_enter_idle_mode_queue(
+                    &rules,
+                    MissionHandlerInput {
+                        effective_mission: Some(frozen),
+                        ..base
+                    }
+                ),
+                None,
+                "{frozen:?} carries a frozen control entry"
+            );
+        }
+        assert_eq!(
+            foot_enter_idle_mode_queue(&rules, base),
+            Some(MissionType::Guard),
+            "stock [Attack] carries neither key"
         );
     }
 

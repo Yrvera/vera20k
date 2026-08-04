@@ -544,7 +544,6 @@ pub(super) fn handle_deferred_occupancy(
     finished_entities: &mut Vec<u64>,
     crush_kills: &mut Vec<PendingCrushKill>,
     already_scattered: &mut BTreeSet<u64>,
-    blockage_path_delay_ticks: u16,
     sim_tick: u64,
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
@@ -619,6 +618,63 @@ pub(super) fn handle_deferred_occupancy(
         );
     }
 
+    // An infantryman arriving at a cell whose three sub-cell slots are already
+    // taken does not simply stop in the original: `InfantryClass::PerCellProcess`
+    // force-scatters the whole cell so a slot frees up. force = 1 bypasses the
+    // unforced dispatch gate, so every occupant of the selected list is asked to
+    // move.
+    //
+    // The original reaches this once per cell *entry*; VERA re-evaluates the
+    // blocked step every tick, so the mover's post-scatter wait rate-limits it
+    // to the same cadence the locomotor scatter uses. Without the limiter a
+    // jammed infantry group would draw from the scenario stream every frame.
+    let cell_full_scatter_ready = is_infantry
+        && entities
+            .get(entity_id)
+            .and_then(|entity| entity.movement_target.as_ref())
+            .is_some_and(|target| target.blocked_delay == 0)
+        && bump_crush::infantry_sub_cells_full(
+            occupancy.get(nx, ny),
+            occupancy_bits_layer,
+            entity_id,
+        );
+    if cell_full_scatter_ready {
+        let mut scattered_any = false;
+        for blocker_id in bump_crush::full_infantry_cell_scatter_targets(
+            occupancy.get(nx, ny),
+            object_list_layer,
+            entity_id,
+        ) {
+            if already_scattered.contains(&blocker_id) {
+                continue;
+            }
+            let blocker_fraidycat =
+                bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
+            if bump_crush::scatter_blocker(
+                entities,
+                blocker_id,
+                path_grid,
+                occupancy,
+                object_list_layer,
+                rng,
+                rules.map(|r| &r.mission_control),
+                blocker_fraidycat,
+            ) {
+                already_scattered.insert(blocker_id);
+                scattered_any = true;
+                stats.scatter_successes = stats.scatter_successes.saturating_add(1);
+            }
+        }
+        if scattered_any
+            && let Some(target) = entities
+                .get_mut(entity_id)
+                .and_then(|entity| entity.movement_target.as_mut())
+        {
+            target.path_blocked = true;
+            target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
+        }
+    }
+
     match entry_result {
         CellEntryResult::Clear => {
             // Locomotor override (JumpJet) can clear a lower native code before
@@ -678,6 +734,14 @@ pub(super) fn handle_deferred_occupancy(
         CellEntryResult::Crushable { victims } => {
             let crusher_cell = (i32::from(nx), i32::from(ny));
             let crusher_lepton = (i32::from(nx) * 256 + 128, i32::from(ny) * 256 + 128);
+            let eligibility = bump_crush::ScatterEligibility::from_rules(rules);
+            // The entering-cell scatter walks the whole selected cell list, not
+            // just the crushable subset, and it runs before any kill filter.
+            let cell_occupants: Vec<u64> = occupancy.get(nx, ny).map_or_else(Vec::new, |occ| {
+                occ.iter_layer(object_list_layer)
+                    .map(|occupant| occupant.entity_id)
+                    .collect()
+            });
             let victims = match bump_crush::classify_drive_crush_phase(
                 bump_crush::DriveCrushPhase::FullyInCell,
                 &victims,
@@ -687,6 +751,8 @@ pub(super) fn handle_deferred_occupancy(
                 interner,
                 crusher_lepton,
                 crush_capability,
+                eligibility,
+                sim_tick as u32,
             ) {
                 bump_crush::DriveCrushOutcome::Kill { victims } => victims,
                 _ => Vec::new(),
@@ -695,13 +761,15 @@ pub(super) fn handle_deferred_occupancy(
             if let bump_crush::DriveCrushOutcome::Scatter { blockers } =
                 bump_crush::classify_drive_crush_phase(
                     bump_crush::DriveCrushPhase::EnteringCell,
-                    &victims,
+                    &cell_occupants,
                     entities,
                     entity_id,
                     alliances,
                     interner,
                     crusher_lepton,
                     crush_capability,
+                    eligibility,
+                    sim_tick as u32,
                 )
             {
                 for blocker_id in blockers {
@@ -804,11 +872,12 @@ pub(super) fn handle_deferred_occupancy(
                 let body_facing = entity.body_facing;
                 if let Some(ref mut target) = entity.movement_target {
                     if scattered {
-                        // Blocker is moving — treat as temporary block, start
-                        // a short wait before repath so the blocker has time to clear.
+                        // Blocker is walking away. The original writes its
+                        // hardcoded 10-frame post-scatter wait here, not
+                        // `[AI] BlockagePathDelay`, which is a separate timer.
                         if !target.path_blocked {
                             target.path_blocked = true;
-                            target.blocked_delay = blockage_path_delay_ticks;
+                            target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
                         }
                     } else {
                         let mut aborted_for_stuck = false;
@@ -851,7 +920,47 @@ pub(super) fn handle_deferred_occupancy(
             }
         }
         CellEntryResult::OccupiedEnemy { blocker_id } => {
-            // Code 5: Attack blocker while waiting.
+            // Native cell-entry class 5, body arm: the next step is blocked by
+            // an object the mover is not allied with, so the mover stops and
+            // fights it. The Override archives the destination and the current
+            // target, so once something releases the mover — the target dies,
+            // or detaches alive — it goes back to the order it was carrying.
+            //
+            // Class 5 also covers an *enemy wall* natively, and that arm targets
+            // a cell rather than an object, which neither detach sweep can see;
+            // an object overridden onto a wall would strand. It cannot arrive
+            // here: `OccupiedEnemy` is built at exactly one place, inside the
+            // blocker classifier, which has already resolved a live entity, and
+            // `FriendlyWall` has no producer at all because VERA does not
+            // classify wall overlays at cell entry yet. So this site is the body
+            // arm and only the body arm. A future wall-overlay producer must NOT
+            // route into this arm without a Restore path for cell targets.
+            //
+            // NOT WIRED YET, and the reason is load-bearing. The Override
+            // itself is landed and tested
+            // (`mission::authority::override_mission_on_blocked_step`); what is
+            // missing is this arm's other half.
+            //
+            // After the class-4/5 body, the original falls straight into its
+            // "not class 1, not class 7" tail: it clears the path array, stops
+            // the locomotor and resets facing, then RETURNS. Together with the
+            // Override's own NULL destination that leaves the mover with no
+            // destination and no path, so the walk step cannot re-enter this arm
+            // — the Override fires ONCE per block.
+            //
+            // This arm instead keeps `movement_target` and hands off to
+            // `handle_blocked_tick` with code-2-style grace, so it re-enters
+            // every tick. Measured on the current tree: one mover re-entered 78
+            // times against a single blocker. Because a second Override with an
+            // empty queue archives the *current* mission, the second tick
+            // overwrites the archived Move with Attack and every later Restore
+            // returns the unit to Attack instead of its original order. That
+            // clobber is native and must not be gated away; what is not native
+            // is re-entering the arm at all.
+            //
+            // Wiring the call here without the stop would cost a unit its move
+            // order every time an enemy blocks it — continuous during a squad
+            // advance. Resolve the stop first, then add the call.
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 if entity.attack_target.is_none() {
@@ -913,7 +1022,7 @@ pub(super) fn handle_deferred_occupancy(
                 if let Some(ref mut target) = entity.movement_target {
                     if !target.path_blocked {
                         target.path_blocked = true;
-                        target.blocked_delay = blockage_path_delay_ticks;
+                        target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
                     }
                     has_target = true;
                     grace_expired = target.blocked_delay == 0;

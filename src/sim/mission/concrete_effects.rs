@@ -142,42 +142,7 @@ impl ConcreteMissionEffects for RepresentedConcreteMissionEffects {
             .entities
             .get_mut(prepared.receiver)
             .expect("preflight guaranteed receiver");
-        // The original's target assignment clears the passive-acquire flag as
-        // its first statement, ahead of any same-target short-circuit, so a
-        // target arriving from an order, a retaliation or a pointer expiry can
-        // never inherit the provenance of one the scanner picked. The scanner
-        // re-sets the flag itself after calling this.
-        entity.passively_acquired_target = false;
-        if entity.attack_target.as_ref().map(|target| target.target) == requested {
-            return;
-        }
-
-        if entity.category == crate::map::entities::EntityCategory::Infantry {
-            entity.mission_leaf.set_infantry_firing_sequence(0);
-            entity
-                .mission_leaf
-                .set_infantry_doing_verified(-1)
-                .expect("idle Infantry action is always valid");
-            if let Some(animation) = entity.animation.as_mut() {
-                use crate::sim::animation::SequenceKind;
-
-                let idle = match animation.sequence {
-                    SequenceKind::FireProne | SequenceKind::SecondaryProne => SequenceKind::Prone,
-                    SequenceKind::DeployedFire => SequenceKind::Deployed,
-                    SequenceKind::FireFly => SequenceKind::Fly,
-                    SequenceKind::WetAttack => SequenceKind::Tread,
-                    _ => SequenceKind::Stand,
-                };
-                if crate::sim::animation::sequence_is_fire_action(animation.sequence) {
-                    animation.switch_to(idle);
-                }
-            }
-        }
-
-        entity.attack_target = requested.map(|target| match target {
-            TargetKind::Entity(id) => crate::sim::combat::AttackTarget::new(id),
-            TargetKind::Cell(rx, ry) => crate::sim::combat::AttackTarget::for_cell(rx, ry),
-        });
+        represented_assign_target(entity, requested);
     }
 
     fn apply_destination_mode_one(
@@ -191,10 +156,68 @@ impl ConcreteMissionEffects for RepresentedConcreteMissionEffects {
             .entities
             .get_mut(prepared.receiver)
             .expect("preflight guaranteed receiver");
-        entity.navigation.nav_com_aux = None;
-        entity.navigation.nav_com = requested;
-        entity.navigation.pending_arrival_clear = false;
+        represented_assign_destination_mode_one(entity, requested);
     }
+}
+
+/// The represented `Assign_Target` write set, entity-local.
+///
+/// Every write the target setter performs lands on the receiving object and
+/// nothing else, so this is the whole setter. It is a free function rather than
+/// a method body so the phases that hold a bare `EntityStore` — the movement
+/// tick, which is where the ground locomotors run — reach the *same*
+/// implementation the Mission authority transactions use instead of an
+/// open-coded copy that can drift from it.
+pub(crate) fn represented_assign_target(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    requested: Option<TargetKind>,
+) {
+    // The original's target assignment clears the passive-acquire flag as
+    // its first statement, ahead of any same-target short-circuit, so a
+    // target arriving from an order, a retaliation or a pointer expiry can
+    // never inherit the provenance of one the scanner picked. The scanner
+    // re-sets the flag itself after calling this.
+    entity.passively_acquired_target = false;
+    if entity.attack_target.as_ref().map(|target| target.target) == requested {
+        return;
+    }
+
+    if entity.category == crate::map::entities::EntityCategory::Infantry {
+        entity.mission_leaf.set_infantry_firing_sequence(0);
+        entity
+            .mission_leaf
+            .set_infantry_doing_verified(-1)
+            .expect("idle Infantry action is always valid");
+        if let Some(animation) = entity.animation.as_mut() {
+            use crate::sim::animation::SequenceKind;
+
+            let idle = match animation.sequence {
+                SequenceKind::FireProne | SequenceKind::SecondaryProne => SequenceKind::Prone,
+                SequenceKind::DeployedFire => SequenceKind::Deployed,
+                SequenceKind::FireFly => SequenceKind::Fly,
+                SequenceKind::WetAttack => SequenceKind::Tread,
+                _ => SequenceKind::Stand,
+            };
+            if crate::sim::animation::sequence_is_fire_action(animation.sequence) {
+                animation.switch_to(idle);
+            }
+        }
+    }
+
+    entity.attack_target = requested.map(|target| match target {
+        TargetKind::Entity(id) => crate::sim::combat::AttackTarget::new(id),
+        TargetKind::Cell(rx, ry) => crate::sim::combat::AttackTarget::for_cell(rx, ry),
+    });
+}
+
+/// The represented mode-one `Assign_Destination` write set, entity-local.
+pub(crate) fn represented_assign_destination_mode_one(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    requested: Option<NavTargetRef>,
+) {
+    entity.navigation.nav_com_aux = None;
+    entity.navigation.nav_com = requested;
+    entity.navigation.pending_arrival_clear = false;
 }
 
 #[cfg(test)]

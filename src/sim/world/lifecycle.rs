@@ -135,6 +135,15 @@ pub(crate) enum LifecycleTestEvent {
     UninitAliveCleared {
         stable_id: u64,
     },
+    /// One visited listener of the live-detach targeting sweep, in the order
+    /// the sweep visited it. Recorded for every listener that was pointed at
+    /// the detaching object, so a test can pin the descending walk.
+    DetachTargetingSweepVisited {
+        detach_id: u64,
+        listener_id: u64,
+        restored: bool,
+        target_cleared: bool,
+    },
     PendingDeleteQueued {
         stable_id: u64,
     },
@@ -569,14 +578,19 @@ impl Simulation {
         use crate::rules::locomotor_type::LocomotorKind;
         use crate::sim::movement::locomotor::MovementLayer;
 
-        let transact_fly = self.substrate.entities.get(stable_id).is_some_and(|entity| {
-            entity.category == EntityCategory::Aircraft
-                && entity.lifecycle.object_alive
-                && !entity.lifecycle.in_limbo
-                && entity.locomotor.as_ref().is_some_and(|locomotor| {
-                    locomotor.kind == LocomotorKind::Fly && locomotor.layer == MovementLayer::Air
-                })
-        });
+        let transact_fly = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_some_and(|entity| {
+                entity.category == EntityCategory::Aircraft
+                    && entity.lifecycle.object_alive
+                    && !entity.lifecycle.in_limbo
+                    && entity.locomotor.as_ref().is_some_and(|locomotor| {
+                        locomotor.kind == LocomotorKind::Fly
+                            && locomotor.layer == MovementLayer::Air
+                    })
+            });
         if transact_fly {
             self.remove_entity_occupancy(stable_id);
         }
@@ -588,9 +602,11 @@ impl Simulation {
         );
 
         if transact_fly
-            && self.substrate.entities.get(stable_id).is_some_and(|entity| {
-                entity.lifecycle.object_alive && !entity.lifecycle.in_limbo
-            })
+            && self
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|entity| entity.lifecycle.object_alive && !entity.lifecycle.in_limbo)
         {
             self.add_entity_occupancy(stable_id);
         }
@@ -996,6 +1012,98 @@ impl Simulation {
         listeners
     }
 
+    /// The detach-time targeting sweep: release every object currently shooting
+    /// at `detach_id`, which is leaving play *while still alive*.
+    ///
+    /// This is not the pointer-expiry broadcast. The detaching object survives —
+    /// it is being sold, changing owner, teleporting, or being detached by area
+    /// damage — so nothing else nulls the references pointed at it, and this is
+    /// the only route by which a live-but-detached target releases its
+    /// attackers. In an ordinary skirmish it fires tens of times per match:
+    /// every building sale, every engineer capture, every mind-control or
+    /// Psychic Beacon owner change, every Chrono Legionnaire or Chronosphere
+    /// teleport.
+    ///
+    /// Three clauses are NOT copies of the pointer-expiry sweep and are
+    /// reproduced verbatim because each is observable:
+    ///
+    /// 1. **Descending stable-ID iteration.** The native walk runs the global
+    ///    techno vector from its last entry down to its first. When two objects
+    ///    share the detaching target, the higher ID restores first, so its
+    ///    restored mission dispatches first and draws from the scenario RNG
+    ///    first. An ascending walk would reorder the global draw sequence.
+    /// 2. **Restore runs first, with no suspended-mission pre-check.** The
+    ///    expiry sweep asks whether a mission is suspended and clears the target
+    ///    before restoring; this one restores unconditionally and clears after.
+    /// 3. **The target clear is conditional on the Restore not having replaced
+    ///    the target.** A successful Restore re-installs the archived target, and
+    ///    the null-out then does not run.
+    ///
+    /// RESIDUALS, recorded rather than guessed:
+    /// - The native suppression clause skips the whole block for a listener
+    ///   whose manager sub-object points at the detaching object while that
+    ///   object is still alive and active — a mind-control / capture link
+    ///   holding its live victim as its target. It exists precisely so that the
+    ///   owner change *performed by* mind control does not make the controller
+    ///   drop its own new victim. VERA models mind control as a per-entity flag
+    ///   with no controller-to-victim link, so the clause cannot be evaluated
+    ///   and is omitted. Consequence: once VERA gives mind control a controller
+    ///   link, a controller will lose its target here where the original keeps
+    ///   it — every control event. Today the arm is unreachable because no
+    ///   controller link exists to hold the victim as a target.
+    /// - The aircraft-Patrol arm, which clears two patrol-cursor fields on an
+    ///   aircraft whose committed mission is Patrol. Neither field is
+    ///   represented; the arm is a no-op for every ground object.
+    /// - A second native table swept after the techno vector, nulling two
+    ///   pointer slots that match the detaching object. Its element class is
+    ///   UNKNOWN, so it is not modelled.
+    pub(crate) fn stop_all_targeting_on_detach(&mut self, detach_id: u64) {
+        let mut listeners = self.substrate.entities.keys_sorted();
+        listeners.reverse();
+
+        for listener_id in listeners {
+            if !self.listener_targets(listener_id, detach_id) {
+                continue;
+            }
+
+            let restored = self
+                .mission_restore_on_target_detach(listener_id)
+                .expect("detach sweep listener was resolved immediately before the Restore");
+
+            let target_cleared = self.listener_targets(listener_id, detach_id);
+            if target_cleared {
+                self.set_archive_target_represented(listener_id, None)
+                    .expect("detach sweep listener remains present for the target clear");
+            }
+
+            let _ = restored;
+            #[cfg(test)]
+            self.trace_lifecycle_for_test(LifecycleTestEvent::DetachTargetingSweepVisited {
+                detach_id,
+                listener_id,
+                restored,
+                target_cleared,
+            });
+        }
+    }
+
+    /// Whether `listener_id` currently holds `detach_id` as its shoot-at target.
+    ///
+    /// Cell targets never match: the native comparison is against an object
+    /// pointer, so an object overridden onto a wall cell is invisible to both
+    /// detach sweeps.
+    fn listener_targets(&self, listener_id: u64, detach_id: u64) -> bool {
+        self.substrate
+            .entities
+            .get(listener_id)
+            .is_some_and(|listener| {
+                matches!(
+                    listener.attack_target.as_ref().map(|target| target.target),
+                    Some(TargetKind::Entity(id)) if id == detach_id
+                )
+            })
+    }
+
     fn notify_entity_pointer_expired(
         &mut self,
         listener_id: u64,
@@ -1223,11 +1331,7 @@ impl Simulation {
                 // SpawnManager (`0x00707A6F`). This is the only mechanism that
                 // drops a destroyed wing target, so without it a Carrier keeps
                 // sending its Hornets at a corpse.
-                crate::sim::spawn_manager::notify_pointer_expired(
-                    self,
-                    listener_id,
-                    expired_id,
-                );
+                crate::sim::spawn_manager::notify_pointer_expired(self, listener_id, expired_id);
             } else if is_anim {
                 self.expire_anim_owner_reference(listener_id, expired_id);
             } else if is_particle {

@@ -1689,6 +1689,13 @@ impl Simulation {
         {
             crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
         }
+        // `TechnoClass::ChangeOwner` runs the live-detach targeting sweep next,
+        // before the house swap: everything shooting at this object is released
+        // while the object still belongs to its old house. Engineer capture and
+        // garrison transfer both come through here, so a squad that was firing
+        // at a building stops the instant the building changes hands instead of
+        // shooting at what is now its own structure.
+        self.stop_all_targeting_on_detach(stable_id);
         self.substrate.entities.change_owner(stable_id, new_owner);
     }
 

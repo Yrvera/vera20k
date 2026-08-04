@@ -1,4 +1,4 @@
-//! Focused regression tests for ordered lifecycle authority.
+﻿//! Focused regression tests for ordered lifecycle authority.
 
 use std::collections::BTreeMap;
 
@@ -278,7 +278,10 @@ fn gsi_04_12_common_raw_occupation_structural_deck_unit_tracks_production_collap
             StateOutcome::Collapsed { .. }
         ));
         assert!(
-            bridge_state.cell(3, 4).expect("collapsed bridge cell").deck_present,
+            bridge_state
+                .cell(3, 4)
+                .expect("collapsed bridge cell")
+                .deck_present,
             "collapse leaves the structural deck record present"
         );
         assert!(!bridge_state.is_bridge_walkable(3, 4));
@@ -627,7 +630,10 @@ fn gsi_04_12_object_raw_occupation_production_fly_tick_unmarks_takeoff_and_marks
 
     let aircraft = sim.substrate.entities.get(1).unwrap();
     assert!(aircraft.locomotor.as_ref().unwrap().altitude > SimFixed::from_num(0));
-    assert!(aircraft.lifecycle.cell_marked, "the post-process Mark transaction completed");
+    assert!(
+        aircraft.lifecycle.cell_marked,
+        "the post-process Mark transaction completed"
+    );
     assert!(!sim.substrate.occupancy.contains_entity(3, 4, 1));
     assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
 
@@ -648,7 +654,10 @@ fn gsi_04_12_object_raw_occupation_production_fly_tick_unmarks_takeoff_and_marks
     sim.tick_air_movement_with_cell_lists_one(1);
 
     let aircraft = sim.substrate.entities.get(1).unwrap();
-    assert_eq!(aircraft.locomotor.as_ref().unwrap().altitude, SimFixed::from_num(0));
+    assert_eq!(
+        aircraft.locomotor.as_ref().unwrap().altitude,
+        SimFixed::from_num(0)
+    );
     assert!(aircraft.lifecycle.cell_marked);
     assert_eq!(
         sim.substrate
@@ -1190,29 +1199,22 @@ fn gsi_04_05_hard_limbo_clears_pending_then_current_vehicle_occupation() {
             ..Default::default()
         });
     }
-    sim.substrate.cell_occupation.mark_vehicle_on_layer(
-        head.0,
-        head.1,
-        1,
-        MovementLayer::Ground,
-    );
+    sim.substrate
+        .cell_occupation
+        .mark_vehicle_on_layer(head.0, head.1, 1, MovementLayer::Ground);
 
     let _ = sim.object_conceal(1);
 
     assert_eq!(
-        sim.substrate.cell_occupation.vehicle_bits(
-            head.0,
-            head.1,
-            MovementLayer::Ground
-        ),
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(head.0, head.1, MovementLayer::Ground),
         0
     );
     assert_eq!(
-        sim.substrate.cell_occupation.vehicle_bits(
-            current.0,
-            current.1,
-            MovementLayer::Ground
-        ),
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(current.0, current.1, MovementLayer::Ground),
         0
     );
     assert_eq!(
@@ -2021,7 +2023,7 @@ fn score_stats_ignore_a_removal_that_was_not_a_destruction() {
 #[test]
 fn score_stats_count_a_self_inflicted_kill_but_award_no_points() {
     // Self-inflicted destruction (own death weapon, own splash) is both a loss
-    // and a kill for the house — native increments the kill table regardless of
+    // and a kill for the house â€” native increments the kill table regardless of
     // relation and suppresses only the points.
     let mut sim = Simulation::new();
     let owner = sim.interner.intern("Americans");
@@ -2264,4 +2266,291 @@ fn lifecycle_authority_alive_queued_object_remains_queued() {
     sim.process_pending_delete();
     assert!(sim.substrate.entities.contains(1));
     assert_eq!(sim.substrate.pending_delete, vec![1]);
+}
+
+fn attack_fixture(current: MissionType, suspended: MissionId) -> MissionTestFixture {
+    MissionTestFixture {
+        current: MissionId::from_known(current),
+        suspended,
+        queued: MissionId::NONE,
+        movement_bypass_latch: 0,
+        handler_state: 0,
+        mission_start_frame: 0,
+        ai_counter: 0,
+        dispatch_timer: MissionDispatchTimer::at_frame(0),
+    }
+}
+
+/// Two attackers share one target that then leaves play ALIVE â€” sold, captured,
+/// mind-controlled or teleported. Nothing dies, so the pointer-expiry broadcast
+/// never runs and this sweep is the only thing that releases them.
+///
+/// Pins the three clauses that make the detach sweep different from the expiry
+/// one: the Restore runs before the target clear, the clear is skipped when the
+/// Restore replaced the target, and the walk is descending.
+#[test]
+fn detach_sweep_restores_before_clearing_target_in_descending_id_order() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Infantry);
+    insert_entity(&mut sim, 3, EntityCategory::Structure);
+    insert_entity(&mut sim, 4, EntityCategory::Unit);
+
+    for attacker in [1, 2] {
+        let entity = sim.substrate.entities.get_mut(attacker).unwrap();
+        entity.attack_target = Some(AttackTarget::new(3));
+        entity.suspended_attack_target = Some(TargetKind::Entity(4));
+        entity.navigation.nav_com = None;
+        entity.navigation.suspended_nav_com = Some(NavTargetRef::Cell { rx: 7, ry: 8 });
+        entity.mission.apply_test_fixture(attack_fixture(
+            MissionType::Attack,
+            MissionId::from_known(MissionType::Move),
+        ));
+    }
+    sim.lifecycle_test_events.clear();
+
+    sim.stop_all_targeting_on_detach(3);
+
+    // The detaching object is untouched and still present: this is not removal.
+    assert!(sim.substrate.entities.contains(3));
+
+    for attacker in [1, 2] {
+        let entity = sim.substrate.entities.get(attacker).unwrap();
+        assert_eq!(
+            entity.mission.current(),
+            MissionId::from_known(MissionType::Move),
+            "attacker {attacker} restored its suspended mission"
+        );
+        assert_eq!(entity.mission.suspended(), MissionId::NONE);
+        // Restore-then-clear: the archived target is reinstalled and the
+        // null-out is skipped because it no longer matches the detaching object.
+        assert_eq!(
+            entity.attack_target.as_ref().map(|target| target.target),
+            Some(TargetKind::Entity(4)),
+            "attacker {attacker} kept the target the Restore installed"
+        );
+        assert_eq!(
+            entity.navigation.nav_com,
+            Some(NavTargetRef::Cell { rx: 7, ry: 8 }),
+            "attacker {attacker} got its destination back"
+        );
+    }
+
+    let visits: Vec<(u64, bool, bool)> = sim
+        .lifecycle_test_events
+        .iter()
+        .filter_map(|event| match event {
+            LifecycleTestEvent::DetachTargetingSweepVisited {
+                detach_id: 3,
+                listener_id,
+                restored,
+                target_cleared,
+            } => Some((*listener_id, *restored, *target_cleared)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        visits,
+        vec![(2, true, false), (1, true, false)],
+        "the sweep walks descending stable-ID order"
+    );
+}
+
+/// The other half of the sweep: an attacker with no suspended mission. The
+/// Restore writes nothing, so the conditional null-out is the clause that fires
+/// and the attacker is left with no target â€” which is what hands it to the
+/// Attack handler's idle exit on its next dispatch.
+#[test]
+fn detach_sweep_clears_target_when_no_mission_was_suspended() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Structure);
+
+    let attacker = sim.substrate.entities.get_mut(1).unwrap();
+    attacker.attack_target = Some(AttackTarget::new(2));
+    attacker.passively_acquired_target = true;
+    attacker
+        .mission
+        .apply_test_fixture(attack_fixture(MissionType::Attack, MissionId::NONE));
+    sim.lifecycle_test_events.clear();
+
+    sim.stop_all_targeting_on_detach(2);
+
+    let attacker = sim.substrate.entities.get(1).unwrap();
+    assert!(attacker.attack_target.is_none());
+    assert!(!attacker.passively_acquired_target);
+    assert_eq!(
+        attacker.mission.current(),
+        MissionId::from_known(MissionType::Attack),
+        "a Restore with nothing suspended writes no mission field"
+    );
+    assert_eq!(attacker.mission.suspended(), MissionId::NONE);
+    assert!(matches!(
+        sim.lifecycle_test_events.as_slice(),
+        [LifecycleTestEvent::DetachTargetingSweepVisited {
+            detach_id: 2,
+            listener_id: 1,
+            restored: false,
+            target_cleared: true,
+        }]
+    ));
+}
+
+/// A cell target is not an object pointer, so neither detach sweep can see it.
+/// This is the recorded hole behind the wall arm of the blocked-step Override:
+/// an object overridden onto a wall has no Restore route from here.
+#[test]
+fn detach_sweep_never_matches_a_cell_target() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Structure);
+
+    let attacker = sim.substrate.entities.get_mut(1).unwrap();
+    attacker.attack_target = Some(AttackTarget::for_cell(9, 11));
+    attacker.mission.apply_test_fixture(attack_fixture(
+        MissionType::Attack,
+        MissionId::from_known(MissionType::Move),
+    ));
+
+    sim.stop_all_targeting_on_detach(2);
+
+    let attacker = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        attacker.attack_target.as_ref().map(|target| target.target),
+        Some(TargetKind::Cell(9, 11))
+    );
+    assert_eq!(
+        attacker.mission.current(),
+        MissionId::from_known(MissionType::Attack),
+        "a cell-targeted object is never restored by the detach sweep"
+    );
+}
+
+/// The whole loop end to end, in the shape the deferred item names: an
+/// infantryman is overridden onto a blocker, the blocker LEAVES ALIVE (owner
+/// change â€” engineer capture, Yuri, Psychic Beacon), and the infantryman comes
+/// back to what it was doing instead of sitting on Attack forever.
+#[test]
+fn overridden_attacker_is_released_when_its_blocker_leaves_alive() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    let soviets = sim.interner.intern("Soviets");
+    sim.substrate.entities.get_mut(2).unwrap().owner = soviets;
+
+    let mover = sim.substrate.entities.get_mut(1).unwrap();
+    mover.navigation.nav_com = Some(NavTargetRef::Cell { rx: 20, ry: 21 });
+    mover
+        .mission
+        .apply_test_fixture(attack_fixture(MissionType::Move, MissionId::NONE));
+
+    assert!(sim.mission_override_blocked_by_object(1, 2));
+
+    let mover = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        mover.mission.current(),
+        MissionId::from_known(MissionType::Attack)
+    );
+    assert_eq!(
+        mover.mission.suspended(),
+        MissionId::from_known(MissionType::Move)
+    );
+    assert_eq!(
+        mover.attack_target.as_ref().map(|target| target.target),
+        Some(TargetKind::Entity(2))
+    );
+    assert!(mover.navigation.nav_com.is_none(), "the mover stops");
+    assert_eq!(
+        mover.navigation.suspended_nav_com,
+        Some(NavTargetRef::Cell { rx: 20, ry: 21 })
+    );
+
+    // The blocker changes hands and stays alive.
+    let americans = sim.interner.intern("Americans");
+    sim.change_owner(2, americans);
+
+    assert!(sim.substrate.entities.contains(2), "the blocker is alive");
+    let mover = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        mover.mission.current(),
+        MissionId::from_known(MissionType::Move),
+        "the mover goes back to its original order"
+    );
+    assert_eq!(mover.mission.suspended(), MissionId::NONE);
+    assert_eq!(
+        mover.navigation.nav_com,
+        Some(NavTargetRef::Cell { rx: 20, ry: 21 }),
+        "and re-paths to the destination it was archived with"
+    );
+    assert!(
+        mover.attack_target.is_none(),
+        "nothing was archived, so the conditional null-out fires"
+    );
+}
+
+/// The ally arm: the blocked-step Override does not fire on a friendly blocker,
+/// and it writes none of the five fields.
+#[test]
+fn blocked_step_override_does_not_fire_on_an_allied_blocker() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+
+    let mover = sim.substrate.entities.get_mut(1).unwrap();
+    mover.navigation.nav_com = Some(NavTargetRef::Cell { rx: 20, ry: 21 });
+    mover
+        .mission
+        .apply_test_fixture(attack_fixture(MissionType::Move, MissionId::NONE));
+
+    // Same house: always an ally.
+    assert!(!sim.mission_override_blocked_by_object(1, 2));
+
+    let mover = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        mover.mission.current(),
+        MissionId::from_known(MissionType::Move)
+    );
+    assert_eq!(mover.mission.suspended(), MissionId::NONE);
+    assert!(mover.attack_target.is_none());
+    assert_eq!(
+        mover.navigation.nav_com,
+        Some(NavTargetRef::Cell { rx: 20, ry: 21 })
+    );
+    assert!(mover.navigation.suspended_nav_com.is_none());
+}
+
+/// Two blocked steps against two different blockers with no Restore between
+/// them: the second Override archives the FIRST override's mission, so a later
+/// Restore lands the object back on Attack and the original order is lost.
+/// Native, and it must survive the wiring â€” no caller-side clobber guard.
+#[test]
+fn second_blocked_step_override_clobbers_the_archived_mission() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    insert_entity(&mut sim, 3, EntityCategory::Unit);
+    let soviets = sim.interner.intern("Soviets");
+    for blocker in [2, 3] {
+        sim.substrate.entities.get_mut(blocker).unwrap().owner = soviets;
+    }
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .mission
+        .apply_test_fixture(attack_fixture(MissionType::Move, MissionId::NONE));
+
+    assert!(sim.mission_override_blocked_by_object(1, 2));
+    assert!(sim.mission_override_blocked_by_object(1, 3));
+
+    let mover = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        mover.mission.suspended(),
+        MissionId::from_known(MissionType::Attack),
+        "the second Override archived the first Override's mission"
+    );
+    assert_eq!(
+        mover.attack_target.as_ref().map(|target| target.target),
+        Some(TargetKind::Entity(3))
+    );
 }

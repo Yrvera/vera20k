@@ -1181,8 +1181,16 @@ impl ObjectType {
                 None
             },
 
-            // Crush properties -- default false for all types.
-            crushable: section.get_bool("Crushable").unwrap_or(false),
+            // Crush properties. `Crushable=` is the one key whose default is
+            // category-dependent: the ObjectTypeClass constructor clears the
+            // byte, but the InfantryTypeClass constructor overwrites it with 1,
+            // so every infantry type defaults `Crushable=yes` and everything
+            // else defaults no. Stock rulesmd leaves the key off ~35 infantry
+            // sections (Conscript, Engineer, Flak Trooper, ...), so a blanket
+            // `false` here makes most of the game's infantry un-crushable.
+            crushable: section
+                .get_bool("Crushable")
+                .unwrap_or(category == ObjectCategory::Infantry),
             deployed_crushable: section.get_bool("DeployedCrushable").unwrap_or(true),
             crusher: section.get_bool("Crusher").unwrap_or(false),
             no_force_shield: section.get_bool("NoForceShield").unwrap_or(false),
@@ -2523,6 +2531,31 @@ mod tests {
         assert!(!obj.crawls);
         assert!(obj.veteran_fearless);
         assert!(obj.elite_fearless);
+    }
+
+    #[test]
+    fn crushable_defaults_yes_for_infantry_and_no_for_everything_else() {
+        // The InfantryTypeClass constructor overwrites the ObjectTypeClass
+        // default with 1, so a key-less infantry section (Conscript, Engineer,
+        // Flak Trooper, ... in stock rulesmd) is crushable.
+        let ini = IniFile::from_str("[E2]\nName=Conscript\n");
+        let section = ini.section("E2").unwrap();
+        assert!(ObjectType::from_ini_section("E2", section, ObjectCategory::Infantry).crushable);
+
+        let ini = IniFile::from_str("[MTNK]\nSpeed=7\n");
+        let section = ini.section("MTNK").unwrap();
+        assert!(!ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle).crushable);
+
+        // An explicit key still wins in both directions.
+        let ini = IniFile::from_str("[DESO]\nCrushable=no\n");
+        let section = ini.section("DESO").unwrap();
+        assert!(!ObjectType::from_ini_section("DESO", section, ObjectCategory::Infantry).crushable);
+
+        let ini = IniFile::from_str("[GASAND]\nCrushable=yes\n");
+        let section = ini.section("GASAND").unwrap();
+        assert!(
+            ObjectType::from_ini_section("GASAND", section, ObjectCategory::Building).crushable
+        );
     }
 
     #[test]

@@ -1006,6 +1006,7 @@ fn handle_deferred_drive_track_chain(
     stats: &mut MovementTickStats,
     crush_kills: &mut Vec<PendingCrushKill>,
     already_scattered: &mut BTreeSet<u64>,
+    sim_tick: u64,
 ) -> bool {
     let entry_result = classify_drive_track_chain_entry(
         chain,
@@ -1050,6 +1051,8 @@ fn handle_deferred_drive_track_chain(
                 interner,
                 crusher_lepton,
                 bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher),
+                bump_crush::ScatterEligibility::from_rules(rules),
+                sim_tick as u32,
             ) {
                 bump_crush::DriveCrushOutcome::Kill { victims } => victims,
                 _ => Vec::new(),
@@ -2230,6 +2233,7 @@ fn tick_movement_with_grids_scoped(
                 &mut stats,
                 &mut crush_kills,
                 &mut already_scattered,
+                sim_tick,
             );
         }
 
@@ -2259,7 +2263,6 @@ fn tick_movement_with_grids_scoped(
                 &mut finished_entities,
                 &mut crush_kills,
                 &mut already_scattered,
-                blockage_path_delay_ticks,
                 sim_tick,
                 interner,
                 rules,
@@ -2808,6 +2811,7 @@ mod drive_track_chain_tests {
             &mut stats,
             &mut crush_kills,
             &mut already_scattered,
+            0,
         );
         (installed, entities, stats)
     }
@@ -2957,6 +2961,7 @@ mod drive_track_chain_tests {
             &mut stats,
             &mut crush_kills,
             &mut already_scattered,
+            0,
         );
 
         assert!(installed);
