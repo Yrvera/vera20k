@@ -115,7 +115,12 @@ fn parses_hidden_occupancy_art_fields() {
     assert!(reg.can_hide_things("GAPOWR"));
     assert_eq!(reg.occupy_height("GAPOWR"), 3);
     assert!(reg.can_hide_things("NAPOWR"));
-    assert_eq!(reg.occupy_height("NAPOWR"), 0);
+    // Neither key authored, so this inherits the `Height=` default, which the
+    // BuildingTypeClass constructor sets to 2 rather than 0. Whether the
+    // original defaults OccupyHeight to 2 *independently* of Height is
+    // UNCHECKED — the field one word past height takes the same literal 2 in
+    // the constructor, but that field's identity was not established.
+    assert_eq!(reg.occupy_height("NAPOWR"), 2);
     assert!(reg.can_hide_things("MISSING"));
     assert_eq!(reg.occupy_height("MISSING"), 2);
 }

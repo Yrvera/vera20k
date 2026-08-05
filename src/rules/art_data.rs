@@ -931,8 +931,25 @@ impl ArtRegistry {
                 }
                 offsets
             };
-            let height: i32 = section.get_i32("Height").unwrap_or(0);
+            // An absent `Height=` leaves the BuildingTypeClass constructor's own
+            // value, which is 2 — the ctor stores a literal 2 into the height
+            // field, and ReadINI passes the current field as the INI default, so
+            // a section that omits the key keeps it. 187 of the 568 stock art
+            // sections carrying a `Foundation=` omit `Height=`, including every
+            // garrisonable city building, so defaulting to 0 collapsed their
+            // selection bracket box onto the ground plane and put their health
+            // bar and pips at ground level instead of roof level.
+            //
+            // No stock art section authors `Height=0`, so this changes only the
+            // absent case.
+            let height: i32 = section.get_i32("Height").unwrap_or(2);
             let can_hide: bool = section.get_bool("CanHideThings").unwrap_or(true);
+            // DRIFT, recorded not fixed: the ctor gives the adjacent field one
+            // word further on its own literal 2 rather than copying height, so
+            // an authored `Height=` with no `OccupyHeight=` likely yields 2 in
+            // the original where this yields the authored height. That field's
+            // identity is UNCHECKED and `occupy_height` has no production
+            // consumer today, so it is left alone.
             let occupy_height: i32 = section.get_i32("OccupyHeight").unwrap_or(height);
             let muzzle_flash_positions: Vec<(i32, i32)> = {
                 let mut positions = Vec::new();
