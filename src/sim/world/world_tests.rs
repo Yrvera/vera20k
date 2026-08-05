@@ -3893,7 +3893,10 @@ fn test_undeploy_conyard_spawns_mcv() {
         "ConYard should be removed after undeploy animation"
     );
 
-    // MCV should be spawned at center of old foundation (4x3 → center offset 2,1).
+    // The MCV returns to the cell it deployed from — one step south-east of the
+    // footprint's north-west cell, mirroring the one step north-west that deploy
+    // took. Not the footprint's centre: gamemd never halves the foundation, and
+    // an even-sided footprint has no centre cell to land on anyway.
     let amcv_id = sim.interner.get("AMCV").expect("AMCV should be interned");
     let mcvs: Vec<(u16, u16, bool)> = sim
         .substrate
@@ -3904,9 +3907,10 @@ fn test_undeploy_conyard_spawns_mcv() {
         .collect();
     assert_eq!(mcvs.len(), 1, "Exactly one MCV should exist after undeploy");
     let (rx, ry, selected) = mcvs[0];
-    // Origin was (19, 21) from deploy, foundation 4x3, center = (19+2, 21+1) = (21, 22).
-    assert_eq!(rx, 21, "MCV should spawn at foundation center X");
-    assert_eq!(ry, 22, "MCV should spawn at foundation center Y");
+    // Deploy put the origin at (19, 21) from an MCV standing on (20, 22), so
+    // undeploy has to hand (20, 22) back.
+    assert_eq!(rx, 20, "MCV should return to the cell it deployed from, X");
+    assert_eq!(ry, 22, "MCV should return to the cell it deployed from, Y");
     assert!(selected, "MCV should inherit selection from ConYard");
 }
 
