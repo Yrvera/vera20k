@@ -751,8 +751,22 @@ pub(crate) fn issue_move_command_with_layered(
                             current_layer,
                             next,
                         );
+                        // The curve this order replaces takes its forward
+                        // handoff claim with it. Leaving it behind strands a
+                        // cell nothing occupies, and every later mover is
+                        // refused entry to it for the rest of the match.
+                        crate::sim::occupancy::drop_drive_handoff_occupation(
+                            drive,
+                            occupation,
+                            entity_id,
+                            current_cell,
+                            current_layer,
+                        );
                     }
-                    (Some(next), None) => drive.occupation_head_to = Some(next),
+                    (Some(next), None) => {
+                        drive.occupation_head_to = Some(next);
+                        drive.occupation_handoff = None;
+                    }
                     (None, Some(occupation)) => {
                         crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
                             drive,
@@ -761,8 +775,18 @@ pub(crate) fn issue_move_command_with_layered(
                             current_cell,
                             current_layer,
                         );
+                        crate::sim::occupancy::drop_drive_handoff_occupation(
+                            drive,
+                            occupation,
+                            entity_id,
+                            current_cell,
+                            current_layer,
+                        );
                     }
-                    (None, None) => drive.occupation_head_to = None,
+                    (None, None) => {
+                        drive.occupation_head_to = None;
+                        drive.occupation_handoff = None;
+                    }
                 }
             }
         } else if uses_ship_locomotor {

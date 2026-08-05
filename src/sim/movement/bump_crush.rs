@@ -174,6 +174,7 @@ pub fn build_entity_block_sets(
             continue;
         }
         // Enemy units: soft-block with code 5 (cost 20x).
+        let blocker_is_infantry = entity.category == EntityCategory::Infantry;
         let entity_owner_str = interner.resolve(entity.owner);
         let is_friendly =
             crate::map::houses::are_houses_friendly(alliances, mover_owner, entity_owner_str);
@@ -184,6 +185,7 @@ pub fn build_entity_block_sets(
                 EntityBlockEntry {
                     next_cell: None,
                     cost_code: 5,
+                    blocker_is_infantry,
                 },
             );
             continue;
@@ -198,6 +200,7 @@ pub fn build_entity_block_sets(
                         EntityBlockEntry {
                             next_cell: Some(next_cell),
                             cost_code: 2,
+                            blocker_is_infantry,
                         },
                     );
                     continue;
@@ -211,6 +214,7 @@ pub fn build_entity_block_sets(
             EntityBlockEntry {
                 next_cell: None,
                 cost_code: 6,
+                blocker_is_infantry,
             },
         );
     }

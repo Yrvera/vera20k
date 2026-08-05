@@ -160,7 +160,19 @@ use crate::sim::world::Simulation;
 // serialized on GameEntity, including their phase and landing state.
 // Bumped {41..46 fork} -> 47: merge of the two lineages; layout is the
 // union of every field both sides added.
-const SNAPSHOT_VERSION: u32 = 47;
+//
+// Bumped 47 -> 48: `DriveLocomotionRuntime` gains `occupation_handoff`, the
+// forward RawTrack handoff mark that accompanies the head-to mark, and it is
+// inserted BETWEEN `occupation_head_to` and `current_occupation_cleared` rather
+// than appended. Same bincode trap as 42 -> 43 and 43 -> 44: the encoding is not
+// self-describing, so the decoder reads the next field's bytes unconditionally
+// and `#[serde(default)]` never fires for a short record — a mid-struct
+// insertion is exactly the case it cannot cover. A v47 save written before this
+// change would pass the version check and then misread every byte from that
+// field onward, for that vehicle and every entity after it. Both occupation
+// marks are rebuilt into the transient `CellOccupationGrid` on load, so a
+// misread is a wrong cell reservation, not just a cosmetic field.
+const SNAPSHOT_VERSION: u32 = 48;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1354,10 +1366,11 @@ mod tests {
     /// anim-overlay unit change, while the foundations line assigned the same
     /// numbers to projectile state, trigger hashing, TeamClass state, piggyback
     /// persistence, and typed special locomotors. The merge unified both as 47.
-    /// This pins it so a later accidental bump is caught.
+    /// This pins it so a later accidental bump is caught. 47 -> 48 added
+    /// `DriveLocomotionRuntime::occupation_handoff` mid-struct.
     #[test]
-    fn snapshot_version_is_47() {
-        assert_eq!(super::SNAPSHOT_VERSION, 47);
+    fn snapshot_version_is_48() {
+        assert_eq!(super::SNAPSHOT_VERSION, 48);
     }
 
     #[test]
@@ -1373,7 +1386,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            47
+            super::SNAPSHOT_VERSION
         );
 
         let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1434,7 +1447,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            47
+            super::SNAPSHOT_VERSION
         );
 
         let mut restored_a = GameSnapshot::load(&bytes).expect("current snapshot").sim;
@@ -1500,7 +1513,7 @@ mod tests {
             GameSnapshot::read_header(&bytes)
                 .expect("current snapshot header")
                 .version,
-            47
+            super::SNAPSHOT_VERSION
         );
         let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
         let cell = restored

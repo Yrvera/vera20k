@@ -417,6 +417,14 @@ pub struct DriveLocomotionRuntime {
     /// cell before any paid track point is consumed.
     #[serde(default)]
     pub occupation_head_to: Option<DriveOccupationFootprint>,
+    /// Forward RawTrack handoff mark. A turning curve comes to rest on its head
+    /// cell but *passes through* an intermediate one, and the original claims
+    /// both: `Apply_Track_Occupation_Mode` applies the same mode to the track's
+    /// `+0x0C` handoff point — transformed around the stored head — before it
+    /// applies it to the supplied head coordinate. Without this the cell a
+    /// turning mover is about to drive through looks free to every other mover.
+    #[serde(default)]
+    pub occupation_handoff: Option<DriveOccupationFootprint>,
     /// A paid within-cell Drive point clears the current-coordinate occupation
     /// bit before committing coordinates. Entering a new cell marks it again.
     #[serde(default)]
@@ -439,6 +447,7 @@ impl Default for DriveLocomotionRuntime {
             residual_budget: 0,
             active_tube: None,
             occupation_head_to: None,
+            occupation_handoff: None,
             current_occupation_cleared: false,
         }
     }

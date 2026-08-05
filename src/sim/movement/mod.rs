@@ -135,6 +135,12 @@ pub(crate) fn install_forced_drive_track(
         layer: locomotor::MovementLayer::Ground,
     };
 
+    // Captured before the Drive borrow. The early return above already
+    // established the mover is on the ground plane.
+    let current_cell = (entity.position.rx, entity.position.ry);
+    let current_layer = locomotor::MovementLayer::Ground;
+    let entity_stable_id = entity.stable_id;
+
     let drive = entity
         .drive_locomotion
         .get_or_insert_with(crate::sim::components::DriveLocomotionRuntime::default);
@@ -148,13 +154,31 @@ pub(crate) fn install_forced_drive_track(
     drive.track_valid = true;
     drive.target_speed_fraction = SIM_ONE;
     drive.current_speed_fraction = SIM_ONE;
-    // Force_Track directly installs the new head mark. Its active retail
-    // callers enter with no old head, so ordinary replacement/old-mark clear
-    // semantics do not apply here.
+    // Force_Track directly installs the new head mark. Its active retail callers
+    // enter with no old head — but nothing in this function's signature enforces
+    // that, and a caller that reached a mid-curve mover would otherwise strand
+    // both of that curve's claims: a head cell and a forward handoff cell that
+    // nothing occupies and every later mover is refused entry to.
+    // `Apply_Track_Occupation_Mode` releases the pair together on mode 0, so
+    // release them here before installing the replacement.
+    crate::sim::occupancy::drop_drive_handoff_occupation(
+        drive,
+        cell_occupation,
+        entity_stable_id,
+        current_cell,
+        current_layer,
+    );
+    crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+        drive,
+        cell_occupation,
+        entity_stable_id,
+        current_cell,
+        current_layer,
+    );
     cell_occupation.mark_vehicle_on_layer(
         footprint.rx,
         footprint.ry,
-        entity.stable_id,
+        entity_stable_id,
         footprint.layer,
     );
     drive.occupation_head_to = Some(footprint);
@@ -268,6 +292,10 @@ pub struct MovementTickStats {
     pub track_selections: u32,
     /// Stuck entities that recovered via repath or scatter.
     pub stuck_recoveries: u32,
+    /// Fresh Drive curve selections refused by the cell-entry predicate, on
+    /// either arm. Counted so a fixture can show the lane was actually
+    /// exercised rather than trivially absent.
+    pub selection_admission_refusals: u32,
     /// Elapsed microseconds for the entire tick.
     pub elapsed_us: u64,
 }
@@ -287,6 +315,9 @@ impl MovementTickStats {
         self.scatter_attempts = self.scatter_attempts.saturating_add(other.scatter_attempts);
         self.track_selections = self.track_selections.saturating_add(other.track_selections);
         self.stuck_recoveries = self.stuck_recoveries.saturating_add(other.stuck_recoveries);
+        self.selection_admission_refusals = self
+            .selection_admission_refusals
+            .saturating_add(other.selection_admission_refusals);
         self.elapsed_us = self.elapsed_us.saturating_add(other.elapsed_us);
     }
 }

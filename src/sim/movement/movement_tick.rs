@@ -26,6 +26,7 @@ use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::infantry;
 use crate::sim::lifecycle_request::{LifecycleRequest, UninitReason};
+use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::cell_entry::{self, CellEntryResult, TerrainEntryMode};
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
@@ -839,6 +840,123 @@ fn process_pending_drive_arrivals(
     }
 }
 
+/// `Can_Enter_Cell` code for an allied body that is standing still in the cell.
+/// The one code the selection gate can produce that does NOT share the entry at
+/// 0x004B3607: `CMP EDX,0x6 / JNZ 0x004B3944` at 0x004B36F4 splits it out.
+const CODE_FRIENDLY_STATIONARY: u8 = 6;
+
+/// Dispatch for a fresh Drive curve refused with a code that shares gamemd's
+/// entry at 0x004B3607 — a bare occupation-mask claim (code 2), a moving
+/// friendly (2), or an enemy (5). **Code 6 does not come here**; it has its own
+/// retail arm with a scatter in it and is routed to the classifying lane
+/// instead, at the call site.
+///
+/// For the mask there is exactly one arm and nothing to classify. The mask is
+/// the last-resort arm of `Can_Enter_Cell` — `TEST EBP,EBP; JNZ 0x0073FD37` at
+/// 0x0073FC24 skips it whenever the object-list walk already produced a code —
+/// and when its vehicle bit is what refuses, the answer is the literal 2 written
+/// at 0x0073FD32. So the code the gate decided with is the code this consumes;
+/// no second predicate exists to disagree with it.
+///
+/// Code 5 belongs here rather than in the crossing lane's attack-the-blocker
+/// arm: for a Drive mover gamemd has no blocking-object arm at all. Every code
+/// that is not 1, 3 or 6 falls through `0x004B3944 CMP EDX,0x1 /
+/// JNZ 0x004B3607` into this same entry, and the ten call sites of the
+/// mission-override vtable slot give the *walk* locomotor the only
+/// blocking-object one. A blocked vehicle repaths; it does not stop and shoot.
+///
+/// gamemd's code-2 arm, read end to end from dispatch site B (`Can_Enter_Cell`
+/// call at 0x004B34C0):
+///
+/// * 0x004B36F7 `JNZ 0x004B3944`, then 0x004B3947 `JNZ 0x004B3607` — codes 2, 4,
+///   5 and 7 share this entry;
+/// * 0x004B3607-0x004B3646 nulls the Drive head-to coordinate from the null
+///   triple at 0x008A0790 (VERA does this inside the gate, before returning);
+/// * 0x004B364D `CMP EAX,0x2 / JNZ 0x004B3A97` selects the code-2 arm;
+/// * 0x004B3659-0x004B368D raises the mover's blocked flag `Foot+0x6B7` ONCE and,
+///   only on that first pass, arms its escalation timer with `Rules+0x1768`;
+/// * 0x004B3690-0x004B36B6 returns early while the movement-delay timer
+///   (`Foot+0x640` start / `+0x648` duration) is still running;
+/// * 0x004B36BC-0x004B36EF sets `BL` from whether the escalation timer expired,
+///   0x004B39FB `TEST BL,BL / SETNZ DL / INC EDX` turns that into 1 or 2, and
+///   0x004B3A0E calls `FootClass::Find_Path(cell, 0, urgency)`.
+///
+/// **There is no `Scatter_Objects` call anywhere in the arm.** The movement
+/// body's cell scatters all sit in code-6 ladders — 0x004B3225 in the blocked
+/// block, and 0x004B393A in the code-6 dispatch arm itself. A previous revision
+/// of this file claimed the arm contained no CALL at all; that is true only of
+/// the range 0x004B3656-0x004B36EF, and the arm exits that range via
+/// `JMP 0x004B39D3` into the `Find_Path` call above.
+///
+/// `handle_blocked_tick` already IS that ladder: it arms `blocked_delay` once on
+/// the first blocked pass and never re-arms it, so urgency reads 1 while
+/// `BlockagePathDelay` runs and 2 thereafter, and it repaths on every pass the
+/// movement-delay limiter allows. Nothing else belongs here — in particular no
+/// scatter, and therefore no scenario-RNG draw, on the most common event this
+/// gate produces.
+#[allow(clippy::too_many_arguments)]
+fn handle_deferred_drive_selection_block(
+    entities: &mut EntityStore,
+    entity_id: u64,
+    snap: &MoverSnapshot,
+    active_layer: MovementLayer,
+    ctx: PathfindingContext<'_>,
+    mcfg: MovementConfig,
+    entity_cost_grid: Option<&TerrainCostGrid>,
+    mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
+    occupancy: &OccupancyGrid,
+    rng: &mut SimRng,
+    stats: &mut MovementTickStats,
+    finished_entities: &mut Vec<u64>,
+    sim_tick: u64,
+    marker_context: Option<crate::sim::movement::path_markers::BridgeMarkerContext<'_>>,
+) -> Vec<(u32, DebugEventKind)> {
+    let Some(entity) = entities.get_mut(entity_id) else {
+        return Vec::new();
+    };
+    let cur_pos = (entity.position.rx, entity.position.ry);
+    let body_facing = entity.body_facing;
+    let Some(ref mut target) = entity.movement_target else {
+        return Vec::new();
+    };
+    let mut aborted_for_stuck = false;
+    handle_blocked_tick(
+        target,
+        &mut entity.facing,
+        body_facing,
+        &snap.locomotor,
+        &mut entity.drive_locomotion,
+        &mut entity.ship_locomotion,
+        entity_id,
+        cur_pos,
+        active_layer,
+        snap.on_bridge,
+        stats,
+        finished_entities,
+        &mut aborted_for_stuck,
+        ctx,
+        entity_cost_grid,
+        mover_entity_blocks,
+        mover_entity_block_map,
+        snap.too_big_to_fit_under_bridge,
+        mcfg,
+        rng,
+        sim_tick,
+        PATH_STUCK_INIT,
+        bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher).can_crush_units(),
+        snap.category == EntityCategory::Infantry,
+        // Code 2 keeps its grace span; the escalation timer is what selects the
+        // repath urgency (0x004B36BC-0x004B36EF).
+        false,
+        // All five `Rules+0x1718` give-up compares in the movement body sit
+        // outside the code-2 dispatch.
+        false,
+        marker_context,
+        occupancy,
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DeferredDriveTrackChain {
     target_cell: (u16, u16),
@@ -943,13 +1061,60 @@ fn classify_drive_track_chain_entry(
     )
 }
 
+/// May the chained curve be installed for this cell-entry answer?
+///
+/// Only code 0 (and the crush case, which resolves to code 0 once the victims
+/// are killed) admits a step. Every non-zero code takes a per-code branch in the
+/// movement body instead — `CMP EAX,0x3 / CMP EAX,0x6` at 0x004B2FFF-0x004B3027,
+/// with all remaining non-zero codes falling into the shared wait tail at
+/// 0x004B3282 — and none of those branches commits a crossing.
+///
+/// The two temporary codes used to be admitted here, and that is the defect this
+/// gate closes: `TemporaryOccupation` is the mask arm's code 2 (another mover
+/// has stamped this cell), and `TemporaryBlock` is a body still standing in the
+/// cell. gamemd refuses both for a vehicle occupant. Its object-list walk reads
+/// the occupant's `Foot+0x6B6` at 0x0073FA30 and branches
+/// (0x0073FA30-0x0073FA7C):
+///
+/// * `+0x6B6 == 0` -> query the occupant's locomotor slot `+0xA4`; false skips
+///   the occupant entirely (0x0073FA6B falls to 0x0073FA7C), true raises the
+///   code;
+/// * `+0x6B6 != 0` and RTTI (`vtable+0x2C`) **is** `0x0F` -> the SAME locomotor
+///   query, so those occupants can still be skipped (RTTI-to-class binding
+///   UNCHECKED);
+/// * `+0x6B6 != 0` and RTTI is anything else -> straight to the raise.
+///
+/// The raise at 0x0073FA74 is a running MAX, not an unconditional store: it is
+/// guarded by `CMP [ESP+0x18],0x2 / JGE 0x0073FA7C` at 0x0073FA6D, so it only
+/// lifts an accumulator that is still below 2.
+///
+/// Admitting the chain on those codes let a follower install a curve into, and
+/// then drive onto, a cell another vehicle was standing in, so refusing is the
+/// right direction. But VERA refuses on BOTH branches, and gamemd does not.
+///
+/// **CONFIRMED DRIFT — VERA is stricter than gamemd for an occupant in
+/// transit.** An earlier revision of this comment argued that a vehicle always
+/// reaches the raise because `FootClass`'s constructor initialises `+0x6B6` to 1
+/// (`MOV byte ptr [ESI+0x6B6],0x1` at 0x004D344A). The constructor store is
+/// real, but it is the IDLE value, not an invariant: an exhaustive writer search
+/// finds each locomotor clearing and re-setting the same byte around its own
+/// motion — `DriveLocomotionClass__Process_Drive_Track @ 0x004B0F20` writes 0 at
+/// 0x004B161A and 1 at 0x004B1FEF, `ShipLocomotionClass__Process_Drive_Track`
+/// 0x006A0CDA / 0x006A1632, `HoverLocomotionClass__Move` 0x005147D5 /
+/// 0x0051451E. A moving vehicle therefore carries 0 and takes the very same
+/// locomotor `+0xA4` question at 0x0073FA46; when that answers false, gamemd
+/// skips the occupant and admits the follower.
+///
+/// So on the arrival phase of a group move, where the cell ahead is held by a
+/// peer that is itself still moving, gamemd can chain through and VERA cannot.
+/// Player effect: columns space out slightly more than retail and take marginally
+/// longer to close up. Frequency: every multi-unit move. VERA models neither
+/// `+0x6B6` nor the locomotor `+0xA4` slot, so closing this needs both; gamemd
+/// equivalent of the `+0xA4` predicate itself is UNCHECKED.
 fn drive_track_chain_entry_allows_track_install(entry_result: &CellEntryResult) -> bool {
     matches!(
         entry_result,
-        CellEntryResult::Clear
-            | CellEntryResult::TemporaryBlock { .. }
-            | CellEntryResult::TemporaryOccupation
-            | CellEntryResult::Crushable { .. }
+        CellEntryResult::Clear | CellEntryResult::Crushable { .. }
     )
 }
 
@@ -1123,8 +1288,31 @@ fn handle_deferred_drive_track_chain(
     ) else {
         return false;
     };
-    entity.drive_track = Some(new_track);
     let current_cell = (entity.position.rx, entity.position.ry);
+    // Same pair of claims the fresh selection installs: the forward RawTrack
+    // handoff cell this curve passes through, then its head cell.
+    //
+    // The pair stays on ONE plane — the head mark's, resolved just below from
+    // `chain.layers.occupancy_bits_layer` — rather than pinning the handoff to
+    // Ground while the head follows the layer context. `Apply_Track_Occupation_Mode`
+    // applies one mode to both coordinates and its mark helper picks the plane
+    // from each coordinate's own height, which VERA has no equivalent of here;
+    // splitting them would let a mover on a bridge deck claim a ground cell it
+    // is not on and block a ground mover underneath. Deck equivalent UNCHECKED.
+    let handoff = (chain.layers.occupancy_bits_layer == MovementLayer::Ground)
+        .then(|| {
+            super::drive_track::is_at_coord_track_cells(&new_track, current_cell, true)
+                .0
+                .and_then(|(hx, hy)| {
+                    Some(DriveOccupationFootprint {
+                        rx: u16::try_from(hx).ok()?,
+                        ry: u16::try_from(hy).ok()?,
+                        layer: MovementLayer::Ground,
+                    })
+                })
+        })
+        .flatten();
+    entity.drive_track = Some(new_track);
     let current_layer = entity
         .occupancy_list_layer()
         .unwrap_or(MovementLayer::Ground);
@@ -1158,6 +1346,14 @@ fn handle_deferred_drive_track_chain(
                 current_layer,
             ),
         }
+        crate::sim::occupancy::replace_drive_handoff_occupation(
+            drive,
+            cell_occupation,
+            entity_id,
+            current_cell,
+            current_layer,
+            handoff,
+        );
     }
     true
 }
@@ -1524,6 +1720,7 @@ fn tick_movement_with_grids_scoped(
         // the check in a separate scope below.
         let mut deferred_cell_check: Option<DeferredCellCheck> = None;
         let mut deferred_drive_track_chain: Option<DeferredDriveTrackChain> = None;
+        let mut deferred_drive_selection_block: Option<movement_step::DriveSelectionRefusal> = None;
         let mut already_finished: bool = false;
 
         // Scoped mutable borrow of the entity — released at block end so the
@@ -1870,6 +2067,12 @@ fn tick_movement_with_grids_scoped(
                 dt,
                 entity_id,
                 Some(&mut *cell_occupation),
+                // The object-list arm, from this owner's blocker snapshot.
+                // It is refreshed above whenever occupancy changed, so it
+                // reflects every mover that already committed this tick.
+                movement_step::DriveCellAdmission {
+                    units: mover_entity_block_map,
+                },
                 current_occupation_layer,
                 path_grid,
             ) {
@@ -2123,6 +2326,53 @@ fn tick_movement_with_grids_scoped(
                     // where it was (point_index stays at chain_index).
                     skip_cell_crossings_after_chain_ready = true;
                 }
+                movement_step::AdvanceResult::DriveTrackFreshBlocked(refusal) => {
+                    // gamemd asks `Can_Enter_Cell` before it commits a curve and
+                    // dispatches on the CODE it returns — the codes do not share
+                    // one arm. Nothing was installed, nothing was reserved, and
+                    // the mover has not moved, so no crossing follows; the only
+                    // thing carried out is the refusal and its code.
+                    //
+                    // Code 6 — an allied body sitting still in the cell — takes
+                    // its own arm at 0x004B36FD (`CMP EDX,0x6 / JNZ 0x004B3944`
+                    // at 0x004B36F4-0x004B36F7 is what separates it) and that arm
+                    // ends in `CellClass__Scatter_Objects @ 0x00481670`, called
+                    // at 0x004B393A, before it falls into the shared entry via
+                    // `JMP 0x004B3607`. So the parked blocker gets told to move.
+                    // Routing it into the code-2 entry instead leaves it parked
+                    // forever and the mover repathing around a cell that never
+                    // clears.
+                    //
+                    // `handle_deferred_occupancy`'s `FriendlyStationary` arm IS
+                    // that ladder — scatter the blocker, then take the wait — so
+                    // the refusal is handed to it rather than reimplemented here.
+                    // Nothing else in the tick sets `deferred_cell_check` on this
+                    // path: `process_cell_crossings`, its only other producer, is
+                    // skipped one line below.
+                    //
+                    // VERA-internal, gamemd equivalent UNCHECKED: the retail arm
+                    // only reaches its scatter through one of three tests
+                    // (0x004B37C4, 0x004B37F9, 0x004B3829 — a magnitude compare
+                    // against a Rules field, a height compare, and a cell-kind
+                    // compare); VERA scatters unconditionally, as its crossing
+                    // lane already did before this gate existed.
+                    //
+                    // The layer context is `single(refusal.layer)` — the three
+                    // layers collapsed onto the plane the claim was found on —
+                    // where the crossing lane resolves them separately through
+                    // `evaluate_runtime_can_enter_cell_with_transition`. The two
+                    // agree off a bridge, which is the only regime with
+                    // fixtures; the deck equivalent is UNCHECKED, as it is for
+                    // the handoff mark.
+                    if refusal.cost_code == Some(CODE_FRIENDLY_STATIONARY) {
+                        deferred_cell_check = Some(DeferredCellCheck::Vehicle(
+                            refusal.cell,
+                            cell_entry::CanEnterLayerContext::single(refusal.layer),
+                        ));
+                    }
+                    deferred_drive_selection_block = Some(refusal);
+                    skip_cell_crossings_after_chain_ready = true;
+                }
                 movement_step::AdvanceResult::ReadyForCrossings => {}
             }
 
@@ -2269,6 +2519,41 @@ fn tick_movement_with_grids_scoped(
                 &mut already_scattered,
                 sim_tick,
             );
+        }
+
+        if let Some(refusal) = deferred_drive_selection_block {
+            stats.selection_admission_refusals =
+                stats.selection_admission_refusals.saturating_add(1);
+            log::trace!(
+                "SELECTION_REFUSAL entity={entity_id} cell={:?} layer={:?} arm={:?} code={:?}",
+                refusal.cell,
+                refusal.layer,
+                refusal.arm,
+                refusal.cost_code,
+            );
+            // Code 6 was routed to the classifying lane above, which owns the
+            // scatter ladder AND the wait/repath fallback when the scatter
+            // fails. Running both would dispatch the same refusal twice.
+            if refusal.cost_code != Some(CODE_FRIENDLY_STATIONARY) {
+                let evts = handle_deferred_drive_selection_block(
+                    entities,
+                    entity_id,
+                    &snap,
+                    active_layer,
+                    ctx,
+                    mcfg,
+                    entity_cost_grid,
+                    mover_entity_blocks,
+                    mover_entity_block_map,
+                    occupancy,
+                    rng,
+                    &mut stats,
+                    &mut finished_entities,
+                    sim_tick,
+                    marker_context,
+                );
+                debug_events.extend(evts);
+            }
         }
 
         // --- Deferred occupancy check (unified vehicle + infantry) ---
@@ -2856,10 +3141,21 @@ mod drive_track_chain_tests {
             &CellEntryResult::Clear
         ));
         assert!(drive_track_chain_entry_allows_track_install(
+            &CellEntryResult::Crushable { victims: vec![1] }
+        ));
+        // Code 2, both variants. A body still standing in the cell and a bare
+        // mask claim are both refused here. That is stricter than gamemd for an
+        // occupant in TRANSIT, which carries `Foot+0x6B6 == 0` (0x004B161A) and
+        // therefore takes the locomotor `+0xA4` question at 0x0073FA46 that can
+        // skip it — a recorded DRIFT, written up on
+        // `drive_track_chain_entry_allows_track_install`. Only a parked
+        // occupant (`+0x6B6 != 0`, RTTI != 0x0F) reaches the raise directly via
+        // 0x0073FA38-0x0073FA44.
+        assert!(!drive_track_chain_entry_allows_track_install(
             &CellEntryResult::TemporaryBlock { blocker_id: 1 }
         ));
-        assert!(drive_track_chain_entry_allows_track_install(
-            &CellEntryResult::Crushable { victims: vec![1] }
+        assert!(!drive_track_chain_entry_allows_track_install(
+            &CellEntryResult::TemporaryOccupation
         ));
         assert!(!drive_track_chain_entry_allows_track_install(
             &CellEntryResult::ScatterRequired {
@@ -2940,12 +3236,31 @@ mod drive_track_chain_tests {
         assert_eq!(stats.scatter_successes, 1);
     }
 
+    /// Code 2 refuses the chain and, unlike code 6, consumes no scatter.
+    ///
+    /// This asserted the opposite until 2026-08-05. A moving friendly vehicle is
+    /// still a body in the cell, so refusing is the right direction — but this
+    /// is a RATCHET on a recorded DRIFT, not a parity assertion, and it must not
+    /// be read as one. gamemd would ask the occupant's locomotor `+0xA4` at
+    /// 0x0073FA46 (`Foot+0x6B6` reads 0 while that occupant is in transit —
+    /// 0x004B161A clears it, 0x004B1FEF re-sets it) and, on a false answer,
+    /// admit the follower. VERA has neither field and refuses unconditionally.
+    /// Full write-up on `drive_track_chain_entry_allows_track_install`.
+    ///
+    /// The no-scatter half is the load-bearing half for determinism, and it
+    /// still holds, but not for the reason recorded here earlier: the Drive
+    /// code-2 arm is NOT call-free. It runs 0x004B3607 -> 0x004B3656 ->
+    /// `JMP 0x004B39D3` -> `CALL 0x004D3920` (`FootClass::Find_Path`) at
+    /// 0x004B3A0E with urgency `(BL != 0) + 1`. What it has none of is a
+    /// `Scatter_Objects` call; every cell scatter in the movement body sits in a
+    /// code-6 ladder — 0x004B3225 in the blocked block, 0x004B393A in the code-6
+    /// dispatch arm.
     #[test]
-    fn drive_track_chain_code2_still_installs_track() {
+    fn drive_track_chain_code2_refuses_track_without_scattering() {
         let (installed, entities, stats) = run_chain_with_blocker(true);
 
-        assert!(installed);
-        assert!(entities.get(1).unwrap().drive_track.is_some());
+        assert!(!installed);
+        assert!(entities.get(1).unwrap().drive_track.is_none());
         assert_eq!(stats.scatter_successes, 0);
     }
 

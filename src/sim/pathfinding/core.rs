@@ -156,6 +156,16 @@ pub struct EntityBlockEntry {
     pub next_cell: Option<(u16, u16)>,
     /// Can_Enter_Cell return code: 2 (moving friendly), 5 (enemy), 6 (stationary friendly).
     pub cost_code: u8,
+    /// Whether the blocker is infantry.
+    ///
+    /// A* does not care, but the Drive selection gate does: infantry never
+    /// hold the cell's vehicle occupation bit -- `0x20` is written only by
+    /// `UnitClass__MarkCellOccupationBit20 @ 0x007441B0`, while
+    /// `InfantryClass__MarkCellOccupancy @ 0x005217C0` writes
+    /// `1 << GetSubCell` into the sub-cell bits of the same byte -- and a
+    /// vehicle entitled to crush them must not be refused a curve on their
+    /// account.
+    pub blocker_is_infantry: bool,
 }
 
 /// Entity soft blockers split by object-list layer.

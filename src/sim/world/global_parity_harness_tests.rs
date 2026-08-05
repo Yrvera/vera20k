@@ -125,10 +125,10 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// is a changed schedule, not an RNG misroute. No draw site was added or
 /// removed.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
-// MERGE 2026-08-03: both branches re-baselined these independently (dev:
-// passive acquire + spawner; foundations: Move cadence + hashed runtime
-// state). Neither side's values describe the merged tree; re-derived below
-// from the merged tree's own output in the same merge commit.
+    // MERGE 2026-08-03: both branches re-baselined these independently (dev:
+    // passive acquire + spawner; foundations: Move cadence + hashed runtime
+    // state). Neither side's values describe the merged tree; re-derived below
+    // from the merged tree's own output in the same merge commit.
     3450507931353894124,
     4175722561206807420,
     2082941527059030371,
@@ -270,8 +270,33 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // still reproduces BOTH of its legacy probes unchanged across the whole slice —
 // its 16-tick fixture never reaches the first scan — so the composition half
 // remains isolated and behaviour-free, and everything moving here is behaviour.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xFE3D_5874_DD44_FD7E;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2F73_22C6_2FC3_AF0C;
+//
+// Re-baselined 2026-08-05 for the Drive cell-admission slice, and this time the
+// attribution is MEASURED rather than argued. `DriveLocomotionRuntime` gained
+// `occupation_handoff: Option<DriveOccupationFootprint>`, and the whole struct
+// is hashed by its derived `Hash` (`world_hash.rs`, `entity.drive_locomotion`),
+// so an `Option` discriminant enters the fold for every vehicle even while the
+// field is `None`.
+//
+// The experiment, run in this tree with no `world_hash.rs` change: KEEP the
+// field (so the schema delta is fixed), neutralise every behaviour writer that
+// landed with it — the fresh-selection admission gate, the chained-curve refusal
+// on the two temporary codes, the handoff mark at both install sites, and the
+// forced-track pre-clear — and re-run this fixture. Result, byte-identical to
+// the full change on every printed value:
+//
+//     final_hash=F221E97E407676CA  pre-v28=5E01CF58F7998106  pre-v29=56B366E67991E8A4
+//     streams=2FE2AAAE97044CEC,39F3258BA550EB7C,1CE8184870436163
+//
+// So this fixture's entire shift is SCHEMA and none of it is behaviour: the
+// harness's one miner and small unit count never reach the admission lane.
+// `FINAL_STREAM_STATES` is byte-identical across all three streams, which —
+// because the generator advances as a pure function of its own state — proves
+// the DRAW COUNT per stream is unchanged, not the schedule; the intra-run
+// determinism assertion passes on top of that. Still a Rust-vs-prior-Rust
+// regression ratchet, not gamemd parity evidence.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x5E01_CF58_F799_8106;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x56B3_66E6_7991_E8A4;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -376,7 +401,13 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2F73_22C6_2FC3_AF0C;
 /// erodes the ratchet. That criticism is recorded and stands: these constants
 /// are a Rust-vs-prior-Rust regression ratchet, not parity evidence, and they
 /// need a machine-derived oracle before they can carry more weight than that.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xF370_B6DA_AF1C_60BB;
+/// Re-baselined 2026-08-05 for the Drive cell-admission slice. Attribution
+/// measured, not argued: see the experiment written out at
+/// `GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH`. With the new
+/// `occupation_handoff` field present and every behaviour writer neutralised,
+/// this fixture produces this exact value, so the shift is entirely the hash
+/// schema and none of it is behaviour.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xF221_E97E_4076_76CA;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
@@ -782,7 +813,36 @@ fn dense_converging_setup() -> (
 /// written up at `FINAL_STREAM_STATES`.
 /// Re-baselined 2026-08-04 with FINAL_STREAM_STATES for the same
 /// constructed-`Rate` change; see the provenance note there.
-const POSITION_FINGERPRINT: u64 = 0x0FC6_3769_AADD_1F8A;
+/// Re-baselined 2026-08-05 for the Drive cell-admission gate. A curve is now
+/// refused when the cell it would step into is refused by *either* arm of
+/// gamemd's cell-entry predicate — a body in the cell's object list, or another
+/// vehicle's occupation mark — where before the runtime consulted neither at
+/// selection time. This fixture is twenty tanks converging on one column, so
+/// movers that previously drove through each other now wait, scatter and
+/// repath; positions move on purpose.
+///
+/// WITHDRAWN: an earlier revision of this note cited `FINAL_STREAM_STATES` to
+/// certify that "no RNG draw moved and no stream was misrouted" for THIS
+/// fixture. That claim is wrong on two axes and is retracted. First, the pin
+/// lives in a different test — `s2_dense_scenario_position_fingerprint_stable`
+/// pins no stream at all, so this twenty-tank convergence has ZERO RNG
+/// observation of its own. Second, `SimRng::next_u32` advances as a pure
+/// function of its own state, so even where the pin does apply an unchanged
+/// final state proves only that the DRAW COUNT on that stream is unchanged; it
+/// says nothing about which tick or which consumer took them.
+///
+/// ATTRIBUTION, MEASURED. This fixture folds only entity ids and positions, so
+/// it carries no hash-schema component at all — and that is confirmed rather
+/// than assumed. With `occupation_handoff` still on the struct but every
+/// behaviour writer neutralised (the experiment written out at
+/// `GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH`), this fixture returns to exactly its
+/// previous committed value `0x0FC6_3769_AADD_1F8A`. So its shift is 100%
+/// behaviour and 0% schema — the mirror image of the global harness above.
+///
+/// What is still NOT separated: the individual contribution of the object-list
+/// arm, the mask arm and the handoff mark, which landed together and were
+/// neutralised together. UNVERIFIED.
+const POSITION_FINGERPRINT: u64 = 0x46A8_A475_2A7C_15EF;
 
 #[test]
 fn s2_dense_scenario_position_fingerprint_stable() {

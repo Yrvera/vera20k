@@ -1844,6 +1844,7 @@ fn code2_urgency_2_routes_around_blocker() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let path = find_path_with_costs(
@@ -1880,6 +1881,7 @@ fn code2_urgency_1_picks_alt_when_available() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let path = find_path_with_costs(
@@ -1917,6 +1919,7 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     ebm.insert(
@@ -1925,6 +1928,7 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
         EntityBlockEntry {
             next_cell: Some((5, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     ebm.insert(
@@ -1933,6 +1937,7 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
         EntityBlockEntry {
             next_cell: Some((6, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     // Block the alt rows so the only route is through the chain.
@@ -1975,6 +1980,7 @@ fn code2_urgency_0_ten_step_jam_uses_4x() {
             EntityBlockEntry {
                 next_cell: Some((x + 1, 1)),
                 cost_code: 2,
+                blocker_is_infantry: false,
             },
         );
     }
@@ -2015,6 +2021,7 @@ fn code2_goal_cell_exempt_from_multiplier() {
         EntityBlockEntry {
             next_cell: Some((6, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let path = find_path_with_costs(
@@ -2044,6 +2051,7 @@ fn soft_blocker_cost_uses_selected_ground_object_list_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
 
@@ -2073,6 +2081,7 @@ fn soft_blocker_cost_uses_selected_ground_object_list_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let ground_path = find_path_with_costs(
@@ -2112,6 +2121,7 @@ fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let ground_only_path = find_layered_path(
@@ -2143,6 +2153,7 @@ fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let bridge_path = find_layered_path(
@@ -2176,6 +2187,7 @@ fn code2_chain_lookup_stays_on_selected_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     for x in 4..15u16 {
@@ -2185,6 +2197,7 @@ fn code2_chain_lookup_stays_on_selected_layer() {
             EntityBlockEntry {
                 next_cell: Some((x + 1, 1)),
                 cost_code: 2,
+                blocker_is_infantry: false,
             },
         );
     }
