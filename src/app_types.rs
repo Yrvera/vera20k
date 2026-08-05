@@ -60,8 +60,13 @@ pub(crate) enum CursorId {
     Move,
     NoMove,
     Attack,
+    /// Cursor table row 21. Shared by out-of-range attack and by the harvest
+    /// action — the action switch routes both to the same row, so they must
+    /// stay one id or switching between them would restart the animation.
     AttackOutOfRange,
     AttackMove,
+    /// Cursor table row 22 — the guard-area reticle.
+    GuardArea,
     Deploy,
     NoDeploy,
     // Directional scroll cursors (move-allowed).
@@ -199,6 +204,9 @@ pub(crate) enum CursorFeedbackKind {
     EnemyUnit,
     EnemyStructure,
     EnemyOutOfRange,
+    /// Harvest — a miner over ore. The action switch sends this to the same
+    /// cursor row as an out-of-range attack.
+    Harvest,
     Invalid,
     PlaceValid,
     PlaceInvalid,

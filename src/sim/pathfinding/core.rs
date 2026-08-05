@@ -156,6 +156,16 @@ pub struct EntityBlockEntry {
     pub next_cell: Option<(u16, u16)>,
     /// Can_Enter_Cell return code: 2 (moving friendly), 5 (enemy), 6 (stationary friendly).
     pub cost_code: u8,
+    /// Whether the blocker is infantry.
+    ///
+    /// A* does not care, but the Drive selection gate does: infantry never
+    /// hold the cell's vehicle occupation bit -- `0x20` is written only by
+    /// `UnitClass__MarkCellOccupationBit20 @ 0x007441B0`, while
+    /// `InfantryClass__MarkCellOccupancy @ 0x005217C0` writes
+    /// `1 << GetSubCell` into the sub-cell bits of the same byte -- and a
+    /// vehicle entitled to crush them must not be refused a curve on their
+    /// account.
+    pub blocker_is_infantry: bool,
 }
 
 /// Entity soft blockers split by object-list layer.
@@ -854,17 +864,24 @@ pub fn astar_search(
     // naturally — no need for an explicit start-cell rejection.
 
     // --- Goal passability ---
-    // Goal must be walkable on at least one layer.
-    let goal_ground_ok = is_cell_passable_for_mover_with_speed(
+    // An impassable destination does NOT abort the search. gamemd runs the
+    // search anyway; when a cell adjacent to the blocked goal is reached it
+    // drops into the success tail and returns the path to that adjacent cell
+    // ("walk as close to the blocked target as you can"). The near-miss branch
+    // in the neighbour loop below is that tail. Only the layer selection below
+    // consumes these two flags.
+    let goal_ground_ok = is_cell_passable_for_category_on_layer(
         grid,
         goal.0,
         goal.1,
+        MovementLayer::Ground,
         options.movement_zone,
         None,
         options.resolved_terrain,
         options.terrain_costs,
         false,
         TerrainEntryMode::AStarNeighbor,
+        options.is_infantry,
     );
     let goal_bridge_ok = is_cell_passable_for_mover_on_layer_with_speed(
         grid,
@@ -878,9 +895,7 @@ pub fn astar_search(
         false,
         TerrainEntryMode::AStarNeighbor,
     );
-    if !goal_ground_ok && !goal_bridge_ok {
-        return None;
-    }
+    let _ = goal_ground_ok;
 
     // --- Height initialization ---
     let start_cell = grid.cell(start.0, start.1).unwrap_or(&DEFAULT_BLOCKED_CELL);
@@ -890,7 +905,17 @@ pub fn astar_search(
     };
 
     let goal_cell = grid.cell(goal.0, goal.1).unwrap_or(&DEFAULT_BLOCKED_CELL);
-    let goal_height = if !options.is_infantry && goal_bridge_ok {
+    // Bridge-deck destinations resolve to the deck height for every mover.
+    //
+    // This deliberately does NOT except infantry. A former `!is_infantry` guard
+    // here ("infantry always target ground level at bridge destinations") was
+    // inert for as long as the flag was never set by any production caller, and
+    // it carries no source: stock YR infantry walk over high bridges on every
+    // bridge map, so forcing an infantry move order onto a deck cell to aim at
+    // the ground beneath it would break ordinary bridge crossings. The flag now
+    // reaches this function, so the guard is removed rather than silently
+    // switched on.
+    let goal_height = if goal_bridge_ok {
         goal_cell.bridge_deck_level
     } else {
         goal_cell.ground_level
@@ -938,10 +963,15 @@ pub fn astar_search(
 
         let start_idx = start.1 as usize * w + start.0 as usize;
         let start_on_bridge = is_at_bridge_level(start_height, start_cell);
+        // Close-on-generation: gamemd stamps a (cell, layer) closed at the
+        // moment a node is created for it and freezes its g there. The start
+        // node is created before the loop, so it is stamped here.
         if start_on_bridge {
             bridge_g[start_idx] = 0;
+            bridge_closed[start_idx] = true;
         } else {
             ground_g[start_idx] = 0;
+            ground_closed[start_idx] = true;
         }
 
         open.push(Reverse(AStarNode {
@@ -971,18 +1001,9 @@ pub fn astar_search(
             // usize::MAX from the wrong came_from array.
             let on_bridge = current.on_bridge;
 
-            // Skip if already closed on this list
-            if on_bridge {
-                if bridge_closed[c_idx] {
-                    continue;
-                }
-                bridge_closed[c_idx] = true;
-            } else {
-                if ground_closed[c_idx] {
-                    continue;
-                }
-                ground_closed[c_idx] = true;
-            }
+            // No close-at-pop and no stale-duplicate skip: every (cell, layer)
+            // is stamped closed when its node is created, so the open set can
+            // never hold two nodes for the same (cell, layer).
 
             // Goal check: cell AND height must match
             if (cx, cy) == goal && current.height == goal_height {
@@ -1187,25 +1208,34 @@ pub fn astar_search(
                         bridge_terrain_passable && neighbor_cell.transition
                     }
                 } else {
-                    is_cell_passable_for_mover_with_speed(
+                    is_cell_passable_for_category_on_layer(
                         grid,
                         nx,
                         ny,
+                        MovementLayer::Ground,
                         options.movement_zone,
                         None,
                         options.resolved_terrain,
                         options.terrain_costs,
                         false,
                         TerrainEntryMode::AStarNeighbor,
+                        options.is_infantry,
                     )
                 };
                 trace_step.walkable = Some(neighbor_passable);
                 if !neighbor_passable {
-                    // Near-miss goal fallback (0x0042a17d): if the impassable neighbor
-                    // IS the goal cell and start/goal heights are close, accept the
-                    // path ending at the current node. This lets units route to the
-                    // nearest passable cell when the goal itself is blocked.
+                    // Impassable-destination abort. When the goal cell itself is
+                    // impassable and the search has reached a cell adjacent to
+                    // it, gamemd leaves the main loop immediately and drops into
+                    // the success tail — "walk as close to the blocked target as
+                    // you can". The search does NOT continue past this point.
+                    // The tail additionally requires the aborting node to be at
+                    // least one real step from the start, so a start-adjacent
+                    // blocked goal fails the search outright.
                     if (nx, ny) == goal && start_height.abs_diff(goal_height) <= 1 {
+                        if c_idx == start_idx && on_bridge == start_on_bridge {
+                            return None;
+                        }
                         // Use the current node's push-time layer flag (same value
                         // came_from was keyed on when the node was pushed).
                         return Some(reconstruct_path_dual(
@@ -1362,34 +1392,38 @@ pub fn astar_search(
                 // Direction tie-breaker
                 let tentative_g = current.g_cost + step_cost + DIR_TIEBREAK[dir_index];
 
-                // Update appropriate g-cost array
+                // Node creation. gamemd stamps the selected layer's closed
+                // array and records g at this point and never revisits the
+                // cell, so g is write-once and there is no relaxation: the
+                // route that discovers a cell first owns it. The closed test
+                // for this (cell, layer) already ran above.
                 let (g_array, from_array) = if neighbor_use_bridge {
                     (&mut bridge_g, &mut bridge_from)
                 } else {
                     (&mut ground_g, &mut ground_from)
                 };
-                if tentative_g < g_array[n_idx] {
-                    g_array[n_idx] = tentative_g;
-                    from_array[n_idx] = encode_from(c_idx, on_bridge);
-                    let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
-                    open.push(Reverse(AStarNode {
-                        f_cost: tentative_g + h,
-                        g_cost: tentative_g,
-                        x: nx,
-                        y: ny,
-                        height: neighbor_height,
-                        on_bridge: neighbor_use_bridge,
-                    }));
-                    if let (Some(gate), Some(progress)) =
-                        (options.hierarchy_gate, options.hierarchy_progress)
-                    {
-                        progress.maybe_advance(gate.level0_zones.zone_at(nx, ny), (nx, ny));
-                    }
-                    emit_astar_trace(options, trace_step);
+                g_array[n_idx] = tentative_g;
+                from_array[n_idx] = encode_from(c_idx, on_bridge);
+                if neighbor_use_bridge {
+                    bridge_closed[n_idx] = true;
                 } else {
-                    trace_step.rejected_reason = Some("not_better_g_cost");
-                    emit_astar_trace(options, trace_step);
+                    ground_closed[n_idx] = true;
                 }
+                let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
+                open.push(Reverse(AStarNode {
+                    f_cost: tentative_g + h,
+                    g_cost: tentative_g,
+                    x: nx,
+                    y: ny,
+                    height: neighbor_height,
+                    on_bridge: neighbor_use_bridge,
+                }));
+                if let (Some(gate), Some(progress)) =
+                    (options.hierarchy_gate, options.hierarchy_progress)
+                {
+                    progress.maybe_advance(gate.level0_zones.zone_at(nx, ny), (nx, ny));
+                }
+                emit_astar_trace(options, trace_step);
             }
 
             // Direction 8 is a TubeClass jump. It is not an adjacent neighbor and
@@ -1415,19 +1449,19 @@ pub fn astar_search(
                             let tentative_g =
                                 current.g_cost + STEP_COST * tube_steps + TUBE_DIR_TIEBREAK;
 
-                            if tentative_g < ground_g[n_idx] {
-                                ground_g[n_idx] = tentative_g;
-                                ground_from[n_idx] = encode_from(c_idx, on_bridge);
-                                let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
-                                open.push(Reverse(AStarNode {
-                                    f_cost: tentative_g + h,
-                                    g_cost: tentative_g,
-                                    x: nx,
-                                    y: ny,
-                                    height: neighbor_height,
-                                    on_bridge: false,
-                                }));
-                            }
+                            // Same close-on-generation rule as the compass edges.
+                            ground_g[n_idx] = tentative_g;
+                            ground_from[n_idx] = encode_from(c_idx, on_bridge);
+                            ground_closed[n_idx] = true;
+                            let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
+                            open.push(Reverse(AStarNode {
+                                f_cost: tentative_g + h,
+                                g_cost: tentative_g,
+                                x: nx,
+                                y: ny,
+                                height: neighbor_height,
+                                on_bridge: false,
+                            }));
                         }
                     }
                 }
@@ -1505,6 +1539,40 @@ pub fn is_cell_passable_for_mover_with_speed(
     )
 }
 
+/// Infantry-aware variant of `is_cell_passable_for_mover_on_layer_with_speed`.
+///
+/// `is_infantry` selects the sub-cell view of terrain-object occupation: retail
+/// terrain objects close a cell to infantry only when every functional sub-cell
+/// bit is set.
+#[allow(clippy::too_many_arguments)]
+pub fn is_cell_passable_for_category_on_layer(
+    grid: &PathGrid,
+    x: u16,
+    y: u16,
+    terrain_layer: MovementLayer,
+    movement_zone: Option<MovementZone>,
+    speed_type: Option<SpeedType>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    terrain_costs: Option<&TerrainCostGrid>,
+    bypass_grid: bool,
+    mode: TerrainEntryMode,
+    is_infantry: bool,
+) -> bool {
+    evaluate_can_enter_cell(CanEnterCellContext {
+        target: (x, y),
+        terrain_layer,
+        movement_zone,
+        speed_type,
+        path_grid: Some(grid),
+        resolved_terrain,
+        terrain_costs,
+        bypass_grid,
+        mode,
+        is_infantry,
+    })
+    .is_clear()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn is_cell_passable_for_mover_on_layer_with_speed(
     grid: &PathGrid,
@@ -1528,6 +1596,7 @@ pub fn is_cell_passable_for_mover_on_layer_with_speed(
         terrain_costs,
         bypass_grid,
         mode,
+        is_infantry: false,
     })
     .is_clear()
 }
@@ -1552,6 +1621,27 @@ pub struct PathCell {
     pub tube_index: Option<TubeId>,
     /// True when this cell has a valid tube index and final YR CellClass LandType 10.
     pub low_bridge_tube_cell: bool,
+}
+
+/// Sub-cell bits an infantryman can actually stand in.
+///
+/// Retail terrain objects write only sub-cells 2/3/4 into the ground occupation
+/// plane, and the infantry cell-entry gate refuses the cell only when **all
+/// three** are set. Any partial pattern leaves the cell enterable and the
+/// sub-cell allocator picks a free slot. Stock `rulesmd.ini` gives 56 of 60
+/// temperate terrain types `TemperateOccupationBits=4` (a single bit), so most
+/// tree cells hold two infantry; only `=7` closes the cell.
+pub const INFANTRY_SUBCELL_MASK: u8 = 0x1C;
+
+/// Terrain-object INI occupation bits (`1|2|4`) shifted into the cell occupation
+/// plane (`0x04|0x08|0x10`). Mirrors `sim::terrain_object::terrain_raw_occupation_mask`.
+pub fn terrain_object_cell_bits_from_ini(ini_bits: u8) -> u8 {
+    (ini_bits & 0x07) << 2
+}
+
+/// Whether a terrain object with these cell-plane bits closes the cell to infantry.
+pub fn terrain_object_blocks_infantry(cell_bits: u8) -> bool {
+    cell_bits & INFANTRY_SUBCELL_MASK == INFANTRY_SUBCELL_MASK
 }
 
 impl PathCell {
@@ -1640,6 +1730,15 @@ pub struct PathGrid {
     cells: Vec<PathCell>,
     width: u16,
     height: u16,
+    /// Per-cell terrain-object sub-cell occupation, already shifted into
+    /// cell-plane bits (`0x04|0x08|0x10`). Retail terrain occupation is a
+    /// sub-cell mask, not a whole-cell block, and only infantry read it.
+    /// Empty when the grid was not built from resolved terrain; every cell then
+    /// reads 0 and infantry fall back to `ground_walkable`.
+    terrain_object_cell_bits: Vec<u8>,
+    /// `ground_walkable` recomputed as if the cell held no terrain object.
+    /// Same emptiness rule as `terrain_object_cell_bits`.
+    ground_walkable_without_terrain_object: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1657,7 +1756,45 @@ impl PathGrid {
             cells: vec![DEFAULT_WALKABLE_CELL; size],
             width,
             height,
+            terrain_object_cell_bits: Vec::new(),
+            ground_walkable_without_terrain_object: Vec::new(),
         }
+    }
+
+    /// Terrain-object sub-cell occupation bits at a cell, in cell-plane form
+    /// (`0x04|0x08|0x10`). Zero when the cell holds no terrain object or the
+    /// grid carries no terrain-object overlay.
+    pub fn terrain_object_cell_bits_at(&self, x: u16, y: u16) -> u8 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        let idx = y as usize * self.width as usize + x as usize;
+        self.terrain_object_cell_bits.get(idx).copied().unwrap_or(0)
+    }
+
+    /// Ground walkability for an infantry mover.
+    ///
+    /// Identical to `is_walkable` except for the terrain-object clause: retail
+    /// terrain objects occupy sub-cells, so a tree or rock only closes the cell
+    /// to infantry when its mask fills every functional sub-cell. Any other
+    /// blocking clause (cliff, overlay, `ground_walk_blocked`, destroyed bridge)
+    /// still blocks.
+    pub fn is_walkable_for_infantry(&self, x: u16, y: u16) -> bool {
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        let idx = y as usize * self.width as usize + x as usize;
+        let bits = self.terrain_object_cell_bits.get(idx).copied().unwrap_or(0);
+        if bits == 0 {
+            return self.cells[idx].ground_walkable;
+        }
+        if terrain_object_blocks_infantry(bits) {
+            return false;
+        }
+        self.ground_walkable_without_terrain_object
+            .get(idx)
+            .copied()
+            .unwrap_or(self.cells[idx].ground_walkable)
     }
 
     /// Grid width accessor.
@@ -1867,6 +2004,8 @@ impl PathGrid {
             cells: vec![DEFAULT_BLOCKED_CELL; size],
             width: map_width,
             height: map_height,
+            terrain_object_cell_bits: Vec::new(),
+            ground_walkable_without_terrain_object: Vec::new(),
         };
 
         let mut walkable_count: u32 = 0;
@@ -1930,8 +2069,14 @@ impl PathGrid {
         terrain: &ResolvedTerrainGrid,
         bridge_state: Option<&BridgeRuntimeState>,
     ) -> Self {
-        let mut cells =
-            vec![DEFAULT_BLOCKED_CELL; terrain.width() as usize * terrain.height() as usize];
+        let size = terrain.width() as usize * terrain.height() as usize;
+        let mut cells = vec![DEFAULT_BLOCKED_CELL; size];
+        // Retail terrain occupation is a per-cell *sub-cell* mask that only the
+        // infantry entry gate reads; vehicles keep the whole-cell block. These
+        // two side tables carry the infantry view without changing
+        // `PathCell::ground_walkable`, which every non-infantry consumer reads.
+        let mut terrain_object_cell_bits = vec![0u8; size];
+        let mut ground_walkable_without_terrain_object = vec![false; size];
         for cell in terrain.iter() {
             let bridge_structural = cell.bridge_facts.has_structural_bridge()
                 || (cell.has_bridge_deck
@@ -1997,15 +2142,42 @@ impl PathGrid {
                 tube_index: cell.tube_index,
                 low_bridge_tube_cell: cell.is_low_bridge_tube_cell(),
             };
+            // Infantry overlay: recompute the same walkability decision with the
+            // terrain object removed, so only the sub-cell mask decides.
+            let walkable_without_terrain_object = if cell.overlay_blocks {
+                false
+            } else if bridge_structural {
+                if bridge_intact {
+                    true
+                } else {
+                    !cell.is_cliff_like && !(cell.base_ground_walk_blocked || cell.overlay_blocks)
+                }
+            } else if cell.bridge_walkable && cell.bridge_transition {
+                true
+            } else if cell.is_cliff_like {
+                false
+            } else {
+                !(cell.base_ground_walk_blocked || cell.overlay_blocks) || cell.is_water
+            };
             let index = cell.ry as usize * terrain.width() as usize + cell.rx as usize;
             if let Some(slot) = cells.get_mut(index) {
                 *slot = path_cell;
+            }
+            if let Some(slot) = terrain_object_cell_bits.get_mut(index) {
+                *slot = cell
+                    .terrain_object_occupation
+                    .map_or(0, terrain_object_cell_bits_from_ini);
+            }
+            if let Some(slot) = ground_walkable_without_terrain_object.get_mut(index) {
+                *slot = walkable_without_terrain_object;
             }
         }
         Self {
             cells,
             width: terrain.width(),
             height: terrain.height(),
+            terrain_object_cell_bits,
+            ground_walkable_without_terrain_object,
         }
     }
 
@@ -2028,6 +2200,9 @@ impl PathGrid {
                 || a.slope_type != b.slope_type
                 || a.tube_index != b.tube_index
                 || a.low_bridge_tube_cell != b.low_bridge_tube_cell
+                || self.terrain_object_cell_bits.get(idx) != other.terrain_object_cell_bits.get(idx)
+                || self.ground_walkable_without_terrain_object.get(idx)
+                    != other.ground_walkable_without_terrain_object.get(idx)
             {
                 changed.push(((idx % w) as u16, (idx / w) as u16));
             }
@@ -2081,6 +2256,8 @@ impl PathGrid {
             cells,
             width,
             height,
+            terrain_object_cell_bits: Vec::new(),
+            ground_walkable_without_terrain_object: Vec::new(),
         }
     }
 
@@ -2288,6 +2465,7 @@ pub fn find_path_with_costs(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     find_path_with_costs_marker(
         grid,
@@ -2301,6 +2479,7 @@ pub fn find_path_with_costs(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -2317,6 +2496,7 @@ pub fn find_path_with_costs_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     let steps = astar_search(
         grid,
@@ -2330,6 +2510,7 @@ pub fn find_path_with_costs_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             movement_zone,
             resolved_terrain,
             ..Default::default()
@@ -2352,6 +2533,7 @@ pub fn find_path_with_costs_corridor(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     find_path_with_costs_corridor_marker(
         grid,
@@ -2367,6 +2549,7 @@ pub fn find_path_with_costs_corridor(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -2385,6 +2568,7 @@ pub fn find_path_with_costs_corridor_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     let steps = astar_search(
         grid,
@@ -2399,6 +2583,7 @@ pub fn find_path_with_costs_corridor_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             movement_zone,
             resolved_terrain,
             ..Default::default()
@@ -2424,6 +2609,7 @@ pub(crate) fn find_path_with_costs_hierarchy_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     Some(
         find_path_with_costs_hierarchy_marker_progress(
@@ -2442,6 +2628,7 @@ pub(crate) fn find_path_with_costs_hierarchy_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
         )?
         .path,
     )
@@ -2471,6 +2658,7 @@ pub(crate) fn find_path_with_costs_hierarchy_marker_progress(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<HierarchyMarkerPathResult> {
     let progress = HierarchyProgressTracker::new(start, level0_path);
     let steps = astar_search(
@@ -2491,6 +2679,7 @@ pub(crate) fn find_path_with_costs_hierarchy_marker_progress(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             movement_zone,
             resolved_terrain,
             ..Default::default()
@@ -2522,6 +2711,7 @@ pub(crate) fn find_layered_path_hierarchy_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<LayeredPathStep>> {
     if !matches!(start_layer, MovementLayer::Ground | MovementLayer::Bridge) {
         return None;
@@ -2547,6 +2737,7 @@ pub(crate) fn find_layered_path_hierarchy_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             movement_zone,
             ..Default::default()
         },
@@ -2609,6 +2800,7 @@ pub fn find_layered_path(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<LayeredPathStep>> {
     find_layered_path_marker(
         grid,
@@ -2623,6 +2815,7 @@ pub fn find_layered_path(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -2640,6 +2833,7 @@ pub fn find_layered_path_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<LayeredPathStep>> {
     if !matches!(start_layer, MovementLayer::Ground | MovementLayer::Bridge) {
         return None;
@@ -2658,6 +2852,7 @@ pub fn find_layered_path_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
             ..Default::default()
         },
     )
@@ -2677,6 +2872,8 @@ impl PathGrid {
             cells: vec![DEFAULT_WALKABLE_CELL; size],
             width,
             height,
+            terrain_object_cell_bits: Vec::new(),
+            ground_walkable_without_terrain_object: Vec::new(),
         }
     }
 
@@ -2687,6 +2884,8 @@ impl PathGrid {
             cells: vec![DEFAULT_BLOCKED_CELL; size],
             width,
             height,
+            terrain_object_cell_bits: Vec::new(),
+            ground_walkable_without_terrain_object: Vec::new(),
         }
     }
 }

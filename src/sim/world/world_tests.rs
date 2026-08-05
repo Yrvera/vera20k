@@ -32,6 +32,7 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
         sub_cell: 0,
         veterancy: 0,
         high: false,
+        mission: None,
     }
 }
 
@@ -1100,6 +1101,7 @@ fn test_spawn_from_map_high_unit_uses_bridge_layer_and_deck_level() {
             sub_cell: 0,
             veterancy: 0,
             high: true,
+            mission: None,
         }],
         Some(&combat_test_rules()),
         &heights,
@@ -1197,6 +1199,7 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
             sub_cell: 0,
             veterancy: 0,
             high: true,
+            mission: None,
         }],
         Some(&combat_test_rules()),
         &heights,
@@ -1401,6 +1404,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
             sub_cell: 0,
             veterancy: 0,
             high: true,
+            mission: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::from([((5, 5), 1)]),
@@ -1458,6 +1462,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
             sub_cell: 0,
             veterancy: 0,
             high: true,
+            mission: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -1520,6 +1525,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
             sub_cell: 0,
             veterancy: 0,
             high: true,
+            mission: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -1574,6 +1580,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
             sub_cell: 0,
             veterancy: 0,
             high: true,
+            mission: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -1631,6 +1638,7 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
             sub_cell: 0,
             veterancy: 0,
             high: true,
+            mission: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -1697,6 +1705,7 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         }],
         Some(&combat_test_rules()),
         &BTreeMap::new(),
@@ -2895,6 +2904,7 @@ fn test_execute_tick_delay_blocks_early_execution() {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         }],
         None,
         &empty_heights(),
@@ -2971,6 +2981,7 @@ fn test_move_queue_command_appends_waypoint() {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         }],
         None,
         &empty_heights(),
@@ -3031,6 +3042,7 @@ fn test_stop_command_clears_move_and_attack_intent() {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         }],
         None,
         &empty_heights(),
@@ -3087,6 +3099,7 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         }],
         None,
         &empty_heights(),
@@ -3316,6 +3329,7 @@ fn test_move_command_rejects_non_owned_entity() {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         }],
         None,
         &empty_heights(),
@@ -3493,6 +3507,7 @@ fn test_attack_command_rejects_friendly_target() {
                 sub_cell: 0,
                 veterancy: 0,
                 high: false,
+                mission: None,
             },
             MapEntity {
                 owner: "British".to_string(),
@@ -3505,6 +3520,7 @@ fn test_attack_command_rejects_friendly_target() {
                 sub_cell: 0,
                 veterancy: 0,
                 high: false,
+                mission: None,
             },
         ],
         None,
@@ -3549,6 +3565,7 @@ fn test_attack_move_auto_acquires_enemy() {
                 sub_cell: 0,
                 veterancy: 0,
                 high: false,
+                mission: None,
             },
             MapEntity {
                 owner: "Russians".to_string(),
@@ -3561,6 +3578,7 @@ fn test_attack_move_auto_acquires_enemy() {
                 sub_cell: 0,
                 veterancy: 0,
                 high: false,
+                mission: None,
             },
         ],
         None,
@@ -3629,6 +3647,7 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
                 sub_cell: 0,
                 veterancy: 0,
                 high: false,
+                mission: None,
             },
             MapEntity {
                 owner: "Russians".to_string(),
@@ -3641,6 +3660,7 @@ fn test_attack_move_lethal_hit_does_not_run_pointer_expiry_early() {
                 sub_cell: 0,
                 veterancy: 0,
                 high: false,
+                mission: None,
             },
         ],
         None,
@@ -3712,6 +3732,7 @@ fn test_guard_returns_to_anchor_when_displaced() {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         }],
         None,
         &empty_heights(),
@@ -3778,7 +3799,11 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
         e1_id,
         EntityCategory::Infantry,
         0,
-        0,
+        // Sight=1. This test used to pass 0 and lean on VERA revealing a
+        // sight-0 object's own cell; gamemd reveals nothing at all for
+        // Sight=0 (36 stock types carry it), so a zero here would test the
+        // sight gate rather than fog persistence.
+        1,
         false,
     );
     sim.substrate.entities.insert(ge);
@@ -3790,14 +3815,15 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
     assert!(sim.fog.is_cell_revealed(americans, 1, 1));
 
     let _ = (sx, sy); // suppress unused warning
+    // Far enough that (1,1) leaves a Sight=1 reveal disc entirely.
     if let Some(e) = sim.substrate.entities.get_mut(1) {
-        e.position.rx = 2;
+        e.position.rx = 6;
         e.position.ry = 1;
     }
     let _ = sim.advance_tick(&[], None, &empty_heights(), Some(&grid), None, 33);
     assert!(!sim.fog.is_cell_visible(americans, 1, 1));
     assert!(sim.fog.is_cell_revealed(americans, 1, 1));
-    assert!(sim.fog.is_cell_visible(americans, 2, 1));
+    assert!(sim.fog.is_cell_visible(americans, 6, 1));
 }
 
 #[test]
@@ -4152,6 +4178,7 @@ fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
         None,
         0,
         false,
+        false,
     );
     assert!(
         path_initial.is_some(),
@@ -4175,6 +4202,7 @@ fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
         None,
         None,
         0,
+        false,
         false,
     );
     assert!(
@@ -4440,4 +4468,1843 @@ fn combat_death_not_repaired_then_freed_at_end_of_tick() {
         Some(1000),
         "destroyed building must not be repaired at Phase 7 (dying-gated, no credits spent)",
     );
+}
+
+// ===========================================================================
+// GROUP-MOVE STACKING REPRODUCTION
+//
+// Player report: "tanks when moved in a group stack on top of each other."
+// In retail YR ground vehicles are strictly one-per-cell. These tests drive
+// the real command path (Command::Move through advance_tick, including the
+// staged-megamission group-destination distributor) and measure whether two
+// vehicles ever end up on the same cell.
+// ===========================================================================
+
+fn stacking_repro_rules() -> RuleSet {
+    let ini: IniFile = IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n\n\
+         [MTNK]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\nStrength=300\nArmor=heavy\nSpeed=6\n",
+    );
+    RuleSet::from_ini(&ini).expect("stacking repro rules should parse")
+}
+
+/// Same clear-ground world, plus a crushable infantry type and a crusher tank.
+fn stacking_crusher_rules() -> RuleSet {
+    let ini: IniFile = IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\n\
+         [VehicleTypes]\n0=MTNK\n\n\
+         [E1]\nStrength=125\nArmor=flak\nSpeed=4\n\n\
+         [MTNK]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\nStrength=300\n\
+         Armor=heavy\nSpeed=6\nMovementZone=Crusher\nCrusher=yes\n",
+    );
+    RuleSet::from_ini(&ini).expect("stacking crusher rules should parse")
+}
+
+fn stacking_crusher_world(size: u16) -> (Simulation, RuleSet, PathGrid) {
+    use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+
+    let rules = stacking_crusher_rules();
+    let mut sim = Simulation::new();
+    let terrain = gsi_04_10_clear_terrain(size, size);
+    sim.terrain_costs = build_canonical_terrain_cost_grids(&terrain);
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    sim.zone_grid = Some(ZoneGrid::build(&grid, &sim.terrain_costs, size, size));
+    sim.resolved_terrain = Some(terrain);
+    (sim, rules, grid)
+}
+
+/// The longest stretch of consecutive ticks on which `id` did not change cell
+/// while it still held a movement order. A mover whose selection is refused by
+/// a predicate that nothing downstream can resolve produces a bit-identical
+/// tick forever; that shows up here as an unbounded run.
+fn longest_stationary_run_while_ordered(series: &[(bool, (u16, u16))]) -> usize {
+    let mut longest = 0usize;
+    let mut open = 0usize;
+    let mut previous: Option<(u16, u16)> = None;
+    for &(ordered, cell) in series {
+        if ordered && previous == Some(cell) {
+            open += 1;
+            longest = longest.max(open);
+        } else {
+            open = 0;
+        }
+        previous = Some(cell);
+    }
+    longest
+}
+
+/// D1 GUARD — a crusher must not be frozen by a body it is entitled to drive
+/// over.
+///
+/// The cell occupation mask holds a bit for vehicles only: `0x20` is written
+/// exclusively by `UnitClass__MarkCellOccupationBit20 @ 0x007441B0`, while
+/// `InfantryClass__MarkCellOccupancy @ 0x005217C0` writes `1 << GetSubCell` into
+/// the sub-cell bits of the same byte. So the selection gate — which models the
+/// mask arm — must never see infantry at all, and a tank ordered through them
+/// keeps moving. A gate that refused on mere unit presence would stall the tank
+/// one refusal per tick, forever, because nothing downstream ever clears the
+/// refusal.
+#[test]
+fn crusher_does_not_freeze_in_front_of_infantry() {
+    for enemy_infantry in [false, true] {
+        let (mut sim, rules, grid) = stacking_crusher_world(24);
+        let heights = empty_heights();
+
+        let infantry_owner = if enemy_infantry {
+            "Russians"
+        } else {
+            "Americans"
+        };
+        let blocker = sim
+            .spawn_object("E1", infantry_owner, 10, 10, 0, &rules, &heights)
+            .expect("infantry spawns");
+        let tank = sim
+            .spawn_object("MTNK", "Americans", 6, 10, 64, &rules, &heights)
+            .expect("tank spawns");
+
+        let cmd = cmd_envelope(
+            &sim,
+            "Americans",
+            1,
+            Command::Move {
+                entity_id: tank,
+                target_rx: 16,
+                target_ry: 10,
+                queue: false,
+                group_id: None,
+            },
+        );
+        let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 100);
+
+        let mut series: Vec<(bool, (u16, u16))> = Vec::new();
+        let mut arrived_at: Option<u64> = None;
+        let mut entered_blocker_cell: Option<u64> = None;
+        let mut refusals = 0u32;
+        for tick in 0..600u64 {
+            let result = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+            refusals += result.movement.selection_admission_refusals;
+            let Some(e) = sim.substrate.entities.get(tank) else {
+                break;
+            };
+            let cell = (e.position.rx, e.position.ry);
+            series.push((e.movement_target.is_some(), cell));
+            if cell == (10, 10) && entered_blocker_cell.is_none() {
+                entered_blocker_cell = Some(tick);
+            }
+            if cell == (16, 10) && arrived_at.is_none() {
+                arrived_at = Some(tick);
+            }
+        }
+
+        let stall = longest_stationary_run_while_ordered(&series);
+        println!(
+            "--- crusher_does_not_freeze_in_front_of_infantry (enemy={enemy_infantry}) ---\n    \
+             tank: {}\n    blocker: {}\n    longest ordered-but-stationary run = {stall} tick(s); \
+             arrived_at = {arrived_at:?}; entered (10,10) at {entered_blocker_cell:?}; \
+             selection refusals = {refusals}",
+            stacking_motion_state(&sim, tank),
+            stacking_motion_state(&sim, blocker),
+        );
+
+        // THE COUNTER ASSERTION. Arrival alone does not prove the exclusion was
+        // exercised — a tank that routed politely around the man never asked the
+        // gate about his cell at all. The gate is the only producer of this
+        // counter, so a zero says the infantry occupant never refused a curve on
+        // either arm: the object arm skipped him by category, and he holds no
+        // vehicle bit for the mask arm to find.
+        assert_eq!(
+            refusals, 0,
+            "the infantry blocker refused a Drive selection {refusals} time(s) \
+             (enemy_infantry={enemy_infantry}) — the infantry exclusion is not holding"
+        );
+        // And the tank genuinely went THROUGH him rather than politely around:
+        // measured entry into the blocker's own cell at tick 53 in both the
+        // friendly and the enemy case. Without this the zero above is
+        // ambiguous — a mover that never approached also refuses nothing.
+        assert!(
+            entered_blocker_cell.is_some(),
+            "the crusher never entered the infantry's cell (10,10) \
+             (enemy_infantry={enemy_infantry}), so the exclusion was never exercised: {}",
+            stacking_motion_state(&sim, tank)
+        );
+
+        // A blocked mover legitimately waits: BlockagePathDelay is 60 frames and
+        // the scatter/repath ladder can run several spans. What it never does is
+        // sit still for the whole run.
+        assert!(
+            stall < 300,
+            "crusher sat still for {stall} consecutive ticks while still ordered \
+             (enemy_infantry={enemy_infantry}) — this is the permanent-refusal freeze"
+        );
+        assert!(
+            arrived_at.is_some(),
+            "crusher never reached (16,10) with enemy_infantry={enemy_infantry}: {}",
+            stacking_motion_state(&sim, tank)
+        );
+    }
+}
+
+/// D2 GUARD — a turning curve whose ENDPOINT is occupied must still make
+/// progress.
+///
+/// gamemd asks `Can_Enter_Cell` once per selection, about one cell
+/// (0x004B34C0), and dispatches on the one code it gets back. A gate that asked
+/// about a second cell — the curve's two-cells-out endpoint — and then reported
+/// the FIRST cell to its dispatch would hand the dispatch a cell that is clear,
+/// which resolves to "not blocked", resets the timers and returns without
+/// stepping: a bit-identical tick, forever.
+#[test]
+fn turning_mover_with_an_occupied_endpoint_still_makes_progress() {
+    let (mut sim, rules, grid) = stacking_world(24);
+    let heights = empty_heights();
+
+    // Mover at (10,10) ordered north-east: the curve's head node is (10,9) and
+    // its endpoint two cells out is (11,9). Park a friendly on the endpoint and
+    // leave the head node clear.
+    let parked = sim
+        .spawn_object("MTNK", "Americans", 11, 9, 64, &rules, &heights)
+        .expect("parked tank spawns");
+    let mover = sim
+        .spawn_object("MTNK", "Americans", 10, 10, 64, &rules, &heights)
+        .expect("mover spawns");
+
+    let cmd = cmd_envelope(
+        &sim,
+        "Americans",
+        1,
+        Command::Move {
+            entity_id: mover,
+            target_rx: 10,
+            target_ry: 4,
+            queue: false,
+            group_id: None,
+        },
+    );
+    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 100);
+
+    let mut series: Vec<(bool, (u16, u16))> = Vec::new();
+    let mut arrived_at: Option<u64> = None;
+    for tick in 0..600u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        let Some(e) = sim.substrate.entities.get(mover) else {
+            break;
+        };
+        let cell = (e.position.rx, e.position.ry);
+        series.push((e.movement_target.is_some(), cell));
+        if cell == (10, 4) && arrived_at.is_none() {
+            arrived_at = Some(tick);
+        }
+    }
+
+    let stall = longest_stationary_run_while_ordered(&series);
+    println!(
+        "--- turning_mover_with_an_occupied_endpoint_still_makes_progress ---\n    \
+         mover: {}\n    parked: {}\n    longest ordered-but-stationary run = {stall}; \
+         arrived_at = {arrived_at:?}",
+        stacking_motion_state(&sim, mover),
+        stacking_motion_state(&sim, parked),
+    );
+
+    assert!(
+        stall < 300,
+        "mover sat still for {stall} consecutive ticks while still ordered — \
+         the endpoint refusal is not resolvable by its own dispatch"
+    );
+    assert!(
+        arrived_at.is_some(),
+        "mover never reached (10,4): {}",
+        stacking_motion_state(&sim, mover)
+    );
+    let m = sim.substrate.entities.get(mover).expect("mover alive");
+    let p = sim.substrate.entities.get(parked).expect("parked alive");
+    assert_ne!(
+        (m.position.rx, m.position.ry),
+        (p.position.rx, p.position.ry),
+        "two ground vehicles must never rest on the same cell"
+    );
+}
+
+/// B1 GUARD — a parked friendly vehicle standing ON the mover's route must be
+/// told to move, not merely repathed around.
+///
+/// Code 6 is the one `Can_Enter_Cell` answer the Drive selection gate can
+/// produce that does NOT share gamemd's entry at 0x004B3607. `CMP EDX,0x6 /
+/// JNZ 0x004B3944` at 0x004B36F4 splits it into its own arm at 0x004B36FD, and
+/// that arm reaches `CellClass__Scatter_Objects @ 0x00481670` — call site
+/// 0x004B393A, via 0x004B38B3 — before falling into the shared entry through
+/// `JMP 0x004B3607`. Codes 2 and 5 reach that shared entry directly and no
+/// `Scatter_Objects` call sits anywhere between it and its `Find_Path` tail. A
+/// gate that sent all three to one dispatch left the parked blocker parked.
+///
+/// The blocker is parked AFTER the order is issued and directly on the path A*
+/// already returned. That is the ordinary case — a group member that finishes
+/// its own move while a peer is still routed through the cell it stopped on —
+/// and it is the only way to get a stationary vehicle onto the route at all: on
+/// open ground A* simply steers around a code-6 cell, and an occupied goal cell
+/// makes it return a path that stops one short without ever consulting the gate.
+///
+/// SEEN TO FAIL before being trusted (2026-08-05). With the code-6 routing
+/// removed — every refusal taking the shared-entry dispatch, which is what this
+/// change shipped before this fixture existed — the blocker never leaves (12,8).
+/// Excluding code 6 from the object arm instead does NOT help: a stationary
+/// vehicle always holds its own occupation bit, so the mask arm refuses the same
+/// blocker one line later. The dispatch is what has to change.
+#[test]
+fn parked_friendly_on_the_route_is_scattered_out_of_the_way() {
+    let (mut sim, rules, grid) = stacking_world(24);
+    let heights = empty_heights();
+
+    const PARKED_AT: (u16, u16) = (12, 8);
+    const DESTINATION: (u16, u16) = (18, 8);
+
+    let mover = sim
+        .spawn_object("MTNK", "Americans", 6, 8, 64, &rules, &heights)
+        .expect("mover spawns");
+
+    let cmd = cmd_envelope(
+        &sim,
+        "Americans",
+        1,
+        Command::Move {
+            entity_id: mover,
+            target_rx: DESTINATION.0,
+            target_ry: DESTINATION.1,
+            queue: false,
+            group_id: None,
+        },
+    );
+    let first = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 100);
+    let mut refusals = first.movement.selection_admission_refusals;
+
+    // The route A* actually returned, before anything is parked on it. The
+    // fixture is only meaningful if the blocker cell is on it.
+    let route: Vec<(u16, u16)> = sim
+        .substrate
+        .entities
+        .get(mover)
+        .and_then(|m| m.movement_target.as_ref())
+        .map(|t| t.path.clone())
+        .unwrap_or_default();
+    assert!(
+        route.contains(&PARKED_AT),
+        "fixture precondition: {PARKED_AT:?} must lie on the mover's route {route:?}"
+    );
+
+    let parked = sim
+        .spawn_object(
+            "MTNK",
+            "Americans",
+            PARKED_AT.0,
+            PARKED_AT.1,
+            64,
+            &rules,
+            &heights,
+        )
+        .expect("parked tank spawns");
+
+    let mut series: Vec<(bool, (u16, u16))> = Vec::new();
+    let mut blocker_left_at: Option<u64> = None;
+    let mut arrived_at: Option<u64> = None;
+    for tick in 0..400u64 {
+        let result = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        refusals += result.movement.selection_admission_refusals;
+        if let Some(b) = sim.substrate.entities.get(parked)
+            && (b.position.rx, b.position.ry) != PARKED_AT
+            && blocker_left_at.is_none()
+        {
+            blocker_left_at = Some(tick);
+        }
+        let Some(m) = sim.substrate.entities.get(mover) else {
+            break;
+        };
+        let cell = (m.position.rx, m.position.ry);
+        series.push((m.movement_target.is_some(), cell));
+        if cell == DESTINATION && arrived_at.is_none() {
+            arrived_at = Some(tick);
+        }
+    }
+
+    let stall = longest_stationary_run_while_ordered(&series);
+    println!(
+        "--- parked_friendly_on_the_route_is_scattered_out_of_the_way ---
+             route: {route:?}
+    mover: {}
+    parked: {}
+             selection refusals = {refusals}; blocker left {PARKED_AT:?} at {blocker_left_at:?};          arrived_at = {arrived_at:?}; longest ordered-but-stationary run = {stall}",
+        stacking_motion_state(&sim, mover),
+        stacking_motion_state(&sim, parked),
+    );
+
+    // The lane fired at all. `selection_admission_refusals` has exactly one
+    // producer — the gate — so without this the two assertions below could both
+    // pass on a build where the gate never ran, which is how a silent upstream
+    // change would leave every new fixture in this file green.
+    assert!(
+        refusals > 0,
+        "the Drive selection gate never refused anything, so this fixture proves          nothing about its dispatch"
+    );
+    assert!(
+        blocker_left_at.is_some(),
+        "the parked friendly never left {PARKED_AT:?}, so nothing ever reached the          code-6 scatter: {}",
+        stacking_motion_state(&sim, parked)
+    );
+    assert!(
+        arrived_at.is_some(),
+        "the mover never reached its ordered destination {DESTINATION:?}: {}",
+        stacking_motion_state(&sim, mover)
+    );
+}
+
+/// Clear square map with PathGrid + terrain costs + zone grid, so both the
+/// group-destination distributor and the runtime cell-entry checks are live.
+fn stacking_world(size: u16) -> (Simulation, RuleSet, PathGrid) {
+    use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+
+    let rules = stacking_repro_rules();
+    let mut sim = Simulation::new();
+    let terrain = gsi_04_10_clear_terrain(size, size);
+    sim.terrain_costs = build_canonical_terrain_cost_grids(&terrain);
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    sim.zone_grid = Some(ZoneGrid::build(&grid, &sim.terrain_costs, size, size));
+    sim.resolved_terrain = Some(terrain);
+    (sim, rules, grid)
+}
+
+fn stacking_cells(sim: &Simulation, ids: &[u64]) -> Vec<(u64, u16, u16)> {
+    ids.iter()
+        .filter_map(|&id| {
+            sim.substrate
+                .entities
+                .get(id)
+                .map(|e| (id, e.position.rx, e.position.ry))
+        })
+        .collect()
+}
+
+fn stacking_duplicates(cells: &[(u64, u16, u16)]) -> BTreeMap<(u16, u16), Vec<u64>> {
+    let mut by_cell: BTreeMap<(u16, u16), Vec<u64>> = BTreeMap::new();
+    for &(id, rx, ry) in cells {
+        by_cell.entry((rx, ry)).or_default().push(id);
+    }
+    by_cell.retain(|_, ids| ids.len() > 1);
+    by_cell
+}
+
+/// (d) raw grid state for one cell: object list, the owner-aware vehicle
+/// occupation plane, and the destructive raw CellClass ground byte.
+fn stacking_cell_state(sim: &Simulation, rx: u16, ry: u16) -> String {
+    let list: Vec<(u64, MovementLayer, Option<u8>, bool)> = sim
+        .substrate
+        .occupancy
+        .get(rx, ry)
+        .map(|o| {
+            o.occupants
+                .iter()
+                .map(|c| (c.entity_id, c.layer, c.sub_cell, c.is_building))
+                .collect()
+        })
+        .unwrap_or_default();
+    format!(
+        "({rx},{ry}) object_list={list:?} vehicle_bits=0x{:02X} raw_ground=0x{:02X}",
+        sim.substrate
+            .cell_occupation
+            .vehicle_bits(rx, ry, MovementLayer::Ground),
+        sim.substrate.raw_cell_occupation.ground_bits(rx, ry),
+    )
+}
+
+/// (e) is this vehicle still trying to move?
+fn stacking_motion_state(sim: &Simulation, id: u64) -> String {
+    let Some(e) = sim.substrate.entities.get(id) else {
+        return "<gone>".to_string();
+    };
+    match e.movement_target.as_ref() {
+        None => format!(
+            "id={id} at ({},{}) sub=({},{}) movement_target=None",
+            e.position.rx, e.position.ry, e.position.sub_x, e.position.sub_y
+        ),
+        Some(mt) => format!(
+            "id={id} at ({},{}) sub=({},{}) path_len={} next_index={} goal={:?}",
+            e.position.rx,
+            e.position.ry,
+            e.position.sub_x,
+            e.position.sub_y,
+            mt.path.len(),
+            mt.next_index,
+            mt.path.last().copied()
+        ),
+    }
+}
+
+/// MINIMAL CASE: one stopped vehicle sits on a cell; a second vehicle is
+/// ordered by the real command path to move onto exactly that cell.
+/// Retail: the mover must NOT be admitted onto the occupied cell.
+/// World lepton position of a mover. 256 leptons per cell — the verified
+/// leptons-per-cell constant the whole coordinate frame is built on.
+fn stacking_lepton_pos(sim: &Simulation, id: u64) -> Option<(i64, i64)> {
+    sim.substrate.entities.get(id).map(|e| {
+        (
+            i64::from(e.position.rx) * 256 + i64::from(e.position.sub_x.to_num::<i32>()),
+            i64::from(e.position.ry) * 256 + i64::from(e.position.sub_y.to_num::<i32>()),
+        )
+    })
+}
+
+/// Straight-line hull separation between two movers, in leptons. This is what
+/// the renderer draws; the cell index is not.
+fn stacking_gap(sim: &Simulation, a: u64, b: u64) -> Option<i64> {
+    let (ax, ay) = stacking_lepton_pos(sim, a)?;
+    let (bx, by) = stacking_lepton_pos(sim, b)?;
+    let dx = ax - bx;
+    let dy = ay - by;
+    Some((((dx * dx + dy * dy) as f64).sqrt()) as i64)
+}
+
+/// Closest approach between any two of `ids` on this tick.
+fn stacking_min_gap(sim: &Simulation, ids: &[u64]) -> Option<(u64, u64, i64)> {
+    let mut worst: Option<(u64, u64, i64)> = None;
+    for i in 0..ids.len() {
+        for j in (i + 1)..ids.len() {
+            let Some(gap) = stacking_gap(sim, ids[i], ids[j]) else {
+                continue;
+            };
+            if worst.is_none_or(|(_, _, best)| gap < best) {
+                worst = Some((ids[i], ids[j], gap));
+            }
+        }
+    }
+    worst
+}
+
+/// Closest approach between two movers that are on the SAME cell this tick.
+///
+/// This is the regime the derived bound actually covers: it bounds the instant
+/// gamemd admits a mover into a cell another mover still occupies. Convergence
+/// between two movers in different cells is ordinary traffic and is not what the
+/// derivation speaks to.
+fn stacking_min_gap_within_shared_cell(sim: &Simulation, ids: &[u64]) -> Option<(u64, u64, i64)> {
+    let mut worst: Option<(u64, u64, i64)> = None;
+    for (_, members) in stacking_duplicates(&stacking_cells(sim, ids)) {
+        for i in 0..members.len() {
+            for j in (i + 1)..members.len() {
+                let Some(gap) = stacking_gap(sim, members[i], members[j]) else {
+                    continue;
+                };
+                if worst.is_none_or(|(_, _, best)| gap < best) {
+                    worst = Some((members[i], members[j], gap));
+                }
+            }
+        }
+    }
+    worst
+}
+
+/// Half a cell. Two MTNK hulls this close read on screen as one stacked sprite,
+/// which is what the player reported seeing.
+const VISIBLE_OVERLAP_LEPTONS: i64 = 128;
+
+/// The player's measured symptoms, used directly as the acceptance bound.
+///
+/// Verbatim report: "tanks when moved in a group stack on top of each other."
+/// Measured: **38 leptons** between a head-on pair, and **29 leptons held for 31
+/// consecutive ticks** on a group move. 256 leptons is one cell.
+///
+/// Both numbers matter and neither substitutes for the other. A minimum taken
+/// over a run and then compared to a floor cannot see the second report at all:
+/// two hulls parked 130 leptons apart for 31 straight ticks are visually
+/// indistinguishable from the complaint and clear every floor above. So the
+/// duration of close approach is measured too, and both are asserted.
+const REPORTED_HEADON_OVERLAP_LEPTONS: i64 = 38;
+const REPORTED_SUSTAINED_OVERLAP_TICKS: usize = 31;
+
+/// The bound the duration assertion actually uses — deliberately NOT the
+/// player's 31.
+///
+/// 31 was the bound until 2026-08-05 and it had never fired, because it sits
+/// ABOVE the worst value ever measured against it. The known-bad intermediate
+/// build recorded on [`StackingWatch`] produced a **28**-tick run inside half a
+/// cell, and 28 < 31, so that build PASSED this assertion; only the sibling
+/// 38-lepton floor caught it. A regression that parked two hulls 45 leptons
+/// apart for 28 straight ticks would have failed nothing.
+///
+/// Derived from measurement instead. On the passing build all three fixtures
+/// that assert this report `longest run under 128 leptons = 0` — no pair ever
+/// comes within half a cell for even one tick, the tightest approach anywhere
+/// being 180 leptons on `group_move_short_range` and 181 on
+/// `group_move_eight_to_one_cell` and `column_of_four`. The bound is one
+/// post-scatter wait span (`bump_crush::POST_SCATTER_WAIT_FRAMES` = 10), the
+/// shortest window in which a legitimate pass-by resolves itself. That is 10
+/// ticks of headroom over the measured 0 and it refuses 18 ticks before the
+/// known-bad 28.
+const SUSTAINED_OVERLAP_TICK_BOUND: usize =
+    crate::sim::movement::bump_crush::POST_SCATTER_WAIT_FRAMES as usize;
+
+/// Per-tick separation record for a set of movers.
+///
+/// Deliberately keeps the whole series rather than folding straight to a
+/// minimum: the reported defect is a *sustained* overlap, and a fold to one
+/// number throws away exactly the axis that distinguishes it from an ordinary
+/// pass-by.
+///
+/// SEEN TO FAIL, twice, before being trusted (2026-08-05):
+///
+/// * With the cell-admission gate reverted entirely,
+///   `repro_two_moving_vehicles_pass_through_each_other` reports "head-on pair
+///   closed to 36 leptons (0.14 cells) at tick 68" and
+///   `column_of_vehicles_all_arrive_without_stacking` reports two hulls 190
+///   leptons apart while sharing a cell, under the 239-lepton derived bound.
+/// * With an intermediate build of the gate that dropped a refused mover's own
+///   cell claim, `repro_group_move_of_eight_vehicles_to_one_cell` reported
+///   "vehicles 3 and 8 closed to 29 leptons (0.11 cells) at tick 341" with a
+///   28-consecutive-tick run inside half a cell — the player's reported numbers
+///   almost exactly, on a pair in ADJACENT cells. The predecessor of this
+///   struct passed that build: its bound sat inside an `if let Some(..)` on a
+///   same-cell measure that the change itself drove to `None` everywhere, and
+///   its all-pairs helper was never called.
+#[derive(Default)]
+struct StackingWatch {
+    /// Closest approach between ANY two movers: (a, b, leptons, tick).
+    closest: Option<(u64, u64, i64, u64)>,
+    /// Closest approach between two movers that share a cell on that tick.
+    closest_in_cell: Option<(u64, u64, i64, u64)>,
+    /// Per-tick all-pairs minimum, kept in full.
+    series: Vec<(u64, i64)>,
+    /// Longest consecutive run of ticks whose all-pairs minimum was inside
+    /// [`VISIBLE_OVERLAP_LEPTONS`], and where that run ended.
+    longest_close_run: usize,
+    longest_close_run_end: u64,
+    open_close_run: usize,
+    /// Ticks on which two movers occupied one cell.
+    shared_cell_ticks: Vec<u64>,
+}
+
+impl StackingWatch {
+    fn sample(&mut self, sim: &Simulation, ids: &[u64], tick: u64) {
+        if let Some((a, b, gap)) = stacking_min_gap(sim, ids) {
+            self.series.push((tick, gap));
+            if self.closest.is_none_or(|(_, _, best, _)| gap < best) {
+                self.closest = Some((a, b, gap, tick));
+            }
+            if gap < VISIBLE_OVERLAP_LEPTONS {
+                self.open_close_run += 1;
+                if self.open_close_run > self.longest_close_run {
+                    self.longest_close_run = self.open_close_run;
+                    self.longest_close_run_end = tick;
+                }
+            } else {
+                self.open_close_run = 0;
+            }
+        }
+        if let Some((a, b, gap)) = stacking_min_gap_within_shared_cell(sim, ids)
+            && self
+                .closest_in_cell
+                .is_none_or(|(_, _, best, _)| gap < best)
+        {
+            self.closest_in_cell = Some((a, b, gap, tick));
+        }
+        if !stacking_duplicates(&stacking_cells(sim, ids)).is_empty() {
+            self.shared_cell_ticks.push(tick);
+        }
+    }
+
+    fn report(&self, label: &str) {
+        println!(
+            "[{label}] samples={} closest(any pair)={:?} closest(shared cell)={:?} \
+             longest run under {VISIBLE_OVERLAP_LEPTONS} leptons = {} tick(s) ending {} \
+             shared-cell ticks = {}",
+            self.series.len(),
+            self.closest,
+            self.closest_in_cell,
+            self.longest_close_run,
+            self.longest_close_run_end,
+            self.shared_cell_ticks.len(),
+        );
+        let tightest: Vec<String> = {
+            let mut s = self.series.clone();
+            s.sort_by_key(|&(_, gap)| gap);
+            s.iter()
+                .take(12)
+                .map(|(t, g)| format!("t{t}:{g}"))
+                .collect()
+        };
+        println!("[{label}] tightest sampled ticks: {}", tightest.join(" "));
+    }
+
+    /// The acceptance surface. Unconditional: a fixture that sampled nothing
+    /// fails here rather than passing vacuously.
+    fn assert_no_reported_stacking(&self, label: &str) {
+        let (a, b, gap, tick) = self
+            .closest
+            .unwrap_or_else(|| panic!("[{label}] measured no pair separation at all"));
+        assert!(
+            gap > REPORTED_HEADON_OVERLAP_LEPTONS,
+            "[{label}] vehicles {a} and {b} closed to {gap} leptons ({:.2} cells) at tick {tick}; \
+             the player's head-on report was {REPORTED_HEADON_OVERLAP_LEPTONS}",
+            gap as f64 / 256.0
+        );
+        assert!(
+            self.longest_close_run < SUSTAINED_OVERLAP_TICK_BOUND,
+            "[{label}] some pair stayed inside {VISIBLE_OVERLAP_LEPTONS} leptons for {} \
+             consecutive ticks (run ends at tick {}); the bound is \
+             {SUSTAINED_OVERLAP_TICK_BOUND} and the passing build measures 0. For scale, \
+             the player's group-move report was {REPORTED_SUSTAINED_OVERLAP_TICKS} \
+             consecutive ticks and the known-bad intermediate build produced 28",
+            self.longest_close_run,
+            self.longest_close_run_end,
+        );
+        // The transit bound is derived for ONE instant — a mover admitted into a
+        // cell another mover still occupies — so it is asserted only on that
+        // regime. It is a refinement of the two bounds above, never a substitute.
+        if let Some((ca, cb, cgap, ctick)) = self.closest_in_cell {
+            let bound = derived_min_transit_separation_leptons();
+            assert!(
+                cgap >= bound,
+                "[{label}] vehicles {ca} and {cb} shared a cell only {cgap} leptons \
+                 ({:.2} cells) apart at tick {ctick}; retail's own admission rule cannot \
+                 produce anything below {bound}",
+                cgap as f64 / 256.0
+            );
+        }
+    }
+}
+
+/// The smallest hull separation retail's own admission rule can produce between
+/// two ground vehicles — DERIVED from the shipped curve tables, not chosen.
+///
+/// gamemd lets a follower into the cell a leader is transiting at the leader's
+/// FIRST PAID TRACK POINT: that is where the movement body clears the leader's
+/// occupation bit and lowers its cell-occupation-enabled byte. At that instant
+/// the leader has advanced from its cell centre by exactly the first inter-point
+/// step of whichever curve it selected, and the follower is still a full cell
+/// pitch away. So the closest the rule can legitimately put two hulls is one
+/// cell minus the largest first step over every curve retail can select.
+///
+/// Anything tighter than this is not something retail's cell exclusion produces,
+/// and is the regime the player reported (the head-on pair measured 38 leptons).
+fn derived_min_transit_separation_leptons() -> i64 {
+    use crate::sim::movement::drive_track::raw_track_points;
+    let mut widest_first_step: i64 = 0;
+    for raw_index in 1u8..16 {
+        let points = raw_track_points(raw_index);
+        if points.len() < 2 {
+            continue;
+        }
+        let dx = i64::from(points[1].x) - i64::from(points[0].x);
+        let dy = i64::from(points[1].y) - i64::from(points[0].y);
+        let step = (((dx * dx + dy * dy) as f64).sqrt()) as i64;
+        widest_first_step = widest_first_step.max(step);
+    }
+    256 - widest_first_step
+}
+
+#[test]
+fn derived_transit_separation_bound_is_inside_one_cell() {
+    let bound = derived_min_transit_separation_leptons();
+    println!("derived minimum in-transit hull separation = {bound} leptons");
+    // Must be a real bound: strictly inside one cell pitch (a leader that has
+    // paid a point has moved), and far above the reported symptom's 38.
+    assert!(
+        bound > 38 && bound < 256,
+        "derived bound {bound} is not a usable in-transit separation bound"
+    );
+}
+
+#[test]
+fn repro_second_vehicle_ordered_onto_an_occupied_cell() {
+    let (mut sim, rules, grid) = stacking_world(24);
+    let heights = empty_heights();
+
+    let blocker = sim
+        .spawn_object("MTNK", "Americans", 12, 8, 64, &rules, &heights)
+        .expect("blocker spawns");
+    let mover = sim
+        .spawn_object("MTNK", "Americans", 6, 8, 64, &rules, &heights)
+        .expect("mover spawns");
+
+    let cmd = cmd_envelope(
+        &sim,
+        "Americans",
+        1,
+        Command::Move {
+            entity_id: mover,
+            target_rx: 12,
+            target_ry: 8,
+            queue: false,
+            group_id: None,
+        },
+    );
+    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 100);
+
+    let mut shared_ticks: Vec<u64> = Vec::new();
+    for tick in 0..400u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        let cells = stacking_cells(&sim, &[blocker, mover]);
+        if !stacking_duplicates(&cells).is_empty() {
+            shared_ticks.push(tick);
+        }
+    }
+
+    println!("--- repro_second_vehicle_ordered_onto_an_occupied_cell ---");
+    println!("blocker: {}", stacking_motion_state(&sim, blocker));
+    println!("mover:   {}", stacking_motion_state(&sim, mover));
+    println!("blocker cell: {}", stacking_cell_state(&sim, 12, 8));
+    println!(
+        "shared-cell ticks: count={} first={:?} last={:?}",
+        shared_ticks.len(),
+        shared_ticks.first(),
+        shared_ticks.last()
+    );
+
+    let b = sim.substrate.entities.get(blocker).expect("blocker alive");
+    let m = sim.substrate.entities.get(mover).expect("mover alive");
+    assert_ne!(
+        (b.position.rx, b.position.ry),
+        (m.position.rx, m.position.ry),
+        "two ground vehicles must never rest on the same cell"
+    );
+    // RECORDED RESIDUAL: this is STRICTER than retail. gamemd genuinely lets two
+    // vehicles share one `CellClass` in transit — the leader clears its
+    // occupation bit at its first paid track point but stays linked in that
+    // cell's object list until the crossing, and the derived transit-separation
+    // bound exists precisely because the follower can be admitted in that
+    // window. Asserting emptiness here is a Rust regression ratchet on a fixture
+    // that happens to produce none, not a parity claim, and it must not be read
+    // as one.
+    assert!(
+        shared_ticks.is_empty(),
+        "two ground vehicles shared a cell during transit on ticks {shared_ticks:?}"
+    );
+}
+
+/// FAITHFUL CASE: eight vehicles selected as a group, one Move order each to
+/// a single destination cell, issued in one batch exactly as a group order is.
+#[test]
+fn repro_group_move_of_eight_vehicles_to_one_cell() {
+    let (mut sim, rules, grid) = stacking_world(48);
+    let heights = empty_heights();
+
+    let start_cells = [
+        (6u16, 6u16),
+        (7, 6),
+        (8, 6),
+        (9, 6),
+        (6, 7),
+        (7, 7),
+        (8, 7),
+        (9, 7),
+    ];
+    let ids: Vec<u64> = start_cells
+        .iter()
+        .map(|&(cx, cy)| {
+            sim.spawn_object("MTNK", "Americans", cx, cy, 64, &rules, &heights)
+                .expect("tank spawns")
+        })
+        .collect();
+
+    let target = (30u16, 30u16);
+    let commands: Vec<CommandEnvelope> = ids
+        .iter()
+        .map(|&id| {
+            cmd_envelope(
+                &sim,
+                "Americans",
+                1,
+                Command::Move {
+                    entity_id: id,
+                    target_rx: target.0,
+                    target_ry: target.1,
+                    queue: false,
+                    group_id: None,
+                },
+            )
+        })
+        .collect();
+
+    // (a) What the group-destination distributor rewrites each command to.
+    // Same &self read the tick performs, run before any tick mutates state.
+    let mut staged = commands.clone();
+    sim.adjust_staged_megamission_destinations(&mut staged, Some(&grid));
+    let assigned: Vec<(u64, (u16, u16))> = staged
+        .iter()
+        .filter_map(|c| match &c.payload {
+            Command::Move {
+                entity_id,
+                target_rx,
+                target_ry,
+                ..
+            } => Some((*entity_id, (*target_rx, *target_ry))),
+            _ => None,
+        })
+        .collect();
+    let mut assigned_counts: BTreeMap<(u16, u16), Vec<u64>> = BTreeMap::new();
+    for &(id, cell) in &assigned {
+        assigned_counts.entry(cell).or_default().push(id);
+    }
+
+    println!("--- repro_group_move_of_eight_vehicles_to_one_cell ---");
+    println!("(a) distributor assignments (entity -> destination):");
+    for (id, cell) in &assigned {
+        println!("    {id} -> {cell:?}");
+    }
+    println!(
+        "(a) distinct destinations = {} of {}; collisions = {:?}",
+        assigned_counts.len(),
+        assigned.len(),
+        assigned_counts
+            .iter()
+            .filter(|(_, v)| v.len() > 1)
+            .collect::<Vec<_>>()
+    );
+
+    // Run the real path.
+    let _ = sim.advance_tick(&commands, Some(&rules), &heights, Some(&grid), None, 100);
+
+    // (c) per-tick cell sharing during transit, with (d) sampled AT the
+    // sharing tick — the grid must be read while the two movers are still
+    // co-located, not after they have moved on.
+    let mut shared_by_tick: Vec<(u64, BTreeMap<(u16, u16), Vec<u64>>)> = Vec::new();
+    let mut shared_snapshots: Vec<String> = Vec::new();
+    let mut watch = StackingWatch::default();
+    for tick in 0..400u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        watch.sample(&sim, &ids, tick);
+        let dups = stacking_duplicates(&stacking_cells(&sim, &ids));
+        if !dups.is_empty() {
+            for (cell, members) in &dups {
+                shared_snapshots.push(format!(
+                    "tick {tick} shared {cell:?} by {members:?}\n        grid: {}\n        {}",
+                    stacking_cell_state(&sim, cell.0, cell.1),
+                    members
+                        .iter()
+                        .map(|&id| stacking_motion_state(&sim, id))
+                        .collect::<Vec<_>>()
+                        .join("\n        "),
+                ));
+            }
+            shared_by_tick.push((tick, dups));
+        }
+    }
+
+    // (b) final resting cells.
+    let final_cells = stacking_cells(&sim, &ids);
+    println!("(b) final positions / (e) still-moving state:");
+    for (id, _, _) in &final_cells {
+        println!("    {}", stacking_motion_state(&sim, *id));
+    }
+    let final_dups = stacking_duplicates(&final_cells);
+    println!("(b) cells shared AT REST: {final_dups:?}");
+
+    // (c) transient (one isolated tick) vs persistent (consecutive ticks).
+    let mut runs: Vec<(u64, u64)> = Vec::new();
+    for &(tick, _) in &shared_by_tick {
+        match runs.last_mut() {
+            Some(last) if last.1 + 1 == tick => last.1 = tick,
+            _ => runs.push((tick, tick)),
+        }
+    }
+    println!(
+        "(c) ticks with a shared cell: {} across {} consecutive run(s); \
+         longest run = {} tick(s)",
+        shared_by_tick.len(),
+        runs.len(),
+        runs.iter().map(|(a, b)| b - a + 1).max().unwrap_or(0),
+    );
+    println!("(c) runs (first..last tick): {runs:?}");
+
+    // (d) grid state sampled AT each sharing tick.
+    println!("(d) grid + entity state at each sharing tick:");
+    for snap in shared_snapshots.iter().take(8) {
+        println!("    {snap}");
+    }
+    if shared_snapshots.len() > 8 {
+        println!("    ... ({} more)", shared_snapshots.len() - 8);
+    }
+
+    // AT REST: cell identity. Retail-backed and kept — a stopped vehicle holds
+    // its cell's occupation bit, so two of them cannot rest on one cell.
+    assert!(
+        final_dups.is_empty(),
+        "ground vehicles must never rest on the same cell; shared: {final_dups:?}"
+    );
+    // IN TRANSIT: hull separation, not cell identity. gamemd releases a mover's
+    // occupation bit at its first paid track point and relinks the cell object
+    // list only at the crossing, so two vehicles genuinely share one CellClass
+    // while one is leaving it. Cell distinctness is therefore NOT retail's
+    // in-transit invariant; overlapping hulls are what it never produces, and
+    // that is the player's reported symptom.
+    watch.report("group_move_eight_to_one_cell");
+    watch.assert_no_reported_stacking("group_move_eight_to_one_cell");
+}
+
+/// SHORT-RANGE GROUP CASE: the same eight vehicles, but the destination is
+/// close enough that most of them arrive within a few ticks of each other,
+/// maximising arrival contention. Also traces the full per-tick cell of every
+/// member so co-travel (two tanks moving as one) is visible, not just sampled.
+#[test]
+fn repro_group_move_short_range_traces_every_tick() {
+    let (mut sim, rules, grid) = stacking_world(48);
+    let heights = empty_heights();
+
+    let start_cells = [
+        (10u16, 10u16),
+        (11, 10),
+        (12, 10),
+        (13, 10),
+        (10, 11),
+        (11, 11),
+        (12, 11),
+        (13, 11),
+    ];
+    let ids: Vec<u64> = start_cells
+        .iter()
+        .map(|&(cx, cy)| {
+            sim.spawn_object("MTNK", "Americans", cx, cy, 64, &rules, &heights)
+                .expect("tank spawns")
+        })
+        .collect();
+
+    let target = (16u16, 16u16);
+    let commands: Vec<CommandEnvelope> = ids
+        .iter()
+        .map(|&id| {
+            cmd_envelope(
+                &sim,
+                "Americans",
+                1,
+                Command::Move {
+                    entity_id: id,
+                    target_rx: target.0,
+                    target_ry: target.1,
+                    queue: false,
+                    group_id: None,
+                },
+            )
+        })
+        .collect();
+
+    let mut staged = commands.clone();
+    sim.adjust_staged_megamission_destinations(&mut staged, Some(&grid));
+    println!("--- repro_group_move_short_range_traces_every_tick ---");
+    println!("(a) distributor assignments:");
+    for c in &staged {
+        if let Command::Move {
+            entity_id,
+            target_rx,
+            target_ry,
+            ..
+        } = &c.payload
+        {
+            println!("    {entity_id} -> ({target_rx},{target_ry})");
+        }
+    }
+
+    let _ = sim.advance_tick(&commands, Some(&rules), &heights, Some(&grid), None, 100);
+
+    let mut shared_by_tick: Vec<(u64, BTreeMap<(u16, u16), Vec<u64>>)> = Vec::new();
+    let mut trace: Vec<String> = Vec::new();
+    let mut watch = StackingWatch::default();
+    for tick in 0..400u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        watch.sample(&sim, &ids, tick);
+        let cells = stacking_cells(&sim, &ids);
+        let dups = stacking_duplicates(&cells);
+        if tick < 120 {
+            trace.push(format!(
+                "t{tick:>3} {}{}",
+                cells
+                    .iter()
+                    .map(|(id, rx, ry)| format!("{id}:({rx},{ry})"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                if dups.is_empty() {
+                    String::new()
+                } else {
+                    format!("   <<< SHARED {dups:?}")
+                }
+            ));
+        }
+        if !dups.is_empty() {
+            for (cell, members) in &dups {
+                trace.push(format!(
+                    "t{tick:>3} SHARED {cell:?} by {members:?}\n        grid: {}\n        {}",
+                    stacking_cell_state(&sim, cell.0, cell.1),
+                    members
+                        .iter()
+                        .map(|&id| stacking_reservation_state(&sim, id))
+                        .collect::<Vec<_>>()
+                        .join("\n        "),
+                ));
+            }
+            shared_by_tick.push((tick, dups));
+        }
+    }
+
+    for line in &trace {
+        println!("{line}");
+    }
+
+    let final_cells = stacking_cells(&sim, &ids);
+    for (id, _, _) in &final_cells {
+        println!("    {}", stacking_motion_state(&sim, *id));
+    }
+    let final_dups = stacking_duplicates(&final_cells);
+    println!("cells shared AT REST: {final_dups:?}");
+    println!("ticks with a shared cell: {}", shared_by_tick.len());
+
+    // AT REST: cell identity. Retail-backed and kept — a stopped vehicle holds
+    // its cell's occupation bit, so two of them cannot rest on one cell.
+    assert!(
+        final_dups.is_empty(),
+        "ground vehicles must never rest on the same cell; shared: {final_dups:?}"
+    );
+    // IN TRANSIT: hull separation, not cell identity. gamemd releases a mover's
+    // occupation bit at its first paid track point and relinks the cell object
+    // list only at the crossing, so two vehicles genuinely share one CellClass
+    // while one is leaving it. Cell distinctness is therefore NOT retail's
+    // in-transit invariant; overlapping hulls are what it never produces, and
+    // that is the player's reported symptom.
+    watch.report("group_move_short_range");
+    watch.assert_no_reported_stacking("group_move_short_range");
+}
+
+/// What the one-per-cell predicate WOULD say for `mover` entering `cell`,
+/// evaluated read-only from live sim state. Used to show that the predicate
+/// exists and answers correctly while the runtime step never consults it.
+fn stacking_cell_entry_verdict(sim: &Simulation, mover: u64, rx: u16, ry: u16) -> String {
+    use crate::sim::movement::bump_crush::CrushCapability;
+    use crate::sim::pathfinding::cell_entry::{
+        CanEnterLayerContext, check_terrain_with_layers, classify_occupied_cell_with_layers,
+    };
+    let Some(e) = sim.substrate.entities.get(mover) else {
+        return "<gone>".to_string();
+    };
+    let layers = CanEnterLayerContext::single(MovementLayer::Ground);
+    let phase1 = check_terrain_with_layers(
+        (rx, ry),
+        layers,
+        e.category,
+        None,
+        None,
+        &sim.substrate.occupancy,
+    );
+    let owner = sim.interner.resolve(e.owner).to_string();
+    let phase2 = classify_occupied_cell_with_layers(
+        (rx, ry),
+        layers,
+        mover,
+        CrushCapability::new(false, false),
+        &owner,
+        e.locomotor
+            .as_ref()
+            .map(|l| l.kind)
+            .unwrap_or(crate::rules::locomotor_type::LocomotorKind::Drive),
+        false,
+        &sim.substrate.occupancy,
+        &sim.substrate.entities,
+        &sim.house_alliances,
+        &sim.interner,
+    );
+    format!(
+        "phase1={phase1:?} phase2={phase2:?} yr_code={}",
+        phase2.yr_code()
+    )
+}
+
+/// MINIMAL TWO-MOVER CASE â€” no group order at all.
+///
+/// Two vehicles are given INDEPENDENT Move commands with DIFFERENT targets,
+/// so each is a run of one and the group-destination distributor never runs.
+/// They are driven head-on through each other. Retail keeps ground vehicles
+/// strictly one-per-cell whether they are moving or stopped.
+#[test]
+fn repro_two_moving_vehicles_pass_through_each_other() {
+    let (mut sim, rules, grid) = stacking_world(24);
+    let heights = empty_heights();
+
+    let west = sim
+        .spawn_object("MTNK", "Americans", 5, 10, 64, &rules, &heights)
+        .expect("west tank spawns");
+    let east = sim
+        .spawn_object("MTNK", "Americans", 15, 10, 192, &rules, &heights)
+        .expect("east tank spawns");
+
+    let commands = vec![
+        cmd_envelope(
+            &sim,
+            "Americans",
+            1,
+            Command::Move {
+                entity_id: west,
+                target_rx: 16,
+                target_ry: 10,
+                queue: false,
+                group_id: None,
+            },
+        ),
+        cmd_envelope(
+            &sim,
+            "Americans",
+            1,
+            Command::Move {
+                entity_id: east,
+                target_rx: 4,
+                target_ry: 10,
+                queue: false,
+                group_id: None,
+            },
+        ),
+    ];
+    // Different targets => different formation keys => runs of length 1 =>
+    // the group-destination distributor cannot touch either command.
+    let mut staged = commands.clone();
+    sim.adjust_staged_megamission_destinations(&mut staged, Some(&grid));
+    println!("--- repro_two_moving_vehicles_pass_through_each_other ---");
+    for c in &staged {
+        if let Command::Move {
+            entity_id,
+            target_rx,
+            target_ry,
+            ..
+        } = &c.payload
+        {
+            println!("    post-distributor: {entity_id} -> ({target_rx},{target_ry})");
+        }
+    }
+
+    let _ = sim.advance_tick(&commands, Some(&rules), &heights, Some(&grid), None, 100);
+
+    let ids = [west, east];
+    let mut shared_ticks: Vec<u64> = Vec::new();
+    let mut snapshots: Vec<String> = Vec::new();
+    let mut closest_approach: Option<(i64, u64)> = None;
+    let mut shared_cell_approach: Option<(u64, u64, i64, u64)> = None;
+    for tick in 0..400u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        if let Some(gap) = stacking_gap(&sim, west, east)
+            && closest_approach.is_none_or(|(best, _)| gap < best)
+        {
+            closest_approach = Some((gap, tick));
+        }
+        if let Some((a, b, gap)) = stacking_min_gap_within_shared_cell(&sim, &ids)
+            && shared_cell_approach.is_none_or(|(_, _, best, _)| gap < best)
+        {
+            shared_cell_approach = Some((a, b, gap, tick));
+        }
+        let dups = stacking_duplicates(&stacking_cells(&sim, &ids));
+        if !dups.is_empty() {
+            shared_ticks.push(tick);
+            for (cell, members) in &dups {
+                snapshots.push(format!(
+                    "tick {tick} cell {cell:?} members {members:?}\n        grid: {}\n        {}\n        \
+                     cell-entry predicate for {}: {}",
+                    stacking_cell_state(&sim, cell.0, cell.1),
+                    members
+                        .iter()
+                        .map(|&id| stacking_motion_state(&sim, id))
+                        .collect::<Vec<_>>()
+                        .join("\n        "),
+                    members[1],
+                    stacking_cell_entry_verdict(&sim, members[1], cell.0, cell.1),
+                ));
+            }
+        }
+    }
+
+    println!("west: {}", stacking_motion_state(&sim, west));
+    println!("east: {}", stacking_motion_state(&sim, east));
+    println!("shared ticks: {} -> {shared_ticks:?}", shared_ticks.len());
+    for snap in snapshots.iter().take(10) {
+        println!("    {snap}");
+    }
+    if snapshots.len() > 10 {
+        println!("    ... ({} more)", snapshots.len() - 10);
+    }
+
+    // THE REPORTED SYMPTOM, MEASURED. This is the only fixture in the repo known
+    // to have produced the player's overlap: before the cell-exclusion gate both
+    // tanks occupied (10,10) for ten consecutive ticks and closed to 38 leptons
+    // — an ~85% hull overlap. Cell distinctness alone places no lower bound on
+    // separation, so it cannot detect a regression of that; the separation
+    // assertions below can.
+    //
+    // TWO REGIMES, TWO BOUNDS — and they are not interchangeable.
+    //
+    // `derived_min_transit_separation_leptons` is derived for one instant: when
+    // gamemd admits a mover into a cell another mover is still occupying. It
+    // does NOT bound two movers in DIFFERENT cells, and gamemd's own crossing
+    // rule refutes any attempt to make it: `Process_Drive_Track` derives the
+    // cell from one absolute coordinate and crosses the moment that coordinate
+    // crosses, so a hull sits a handful of leptons inside a cell immediately
+    // after entering it. A vehicle resting at the centre of the cell it just
+    // left is then a little over half a cell away, both legally in their own
+    // cells. Applying the transit bound to every pair asserted something retail
+    // does not honour, so the transit bound is asserted here on the regime it
+    // was derived for, and the all-pair measurement keeps the half-cell
+    // "two hulls on one spot" floor used by
+    // `group_move_never_draws_two_hulls_on_one_spot` — which is what the
+    // player's 38-lepton report was a violation of.
+    const VISIBLE_OVERLAP_LEPTONS: i64 = 128;
+    let bound = derived_min_transit_separation_leptons();
+    let (gap, gap_tick) = closest_approach.expect("both movers sampled");
+    println!(
+        "closest approach (any pair): {gap} leptons ({:.2} cells) at tick {gap_tick}; \
+         transit bound {bound}, visible-overlap floor {VISIBLE_OVERLAP_LEPTONS}; \
+         closest approach while sharing a cell: {shared_cell_approach:?}",
+        gap as f64 / 256.0
+    );
+    assert!(
+        gap >= VISIBLE_OVERLAP_LEPTONS,
+        "head-on pair closed to {gap} leptons ({:.2} cells) at tick {gap_tick} — hulls visibly overlap",
+        gap as f64 / 256.0
+    );
+    if let Some((a, b, shared_gap, shared_tick)) = shared_cell_approach {
+        assert!(
+            shared_gap >= bound,
+            "vehicles {a} and {b} shared a cell only {shared_gap} leptons ({:.2} cells) at tick {shared_tick};              retail's own admission rule cannot produce anything below {bound}",
+            shared_gap as f64 / 256.0
+        );
+    }
+    // RECORDED RESIDUAL: stricter than retail, for the reason written out at
+    // `repro_second_vehicle_ordered_onto_an_occupied_cell`. Regression ratchet,
+    // not a parity claim.
+    assert!(
+        shared_ticks.is_empty(),
+        "two moving ground vehicles shared a cell on ticks {shared_ticks:?}"
+    );
+}
+
+/// Head-to reservation + occupation-bit state for one vehicle.
+fn stacking_reservation_state(sim: &Simulation, id: u64) -> String {
+    let Some(e) = sim.substrate.entities.get(id) else {
+        return format!("{id}:<gone>");
+    };
+    let Some(d) = e.drive_locomotion.as_ref() else {
+        return format!("{id}:<no drive>");
+    };
+    format!(
+        "{id}@({},{})sub({},{}) head_to={:?} cur_cleared={}",
+        e.position.rx,
+        e.position.ry,
+        e.position.sub_x,
+        e.position.sub_y,
+        d.occupation_head_to.map(|f| (f.rx, f.ry)),
+        d.current_occupation_cleared,
+    )
+}
+
+/// Tick-by-tick trace of the head-on race, showing exactly when each mover
+/// installs its head-to reservation on the contested cell and whether the
+/// other mover's reservation was visible at that moment.
+#[test]
+fn repro_two_moving_vehicles_reservation_trace() {
+    let (mut sim, rules, grid) = stacking_world(24);
+    let heights = empty_heights();
+
+    let west = sim
+        .spawn_object("MTNK", "Americans", 5, 10, 64, &rules, &heights)
+        .expect("west tank spawns");
+    let east = sim
+        .spawn_object("MTNK", "Americans", 15, 10, 192, &rules, &heights)
+        .expect("east tank spawns");
+
+    let commands = vec![
+        cmd_envelope(
+            &sim,
+            "Americans",
+            1,
+            Command::Move {
+                entity_id: west,
+                target_rx: 16,
+                target_ry: 10,
+                queue: false,
+                group_id: None,
+            },
+        ),
+        cmd_envelope(
+            &sim,
+            "Americans",
+            1,
+            Command::Move {
+                entity_id: east,
+                target_rx: 4,
+                target_ry: 10,
+                queue: false,
+                group_id: None,
+            },
+        ),
+    ];
+    let _ = sim.advance_tick(&commands, Some(&rules), &heights, Some(&grid), None, 100);
+
+    println!("--- repro_two_moving_vehicles_reservation_trace ---");
+    // The head-to mark is the only cell-exclusion mechanism a Drive curve
+    // installs. If two movers can hold it on the same cell at the same tick,
+    // the reservation is not exclusive and both will commit into that cell.
+    let mut double_reservation_ticks: Vec<(u64, (u16, u16))> = Vec::new();
+    for tick in 0..80u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        let heads: Vec<Option<(u16, u16)>> = [west, east]
+            .iter()
+            .map(|&id| {
+                sim.substrate
+                    .entities
+                    .get(id)
+                    .and_then(|e| e.drive_locomotion.as_ref())
+                    .and_then(|d| d.occupation_head_to)
+                    .map(|f| (f.rx, f.ry))
+            })
+            .collect();
+        if let (Some(a), Some(b)) = (heads[0], heads[1])
+            && a == b
+        {
+            double_reservation_ticks.push((tick, a));
+        }
+        if !(40..=75).contains(&tick) {
+            continue;
+        }
+        let bits: Vec<String> = (9u16..=11)
+            .map(|rx| {
+                format!(
+                    "({rx},10)=0x{:02X}/n{}",
+                    sim.substrate
+                        .cell_occupation
+                        .vehicle_bits(rx, 10, MovementLayer::Ground),
+                    sim.substrate
+                        .occupancy
+                        .count_on_layer(rx, 10, MovementLayer::Ground),
+                )
+            })
+            .collect();
+        println!(
+            "t{tick:>3} | {} | {} | cells {}",
+            stacking_reservation_state(&sim, west),
+            stacking_reservation_state(&sim, east),
+            bits.join(" "),
+        );
+    }
+
+    println!("double-reserved ticks: {double_reservation_ticks:?}");
+    // The double-reservation check only fires while BOTH movers hold a head-to
+    // reservation, and a refusal sets that to None — so a permanently gridlocked
+    // pair would satisfy it vacuously. Require real progress first: both movers
+    // must have left their start cells, which a gridlocked pair never does.
+    let west_moved = sim
+        .substrate
+        .entities
+        .get(west)
+        .is_some_and(|e| (e.position.rx, e.position.ry) != (5, 10));
+    let east_moved = sim
+        .substrate
+        .entities
+        .get(east)
+        .is_some_and(|e| (e.position.rx, e.position.ry) != (15, 10));
+    assert!(
+        west_moved && east_moved,
+        "the reservation check is vacuous unless both movers actually moved;          west_moved={west_moved} east_moved={east_moved} — {} | {}",
+        stacking_motion_state(&sim, west),
+        stacking_motion_state(&sim, east)
+    );
+    assert!(
+        double_reservation_ticks.is_empty(),
+        "two Drive movers held the head-to cell reservation on the SAME cell: \
+         {double_reservation_ticks:?} — the mark installed by \
+         select_fresh_drive_track_at_current_cell (movement_step.rs) is not \
+         gated on CellOccupationGrid::occupied_by_other"
+    );
+}
+
+/// DEADLOCK GUARD — head-on pair.
+///
+/// The cell-exclusion gate refuses a curve into a cell another vehicle has
+/// already claimed. Two movers that each want the other's cell would freeze
+/// under a bare refusal, so the refusal must land in gamemd's per-code
+/// dispatch: a temporary claim waits and repaths at escalating urgency, and a
+/// blocker that has come to rest gets scattered out of the way. Both tanks must
+/// therefore still finish their orders.
+#[test]
+fn head_on_pair_resolves_without_deadlock() {
+    let (mut sim, rules, grid) = stacking_world(24);
+    let heights = empty_heights();
+
+    let west = sim
+        .spawn_object("MTNK", "Americans", 5, 10, 64, &rules, &heights)
+        .expect("west tank spawns");
+    let east = sim
+        .spawn_object("MTNK", "Americans", 15, 10, 192, &rules, &heights)
+        .expect("east tank spawns");
+
+    let commands = vec![
+        cmd_envelope(
+            &sim,
+            "Americans",
+            1,
+            Command::Move {
+                entity_id: west,
+                target_rx: 16,
+                target_ry: 10,
+                queue: false,
+                group_id: None,
+            },
+        ),
+        cmd_envelope(
+            &sim,
+            "Americans",
+            1,
+            Command::Move {
+                entity_id: east,
+                target_rx: 4,
+                target_ry: 10,
+                queue: false,
+                group_id: None,
+            },
+        ),
+    ];
+    let _ = sim.advance_tick(&commands, Some(&rules), &heights, Some(&grid), None, 100);
+
+    // Generous budget: 11 cells each at MTNK speed, plus whatever the block
+    // dispatch costs in waits and repaths.
+    let mut west_done_at: Option<u64> = None;
+    let mut east_done_at: Option<u64> = None;
+    for tick in 0..900u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        let w = sim.substrate.entities.get(west).expect("west alive");
+        let e = sim.substrate.entities.get(east).expect("east alive");
+        if west_done_at.is_none() && (w.position.rx, w.position.ry) == (16, 10) {
+            west_done_at = Some(tick);
+        }
+        if east_done_at.is_none() && (e.position.rx, e.position.ry) == (4, 10) {
+            east_done_at = Some(tick);
+        }
+        if west_done_at.is_some() && east_done_at.is_some() {
+            break;
+        }
+    }
+
+    println!("--- head_on_pair_resolves_without_deadlock ---");
+    println!("west: {}", stacking_motion_state(&sim, west));
+    println!("east: {}", stacking_motion_state(&sim, east));
+    println!("west reached goal at tick {west_done_at:?}, east at {east_done_at:?}");
+
+    assert!(
+        west_done_at.is_some(),
+        "west tank never reached (16,10): {}",
+        stacking_motion_state(&sim, west)
+    );
+    assert!(
+        east_done_at.is_some(),
+        "east tank never reached (4,10): {}",
+        stacking_motion_state(&sim, east)
+    );
+}
+
+/// DEADLOCK GUARD — column.
+///
+/// Four vehicles queued nose-to-tail on one row, each with its own destination
+/// further along that row. The trailing movers repeatedly select a curve into
+/// the cell the mover ahead is heading for, so this is the case the gate is
+/// asked about most often in ordinary play. Every member must arrive, and no
+/// two may ever occupy one cell.
+#[test]
+fn column_of_vehicles_all_arrive_without_stacking() {
+    let (mut sim, rules, grid) = stacking_world(32);
+    let heights = empty_heights();
+
+    let starts = [(5u16, 10u16), (6, 10), (7, 10), (8, 10)];
+    let goals = [(18u16, 10u16), (19, 10), (20, 10), (21, 10)];
+    let ids: Vec<u64> = starts
+        .iter()
+        .map(|&(cx, cy)| {
+            sim.spawn_object("MTNK", "Americans", cx, cy, 64, &rules, &heights)
+                .expect("tank spawns")
+        })
+        .collect();
+
+    let commands: Vec<CommandEnvelope> = ids
+        .iter()
+        .zip(goals.iter())
+        .map(|(&id, &(gx, gy))| {
+            cmd_envelope(
+                &sim,
+                "Americans",
+                1,
+                Command::Move {
+                    entity_id: id,
+                    target_rx: gx,
+                    target_ry: gy,
+                    queue: false,
+                    group_id: None,
+                },
+            )
+        })
+        .collect();
+    let _ = sim.advance_tick(&commands, Some(&rules), &heights, Some(&grid), None, 100);
+
+    let mut watch = StackingWatch::default();
+    for tick in 0..900u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        watch.sample(&sim, &ids, tick);
+    }
+
+    println!("--- column_of_vehicles_all_arrive_without_stacking ---");
+    for &id in &ids {
+        println!("    {}", stacking_motion_state(&sim, id));
+    }
+
+    let mut stalled: Vec<String> = Vec::new();
+    for (&id, &goal) in ids.iter().zip(goals.iter()) {
+        let at_goal = sim
+            .substrate
+            .entities
+            .get(id)
+            .is_some_and(|e| (e.position.rx, e.position.ry) == goal);
+        if !at_goal {
+            stalled.push(format!(
+                "{} (wanted {goal:?})",
+                stacking_motion_state(&sim, id)
+            ));
+        }
+    }
+
+    assert!(
+        stalled.is_empty(),
+        "column members never reached their destinations: {stalled:?}"
+    );
+    // Their destinations are distinct cells, so arriving proves the at-rest
+    // half. In transit, measure hull separation rather than cell identity for
+    // the reason written out at the group fixtures.
+    watch.report("column_of_four");
+    watch.assert_no_reported_stacking("column_of_four");
+}
+
+/// DIAGNOSTIC: per-tick reservation trace of the four-tank column, printing the
+/// tick a cell first becomes shared together with the preceding window of
+/// head-to reservations and occupation bits for every member.
+#[test]
+#[ignore = "diagnostic"]
+fn diag_column_reservation_trace() {
+    let (mut sim, rules, grid) = stacking_world(32);
+    let heights = empty_heights();
+
+    let starts = [(5u16, 10u16), (6, 10), (7, 10), (8, 10)];
+    let goals = [(18u16, 10u16), (19, 10), (20, 10), (21, 10)];
+    let ids: Vec<u64> = starts
+        .iter()
+        .map(|&(cx, cy)| {
+            sim.spawn_object("MTNK", "Americans", cx, cy, 64, &rules, &heights)
+                .expect("tank spawns")
+        })
+        .collect();
+    let commands: Vec<CommandEnvelope> = ids
+        .iter()
+        .zip(goals.iter())
+        .map(|(&id, &(gx, gy))| {
+            cmd_envelope(
+                &sim,
+                "Americans",
+                1,
+                Command::Move {
+                    entity_id: id,
+                    target_rx: gx,
+                    target_ry: gy,
+                    queue: false,
+                    group_id: None,
+                },
+            )
+        })
+        .collect();
+    let _ = sim.advance_tick(&commands, Some(&rules), &heights, Some(&grid), None, 100);
+
+    for tick in 0..70u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        let dups = stacking_duplicates(&stacking_cells(&sim, &ids));
+        let bits: Vec<String> = (4u16..=14)
+            .map(|rx| {
+                format!(
+                    "{rx}:{:02X}",
+                    sim.substrate
+                        .cell_occupation
+                        .vehicle_bits(rx, 10, MovementLayer::Ground)
+                )
+            })
+            .collect();
+        println!(
+            "t{tick:>3} {} | row10 {} {}",
+            ids.iter()
+                .map(|&id| stacking_reservation_state(&sim, id))
+                .collect::<Vec<_>>()
+                .join("  "),
+            bits.join(" "),
+            if dups.is_empty() {
+                String::new()
+            } else {
+                format!("<<< SHARED {dups:?}")
+            }
+        );
+    }
+}
+
+/// How close two vehicles actually get, in leptons, over a group move.
+///
+/// The three cell-identity tests above assert that no two vehicles ever share
+/// an `(rx, ry)`. That is stricter than the retail invariant: gamemd derives a
+/// unit's cell from one absolute coordinate, releases its cell-occupation bit
+/// on the first paid track point of a curve, and only relinks the cell object
+/// list at the crossing itself — so a follower is admitted into the cell a
+/// leader is leaving while the leader's body is still nominally in it. What
+/// gamemd never produces is two hulls drawn on the same spot. This test
+/// measures that directly: the closest approach between any two movers, in
+/// leptons (256 per cell). The reported bug measured 38.
+#[test]
+fn group_move_never_draws_two_hulls_on_one_spot() {
+    let (mut sim, rules, grid) = stacking_world(48);
+    let heights = empty_heights();
+
+    let start_cells = [
+        (10u16, 10u16),
+        (11, 10),
+        (12, 10),
+        (13, 10),
+        (10, 11),
+        (11, 11),
+        (12, 11),
+        (13, 11),
+    ];
+    let ids: Vec<u64> = start_cells
+        .iter()
+        .map(|&(cx, cy)| {
+            sim.spawn_object("MTNK", "Americans", cx, cy, 64, &rules, &heights)
+                .expect("tank spawns")
+        })
+        .collect();
+    let commands: Vec<CommandEnvelope> = ids
+        .iter()
+        .map(|&id| {
+            cmd_envelope(
+                &sim,
+                "Americans",
+                1,
+                Command::Move {
+                    entity_id: id,
+                    target_rx: 16,
+                    target_ry: 16,
+                    queue: false,
+                    group_id: None,
+                },
+            )
+        })
+        .collect();
+    let _ = sim.advance_tick(&commands, Some(&rules), &heights, Some(&grid), None, 100);
+
+    // Lepton world position of each mover, so the measurement is what the
+    // renderer draws rather than the cell index.
+    fn lepton_pos(sim: &Simulation, id: u64) -> Option<(i64, i64)> {
+        sim.substrate.entities.get(id).map(|e| {
+            (
+                i64::from(e.position.rx) * 256 + i64::from(e.position.sub_x.to_num::<i32>()),
+                i64::from(e.position.ry) * 256 + i64::from(e.position.sub_y.to_num::<i32>()),
+            )
+        })
+    }
+
+    let mut worst: Option<(u64, u64, u64, i64)> = None;
+    for tick in 0..400u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                let (Some(a), Some(b)) = (lepton_pos(&sim, ids[i]), lepton_pos(&sim, ids[j]))
+                else {
+                    continue;
+                };
+                let dx = a.0 - b.0;
+                let dy = a.1 - b.1;
+                let d2 = dx * dx + dy * dy;
+                let d = (d2 as f64).sqrt() as i64;
+                if worst.is_none_or(|(_, _, _, best)| d < best) {
+                    worst = Some((tick, ids[i], ids[j], d));
+                }
+            }
+        }
+    }
+
+    let (tick, a, b, gap) = worst.expect("at least one pair sampled");
+    println!(
+        "--- group_move_never_draws_two_hulls_on_one_spot ---\n\
+         closest approach: {gap} leptons ({:.2} cells) between {a} and {b} at tick {tick}",
+        gap as f64 / 256.0
+    );
+
+    // Half a cell. Below this the two hulls visibly overlap, which is the
+    // player-reported symptom; the reported bug produced 38.
+    assert!(
+        gap >= 128,
+        "two vehicles closed to {gap} leptons ({:.2} cells) at tick {tick} \
+         ({a} and {b}) — hulls visibly overlap",
+        gap as f64 / 256.0
+    );
+}
+
+/// DIAGNOSTIC: short-range group move, per-tick head-to reservations, so the
+/// curve geometry at each shared tick is visible (two-node turning curve vs
+/// one-node straight follow).
+#[test]
+#[ignore = "diagnostic"]
+fn diag_short_range_group_reservation_trace() {
+    let (mut sim, rules, grid) = stacking_world(48);
+    let heights = empty_heights();
+    let start_cells = [
+        (10u16, 10u16),
+        (11, 10),
+        (12, 10),
+        (13, 10),
+        (10, 11),
+        (11, 11),
+        (12, 11),
+        (13, 11),
+    ];
+    let ids: Vec<u64> = start_cells
+        .iter()
+        .map(|&(cx, cy)| {
+            sim.spawn_object("MTNK", "Americans", cx, cy, 64, &rules, &heights)
+                .expect("tank spawns")
+        })
+        .collect();
+    let commands: Vec<CommandEnvelope> = ids
+        .iter()
+        .map(|&id| {
+            cmd_envelope(
+                &sim,
+                "Americans",
+                1,
+                Command::Move {
+                    entity_id: id,
+                    target_rx: 16,
+                    target_ry: 16,
+                    queue: false,
+                    group_id: None,
+                },
+            )
+        })
+        .collect();
+    let _ = sim.advance_tick(&commands, Some(&rules), &heights, Some(&grid), None, 100);
+
+    for tick in 0..110u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 100);
+        let dups = stacking_duplicates(&stacking_cells(&sim, &ids));
+        if dups.is_empty() && !(60..=70).contains(&tick) && !(93..=99).contains(&tick) {
+            continue;
+        }
+        println!(
+            "t{tick:>3} {} {}",
+            ids.iter()
+                .map(|&id| stacking_reservation_state(&sim, id))
+                .collect::<Vec<_>>()
+                .join(" | "),
+            if dups.is_empty() {
+                String::new()
+            } else {
+                format!("<<< SHARED {dups:?}")
+            }
+        );
+    }
 }

@@ -34,6 +34,32 @@ pub(super) fn drive_requires_native_step(drive: &DriveLocomotionRuntime) -> bool
     drive.active_tube.is_some() || !drive.path.directions.is_empty() || drive.residual_budget != 0
 }
 
+/// `ILocomotion::Is_Moving` (slot 4) for the Drive locomotor.
+///
+/// gamemd reads the locomotor's OWN coordinates, not the owner's path queue: a
+/// non-null destination is moving; otherwise a null head-to is not moving; a
+/// head-to whose X and Y already equal the owner's exact lepton position is not
+/// moving; anything else is. Z is deliberately not compared.
+///
+/// This is the predicate `Drive::Is_Ok_To_End` consults before a piggyback may
+/// be unwound. It is a different function from `Is_Moving_Now` (slot 32), which
+/// additionally folds in hull rotation and the live per-frame speed — a Drive
+/// unit with a destination but zero speed is `Is_Moving`, not `Is_Moving_Now`.
+pub(crate) fn drive_locomotor_is_moving(entity: &GameEntity) -> bool {
+    let Some(drive) = entity.drive_locomotion.as_ref() else {
+        return false;
+    };
+    if drive.destination.is_some() {
+        return true;
+    }
+    let Some(head) = drive.head_to else {
+        return false;
+    };
+    let owner_x = i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>();
+    let owner_y = i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>();
+    head.x != owner_x || head.y != owner_y
+}
+
 pub(super) fn refresh_drive_head_to_from_navcom(
     entity: &mut GameEntity,
     entities: &EntityStore,
@@ -73,6 +99,11 @@ pub(super) fn drive_entity_nav_targets(entities: &EntityStore) -> Vec<(u64, NavT
 /// Compute the Drive-local target speed fraction from currently modeled runtime
 /// modifiers. This is the `DriveLocomotion` owner value; raw `Speed=` remains a
 /// separate top-speed input.
+///
+/// `below_condition_yellow` carries the owner's damaged state into the fraction:
+/// gamemd reads the health ratio inside `Process_Movement` itself and multiplies
+/// the fraction by 0.75 when it is at or below `[AudioVisual] ConditionYellow`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn compute_drive_target_speed_fraction(
     speed_type: SpeedType,
     locomotor_kind: LocomotorKind,
@@ -80,6 +111,7 @@ pub(super) fn compute_drive_target_speed_fraction(
     next_cell: (u16, u16),
     terrain: &ResolvedTerrainGrid,
     config: &TerrainSpeedConfig,
+    below_condition_yellow: bool,
 ) -> SimFixed {
     terrain_speed::compute_cell_speed_modifier(
         speed_type,
@@ -88,6 +120,7 @@ pub(super) fn compute_drive_target_speed_fraction(
         next_cell,
         terrain,
         config,
+        below_condition_yellow,
     )
 }
 
@@ -223,9 +256,200 @@ mod tests {
             (1, 0),
             &terrain,
             &TerrainSpeedConfig::default(),
+            false,
         );
 
         assert_eq!(fraction, SIM_HALF);
+    }
+
+    /// Two flat `[Clear]` cells, `Track=100%`, so the terrain × slope product is
+    /// exactly 1.0 and the only thing under test is the damaged-mover factor.
+    fn flat_clear_pair() -> ResolvedTerrainGrid {
+        let clear = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            ..Default::default()
+        };
+        ResolvedTerrainGrid::from_cells(
+            2,
+            1,
+            vec![terrain_cell(0, 0, clear), terrain_cell(1, 0, clear)],
+        )
+    }
+
+    fn fraction_for(kind: LocomotorKind, damaged: bool) -> SimFixed {
+        compute_drive_target_speed_fraction(
+            SpeedType::Track,
+            kind,
+            (0, 0),
+            (1, 0),
+            &flat_clear_pair(),
+            &TerrainSpeedConfig::default(),
+            damaged,
+        )
+    }
+
+    /// GSI-06.04 G1: gamemd multiplies the per-cell speed fraction by 0.75 when
+    /// the owner's health ratio is at or below `[AudioVisual] ConditionYellow`.
+    /// A healthy mover on the same cells keeps the full fraction.
+    #[test]
+    fn gsi_06_04_damaged_drive_mover_slows_to_three_quarters() {
+        assert_eq!(fraction_for(LocomotorKind::Drive, false), SIM_ONE);
+        assert_eq!(
+            fraction_for(LocomotorKind::Drive, true),
+            SimFixed::lit("0.75")
+        );
+    }
+
+    /// The same factor is read by Ship `Process_Movement`; a damaged destroyer
+    /// slows exactly like a damaged tank.
+    #[test]
+    fn gsi_06_04_damaged_ship_mover_slows_to_three_quarters() {
+        assert_eq!(fraction_for(LocomotorKind::Ship, false), SIM_ONE);
+        assert_eq!(
+            fraction_for(LocomotorKind::Ship, true),
+            SimFixed::lit("0.75")
+        );
+    }
+
+    /// The damaged factor is NOT read by any other locomotor — a wounded GI, a
+    /// wounded Robot Tank and a wounded Rocketeer all keep full speed. Guards
+    /// against over-applying the factor once it exists.
+    #[test]
+    fn gsi_06_04_damaged_non_drive_movers_keep_full_speed() {
+        for kind in [
+            LocomotorKind::Walk,
+            LocomotorKind::Hover,
+            LocomotorKind::Jumpjet,
+            LocomotorKind::Mech,
+            LocomotorKind::Teleport,
+            LocomotorKind::Tunnel,
+            LocomotorKind::Fly,
+        ] {
+            assert_eq!(fraction_for(kind, true), SIM_ONE, "damaged {kind:?}");
+            assert_eq!(fraction_for(kind, false), SIM_ONE, "healthy {kind:?}");
+        }
+    }
+
+    /// GSI-06.04 G2: gamemd routes the land-type table through Drive and Ship
+    /// only. A hover mover standing on `[Clear] Hover=50%` therefore runs at full
+    /// speed on land — its locomotor is a pure throttle that never reads the
+    /// table — while a Drive mover on the same cell is halved.
+    #[test]
+    fn gsi_06_04_land_type_table_reaches_drive_and_ship_only() {
+        let terrain = ResolvedTerrainGrid::from_cells(
+            2,
+            1,
+            vec![
+                terrain_cell(0, 0, SpeedCostProfile::default()),
+                terrain_cell(
+                    1,
+                    0,
+                    SpeedCostProfile {
+                        hover: Some(50),
+                        track: Some(50),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        );
+        let sample = |kind: LocomotorKind, st: SpeedType| {
+            compute_drive_target_speed_fraction(
+                st,
+                kind,
+                (0, 0),
+                (1, 0),
+                &terrain,
+                &TerrainSpeedConfig::default(),
+                false,
+            )
+        };
+        assert_eq!(sample(LocomotorKind::Drive, SpeedType::Track), SIM_HALF);
+        assert_eq!(sample(LocomotorKind::Ship, SpeedType::Track), SIM_HALF);
+        assert_eq!(sample(LocomotorKind::Hover, SpeedType::Hover), SIM_ONE);
+        assert_eq!(sample(LocomotorKind::Walk, SpeedType::Foot), SIM_ONE);
+    }
+
+    /// GSI-06.04 G2 (slope half): the four `[General]` slope coefficients are
+    /// applied at the same two sites as the table, so infantry get no downhill
+    /// boost on a ramp.
+    #[test]
+    fn gsi_06_04_slope_coefficients_reach_drive_and_ship_only() {
+        let flat = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            ..Default::default()
+        };
+        let mut high = terrain_cell(0, 0, flat);
+        high.level = 2;
+        let terrain = ResolvedTerrainGrid::from_cells(2, 1, vec![high, terrain_cell(1, 0, flat)]);
+        let sample = |kind: LocomotorKind, st: SpeedType| {
+            compute_drive_target_speed_fraction(
+                st,
+                kind,
+                (0, 0),
+                (1, 0),
+                &terrain,
+                &TerrainSpeedConfig::default(),
+                false,
+            )
+        };
+        // Downhill: the Drive mover takes the 1.2x coefficient...
+        assert_eq!(
+            sample(LocomotorKind::Drive, SpeedType::Track),
+            SimFixed::lit("1.2")
+        );
+        // ...and the walking infantryman does not.
+        assert_eq!(sample(LocomotorKind::Walk, SpeedType::Foot), SIM_ONE);
+    }
+
+    fn drive_entity_at(rx: u16, ry: u16) -> GameEntity {
+        let mut entity = GameEntity::test_default(1, "HARV", "Americans", rx, ry);
+        entity.drive_locomotion = Some(DriveLocomotionRuntime::default());
+        entity
+    }
+
+    /// GSI-06.12 GAP 3: `Drive::Is_Ok_To_End` reads ILocomotion slot 4
+    /// (`Is_Moving`) on the ACTIVE locomotor, and that predicate looks at the
+    /// Drive locomotor's own destination and head-to coords — not at the
+    /// owner's path queue. A non-null destination alone means "moving".
+    #[test]
+    fn gsi_06_12_drive_is_moving_reads_its_own_destination() {
+        let mut entity = drive_entity_at(3, 3);
+        assert!(!drive_locomotor_is_moving(&entity));
+
+        entity.drive_locomotion.as_mut().expect("drive").destination =
+            Some(DriveCoord::cell(9, 3, 0));
+        assert!(drive_locomotor_is_moving(&entity));
+    }
+
+    /// With no destination, a null head-to is not moving and a head-to that
+    /// already equals the owner's exact lepton X/Y is not moving either. Z is
+    /// deliberately not part of the comparison.
+    #[test]
+    fn gsi_06_12_drive_is_moving_compares_head_to_against_the_owner_position() {
+        let mut entity = drive_entity_at(3, 3);
+        entity.position.sub_x = SimFixed::from_num(128);
+        entity.position.sub_y = SimFixed::from_num(128);
+
+        let drive = entity.drive_locomotion.as_mut().expect("drive");
+        drive.head_to = Some(DriveCoord::cell(3, 3, 0));
+        assert!(
+            !drive_locomotor_is_moving(&entity),
+            "head-to at the owner's own cell centre is not moving"
+        );
+
+        let drive = entity.drive_locomotion.as_mut().expect("drive");
+        drive.head_to = Some(DriveCoord::cell(3, 3, 7));
+        assert!(
+            !drive_locomotor_is_moving(&entity),
+            "a Z-only difference does not make it moving"
+        );
+
+        let drive = entity.drive_locomotion.as_mut().expect("drive");
+        drive.head_to = Some(DriveCoord::cell(4, 3, 0));
+        assert!(drive_locomotor_is_moving(&entity));
     }
 
     #[test]

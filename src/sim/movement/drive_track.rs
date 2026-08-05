@@ -3607,6 +3607,183 @@ pub fn build_shared_sharp_turn_fallback(
     Some(selection)
 }
 
+// ---------------------------------------------------------------------------
+// Path-window track selection — the retail basis
+// ---------------------------------------------------------------------------
+
+/// `TurnTrack.flags` bit 3. Set on exactly the 32 of 72 table entries whose
+/// `to` direction differs from their `from` direction; gamemd tests it to pick
+/// the two-node queue shift with a two-cell reserved head over the one-node
+/// shift with a one-cell head.
+pub const TURN_TRACK_TURNS_FLAG: u8 = 0x08;
+
+/// Facing units per direction octant (256 / 8).
+const OCTANT_FACING_STEP: u8 = 0x20;
+
+/// Highest RawTrack index in the set ShipLocomotion shares with Drive.
+const SHIP_MAX_SHARED_RAW_TRACK: u8 = 13;
+
+/// Cell delta of each direction octant in the sim cell grid
+/// (+X = east, +Y = south), indexed N=0, NE=1, E=2, SE=3, S=4, SW=5, W=6, NW=7.
+/// Mirrors `crate::util::fixed_math::dir_to_cell_delta` without the facing-byte
+/// round trip, so a path step maps to an octant exactly.
+const OCTANT_CELL_DELTA: [(i32, i32); FACING_DIRECTIONS] = [
+    (0, -1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+    (0, 1),
+    (-1, 1),
+    (-1, 0),
+    (-1, -1),
+];
+
+/// Direction octant of a one-cell path step. `None` for a null step.
+fn octant_from_cell_delta(dx: i32, dy: i32) -> Option<usize> {
+    let step = (dx.signum(), dy.signum());
+    OCTANT_CELL_DELTA.iter().position(|&delta| delta == step)
+}
+
+/// A curve chosen from the path window, with the head cell it reserves.
+#[derive(Debug, Clone, Copy)]
+pub struct DriveTrackPlan {
+    /// The chosen TurnTrack/RawTrack pair.
+    pub selection: DriveTrackSelection,
+    /// Cell delta from the mover's current cell to the reserved head cell.
+    /// One cell for a non-turning curve, two for a `TURN_TRACK_TURNS_FLAG` curve.
+    pub head_dx: i32,
+    pub head_dy: i32,
+    /// Path nodes this curve spans: 1 for the one-node shift, 2 for the
+    /// two-node shift that a turning curve takes.
+    pub nodes: usize,
+}
+
+impl DriveTrackPlan {
+    /// True when the curve spans two path nodes.
+    pub fn spans_two_nodes(&self) -> bool {
+        self.nodes == 2
+    }
+}
+
+/// What the Drive/Ship selection step decided for this frame.
+#[derive(Debug, Clone, Copy)]
+pub enum DriveTrackDecision {
+    /// The body is not yet on the octant of the head path node. gamemd commands
+    /// the turn and returns without touching the path queue or taking a step;
+    /// the caller must install no curve and consume no node this frame.
+    TurnFirst {
+        /// Exact octant facing the body must reach before selection may run.
+        desired_facing: u8,
+    },
+    /// Install this curve.
+    Select(DriveTrackPlan),
+    /// No curve is available (degenerate step, or track point data missing).
+    Unavailable,
+}
+
+/// Choose the drive curve for a mover standing on its current cell with the
+/// path window `current -> current+from_delta -> +to_delta`.
+///
+/// gamemd indexes the turn table by the two leading *path* directions —
+/// `turn_index = path[1]_dir + path[0]_dir * 8` — never by the mover's body
+/// facing. A null curve falls back to `path[0]_dir * 9`, the straight run in
+/// the head node's own direction. The body facing enters only as the exact
+/// precondition below: an in-place turn is commanded whenever it differs from
+/// the head node's octant, and no curve is selected until it matches.
+///
+/// `to_delta` is `None` at the last step of a path, which gamemd normalises to
+/// `to := from` (its queue terminator).
+pub fn plan_drive_track_from_path(
+    body_facing: u8,
+    from_delta: (i32, i32),
+    to_delta: Option<(i32, i32)>,
+    is_ship: bool,
+) -> DriveTrackDecision {
+    let Some(from_dir) = octant_from_cell_delta(from_delta.0, from_delta.1) else {
+        return DriveTrackDecision::Unavailable;
+    };
+
+    // Exact-facing precondition. Zero tolerance: gamemd compares the 16-bit
+    // facing against `path[0]_dir << 13`, which in the 8-bit frame is
+    // `path[0]_dir * 0x20`, and any non-zero delta commands the turn instead.
+    let desired_facing = (from_dir as u8).wrapping_mul(OCTANT_FACING_STEP);
+    if body_facing != desired_facing {
+        return DriveTrackDecision::TurnFirst { desired_facing };
+    }
+
+    let to_dir = to_delta
+        .and_then(|(dx, dy)| octant_from_cell_delta(dx, dy))
+        .unwrap_or(from_dir);
+
+    // `from * 9` is the straight-ahead entry on the table diagonal; it is the
+    // null-curve substitute and is never itself null.
+    let straight_index = from_dir * FACING_DIRECTIONS + from_dir;
+    let mut turn_index = from_dir * FACING_DIRECTIONS + to_dir;
+    if TURN_TRACKS[turn_index].normal_track == 0 {
+        turn_index = straight_index;
+    }
+    // ShipLocomotion consumes only the RawTrack set it shares with Drive.
+    if is_ship && TURN_TRACKS[turn_index].normal_track > SHIP_MAX_SHARED_RAW_TRACK {
+        turn_index = straight_index;
+    }
+
+    let turn = &TURN_TRACKS[turn_index];
+    let raw_index = turn.normal_track;
+    if raw_index == 0 {
+        return DriveTrackDecision::Unavailable;
+    }
+    let Some(raw_meta) = RAW_TRACKS.get(raw_index as usize) else {
+        return DriveTrackDecision::Unavailable;
+    };
+    if raw_track_points(raw_index).is_empty() {
+        return DriveTrackDecision::Unavailable;
+    }
+
+    let two_node = turn.flags & TURN_TRACK_TURNS_FLAG != 0;
+    let (from_dx, from_dy) = OCTANT_CELL_DELTA[from_dir];
+    let (head_dx, head_dy) = if two_node {
+        let (to_dx, to_dy) = OCTANT_CELL_DELTA[to_dir];
+        (from_dx + to_dx, from_dy + to_dy)
+    } else {
+        (from_dx, from_dy)
+    };
+
+    DriveTrackDecision::Select(DriveTrackPlan {
+        selection: DriveTrackSelection {
+            turn_track_index: turn_index,
+            raw_track_index: raw_index,
+            entry_index: raw_meta.entry_index,
+            chain_index: raw_meta.chain_index,
+            occupation_handoff_point_index: raw_meta.occupation_handoff_point_index,
+            points_count: raw_meta.points_count,
+            target_facing: turn.target_facing,
+            flags: turn.flags,
+        },
+        head_dx,
+        head_dy,
+        nodes: if two_node { 2 } else { 1 },
+    })
+}
+
+/// Install a curve chosen by `plan_drive_track_from_path`.
+///
+/// The cursor starts at point 0, not at `entry_index`: gamemd's selection
+/// finalize writes 0 to the track cursor, and the lead-in points are exactly
+/// what carry the mover from its current cell centre into the arc. The
+/// non-zero `entry_index` is the *chain* entry point, used when a curve is
+/// adopted mid-motion.
+pub fn begin_selected_drive_track(plan: &DriveTrackPlan) -> Option<DriveTrackState> {
+    let mut state = begin_drive_track(
+        plan.selection.raw_track_index,
+        plan.selection.flags,
+        plan.head_dx,
+        plan.head_dy,
+        plan.selection.target_facing,
+    )?;
+    state.point_index = 0;
+    Some(state)
+}
+
 /// Quantize a 0-255 facing to a direction index 0-7 (N, NE, E, SE, S, SW, W, NW).
 fn facing_to_dir(facing: u8) -> usize {
     // Add half a direction (16) for rounding, then divide by 32.
@@ -3653,6 +3830,18 @@ pub struct DriveTrackAdvance {
     /// Detected by coordinate-based boundary checking — every step checks
     /// if the world position lands in a new cell.
     pub cell_jump: bool,
+    /// Cell delta the coordinate crossing actually applied, in cells
+    /// (+X = east, +Y = south). `(0, 0)` whenever `cell_jump` is false.
+    ///
+    /// The caller must move the mover's cell by exactly this delta: it is the
+    /// same value that shifted `cell_offset_*`, so `cell * 256 + sub` stays
+    /// continuous across the crossing. A curve's crossings do not always match
+    /// its path steps one for one — the straight diagonals whose transform puts
+    /// a point exactly on a cell corner cross one axis, then the other, on
+    /// consecutive points for a single path node.
+    pub cell_jump_dx: i32,
+    /// See `cell_jump_dx`.
+    pub cell_jump_dy: i32,
     /// True if the track reached the chain_index point. The caller should
     /// attempt to chain into the next track curve (check Can_Enter_Cell on
     /// the next-next cell, select new track if passable).
@@ -3770,8 +3959,12 @@ pub fn begin_forced_turn_track(
 /// **Coordinate-based cell detection**: after each step,
 /// the transformed track point is mapped to sub-cell coordinates. If the
 /// coordinates land in a different cell (sub_x outside [0,256) or sub_y
-/// outside [0,256)), a cell_jump is signaled and the loop breaks so the
-/// caller can handle the transition.
+/// outside [0,256)), a cell_jump is signaled with the applied `(dx, dy)` and
+/// the loop breaks so the caller can handle the transition. The original engine
+/// keeps one absolute coordinate per object and derives the cell from it by a
+/// sign-corrected shift, so the cell and the coordinate always move together;
+/// the caller must use the reported delta rather than its own path cursor, or
+/// the two disagree and the rendered position snaps.
 ///
 /// **Track chaining** at chain_index (binary +0x04): when the stepping loop
 /// reaches the chain_index point, chain_ready is set and the loop breaks
@@ -3825,6 +4018,8 @@ fn advance_drive_track_with_budget_mode(
     let points = raw_track_points(state.raw_track_index);
     let last_index = meta.points_count.saturating_sub(1);
     let mut cell_jump = false;
+    let mut cell_jump_dx = 0;
+    let mut cell_jump_dy = 0;
     let mut chain_ready = false;
 
     // Budget = this tick's speed + leftover from last tick.
@@ -3851,6 +4046,8 @@ fn advance_drive_track_with_budget_mode(
                 state.cell_offset_x -= cell_x * 256;
                 state.cell_offset_y -= cell_y * 256;
                 cell_jump = true;
+                cell_jump_dx = cell_x;
+                cell_jump_dy = cell_y;
                 break;
             }
         }
@@ -3902,6 +4099,8 @@ fn advance_drive_track_with_budget_mode(
             sub_y: SimFixed::from_num(state.head_offset_y + ty as i32 + state.cell_offset_y),
             facing: tf,
             cell_jump,
+            cell_jump_dx,
+            cell_jump_dy,
             chain_ready,
             finished,
             next_step_delta_x: next_dx,
@@ -3914,6 +4113,8 @@ fn advance_drive_track_with_budget_mode(
             sub_y: SimFixed::from_num(128),
             facing: 0,
             cell_jump: false,
+            cell_jump_dx: 0,
+            cell_jump_dy: 0,
             chain_ready: false,
             finished: true,
             next_step_delta_x: 0,

@@ -609,6 +609,18 @@ pub struct GeneralRules {
     /// When this timer expires, the unit re-pathfinds with urgency=2 (scatter).
     pub blockage_path_delay_ticks: u16,
 
+    // -- Cell scatter eligibility (CellClass::Scatter_Objects) --
+    /// `PlayerScatter=` from `[CombatDamage]` — when set, an *unforced* cell
+    /// scatter dispatches to every occupant regardless of who owns it. Stock
+    /// `rulesmd.ini:900` says `no`, and the RulesClass constructor also clears
+    /// the byte, so ordinarily only elite occupants and AI-owned occupants
+    /// respond to an unforced scatter.
+    pub player_scatter: bool,
+    /// `Scatter=` from `[IQ]` — the house IQ level at or above which an
+    /// occupant answers an *unforced* cell scatter. Stock `rulesmd.ini:3164`
+    /// says `2`; the RulesClass constructor default is `3`.
+    pub iq_scatter: i32,
+
     /// Overlay type names that are opaque concrete walls (ConcreteWalls= in [General]).
     /// Concrete walls do NOT render a ghost sprite during placement -- only the
     /// valid/invalid cell grid is shown. Fence walls (not in this list) still
@@ -910,6 +922,10 @@ impl Default for GeneralRules {
             path_delay_ticks: 9,
             // BlockagePathDelay=60 frames (directly in frames, not minutes).
             blockage_path_delay_ticks: 60,
+            // RulesClass constructor clears PlayerScatter and stores 3 into
+            // [IQ] Scatter; stock rulesmd overrides the latter with 2.
+            player_scatter: false,
+            iq_scatter: 3,
             concrete_walls: Vec::new(),
             cliff_back_impassability: 2,
             lightning_storm_duration: 180,
@@ -1235,6 +1251,8 @@ impl GeneralRules {
         let audio_visual = ini.section("AudioVisual");
         // Combat-only globals are read in the late [CombatDamage] pass.
         let combat_damage = ini.section("CombatDamage");
+        // AI IQ thresholds live in their own [IQ] read.
+        let iq = ini.section("IQ");
         // Genetic Mutator warhead references are read by [SpecialWeapons].
         let special_weapons = ini.section("SpecialWeapons");
         // INI parser already strips everything after `;` (Westwood comment
@@ -1641,6 +1659,14 @@ impl GeneralRules {
                 .get_i32("BlockagePathDelay")
                 .map(|frames| frames.max(1) as u16)
                 .unwrap_or(defaults.blockage_path_delay_ticks),
+            // PlayerScatter belongs to the [CombatDamage] read, IQ Scatter to
+            // the [IQ] read; neither is a [General] key.
+            player_scatter: combat_damage
+                .and_then(|s| s.get_bool("PlayerScatter"))
+                .unwrap_or(defaults.player_scatter),
+            iq_scatter: iq
+                .and_then(|s| s.get_i32("Scatter"))
+                .unwrap_or(defaults.iq_scatter),
             concrete_walls: general
                 .get_list("ConcreteWalls")
                 .map(|list| {
@@ -3976,6 +4002,30 @@ ChuteSound=
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert!(general.chute_sound.is_none());
+    }
+
+    #[test]
+    fn cell_scatter_gate_keys_parse_from_their_own_sections() {
+        // PlayerScatter is a [CombatDamage] key and Scatter an [IQ] key; neither
+        // lives in [General], so a [General]-only file must fall back to the
+        // RulesClass constructor values (no / 3).
+        let ini = IniFile::from_str("[General]\n");
+        let general = GeneralRules::from_ini(&ini);
+        assert!(!general.player_scatter);
+        assert_eq!(general.iq_scatter, 3);
+
+        // Stock values.
+        let ini =
+            IniFile::from_str("[General]\n[CombatDamage]\nPlayerScatter=no\n[IQ]\nScatter=2\n");
+        let general = GeneralRules::from_ini(&ini);
+        assert!(!general.player_scatter);
+        assert_eq!(general.iq_scatter, 2);
+
+        let ini =
+            IniFile::from_str("[General]\n[CombatDamage]\nPlayerScatter=yes\n[IQ]\nScatter=4\n");
+        let general = GeneralRules::from_ini(&ini);
+        assert!(general.player_scatter);
+        assert_eq!(general.iq_scatter, 4);
     }
 
     #[test]

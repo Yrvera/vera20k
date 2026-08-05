@@ -135,6 +135,12 @@ pub(crate) fn install_forced_drive_track(
         layer: locomotor::MovementLayer::Ground,
     };
 
+    // Captured before the Drive borrow. The early return above already
+    // established the mover is on the ground plane.
+    let current_cell = (entity.position.rx, entity.position.ry);
+    let current_layer = locomotor::MovementLayer::Ground;
+    let entity_stable_id = entity.stable_id;
+
     let drive = entity
         .drive_locomotion
         .get_or_insert_with(crate::sim::components::DriveLocomotionRuntime::default);
@@ -148,13 +154,31 @@ pub(crate) fn install_forced_drive_track(
     drive.track_valid = true;
     drive.target_speed_fraction = SIM_ONE;
     drive.current_speed_fraction = SIM_ONE;
-    // Force_Track directly installs the new head mark. Its active retail
-    // callers enter with no old head, so ordinary replacement/old-mark clear
-    // semantics do not apply here.
+    // Force_Track directly installs the new head mark. Its active retail callers
+    // enter with no old head — but nothing in this function's signature enforces
+    // that, and a caller that reached a mid-curve mover would otherwise strand
+    // both of that curve's claims: a head cell and a forward handoff cell that
+    // nothing occupies and every later mover is refused entry to.
+    // `Apply_Track_Occupation_Mode` releases the pair together on mode 0, so
+    // release them here before installing the replacement.
+    crate::sim::occupancy::drop_drive_handoff_occupation(
+        drive,
+        cell_occupation,
+        entity_stable_id,
+        current_cell,
+        current_layer,
+    );
+    crate::sim::occupancy::clear_drive_head_to_occupation_for_replacement(
+        drive,
+        cell_occupation,
+        entity_stable_id,
+        current_cell,
+        current_layer,
+    );
     cell_occupation.mark_vehicle_on_layer(
         footprint.rx,
         footprint.ry,
-        entity.stable_id,
+        entity_stable_id,
         footprint.layer,
     );
     drive.occupation_head_to = Some(footprint);
@@ -226,6 +250,22 @@ pub(super) struct MoverSnapshot {
     /// occupants are skipped during the foundation-cross occupancy check
     /// (harvester dock drive: buildings are not scatter targets).
     pub bypass_grid: bool,
+    /// Whether this mover's current mission is one of the five the original
+    /// engine lets bypass sub-cell occupancy: Enter (7), Capture (8), Eaten
+    /// (9), Area Guard (11), Patrol (25).
+    ///
+    /// Half of the "priority" placement condition; the other half is the
+    /// NavCom sitting in the cell being entered, which can only be tested per
+    /// crossing (see [`MoverSnapshot::nav_com_cell`]).
+    pub sub_cell_priority_mission: bool,
+    /// Cell currently occupied by this mover's NavCom target, when that target
+    /// is an **object**.
+    ///
+    /// Resolved once per tick from the entity store as the target entity's
+    /// anchor cell. A bare-cell NavCom yields `None`: the original tests its
+    /// destination as an object pointer, so a cell destination never satisfies
+    /// the priority condition.
+    pub nav_com_cell: Option<(u16, u16)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,6 +292,10 @@ pub struct MovementTickStats {
     pub track_selections: u32,
     /// Stuck entities that recovered via repath or scatter.
     pub stuck_recoveries: u32,
+    /// Fresh Drive curve selections refused by the cell-entry predicate, on
+    /// either arm. Counted so a fixture can show the lane was actually
+    /// exercised rather than trivially absent.
+    pub selection_admission_refusals: u32,
     /// Elapsed microseconds for the entire tick.
     pub elapsed_us: u64,
 }
@@ -271,6 +315,9 @@ impl MovementTickStats {
         self.scatter_attempts = self.scatter_attempts.saturating_add(other.scatter_attempts);
         self.track_selections = self.track_selections.saturating_add(other.track_selections);
         self.stuck_recoveries = self.stuck_recoveries.saturating_add(other.stuck_recoveries);
+        self.selection_admission_refusals = self
+            .selection_admission_refusals
+            .saturating_add(other.selection_admission_refusals);
         self.elapsed_us = self.elapsed_us.saturating_add(other.elapsed_us);
     }
 }
@@ -312,15 +359,45 @@ pub fn tick_locomotor_piggyback_restore(entities: &mut EntityStore) -> usize {
     restored
 }
 
+/// Build the `Is_Ok_To_End` inputs for one entity.
+///
+/// gamemd's END gate reads the ACTIVE locomotor's own `Is_Moving` (ILocomotion
+/// slot 4) — `Drive::Is_Ok_To_End` calls it on the object's own ILocomotion,
+/// which inspects the Drive locomotor's destination and head-to coordinates
+/// against the owner's exact position, never the owner's path queue. Drive now
+/// has that predicate; the remaining classes keep the VERA-internal
+/// owner-path approximation, gamemd equivalent UNCHECKED.
+pub(crate) fn locomotor_end_gate_context(
+    entity: &crate::sim::game_entity::GameEntity,
+) -> locomotion::piggyback::EndGateContext {
+    let active_is_drive = entity.locomotor.as_ref().is_some_and(|loco| {
+        loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive
+    });
+    let owner_moving = if active_is_drive {
+        drive_locomotion::drive_locomotor_is_moving(entity) || entity.forced_drive_track.is_some()
+    } else {
+        entity.movement_target.is_some() || entity.forced_drive_track.is_some()
+    };
+    locomotion::piggyback::EndGateContext {
+        owner_moving,
+        owner_teleporting: entity.teleport_state.is_some(),
+        owner_deploying: entity.building_up.is_some()
+            || entity.building_down.is_some()
+            || entity.deploy_state.is_some(),
+    }
+}
+
 pub(crate) fn tick_locomotor_piggyback_restore_one(entities: &mut EntityStore, id: u64) -> bool {
+    let Some(entity) = entities.get(id) else {
+        return false;
+    };
+    let gate = locomotor_end_gate_context(entity);
     let Some(entity) = entities.get_mut(id) else {
         return false;
     };
-    let owner_moving = entity.movement_target.is_some() || entity.forced_drive_track.is_some();
-    let owner_teleporting = entity.teleport_state.is_some();
-    let owner_deploying = entity.building_up.is_some()
-        || entity.building_down.is_some()
-        || entity.deploy_state.is_some();
+    let owner_moving = gate.owner_moving;
+    let owner_teleporting = gate.owner_teleporting;
+    let owner_deploying = gate.owner_deploying;
     let mut retired_drive = false;
     let restored_now = if let Some(ref mut loco) = entity.locomotor {
         retired_drive = loco.active_kind() == crate::rules::locomotor_type::LocomotorKind::Drive;

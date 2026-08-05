@@ -259,6 +259,10 @@ pub(crate) struct AppState {
     pub(crate) zoom_anchor_screen: [f32; 2],
     /// Mouse edge auto-scroll ramp state (gamemd's CoastLevel and its 16 ms timer).
     pub(crate) edge_scroll: crate::app_camera::EdgeScrollState,
+    /// Tactical mouse capture and right-drag pan anchor.
+    pub(crate) tactical_mouse: crate::app_camera::TacticalMouseState,
+    /// The four camera bookmarks (View1..4 / SetView1..4).
+    pub(crate) view_bookmarks: crate::app_camera::ViewBookmarks,
     pub(crate) cursor_x: f32,
     pub(crate) cursor_y: f32,
     pub(crate) keys_held: HashSet<KeyCode>,
@@ -479,6 +483,11 @@ pub(crate) struct AppState {
     pub(crate) queued_order_mode: app_render::OrderMode,
     /// Control group slots (0-9) storing stable entity ids.
     pub(crate) control_groups: Vec<Vec<u64>>,
+    /// Slot and wall-clock instant of the last plain control-group recall, for
+    /// the 800 ms double-tap that centres the camera. Wall clock, never sim
+    /// state: the original stamps `timeGetTime()` here and only a recall writes
+    /// it — assigning with Ctrl+digit never does.
+    pub(crate) last_control_group_press: Option<(usize, std::time::Instant)>,
     /// Match-scoped local player identity, pinned ONCE at match launch
     /// (skirmish session / spawn-pick) and never rewritten mid-match. All
     /// command/HUD owner resolution reads this first — selection must never
@@ -523,7 +532,17 @@ pub(crate) struct AppState {
     /// Sidebar, minimap, and other UI elements are scaled by this factor.
     pub(crate) ui_scale: f32,
     /// Scroll offset for the current sidebar tab's item list.
+    ///
+    /// gamemd's sidebar keeps this row per build strip, not one shared value —
+    /// its scroll command indexes the strip by column. This holds the live row
+    /// for the active tab; the parked rows for the other tabs live in
+    /// `sidebar_scroll_rows_parked` and swap in and out on a tab change, which
+    /// keeps every consumer reading one field while the position stops bleeding
+    /// across tabs.
     pub(crate) sidebar_scroll_rows: usize,
+    /// Parked scroll row per sidebar tab, indexed by `app_input::tab_scroll_slot`.
+    /// One entry per `SidebarTab` variant.
+    pub(crate) sidebar_scroll_rows_parked: [usize; 4],
     /// Asset manager — kept alive for music track lookups.
     pub(crate) asset_manager: Option<AssetManager>,
     /// Background music player (rodio).
@@ -3646,6 +3665,18 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Focused(active) => {
+                if !active {
+                    // Losing focus takes the mouse capture away, and gamemd
+                    // handles that explicitly: its capture-changed case drops
+                    // the button-held byte and tears the band rectangle down.
+                    // Without this the right-drag pan keeps applying its
+                    // anchor-relative step every frame and edge scroll stays
+                    // inhibited until the player right-clicks again.
+                    state.tactical_mouse = Default::default();
+                    state.selection_state.cancel_drag();
+                    state.middle_mouse_panning = false;
+                    state.minimap_dragging = false;
+                }
                 Self::set_window_active(state, active);
             }
             WindowEvent::Occluded(occluded) => {
@@ -3908,13 +3939,11 @@ impl ApplicationHandler for App {
                 if !egui_consumed
                     && (state.screen == GameScreen::InGame || state.screen == GameScreen::SpawnPick)
                 {
-                    // Scroll sidebar when cursor is over the sidebar panel,
-                    // otherwise zoom the game viewport (if enabled in settings).
-                    if !app_input::try_sidebar_scroll(state, lines)
-                        && state.skirmish_settings.zoom_enabled
-                    {
-                        crate::app_camera::apply_zoom(state, lines);
-                    }
+                    // Every wheel notch scrolls the active build strip by one
+                    // row, wherever the cursor is. gamemd routes the wheel
+                    // message straight to the SidebarUp / SidebarDown commands
+                    // and has no world zoom for it to reach.
+                    app_input::sidebar_wheel_scroll(state, lines);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -4330,6 +4359,8 @@ impl App {
             zoom_anchor_world: [0.0, 0.0],
             zoom_anchor_screen: [0.0, 0.0],
             edge_scroll: crate::app_camera::EdgeScrollState::default(),
+            tactical_mouse: crate::app_camera::TacticalMouseState::default(),
+            view_bookmarks: crate::app_camera::ViewBookmarks::default(),
             cursor_x: 0.0,
             cursor_y: 0.0,
             keys_held: HashSet::new(),
@@ -4442,6 +4473,7 @@ impl App {
             configured_input_delay_ticks: input_delay_ticks,
             queued_order_mode: app_render::OrderMode::Move,
             control_groups: vec![Vec::new(); 10],
+            last_control_group_press: None,
             local_player_owner: None,
             local_owner_override: None,
             eva_low_power_active: false,
@@ -4458,6 +4490,7 @@ impl App {
             sidebar_layout_spec_base: base_sidebar_layout_spec,
             ui_scale,
             sidebar_scroll_rows: 0,
+            sidebar_scroll_rows_parked: [0; 4],
             asset_manager: startup_asset_manager,
             music_player: MusicPlayer::new(),
             sfx_player: SfxPlayer::new(),

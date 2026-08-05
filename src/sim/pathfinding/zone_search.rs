@@ -60,19 +60,29 @@ impl ZoneEdge {
     }
 }
 
+/// Whether the path entry may answer reachability from the reduced per-row zone
+/// map before running A*.
+///
+/// Gamemd gates every row: `Can_Reach_Zone` short-circuits to "reachable" only on
+/// `mzRow == -1`, and the A*-entry precheck reads whatever row the type's
+/// `MovementZone=` gives. Stock rulesmd puts every main battle tank in
+/// `Destroyer`, every ore miner in `Crusher` and the Battle Fortress in
+/// `CrusherAll`, so excluding those rows bypassed the gate for the majority of
+/// all path searches in a match.
+///
+/// `Water` / `WaterBeach` remain excluded — VERA-internal, gamemd equivalent
+/// UNCHECKED. The terrain-aware zone builder's water/beach surface legality is
+/// still coarser than the runtime water-surface predicate, so hard-gating naval
+/// movers here would refuse orders gamemd accepts. Remove the exception once the
+/// naval surface classes are pinned.
 fn can_use_reduced_zone_precheck(movement_zone: Option<MovementZone>) -> bool {
     match movement_zone {
         None => true,
-        Some(
-            MovementZone::Normal
-            | MovementZone::Amphibious
-            | MovementZone::Infantry
-            | MovementZone::Fly,
-        ) => true,
-        // TODO(RE): naval water/beach surface legality in the current terrain-aware zone
-        // builder is still coarser than the runtime water-surface predicate, so do not
-        // hard-gate those movers on reduced-zone reachability yet.
-        Some(_) => false,
+        // `mzRow == -1` short-circuits to "reachable" in the engine, so the
+        // reduced zone gate must NOT be allowed to refuse the search.
+        Some(MovementZone::Invalid) => false,
+        Some(MovementZone::Water | MovementZone::WaterBeach) => false,
+        Some(_) => true,
     }
 }
 
@@ -154,6 +164,7 @@ pub fn find_path_zoned(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     find_path_zoned_marker(
         grid,
@@ -170,6 +181,7 @@ pub fn find_path_zoned(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -189,6 +201,7 @@ pub(crate) fn find_path_zoned_marker(
     blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<(u16, u16)>> {
     find_path_zoned_marker_inner(
         grid,
@@ -204,6 +217,7 @@ pub(crate) fn find_path_zoned_marker(
         marker_overlay,
         urgency,
         mover_is_crusher,
+        is_infantry,
         blocker_neighbor_counts,
     )
 }
@@ -223,6 +237,7 @@ fn find_path_zoned_marker_inner(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
     blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
 ) -> Option<Vec<(u16, u16)>> {
     if !can_use_reduced_zone_precheck(movement_zone) {
@@ -238,6 +253,7 @@ fn find_path_zoned_marker_inner(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
         );
     }
 
@@ -254,6 +270,7 @@ fn find_path_zoned_marker_inner(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
         );
     };
 
@@ -270,6 +287,7 @@ fn find_path_zoned_marker_inner(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
         );
     };
     let start_zone = zone_map.zone_at(start.0, start.1, MovementLayer::Ground);
@@ -309,6 +327,7 @@ fn find_path_zoned_marker_inner(
                     marker_overlay,
                     urgency,
                     mover_is_crusher,
+                    is_infantry,
                 )
                 .map(|result| result.path);
             }
@@ -325,6 +344,7 @@ fn find_path_zoned_marker_inner(
                     marker_overlay,
                     urgency,
                     mover_is_crusher,
+                    is_infantry,
                 );
             }
             ZonePrecheckOutcome::Failed => return None,
@@ -353,6 +373,7 @@ fn find_path_zoned_marker_inner(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
         );
     }
 
@@ -378,6 +399,7 @@ fn find_path_zoned_marker_inner(
                 marker_overlay,
                 urgency,
                 mover_is_crusher,
+                is_infantry,
             );
         }
         log::trace!(
@@ -402,6 +424,7 @@ fn find_path_zoned_marker_inner(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
         );
     };
 
@@ -422,6 +445,7 @@ fn find_path_zoned_marker_inner(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
         );
     }
 
@@ -447,6 +471,7 @@ fn find_path_zoned_marker_inner(
                 marker_overlay,
                 urgency,
                 mover_is_crusher,
+                is_infantry,
             ) {
                 return Some(path);
             }
@@ -487,6 +512,7 @@ pub fn find_layered_path_zoned(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<LayeredPathStep>> {
     find_layered_path_zoned_marker(
         grid,
@@ -505,6 +531,7 @@ pub fn find_layered_path_zoned(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -526,6 +553,7 @@ pub(crate) fn find_layered_path_zoned_marker(
     blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<Vec<LayeredPathStep>> {
     if !can_use_reduced_zone_precheck(movement_zone) {
         return find_layered_path_marker(
@@ -541,6 +569,7 @@ pub(crate) fn find_layered_path_zoned_marker(
             marker_overlay,
             urgency,
             mover_is_crusher,
+            is_infantry,
         );
     }
 
@@ -607,6 +636,7 @@ pub(crate) fn find_layered_path_zoned_marker(
                         marker_overlay,
                         urgency,
                         mover_is_crusher,
+                        is_infantry,
                     );
                 }
                 ZonePrecheckOutcome::Failed if zones_match => {
@@ -623,6 +653,7 @@ pub(crate) fn find_layered_path_zoned_marker(
                         marker_overlay,
                         urgency,
                         mover_is_crusher,
+                        is_infantry,
                     );
                 }
                 ZonePrecheckOutcome::Failed => return None,
@@ -644,6 +675,7 @@ pub(crate) fn find_layered_path_zoned_marker(
                     marker_overlay,
                     urgency,
                     mover_is_crusher,
+                    is_infantry,
                 );
             }
             if can_reach_through_explicit_tube(zg, mz, start, start_layer, goal, resolved_terrain) {
@@ -660,6 +692,7 @@ pub(crate) fn find_layered_path_zoned_marker(
                     marker_overlay,
                     urgency,
                     mover_is_crusher,
+                    is_infantry,
                 );
             }
             log::trace!(
@@ -686,6 +719,7 @@ pub(crate) fn find_layered_path_zoned_marker(
         marker_overlay,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 

@@ -98,31 +98,12 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             crate::app_render::OrderMode::Guard => CursorFeedbackKind::Guard,
         });
     }
-    // Force-fire override: when Ctrl is held (and Alt isn't), show the attack
-    // cursor over allies, own units, and empty cells. Only fires if the
-    // selection has at least one armed unit (gamemd
-    // SelectBestObjectForAction priority: armed mobile = 5 wins the cursor
-    // source). Placed AFTER the shroud check above so over-shroud Ctrl-hold
-    // falls through to the queued_order_mode cursor already chosen at lines
-    // 79-84 — that branch already returned by here.
-    if crate::app_input::is_ctrl_held(state) && !crate::app_input::is_alt_held(state) {
-        let selection_has_armed_unit = sim.entities().values().filter(|e| e.selected).any(|e| {
-            let type_str = sim.interner.resolve(e.type_ref);
-            state
-                .rules
-                .as_ref()
-                .and_then(|r| r.object(type_str))
-                .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some())
-        });
-        if selection_has_armed_unit {
-            // EnemyUnit is the standard attack-reticle cursor; reuse it for
-            // force-fire over allies/own/empty. (Exact mouse SHP frame for
-            // gamemd's distinct action 0x33 is unverified — cosmetic-only
-            // follow-up; tracked in the design doc.)
-            return Some(CursorFeedbackKind::EnemyUnit);
-        }
-    }
-    if let Some(hover) = crate::app_entity_pick::hover_target_at_point(
+    let modifier = crate::app_context_order::resolve_order_modifiers(
+        crate::app_input::is_ctrl_held(state),
+        crate::app_input::is_shift_held(state),
+        crate::app_input::is_alt_held(state),
+    );
+    let hover = crate::app_entity_pick::hover_target_at_point(
         sim,
         world_x,
         world_y,
@@ -131,17 +112,72 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         state.rules.as_ref(),
         &state.height_map,
         Some(&state.tactical_bridge_inverse_map),
-    ) {
+    );
+    // gamemd's DetermineAction resolves ONE object for the whole selection and
+    // shows that object's action, for the cell branch as well as the object
+    // branch. Resolve it before the split so every branch below reads the same
+    // object instead of taking `.any()` over the selection.
+    let action_target = hover
+        .as_ref()
+        .and_then(|h| sim.entities().get(h.stable_id))
+        .map_or(ActionDistanceTarget::CellCentre(hover_rx, hover_ry), |e| {
+            ActionDistanceTarget::Object(e.stable_id)
+        });
+    let best_id = select_best_for_action(sim, &selected, action_target, state.rules.as_ref());
+
+    // Force-fire override: with Ctrl held the cell path takes the attack branch
+    // over allies, own units and empty ground. Ctrl+Shift is attack-move and
+    // Ctrl+Alt is guard area — neither force-fires — so this reads the resolved
+    // modifier verb rather than raw Ctrl. The armed test runs on the one
+    // resolved object, matching gamemd's single-object dispatch.
+    if modifier == crate::app_context_order::OrderModifier::ForceFire {
+        let best_is_armed = best_id.is_some_and(|id| {
+            sim.entities().get(id).is_some_and(|e| {
+                let type_str = sim.interner.resolve(e.type_ref);
+                state
+                    .rules
+                    .as_ref()
+                    .and_then(|r| r.object(type_str))
+                    .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some())
+            })
+        });
+        if best_is_armed {
+            // EnemyUnit is the standard attack-reticle cursor; reuse it for
+            // force-fire over allies/own/empty. (Exact mouse SHP frame for
+            // gamemd's distinct force-fire action is unverified — cosmetic-only
+            // follow-up; tracked in the design doc.)
+            return Some(CursorFeedbackKind::EnemyUnit);
+        }
+    }
+    if let Some(hover) = hover.as_ref() {
         let kind = capability_cursor_for_hover(
             sim,
             &selected,
-            &hover,
+            best_id,
+            hover,
             state.rules.as_ref(),
             state.path_grid.as_ref(),
         );
         return Some(kind);
     }
-    // Check for ore/gem under cursor — show attack cursor when miners are selected.
+
+    // No object under the cursor. gamemd runs the full What_Action_OnCell ladder
+    // for the resolved object and answers Move or No-Move, so an unreachable or
+    // blocked destination shows the barred cursor instead of the move cursor.
+    let cell_action = what_action_on_cell(
+        sim,
+        best_id,
+        (hover_rx, hover_ry),
+        state.path_grid.as_ref(),
+        modifier,
+    );
+    if cell_action == CellAction::NoMove {
+        return Some(CursorFeedbackKind::Invalid);
+    }
+
+    // Ore/gem harvest hangs off the cell action: UnitClass only substitutes the
+    // harvest action when the base action came back Move, and it tests the one
+    // resolved object's harvester flags, not the whole selection.
     let has_ore = match (
         sim.overlay_grid.as_ref(),
         state.overlay_registry.as_ref(),
@@ -162,19 +198,82 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             .get(&(hover_rx, hover_ry))
             .is_some_and(|node| node.remaining > 0),
     };
-    if has_ore {
-        let any_miner = selected
-            .iter()
-            .any(|&sid| sim.entities().get(sid).is_some_and(|e| e.miner.is_some()));
-        if any_miner {
-            return Some(CursorFeedbackKind::AttackMove);
-        }
+    if has_ore
+        && best_id.is_some_and(|id| sim.entities().get(id).is_some_and(|e| e.miner.is_some()))
+    {
+        return Some(CursorFeedbackKind::Harvest);
     }
     Some(match state.queued_order_mode {
         crate::app_render::OrderMode::Move => CursorFeedbackKind::Move,
         crate::app_render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
         crate::app_render::OrderMode::Guard => CursorFeedbackKind::Guard,
     })
+}
+
+/// gamemd's `What_Action_OnCell` outcome for an empty cell: action 1 (Move) or
+/// action 2 (No-Move).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CellAction {
+    Move,
+    NoMove,
+}
+
+/// Resolve the empty-cell action for the object that owns the cursor.
+///
+/// gamemd's ladder, in order: outside the playfield answers No-Move; Shift
+/// answers Move and returns *before* the occupancy probe; Alt with the
+/// force-move capability answers Move; a unit that cannot accept move orders
+/// answers No-Move; otherwise the cell occupancy probe decides Move vs No-Move.
+///
+/// VERA implements the playfield test, both modifier short-circuits, and a
+/// terrain-passability stand-in for the occupancy probe (`Can_Enter_Cell` has no
+/// VERA equivalent yet, so the same layered-walkability test the click path uses
+/// stands in for it — that residual is terrain-only, with no per-cell occupancy).
+/// Aircraft and subterranean movers answer Move for any in-playfield cell.
+///
+/// With no path grid or no resolved object the cursor keeps its previous
+/// behaviour and reports Move: VERA-internal, gamemd equivalent UNCHECKED (a
+/// live gamemd session always has a map and a selection here).
+fn what_action_on_cell(
+    sim: &crate::sim::world::Simulation,
+    best_id: Option<u64>,
+    cell: (u16, u16),
+    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    modifier: crate::app_context_order::OrderModifier,
+) -> CellAction {
+    use crate::sim::movement::locomotor::MovementLayer;
+
+    let Some(grid) = path_grid else {
+        return CellAction::Move;
+    };
+    if cell.0 >= grid.width() || cell.1 >= grid.height() {
+        return CellAction::NoMove;
+    }
+    let Some(entity) = best_id.and_then(|id| sim.entities().get(id)) else {
+        return CellAction::Move;
+    };
+    // Only mobile objects run this ladder; a selected structure takes a
+    // different override in gamemd, and VERA answers a rally-point click there.
+    if entity.category == crate::map::entities::EntityCategory::Structure {
+        return CellAction::Move;
+    }
+    if matches!(
+        modifier,
+        crate::app_context_order::OrderModifier::Queue
+            | crate::app_context_order::OrderModifier::ForceMove
+    ) {
+        return CellAction::Move;
+    }
+    match entity.movement_layer_or_ground() {
+        MovementLayer::Air | MovementLayer::Underground => CellAction::Move,
+        MovementLayer::Ground | MovementLayer::Bridge => {
+            if grid.is_any_layer_walkable(cell.0, cell.1) {
+                CellAction::Move
+            } else {
+                CellAction::NoMove
+            }
+        }
+    }
 }
 
 /// Determine the cursor feedback kind for a hover target, checking ObjectType
@@ -198,6 +297,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
 fn capability_cursor_for_hover(
     sim: &crate::sim::world::Simulation,
     selected: &[u64],
+    best_id: Option<u64>,
     hover: &crate::app_entity_pick::HoverTargetKindWithId,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
@@ -212,6 +312,7 @@ fn capability_cursor_for_hover(
     //    Show the deploy cursor for units with Deployer=yes (e.g. GGI, Guardian GI)
     //    OR units with DeploysInto= set (e.g. MCV → ConYard).  In the original game
     //    both kinds show the deploy cursor when hovering over themselves.
+    //    gamemd gates its self-click actions on a selection of exactly one.
     if selected.len() == 1 && selected[0] == hover.stable_id {
         let entity = sim.entities().get(selected[0]);
         let obj =
@@ -246,25 +347,9 @@ fn capability_cursor_for_hover(
         }
     }
 
-    // Pick the "best" selected unit for capability cursor checks.
-    // Matches the original engine's SelectBestObjectForAction priority system.
-    let hover_pos = hovered_entity.map(|e| (e.position.rx, e.position.ry));
-    let best_id = select_best_for_action(sim, selected, hover_pos, rules);
-
+    // The caller already resolved the single object whose action drives the
+    // cursor for the whole selection, matching gamemd's DetermineAction.
     if let Some(best_id) = best_id {
-        // DIAG c4-cursor: outer probe — fires for every hover, shows whether
-        // the sel_obj lookup succeeds. Remove once C4 bug is diagnosed.
-        log::info!(
-            "c4-cursor: best_id={} sel_type={:?} obj_lookup={}",
-            best_id,
-            sim.entities()
-                .get(best_id)
-                .map(|e| sim.interner.resolve(e.type_ref)),
-            sim.entities()
-                .get(best_id)
-                .and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref))))
-                .is_some(),
-        );
         if let (Some(sel_entity), Some(sel_obj)) = (
             sim.entities().get(best_id),
             sim.entities()
@@ -276,23 +361,6 @@ fn capability_cursor_for_hover(
             //    SabotageCursor flag remains in the data model (parsed in
             //    object_type.rs) for modder weapon-overlay use, but cursor
             //    logic is now driven by C4=yes — matches gamemd action 0x10.
-            // DIAG c4-cursor: inner probe — shows each field of the C4 gate
-            // so we can see which condition rejects the Demolish cursor.
-            // Remove once C4 bug is diagnosed.
-            log::info!(
-                "c4-cursor: sel.c4={} hover.kind={:?} hover_type={:?} can_c4={:?} invis={:?} invuln={}",
-                sel_obj.c4,
-                hover.kind,
-                hovered_entity.map(|e| sim.interner.resolve(e.type_ref)),
-                hovered_obj.map(|o| o.can_c4),
-                hovered_obj.map(|o| o.invisible_in_game),
-                hovered_entity.is_some_and(|e| {
-                    crate::sim::superweapon::invulnerability::is_invulnerable(
-                        e.invulnerability.as_ref(),
-                        sim.session.tick as u32,
-                    )
-                }),
-            );
             if sel_obj.c4
                 && matches!(hover.kind, HoverTargetKind::EnemyStructure)
                 && hovered_obj.map_or(false, |o| o.can_c4 && !o.invisible_in_game)
@@ -360,9 +428,9 @@ fn capability_cursor_for_hover(
                     hover.kind,
                     HoverTargetKind::FriendlyUnit | HoverTargetKind::FriendlyStructure
                 ) {
-                    let in_range = any_selected_unit_in_range(
+                    let in_range = resolved_unit_in_range(
                         sim,
-                        selected,
+                        best_id,
                         hover.stable_id,
                         rules,
                         sim.resolved_terrain.as_ref(),
@@ -423,13 +491,15 @@ fn capability_cursor_for_hover(
         HoverTargetKind::FriendlyUnit => CursorFeedbackKind::FriendlyUnit,
         HoverTargetKind::FriendlyStructure => CursorFeedbackKind::FriendlyStructure,
         HoverTargetKind::EnemyUnit | HoverTargetKind::EnemyStructure => {
-            let in_range = any_selected_unit_in_range(
-                sim,
-                selected,
-                hover.stable_id,
-                rules,
-                sim.resolved_terrain.as_ref(),
-            );
+            let in_range = best_id.is_some_and(|id| {
+                resolved_unit_in_range(
+                    sim,
+                    id,
+                    hover.stable_id,
+                    rules,
+                    sim.resolved_terrain.as_ref(),
+                )
+            });
             if in_range {
                 if hover.kind == HoverTargetKind::EnemyUnit {
                     CursorFeedbackKind::EnemyUnit
@@ -444,10 +514,15 @@ fn capability_cursor_for_hover(
     }
 }
 
-/// Check if any selected unit has a weapon that can reach the target entity.
-fn any_selected_unit_in_range(
+/// Does the object that owns the cursor have a weapon that reaches the target?
+///
+/// gamemd shows the action of ONE resolved object, so the in-range split is a
+/// property of that object alone, not of any unit in the selection. Both weapon
+/// slots count, matching the all-slots weapon-range query the object resolver
+/// itself uses.
+fn resolved_unit_in_range(
     sim: &crate::sim::world::Simulation,
-    selected_ids: &[u64],
+    actor_id: u64,
     target_id: u64,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
@@ -465,14 +540,14 @@ fn any_selected_unit_in_range(
         ),
         None => return false,
     };
-    for &sid in selected_ids {
-        let Some(entity) = sim.entities().get(sid) else {
-            continue;
-        };
-        let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
-            continue;
-        };
-        let weapon = match obj.primary.as_ref().and_then(|w| rules.weapon(w)) {
+    let Some(entity) = sim.entities().get(actor_id) else {
+        return false;
+    };
+    let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+        return false;
+    };
+    for slot in [obj.primary.as_ref(), obj.secondary.as_ref()] {
+        let weapon = match slot.and_then(|w| rules.weapon(w)) {
             Some(w) => w,
             None => continue,
         };
@@ -518,52 +593,121 @@ fn any_selected_unit_in_range(
     false
 }
 
-/// Pick the single "best" selected object for determining the action cursor.
+/// What the object resolver measures its candidates' distance to.
 ///
-/// Matches the original engine's `SelectBestObjectForAction` (0x005353d0):
-///   Priority 5 — mobile, not building, has weapons (WeaponRange > 0)
-///   Priority 4 — mobile, not building
-///   Priority 3 — can move (any mobile entity)
-///   Priority 2 — exists on map
-///   Priority 1 — deploying
-///   Priority 0 — warping/teleporting
-/// Ties within the same priority broken by closest distance to the hover target.
+/// gamemd's resolver takes a cell *or* an object: with a cell it measures to the
+/// cell centre at ground level, with an object to that object's own world point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionDistanceTarget {
+    /// Cell centre, in cell coordinates.
+    CellCentre(u16, u16),
+    /// A specific object's world point.
+    Object(u64),
+}
+
+/// Leptons per cell — a cell centre sits half a cell in on both axes.
+const LEPTONS_PER_CELL: i64 = 256;
+
+/// World point in leptons for one entity, including altitude when terrain is
+/// resolved. gamemd's resolver reads the object's full 3-D world coordinate.
+fn entity_world_leptons(
+    entity: &crate::sim::game_entity::GameEntity,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> (i64, i64, i64) {
+    let z = terrain
+        .and_then(|t| combat::in_range::effective_z_leptons(entity, t))
+        .unwrap_or(0);
+    (
+        entity.position.rx as i64 * LEPTONS_PER_CELL + entity.position.sub_x.to_num::<i64>(),
+        entity.position.ry as i64 * LEPTONS_PER_CELL + entity.position.sub_y.to_num::<i64>(),
+        z,
+    )
+}
+
+/// Integer square root — the resolver compares whole-lepton distances, not
+/// squares, so ties that round to the same distance must resolve the same way.
+fn isqrt_u64(value: u64) -> u64 {
+    if value < 2 {
+        return value;
+    }
+    let mut guess = 1u64 << ((64 - value.leading_zeros()).div_ceil(2));
+    loop {
+        let next = (guess + value / guess) / 2;
+        if next >= guess {
+            return guess;
+        }
+        guess = next;
+    }
+}
+
+/// Pick the single object whose action drives the cursor for the whole selection.
+///
+/// Matches the original engine's `SelectBestObjectForAction` score ladder:
+///   5 — actionable, not a building, and at least one weapon slot has range
+///   4 — actionable, not a building
+///   3 — actionable
+///   2 — on the map but not actionable
+/// (the engine's tiers 1 and 0 cover deploy-in-progress and warp states that
+/// VERA does not model here yet — recorded, not invented.)
+///
+/// Ties are *evaluated*, not skipped: a strictly higher score always replaces
+/// the incumbent and overwrites the stored distance even when it is farther
+/// away, while an equal score replaces only on a strictly smaller distance.
+/// Distance is 3-D Euclidean in leptons — to the cell centre when a cell was
+/// supplied, otherwise to the target object's own world point.
 fn select_best_for_action(
     sim: &crate::sim::world::Simulation,
     selected: &[u64],
-    hover_pos: Option<(u16, u16)>,
+    target: ActionDistanceTarget,
     rules: Option<&crate::rules::ruleset::RuleSet>,
 ) -> Option<u64> {
     use crate::map::entities::EntityCategory;
 
+    let terrain = sim.resolved_terrain.as_ref();
+    let target_point: (i64, i64, i64) = match target {
+        ActionDistanceTarget::CellCentre(cx, cy) => (
+            cx as i64 * LEPTONS_PER_CELL + LEPTONS_PER_CELL / 2,
+            cy as i64 * LEPTONS_PER_CELL + LEPTONS_PER_CELL / 2,
+            0,
+        ),
+        ActionDistanceTarget::Object(id) => match sim.entities().get(id) {
+            Some(e) => entity_world_leptons(e, terrain),
+            None => return None,
+        },
+    };
+
     let mut best_id: Option<u64> = None;
     let mut best_priority: i32 = -1;
-    let mut best_dist: u32 = u32::MAX;
+    let mut best_dist: u64 = u64::MAX;
 
     for &sid in selected {
         let Some(entity) = sim.entities().get(sid) else {
             continue;
         };
-        // Compute priority tier.
         let priority = if entity.category == EntityCategory::Structure {
-            // Buildings: can't move, priority 2 (exists on map).
-            2
+            // A building is actionable but is a building, so it stops at 3.
+            3
         } else {
-            // Mobile unit: at least priority 3.
+            // The engine's weapon test queries *all* weapon slots, so a
+            // secondary-only unit scores 5 just like a primary-armed one.
             let obj = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
-            let has_weapon = obj
-                .and_then(|o| o.primary.as_ref())
-                .and_then(|w| rules.and_then(|r| r.weapon(w)))
-                .is_some_and(|w| w.range > crate::util::fixed_math::SIM_ZERO);
+            let has_weapon = obj.is_some_and(|o| {
+                [o.primary.as_ref(), o.secondary.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|w| rules.and_then(|r| r.weapon(w)))
+                    .any(|w| w.range > crate::util::fixed_math::SIM_ZERO)
+            });
             if has_weapon { 5 } else { 4 }
         };
 
-        // Distance to hover target (squared, in cells).
-        let dist = hover_pos.map_or(0u32, |(hx, hy)| {
-            let dx = (entity.position.rx as i32 - hx as i32).unsigned_abs();
-            let dy = (entity.position.ry as i32 - hy as i32).unsigned_abs();
-            dx * dx + dy * dy
-        });
+        let (sx, sy, sz) = entity_world_leptons(entity, terrain);
+        let (dx, dy, dz) = (
+            sx - target_point.0,
+            sy - target_point.1,
+            sz - target_point.2,
+        );
+        let dist = isqrt_u64((dx * dx + dy * dy + dz * dz) as u64);
 
         if priority > best_priority || (priority == best_priority && dist < best_dist) {
             best_priority = priority;
@@ -580,16 +724,24 @@ fn select_best_for_action(
 /// Alias mappings live here: Pan→Move, Guard→Select, FriendlyUnit→Select, etc.
 pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorId> {
     match kind {
-        CursorFeedbackKind::FriendlyUnit
-        | CursorFeedbackKind::FriendlyStructure
-        | CursorFeedbackKind::Guard => Some(CursorId::Select),
+        CursorFeedbackKind::FriendlyUnit | CursorFeedbackKind::FriendlyStructure => {
+            Some(CursorId::Select)
+        }
+        // Guard-area has its own reticle (cursor row 22); it is not the select
+        // cursor, which is what VERA used to show while guard mode was armed.
+        CursorFeedbackKind::Guard => Some(CursorId::GuardArea),
         CursorFeedbackKind::Move => Some(CursorId::Move),
         CursorFeedbackKind::Pan => Some(CursorId::Pan),
         CursorFeedbackKind::AttackMove => Some(CursorId::AttackMove),
         CursorFeedbackKind::EnemyUnit | CursorFeedbackKind::EnemyStructure => {
             Some(CursorId::Attack)
         }
-        CursorFeedbackKind::EnemyOutOfRange => Some(CursorId::AttackOutOfRange),
+        // Harvest and out-of-range attack share cursor row 21 — the action
+        // switch falls through from the attack case straight into the harvest
+        // case, so both land on the same row.
+        CursorFeedbackKind::EnemyOutOfRange | CursorFeedbackKind::Harvest => {
+            Some(CursorId::AttackOutOfRange)
+        }
         CursorFeedbackKind::Invalid => Some(CursorId::NoMove),
         CursorFeedbackKind::PlaceValid | CursorFeedbackKind::PlaceInvalid => None,
         CursorFeedbackKind::Scroll(dir) => Some(scroll_dir_to_cursor_id(dir)),
@@ -625,22 +777,92 @@ fn scroll_dir_to_cursor_id(dir: ScrollDir) -> CursorId {
     }
 }
 
-pub(crate) fn current_software_cursor_frame(
+/// Phase of the animated software cursor.
+///
+/// The original keeps this in engine globals and the contract has two halves.
+/// Setting a new mouse shape zeroes the current frame and re-anchors the timer,
+/// so every cursor change restarts its sequence at frame 0 rather than dropping
+/// into the middle of a shared free-running phase. The per-frame update then
+/// advances by exactly **one** frame once the interval has elapsed and
+/// re-anchors again — never several — so a frame-rate stall makes the animation
+/// lag instead of skipping frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CursorAnimation {
+    shape: Option<CursorId>,
+    frame: usize,
+    anchor_ms: u64,
+}
+
+impl CursorAnimation {
+    pub(crate) const fn new() -> Self {
+        Self {
+            shape: None,
+            frame: 0,
+            anchor_ms: 0,
+        }
+    }
+
+    /// Resolve the frame index to draw for `id` at `now_ms`, updating the phase.
+    pub(crate) fn advance(
+        &mut self,
+        id: CursorId,
+        frame_count: usize,
+        interval_ms: u64,
+        now_ms: u64,
+    ) -> usize {
+        if self.shape != Some(id) {
+            self.shape = Some(id);
+            self.frame = 0;
+            self.anchor_ms = now_ms;
+            return 0;
+        }
+        if frame_count <= 1 || interval_ms == 0 {
+            return 0;
+        }
+        if now_ms.saturating_sub(self.anchor_ms) >= interval_ms {
+            self.frame = (self.frame + 1) % frame_count;
+            self.anchor_ms = now_ms;
+        }
+        self.frame
+    }
+}
+
+thread_local! {
+    static CURSOR_ANIMATION: std::cell::Cell<CursorAnimation> =
+        const { std::cell::Cell::new(CursorAnimation::new()) };
+}
+
+/// The frame of `sequence` to draw for cursor `id` right now.
+///
+/// The id is part of the query because the phase is keyed on it: asking for a
+/// different cursor than last frame restarts that cursor's animation.
+pub(crate) fn software_cursor_frame_for(
+    id: CursorId,
     sequence: &SoftwareCursorSequence,
 ) -> Option<&SoftwareCursorFrame> {
     if sequence.frames.is_empty() {
         return None;
     }
-    if sequence.frames.len() == 1 || sequence.interval_ms == 0 {
-        return sequence.frames.first();
-    }
-    let elapsed_ms: u64 = cursor_animation_start()
+    let now_ms: u64 = cursor_animation_start()
         .elapsed()
         .as_millis()
         .try_into()
-        .ok()?;
-    let frame_idx = ((elapsed_ms / sequence.interval_ms) % sequence.frames.len() as u64) as usize;
+        .unwrap_or(u64::MAX);
+    let frame_idx = CURSOR_ANIMATION.with(|cell| {
+        let mut animation = cell.get();
+        let idx = animation.advance(id, sequence.frames.len(), sequence.interval_ms, now_ms);
+        cell.set(animation);
+        idx
+    });
     sequence.frames.get(frame_idx)
+}
+
+/// Shell screens (menu, skirmish setup, score) only ever show the default
+/// arrow, which is a single static frame.
+pub(crate) fn current_software_cursor_frame(
+    sequence: &SoftwareCursorSequence,
+) -> Option<&SoftwareCursorFrame> {
+    software_cursor_frame_for(CursorId::Default, sequence)
 }
 
 fn cursor_animation_start() -> &'static Instant {
@@ -743,7 +965,10 @@ pub(crate) fn super_weapon_cursor_id(action: &str) -> Option<CursorId> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capability_cursor_for_hover, super_weapon_cursor_id};
+    use super::{
+        ActionDistanceTarget, CellAction, capability_cursor_for_hover, select_best_for_action,
+        super_weapon_cursor_id, what_action_on_cell,
+    };
     use crate::app_entity_pick::HoverTargetKindWithId;
     use crate::app_types::{CursorFeedbackKind, CursorId, HoverTargetKind};
     use crate::rules::ini_parser::IniFile;
@@ -818,7 +1043,14 @@ mod tests {
         };
 
         // 6. Call the same function the live cursor pipeline calls.
-        let result = capability_cursor_for_hover(&sim, &[seal_id], &hover, Some(&rules), None);
+        let result = capability_cursor_for_hover(
+            &sim,
+            &[seal_id],
+            Some(seal_id),
+            &hover,
+            Some(&rules),
+            None,
+        );
 
         // 7. Dump the gate inputs so we can see which condition fails
         //    if the assertion below trips.
@@ -866,7 +1098,14 @@ mod tests {
             stable_id: refinery_id,
         };
 
-        let result = capability_cursor_for_hover(&sim, &[miner_id], &hover, Some(&rules), None);
+        let result = capability_cursor_for_hover(
+            &sim,
+            &[miner_id],
+            Some(miner_id),
+            &hover,
+            Some(&rules),
+            None,
+        );
         assert_eq!(
             result,
             CursorFeedbackKind::Enter,
@@ -922,5 +1161,274 @@ mod tests {
         assert_eq!(super_weapon_cursor_id("IonCannon"), None);
         assert_eq!(super_weapon_cursor_id(""), None);
         assert_eq!(super_weapon_cursor_id("BogusAction"), None);
+    }
+
+    /// Rules for the cell-action and best-object contracts: one plain armed
+    /// tank, one unarmed truck, one unit armed only through `Secondary=`.
+    fn cell_action_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=MTNK\n\
+             1=TRUCKA\n\
+             2=SREF\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [MTNK]\n\
+             Strength=300\n\
+             Primary=105mm\n\
+             [TRUCKA]\n\
+             Strength=150\n\
+             [SREF]\n\
+             Strength=200\n\
+             Secondary=105mm\n\
+             [WeaponTypes]\n\
+             0=105mm\n\
+             [105mm]\n\
+             Damage=60\n\
+             Range=5\n",
+        );
+        RuleSet::from_ini(&ini).expect("cell action rules")
+    }
+
+    fn sim_with_tank() -> (Simulation, RuleSet, u64) {
+        let mut rules = cell_action_rules();
+        let mut sim = Simulation::new();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        let tank = sim
+            .spawn_object("MTNK", "Americans", 2, 2, 0, &rules, &height_map)
+            .expect("tank spawned");
+        (sim, rules, tank)
+    }
+
+    /// gamemd answers action 2 (no-move) for a cell its occupancy probe rejects,
+    /// so the barred cursor appears before the click — the move cursor is not a
+    /// constant over empty ground.
+    #[test]
+    fn blocked_cell_resolves_to_no_move() {
+        use crate::app_context_order::OrderModifier;
+        use crate::sim::pathfinding::PathGrid;
+
+        let (sim, _rules, tank) = sim_with_tank();
+        let mut grid = PathGrid::new(8, 8);
+        grid.set_blocked(6, 6, true);
+
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (4, 4), Some(&grid), OrderModifier::Normal),
+            CellAction::Move,
+            "an open cell inside the playfield answers move",
+        );
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (6, 6), Some(&grid), OrderModifier::Normal),
+            CellAction::NoMove,
+            "a blocked cell answers no-move",
+        );
+    }
+
+    /// Outside the playfield the ladder answers no-move before it looks at the
+    /// cell at all.
+    #[test]
+    fn cell_outside_the_playfield_resolves_to_no_move() {
+        use crate::app_context_order::OrderModifier;
+        use crate::sim::pathfinding::PathGrid;
+
+        let (sim, _rules, tank) = sim_with_tank();
+        let grid = PathGrid::new(8, 8);
+
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (8, 3), Some(&grid), OrderModifier::Normal),
+            CellAction::NoMove,
+        );
+    }
+
+    /// gamemd returns action 1 on Shift and on Alt *before* running the
+    /// occupancy probe, so both show the move cursor even over a blocked cell.
+    #[test]
+    fn shift_and_alt_skip_the_occupancy_probe() {
+        use crate::app_context_order::OrderModifier;
+        use crate::sim::pathfinding::PathGrid;
+
+        let (sim, _rules, tank) = sim_with_tank();
+        let mut grid = PathGrid::new(8, 8);
+        grid.set_blocked(6, 6, true);
+
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (6, 6), Some(&grid), OrderModifier::Queue),
+            CellAction::Move,
+        );
+        assert_eq!(
+            what_action_on_cell(
+                &sim,
+                Some(tank),
+                (6, 6),
+                Some(&grid),
+                OrderModifier::ForceMove
+            ),
+            CellAction::Move,
+        );
+    }
+
+    /// The engine's weapon test queries every weapon slot, so a `Secondary=`-only
+    /// unit reaches the armed tier and outranks an unarmed one regardless of
+    /// which is closer.
+    #[test]
+    fn secondary_only_unit_outranks_a_closer_unarmed_unit() {
+        let mut rules = cell_action_rules();
+        let mut sim = Simulation::new();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+        let truck = sim
+            .spawn_object("TRUCKA", "Americans", 9, 10, 0, &rules, &height_map)
+            .expect("unarmed truck");
+        let arty = sim
+            .spawn_object("SREF", "Americans", 2, 2, 0, &rules, &height_map)
+            .expect("secondary-only unit");
+
+        let best = select_best_for_action(
+            &sim,
+            &[truck, arty],
+            ActionDistanceTarget::CellCentre(10, 10),
+            Some(&rules),
+        );
+        assert_eq!(
+            best,
+            Some(arty),
+            "the armed tier wins even from much farther away",
+        );
+    }
+
+    /// Ties inside one tier break on 3-D lepton distance to the *cell centre*.
+    /// Both candidates sit in cells the same number of cell indices away, so a
+    /// cell-index tie-break cannot separate them; the sub-cell offset can.
+    #[test]
+    fn tie_break_uses_lepton_distance_to_the_cell_centre() {
+        let mut rules = cell_action_rules();
+        let mut sim = Simulation::new();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+        let near = sim
+            .spawn_object("MTNK", "Americans", 8, 10, 0, &rules, &height_map)
+            .expect("near tank");
+        let far = sim
+            .spawn_object("MTNK", "Americans", 12, 10, 0, &rules, &height_map)
+            .expect("far tank");
+        // Nudge the far tank's sub-cell offset toward the target so that both
+        // sit two cell indices away but the far one is closer in leptons.
+        if let Some(e) = sim.entities_mut().get_mut(far) {
+            e.position.sub_x = crate::util::fixed_math::SimFixed::from_num(-120);
+        }
+
+        let best = select_best_for_action(
+            &sim,
+            &[near, far],
+            ActionDistanceTarget::CellCentre(10, 10),
+            Some(&rules),
+        );
+        assert_eq!(
+            best,
+            Some(far),
+            "sub-cell position decides the tie, not the cell index",
+        );
+    }
+}
+
+#[cfg(test)]
+mod cursor_animation_tests {
+    use super::CursorAnimation;
+    use crate::app_types::{CursorFeedbackKind, CursorId};
+
+    /// Retail interval for every animated cursor row: rate 4 x 16 ms.
+    const INTERVAL_MS: u64 = 64;
+
+    /// The first look at a cursor starts it at frame 0 and anchors the timer
+    /// there, instead of sampling a process-wide clock.
+    #[test]
+    fn a_new_cursor_shape_starts_at_frame_zero() {
+        let mut anim = CursorAnimation::new();
+        assert_eq!(anim.advance(CursorId::Move, 10, INTERVAL_MS, 5_000), 0);
+    }
+
+    /// One frame per elapsed interval, and exactly one — a long stall does not
+    /// skip ahead.
+    #[test]
+    fn animation_advances_one_frame_per_interval_and_never_skips() {
+        let mut anim = CursorAnimation::new();
+        anim.advance(CursorId::Move, 10, INTERVAL_MS, 0);
+        assert_eq!(anim.advance(CursorId::Move, 10, INTERVAL_MS, 63), 0);
+        assert_eq!(anim.advance(CursorId::Move, 10, INTERVAL_MS, 64), 1);
+        // A 1-second stall still yields a single step.
+        assert_eq!(anim.advance(CursorId::Move, 10, INTERVAL_MS, 1_064), 2);
+    }
+
+    #[test]
+    fn animation_wraps_at_the_end_of_the_sequence() {
+        let mut anim = CursorAnimation::new();
+        anim.advance(CursorId::Attack, 5, INTERVAL_MS, 0);
+        for step in 1..=4 {
+            assert_eq!(
+                anim.advance(CursorId::Attack, 5, INTERVAL_MS, step * INTERVAL_MS),
+                step as usize
+            );
+        }
+        assert_eq!(
+            anim.advance(CursorId::Attack, 5, INTERVAL_MS, 5 * INTERVAL_MS),
+            0
+        );
+    }
+
+    /// The clause a process-global phase cannot express: switching cursor
+    /// restarts the new sequence at frame 0 rather than dropping into whatever
+    /// phase the shared clock happened to be in.
+    #[test]
+    fn changing_cursor_restarts_the_sequence() {
+        let mut anim = CursorAnimation::new();
+        anim.advance(CursorId::Move, 10, INTERVAL_MS, 0);
+        assert_eq!(
+            anim.advance(CursorId::Move, 10, INTERVAL_MS, 3 * INTERVAL_MS),
+            1
+        );
+        assert_eq!(
+            anim.advance(CursorId::Attack, 5, INTERVAL_MS, 3 * INTERVAL_MS),
+            0
+        );
+        // And going back restarts again rather than resuming.
+        assert_eq!(
+            anim.advance(CursorId::Move, 10, INTERVAL_MS, 3 * INTERVAL_MS),
+            0
+        );
+    }
+
+    /// A rate-0 row is static however much time passes.
+    #[test]
+    fn static_rows_never_advance() {
+        let mut anim = CursorAnimation::new();
+        anim.advance(CursorId::IronCurtain, 5, 0, 0);
+        assert_eq!(anim.advance(CursorId::IronCurtain, 5, 0, 10_000), 0);
+    }
+
+    /// Guard mode shows the guard-area reticle, not the select cursor.
+    #[test]
+    fn guard_feedback_maps_to_the_guard_area_reticle() {
+        assert_eq!(
+            super::cursor_id_for_feedback(CursorFeedbackKind::Guard),
+            Some(CursorId::GuardArea)
+        );
+    }
+
+    /// Harvest shares cursor row 21 with an out-of-range attack, and is not the
+    /// attack-move reticle VERA used to show.
+    #[test]
+    fn harvest_feedback_maps_to_cursor_row_twenty_one() {
+        assert_eq!(
+            super::cursor_id_for_feedback(CursorFeedbackKind::Harvest),
+            Some(CursorId::AttackOutOfRange)
+        );
+        assert_ne!(
+            super::cursor_id_for_feedback(CursorFeedbackKind::Harvest),
+            Some(CursorId::AttackMove)
+        );
     }
 }

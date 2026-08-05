@@ -2291,10 +2291,13 @@ fn mission_base_frames_reads_rate_table_stock_identical() {
     // Sanity: the table also carries Guard's distinct 27/14 Rate/AARate split.
     assert_eq!(rules.mission_control.rate_frames(MissionType::Guard), 27);
 
-    // Keyless mission (no [Stop] section) → table is 0 → mission_base_frames
-    // returns the passed fallback constant.
-    assert_eq!(rules.mission_control.rate_frames(MissionType::Stop), 0);
-    assert_eq!(mission_base_frames(&rules, MissionType::Stop, 14), 14);
+    // Keyless mission (no [Stop] section) → the slot keeps its constructed
+    // 0.016-minute rate, i.e. 14 frames. It is NOT zero, so the zero-sentinel
+    // fallback branch in `mission_base_frames` is unreachable for a table
+    // parsed from any INI (recorded: that fallback is a VERA-internal gate the
+    // original does not have).
+    assert_eq!(rules.mission_control.rate_frames(MissionType::Stop), 14);
+    assert_eq!(mission_base_frames(&rules, MissionType::Stop, 99), 14);
 }
 
 /// When the per-unit `ChronoInSound=` / `ChronoOutSound=` are absent, the
@@ -7776,4 +7779,125 @@ fn coordinate_runtime_trace_miner_arrival_and_extraction_four_directions() {
             "{label}: miner never extracted the target ore"
         );
     }
+}
+
+// ===== Stop must actually stop a miner =====
+
+/// The retail IDLE event handler ends with, for a vehicle carrying the ore-miner
+/// type flag whose committed mission is Harvest or Return:
+/// `Queue_Mission(Guard, 0); Commence();`. The miner is off the harvest loop the
+/// same tick and stays off until it is re-ordered.
+///
+/// Before this landed, `Command::Stop` committed mission 13 while the harvest
+/// dispatch ignored the mission entirely, so the miner stalled for a beat and
+/// then drove straight back to the ore field.
+#[test]
+fn stop_commits_guard_and_takes_a_harvesting_miner_off_the_loop() {
+    use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let rules = miner_rules();
+    let mut sim = Simulation::new();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
+    // Test entities are inserted straight into the store, which leaves the
+    // native in-limbo byte set; the order-admission gate refuses a limboed
+    // actor outright.
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner present")
+        .lifecycle
+        .in_limbo = false;
+    sim.mission_assign_exact(miner_id, MissionId::from_known(MissionType::Harvest), 0)
+        .expect("miner exists");
+    let owner = sim.interner.get("Americans").expect("owner interned");
+
+    let before = sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .expect("miner present")
+        .miner_state();
+
+    let stop = CommandEnvelope::new(
+        owner,
+        1,
+        Command::Stop {
+            entity_id: miner_id,
+        },
+    );
+    let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let _ = sim.advance_tick(&[stop], Some(&rules), &heights, None, None, 33);
+
+    let miner = sim.substrate.entities.get(miner_id).expect("miner present");
+    assert_eq!(
+        miner.mission.current().known(),
+        Some(MissionType::Guard),
+        "Stop force-assigns Guard to a miner that was on Harvest"
+    );
+    assert_eq!(miner.mission.queued(), MissionId::NONE);
+    assert!(miner.movement_target.is_none());
+
+    // And the harvest handler must decline it from here on, so the FSM cursor
+    // stops advancing.
+    let after_stop = miner.miner_state();
+    for tick in 2..40u64 {
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, tick as u32);
+    }
+    let miner = sim.substrate.entities.get(miner_id).expect("miner present");
+    assert_eq!(
+        miner.miner_state(),
+        after_stop,
+        "the harvest FSM must not advance once Stop has committed Guard \
+         (was {before:?} before the order)"
+    );
+    assert_eq!(miner.mission.current().known(), Some(MissionType::Guard));
+}
+
+/// The mission write is the miner arm ONLY. Retail's Stop leaves every other
+/// object's committed mission untouched; VERA still commits mission 13 there
+/// (a recorded drift), but it must never write Guard.
+#[test]
+fn stop_does_not_force_guard_on_a_non_miner() {
+    use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::mission::{MissionId, MissionType};
+
+    let rules = miner_rules();
+    let mut sim = Simulation::new();
+    let owner_id = sim.interner.intern("Americans");
+    let type_id = sim.interner.intern("HARV");
+    let mut tank = GameEntity::new_at_frame_zero_for_test(
+        7,
+        10,
+        10,
+        0,
+        0,
+        owner_id,
+        Health {
+            current: 300,
+            max: 300,
+        },
+        type_id,
+        EntityCategory::Unit,
+        0,
+        5,
+        true,
+    );
+    tank.miner = None;
+    tank.lifecycle.in_limbo = false;
+    sim.substrate.entities.insert(tank);
+    sim.substrate.next_stable_object_id = 8;
+    sim.mission_assign_exact(7, MissionId::from_known(MissionType::Move), 0)
+        .expect("tank exists");
+
+    let stop = CommandEnvelope::new(owner_id, 1, Command::Stop { entity_id: 7 });
+    let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let _ = sim.advance_tick(&[stop], Some(&rules), &heights, None, None, 33);
+
+    let tank = sim.substrate.entities.get(7).expect("tank present");
+    assert_ne!(
+        tank.mission.current().known(),
+        Some(MissionType::Guard),
+        "the Guard force-assign is the ore-miner arm only"
+    );
 }

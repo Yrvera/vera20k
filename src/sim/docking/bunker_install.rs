@@ -265,6 +265,11 @@ fn shove_footprint_blockers(
             &sim.substrate.occupancy,
             MovementLayer::Ground,
             &mut sim.scenario_rng,
+            // No rules handle on this path; an absent table resolves to the
+            // constructed `Scatter=yes` default, matching an unread slot.
+            None,
+            // Same absent-rules resolution for `Fraidycat=` (ctor default no).
+            false,
         );
     }
 }

@@ -706,23 +706,15 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
         movement.slowdown_distance,
         SimFixed::from_num(harv.slowdown_distance),
     );
-    // Handler dispatch precedes Phase-1 movement, so the issuing tick already
-    // ran the drive's first acceleration step.
-    assert_eq!(drive.current_speed_fraction, harv.accel_factor);
-
-    advance(&mut sim, &oracle, &grid);
-    let entity = sim.substrate.entities.get(entity_id).expect("HARV");
-    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
-    let movement = entity.movement_target.as_ref().expect("movement target");
-    assert_eq!(
-        drive.current_speed_fraction,
-        harv.accel_factor + harv.accel_factor
+    // The exact-facing precondition holds the hull on the spot until it reaches
+    // the first path node's octant, and a frame spent rotating carries no speed
+    // ramp — so the issuing tick leaves the drive fraction at zero and the ramp
+    // only starts once the turn has finished.
+    assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+    assert!(
+        entity.facing_target.is_some(),
+        "the hull is commanded onto the head path node's octant first"
     );
-    assert_eq!(
-        movement.current_speed,
-        movement.speed * (harv.accel_factor + harv.accel_factor),
-    );
-    assert!(movement.current_speed > SIM_ZERO);
 
     let mut departed = position_tuple(&sim, entity_id) != start;
     for _ in 0..96 {
@@ -733,6 +725,19 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
         departed = position_tuple(&sim, entity_id) != start;
     }
     assert!(departed, "stock HARV must physically leave {start:?}");
+
+    let entity = sim.substrate.entities.get(entity_id).expect("HARV");
+    let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
+    let movement = entity.movement_target.as_ref().expect("movement target");
+    assert!(
+        drive.current_speed_fraction >= harv.accel_factor,
+        "the rules accel profile ramps once the hull is under way"
+    );
+    assert_eq!(
+        movement.current_speed,
+        movement.speed * drive.current_speed_fraction,
+    );
+    assert!(movement.current_speed > SIM_ZERO);
 }
 
 #[test]

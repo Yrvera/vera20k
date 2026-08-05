@@ -253,6 +253,100 @@ pub(crate) fn compute_click_selection_snapshot(
     Some(out)
 }
 
+/// Did the band box catch anything at all?
+///
+/// gamemd asks this before it clears the selection, and the question is far
+/// looser than "which objects join the selection": it walks the drawn-object
+/// list and accepts any live object inside the rectangle — no owner filter, no
+/// `Selectable=`, no limbo or docked test. A rectangle holding nothing but enemy
+/// units, or a single building, still counts as caught and still replaces the
+/// selection. A rectangle holding nothing at all leaves the selection untouched
+/// and the release falls through to the ordinary click/action path.
+///
+/// Limbo is the one exclusion, and it is a registration property rather than a
+/// filter: an object without map presence is never in the drawn-object list, so
+/// a passenger inside a transport cannot make a rectangle "non-empty".
+///
+/// The list is **partly** visibility-filtered, and the asymmetry is native:
+/// mobile objects append themselves from inside their own draw routine, so an
+/// object the shroud hides is never registered, while buildings are appended in
+/// bulk from the whole building array with no visibility test at all. A building
+/// under unexplored shroud therefore does make a rectangle non-empty, and an
+/// enemy unit under it does not.
+///
+/// The registration helper has exactly four call sites, and every one of them is
+/// the same virtual — the per-class "draw extras" override — reached once from
+/// the vehicle version, twice from the infantry version (its two draw paths) and
+/// once from the aircraft version. Nothing outside a draw routine registers an
+/// object, so the shroud filter above is complete: there is no second, unfiltered
+/// path by which a hidden enemy could enter the list.
+pub(crate) fn band_rect_contains_drawn_object(
+    entities: &EntityStore,
+    fog: Option<&FogState>,
+    local_owner: Option<&str>,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+    interner: Option<&crate::sim::intern::StringInterner>,
+) -> bool {
+    let local_owner_id = local_owner.and_then(|o| interner.and_then(|i| i.get(o)));
+    entities.values().any(|entity| {
+        if !entity.lifecycle.object_alive || entity.lifecycle.in_limbo {
+            return false;
+        }
+        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
+        if !(sx >= min_x && sx <= max_x && sy >= min_y && sy <= max_y) {
+            return false;
+        }
+        if entity.category == EntityCategory::Structure {
+            // Bulk-registered, shroud or no shroud.
+            return true;
+        }
+        let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
+        is_drawn_for_local_owner(fog, local_owner, owner_str, entity, local_owner_id)
+    })
+}
+
+/// Would the local player see this object drawn right now?
+///
+/// Deliberately distinct from the eligibility gate's visibility tail: with no
+/// fog state at all (the sandbox full-visibility switch) everything is drawn,
+/// where the eligibility gate falls back to an owner test.
+fn is_drawn_for_local_owner(
+    fog: Option<&FogState>,
+    local_owner: Option<&str>,
+    entity_owner: &str,
+    entity: &crate::sim::game_entity::GameEntity,
+    local_owner_id: Option<InternedId>,
+) -> bool {
+    let Some(local_owner) = local_owner else {
+        return true;
+    };
+    let Some(fog) = fog else {
+        // Sandbox full visibility: everything is drawn.
+        return true;
+    };
+    if fog.is_friendly(local_owner, entity_owner) {
+        return true;
+    }
+    let owner_id = local_owner_id.unwrap_or_default();
+    let pos = &entity.position;
+    fog.is_cell_revealed(owner_id, pos.rx, pos.ry)
+        && !fog.is_cell_gap_covered(owner_id, pos.rx, pos.ry)
+}
+
+/// Resolve a band-box release into the selection snapshot to commit.
+///
+/// Three outcomes, matching the native release:
+/// * `None` — the rectangle caught no drawn object (or a shift-drag added
+///   nothing). The selection is left exactly as it was.
+/// * `Some(list)` — the rectangle caught something. A plain drag replaces the
+///   selection with the eligible members; a shift drag **adds** them.
+///
+/// A rectangle that caught something but nothing eligible — a box over an enemy
+/// patrol, say — returns an empty list, because the native clear runs before the
+/// per-object filter does.
 pub(crate) fn compute_box_selection_snapshot(
     entities: &EntityStore,
     fog: Option<&FogState>,
@@ -266,6 +360,18 @@ pub(crate) fn compute_box_selection_snapshot(
     houses: Option<&HouseStates>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<Vec<u64>> {
+    if !band_rect_contains_drawn_object(
+        entities,
+        fog,
+        local_owner,
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+        interner,
+    ) {
+        return None;
+    }
     let current: Vec<u64> = selected_stable_ids_sorted_from_store(entities);
     let candidates = entities_in_rect(
         entities,
@@ -279,31 +385,26 @@ pub(crate) fn compute_box_selection_snapshot(
         houses,
         interner,
     );
-    if candidates.is_empty() && additive {
-        return None;
-    }
-    let mut out = if additive {
-        current.clone()
-    } else {
-        Vec::new()
-    };
-    let mut changed = false;
     if additive {
+        // The native band callback only ever calls Select — there is no Deselect
+        // anywhere on this path, and the shift branch merely skips the clear. So
+        // a shift drag across units already in the group keeps them.
+        let mut out = current;
+        let mut added = false;
         for sid in candidates {
-            if let Some(idx) = out.iter().position(|v| *v == sid) {
-                out.remove(idx);
-                changed = true;
-            } else {
+            if !out.contains(&sid) {
                 out.push(sid);
-                changed = true;
+                added = true;
             }
         }
-        if !changed {
+        if !added {
             return None;
         }
-    } else {
-        out.extend(candidates);
+        out.sort_unstable();
+        out.dedup();
+        return Some(out);
     }
+    let mut out = candidates;
     out.sort_unstable();
     out.dedup();
     Some(out)
@@ -336,6 +437,12 @@ fn entities_in_rect(
     entities
         .values()
         .filter_map(|entity| {
+            // Rectangle first, the way the native walk does it: the per-object
+            // filter only runs for objects the box actually covers.
+            let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
+            if !(sx >= min_x && sx <= max_x && sy >= min_y && sy <= max_y) {
+                return None;
+            }
             let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
             let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
             if !is_selectable_entity(
@@ -354,10 +461,111 @@ fn entities_in_rect(
             if entity.category == EntityCategory::Structure {
                 return None;
             }
-            let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
-            (sx >= min_x && sx <= max_x && sy >= min_y && sy <= max_y).then_some(entity.stable_id)
+            if !can_be_selected_now(entity, entities, rules, interner) {
+                return None;
+            }
+            Some(entity.stable_id)
         })
         .collect()
+}
+
+/// The band-box-only half of the eligibility chain.
+///
+/// A single click reaches an object through a shorter chain than a band box
+/// does: only the band path asks `CanBeSelectedNow`, which refuses an object
+/// that is enslaved, mid-way through a deploy transition, linked into a bunker,
+/// or radio-docked on a building. The docked clause is the one players feel — it
+/// keeps the miner unloading on the refinery pad out of a box dragged across the
+/// base, while a direct click on that same miner still selects it.
+///
+/// The radio-dock clause is a **pair** of tests, and both halves matter: the
+/// dock flag alone is not enough, the object also has to be standing on a
+/// building. That second half is what keeps the rule narrow — the same flag is
+/// raised on a vehicle leaving a war factory, and such a vehicle stops being
+/// refused the moment it drives clear of the factory footprint, exactly as the
+/// native cell lookup behaves.
+///
+/// Two native clauses are approximated rather than reproduced, because VERA has
+/// no matching state:
+/// * The native enslaved test reads a slave-owner pointer that every slave
+///   carries. VERA's nearest state is the slave-harvester component, which only
+///   the Slave Miner's slaves own; a mind-controlled unit is a different field
+///   in the original and is deliberately not tested here.
+/// * The native bunker test reads one link field. VERA splits the link into an
+///   approach marker and an installed link, and only the installed link is
+///   treated as linked.
+fn can_be_selected_now(
+    entity: &crate::sim::game_entity::GameEntity,
+    entities: &EntityStore,
+    rules: Option<&RuleSet>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+) -> bool {
+    use crate::sim::deploy::DeployPhase;
+    if entity.slave_harvester.is_some() {
+        return false;
+    }
+    if matches!(
+        entity.deploy_state,
+        Some(DeployPhase::Deploying { .. } | DeployPhase::Undeploying { .. })
+    ) {
+        return false;
+    }
+    if entity.bunker_link.installed_in().is_some() {
+        return false;
+    }
+    if entity.dock_entered_with.is_some()
+        && building_covers_cell(
+            entities,
+            rules,
+            interner,
+            entity.position.rx,
+            entity.position.ry,
+        )
+    {
+        return false;
+    }
+    true
+}
+
+/// Does a building's footprint cover this cell? The native lookup asks the cell
+/// itself; VERA has no cell→occupier index on this path, so the building list is
+/// walked instead. It only runs for an object that already carries the dock
+/// flag, which is a handful of objects in a normal match.
+///
+/// A destroyed building is skipped as well as a limboed one: the native cell
+/// occupier is cleared the moment the building leaves the map, so a dead
+/// refinery must not keep the miner standing on its pad out of a band box.
+///
+/// The footprint is treated as the plain `Foundation=` rectangle. `Foundation=`
+/// is not free-form — it resolves through a fixed table — and every value that
+/// appears in stock `artmd.ini` is a plain `WxH` name, so the rectangle covers
+/// stock play. The table also carries named entries the stock art never selects
+/// (`3x3Refinery`); whether their native occupancy is the full rectangle is
+/// UNCHECKED, so a mod that selects one is the residual here, not stock YR.
+fn building_covers_cell(
+    entities: &EntityStore,
+    rules: Option<&RuleSet>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+    rx: u16,
+    ry: u16,
+) -> bool {
+    entities.values().any(|candidate| {
+        if candidate.category != EntityCategory::Structure
+            || candidate.lifecycle.in_limbo
+            || !candidate.lifecycle.object_alive
+        {
+            return false;
+        }
+        let type_str = interner.map_or("", |i| i.resolve(candidate.type_ref));
+        let foundation = rules
+            .and_then(|r| r.object(type_str))
+            .map(|o| o.foundation.as_str())
+            .unwrap_or("1x1");
+        let (fw, fh) = crate::rules::foundation::foundation_dimensions(foundation);
+        let brx = candidate.position.rx;
+        let bry = candidate.position.ry;
+        rx >= brx && rx < brx.saturating_add(fw) && ry >= bry && ry < bry.saturating_add(fh)
+    })
 }
 
 /// Check if a world-space click point falls on a building's foundation cells.
@@ -511,4 +719,78 @@ fn is_selectable_entity(
     let owner_id = local_owner_id.unwrap_or_default();
     fog.is_cell_revealed(owner_id, pos.rx, pos.ry)
         && !fog.is_cell_gap_covered(owner_id, pos.rx, pos.ry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::intern::StringInterner;
+
+    fn store_with_structure(alive: bool, in_limbo: bool) -> (EntityStore, StringInterner) {
+        let mut interner = StringInterner::new();
+        let owner = interner.intern("Americans");
+        let type_ref = interner.intern("NAREFN");
+        let mut entities = EntityStore::new();
+        let mut building = GameEntity::new_at_frame_zero_for_test(
+            1,
+            10,
+            10,
+            0,
+            0,
+            owner,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        building.lifecycle.object_alive = alive;
+        building.lifecycle.in_limbo = in_limbo;
+        entities.insert(building);
+        (entities, interner)
+    }
+
+    /// A dead building no longer occupies its cell.
+    ///
+    /// The native own-cell lookup answers with whatever currently occupies the
+    /// cell, and a destroyed building has already been taken off the map — so a
+    /// miner left standing where a refinery used to be must be band-selectable
+    /// again, exactly as it is when it drives clear of a live one.
+    #[test]
+    fn destroyed_and_limboed_buildings_stop_covering_their_cell() {
+        let (entities, interner) = store_with_structure(true, false);
+        assert!(building_covers_cell(
+            &entities,
+            None,
+            Some(&interner),
+            10,
+            10
+        ));
+        // A cell outside the footprint is never covered.
+        assert!(!building_covers_cell(
+            &entities,
+            None,
+            Some(&interner),
+            11,
+            10
+        ));
+
+        let (dead, interner) = store_with_structure(false, false);
+        assert!(!building_covers_cell(&dead, None, Some(&interner), 10, 10));
+
+        let (limboed, interner) = store_with_structure(true, true);
+        assert!(!building_covers_cell(
+            &limboed,
+            None,
+            Some(&interner),
+            10,
+            10
+        ));
+    }
 }

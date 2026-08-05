@@ -232,51 +232,56 @@ struct CellOccupationFootprint {
     layer: MovementLayer,
 }
 
-/// Reverse lookup for one Unit's at-most-current/head occupation marks.
+/// Reverse lookup for one Unit's at-most-current/handoff/head occupation marks.
 ///
 /// Native storage is one ORed bit per owner and plane, not a reference count:
-/// coincident current/head roles therefore occupy one slot here as well.
-#[derive(Debug, Clone, Copy, Default)]
+/// coincident roles therefore occupy one slot here as well.
+///
+/// A turning Drive curve transiently holds three distinct cells: the one its
+/// body still stands in, the RawTrack handoff cell it is about to pass through,
+/// and the head cell it comes to rest on. `Apply_Track_Occupation_Mode` marks
+/// the handoff coordinate and then the head coordinate on modes 1 and 3, and the
+/// mover's own cell mark is only dropped once a track point has been paid.
+///
+/// The store is a plain insertion-ordered list rather than a fixed bound. The
+/// original has NO per-owner reverse index at all — its cell mask is one ORed
+/// bit per cell, and the owner side is not tracked — so a bound here would be a
+/// VERA-internal invariant with nothing behind it, and overrunning it must not
+/// take the player's game down. Three is what every current path produces; the
+/// list simply records what was marked, so a fourth mark is released correctly
+/// instead of being asserted away.
+#[derive(Debug, Clone, Default)]
 struct OwnerOccupationFootprints {
-    first: Option<CellOccupationFootprint>,
-    second: Option<CellOccupationFootprint>,
+    marks: Vec<CellOccupationFootprint>,
 }
 
 impl OwnerOccupationFootprints {
     fn insert(&mut self, footprint: CellOccupationFootprint) {
-        if self.first == Some(footprint) || self.second == Some(footprint) {
+        // Native storage is one ORed bit per owner and plane, not a reference
+        // count: coincident roles collapse onto one entry here as well.
+        if self.marks.contains(&footprint) {
             return;
         }
-        if self.first.is_none() {
-            self.first = Some(footprint);
-            return;
-        }
-        if self.second.is_none() {
-            self.second = Some(footprint);
-            return;
-        }
-        panic!("CellOccupationGrid owner exceeded current/head footprint bound");
+        self.marks.push(footprint);
     }
 
     fn remove(&mut self, footprint: CellOccupationFootprint) {
-        if self.first == Some(footprint) {
-            self.first = self.second.take();
-        } else if self.second == Some(footprint) {
-            self.second = None;
+        if let Some(index) = self.marks.iter().position(|mark| *mark == footprint) {
+            self.marks.remove(index);
         }
     }
 
-    fn iter(self) -> impl Iterator<Item = CellOccupationFootprint> {
-        [self.first, self.second].into_iter().flatten()
+    fn iter(&self) -> impl Iterator<Item = CellOccupationFootprint> + '_ {
+        self.marks.iter().copied()
     }
 
     fn is_empty(&self) -> bool {
-        self.first.is_none() && self.second.is_none()
+        self.marks.is_empty()
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        usize::from(self.first.is_some()) + usize::from(self.second.is_some())
+        self.marks.len()
     }
 }
 
@@ -318,10 +323,12 @@ impl CellOccupationGrid {
                     layer,
                 );
             }
-            if let Some(mark) = entity
+            for mark in entity
                 .drive_locomotion
                 .as_ref()
-                .and_then(|drive| drive.occupation_head_to)
+                .into_iter()
+                .flat_map(|drive| [drive.occupation_handoff, drive.occupation_head_to])
+                .flatten()
             {
                 grid.mark_vehicle_on_layer(mark.rx, mark.ry, entity.stable_id, mark.layer);
             }
@@ -338,11 +345,7 @@ impl CellOccupationGrid {
         let old_footprints = self
             .footprints_by_owner
             .get_mut(&entity.stable_id)
-            .map(|footprints| {
-                let old = *footprints;
-                *footprints = OwnerOccupationFootprints::default();
-                old
-            })
+            .map(std::mem::take)
             .unwrap_or_default();
         for footprint in old_footprints.iter() {
             self.clear_vehicle_plane(footprint, entity.stable_id);
@@ -367,12 +370,14 @@ impl CellOccupationGrid {
                 layer,
             );
         }
-        if let Some(head) = entity
+        for mark in entity
             .drive_locomotion
             .as_ref()
-            .and_then(|drive| drive.occupation_head_to)
+            .into_iter()
+            .flat_map(|drive| [drive.occupation_handoff, drive.occupation_head_to])
+            .flatten()
         {
-            self.mark_vehicle_on_layer(head.rx, head.ry, entity.stable_id, head.layer);
+            self.mark_vehicle_on_layer(mark.rx, mark.ry, entity.stable_id, mark.layer);
         }
         if self
             .footprints_by_owner
@@ -546,6 +551,76 @@ pub(crate) fn replace_drive_head_to_occupation(
     drive.occupation_head_to = Some(next);
 }
 
+/// Install (or drop) the forward RawTrack handoff mark that accompanies a Drive
+/// curve's head mark.
+///
+/// `Apply_Track_Occupation_Mode` applies the caller's mode to the handoff
+/// coordinate first and to the head coordinate second, so the two marks are
+/// installed and released together.
+///
+/// Two recorded differences from the original, neither of them a "held for the
+/// whole curve" guarantee — an earlier revision of this comment claimed one, and
+/// the code does not provide it:
+///
+/// 1. VERA does not release the handoff the moment the point cursor passes the
+///    handoff index the way the original's cursor guard does. It releases at
+///    curve end (or at replacement).
+/// 2. The cell plane stores one entry per owner with no per-role reference
+///    count, matching the original's single ORed bit. So once the mover is
+///    standing IN its own handoff cell, `clear_current_drive_occupation_for_paid_point`
+///    drops that owner's bit for the cell and the handoff role loses its claim
+///    with it, until the next tick's `reconcile_entity` re-marks from
+///    `drive.occupation_handoff`. The gap is deterministic and inside one tick,
+///    so it is not a desync — but the cell is genuinely unclaimed across it.
+///
+/// Both are UNCHECKED against the original's behaviour for a third mover
+/// arriving in that window.
+pub(crate) fn replace_drive_handoff_occupation(
+    drive: &mut DriveLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    current_cell: (u16, u16),
+    current_layer: MovementLayer,
+    next: Option<DriveOccupationFootprint>,
+) {
+    if let Some(old) = drive.occupation_handoff.take() {
+        let aliases_marked_current = (old.rx, old.ry, old.layer)
+            == (current_cell.0, current_cell.1, current_layer)
+            && !drive.current_occupation_cleared;
+        let aliases_head = drive.occupation_head_to == Some(old);
+        if !aliases_marked_current && !aliases_head {
+            occupation.clear_vehicle_on_layer(old.rx, old.ry, entity_id, old.layer);
+        }
+    }
+    if let Some(next) = next {
+        occupation.mark_vehicle_on_layer(next.rx, next.ry, entity_id, next.layer);
+        drive.occupation_handoff = Some(next);
+    }
+}
+
+/// Drop the handoff mark without touching the head mark. Used wherever the head
+/// mark's own lifecycle ends — completion, replacement by a new curve, a new
+/// order, or world removal. `Apply_Track_Occupation_Mode` mode 0 clears the
+/// handoff coordinate and the head coordinate together, so no site may release
+/// one and keep the other: a stranded handoff refuses every later mover entry to
+/// a cell nothing is in.
+pub(crate) fn drop_drive_handoff_occupation(
+    drive: &mut DriveLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    current_cell: (u16, u16),
+    current_layer: MovementLayer,
+) {
+    replace_drive_handoff_occupation(
+        drive,
+        occupation,
+        entity_id,
+        current_cell,
+        current_layer,
+        None,
+    );
+}
+
 /// Clear an obsolete head-to mark during accepted track replacement while
 /// preserving a coincident committed current-cell mark.
 pub(crate) fn clear_drive_head_to_occupation_for_replacement(
@@ -579,6 +654,43 @@ pub(crate) fn clear_current_drive_occupation_for_paid_point(
     drive.current_occupation_cleared = true;
 }
 
+/// A refused selection keeps the standing mover's claim on its own cell.
+///
+/// **VERA-internal, gamemd equivalent UNCHECKED.** The binary supports the
+/// INVARIANT — a refused mover still holds a cell — and not this mechanism. The
+/// Drive code-2 arm nulls the head-to coordinate with three direct stores
+/// (0x004B3607-0x004B3646) and never calls `Apply_Track_Occupation_Mode`, the
+/// only writer of the cell bit, so retail's refusal performs ONE operation:
+/// nothing. It never releases, so it never has to re-mark. This function does
+/// release-then-re-mark, which is load-bearing only because VERA's paid-point
+/// path clears the bit up front (`clear_current_drive_occupation_for_paid_point`
+/// above) where retail's does not clear it in the first place. Removing the
+/// early clear would remove the need for this; that is the right shape and it is
+/// not attempted here.
+///
+/// Without this, a mover whose previous curve had already paid a point holds NO
+/// bit at all once its head-to mark is dropped: its own cell reads as free to
+/// every other mover, and the next follower drives its hull straight into it.
+/// Measured on `repro_group_move_of_eight_vehicles_to_one_cell` against an
+/// INTERMEDIATE BUILD OF THIS CHANGE — two hulls 29 leptons apart for 28 ticks,
+/// on a cell whose occupation byte read `0x00` under a standing tank. That is
+/// evidence this change needs the restore for its own construction. It is NOT
+/// evidence about the shipped defect the player reported: the pre-change tree
+/// has no refusal path at all, so it could not reach this state by this route.
+pub(crate) fn restore_current_drive_occupation_after_refusal(
+    drive: &mut DriveLocomotionRuntime,
+    occupation: &mut CellOccupationGrid,
+    entity_id: u64,
+    current_cell: (u16, u16),
+    current_layer: MovementLayer,
+) {
+    if !drive.current_occupation_cleared {
+        return;
+    }
+    occupation.mark_vehicle_on_layer(current_cell.0, current_cell.1, entity_id, current_layer);
+    drive.current_occupation_cleared = false;
+}
+
 /// AddContent after an actual cell crossing re-marks the committed cell.
 pub(crate) fn mark_current_drive_occupation_after_crossing(
     drive: &mut DriveLocomotionRuntime,
@@ -600,6 +712,8 @@ pub(crate) fn finish_drive_head_to_occupation(
     current_cell: (u16, u16),
     current_layer: MovementLayer,
 ) {
+    // The curve is over, so its handoff claim goes with it.
+    drop_drive_handoff_occupation(drive, occupation, entity_id, current_cell, current_layer);
     let Some(head) = drive.occupation_head_to.take() else {
         return;
     };
@@ -618,8 +732,14 @@ pub(crate) fn clear_drive_head_to_occupation_for_remove(
     occupation: &mut CellOccupationGrid,
     entity_id: u64,
 ) {
-    if let Some(head) = drive.occupation_head_to.take() {
-        occupation.clear_vehicle_on_layer(head.rx, head.ry, entity_id, head.layer);
+    for mark in [
+        drive.occupation_handoff.take(),
+        drive.occupation_head_to.take(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        occupation.clear_vehicle_on_layer(mark.rx, mark.ry, entity_id, mark.layer);
     }
 }
 

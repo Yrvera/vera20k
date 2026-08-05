@@ -24,10 +24,16 @@ use crate::sim::world::Simulation;
 /// How long selected action lines remain visible after a command is issued.
 const DURATION_TICKS: u64 = 25;
 
-/// Attack target line - bright green (PALETTE.PAL index 8 approximation).
-const ATTACK_COLOR: [f32; 3] = [0.0, 1.0, 0.0];
-/// Move target line - lighter green (PALETTE.PAL index 3 approximation).
-const MOVE_COLOR: [f32; 3] = [0.33, 1.0, 0.33];
+/// One 6-bit VGA palette channel expanded to the 0..255 the renderer wants.
+/// PALETTE.PAL stores `0xA8` for the full-intensity band these two lines use.
+const PALETTE_CHANNEL_A8: f32 = 0xA8 as f32 / 255.0;
+
+/// Attack (archive-target) line — PALETTE.PAL index 8, `#A80000` dark red.
+/// The draw routine picks the palette index by branch: the archive-target arm
+/// takes 8 and returns without falling through to the movement arm.
+const ATTACK_COLOR: [f32; 3] = [PALETTE_CHANNEL_A8, 0.0, 0.0];
+/// Move (navigation-target) line — PALETTE.PAL index 3, `#00A800` medium green.
+const MOVE_COLOR: [f32; 3] = [0.0, PALETTE_CHANNEL_A8, 0.0];
 /// Depth: above debug overlays (0.0004), below selection brackets (0.0006).
 const LINE_DEPTH: f32 = 0.0005;
 const ENDPOINT_BOX_RADIUS: i32 = 1;
@@ -87,6 +93,17 @@ impl TargetLineState {
 
     pub(crate) fn unit_action_lines_enabled(&self) -> bool {
         self.unit_action_lines_enabled
+    }
+
+    /// Open the action-line window.
+    ///
+    /// The original's start-timer helper has four unconditional callers and
+    /// three of them are selection events — band-box release, click-select and
+    /// control-group recall — with order dispatch the fourth. So selecting a
+    /// group flashes what it is already doing; the lines are not an order-only
+    /// cue.
+    pub(crate) fn start_timer(&mut self, current_tick: u64) {
+        self.start_tick = Some(current_tick);
     }
 }
 
@@ -496,6 +513,27 @@ mod tests {
         let mut state = active_line_state_for_tick(100);
         state.set_unit_action_lines_enabled(false);
         assert!(!state.is_selected_action_active(101));
+    }
+
+    /// The two line colours are palette entries, not eyeballed greens: the
+    /// archive-target branch selects index 8 (`#A80000`) and the navigation
+    /// branch index 3 (`#00A800`). PALETTE.PAL byte value for both is 0xA8.
+    #[test]
+    fn action_line_colors_are_palette_entries_eight_and_three() {
+        let a8 = 168.0 / 255.0;
+        assert_eq!(ATTACK_COLOR, [a8, 0.0, 0.0]);
+        assert_eq!(MOVE_COLOR, [0.0, a8, 0.0]);
+    }
+
+    /// Selection alone opens the window — no command required.
+    #[test]
+    fn start_timer_opens_the_window_without_a_command() {
+        let mut state = TargetLineState::default();
+        assert!(!state.is_selected_action_active(100));
+        state.start_timer(100);
+        assert!(state.is_selected_action_active(100));
+        assert!(state.is_selected_action_active(124));
+        assert!(!state.is_selected_action_active(125));
     }
 
     #[test]

@@ -174,6 +174,7 @@ pub fn build_entity_block_sets(
             continue;
         }
         // Enemy units: soft-block with code 5 (cost 20x).
+        let blocker_is_infantry = entity.category == EntityCategory::Infantry;
         let entity_owner_str = interner.resolve(entity.owner);
         let is_friendly =
             crate::map::houses::are_houses_friendly(alliances, mover_owner, entity_owner_str);
@@ -184,6 +185,7 @@ pub fn build_entity_block_sets(
                 EntityBlockEntry {
                     next_cell: None,
                     cost_code: 5,
+                    blocker_is_infantry,
                 },
             );
             continue;
@@ -198,6 +200,7 @@ pub fn build_entity_block_sets(
                         EntityBlockEntry {
                             next_cell: Some(next_cell),
                             cost_code: 2,
+                            blocker_is_infantry,
                         },
                     );
                     continue;
@@ -211,6 +214,7 @@ pub fn build_entity_block_sets(
             EntityBlockEntry {
                 next_cell: None,
                 cost_code: 6,
+                blocker_is_infantry,
             },
         );
     }
@@ -407,6 +411,82 @@ pub fn allocate_sub_cell_with_preference(
     None
 }
 
+/// Sub-cell placement for a mover whose mission carries placement priority.
+///
+/// The original engine's placement function takes a `priority` byte; when it is
+/// set, control jumps straight past every gate to the offset table and returns
+/// `offset[quadrant]` — **no occupancy test, no vehicle/structure blocker test,
+/// no garrison test, and no random draw**, because the random row selection sits
+/// on the branch the jump skips. Quadrant 0 resolves to the cell *centre* slot,
+/// which the ordinary path can never assign.
+///
+/// The flag is raised for missions Enter, Capture, Eaten, Area Guard and Patrol
+/// when the mover's NavCom sits in the cell being entered — an engineer walking
+/// into the building it is capturing, a spy into an enemy structure, an
+/// infantryman into a garrison, a dog onto the man it is running down.
+pub fn priority_sub_cell(sub_x: SimFixed, sub_y: SimFixed) -> u8 {
+    get_subcell_quadrant(sub_x, sub_y)
+}
+
+/// Recover the functional sub-cell slot a stored lepton destination names.
+///
+/// The three functional slots sit at distinct lepton offsets, so this is an
+/// exact inverse of the slot → offset mapping over `FUNCTIONAL_SUB_CELLS`.
+/// Returns `None` for the cell centre and for any other offset.
+pub fn functional_sub_cell_from_offset(dest: (SimFixed, SimFixed)) -> Option<u8> {
+    FUNCTIONAL_SUB_CELLS
+        .iter()
+        .copied()
+        .find(|&slot| crate::util::lepton::subcell_lepton_offset(Some(slot)) == dest)
+}
+
+/// Claim the sub-cell an infantryman already reserved while walking toward this
+/// cell — the arrival side of the sub-cell handshake.
+///
+/// The original engine does **no** sub-cell selection on arrival: the arrival
+/// branch passes a null coordinate to the sub-cell chooser, which stores the
+/// null destination and returns before reaching the placement function. The slot
+/// the man ends up standing in was decided one cell earlier, by the look-ahead
+/// placement that ran while he was still in the previous cell. So arrival costs
+/// **zero random draws** and re-runs no preference table.
+///
+/// This mirrors that contract: take the pre-reserved slot when it is still free,
+/// otherwise fall back to the deterministic first-free scan. `self_id` is
+/// excluded from the occupancy test because the caller has already moved the
+/// mover into this cell carrying its previous slot. Neither path touches the RNG
+/// — that is the point of the function.
+pub fn claim_reserved_sub_cell(
+    occ: Option<&CellOccupancy>,
+    layer: MovementLayer,
+    self_id: u64,
+    preferred: Option<u8>,
+) -> Option<u8> {
+    if let Some(o) = occ
+        && o.has_blockers_on(layer)
+    {
+        return None;
+    }
+    let others: Vec<u8> = occ.map_or_else(Vec::new, |o| {
+        o.infantry(layer)
+            .filter(|&(id, _)| id != self_id)
+            .map(|(_, slot)| slot)
+            .collect()
+    });
+    if let Some(slot) = preferred
+        && FUNCTIONAL_SUB_CELLS.contains(&slot)
+        && !others.contains(&slot)
+    {
+        return Some(slot);
+    }
+    if others.len() >= MAX_INFANTRY_PER_CELL {
+        return None;
+    }
+    FUNCTIONAL_SUB_CELLS
+        .iter()
+        .copied()
+        .find(|spot| !others.contains(spot))
+}
+
 // ---------------------------------------------------------------------------
 // Crush logic
 // ---------------------------------------------------------------------------
@@ -458,52 +538,135 @@ fn entity_crush_coord(entity: &GameEntity) -> (i32, i32) {
     )
 }
 
-/// Whether `mover_zone` can crush a target with the given properties.
+/// Cell-entry legality is classified where the sim frame is not threaded, so the
+/// Iron Curtain gate cannot be evaluated there.
 ///
-/// Crush hierarchy:
+/// **Recorded residual, and the binary side is now settled rather than assumed.**
+/// `UnitClass::Can_Enter_Cell` reaches the crush predicate from two sites, and
+/// both call the same shared `CanCrushCheck` the kill site uses — the one whose
+/// last gate, on the omni path *and* the ordinary path, is the Iron Curtain
+/// slot. So retail refuses entry to a curtained infantryman's cell and the tank
+/// routes around; VERA reads it as crushable for path legality, enters, and then
+/// fails to kill.
 ///
-/// 1. OmniCrushResistant blocks ALL crush (MCVs, Battle Fortress, Slave Miner, T-Rex)
-/// 2. OmniCrusher (per-unit flag, only Battle Fortress) crushes anything not
-///    OmniCrushResistant, regardless of Crushable flag
-/// 3. CrusherAll (MovementZone) crushes walls — for unit crushing it works
-///    like OmniCrusher since only BFRT has it and also has OmniCrusher=yes
-/// 4. Standard Crusher zones crush only infantry with Crushable=yes
-/// 5. Structures and aircraft are NEVER crushable
-pub fn can_crush(
-    capability: CrushCapability,
-    target_category: EntityCategory,
-    target_crushable: bool,
-    target_low_silhouette: bool,
-    target_omni_crush_resistant: bool,
-) -> bool {
+/// Closing it means threading a sim frame down through the whole cell-entry
+/// classifier, which is also the frame-independent path-planning predicate, so
+/// it is left unfunded here rather than half-plumbed. Frequency: only while an
+/// Iron Curtain is up over infantry a vehicle is pathing through — a few seconds
+/// per curtain use, several times a match for a Soviet player, never otherwise.
+const IRON_CURTAIN_UNAVAILABLE: bool = false;
+
+/// The victim-side inputs of the native crush predicate.
+///
+/// Exactly five type-level facts and two instance facts enter the decision:
+/// `Crushable=`, `OmniCrushResistant=`, the victim's class id, the ally
+/// relation (tested by the caller), the deploy crush-immunity byte, and the
+/// Iron Curtain timer. There is no weight, size, armour or `TypeImmune=` term.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrushTarget {
+    pub category: EntityCategory,
+    /// `Crushable=` — defaults **yes** for infantry types, no for everything else.
+    pub crushable: bool,
+    /// The deploy crush-immunity instance byte: raised on deploy for exactly the
+    /// infantry types carrying `DeployedCrushable=no`, cleared on undeploy.
+    pub deploy_crush_immune: bool,
+    /// `OmniCrushResistant=`.
+    pub omni_crush_resistant: bool,
+    /// Iron Curtain (or Force Shield) currently active on the victim.
+    pub iron_curtained: bool,
+}
+
+impl CrushTarget {
+    /// Read the crush inputs off a live entity at a known sim frame.
+    pub fn from_entity(entity: &GameEntity, current_frame: u32) -> Self {
+        Self {
+            category: entity.category,
+            crushable: entity.crushable,
+            deploy_crush_immune: deploy_crush_immune(entity),
+            omni_crush_resistant: entity.omni_crush_resistant,
+            iron_curtained: crate::sim::superweapon::invulnerability::is_invulnerable(
+                entity.invulnerability.as_ref(),
+                current_frame,
+            ),
+        }
+    }
+
+    /// Read the crush inputs where no sim frame is available — cell-entry
+    /// legality only. See [`IRON_CURTAIN_UNAVAILABLE`].
+    fn from_entity_without_frame(entity: &GameEntity) -> Self {
+        Self {
+            category: entity.category,
+            crushable: entity.crushable,
+            deploy_crush_immune: deploy_crush_immune(entity),
+            omni_crush_resistant: entity.omni_crush_resistant,
+            iron_curtained: IRON_CURTAIN_UNAVAILABLE,
+        }
+    }
+}
+
+/// Whether a crusher with `capability` can crush `target`.
+///
+/// Mirrors the two blocks of the native predicate:
+///
+/// 1. **Omni path** — an `OmniCrusher=` crusher crushes any non-building,
+///    non-ally, non-`OmniCrushResistant=`, non-Iron-Curtained victim, ignoring
+///    `Crushable=` entirely (stock: only the Battle Fortress).
+/// 2. **Ordinary path** — the victim must be `Crushable=`, must not carry the
+///    deploy crush-immunity byte, must not be an ally, and must not be Iron
+///    Curtained.
+///
+/// The Iron Curtain test is the **last** gate of each block, after the ally
+/// test, which is why it cannot be hoisted to the top.
+///
+/// The category exclusions below are **VERA-internal, gamemd equivalent
+/// UNCHECKED**. The original's class test sits in the omni block only; the
+/// ordinary block reads the type's crushable byte, an abstract flag, the deploy
+/// byte, the ally test and the Iron Curtain slot, and nothing else. Stock
+/// `rulesmd` marks sandbags and all three fence walls `Crushable=yes`, so a
+/// retail Crusher flattens them and VERA's category gate does not. That gate
+/// predates this function; it is recorded here rather than credited to the
+/// original. Aircraft never appear in the ground occupant list, so excluding
+/// them is outcome-identical.
+pub fn can_crush(capability: CrushCapability, target: CrushTarget) -> bool {
     // Structures and aircraft are never crushed.
     if matches!(
-        target_category,
+        target.category,
         EntityCategory::Structure | EntityCategory::Aircraft
     ) {
         return false;
     }
-    // OmniCrushResistant blocks everything.
-    if target_omni_crush_resistant {
-        return false;
-    }
-    // OmniCrusher (Battle Fortress) crushes any non-resistant mobile entity.
+    // Omni path: OmniCrushResistant blocks it, Iron Curtain ends it.
     if capability.omni_crusher {
-        return true;
+        return !target.omni_crush_resistant && !target.iron_curtained;
+    }
+    // Ordinary path. OmniCrushResistant is not read by this block in the
+    // original, but every stock OmniCrushResistant type is a vehicle and the
+    // ordinary block only ever passes infantry, so keeping the guard here is
+    // outcome-identical and cheaper than a category re-test.
+    if target.omni_crush_resistant {
+        return false;
     }
 
     capability.regular_crusher
-        && target_category == EntityCategory::Infantry
-        && target_crushable
-        && !target_low_silhouette
+        && target.category == EntityCategory::Infantry
+        && target.crushable
+        && !target.deploy_crush_immune
+        && !target.iron_curtained
 }
 
-fn is_low_silhouette_for_crush(entity: &GameEntity) -> bool {
+/// The deploy crush-immunity byte of the native `TechnoClass` instance.
+///
+/// The only writers in the binary are the `TechnoClass` constructor (clear) and
+/// the infantry deploy sequencer, which raises the byte on deploy **only** when
+/// the type carries `DeployedCrushable=no` and clears it again on undeploy.
+/// `DeployedCrushable=` itself defaults to yes, so stock YR has exactly one
+/// crush-immune-on-deploy type: the Guardian GI. A deployed GI is crushable.
+///
+/// Prone has **no** write site at this offset anywhere in the binary, so lying
+/// down never confers crush immunity.
+fn deploy_crush_immune(entity: &GameEntity) -> bool {
     if entity.category != EntityCategory::Infantry {
         return false;
-    }
-    if entity.infantry.is_some_and(|infantry| infantry.is_prone) {
-        return true;
     }
     matches!(
         entity.deploy_state,
@@ -529,13 +692,7 @@ pub fn collect_crush_victims(
 
     for occupant in occ.iter_layer(layer) {
         if let Some(e) = entities.get(occupant.entity_id) {
-            if can_crush(
-                crush_capability,
-                e.category,
-                e.crushable,
-                is_low_silhouette_for_crush(e),
-                e.omni_crush_resistant,
-            ) {
+            if can_crush(crush_capability, CrushTarget::from_entity_without_frame(e)) {
                 victims.push(occupant.entity_id);
             }
         }
@@ -606,13 +763,7 @@ pub fn cell_passable_after_crush(
     // All blockers must be crushable.
     for eid in occ.blockers(layer) {
         if let Some(e) = entities.get(eid) {
-            if !can_crush(
-                crush_capability,
-                e.category,
-                e.crushable,
-                is_low_silhouette_for_crush(e),
-                e.omni_crush_resistant,
-            ) {
+            if !can_crush(crush_capability, CrushTarget::from_entity_without_frame(e)) {
                 return false;
             }
         }
@@ -620,13 +771,7 @@ pub fn cell_passable_after_crush(
     // All infantry must be crushable.
     for (eid, _) in occ.infantry(layer) {
         if let Some(e) = entities.get(eid) {
-            if !can_crush(
-                crush_capability,
-                e.category,
-                e.crushable,
-                is_low_silhouette_for_crush(e),
-                e.omni_crush_resistant,
-            ) {
+            if !can_crush(crush_capability, CrushTarget::from_entity_without_frame(e)) {
                 return false;
             }
         }
@@ -634,6 +779,108 @@ pub fn cell_passable_after_crush(
     true
 }
 
+// ---------------------------------------------------------------------------
+// Cell scatter dispatch eligibility (the `force = 0` gate)
+// ---------------------------------------------------------------------------
+
+/// Elite veterancy level — the pre-scan in the native cell scatter asks each
+/// occupant's `VeterancyClass::IsElite`.
+const ELITE_VETERANCY: u16 = 200;
+
+/// House IQ as the native cell-scatter gate reads it (`occupant->Owner->IQ`).
+///
+/// `ScenarioClass::Create_Houses` writes `[IQ] MaxIQLevels` into every *computer*
+/// house whenever the game mode is not campaign, and leaves human houses at the
+/// constructor value — 0 in stock skirmish, since no stock house type carries an
+/// `IQ=` key. So in retail the gate separates AI-owned occupants (which dodge)
+/// from player-owned occupants (which do not).
+///
+/// VERA has no per-house IQ field and no AI opponent commanding units, so every
+/// house currently resolves to the human value. VERA-internal; the AI-owned half
+/// of this gate is UNCHECKED against gamemd until houses carry an IQ.
+pub const HUMAN_HOUSE_IQ: i32 = 0;
+
+/// Rules inputs of the native cell-scatter dispatch gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScatterEligibility {
+    /// `[CombatDamage] PlayerScatter` — stock `no`.
+    pub player_scatter: bool,
+    /// `[IQ] Scatter` — stock `2`, constructor default `3`.
+    pub iq_scatter: i32,
+}
+
+impl Default for ScatterEligibility {
+    /// The RulesClass constructor values, used when no ruleset is loaded.
+    fn default() -> Self {
+        Self {
+            player_scatter: false,
+            iq_scatter: 3,
+        }
+    }
+}
+
+impl ScatterEligibility {
+    pub fn from_rules(rules: Option<&crate::rules::ruleset::RuleSet>) -> Self {
+        rules.map_or_else(Self::default, |rules| Self {
+            player_scatter: rules.general.player_scatter,
+            iq_scatter: rules.general.iq_scatter,
+        })
+    }
+}
+
+/// Whether the native cell scatter actually dispatches to one occupant.
+///
+/// The dispatch condition is
+/// `eliteFound || force != 0 || PlayerScatter || (HasWeaponAbility(3) || IQ.Scatter <= occupantHouse.IQ)`.
+/// `eliteFound` is a **per-cell** pre-scan result — the walk breaks on the first
+/// elite occupant and the answer then applies to every occupant of that cell —
+/// while the IQ term is per-occupant.
+///
+/// The `HasWeaponAbility(3)` disjunct is not modelled: the ability index has not
+/// been resolved to a `VeteranAbilities=` string, and no stock type is known to
+/// carry it. Omitting it can only make the gate tighter than retail.
+///
+/// No random draw was found in the native body. The census behind that covered
+/// its DIRECT calls only, and the kill path also dispatches through several
+/// virtual slots, so "consumes no RNG" is UNVERIFIED rather than proven.
+pub fn scatter_dispatch_allowed(
+    eligibility: ScatterEligibility,
+    forced: bool,
+    elite_in_cell: bool,
+    occupant_house_iq: i32,
+) -> bool {
+    elite_in_cell
+        || forced
+        || eligibility.player_scatter
+        || occupant_house_iq >= eligibility.iq_scatter
+}
+
+/// The per-cell elite pre-scan: does any occupant of this cell carry elite rank?
+///
+/// The native pre-scan runs only for an unforced scatter and breaks on the first
+/// elite it finds. It walks the *cell's* occupants, so the vehicle doing the
+/// scattering is not one of them — an elite crusher must not release the cell's
+/// own dispatch gate, which is why `skip_id` exists.
+pub fn cell_has_elite_occupant(occupants: &[u64], skip_id: u64, entities: &EntityStore) -> bool {
+    occupants.iter().any(|&id| {
+        id != skip_id
+            && entities
+                .get(id)
+                .is_some_and(|entity| entity.veterancy >= ELITE_VETERANCY)
+    })
+}
+
+/// Classify what a crusher does to the occupants of the cell it is touching.
+///
+/// `EnteringCell` mirrors `UnitClass::PerCellProcess(entering != 0)`, which
+/// scatters the cell with **force = 0** and never crushes; `FullyInCell` mirrors
+/// the `entering == 0` crush loop. The unforced scatter is subject to the
+/// dispatch gate — an elite in the cell, `PlayerScatter`, or the occupant's
+/// house IQ — which is why player-owned infantry stand still under an
+/// approaching tank in retail instead of dodging.
+///
+/// `current_frame` feeds the Iron Curtain gate of the crush predicate.
+#[allow(clippy::too_many_arguments)]
 pub fn classify_drive_crush_phase(
     phase: DriveCrushPhase,
     occ: &[u64],
@@ -643,6 +890,8 @@ pub fn classify_drive_crush_phase(
     interner: &crate::sim::intern::StringInterner,
     crusher_coord: (i32, i32),
     capability: CrushCapability,
+    eligibility: ScatterEligibility,
+    current_frame: u32,
 ) -> DriveCrushOutcome {
     if !capability.can_crush_units() {
         return DriveCrushOutcome::None;
@@ -651,6 +900,11 @@ pub fn classify_drive_crush_phase(
         return DriveCrushOutcome::None;
     };
     let crusher_owner = interner.resolve(crusher.owner);
+    // Per-cell pre-scan, exactly once, before the dispatch walk.
+    let elite_in_cell = match phase {
+        DriveCrushPhase::EnteringCell => cell_has_elite_occupant(occ, crusher_id, entities),
+        DriveCrushPhase::FullyInCell => false,
+    };
     let mut selected = Vec::new();
     for &id in occ {
         if id == crusher_id {
@@ -660,7 +914,11 @@ pub fn classify_drive_crush_phase(
             continue;
         };
         match phase {
-            DriveCrushPhase::EnteringCell => selected.push(id),
+            DriveCrushPhase::EnteringCell => {
+                if scatter_dispatch_allowed(eligibility, false, elite_in_cell, HUMAN_HOUSE_IQ) {
+                    selected.push(id);
+                }
+            }
             DriveCrushPhase::FullyInCell => {
                 let victim_owner = interner.resolve(victim.owner);
                 if crate::map::houses::are_houses_friendly(alliances, crusher_owner, victim_owner) {
@@ -669,13 +927,7 @@ pub fn classify_drive_crush_phase(
                 if !within_crush_distance_sq(crusher_coord, entity_crush_coord(victim)) {
                     continue;
                 }
-                if can_crush(
-                    capability,
-                    victim.category,
-                    victim.crushable,
-                    is_low_silhouette_for_crush(victim),
-                    victim.omni_crush_resistant,
-                ) {
+                if can_crush(capability, CrushTarget::from_entity(victim, current_frame)) {
                     selected.push(id);
                 }
             }
@@ -703,6 +955,79 @@ pub fn classify_drive_crush_phase(
 // Our implementation: find a walkable, unoccupied adjacent cell and issue
 // the blocker a 1-cell movement command via `issue_direct_move`.
 
+/// Frames a blocked mover waits after telling the cell to scatter.
+///
+/// The drive locomotor writes the literal 10 into the mover's wait field
+/// immediately after its `Scatter_Objects(force = 1)` call, and the head of the
+/// next `Process_Movement` decrements it and skips the move while it is
+/// positive. This is a hardcoded constant, **not** `[AI] BlockagePathDelay`,
+/// which is a different (60-frame) timer with a different consumer.
+pub const POST_SCATTER_WAIT_FRAMES: u16 = 10;
+
+// The full-infantry-cell force-scatter helpers used to live here and are gone
+// with the clause that called them: the three-infantry-bit test is real but the
+// block around it is dominated by a radio-tether byte VERA does not model, and
+// the original scatters the man's OWN cell on arrival rather than the
+// destination cell of a blocked step. See the note at the head of
+// `movement_occupancy::handle_deferred_occupancy`.
+
+/// Whether an already-moving blocker still accepts a forced scatter.
+///
+/// The two native Scatter bodies do NOT agree with each other, and VERA's
+/// former blanket "already moving → refuse" gate matched neither:
+///
+/// * **Vehicles.** `UnitClass::Scatter` never asks its locomotor whether it is
+///   moving — the whole body contains no `Is_Moving` call. Its only gate before
+///   the displacement is `missionEntry.Scatter || forced`, and every locomotor
+///   blocked-cell caller passes `forced = 1`, so a moving vehicle is scattered
+///   unconditionally.
+/// * **Infantry.** `InfantryClass::Scatter` loads its OWN locomotor, calls
+///   `Is_Moving`, and on a positive answer demotes the caller's force byte to
+///   zero — and only then applies the same `missionEntry.Scatter || forced`
+///   gate. So a moving infantryman still scatters whenever the mission it is
+///   currently running has `Scatter=yes`.
+///
+/// An absent mission-control table resolves to the constructed `Scatter=yes`
+/// default, which is what an unread table slot holds in the original engine.
+fn moving_blocker_accepts_forced_scatter(
+    blocker: &GameEntity,
+    mission_control: Option<&crate::sim::mission::MissionControl>,
+) -> bool {
+    // Vehicles: no locomotor query at all, so the force byte survives.
+    if blocker.category != EntityCategory::Infantry {
+        return true;
+    }
+    let mission = blocker.mission.current().known();
+    match (mission, mission_control) {
+        (Some(mission), Some(control)) => {
+            control.entry(mission).map_or(true, |entry| entry.scatter)
+        }
+        _ => true,
+    }
+}
+
+/// Read a blocker type's `Fraidycat=` flag for [`scatter_blocker`].
+///
+/// Stock `rulesmd.ini` sets `Fraidycat=yes` on 26 sections, all civilians — so
+/// every combat infantry type takes the refusing branch of the second scatter
+/// gate. An absent ruleset resolves to the constructed default `false`.
+pub fn blocker_is_fraidycat(
+    entities: &EntityStore,
+    blocker_id: u64,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    interner: &crate::sim::intern::StringInterner,
+) -> bool {
+    let Some(blocker) = entities.get(blocker_id) else {
+        return false;
+    };
+    if blocker.category != EntityCategory::Infantry {
+        return false;
+    }
+    rules
+        .and_then(|rules| rules.object(interner.resolve(blocker.type_ref)))
+        .is_some_and(|obj| obj.fraidycat)
+}
+
 /// Try to scatter a blocker to an adjacent cell by issuing a movement command.
 ///
 /// Matches the original engine's movement scatter (Branch A — NullCoord):
@@ -710,7 +1035,15 @@ pub fn classify_drive_crush_phase(
 /// walkable + unoccupied cell, issue the blocker a movement order to walk
 /// there.
 ///
+/// `mission_control` supplies the current mission's `Scatter=` flag, which the
+/// infantry body consults once its own locomotor reports moving (see
+/// [`moving_blocker_accepts_forced_scatter`]).
+///
+/// `blocker_is_fraidycat` is the blocker type's `Fraidycat=` flag, read by the
+/// infantry body's second force-gated early-out (see [`blocker_is_fraidycat`]).
+///
 /// Returns `true` if the blocker was given a scatter movement command.
+#[allow(clippy::too_many_arguments)]
 pub fn scatter_blocker(
     entities: &mut EntityStore,
     blocker_id: u64,
@@ -718,6 +1051,8 @@ pub fn scatter_blocker(
     occupancy: &OccupancyGrid,
     layer: MovementLayer,
     rng: &mut SimRng,
+    mission_control: Option<&crate::sim::mission::MissionControl>,
+    blocker_is_fraidycat: bool,
 ) -> bool {
     // Read blocker properties (immutable borrow).
     let Some(blocker) = entities.get(blocker_id) else {
@@ -728,8 +1063,27 @@ pub fn scatter_blocker(
     if blocker.category == EntityCategory::Structure {
         return false;
     }
-    // Don't scatter a blocker that's already moving.
-    if blocker.movement_target.is_some() {
+    // A blocker that is already moving is NOT refused outright. VERA has no
+    // per-locomotor `Is_Moving` query yet, so an installed movement target
+    // stands in for it — VERA-internal, gamemd equivalent UNCHECKED.
+    if blocker.movement_target.is_some()
+        && !moving_blocker_accepts_forced_scatter(blocker, mission_control)
+    {
+        return false;
+    }
+    // Second force-gated early-out in the infantry body: a non-`Fraidycat` type
+    // that currently holds a shoot-at target refuses the scatter unless the
+    // force byte survived. The force byte is demoted for exactly the infantry
+    // whose own locomotor reports moving, so this gate bites a moving,
+    // targeting, non-Fraidycat infantryman and nobody else. Vehicles never
+    // reach it — the vehicle Scatter body has no locomotor query and no such
+    // clause. VERA still stands an installed movement target in for the
+    // per-locomotor `Is_Moving` query; gamemd equivalent UNCHECKED.
+    if blocker.category == EntityCategory::Infantry
+        && !blocker_is_fraidycat
+        && blocker.attack_target.is_some()
+        && blocker.movement_target.is_some()
+    {
         return false;
     }
     let bpos = (blocker.position.rx, blocker.position.ry);
@@ -864,14 +1218,28 @@ mod tests {
 
     // -- can_crush tests --
 
+    /// Build a crush target directly, bypassing entity construction.
+    fn target(
+        category: EntityCategory,
+        crushable: bool,
+        deploy_crush_immune: bool,
+        omni_crush_resistant: bool,
+        iron_curtained: bool,
+    ) -> CrushTarget {
+        CrushTarget {
+            category,
+            crushable,
+            deploy_crush_immune,
+            omni_crush_resistant,
+            iron_curtained,
+        }
+    }
+
     #[test]
     fn test_crusher_crushes_crushable_infantry() {
         assert!(can_crush(
             CrushCapability::new(true, false),
-            EntityCategory::Infantry,
-            true,
-            false,
-            false,
+            target(EntityCategory::Infantry, true, false, false, false),
         ));
     }
 
@@ -879,21 +1247,15 @@ mod tests {
     fn test_crusher_cannot_crush_non_crushable_infantry() {
         assert!(!can_crush(
             CrushCapability::new(true, false),
-            EntityCategory::Infantry,
-            false,
-            false,
-            false,
+            target(EntityCategory::Infantry, false, false, false, false),
         ));
     }
 
     #[test]
-    fn test_regular_crusher_cannot_crush_low_silhouette_infantry() {
+    fn test_regular_crusher_cannot_crush_deploy_immune_infantry() {
         assert!(!can_crush(
             CrushCapability::new(true, false),
-            EntityCategory::Infantry,
-            true,
-            true, // low_silhouette
-            false,
+            target(EntityCategory::Infantry, true, true, false, false),
         ));
     }
 
@@ -901,10 +1263,8 @@ mod tests {
     fn test_omni_crusher_crushes_non_crushable_infantry() {
         assert!(can_crush(
             CrushCapability::new(false, true),
-            EntityCategory::Infantry,
-            false,
-            true, // low_silhouette does not gate CrusherAll/Omni-style crush
-            false,
+            // The Omni block reads neither Crushable= nor the deploy byte.
+            target(EntityCategory::Infantry, false, true, false, false),
         ));
     }
 
@@ -912,10 +1272,7 @@ mod tests {
     fn test_omni_crusher_crushes_vehicles() {
         assert!(can_crush(
             CrushCapability::new(false, true),
-            EntityCategory::Unit,
-            false,
-            false,
-            false,
+            target(EntityCategory::Unit, false, false, false, false),
         ));
     }
 
@@ -923,10 +1280,7 @@ mod tests {
     fn test_omni_crush_resistant_blocks_all() {
         assert!(!can_crush(
             CrushCapability::new(false, true),
-            EntityCategory::Infantry,
-            true,
-            true,
-            true, // omni_crush_resistant
+            target(EntityCategory::Infantry, true, true, true, false),
         ));
     }
 
@@ -934,10 +1288,7 @@ mod tests {
     fn test_structures_never_crushable() {
         assert!(!can_crush(
             CrushCapability::new(false, true),
-            EntityCategory::Structure,
-            true,
-            false,
-            false,
+            target(EntityCategory::Structure, true, false, false, false),
         ));
     }
 
@@ -945,10 +1296,7 @@ mod tests {
     fn test_crusher_cannot_crush_vehicles() {
         assert!(!can_crush(
             CrushCapability::new(true, false),
-            EntityCategory::Unit,
-            false,
-            false,
-            false,
+            target(EntityCategory::Unit, false, false, false, false),
         ));
     }
 
@@ -956,10 +1304,7 @@ mod tests {
     fn test_normal_zone_cannot_crush() {
         assert!(!can_crush(
             CrushCapability::new(false, false),
-            EntityCategory::Infantry,
-            true,
-            false,
-            false,
+            target(EntityCategory::Infantry, true, false, false, false),
         ));
     }
 
@@ -967,21 +1312,7 @@ mod tests {
     fn normal_zone_regular_crusher_crushes_crushable_infantry() {
         assert!(can_crush(
             CrushCapability::new(true, false),
-            EntityCategory::Infantry,
-            true,
-            false,
-            false,
-        ));
-    }
-
-    #[test]
-    fn normal_zone_non_crusher_still_cannot_crush() {
-        assert!(!can_crush(
-            CrushCapability::new(false, false),
-            EntityCategory::Infantry,
-            true,
-            false,
-            false,
+            target(EntityCategory::Infantry, true, false, false, false),
         ));
     }
 
@@ -989,10 +1320,34 @@ mod tests {
     fn missing_crusher_flag_does_not_crush_infantry() {
         assert!(!can_crush(
             CrushCapability::new(false, false),
-            EntityCategory::Infantry,
-            true,
-            false,
-            false,
+            target(EntityCategory::Infantry, true, false, false, false),
+        ));
+    }
+
+    #[test]
+    fn iron_curtained_infantry_survives_a_regular_crusher() {
+        // The last gate of the ordinary block, after the ally test.
+        assert!(can_crush(
+            CrushCapability::new(true, false),
+            target(EntityCategory::Infantry, true, false, false, false),
+        ));
+        assert!(!can_crush(
+            CrushCapability::new(true, false),
+            target(EntityCategory::Infantry, true, false, false, true),
+        ));
+    }
+
+    #[test]
+    fn iron_curtained_victim_survives_an_omni_crusher() {
+        // Same gate at the tail of the Omni block: a Battle Fortress crushes a
+        // Crushable=no Desolator, but not a curtained one.
+        assert!(can_crush(
+            CrushCapability::new(false, true),
+            target(EntityCategory::Infantry, false, false, false, false),
+        ));
+        assert!(!can_crush(
+            CrushCapability::new(false, true),
+            target(EntityCategory::Infantry, false, false, false, true),
         ));
     }
 
@@ -1006,8 +1361,20 @@ mod tests {
         assert!(!within_crush_distance_sq((0, 0), (128, 0)));
     }
 
+    /// Stock skirmish gate values: `[CombatDamage] PlayerScatter=no`,
+    /// `[IQ] Scatter=2`.
+    fn stock_eligibility() -> ScatterEligibility {
+        ScatterEligibility {
+            player_scatter: false,
+            iq_scatter: 2,
+        }
+    }
+
     #[test]
-    fn classify_drive_crush_phase_entering_scatters_without_kill() {
+    fn classify_drive_crush_phase_entering_holds_player_infantry_still() {
+        // Retail: the crusher's cell-entry scatter passes force = 0, so with
+        // PlayerScatter=no, no elite present and a human house (IQ 0 < 2) the
+        // occupant is never dispatched. Player infantry stand and get squashed.
         let mut entities = EntityStore::new();
         let mut crusher = vehicle(1, 5, 5);
         crusher.regular_crusher = true;
@@ -1027,9 +1394,110 @@ mod tests {
             &interner,
             (5 * 256 + 128, 5 * 256 + 128),
             CrushCapability::new(true, false),
+            stock_eligibility(),
+            0,
+        );
+
+        assert_eq!(outcome, DriveCrushOutcome::None);
+    }
+
+    #[test]
+    fn classify_drive_crush_phase_entering_scatters_when_an_elite_shares_the_cell() {
+        // The elite pre-scan is per-cell: one elite occupant releases the
+        // dispatch for every occupant of that cell, rookie or not.
+        let mut entities = EntityStore::new();
+        let mut crusher = vehicle(1, 5, 5);
+        crusher.regular_crusher = true;
+        entities.insert(crusher);
+        let mut rookie = GameEntity::test_default(2, "E1", "Soviet", 5, 5);
+        rookie.category = EntityCategory::Infantry;
+        rookie.crushable = true;
+        entities.insert(rookie);
+        let mut elite = GameEntity::test_default(3, "E1", "Soviet", 5, 5);
+        elite.category = EntityCategory::Infantry;
+        elite.crushable = true;
+        elite.veterancy = 200;
+        entities.insert(elite);
+        let interner = crate::sim::intern::test_interner();
+
+        let outcome = classify_drive_crush_phase(
+            DriveCrushPhase::EnteringCell,
+            &[2, 3],
+            &entities,
+            1,
+            &crate::map::houses::HouseAllianceMap::new(),
+            &interner,
+            (5 * 256 + 128, 5 * 256 + 128),
+            CrushCapability::new(true, false),
+            stock_eligibility(),
+            0,
+        );
+
+        assert_eq!(
+            outcome,
+            DriveCrushOutcome::Scatter {
+                blockers: vec![2, 3]
+            }
+        );
+    }
+
+    #[test]
+    fn classify_drive_crush_phase_entering_scatters_when_player_scatter_is_on() {
+        let mut entities = EntityStore::new();
+        let mut crusher = vehicle(1, 5, 5);
+        crusher.regular_crusher = true;
+        entities.insert(crusher);
+        let mut victim = GameEntity::test_default(2, "E1", "Soviet", 5, 5);
+        victim.category = EntityCategory::Infantry;
+        victim.crushable = true;
+        entities.insert(victim);
+        let interner = crate::sim::intern::test_interner();
+
+        let outcome = classify_drive_crush_phase(
+            DriveCrushPhase::EnteringCell,
+            &[2],
+            &entities,
+            1,
+            &crate::map::houses::HouseAllianceMap::new(),
+            &interner,
+            (5 * 256 + 128, 5 * 256 + 128),
+            CrushCapability::new(true, false),
+            ScatterEligibility {
+                player_scatter: true,
+                iq_scatter: 2,
+            },
+            0,
         );
 
         assert_eq!(outcome, DriveCrushOutcome::Scatter { blockers: vec![2] });
+    }
+
+    #[test]
+    fn scatter_dispatch_gate_matches_the_native_disjunction() {
+        let stock = stock_eligibility();
+        // Nothing set: no dispatch.
+        assert!(!scatter_dispatch_allowed(
+            stock,
+            false,
+            false,
+            HUMAN_HOUSE_IQ
+        ));
+        // force = 1 (every locomotor blocked-cell caller) always dispatches.
+        assert!(scatter_dispatch_allowed(stock, true, false, HUMAN_HOUSE_IQ));
+        // An elite in the cell releases it.
+        assert!(scatter_dispatch_allowed(stock, false, true, HUMAN_HOUSE_IQ));
+        // An AI house at MaxIQLevels=5 clears [IQ] Scatter=2.
+        assert!(scatter_dispatch_allowed(stock, false, false, 5));
+        // Exactly at the threshold: `IQ.Scatter <= house.IQ`.
+        assert!(scatter_dispatch_allowed(stock, false, false, 2));
+        assert!(!scatter_dispatch_allowed(stock, false, false, 1));
+    }
+
+    #[test]
+    fn scatter_eligibility_defaults_are_the_rules_constructor_values() {
+        let defaults = ScatterEligibility::default();
+        assert!(!defaults.player_scatter);
+        assert_eq!(defaults.iq_scatter, 3);
     }
 
     #[test]
@@ -1053,6 +1521,8 @@ mod tests {
             &interner,
             (5 * 256 + 128, 5 * 256 + 128),
             CrushCapability::new(true, false),
+            stock_eligibility(),
+            0,
         );
 
         assert_eq!(outcome, DriveCrushOutcome::Kill { victims: vec![2] });
@@ -1078,10 +1548,167 @@ mod tests {
             &interner,
             (5 * 256 + 128, 5 * 256 + 128),
             CrushCapability::new(true, false),
+            stock_eligibility(),
+            0,
         );
 
         assert_eq!(outcome, DriveCrushOutcome::None);
     }
+
+    #[test]
+    fn prone_infantry_are_crushed_like_standing_infantry() {
+        // Prone has no write site at the deploy crush-immunity byte anywhere in
+        // the binary, so lying down is not crush immunity: a Grizzly clears a
+        // suppressed squad in one pass.
+        let mut entities = EntityStore::new();
+        let mut crusher = vehicle(1, 5, 5);
+        crusher.regular_crusher = true;
+        entities.insert(crusher);
+        let mut victim = GameEntity::test_default(2, "E1", "Soviet", 5, 5);
+        victim.category = EntityCategory::Infantry;
+        victim.crushable = true;
+        victim.infantry = Some(InfantryRuntime {
+            is_prone: true,
+            ..InfantryRuntime::new()
+        });
+        entities.insert(victim);
+        let interner = crate::sim::intern::test_interner();
+
+        let outcome = classify_drive_crush_phase(
+            DriveCrushPhase::FullyInCell,
+            &[2],
+            &entities,
+            1,
+            &crate::map::houses::HouseAllianceMap::new(),
+            &interner,
+            (5 * 256 + 128, 5 * 256 + 128),
+            CrushCapability::new(true, false),
+            stock_eligibility(),
+            0,
+        );
+
+        assert_eq!(outcome, DriveCrushOutcome::Kill { victims: vec![2] });
+    }
+
+    #[test]
+    fn deployed_gi_is_crushable_but_deployed_guardian_gi_is_not() {
+        // `DeployedCrushable=` defaults yes; stock YR sets it to no on exactly
+        // one type. So the intuition runs the wrong way — a deployed GI dies
+        // under a tank, a deployed Guardian GI does not.
+        let mut entities = EntityStore::new();
+        let mut crusher = vehicle(1, 5, 5);
+        crusher.regular_crusher = true;
+        entities.insert(crusher);
+        let mut gi = GameEntity::test_default(2, "E1", "Soviet", 5, 5);
+        gi.category = EntityCategory::Infantry;
+        gi.crushable = true;
+        gi.deployed_crushable = true;
+        gi.deploy_state = Some(crate::sim::deploy::DeployPhase::Deployed);
+        entities.insert(gi);
+        let mut ggi = GameEntity::test_default(3, "GGI", "Soviet", 5, 5);
+        ggi.category = EntityCategory::Infantry;
+        ggi.crushable = true;
+        ggi.deployed_crushable = false;
+        ggi.deploy_state = Some(crate::sim::deploy::DeployPhase::Deployed);
+        entities.insert(ggi);
+        let interner = crate::sim::intern::test_interner();
+
+        let outcome = classify_drive_crush_phase(
+            DriveCrushPhase::FullyInCell,
+            &[2, 3],
+            &entities,
+            1,
+            &crate::map::houses::HouseAllianceMap::new(),
+            &interner,
+            (5 * 256 + 128, 5 * 256 + 128),
+            CrushCapability::new(true, false),
+            stock_eligibility(),
+            0,
+        );
+
+        assert_eq!(outcome, DriveCrushOutcome::Kill { victims: vec![2] });
+    }
+
+    #[test]
+    fn iron_curtained_infantry_is_not_crushed_at_the_kill_site() {
+        let mut entities = EntityStore::new();
+        let mut crusher = vehicle(1, 5, 5);
+        crusher.regular_crusher = true;
+        entities.insert(crusher);
+        let mut victim = GameEntity::test_default(2, "E1", "Soviet", 5, 5);
+        victim.category = EntityCategory::Infantry;
+        victim.crushable = true;
+        victim.invulnerability = Some(
+            crate::sim::superweapon::invulnerability::InvulnerabilityState {
+                start_frame: 10,
+                duration_frames: 750,
+                kind: crate::sim::superweapon::invulnerability::InvulnKind::IronCurtain,
+            },
+        );
+        entities.insert(victim);
+        let interner = crate::sim::intern::test_interner();
+        let call = |frame: u32| {
+            classify_drive_crush_phase(
+                DriveCrushPhase::FullyInCell,
+                &[2],
+                &entities,
+                1,
+                &crate::map::houses::HouseAllianceMap::new(),
+                &interner,
+                (5 * 256 + 128, 5 * 256 + 128),
+                CrushCapability::new(true, false),
+                stock_eligibility(),
+                frame,
+            )
+        };
+
+        assert_eq!(call(100), DriveCrushOutcome::None, "curtain still running");
+        assert_eq!(
+            call(760),
+            DriveCrushOutcome::Kill { victims: vec![2] },
+            "curtain expired"
+        );
+    }
+
+    #[test]
+    fn entering_cell_scatter_consumes_no_rng() {
+        // The whole native cell-scatter body contains no random draw; the
+        // dispatch gate is pure boolean.
+        let mut entities = EntityStore::new();
+        let mut crusher = vehicle(1, 5, 5);
+        crusher.regular_crusher = true;
+        entities.insert(crusher);
+        let mut victim = GameEntity::test_default(2, "E1", "Soviet", 5, 5);
+        victim.category = EntityCategory::Infantry;
+        victim.crushable = true;
+        entities.insert(victim);
+        let interner = crate::sim::intern::test_interner();
+        let rng = SimRng::new(0x1234_5678);
+        let before = rng.clone();
+
+        let _ = classify_drive_crush_phase(
+            DriveCrushPhase::EnteringCell,
+            &[2],
+            &entities,
+            1,
+            &crate::map::houses::HouseAllianceMap::new(),
+            &interner,
+            (5 * 256 + 128, 5 * 256 + 128),
+            CrushCapability::new(true, false),
+            stock_eligibility(),
+            0,
+        );
+
+        assert_eq!(rng.state(), before.state());
+    }
+
+    // `post_scatter_wait_is_ten_frames_not_blockage_path_delay` used to sit
+    // here asserting `POST_SCATTER_WAIT_FRAMES == 10` — a constant against
+    // itself, which no behavioural regression could break. The claim it was
+    // reaching for is now pinned by observation in
+    // `movement_tests::code_two_post_scatter_wait_rearms_on_every_pass_while_the_block_holds`,
+    // which watches a blocked mover's timer and sees the 10-frame sawtooth
+    // rather than a `BlockagePathDelay` span.
 
     // -- sub-cell allocation tests --
 
@@ -1221,7 +1848,9 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_crush_victims_skips_prone_infantry_for_regular_crusher() {
+    fn test_collect_crush_victims_keeps_prone_infantry_for_regular_crusher() {
+        // Prone is not crush immunity — the crush predicate reads only the
+        // deploy byte, and nothing in the binary writes it for prone.
         let mut store = EntityStore::new();
         let mut inf = infantry(1, 5, 5, 2);
         inf.infantry = Some(InfantryRuntime {
@@ -1240,7 +1869,7 @@ mod tests {
             CrushCapability::new(true, false),
             &store,
         );
-        assert!(victims.is_empty());
+        assert_eq!(victims, vec![1]);
     }
 
     // -- scatter_blocker tests --
@@ -1262,6 +1891,8 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
+            None,
+            false,
         );
         assert!(result, "scatter_blocker should succeed with open cells");
 
@@ -1305,39 +1936,220 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
+            None,
+            false,
         );
         assert!(!result, "scatter_blocker should fail when all blocked");
         assert!(store.get(1).unwrap().movement_target.is_none());
     }
 
-    #[test]
-    fn test_scatter_blocker_skips_already_moving() {
-        let grid = PathGrid::new(10, 10);
-        let occupancy = OccupancyGrid::new();
-        let mut rng = SimRng::new(42);
-
-        let mut store = EntityStore::new();
-        let mut v = vehicle(1, 5, 5);
-        v.movement_target = Some(crate::sim::components::MovementTarget {
+    fn moving_target() -> crate::sim::components::MovementTarget {
+        crate::sim::components::MovementTarget {
             path: vec![(5, 5), (6, 5)],
             path_layers: vec![MovementLayer::Ground; 2],
             next_index: 1,
             speed: crate::util::fixed_math::SimFixed::from_num(1024),
             ..Default::default()
-        });
+        }
+    }
+
+    fn set_mission(entity: &mut GameEntity, mission: crate::sim::mission::MissionType) {
+        entity
+            .mission
+            .apply_test_fixture(crate::sim::mission::state::MissionTestFixture {
+                current: crate::sim::mission::MissionId::from_known(mission),
+                suspended: crate::sim::mission::MissionId::NONE,
+                queued: crate::sim::mission::MissionId::NONE,
+                movement_bypass_latch: 0,
+                handler_state: 0,
+                mission_start_frame: 0,
+                ai_counter: 0,
+                dispatch_timer: crate::sim::mission::MissionDispatchTimer::at_frame(0),
+            });
+    }
+
+    /// Stock mission control: `[Move] Scatter=` keeps the constructed yes,
+    /// `[Sleep] Scatter=no`.
+    fn scatter_mission_control() -> crate::sim::mission::MissionControl {
+        crate::sim::mission::MissionControl::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[Move]\nRate=.016\n\n[Sleep]\nScatter=no\n",
+        ))
+    }
+
+    /// `UnitClass::Scatter` never queries its locomotor — with the force byte
+    /// the locomotor blocked-cell path always passes, a MOVING vehicle is
+    /// displaced. VERA previously refused every moving blocker outright.
+    #[test]
+    fn scatter_blocker_displaces_a_moving_vehicle_under_force() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+        let control = scatter_mission_control();
+
+        let mut store = EntityStore::new();
+        let mut v = vehicle(1, 5, 5);
+        v.movement_target = Some(moving_target());
+        set_mission(&mut v, crate::sim::mission::MissionType::Move);
         store.insert(v);
 
-        let result = scatter_blocker(
-            &mut store,
-            1,
-            Some(&grid),
-            &occupancy,
-            MovementLayer::Ground,
-            &mut rng,
-        );
         assert!(
-            !result,
-            "scatter_blocker should not scatter already-moving unit"
+            scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+                false,
+            ),
+            "a moving vehicle must still be scattered — the vehicle body has no Is_Moving gate"
+        );
+    }
+
+    /// `InfantryClass::Scatter` has a SECOND force-gated early-out after the
+    /// mission-`Scatter=` test: a non-`Fraidycat` type that already holds a
+    /// shoot-at target refuses the scatter once the force byte has been demoted
+    /// (which happens for exactly the infantry whose locomotor reports moving).
+    #[test]
+    fn scatter_blocker_refuses_a_moving_targeting_non_fraidycat_infantryman() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+        let control = scatter_mission_control();
+
+        let mut store = EntityStore::new();
+        let mut i = infantry(1, 5, 5, 0);
+        i.movement_target = Some(moving_target());
+        i.attack_target = Some(crate::sim::combat::AttackTarget::new(9));
+        set_mission(&mut i, crate::sim::mission::MissionType::Move);
+        store.insert(i);
+
+        assert!(
+            !scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+                false, // Fraidycat=no — every stock combat infantry type
+            ),
+            "a moving, targeting, non-Fraidycat infantryman refuses the demoted-force scatter"
+        );
+
+        // A Fraidycat type in exactly the same state still scatters.
+        let mut store = EntityStore::new();
+        let mut i = infantry(1, 5, 5, 0);
+        i.movement_target = Some(moving_target());
+        i.attack_target = Some(crate::sim::combat::AttackTarget::new(9));
+        set_mission(&mut i, crate::sim::mission::MissionType::Move);
+        store.insert(i);
+        assert!(
+            scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+                true, // Fraidycat=yes — the 26 stock civilian sections
+            ),
+            "the Fraidycat branch skips the early-out entirely"
+        );
+    }
+
+    /// `InfantryClass::Scatter` demotes the force byte when its own locomotor
+    /// reports moving, then applies `missionEntry.Scatter || forced`. A moving
+    /// infantryman on a `Scatter=yes` mission (the constructed default, kept by
+    /// Move) therefore still scatters.
+    #[test]
+    fn scatter_blocker_displaces_a_moving_infantryman_on_a_scatter_yes_mission() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+        let control = scatter_mission_control();
+
+        let mut store = EntityStore::new();
+        let mut i = infantry(1, 5, 5, 0);
+        i.movement_target = Some(moving_target());
+        set_mission(&mut i, crate::sim::mission::MissionType::Move);
+        store.insert(i);
+
+        assert!(
+            scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+                false,
+            ),
+            "Move keeps the constructed Scatter=yes, so the demoted force byte still scatters"
+        );
+    }
+
+    /// ...and the same infantryman on a `Scatter=no` mission is refused, because
+    /// the demotion left `forced == 0` and the mission flag is the only other
+    /// way through the gate.
+    #[test]
+    fn scatter_blocker_refuses_a_moving_infantryman_on_a_scatter_no_mission() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+        let control = scatter_mission_control();
+
+        let mut store = EntityStore::new();
+        let mut i = infantry(1, 5, 5, 0);
+        i.movement_target = Some(moving_target());
+        set_mission(&mut i, crate::sim::mission::MissionType::Sleep);
+        store.insert(i);
+
+        assert!(
+            !scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+                false,
+            ),
+            "[Sleep] Scatter=no and the force byte was demoted, so the gate refuses"
+        );
+    }
+
+    /// A STATIONARY infantryman never reaches the demotion, so the caller's
+    /// force byte survives and the mission flag cannot refuse it.
+    #[test]
+    fn scatter_blocker_displaces_a_stationary_infantryman_on_a_scatter_no_mission() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+        let control = scatter_mission_control();
+
+        let mut store = EntityStore::new();
+        let mut i = infantry(1, 5, 5, 0);
+        set_mission(&mut i, crate::sim::mission::MissionType::Sleep);
+        store.insert(i);
+
+        assert!(
+            scatter_blocker(
+                &mut store,
+                1,
+                Some(&grid),
+                &occupancy,
+                MovementLayer::Ground,
+                &mut rng,
+                Some(&control),
+                false,
+            ),
+            "forced=1 survives when the object is not moving"
         );
     }
 
@@ -1357,6 +2169,8 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng,
+            None,
+            false,
         );
 
         assert!(
@@ -1397,6 +2211,8 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng1,
+            None,
+            false,
         );
 
         let mut store2 = EntityStore::new();
@@ -1409,6 +2225,8 @@ mod tests {
             &occupancy,
             MovementLayer::Ground,
             &mut rng2,
+            None,
+            false,
         );
 
         let t1 = store1.get(1).unwrap().movement_target.as_ref().unwrap();
@@ -1522,6 +2340,150 @@ mod tests {
             get_subcell_quadrant(SimFixed::from_num(200), SimFixed::from_num(200)),
             4
         );
+    }
+
+    // -- arrival-side claim: the zero-draw half of the sub-cell handshake --
+
+    /// GSI-06.14 G3. The retail arrival branch hands its sub-cell chooser a null
+    /// coordinate, which returns before the placement function runs — so arrival
+    /// consumes **no** random draw, whatever the mover's sub-position. A mover
+    /// standing at the cell centre is the case that would draw on the look-ahead
+    /// path, so it is the load-bearing fixture here.
+    #[test]
+    fn gsi_06_14_arrival_claim_consumes_no_rng() {
+        let rng = SimRng::new(42);
+        let before = rng.state();
+        // Centre sub-position: the look-ahead allocator draws here, the arrival
+        // claim must not. `claim_reserved_sub_cell` takes no RNG at all, so the
+        // guarantee is structural — this pins that it stays that way.
+        let claimed = claim_reserved_sub_cell(None, MovementLayer::Ground, 1, None);
+        assert_eq!(claimed, Some(2), "empty cell falls to the first free slot");
+        assert_eq!(rng.state(), before, "arrival must not advance the stream");
+    }
+
+    /// The slot reserved by the look-ahead one cell earlier is the slot the man
+    /// stands in on arrival — retail never re-selects.
+    #[test]
+    fn gsi_06_14_arrival_claims_the_pre_reserved_slot() {
+        let grid = make_occ(&[(5, 5, 2, MovementLayer::Ground, Some(2))]);
+        let occ = grid.get(5, 5);
+        assert_eq!(
+            claim_reserved_sub_cell(occ, MovementLayer::Ground, 1, Some(4)),
+            Some(4),
+            "the reserved slot wins over the first-free scan",
+        );
+        // Taken by someone else meanwhile: fall back deterministically.
+        assert_eq!(
+            claim_reserved_sub_cell(occ, MovementLayer::Ground, 1, Some(2)),
+            Some(3),
+        );
+    }
+
+    /// The mover has already been inserted into the new cell carrying its old
+    /// slot, so it must not count against itself — three men still fit.
+    #[test]
+    fn gsi_06_14_arrival_claim_excludes_the_mover_itself() {
+        let grid = make_occ(&[
+            (5, 5, 1, MovementLayer::Ground, Some(2)),
+            (5, 5, 2, MovementLayer::Ground, Some(3)),
+            (5, 5, 3, MovementLayer::Ground, Some(4)),
+        ]);
+        let occ = grid.get(5, 5);
+        assert_eq!(
+            claim_reserved_sub_cell(occ, MovementLayer::Ground, 1, Some(2)),
+            Some(2),
+            "self-occupancy must not refuse the mover its own slot",
+        );
+        // A genuine fourth man finds nothing.
+        assert_eq!(
+            claim_reserved_sub_cell(occ, MovementLayer::Ground, 9, None),
+            None,
+        );
+    }
+
+    /// The lepton-offset inverse used to recover the reserved slot is exact over
+    /// the three functional slots and rejects the centre.
+    #[test]
+    fn gsi_06_14_functional_sub_cell_offset_inverse_is_exact() {
+        for slot in FUNCTIONAL_SUB_CELLS {
+            let offset = crate::util::lepton::subcell_lepton_offset(Some(slot));
+            assert_eq!(functional_sub_cell_from_offset(offset), Some(slot));
+        }
+        let centre = crate::util::lepton::subcell_lepton_offset(Some(0));
+        assert_eq!(functional_sub_cell_from_offset(centre), None);
+    }
+
+    // -- priority placement --
+
+    /// GSI-06.14 G1. With the priority byte set, the retail placement function
+    /// jumps past every gate straight to `offset[quadrant]`: no occupancy test,
+    /// no vehicle/structure blocker test, no garrison test, and — because the
+    /// random row selection sits on the branch that jump skips — no draw.
+    /// Quadrant 0 resolves to the cell-centre slot, which the ordinary path can
+    /// never assign.
+    #[test]
+    fn gsi_06_14_priority_placement_ignores_occupancy_and_takes_no_draw() {
+        let rng = SimRng::new(7);
+        let before = rng.state();
+        // NE approach → slot 2, even though the ordinary allocator would refuse.
+        assert_eq!(
+            priority_sub_cell(SimFixed::from_num(200), SimFixed::from_num(40)),
+            2,
+        );
+        assert_eq!(
+            priority_sub_cell(SimFixed::from_num(40), SimFixed::from_num(200)),
+            3,
+        );
+        assert_eq!(
+            priority_sub_cell(SimFixed::from_num(200), SimFixed::from_num(200)),
+            4,
+        );
+        // Centre request → slot 0, the centre offset.
+        assert_eq!(
+            priority_sub_cell(SimFixed::from_num(128), SimFixed::from_num(128)),
+            0,
+        );
+        assert_eq!(rng.state(), before, "priority placement draws nothing");
+    }
+
+    /// The ordinary allocator refuses exactly the cases priority must accept —
+    /// a full cell and a cell holding a vehicle or structure.
+    #[test]
+    fn gsi_06_14_priority_accepts_what_the_ordinary_allocator_refuses() {
+        let full = make_occ(&[
+            (5, 5, 1, MovementLayer::Ground, Some(2)),
+            (5, 5, 2, MovementLayer::Ground, Some(3)),
+            (5, 5, 3, MovementLayer::Ground, Some(4)),
+        ]);
+        let blocked = make_occ(&[(6, 6, 4, MovementLayer::Ground, None)]);
+        let mut rng = SimRng::new(1);
+        let ne = (SimFixed::from_num(200), SimFixed::from_num(40));
+
+        assert_eq!(
+            allocate_sub_cell_with_preference(
+                full.get(5, 5),
+                MovementLayer::Ground,
+                None,
+                ne.0,
+                ne.1,
+                &mut rng,
+            ),
+            None,
+        );
+        assert_eq!(
+            allocate_sub_cell_with_preference(
+                blocked.get(6, 6),
+                MovementLayer::Ground,
+                None,
+                ne.0,
+                ne.1,
+                &mut rng,
+            ),
+            None,
+            "a structure or vehicle closes the cell to the ordinary path",
+        );
+        // Priority reads neither cell's occupancy.
+        assert_eq!(priority_sub_cell(ne.0, ne.1), 2);
     }
 
     // -- preference-aware allocation tests --

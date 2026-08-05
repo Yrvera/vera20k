@@ -136,7 +136,11 @@ impl LocomotorRuntime {
 
     /// Build an incoming runtime from the current host defaults. New callers
     /// should prefer `begin_with_runtime` when they already own an instance.
-    pub fn replacement_from(state: &LocomotorState, kind: LocomotorKind, layer: MovementLayer) -> Self {
+    pub fn replacement_from(
+        state: &LocomotorState,
+        kind: LocomotorKind,
+        layer: MovementLayer,
+    ) -> Self {
         let mut runtime = Self::capture(state);
         runtime.kind = kind;
         runtime.layer = layer;
@@ -225,7 +229,10 @@ pub enum EndOutcome {
 
 /// Stash the active complete runtime and install `incoming` as the new active
 /// locomotor. An occupied slot is an atomic E_FAIL-style refusal.
-pub fn begin_with_runtime(state: &mut LocomotorState, incoming: Option<LocomotorRuntime>) -> BeginOutcome {
+pub fn begin_with_runtime(
+    state: &mut LocomotorState,
+    incoming: Option<LocomotorRuntime>,
+) -> BeginOutcome {
     let Some(incoming) = incoming else {
         return BeginOutcome::RefusedNull;
     };
@@ -240,7 +247,11 @@ pub fn begin_with_runtime(state: &mut LocomotorState, incoming: Option<Locomotor
 
 /// Compatibility adapter for callers that name only a replacement class. It
 /// still transfers one complete current runtime into the suspended slot.
-pub fn begin(state: &mut LocomotorState, kind: LocomotorKind, layer: MovementLayer) -> BeginOutcome {
+pub fn begin(
+    state: &mut LocomotorState,
+    kind: LocomotorKind,
+    layer: MovementLayer,
+) -> BeginOutcome {
     let incoming = LocomotorRuntime::replacement_from(state, kind, layer);
     begin_with_runtime(state, Some(incoming))
 }
@@ -248,7 +259,10 @@ pub fn begin(state: &mut LocomotorState, kind: LocomotorKind, layer: MovementLay
 /// Transfer the suspended runtime into an explicit output location. The active
 /// state is unchanged because native END transfers an interface; the caller
 /// decides when to install it.
-pub fn end_into(state: &mut LocomotorState, output: Option<&mut Option<LocomotorRuntime>>) -> EndOutcome {
+pub fn end_into(
+    state: &mut LocomotorState,
+    output: Option<&mut Option<LocomotorRuntime>>,
+) -> EndOutcome {
     let Some(output) = output else {
         return EndOutcome::RefusedNull;
     };
@@ -308,10 +322,20 @@ pub fn is_ok_to_end(state: &LocomotorState, context: EndGateContext) -> bool {
                 && !context.owner_teleporting
                 && !context.owner_deploying
         }
-        LocomotorKind::Teleport
-        | LocomotorKind::Tunnel
-        | LocomotorKind::Rocket
-        | LocomotorKind::DropPod => false,
+        // `TeleportLocomotionClass::Is_Ok_To_End` is a real six-clause
+        // predicate, not a constant false: the locomotor's own warp-active byte
+        // must be clear, a runtime must be stashed, the owner's chrono-warp
+        // field must be clear, the pending warp phase must be zero and the
+        // owner must not be deploying. VERA carries the whole warp in
+        // `teleport_state`, so that one flag stands for the warp-active byte
+        // and the pending warp phase together. The two owner bytes at +0x35 and
+        // +0x27C have no Rust model yet — VERA-internal, gamemd equivalent
+        // UNCHECKED. This is the clause that hands a chrono-warped unit back to
+        // its own locomotor when the warp finishes.
+        LocomotorKind::Teleport => !context.owner_teleporting && !context.owner_deploying,
+        // No stock `Locomotor=` key selects these classes, so gamemd never
+        // reaches their END gate in ordinary play.
+        LocomotorKind::Tunnel | LocomotorKind::Rocket | LocomotorKind::DropPod => false,
     }
 }
 
@@ -326,10 +350,16 @@ mod tests {
     #[test]
     fn begin_rejects_null_and_nested_runtime_without_mutation() {
         let mut state = teleporter();
-        assert_eq!(begin_with_runtime(&mut state, None), BeginOutcome::RefusedNull);
+        assert_eq!(
+            begin_with_runtime(&mut state, None),
+            BeginOutcome::RefusedNull
+        );
         let before = state.clone();
 
-        assert_eq!(begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground), BeginOutcome::Installed);
+        assert_eq!(
+            begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground),
+            BeginOutcome::Installed
+        );
         let nested_before = state.clone();
         assert_eq!(
             begin(&mut state, LocomotorKind::Ship, MovementLayer::Ground),
@@ -346,7 +376,10 @@ mod tests {
         state.hover_speed_request = SimFixed::from_num(1);
         let installed = state.slot;
 
-        assert_eq!(begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground), BeginOutcome::Installed);
+        assert_eq!(
+            begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground),
+            BeginOutcome::Installed
+        );
         assert_eq!(state.kind, LocomotorKind::Drive);
         assert_eq!(state.slot, installed);
         assert_eq!(
@@ -370,9 +403,15 @@ mod tests {
         assert_eq!(end_into(&mut state, Some(&mut output)), EndOutcome::Empty);
 
         begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground);
-        assert_eq!(end_into(&mut state, Some(&mut output)), EndOutcome::Restored);
+        assert_eq!(
+            end_into(&mut state, Some(&mut output)),
+            EndOutcome::Restored
+        );
         assert_eq!(state.kind, LocomotorKind::Drive);
-        assert_eq!(output.expect("transferred runtime").kind, LocomotorKind::Teleport);
+        assert_eq!(
+            output.expect("transferred runtime").kind,
+            LocomotorKind::Teleport
+        );
         assert!(state.piggyback.is_none());
     }
 
@@ -387,8 +426,29 @@ mod tests {
         };
         assert!(is_ok_to_end(&state, ready));
 
+        // `TeleportLocomotionClass::Is_Ok_To_End` refuses while the warp is
+        // live and permits once it has finished — it is not a constant false.
         state.kind = LocomotorKind::Teleport;
+        assert!(!is_ok_to_end(
+            &state,
+            EndGateContext {
+                owner_teleporting: true,
+                ..ready
+            }
+        ));
+        assert!(!is_ok_to_end(
+            &state,
+            EndGateContext {
+                owner_deploying: true,
+                ..ready
+            }
+        ));
+        assert!(is_ok_to_end(&state, ready));
+
+        // Classes no stock `Locomotor=` key selects stay conservative.
+        state.kind = LocomotorKind::Tunnel;
         assert!(!is_ok_to_end(&state, ready));
+
         state.kind = LocomotorKind::Drive;
         state.phase = GroundMovePhase::Cruising;
         assert!(!is_ok_to_end(&state, ready));

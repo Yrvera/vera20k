@@ -11,6 +11,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat;
 use crate::sim::components::OrderIntent;
 use crate::sim::intern::InternedId;
+use crate::sim::mission::MissionType;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::bump_crush;
@@ -915,6 +916,7 @@ impl Simulation {
     /// - Entities inside transports
     /// - Dying entities
     /// - Objects holding a target their own scanner picked up (see below)
+    /// - Objects on the **Sticky** mission, which drop the target instead
     ///
     /// **A passively-acquired target is never pursued.** The original's passive
     /// commit writes the target pointer and nothing else — no mission assign and
@@ -932,8 +934,18 @@ impl Simulation {
         // Phase 1: collect pursuit decisions (read-only on entities).
         // Two action kinds: issue a new path, or clear an existing one.
         enum PursuitAction {
-            IssueMove { entity_id: u64, goal: (u16, u16) },
-            ClearMovement { entity_id: u64 },
+            IssueMove {
+                entity_id: u64,
+                goal: (u16, u16),
+            },
+            ClearMovement {
+                entity_id: u64,
+            },
+            /// A Sticky object that cannot already shoot its target: drop the
+            /// target AND the destination, and produce no pursuit cell.
+            DropTargetAndMovement {
+                entity_id: u64,
+            },
         }
 
         let keys: Vec<u64> = self.substrate.entities.keys_sorted();
@@ -1006,7 +1018,20 @@ impl Simulation {
             let in_range = combat::is_within_range_leptons(dist_sq, weapon_range);
 
             if !in_range {
-                if entity.movement_target.is_none() {
+                // **Sticky never chases.** The one place the engine tells
+                // Sticky apart from Guard at all — they share a mission handler
+                // — is the pursuit-cell producer: when the can-fire-at query
+                // fails and the object's committed mission is Sticky, it drops
+                // both its target and its destination and returns "nowhere to
+                // go", *before* the fallthrough that lets a Guard-family object
+                // pursue. That is the whole of `[Sticky]`'s "just like guard
+                // mode, but cannot move".
+                //
+                // Read off the RAW committed selector, as the original does —
+                // not the derived reading.
+                if entity.mission.current().known() == Some(MissionType::Sticky) {
+                    actions.push(PursuitAction::DropTargetAndMovement { entity_id: id });
+                } else if entity.movement_target.is_none() {
                     // Out of range, no current pursuit — issue a path.
                     actions.push(PursuitAction::IssueMove {
                         entity_id: id,
@@ -1070,6 +1095,14 @@ impl Simulation {
                 PursuitAction::ClearMovement { entity_id } => {
                     if let Some(e) = self.substrate.entities.get_mut(entity_id) {
                         e.movement_target = None;
+                    }
+                }
+                PursuitAction::DropTargetAndMovement { entity_id } => {
+                    if let Some(e) = self.substrate.entities.get_mut(entity_id) {
+                        e.attack_target = None;
+                        e.passively_acquired_target = false;
+                        e.movement_target = None;
+                        e.navigation.nav_com = None;
                     }
                 }
             }

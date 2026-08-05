@@ -1441,6 +1441,7 @@ mod tests {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         }
     }
 

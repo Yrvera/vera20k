@@ -36,8 +36,8 @@ use crate::sim::movement::drop_pod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
 use crate::sim::movement::rocket_movement::RocketState;
 use crate::sim::movement::teleport_movement::TeleportState;
-use crate::sim::movement::tunnel_movement::TunnelState;
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
+use crate::sim::movement::tunnel_movement::TunnelState;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::radio::Contacts;
 use crate::sim::slave_miner::SlaveHarvester;
@@ -685,6 +685,11 @@ impl GameEntity {
     /// null-target arm. VERA has no equivalent handler, so when the committed
     /// mission's live machinery has gone quiet the derived reading wins instead.
     /// The gamemd handler equivalent is UNCHECKED.
+    ///
+    /// The bridge explicitly does NOT cover the missions that mean "stand still
+    /// and do nothing" ([`MissionType::holds_until_retasked`]). Those never
+    /// finish, so letting the derived Guard reading win there would make every
+    /// map-authored Sleep/Sticky/Harmless placement scan and shoot.
     pub fn passive_acquire_mission(&self) -> MissionType {
         let (derived, _) = self.derived_mission_with(!self.passively_acquired_target);
         let derived = if derived == MissionType::None
@@ -699,6 +704,19 @@ impl GameEntity {
             derived
         };
         match self.mission.current().known() {
+            // "Stand still and do nothing" is not a job that finishes — those
+            // missions have no completion transition in the original either, so
+            // the derived reading must never take one back to Guard. This is
+            // what a map placement authored as Sleep, Sticky or Harmless means,
+            // and without it every such neutral object scans and opens fire.
+            Some(known) if known.holds_until_retasked() => known,
+            // Area Guard is a job that never finishes: "hold this spot and
+            // cover it" is the standing state, not a leftover selector. It also
+            // has its own handler, which owns its target acquisition, and the
+            // passive-acquire block admits {Move, Harvest, Guard} only. Letting
+            // the finished-job bridge read it as Guard would put the object
+            // through BOTH scanners on the same cadence.
+            Some(MissionType::AreaGuard) => MissionType::AreaGuard,
             // A committed mission still doing something wins; one whose work is
             // finished defers to what the object is actually doing (nothing).
             Some(known) if !self.committed_mission_is_finished() => known,
@@ -1376,6 +1394,97 @@ mod mission_shadow_tests {
         let mut i = GameEntity::test_default(3, "E1", "Americans", 3, 3);
         i.category = crate::map::entities::EntityCategory::Infantry;
         assert_eq!(i.derived_mission(), (MissionType::None, 0));
+    }
+
+    /// A map placement authored as Sleep, Sticky or Harmless means "stand still
+    /// and do nothing". Those missions have no completion transition, so the
+    /// derived idle-Unit Guard reading must never take one back — otherwise
+    /// every neutral civilian on a stock skirmish map scans and opens fire.
+    #[test]
+    fn stand_still_missions_beat_the_derived_guard_reading() {
+        for mission in [
+            MissionType::Sleep,
+            MissionType::Sticky,
+            MissionType::Harmless,
+        ] {
+            for category in [
+                crate::map::entities::EntityCategory::Unit,
+                crate::map::entities::EntityCategory::Infantry,
+                crate::map::entities::EntityCategory::Structure,
+            ] {
+                let mut e = GameEntity::test_default(1, "CIVBTM", "Neutral", 3, 3);
+                e.category = category;
+                // No destination, no order, no target: the committed mission
+                // reads as "finished", which is what used to hand it to Guard.
+                assert!(e.committed_mission_is_finished());
+                e.mission.apply_test_fixture(MissionTestFixture {
+                    current: MissionId::from_known(mission),
+                    suspended: MissionId::NONE,
+                    queued: MissionId::NONE,
+                    movement_bypass_latch: 0,
+                    handler_state: 0,
+                    mission_start_frame: 0,
+                    ai_counter: 0,
+                    dispatch_timer: MissionDispatchTimer::at_frame(0),
+                });
+                assert_eq!(
+                    e.passive_acquire_mission(),
+                    mission,
+                    "{category:?} committed to {mission:?}"
+                );
+            }
+        }
+    }
+
+    /// The bridge still applies to missions whose work really does end: an
+    /// idle Unit that was ordered to Move once must not stay deaf forever.
+    #[test]
+    fn a_finished_ordinary_mission_still_defers_to_the_derived_reading() {
+        let mut e = GameEntity::test_default(1, "MTNK", "Americans", 3, 3); // Unit
+        e.mission.apply_test_fixture(MissionTestFixture {
+            current: MissionId::from_known(MissionType::Move),
+            suspended: MissionId::NONE,
+            queued: MissionId::NONE,
+            movement_bypass_latch: 0,
+            handler_state: 0,
+            mission_start_frame: 0,
+            ai_counter: 0,
+            dispatch_timer: MissionDispatchTimer::at_frame(0),
+        });
+        assert!(e.committed_mission_is_finished());
+        assert_eq!(e.passive_acquire_mission(), MissionType::Guard);
+    }
+
+    /// Area Guard is a job that never finishes AND has its own handler, which
+    /// owns its acquisition. The finished-job bridge must not read it as Guard,
+    /// or the object would be admitted to the passive-acquire block as well and
+    /// scan twice per cadence. This is the state AI-slot starting units spawn
+    /// in, so it is every non-human unit in every skirmish.
+    #[test]
+    fn committed_area_guard_is_never_bridged_to_guard() {
+        for category in [
+            crate::map::entities::EntityCategory::Unit,
+            crate::map::entities::EntityCategory::Infantry,
+        ] {
+            let mut e = GameEntity::test_default(1, "MTNK", "Americans", 3, 3);
+            e.category = category;
+            assert!(e.committed_mission_is_finished());
+            e.mission.apply_test_fixture(MissionTestFixture {
+                current: MissionId::from_known(MissionType::AreaGuard),
+                suspended: MissionId::NONE,
+                queued: MissionId::NONE,
+                movement_bypass_latch: 0,
+                handler_state: 0,
+                mission_start_frame: 0,
+                ai_counter: 0,
+                dispatch_timer: MissionDispatchTimer::at_frame(0),
+            });
+            assert_eq!(
+                e.passive_acquire_mission(),
+                MissionType::AreaGuard,
+                "{category:?} committed to Area Guard"
+            );
+        }
     }
 
     #[test]

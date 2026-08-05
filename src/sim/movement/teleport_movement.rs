@@ -422,12 +422,31 @@ pub fn tick_teleport_movement(
     for id in finished {
         if let Some(entity) = entities.get_mut(id) {
             entity.teleport_state = None;
-            if let Some(ref mut loco) = entity.locomotor {
-                if loco.is_overridden() {
-                    loco.end_piggyback();
-                }
-            }
             entity.push_debug_event(sim_tick as u32, DebugEventKind::SpecialMovementEnd);
+        }
+        // Every END in gamemd runs behind `Is_Ok_To_End`; the Teleport gate is
+        // the six-clause predicate that hands a warped unit back to its own
+        // locomotor. The warp state was cleared just above, so the ordinary
+        // finished warp still ends here — a unit that is simultaneously
+        // deploying (or otherwise gated) keeps the stash and unwinds on the
+        // per-tick restore instead, as FootClass::AI does.
+        let Some(entity) = entities.get(id) else {
+            continue;
+        };
+        let gate = crate::sim::movement::locomotor_end_gate_context(entity);
+        let may_end = entity.locomotor.as_ref().is_some_and(|loco| {
+            loco.is_overridden()
+                && loco.can_restore_primary_from_piggyback(
+                    gate.owner_moving,
+                    gate.owner_teleporting,
+                    gate.owner_deploying,
+                )
+        });
+        if may_end
+            && let Some(entity) = entities.get_mut(id)
+            && let Some(ref mut loco) = entity.locomotor
+        {
+            loco.end_piggyback();
         }
     }
     outcomes
@@ -499,6 +518,8 @@ mod tests {
             voice_attack: None,
             voice_harvest: None,
             voice_enter: None,
+            voice_capture: None,
+            prevent_attack_move: false,
             voice_die: Vec::new(),
             die_sounds: Vec::new(),
             move_sound: None,
@@ -1014,7 +1035,26 @@ mod tests {
         assert_eq!(loco.effective_kind(), LocomotorKind::Teleport);
         assert!(loco.piggyback.is_some());
 
+        // gamemd's `Drive::Is_Ok_To_End` asks the ACTIVE locomotor's own
+        // `Is_Moving` (ILocomotion slot 4), and that predicate reads the Drive
+        // locomotor's destination and head-to coords — not the owner's path
+        // queue. Dropping the path alone therefore does NOT unwind the stash.
         entities.get_mut(1).expect("entity").movement_target = None;
+        assert_eq!(
+            crate::sim::movement::tick_locomotor_piggyback_restore(&mut entities),
+            0,
+            "the Drive locomotor still holds a destination, so it still reports Is_Moving"
+        );
+
+        // Arrival clears the Drive destination and head-to; now the gate opens.
+        {
+            let drive = entities
+                .get_mut(1)
+                .and_then(|entity| entity.drive_locomotion.as_mut())
+                .expect("drive state");
+            drive.destination = None;
+            drive.head_to = None;
+        }
         assert_eq!(
             crate::sim::movement::tick_locomotor_piggyback_restore(&mut entities),
             1

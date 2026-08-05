@@ -130,6 +130,7 @@ fn zoned_path_reachable_returns_path() {
         None,
         0,
         false,
+        false,
     );
     assert!(path.is_some());
     let path = path.unwrap();
@@ -161,6 +162,7 @@ fn zoned_path_unreachable_returns_none_instantly() {
         None,
         0,
         false,
+        false,
     );
     assert!(path.is_none());
 }
@@ -187,6 +189,7 @@ fn zoned_path_no_zone_grid_falls_through() {
         None,
         0,
         false,
+        false,
     );
     assert!(path.is_some());
 }
@@ -211,6 +214,7 @@ fn zoned_path_same_cell() {
         None,
         None,
         0,
+        false,
         false,
     );
     assert!(path.is_some());
@@ -246,6 +250,7 @@ fn zoned_path_entity_blocks_respected() {
         None,
         None,
         0,
+        false,
         false,
     );
     // Path exists because goal cell is always reachable even if entity-blocked.
@@ -390,6 +395,7 @@ fn zone_precheck_hierarchy_path_bypasses_reduced_superzone_abort() {
         None,
         0,
         false,
+        false,
         Some(&blocker_counts),
     )
     .expect("eligible hierarchy precheck should not be preempted by reduced reachability");
@@ -420,6 +426,7 @@ fn zone_precheck_failed_hierarchy_keeps_zone_map_same_zone_fallback() {
         None,
         None,
         0,
+        false,
         false,
         Some(&blocker_counts),
     )
@@ -1416,4 +1423,42 @@ fn zone_cost_estimate_matches_precheck_and_alternate_margin() {
         ),
         i32::MAX
     );
+}
+
+/// GSI-06.02 G2: gamemd gates every MovementZone row — `Can_Reach_Zone`
+/// short-circuits only on `mzRow == -1`, and the A*-entry precheck reads
+/// whatever row `MovementZone=` gives. Stock rulesmd puts every main battle tank
+/// in `Destroyer`, every ore miner in `Crusher` and the Battle Fortress in
+/// `CrusherAll`, so those rows must reach the reduced precheck.
+#[test]
+fn gsi_06_02_reduced_zone_precheck_covers_every_land_movement_zone() {
+    for mz in [
+        MovementZone::Normal,
+        MovementZone::Crusher,
+        MovementZone::Destroyer,
+        MovementZone::AmphibiousDestroyer,
+        MovementZone::AmphibiousCrusher,
+        MovementZone::Amphibious,
+        MovementZone::Infantry,
+        MovementZone::InfantryDestroyer,
+        MovementZone::Fly,
+        MovementZone::CrusherAll,
+    ] {
+        assert!(
+            can_use_reduced_zone_precheck(Some(mz)),
+            "{mz:?} must be gated by the reduced zone precheck"
+        );
+    }
+
+    // `mzRow == -1` returns "reachable" in gamemd, so the gate must not be
+    // allowed to refuse the search for it.
+    assert!(!can_use_reduced_zone_precheck(Some(MovementZone::Invalid)));
+
+    // VERA-internal residual, gamemd equivalent UNCHECKED: naval surface
+    // legality in the zone builder is still coarser than the runtime predicate,
+    // so the two water rows stay outside the gate for now.
+    assert!(!can_use_reduced_zone_precheck(Some(MovementZone::Water)));
+    assert!(!can_use_reduced_zone_precheck(Some(
+        MovementZone::WaterBeach
+    )));
 }

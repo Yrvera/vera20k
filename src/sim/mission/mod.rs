@@ -54,6 +54,19 @@ pub enum MissionType {
     Sleep = 0,
     Attack = 1,
     Move = 2,
+    /// Index 3, `"QMove"`. **Dormant in stock YR, proven — do not write a
+    /// handler for it.** The dispatcher has no case for it (it falls through
+    /// the jump table's `default` arm to the same 450-frame base stub `Sleep(0)`
+    /// uses), and a whole-image sweep of the mission-assign, mission-queue and
+    /// player-order call sites found no writer and no reader of the id
+    /// anywhere: the client's own order verb emits only
+    /// {Attack, Move, Enter, Capture, Eaten, Harvest, Area Guard, Unload,
+    /// Sabotage, Patrol}. Stock YR's queued/deferred movement is **Planning
+    /// Mode** — a separate bindable command class that commits over its own
+    /// network events and parks each unit on `Deliberate`(28, `"Wait"` in the
+    /// INI table) plus a planning-token route. `[QMove] Rate=.016` is parsed and
+    /// never consumed, exactly as in the original. Round-trips for map-INI name
+    /// fidelity only.
     QMove = 3,
     Retreat = 4,
     Guard = 5,
@@ -67,7 +80,9 @@ pub enum MissionType {
     Return = 12,
     Stop = 13,
     /// Dead stub in YR (no live assigner). Round-trips for map-INI name
-    /// fidelity; executes as a Sleep-equivalent no-op.
+    /// fidelity. Its dispatch slot is a *distinct* base stub from Sleep's —
+    /// the return value coincides (450 frames, do nothing) but a subclass
+    /// could override one without the other.
     Ambush = 14,
     Hunt = 15,
     Unload = 16,
@@ -87,9 +102,12 @@ pub enum MissionType {
     /// Index 28. Named "Wait" in the INI mission-name table and "Deliberate"
     /// in unit reports — one mission. The guard-protected interrupt mission.
     Deliberate = 28,
-    /// No dispatch case — resolved upstream as a queued command, never executed
-    /// as a committed mission. Present so the selector can represent the
-    /// command; the dispatcher MUST skip it (parity requirement).
+    /// Index 29. The dispatcher has no *case* for it: like `QMove(3)` and
+    /// every out-of-range id, it falls through the jump table's `default` arm
+    /// to the same base handler `Sleep(0)` uses, which re-arms the dispatch
+    /// timer with a flat 450 frames. VERA resolves attack-move upstream as a
+    /// standing order and never commits this selector, so the arm is dead
+    /// either way — but the dispatcher does NOT skip it.
     AttackMove = 29,
     SpyplaneApproach = 30,
     SpyplaneOverfly = 31,
@@ -149,6 +167,13 @@ impl MissionType {
     }
 
     /// The `[<MissionName>]` INI section header for this mission's control entry.
+    ///
+    /// These are the literal strings from the original's mission-name pointer
+    /// table, which is what its `MissionControl` reader hands to the section
+    /// lookup. Six of the 32 contain a space — `Area Guard`, `Paradrop
+    /// Approach`, `Paradrop Overfly`, `Attack Move`, `Spyplane Approach`,
+    /// `Spyplane Overfly` — and must be spelled with it or a mod/map INI
+    /// declaring one is silently ignored.
     pub fn ini_section(self) -> &'static str {
         match self {
             Self::Sleep => "Sleep",
@@ -177,12 +202,12 @@ impl MissionType {
             Self::Harmless => "Harmless",
             Self::Open => "Open",
             Self::Patrol => "Patrol",
-            Self::ParadropApproach => "ParadropApproach",
-            Self::ParadropOverfly => "ParadropOverfly",
+            Self::ParadropApproach => "Paradrop Approach",
+            Self::ParadropOverfly => "Paradrop Overfly",
             Self::Deliberate => "Wait",
-            Self::AttackMove => "AttackMove",
-            Self::SpyplaneApproach => "SpyplaneApproach",
-            Self::SpyplaneOverfly => "SpyplaneOverfly",
+            Self::AttackMove => "Attack Move",
+            Self::SpyplaneApproach => "Spyplane Approach",
+            Self::SpyplaneOverfly => "Spyplane Overfly",
             Self::None => "None",
         }
     }
@@ -190,6 +215,49 @@ impl MissionType {
     /// Iterate all 32 dispatched missions in id order (table builds, round-trip).
     pub fn all() -> impl Iterator<Item = MissionType> {
         (0u8..MISSION_COUNT as u8).filter_map(MissionType::from_id)
+    }
+
+    /// Resolve a map-INI `MISSION=` name, the way the original's
+    /// `Mission_From_Name` does: a linear, **case-insensitive**, ASCII-only
+    /// scan of the same 32-entry name table in id order, first match wins,
+    /// and no match (or an absent field) yields the `-1` idle sentinel —
+    /// which is a *distinct* selector from `Sleep(0)`, even though both run
+    /// the same base handler.
+    ///
+    /// The table is [`MissionType::ini_section`]: the original hands the very
+    /// same pointer table to both its map-name lookup and its
+    /// `[<MissionName>]` control-section lookup. Five of those names carry a
+    /// space (`Area Guard`, `Paradrop Approach`, `Paradrop Overfly`,
+    /// `Attack Move`, `Spyplane Approach`/`Spyplane Overfly`) and index 28 is
+    /// spelled `Wait`; a name table that loses those silently resolves the
+    /// affected map lines to the sentinel.
+    pub fn from_map_name(name: &str) -> Option<MissionType> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        MissionType::all().find(|mission| mission.ini_section().eq_ignore_ascii_case(name))
+    }
+
+    /// Missions with **no completion transition**: the object holds them until
+    /// something else retasks it, so a "the committed mission's work is over"
+    /// reading must never override them.
+    ///
+    /// `Sleep` and `Harmless` dispatch to base handlers that do nothing and
+    /// re-arm themselves forever; `Sticky` shares the Guard handler but is
+    /// excluded from passive acquisition and refuses to promote a queued
+    /// mission at all. All three mean "stand still and do nothing", which is
+    /// the opposite of the idle-Unit `Guard` reading VERA derives for an
+    /// object with no live machine.
+    ///
+    /// These are exactly the three the stock map `MISSION=` column authors for
+    /// neutral scenery objects, so the distinction is load-bearing from the
+    /// first frame of any map that carries them.
+    pub fn holds_until_retasked(self) -> bool {
+        matches!(
+            self,
+            MissionType::Sleep | MissionType::Sticky | MissionType::Harmless
+        )
     }
 }
 
@@ -243,5 +311,105 @@ mod tests {
         assert_eq!(MissionType::AreaGuard.ini_section(), "Area Guard");
         assert_eq!(MissionType::Deliberate.ini_section(), "Wait");
         assert_eq!(MissionType::Sleep.ini_section(), "Sleep");
+    }
+
+    /// Every mission name the original's table spells with a space must be
+    /// spelled with it here, or the `[<MissionName>]` lookup misses.
+    #[test]
+    fn spaced_section_names_keep_their_space() {
+        assert_eq!(MissionType::AreaGuard.ini_section(), "Area Guard");
+        assert_eq!(
+            MissionType::ParadropApproach.ini_section(),
+            "Paradrop Approach"
+        );
+        assert_eq!(
+            MissionType::ParadropOverfly.ini_section(),
+            "Paradrop Overfly"
+        );
+        assert_eq!(MissionType::AttackMove.ini_section(), "Attack Move");
+        assert_eq!(
+            MissionType::SpyplaneApproach.ini_section(),
+            "Spyplane Approach"
+        );
+        assert_eq!(
+            MissionType::SpyplaneOverfly.ini_section(),
+            "Spyplane Overfly"
+        );
+    }
+
+    /// `Mission_From_Name` returns the table index for an exact-but-
+    /// case-insensitive name, so every one of the 32 names round-trips.
+    #[test]
+    fn map_name_round_trips_every_mission() {
+        for mission in MissionType::all() {
+            assert_eq!(
+                MissionType::from_map_name(mission.ini_section()),
+                Some(mission),
+                "{mission:?} did not round-trip through its map name"
+            );
+            assert_eq!(
+                MissionType::from_map_name(&mission.ini_section().to_ascii_lowercase()),
+                Some(mission),
+                "{mission:?} map name is not case-insensitive"
+            );
+        }
+    }
+
+    /// The retail comparator is `stricmp`, and the five spaced names plus
+    /// `Wait` are the ones a naive `{:?}` spelling would lose.
+    #[test]
+    fn map_name_resolves_the_spaced_and_renamed_entries() {
+        assert_eq!(
+            MissionType::from_map_name("Area Guard"),
+            Some(MissionType::AreaGuard)
+        );
+        assert_eq!(
+            MissionType::from_map_name("attack move"),
+            Some(MissionType::AttackMove)
+        );
+        assert_eq!(
+            MissionType::from_map_name("Wait"),
+            Some(MissionType::Deliberate)
+        );
+        // The enum's own Rust name is NOT the table name.
+        assert_eq!(MissionType::from_map_name("AreaGuard"), None);
+        assert_eq!(MissionType::from_map_name("Deliberate"), None);
+    }
+
+    /// An unknown or absent name is the `-1` sentinel, NOT `Sleep(0)`.
+    #[test]
+    fn unknown_map_name_is_the_idle_sentinel() {
+        assert_eq!(MissionType::from_map_name("Wibble"), None);
+        assert_eq!(MissionType::from_map_name(""), None);
+        assert_eq!(MissionType::from_map_name("   "), None);
+        // "None" is this project's spelling of the sentinel, not a table name.
+        assert_eq!(MissionType::from_map_name("None"), None);
+        assert_eq!(MissionType::from_map_name("Sleep"), Some(MissionType::Sleep));
+    }
+
+    #[test]
+    fn only_the_stand_still_missions_hold_until_retasked() {
+        for mission in MissionType::all() {
+            let expected = matches!(
+                mission,
+                MissionType::Sleep | MissionType::Sticky | MissionType::Harmless
+            );
+            assert_eq!(mission.holds_until_retasked(), expected, "{mission:?}");
+        }
+        assert!(!MissionType::None.holds_until_retasked());
+    }
+
+    /// The 32 section names are distinct — a duplicate would make two missions
+    /// share one control slot.
+    #[test]
+    fn section_names_are_unique() {
+        let mut seen = std::collections::BTreeSet::new();
+        for mission in MissionType::all() {
+            assert!(
+                seen.insert(mission.ini_section()),
+                "duplicate section name for {mission:?}"
+            );
+        }
+        assert_eq!(seen.len(), MISSION_COUNT);
     }
 }

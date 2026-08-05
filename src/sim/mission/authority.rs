@@ -42,8 +42,90 @@ mod ready_private {
     pub trait Sealed {}
 }
 
+/// The blocked-step Override, over bare storage.
+///
+/// Every write this transaction makes lands on the mover and nothing else, so
+/// it needs storage rather than the whole simulation — which is what lets the
+/// ground locomotors run it *synchronously* from inside the movement tick,
+/// where the original runs it, instead of deferring it to a later phase and
+/// changing same-tick visibility. [`Simulation::mission_override_blocked_by_object`]
+/// is a thin wrapper over this same function, so there is one implementation.
+///
+/// Returns whether the Override ran. It does not when either object is gone, or
+/// when the mover considers the blocker an ally.
+pub(crate) fn override_mission_on_blocked_step(
+    entities: &mut crate::sim::entity_store::EntityStore,
+    alliances: &crate::map::houses::HouseAllianceMap,
+    interner: &crate::sim::intern::StringInterner,
+    mover: u64,
+    blocker: u64,
+) -> bool {
+    let (Some(mover_entity), Some(blocker_entity)) = (entities.get(mover), entities.get(blocker))
+    else {
+        return false;
+    };
+    // The native predicate resolves the blocker's owner and then consults only
+    // the *mover's* own ally set, so the directional sense is the right one. An
+    // object with no owner is not an ally, and gets attacked.
+    if crate::map::houses::is_allied_with(
+        alliances,
+        interner.resolve(mover_entity.owner),
+        interner.resolve(blocker_entity.owner),
+    ) {
+        return false;
+    }
+
+    let Some(entity) = entities.get_mut(mover) else {
+        return false;
+    };
+    if !aircraft_allows(entity, MISSION_ATTACK) {
+        return false;
+    }
+
+    // Save order is NavCom, then TarCom, then the mission fields, then the two
+    // concrete setters. The archived destination is what the mover gets back
+    // when something later restores it.
+    entity.navigation.suspended_nav_com = blocked_step_archived_destination(entity);
+    entity.suspended_attack_target = entity.attack_target.as_ref().map(|target| target.target);
+    verb::override_base(&mut entity.mission, MISSION_ATTACK);
+    super::concrete_effects::represented_assign_target(entity, Some(TargetKind::Entity(blocker)));
+    // NULL destination: the mover stops where it is.
+    super::concrete_effects::represented_assign_destination_mode_one(entity, None);
+    true
+}
+
+/// The destination the blocked-step Override archives.
+///
+/// The original stores one destination per object and the Override saves it
+/// wholesale. VERA splits that single field in two: `navigation.nav_com` carries
+/// it for the track-driven movers (Drive and Ship), while a walking infantryman
+/// — the only class whose locomotor reaches this Override at all — carries its
+/// destination on the path executor it is currently running, and never writes
+/// `nav_com`. Reading only `nav_com` would archive nothing for exactly the
+/// movers this fires for, and the later Restore would hand the object its order
+/// back with nowhere to go.
+///
+/// VERA-internal bridge over VERA's split representation; the original has a
+/// single field, so it has no equivalent to check against.
+fn blocked_step_archived_destination(
+    entity: &crate::sim::game_entity::GameEntity,
+) -> Option<NavTargetRef> {
+    if let Some(nav_com) = entity.navigation.nav_com {
+        return Some(nav_com);
+    }
+    let target = entity.movement_target.as_ref()?;
+    // Same goal resolution the blocked-step handler uses: the recorded final
+    // goal, or the last cell of the path still being walked.
+    let goal = target.final_goal.or_else(|| target.path.last().copied())?;
+    Some(NavTargetRef::cell(goal.0, goal.1))
+}
+
 const AIRCRAFT_ACTION_EXCEPTION: MissionId = MissionId::from_raw(0x1e);
 const MISSION_GUARD: MissionId = MissionId::from_raw(5);
+/// Mission id 1, the `[Attack]` control entry. The selector every ground
+/// locomotor overrides onto when an object it is not allied with stands in the
+/// way of its next step.
+const MISSION_ATTACK: MissionId = MissionId::from_raw(1);
 const AIRCRAFT_PROTECTED: [MissionId; 5] = [
     MissionId::from_raw(4),
     MissionId::from_raw(0x1a),
@@ -582,6 +664,67 @@ impl Simulation {
         self.mission_restore_exact_with_effects(receiver, &mut effects)
     }
 
+    /// The Restore half of the detach sweep that releases every object shooting
+    /// at an object which is leaving play *while still alive*.
+    ///
+    /// Same represented setters as the pointer-expiry Restore, and a separate
+    /// name because the two native sites are not the same shape: the expiry
+    /// site asks whether a mission is suspended and clears the target *before*
+    /// restoring, while the detach sweep restores first, unconditionally, and
+    /// clears the target afterwards only if the Restore did not install a
+    /// different archived one. Restore is a total field-wise no-op on an object
+    /// with no suspended selector, so "unconditional" and "guarded" agree on
+    /// the write set; the difference that matters is the ordering the caller
+    /// wraps around it.
+    pub(crate) fn mission_restore_on_target_detach(
+        &mut self,
+        receiver: u64,
+    ) -> Result<bool, MissionAuthorityError> {
+        let mut effects = RepresentedConcreteMissionEffects;
+        self.mission_restore_exact_with_effects(receiver, &mut effects)
+    }
+
+    /// The blocked-step Override every ground locomotor runs: stop, and fight
+    /// whatever is standing in the way.
+    ///
+    /// The walk locomotor's movement step reaches this when its cell-entry
+    /// check comes back "occupied by an object I am not allied with" — VERA's
+    /// [`crate::sim::pathfinding::cell_entry::CellEntryResult::OccupiedEnemy`],
+    /// native cell-entry class 5. The drive and ship locomotors carry the same
+    /// two-arm shape. The native arm is exactly
+    /// `if (!Is_Ally(blocker)) Override_Mission(Attack, blocker, NULL)`.
+    ///
+    /// The ally test sits at the native call site with nothing between it and
+    /// the Override, so folding it in here preserves behaviour and keeps the
+    /// whole arm in one owned place. It uses the *directional* alliance sense,
+    /// which is what the native predicate reads: it resolves the blocker's
+    /// owner and then consults only the mover's own ally set.
+    ///
+    /// The destination argument is NULL, so the Override archives the mover's
+    /// current destination and then clears it — the mover stops where it is. A
+    /// later Restore re-installs the destination and re-paths from wherever it
+    /// stopped: the native path array is never archived, and the destination
+    /// setter forces the path timer to already-expired so the next step
+    /// recomputes one.
+    ///
+    /// There is deliberately no "already overridden" guard. A second blocked
+    /// step against a different blocker with no Restore in between overwrites
+    /// the archived selector with the first Override's mission, and the object
+    /// then restores onto Attack rather than its original order. That is native
+    /// and it must survive; do not add a caller-side clobber guard.
+    ///
+    /// Returns whether the Override ran. It does not when either object is
+    /// gone, or when the mover considers the blocker an ally.
+    pub(crate) fn mission_override_blocked_by_object(&mut self, mover: u64, blocker: u64) -> bool {
+        override_mission_on_blocked_step(
+            &mut self.substrate.entities,
+            &self.house_alliances,
+            &self.interner,
+            mover,
+            blocker,
+        )
+    }
+
     pub(crate) fn mission_refinery_completion_exact(
         &mut self,
         receiver: u64,
@@ -792,6 +935,20 @@ impl Simulation {
         effects.apply_target(self, &prepared, saved_target);
         if category != EntityCategory::Structure {
             effects.apply_destination_mode_one(self, &prepared, saved_destination);
+            if saved_destination.is_some()
+                && let Some(entity) = self.substrate.entities.get_mut(receiver)
+            {
+                // The original's destination setter drives the locomotor's path
+                // timer to already-expired on every path it takes, so the next
+                // locomotor step re-runs its path search toward the destination
+                // just installed — the stored path array is never archived, only
+                // the destination is. VERA's equivalent re-path hook is the
+                // deferred process-entry pass at the top of the movement tick,
+                // and this flag is what arms it. Without it a restored object
+                // holds its order and never builds a path for it, which is
+                // exactly the state a blocked-step Override leaves it in.
+                entity.navigation.pending_arrival_clear = true;
+            }
         }
         Ok(true)
     }
@@ -1754,5 +1911,73 @@ mod tests {
         let entity = sim.substrate.entities.get(1).unwrap();
         assert_eq!(entity.mission.current(), MOVE);
         assert_eq!(entity.mission_leaf.as_building().unwrap().ready_latch(), 0);
+    }
+
+    /// The storage-level entry point the movement tick calls, exercised over a
+    /// bare `EntityStore` the way the ground locomotors reach it — no
+    /// `Simulation` in scope, all five fields written synchronously.
+    #[test]
+    fn blocked_step_override_runs_over_bare_storage_and_honours_the_ally_gate() {
+        use crate::map::houses::HouseAllianceMap;
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::intern::StringInterner;
+
+        let mut interner = StringInterner::new();
+        let alliances = HouseAllianceMap::default();
+        let mut entities = EntityStore::new();
+
+        let mut mover = GameEntity::test_default(1, "E1", "Americans", 10, 10);
+        mover.owner = interner.intern("Americans");
+        mover.navigation.nav_com = Some(NavTargetRef::Cell { rx: 20, ry: 21 });
+        verb::assign_base(&mut mover.mission, MOVE, 0);
+        entities.insert(mover);
+
+        let mut friend = GameEntity::test_default(2, "E1", "Americans", 11, 10);
+        friend.owner = interner.intern("Americans");
+        entities.insert(friend);
+
+        let mut foe = GameEntity::test_default(3, "E1", "Soviets", 11, 10);
+        foe.owner = interner.intern("Soviets");
+        entities.insert(foe);
+
+        // Allied blocker: no Override, no field written.
+        assert!(!override_mission_on_blocked_step(
+            &mut entities,
+            &alliances,
+            &interner,
+            1,
+            2
+        ));
+        assert_eq!(entities.get(1).unwrap().mission.current(), MOVE);
+
+        // Hostile blocker: the full transaction.
+        assert!(override_mission_on_blocked_step(
+            &mut entities,
+            &alliances,
+            &interner,
+            1,
+            3
+        ));
+        let mover = entities.get(1).unwrap();
+        assert_eq!(mover.mission.current(), ATTACK);
+        assert_eq!(mover.mission.suspended(), MOVE);
+        assert_eq!(
+            mover.attack_target.as_ref().map(|target| target.target),
+            Some(TargetKind::Entity(3))
+        );
+        assert!(mover.navigation.nav_com.is_none(), "the mover stops");
+        assert_eq!(
+            mover.navigation.suspended_nav_com,
+            Some(NavTargetRef::Cell { rx: 20, ry: 21 })
+        );
+
+        // A missing blocker is not an Override.
+        assert!(!override_mission_on_blocked_step(
+            &mut entities,
+            &alliances,
+            &interner,
+            1,
+            999
+        ));
     }
 }

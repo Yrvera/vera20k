@@ -66,6 +66,7 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
         sub_cell: 0,
         veterancy: 0,
         high: false,
+        mission: None,
     }
 }
 
@@ -126,8 +127,33 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // from the merged tree's own output in the same merge commit.
 // Native Move mission cadence now advances MissionCom and Scenario RNG.
 // Re-baselined after hashing the newly persisted YR runtime-contract state.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xFF25_F56A_6E1E_2A46;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xEE98_241E_37BE_6CFE;
+/// Re-baselined 2026-08-04 for the GSI-07.02 constructed-`Rate` default
+/// (0 -> 14 frames when a mission section or its `Rate=` key is absent).
+/// `slice6_rules()` declares no mission sections, so every mission in this
+/// fixture left the zero sentinel. Provenance note in
+/// global_parity_harness_tests.rs at FINAL_STREAM_STATES.
+// Re-baselined 2026-08-05 for the Drive cell-admission slice, with the schema
+// and behaviour halves SEPARATED BY MEASUREMENT rather than argued.
+// `DriveLocomotionRuntime` gained `occupation_handoff`, and the whole struct is
+// hashed by its derived `Hash`, so an `Option` discriminant enters the fold for
+// every vehicle even while the field is `None`.
+//
+// Experiment, no `world_hash.rs` change: keep the field, neutralise every
+// behaviour writer that landed with it (the fresh-selection admission gate, the
+// chained-curve refusal on the two temporary codes, the handoff mark at both
+// install sites, the forced-track pre-clear), re-run. Three points, all
+// observed in this tree:
+//
+//   committed (pre-change) : pre-v28 661EF70FF1847F63  pre-v29 599A096466E0970A  current 5BC6E9E7EEA3E80D
+//   schema only            : pre-v28 2A9B661C382F5DC9  pre-v29 AD6A5FDD5EA76570  current EC8407239DC80358
+//   schema + behaviour     : pre-v28 728141E6E7EE9CBA  pre-v29 5EA7E13419353AB0  current 22D855782E72D55E
+//
+// So unlike the global harness — whose entire shift is schema — this 16-tick
+// scripted fixture carries BOTH: the field's discriminant moves it once, and
+// the admission gate moves it again because its Move/AttackMove script does
+// reach the selection lane. Rust regression ratchet, not gamemd evidence.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x7281_41E6_E7EE_9CBA;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x5EA7_E134_1935_3AB0;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -203,7 +229,10 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xEE98_241E_37BE_6CFE;
 // fields moving off their old values — `passive_scan_timer` armed at the
 // construction frame instead of left unarmed, plus the two new fields folded at
 // their defaults. Rust regression ratchet, not gamemd evidence.
-const SLICE6_BASELINE_HASH: u64 = 0x6763_3A9A_A228_3C22;
+/// Re-baselined 2026-08-05 for the Drive cell-admission slice; the measured
+/// schema/behaviour split for all three of this fixture's constants is written
+/// out at `SLICE6_PRE_LIFECYCLE_V28_HASH`.
+const SLICE6_BASELINE_HASH: u64 = 0x22D8_5578_2E72_D55E;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

@@ -7,12 +7,16 @@
 use std::collections::BTreeSet;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::locomotor_type::{LocomotorKind, MovementZone};
+use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::sim::components::MovementTarget;
+use crate::sim::find_nearby_cell::{
+    NearbyQuery, PassabilityArgs, RADIUS_HARD_CAP, find_nearby_passable_cell,
+};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::path_smooth;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::pathfinding::zone_map::{ZONE_INVALID, ZoneGrid};
 use crate::sim::pathfinding::zone_search;
 use crate::sim::pathfinding::{
     MAX_PATH_SEGMENT_STEPS, PathGrid, SearchMarkerOverlay, truncate_layered_path,
@@ -156,6 +160,108 @@ pub(super) fn resolve_requested_move_goal(
     )
 }
 
+/// Which zone layer a destination cell is resolved on.
+///
+/// Gamemd passes the destination cell's own bridge bit into `Can_Reach_Zone` and
+/// into the nearby-passable-cell search from the ground-click destination
+/// resolver, so a click on a bridge deck is answered on the bridge layer.
+fn goal_zone_layer(
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    goal: (u16, u16),
+) -> MovementLayer {
+    let on_bridge = resolved_terrain
+        .and_then(|terrain| terrain.cell(goal.0, goal.1))
+        .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+    if on_bridge {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
+    }
+}
+
+/// Gamemd's order-time reachability gate and zone-constrained destination
+/// substitution.
+///
+/// The ground-click destination resolver runs `Can_Reach_Zone(myCell, clicked,
+/// mzRow, myLayer, clickedBridgeBit, 0)` before the mission is installed:
+///
+/// * success — the clicked cell is used verbatim;
+/// * failure — **the order is still accepted**. The resolver takes the mover's
+///   own zone id and runs the nearby-passable-cell search seeded at the clicked
+///   cell, requiring that zone, so the unit drives to the near bank of the river
+///   / the near side of the cliff instead of standing still. Only a search that
+///   finds no candidate at all drops the order (the engine's null-cell branch).
+///
+/// Returns `Some(goal)` unchanged when there is no zone data — that is the
+/// engine's `mzRow == -1` short-circuit, which returns "reachable".
+///
+/// Selection mode: the search is given the clicked cell as its distance
+/// reference, so the substitute is the nearest surviving candidate to the click.
+/// The engine's alternative frame-counter selection is reached only when the
+/// reference coord is the null cell; which of the two this call site takes is
+/// UNCHECKED, and nearest-to-click is the deterministic choice that needs no
+/// frame input threaded through every move-order caller.
+pub(super) fn resolve_reachable_move_goal(
+    grid: &PathGrid,
+    zone_grid: Option<&ZoneGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    start: (u16, u16),
+    start_layer: MovementLayer,
+    goal: (u16, u16),
+    zone_mz: MovementZone,
+    speed_type: SpeedType,
+) -> Option<(u16, u16)> {
+    let Some(zone_grid) = zone_grid else {
+        return Some(goal);
+    };
+    let goal_layer = goal_zone_layer(resolved_terrain, goal);
+    if start == goal || zone_grid.can_reach(zone_mz, start, start_layer, goal, goal_layer) {
+        return Some(goal);
+    }
+
+    let Some(zone_map) = zone_grid.map_for(zone_mz) else {
+        return Some(goal);
+    };
+    let required_zone = zone_map.zone_at(start.0, start.1, start_layer);
+    if required_zone == ZONE_INVALID {
+        // The mover itself has no zone — a unit standing on a footprint cell, a
+        // factory exit or an unmapped bridge cell. There is no zone to require,
+        // so the order passes through unchanged rather than being refused.
+        // VERA-internal; the engine labels such a node rather than leaving it
+        // undefined, so the gamemd equivalent here is UNCHECKED.
+        return Some(goal);
+    }
+
+    // Engine radius cap: min(map width + map height, 32).
+    let radius_cap = grid
+        .width()
+        .saturating_add(grid.height())
+        .min(RADIUS_HARD_CAP);
+    let query = NearbyQuery {
+        passability: PassabilityArgs {
+            speed_type,
+            required_zone_id: Some(required_zone),
+            movement_zone: zone_mz,
+            bridge_aware_zone: goal_layer == MovementLayer::Bridge,
+        },
+        allow_bridge_cells: true,
+        check_height: false,
+        check_occupancy: false,
+        radius_cap,
+        target_cell: Some((goal.0 as i32, goal.1 as i32)),
+        path_grid: Some(grid),
+        resolved_terrain,
+        overlay_grid: None,
+        occupancy: None,
+        entities: None,
+        zone_grid: Some(zone_grid),
+        map_size: Some((grid.width(), grid.height())),
+        playfield_bounds: None,
+    };
+    // `target_cell` is set, so the frame counter is not consulted for selection.
+    find_nearby_passable_cell((goal.0 as i32, goal.1 as i32), &query, 0)
+}
+
 pub(super) fn find_move_path(
     ctx: PathfindingContext<'_>,
     layered_pathing: bool,
@@ -172,6 +278,7 @@ pub(super) fn find_move_path(
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
     find_move_path_with_marker(
         ctx,
@@ -190,6 +297,7 @@ pub(super) fn find_move_path(
         None,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )
 }
 
@@ -211,6 +319,7 @@ pub(super) fn find_move_path_with_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    is_infantry: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
     let grid = ctx.path_grid?;
     let zone_grid = ctx.zone_grid;
@@ -244,6 +353,7 @@ pub(super) fn find_move_path_with_marker(
             ctx.blocker_neighbor_counts,
             urgency,
             mover_is_crusher,
+            is_infantry,
         );
         let Some(path) = layered_result else {
             log::trace!(
@@ -312,6 +422,7 @@ pub(super) fn find_move_path_with_marker(
         ctx.blocker_neighbor_counts,
         urgency,
         mover_is_crusher,
+        is_infantry,
     )?;
 
     if contains_non_adjacent_step(&path) {
@@ -466,6 +577,7 @@ pub(super) fn try_repath_after_block(
         marker_overlay,
         effective_urgency,
         mover_is_crusher,
+        is_infantry,
     );
     let Some((new_path, new_layers)) = path_result else {
         target.movement_delay = mcfg.path_delay_ticks;
@@ -652,6 +764,7 @@ mod tests {
             None,
             0,
             false,
+            false,
         )
         .expect("movement path should use explicit tube despite disconnected zones");
 
@@ -688,6 +801,7 @@ mod tests {
             None,
             Some(&marker_overlay),
             0,
+            false,
             false,
         )
         .expect("marker overlay should still allow a path");
@@ -790,6 +904,7 @@ mod tests {
             None,
             0,
             false,
+            false,
         )
         .expect("fixture must prove the removed ground-only retry could succeed");
         assert_eq!(flat.0.last().copied(), Some((2, 0)));
@@ -814,6 +929,7 @@ mod tests {
             false,
             None,
             0,
+            false,
             false,
         );
 

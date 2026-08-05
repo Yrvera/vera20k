@@ -27,6 +27,7 @@ pub(crate) mod fire_decision;
 pub(crate) mod in_range;
 mod inviso_scatter;
 pub mod smudge_dispatch;
+pub(crate) mod threat_range;
 
 #[cfg(test)]
 #[path = "combat_tests.rs"]
@@ -2517,6 +2518,7 @@ pub(crate) fn build_attacker_snapshot(
         burst_delay_ticks,
         weapon_override: entity.weapon_override,
         garrison,
+        scan_mission: threat_range::scan_mission_for(entity),
     }
 }
 

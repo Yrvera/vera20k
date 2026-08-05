@@ -187,10 +187,14 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     );
     state.camera_x = camera_x;
     state.camera_y = camera_y;
+    // gamemd's scenario reader fills all four camera bookmarks with the opening
+    // view cell, so F1 before any Ctrl+F1 is a valid "go home".
+    crate::app_camera::seed_view_bookmarks_from_current_view(state);
     state.asset_manager = result.asset_manager;
     state.building_placement_preview = None;
     state.active_sidebar_tab = SidebarTab::default_active_tab();
     state.sidebar_scroll_rows = 0;
+    state.sidebar_scroll_rows_parked = [0; 4];
     // Re-init the message surface per scenario (the native list is
     // re-initialized at scenario start): drops stale rows from the previous
     // game and any dangling pause span, so a pause→quit→new-map sequence
@@ -234,6 +238,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     }
     state.minimap_dragging = false;
     state.middle_mouse_panning = false;
+    state.tactical_mouse = Default::default();
     state.keys_held.clear();
     let tactical_w = crate::app_camera::tactical_viewport_width_px(
         state.render_width(),

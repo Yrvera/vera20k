@@ -544,7 +544,6 @@ pub(super) fn handle_deferred_occupancy(
     finished_entities: &mut Vec<u64>,
     crush_kills: &mut Vec<PendingCrushKill>,
     already_scattered: &mut BTreeSet<u64>,
-    blockage_path_delay_ticks: u16,
     sim_tick: u64,
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
@@ -619,6 +618,32 @@ pub(super) fn handle_deferred_occupancy(
         );
     }
 
+    // BACKED OUT — the full-infantry-cell force-scatter used to live here.
+    //
+    // The instruction range it was built on is real: the infantry per-cell entry
+    // body does test the three infantry occupancy bits and then call the cell
+    // scatter with force = 1. But the whole block is dominated by an earlier
+    // byte test on the infantryman himself, and every path into that block goes
+    // through it — when the byte is zero the code jumps clean past the scatter
+    // call. That byte is the radio tether: cleared by the `TechnoClass`
+    // constructor, raised on one radio message and cleared on its partner. So
+    // the original force-scatters a cell only for a *tethered* infantryman, and
+    // VERA models no tether term at all.
+    //
+    // It was also re-sited. The cell the original scatters is the man's OWN
+    // cell, resolved at the top of the per-cell entry body, so his own sub-cell
+    // bit is one of the three that satisfy the test. VERA tested the
+    // DESTINATION cell of a blocked step and explicitly excluded the arriver —
+    // a fourth man stopped before entry, which is a different situation.
+    //
+    // Consequence of leaving it in: any ordinary infantryman routed into a cell
+    // already holding three force-scattered all of them and drew from the
+    // scenario RNG where the original makes no draw, bounded only by a
+    // VERA-invented wait. That is deterministic state, and it fires on every
+    // squad funnelling through a chokepoint. Re-siting it faithfully means
+    // moving it to the arrival body and modelling the tether byte first, so the
+    // clause is out until both exist rather than half-gated.
+
     match entry_result {
         CellEntryResult::Clear => {
             // Locomotor override (JumpJet) can clear a lower native code before
@@ -667,6 +692,7 @@ pub(super) fn handle_deferred_occupancy(
                         mover_is_crusher,
                         is_infantry,
                         false,
+                        true,
                         marker_context,
                         occupancy,
                     );
@@ -677,6 +703,14 @@ pub(super) fn handle_deferred_occupancy(
         CellEntryResult::Crushable { victims } => {
             let crusher_cell = (i32::from(nx), i32::from(ny));
             let crusher_lepton = (i32::from(nx) * 256 + 128, i32::from(ny) * 256 + 128);
+            let eligibility = bump_crush::ScatterEligibility::from_rules(rules);
+            // The entering-cell scatter walks the whole selected cell list, not
+            // just the crushable subset, and it runs before any kill filter.
+            let cell_occupants: Vec<u64> = occupancy.get(nx, ny).map_or_else(Vec::new, |occ| {
+                occ.iter_layer(object_list_layer)
+                    .map(|occupant| occupant.entity_id)
+                    .collect()
+            });
             let victims = match bump_crush::classify_drive_crush_phase(
                 bump_crush::DriveCrushPhase::FullyInCell,
                 &victims,
@@ -686,6 +720,8 @@ pub(super) fn handle_deferred_occupancy(
                 interner,
                 crusher_lepton,
                 crush_capability,
+                eligibility,
+                sim_tick as u32,
             ) {
                 bump_crush::DriveCrushOutcome::Kill { victims } => victims,
                 _ => Vec::new(),
@@ -694,19 +730,23 @@ pub(super) fn handle_deferred_occupancy(
             if let bump_crush::DriveCrushOutcome::Scatter { blockers } =
                 bump_crush::classify_drive_crush_phase(
                     bump_crush::DriveCrushPhase::EnteringCell,
-                    &victims,
+                    &cell_occupants,
                     entities,
                     entity_id,
                     alliances,
                     interner,
                     crusher_lepton,
                     crush_capability,
+                    eligibility,
+                    sim_tick as u32,
                 )
             {
                 for blocker_id in blockers {
                     if kill_set.contains(&blocker_id) {
                         continue;
                     }
+                    let blocker_fraidycat =
+                        bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
                     if !already_scattered.contains(&blocker_id)
                         && bump_crush::scatter_blocker(
                             entities,
@@ -715,6 +755,8 @@ pub(super) fn handle_deferred_occupancy(
                             occupancy,
                             object_list_layer,
                             rng,
+                            rules.map(|r| &r.mission_control),
+                            blocker_fraidycat,
                         )
                     {
                         already_scattered.insert(blocker_id);
@@ -760,12 +802,22 @@ pub(super) fn handle_deferred_occupancy(
             }
         }
         CellEntryResult::FriendlyStationary { blocker_id } => {
+            // An allied occupant that is NOT moving and IS a building is a hard
+            // block in gamemd: the ally-and-not-moving branch of
+            // `UnitClass::Can_Enter_Cell` returns 7 outright before the running
+            // code can be raised to 6. Code 7 gets no scatter attempt and no
+            // BlockagePathDelay grace — the mover stops and repaths at once.
+            let blocker_is_structure = entities
+                .get(blocker_id)
+                .is_some_and(|blocker| blocker.category == EntityCategory::Structure);
             // Scatter the stationary friendly blocker out of the way.
             // Matches original engine: CellClass::Scatter_Objects with force=1
             // tells the BLOCKER to move, not the mover. The blocker receives a
             // movement command to walk to an adjacent cell.
             let mut scattered = false;
-            if !already_scattered.contains(&blocker_id) {
+            if !blocker_is_structure && !already_scattered.contains(&blocker_id) {
+                let blocker_fraidycat =
+                    bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
                 scattered = bump_crush::scatter_blocker(
                     entities,
                     blocker_id,
@@ -773,6 +825,8 @@ pub(super) fn handle_deferred_occupancy(
                     occupancy,
                     object_list_layer,
                     rng,
+                    rules.map(|r| &r.mission_control),
+                    blocker_fraidycat,
                 );
                 if scattered {
                     already_scattered.insert(blocker_id);
@@ -787,11 +841,12 @@ pub(super) fn handle_deferred_occupancy(
                 let body_facing = entity.body_facing;
                 if let Some(ref mut target) = entity.movement_target {
                     if scattered {
-                        // Blocker is moving — treat as temporary block, start
-                        // a short wait before repath so the blocker has time to clear.
+                        // Blocker is walking away. The original writes its
+                        // hardcoded 10-frame post-scatter wait here, not
+                        // `[AI] BlockagePathDelay`, which is a separate timer.
                         if !target.path_blocked {
                             target.path_blocked = true;
-                            target.blocked_delay = blockage_path_delay_ticks;
+                            target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
                         }
                     } else {
                         let mut aborted_for_stuck = false;
@@ -820,7 +875,11 @@ pub(super) fn handle_deferred_occupancy(
                             PATH_STUCK_INIT,
                             mover_is_crusher,
                             is_infantry,
-                            false, // friendly stationary: keep code-2 grace
+                            // Allied building occupant is native code 7 (no
+                            // grace); any other stationary friendly keeps the
+                            // code-2 grace.
+                            blocker_is_structure,
+                            true,
                             marker_context,
                             occupancy,
                         );
@@ -830,8 +889,68 @@ pub(super) fn handle_deferred_occupancy(
             }
         }
         CellEntryResult::OccupiedEnemy { blocker_id } => {
-            // Code 5: Attack blocker while waiting.
-            if let Some(entity) = entities.get_mut(entity_id) {
+            // Native cell-entry class 5, body arm: the next step is blocked by
+            // an object the mover is not allied with, so the mover stops and
+            // fights it. The Override archives the destination and the current
+            // target, so once something releases the mover — the target dies,
+            // or detaches alive — it goes back to the order it was carrying.
+            //
+            // Class 5 also covers an *enemy wall* natively, and that arm targets
+            // a cell rather than an object, which neither detach sweep can see;
+            // an object overridden onto a wall would strand. It cannot arrive
+            // here: `OccupiedEnemy` is built at exactly one place, inside the
+            // blocker classifier, which has already resolved a live entity, and
+            // `FriendlyWall` has no producer at all because VERA does not
+            // classify wall overlays at cell entry yet. So this site is the body
+            // arm and only the body arm. A future wall-overlay producer must NOT
+            // route into this arm without a Restore path for cell targets.
+            //
+            // ONLY THE WALK LOCOMOTOR TAKES THIS ARM IN THE ORIGINAL. An
+            // exhaustive search of the Override vtable slot returns ten call
+            // sites; the walk locomotor owns two of them (a blocking *object*
+            // and a wall), while the drive and ship locomotors each own exactly
+            // one — the wall — and have no blocking-object arm at all. So a
+            // blocked vehicle never overrides onto Attack; it repaths. Vehicles
+            // keep the pre-existing behaviour below, unchanged.
+            //
+            // After the body, the original falls straight into its "not class 1,
+            // not class 7" tail and RETURNS: it clears the stored path array,
+            // drives the applied speed fraction to zero, and calls the walk
+            // locomotor's own Stop_Moving. Together with the Override's NULL
+            // destination that leaves the mover with no destination and no path,
+            // so the walk step cannot re-enter this arm — the Override fires
+            // ONCE per block. Reproducing that stop is what makes the trigger
+            // safe: without it VERA re-entered every tick, and because a second
+            // Override with an empty queue archives the *current* mission, tick
+            // two overwrote the archived Move with Attack and every later
+            // Restore returned the unit to Attack instead of its order. The
+            // clobber is native and must not be gated away; the re-entry is the
+            // defect.
+            //
+            // Class 5 also covers an *enemy wall* natively, and that arm targets
+            // a cell rather than an object, which neither detach sweep can see;
+            // an object overridden onto a wall would strand. It cannot arrive
+            // here: `OccupiedEnemy` is built at exactly one place, inside the
+            // blocker classifier, which has already resolved a live entity, and
+            // `FriendlyWall` has no producer at all because VERA does not
+            // classify wall overlays at cell entry yet. So this site is the body
+            // arm and only the body arm. A future wall-overlay producer must NOT
+            // route into this arm without a Restore path for cell targets.
+            if mover_loco_kind == LocomotorKind::Walk {
+                crate::sim::mission::authority::override_mission_on_blocked_step(
+                    entities, alliances, interner, entity_id, blocker_id,
+                );
+                if let Some(entity) = entities.get_mut(entity_id) {
+                    snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                }
+                // The tail. `finalize_finished_entities` is VERA's single stop
+                // path: it drops the path executor (the stored path array), puts
+                // the locomotor back in its idle phase and returns the drive
+                // runtime — including its speed fraction — to rest.
+                if !finished_entities.contains(&entity_id) {
+                    finished_entities.push(entity_id);
+                }
+            } else if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 if entity.attack_target.is_none() {
                     entity.attack_target = Some(AttackTarget::new(blocker_id));
@@ -866,6 +985,7 @@ pub(super) fn handle_deferred_occupancy(
                         mover_is_crusher,
                         is_infantry,
                         false, // enemy blocker (code-5): keep code-2-style grace
+                        true,
                         marker_context,
                         occupancy,
                     );
@@ -880,89 +1000,128 @@ pub(super) fn handle_deferred_occupancy(
                 CellEntryResult::TemporaryOccupation => None,
                 _ => unreachable!(),
             };
-            // Moving friendly — wait, then scatter the BLOCKER.
+            // Moving friendly — scatter the BLOCKER, then wait.
             // Original engine: locomotor calls CellClass::Scatter_Objects with
-            // force=1 regardless of whether blocker is moving or stationary.
-            // The blocker is told to scatter; the mover waits.
+            // force=1 regardless of whether blocker is moving or stationary,
+            // and writes its 10-frame wait into the mover *immediately after*
+            // that call. So the nudge comes first and the wait is what follows
+            // it; arming the wait before the first scatter would delay the first
+            // nudge by the whole wait, which has no source in the original.
+            let mut has_target = false;
+            let mut grace_expired = false;
+            let mut first_block = false;
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 if let Some(ref mut target) = entity.movement_target {
-                    if !target.path_blocked {
-                        target.path_blocked = true;
-                        target.blocked_delay = blockage_path_delay_ticks;
+                    first_block = !target.path_blocked;
+                    target.path_blocked = true;
+                    has_target = true;
+                    grace_expired = target.blocked_delay == 0;
+                }
+            }
+            if has_target {
+                // The grace timer selects the repath URGENCY; it never
+                // suppresses the repath. gamemd's code-2 dispatch falls through
+                // to `FootClass::Find_Path(dest, 0, expired ? 2 : 1)` on every
+                // tick the movement-delay rate limiter allows, and that limiter
+                // is permanently open for Drive movers (the only writers of the
+                // tick field are the FootClass constructor and
+                // Set_Destination_Internal, both of which store zero). Only the
+                // blocker scatter and the peer refresh below wait for the timer.
+                let mut refreshed_marker_peers = None;
+                if first_block || grace_expired {
+                    // Scatter first — on the tick the block is detected, and
+                    // again once the wait has run out.
+                    if let Some(blocker_id) = blocker_id
+                        && !already_scattered.contains(&blocker_id)
+                    {
+                        let blocker_fraidycat =
+                            bump_crush::blocker_is_fraidycat(entities, blocker_id, rules, interner);
+                        let scattered = bump_crush::scatter_blocker(
+                            entities,
+                            blocker_id,
+                            path_grid,
+                            occupancy,
+                            object_list_layer,
+                            rng,
+                            rules.map(|r| &r.mission_control),
+                            blocker_fraidycat,
+                        );
+                        if scattered {
+                            already_scattered.insert(blocker_id);
+                            stats.scatter_successes = stats.scatter_successes.saturating_add(1);
+                        }
                     }
-                    if target.blocked_delay > 0 {
-                        // Still waiting — do nothing this tick.
-                    } else {
-                        // Wait expired — try scattering the blocker, then repath.
-                        if let Some(blocker_id) = blocker_id
-                            && !already_scattered.contains(&blocker_id)
-                        {
-                            let scattered = bump_crush::scatter_blocker(
-                                entities,
-                                blocker_id,
-                                path_grid,
-                                occupancy,
-                                object_list_layer,
-                                rng,
-                            );
-                            if scattered {
-                                already_scattered.insert(blocker_id);
-                                stats.scatter_successes = stats.scatter_successes.saturating_add(1);
-                            }
-                        }
-                        // Retail reads peer paths immediately before A*. Refresh
-                        // only at this seam because the scatter attempt above is
-                        // the sole mutation between the tick snapshot and this
-                        // immediate blocked repath.
-                        let refreshed_marker_peers = marker_context.map(|_| {
-                            crate::sim::movement::path_markers::snapshot_bridge_marker_peers(
-                                entities, rules, interner,
-                            )
-                        });
-                        let refreshed_marker_context =
-                            marker_context.zip(refreshed_marker_peers.as_ref()).map(
-                                |(context, peers)| bridge_marker_context_with_peers(context, peers),
-                            );
-                        // Re-borrow the mover since scatter_blocker and the live
-                        // marker snapshot both released it.
-                        if let Some(entity) = entities.get_mut(entity_id) {
-                            let cur_pos = (entity.position.rx, entity.position.ry);
-                            let body_facing = entity.body_facing;
-                            if let Some(ref mut target) = entity.movement_target {
-                                let mut aborted_for_stuck = false;
-                                let evts = handle_blocked_tick(
-                                    target,
-                                    &mut entity.facing,
-                                    body_facing,
-                                    &snap.locomotor,
-                                    &mut entity.drive_locomotion,
-                                    &mut entity.ship_locomotion,
-                                    entity_id,
-                                    cur_pos,
-                                    active_layer,
-                                    snap.on_bridge,
-                                    stats,
-                                    finished_entities,
-                                    &mut aborted_for_stuck,
-                                    ctx,
-                                    entity_cost_grid,
-                                    mover_entity_blocks,
-                                    mover_entity_block_map,
-                                    snap.too_big_to_fit_under_bridge,
-                                    mcfg,
-                                    rng,
-                                    sim_tick,
-                                    PATH_STUCK_INIT,
-                                    mover_is_crusher,
-                                    is_infantry,
-                                    false, // temp block (moving friendly): keep grace
-                                    refreshed_marker_context,
-                                    occupancy,
-                                );
-                                debug_events.extend(evts);
-                            }
-                        }
+                    if let Some(target) = entities
+                        .get_mut(entity_id)
+                        .and_then(|entity| entity.movement_target.as_mut())
+                    {
+                        // The wait the original writes right after the scatter
+                        // call, on EVERY pass through the block: the store sits
+                        // straight-line after the scatter with no branch between
+                        // them. Re-arming does not pin the repath urgency at 1 —
+                        // the wait expires again after its full span, so urgency
+                        // escalates to 2 once per span exactly as it does in the
+                        // original. Gating this on entry instead left the timer
+                        // at zero forever once it first expired, which made the
+                        // blocker scatter — and its scenario-stream draw — fire
+                        // every tick instead of once per span.
+                        target.blocked_delay = bump_crush::POST_SCATTER_WAIT_FRAMES;
+                    }
+                    // Retail reads peer paths immediately before A*. Refresh
+                    // only at this seam because the scatter attempt above is
+                    // the sole mutation between the tick snapshot and this
+                    // immediate blocked repath.
+                    refreshed_marker_peers = marker_context.map(|_| {
+                        crate::sim::movement::path_markers::snapshot_bridge_marker_peers(
+                            entities, rules, interner,
+                        )
+                    });
+                }
+                let effective_marker_context = match refreshed_marker_peers.as_ref() {
+                    Some(peers) => marker_context
+                        .map(|context| bridge_marker_context_with_peers(context, peers)),
+                    None => marker_context,
+                };
+                // Re-borrow the mover since scatter_blocker and the live
+                // marker snapshot both released it.
+                if let Some(entity) = entities.get_mut(entity_id) {
+                    let cur_pos = (entity.position.rx, entity.position.ry);
+                    let body_facing = entity.body_facing;
+                    if let Some(ref mut target) = entity.movement_target {
+                        let mut aborted_for_stuck = false;
+                        let evts = handle_blocked_tick(
+                            target,
+                            &mut entity.facing,
+                            body_facing,
+                            &snap.locomotor,
+                            &mut entity.drive_locomotion,
+                            &mut entity.ship_locomotion,
+                            entity_id,
+                            cur_pos,
+                            active_layer,
+                            snap.on_bridge,
+                            stats,
+                            finished_entities,
+                            &mut aborted_for_stuck,
+                            ctx,
+                            entity_cost_grid,
+                            mover_entity_blocks,
+                            mover_entity_block_map,
+                            snap.too_big_to_fit_under_bridge,
+                            mcfg,
+                            rng,
+                            sim_tick,
+                            PATH_STUCK_INIT,
+                            mover_is_crusher,
+                            is_infantry,
+                            false, // temp block (moving friendly): keep grace
+                            // Native code 2 has no CloseEnough give-up.
+                            false,
+                            effective_marker_context,
+                            occupancy,
+                        );
+                        debug_events.extend(evts);
                     }
                 }
             }
@@ -1001,6 +1160,7 @@ pub(super) fn handle_deferred_occupancy(
                         mover_is_crusher,
                         is_infantry,
                         true, // wall/impassable (code-7): skip grace
+                        true,
                         marker_context,
                         occupancy,
                     );

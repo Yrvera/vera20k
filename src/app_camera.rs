@@ -21,8 +21,23 @@ use crate::app::AppState;
 use crate::map::terrain;
 use crate::sidebar::SidebarChromeLayoutSpec;
 
-/// Camera scroll speed in pixels per frame (arrow keys).
-const CAMERA_SCROLL_SPEED: f32 = 8.0;
+/// Arrow-key scroll distance in world pixels per frame.
+///
+/// gamemd's main tick reads one flat constant for every arrow key. This path has
+/// no coast ramp and no `ScrollRate` term — that machinery belongs to mouse edge
+/// scrolling alone — and holding two arrows moves the full distance on both axes
+/// because each key issues its own scroll.
+const KEY_SCROLL_DISTANCE: f32 = 21.0;
+
+/// Shift scales the arrow-scroll distance by 2.5 and the product goes through
+/// the same truncating float-to-long as the rest of the scroll math, so the
+/// boosted step is 52 px per frame rather than 52.5.
+const KEY_SCROLL_SHIFT_MULTIPLIER: f32 = 2.5;
+
+/// Ctrl replaces the distance with the map's longer side in cells, shifted left
+/// by the lepton-per-cell shift. That overshoots every stock map, so the clamp
+/// catches it and the view lands on the map border in a single frame.
+const KEY_SCROLL_CTRL_CELL_SHIFT: u32 = 8;
 
 /// Minimum zoom level — zoomed out enough to see a large portion of the map.
 const MIN_ZOOM: f32 = 0.25;
@@ -248,36 +263,312 @@ pub(crate) fn edge_scroll_step(
     (dx * distance, dy * distance)
 }
 
+// ---------------------------------------------------------------------------
+// Camera bookmarks — the View1..4 / SetView1..4 commands.
+// ---------------------------------------------------------------------------
+
+/// Number of camera bookmark slots. gamemd ships exactly four commands per
+/// direction (`View1..View4`, `SetView1..SetView4`), bound to F1..F4 and
+/// Ctrl+F1..Ctrl+F4 in the stock keyboard INI.
+pub(crate) const VIEW_BOOKMARK_SLOTS: usize = 4;
+
+/// The four camera bookmark slots.
+///
+/// Each slot is a **cell**, not a pixel or lepton position: the recall command
+/// projects the cell centre and lands it at the middle of the tactical viewport,
+/// then runs the same clamp every other scroll source uses. Recall is an instant
+/// jump, not a glide.
+///
+/// All four slots are seeded with the scenario's opening view at map load, so a
+/// recall before any set is a valid "go home" rather than a jump to the map
+/// corner. That is why the slots are plain cells rather than `Option`s — the
+/// native structure has no empty state.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ViewBookmarks {
+    slots: [(u16, u16); VIEW_BOOKMARK_SLOTS],
+}
+
+impl ViewBookmarks {
+    /// Seed every slot with one cell (the map-load chained assignment).
+    pub(crate) fn seed_all(&mut self, rx: u16, ry: u16) {
+        self.slots = [(rx, ry); VIEW_BOOKMARK_SLOTS];
+    }
+
+    /// Store `cell` in one slot. Out-of-range slots are ignored.
+    pub(crate) fn set(&mut self, slot: usize, rx: u16, ry: u16) {
+        if let Some(entry) = self.slots.get_mut(slot) {
+            *entry = (rx, ry);
+        }
+    }
+
+    /// Read one slot.
+    pub(crate) fn get(&self, slot: usize) -> Option<(u16, u16)> {
+        self.slots.get(slot).copied()
+    }
+}
+
+/// The cell under the centre of the tactical viewport — the point `SetView`
+/// captures. gamemd reads the *view's* coordinate, not the cursor's, so a
+/// bookmark records where the player is looking rather than where the mouse
+/// happens to sit.
+fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
+    let tactical_w =
+        tactical_viewport_width_px(state.render_width(), state.sidebar_layout_spec) as f32;
+    let world_x = state.camera_x + tactical_w / (2.0 * state.zoom_level);
+    let world_y = state.camera_y + state.render_height() as f32 / (2.0 * state.zoom_level);
+    crate::app_sim_tick::world_point_to_cell(
+        world_x,
+        world_y,
+        &state.height_map,
+        Some(&state.tactical_bridge_inverse_map),
+    )
+}
+
+/// `SetView<slot+1>` — capture the current view into a bookmark.
+pub(crate) fn set_view_bookmark(state: &mut AppState, slot: usize) {
+    let (rx, ry) = tactical_centre_cell(state);
+    state.view_bookmarks.set(slot, rx, ry);
+    log::info!("SetView{}: bookmark set to cell ({rx}, {ry})", slot + 1);
+}
+
+/// `View<slot+1>` — jump the camera to a bookmark.
+pub(crate) fn recall_view_bookmark(state: &mut AppState, slot: usize) {
+    let Some((rx, ry)) = state.view_bookmarks.get(slot) else {
+        return;
+    };
+    center_camera_on_cell(state, rx, ry);
+}
+
+/// Seed all four bookmarks with the cell the view is currently centred on.
+/// Called from the map-load and spawn-pick paths, which are where gamemd's
+/// scenario reader fills the four slots with the opening view.
+pub(crate) fn seed_view_bookmarks_from_current_view(state: &mut AppState) {
+    let (rx, ry) = tactical_centre_cell(state);
+    state.view_bookmarks.seed_all(rx, ry);
+}
+
+// ---------------------------------------------------------------------------
+// Right-drag map pan.
+// ---------------------------------------------------------------------------
+
+/// `2 * SM_CXDRAG` / `2 * SM_CYDRAG` — the displacement a right drag must exceed
+/// before it becomes a map pan, and before the release stops running the
+/// cancel/deselect ladder. Windows ships 4 for both metrics, so the live
+/// threshold is 8 px on a default install.
+///
+/// VERA-internal: the live system metric is not queried, the default is used.
+/// gamemd equivalent UNCHECKED for a machine whose drag metrics were customised.
+const RIGHT_DRAG_THRESHOLD_PX: f32 = 8.0;
+
+/// gamemd divides the anchor displacement by `ScrollRate + 1` and truncates, so
+/// a right drag held 100 px from its anchor with the stock rate moves the camera
+/// 25 px along that axis every frame.
+const RIGHT_DRAG_RATE_BIAS: u32 = 1;
+
+/// Distance from a screen border, in pixels, inside which an anchor makes a
+/// drag pushing further toward that border boost.
+const RIGHT_DRAG_EDGE_BAND_PX: f32 = 10.0;
+/// Minimum displacement the edge boost substitutes before the multiply.
+const RIGHT_DRAG_EDGE_MIN_PX: i32 = 5;
+/// The edge-boost multiplier (a left shift by two in the original).
+const RIGHT_DRAG_EDGE_BOOST: i32 = 4;
+
+/// Tactical mouse capture plus the right-drag pan's anchor and latches.
+///
+/// gamemd sets one "a button is captured" byte on the left *and* the right press
+/// inside the play area and clears it on the matching release. While it is set,
+/// the per-frame mouse block routes to the band-box or right-drag branch and
+/// edge auto-scroll early-returns — which is why pushing a band box into a
+/// screen border does not scroll the map in the original.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TacticalMouseState {
+    /// A tactical mouse button holds the capture.
+    pub(crate) captured: bool,
+    /// Left button physically down.
+    pub(crate) left_held: bool,
+    /// Right button physically down.
+    pub(crate) right_held: bool,
+    /// Right-press anchor in render-target pixels.
+    pub(crate) right_anchor: (f32, f32),
+    /// The right drag has passed the system drag threshold. Once set, the
+    /// release no longer runs the cancel/deselect ladder.
+    pub(crate) right_threshold_crossed: bool,
+    /// The right drag owns the camera (the band box did not win the race).
+    right_pan_engaged: bool,
+}
+
+impl TacticalMouseState {
+    /// Right press inside the play area: record the anchor and take the capture.
+    /// The press itself has no game effect in gamemd.
+    pub(crate) fn begin_right_drag(&mut self, cursor: (f32, f32)) {
+        self.right_anchor = cursor;
+        self.right_threshold_crossed = false;
+        self.right_pan_engaged = false;
+        self.captured = true;
+    }
+
+    /// Drop the capture and both right-drag latches.
+    pub(crate) fn release(&mut self) {
+        self.captured = false;
+        self.right_threshold_crossed = false;
+        self.right_pan_engaged = false;
+    }
+
+    /// True while the right button owns the per-frame mouse block. The left
+    /// button is tested first in the original, so a band box in progress keeps
+    /// the pan from running.
+    fn right_drag_owns_frame(&self) -> bool {
+        self.captured && self.right_held && !self.left_held
+    }
+}
+
+/// One right-drag pan step, in world pixels, for `ScrollMethod = 0` (the stock
+/// value — the two cursor-warping methods have no in-game UI and ship disabled).
+///
+/// The displacement is measured from the **anchor**, not from the previous
+/// frame, so the gesture behaves like a joystick: the further the cursor sits
+/// from the press point, the faster the map slides, every frame the button is
+/// held. Both axes truncate toward zero, matching the original's float-to-long.
+fn right_drag_pan_step(
+    anchor: (f32, f32),
+    cursor: (f32, f32),
+    view_w: f32,
+    view_h: f32,
+    scroll_rate: u32,
+) -> (f32, f32) {
+    // The native handler works on integer mouse coordinates.
+    let mut dx = (cursor.0 - anchor.0).trunc() as i32;
+    let mut dy = (cursor.1 - anchor.1).trunc() as i32;
+
+    // An anchor pinned against a border still scrolls outward when the cursor
+    // cannot travel any further. The native test is asymmetric — the X arm
+    // compares against `width - 1` and the Y arm against the raw height.
+    if dx == 0 {
+        if anchor.0 <= 0.0 {
+            dx = -1;
+        } else if anchor.0 >= view_w - 1.0 {
+            dx = 1;
+        }
+    }
+    if dy == 0 {
+        if anchor.1 <= 0.0 {
+            dy = -1;
+        } else if anchor.1 >= view_h {
+            dy = 1;
+        }
+    }
+
+    // Anchor within ten pixels of a border, dragging further that way: force at
+    // least five pixels of displacement, then multiply by four.
+    if anchor.0 < RIGHT_DRAG_EDGE_BAND_PX && dx < 0 {
+        dx = dx.min(-RIGHT_DRAG_EDGE_MIN_PX) * RIGHT_DRAG_EDGE_BOOST;
+    } else if anchor.0 > view_w - RIGHT_DRAG_EDGE_BAND_PX && dx > 0 {
+        dx = dx.max(RIGHT_DRAG_EDGE_MIN_PX) * RIGHT_DRAG_EDGE_BOOST;
+    }
+    if anchor.1 < RIGHT_DRAG_EDGE_BAND_PX && dy < 0 {
+        dy = dy.min(-RIGHT_DRAG_EDGE_MIN_PX) * RIGHT_DRAG_EDGE_BOOST;
+    } else if anchor.1 > view_h - RIGHT_DRAG_EDGE_BAND_PX && dy > 0 {
+        dy = dy.max(RIGHT_DRAG_EDGE_MIN_PX) * RIGHT_DRAG_EDGE_BOOST;
+    }
+
+    let divisor = (scroll_rate + RIGHT_DRAG_RATE_BIAS) as f32;
+    ((dx as f32 / divisor).trunc(), (dy as f32 / divisor).trunc())
+}
+
+/// Drive the right-drag map pan for this frame.
+fn update_right_drag_pan(state: &mut AppState) {
+    if !state.tactical_mouse.right_drag_owns_frame() {
+        return;
+    }
+    let anchor = state.tactical_mouse.right_anchor;
+    let cursor = (state.cursor_x, state.cursor_y);
+    if !state.tactical_mouse.right_threshold_crossed
+        && ((cursor.0 - anchor.0).abs() > RIGHT_DRAG_THRESHOLD_PX
+            || (cursor.1 - anchor.1).abs() > RIGHT_DRAG_THRESHOLD_PX)
+    {
+        state.tactical_mouse.right_threshold_crossed = true;
+    }
+    if !state.tactical_mouse.right_threshold_crossed {
+        return;
+    }
+    if !state.tactical_mouse.right_pan_engaged {
+        // A live band box wins the race: the original cancels the drag instead
+        // of engaging the pan, and only engages on a later frame.
+        if state.selection_state.is_band_box_active() {
+            state.selection_state.cancel_drag();
+            return;
+        }
+        state.tactical_mouse.right_pan_engaged = true;
+    }
+
+    let (dx, dy) = right_drag_pan_step(
+        anchor,
+        cursor,
+        state.render_width() as f32,
+        state.render_height() as f32,
+        state.in_game_options.scroll_rate,
+    );
+    // The pan distance is in window pixels. Stock YR has no world zoom, so the
+    // divide is VERA-internal and exact at zoom 1.0.
+    state.camera_x += dx / state.zoom_level;
+    state.camera_y += dy / state.zoom_level;
+}
+
+/// Arrow-key scroll distance for this frame, in world pixels.
+///
+/// Shift is tested before Ctrl in the original, so Shift wins when both are
+/// held. The Ctrl distance is derived from the map's longer side; with no map
+/// loaded there is nothing to jump across and the distance is zero.
+fn keyboard_scroll_distance(state: &AppState) -> f32 {
+    if crate::app_input::is_shift_held(state) {
+        (KEY_SCROLL_DISTANCE * KEY_SCROLL_SHIFT_MULTIPLIER).trunc()
+    } else if crate::app_input::is_ctrl_held(state) {
+        let cells = state
+            .simulation
+            .as_ref()
+            .map_or(0u32, |sim| u32::from(sim.fog.width.max(sim.fog.height)));
+        (cells << KEY_SCROLL_CTRL_CELL_SHIFT) as f32
+    } else {
+        KEY_SCROLL_DISTANCE
+    }
+}
+
 /// Update camera position based on keyboard and mouse edge scrolling.
 pub(crate) fn update_camera(state: &mut AppState) {
     let sw: f32 = state.render_width() as f32;
     let sh: f32 = state.render_height() as f32;
 
+    let key_distance = keyboard_scroll_distance(state);
     if state
         .keys_held
         .contains(&winit::keyboard::KeyCode::ArrowLeft)
     {
-        state.camera_x -= CAMERA_SCROLL_SPEED / state.zoom_level;
+        state.camera_x -= key_distance / state.zoom_level;
     }
     if state
         .keys_held
         .contains(&winit::keyboard::KeyCode::ArrowRight)
     {
-        state.camera_x += CAMERA_SCROLL_SPEED / state.zoom_level;
+        state.camera_x += key_distance / state.zoom_level;
     }
     if state.keys_held.contains(&winit::keyboard::KeyCode::ArrowUp) {
-        state.camera_y -= CAMERA_SCROLL_SPEED / state.zoom_level;
+        state.camera_y -= key_distance / state.zoom_level;
     }
     if state
         .keys_held
         .contains(&winit::keyboard::KeyCode::ArrowDown)
     {
-        state.camera_y += CAMERA_SCROLL_SPEED / state.zoom_level;
+        state.camera_y += key_distance / state.zoom_level;
     }
 
-    // gamemd gates edge scroll on a ScrollInhibited flag; VERA's only inhibit
-    // source today is an in-progress minimap drag.
-    if !state.minimap_dragging {
+    update_right_drag_pan(state);
+
+    // gamemd's edge scroll early-returns while any tactical mouse button holds
+    // the capture, so the map is frozen for the whole of a band-box or
+    // right-drag gesture. The minimap-drag and middle-pan inhibits are
+    // VERA-internal: neither gesture exists in gamemd (gamemd equivalent
+    // UNCHECKED), and both already own the camera while they run.
+    if !state.tactical_mouse.captured && !state.minimap_dragging && !state.middle_mouse_panning {
         let now = state.edge_scroll.radar_timer();
         let scroll_rate = state.in_game_options.scroll_rate;
         let (dx, dy) = edge_scroll_step(
@@ -307,10 +598,17 @@ const ZOOM_EASE: f32 = 0.35;
 /// Snap threshold — when zoom_level is this close to zoom_target, jump to it.
 const ZOOM_SNAP: f32 = 0.002;
 
-/// Set zoom target from mouse wheel input, anchored on the cursor position.
+/// Set zoom target, anchored on the cursor position.
 ///
 /// Records the world point under the cursor so `animate_zoom` can keep it
 /// pinned at that screen position during the smooth ease.
+///
+/// **Currently unbound.** Stock YR has no world zoom at all, and the wheel — the
+/// only input that used to reach this — is the sidebar strip scroll in gamemd.
+/// The zoom machinery is kept intact (`animate_zoom` still runs, and every
+/// camera path still divides by `zoom_level`) so a future non-wheel binding or a
+/// spectator/debug view can drive it, but nothing calls this today.
+#[allow(dead_code)]
 pub(crate) fn apply_zoom(state: &mut AppState, delta_lines: f32) {
     let old_target = state.zoom_target;
     let factor = ZOOM_STEP.powf(delta_lines);
@@ -886,5 +1184,181 @@ mod tests {
             tactical_viewport_width_px(800, spec_with(167.6, 0.0)),
             800 - 168
         );
+    }
+
+    // -- camera bookmarks ----------------------------------------------------
+
+    /// All four slots start on the scenario's opening view, so a recall before
+    /// any set is a "go home" rather than a jump to the map corner, and setting
+    /// one slot leaves the other three alone.
+    #[test]
+    fn bookmarks_seed_all_four_and_set_touches_one() {
+        let mut marks = ViewBookmarks::default();
+        marks.seed_all(37, 12);
+        for slot in 0..VIEW_BOOKMARK_SLOTS {
+            assert_eq!(marks.get(slot), Some((37, 12)), "slot {slot}");
+        }
+        marks.set(0, 10, 10);
+        assert_eq!(marks.get(0), Some((10, 10)));
+        for slot in 1..VIEW_BOOKMARK_SLOTS {
+            assert_eq!(marks.get(slot), Some((37, 12)), "slot {slot}");
+        }
+        // Four slots, no more.
+        assert_eq!(marks.get(VIEW_BOOKMARK_SLOTS), None);
+    }
+
+    /// Recalling a bookmark lands the stored cell at the centre of the tactical
+    /// viewport — the same anchoring `center_camera_on_cell` performs, which is
+    /// what the native recall does after projecting the cell centre.
+    #[test]
+    fn recalling_a_bookmark_centres_that_cell_in_the_tactical_viewport() {
+        let mut marks = ViewBookmarks::default();
+        marks.seed_all(37, 12);
+        marks.set(1, 10, 10);
+        let (rx, ry) = marks.get(1).expect("slot 1");
+        let camera = tactical_camera_top_left(
+            cell_centre_world_point(rx, ry, 0),
+            WINDOW_W,
+            WINDOW_H,
+            SIDEBAR_W,
+            1.0,
+        );
+        let (sx, sy) = screen_of(entity_world_point(rx, ry, 0), camera, 1.0);
+        assert!((sx - (WINDOW_W - SIDEBAR_W) / 2.0).abs() < 1e-3, "sx {sx}");
+        assert!((sy - WINDOW_H / 2.0).abs() < 1e-3, "sy {sy}");
+    }
+
+    // -- keyboard scroll -----------------------------------------------------
+
+    /// The Shift boost truncates: 21 * 2.5 is 52.5 and the native float-to-long
+    /// chops it to 52, not 53.
+    #[test]
+    fn shift_boosted_keyboard_scroll_truncates_to_52() {
+        assert_eq!(KEY_SCROLL_DISTANCE, 21.0);
+        assert_eq!(
+            (KEY_SCROLL_DISTANCE * KEY_SCROLL_SHIFT_MULTIPLIER).trunc(),
+            52.0
+        );
+    }
+
+    /// The Ctrl distance is the map's longer side in cells shifted by 8, which
+    /// overshoots the widest stock map by orders of magnitude — the clamp is
+    /// what actually stops the view, so this is a map-edge jump.
+    #[test]
+    fn ctrl_keyboard_scroll_overshoots_the_whole_map() {
+        for cells in [64u32, 128, 256] {
+            let jump = (cells << KEY_SCROLL_CTRL_CELL_SHIFT) as f32;
+            // World width of a square map that many cells on a side.
+            let world_span = cells as f32 * terrain::TILE_WIDTH;
+            assert!(jump > world_span, "{cells} cells: {jump} vs {world_span}");
+        }
+    }
+
+    // -- right-drag pan ------------------------------------------------------
+
+    const PAN_VIEW_W: f32 = 1024.0;
+    const PAN_VIEW_H: f32 = 768.0;
+    /// Stock `[Options] ScrollRate` default (0 fastest .. 6 slowest).
+    const PAN_SCROLL_RATE: u32 = 3;
+
+    /// The pan is measured from the anchor, not from the previous frame, so
+    /// holding the cursor still keeps the map sliding at a constant rate.
+    #[test]
+    fn pan_speed_is_the_anchor_displacement_over_scroll_rate_plus_one() {
+        let anchor = (400.0, 300.0);
+        assert_eq!(
+            right_drag_pan_step(
+                anchor,
+                (500.0, 300.0),
+                PAN_VIEW_W,
+                PAN_VIEW_H,
+                PAN_SCROLL_RATE
+            ),
+            (25.0, 0.0)
+        );
+        assert_eq!(
+            right_drag_pan_step(
+                anchor,
+                (300.0, 380.0),
+                PAN_VIEW_W,
+                PAN_VIEW_H,
+                PAN_SCROLL_RATE
+            ),
+            (-25.0, 20.0)
+        );
+        // Slower ScrollRate, same gesture, smaller step.
+        assert_eq!(
+            right_drag_pan_step(anchor, (500.0, 300.0), PAN_VIEW_W, PAN_VIEW_H, 6),
+            (14.0, 0.0)
+        );
+    }
+
+    /// Both axes truncate toward zero, so a drag shorter than the divisor moves
+    /// the camera not at all rather than by a rounded pixel.
+    #[test]
+    fn pan_truncates_toward_zero_on_both_signs() {
+        let anchor = (400.0, 300.0);
+        assert_eq!(
+            right_drag_pan_step(
+                anchor,
+                (403.0, 297.0),
+                PAN_VIEW_W,
+                PAN_VIEW_H,
+                PAN_SCROLL_RATE
+            ),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            right_drag_pan_step(
+                anchor,
+                (407.0, 293.0),
+                PAN_VIEW_W,
+                PAN_VIEW_H,
+                PAN_SCROLL_RATE
+            ),
+            (1.0, -1.0)
+        );
+    }
+
+    /// An anchor pressed against a border boosts: the displacement is forced to
+    /// at least five pixels outward and then multiplied by four, which is how a
+    /// right drag started at the screen edge still scrolls.
+    #[test]
+    fn pan_boosts_when_the_anchor_sits_on_a_border() {
+        // Anchor 4 px from the left edge, cursor 1 px further left: the raw
+        // displacement is -1, the boost substitutes -5 and quadruples it.
+        let (dx, _) = right_drag_pan_step(
+            (4.0, 300.0),
+            (3.0, 300.0),
+            PAN_VIEW_W,
+            PAN_VIEW_H,
+            PAN_SCROLL_RATE,
+        );
+        assert_eq!(dx, -5.0);
+        // Away from the border the same gesture does nothing.
+        let (plain, _) = right_drag_pan_step(
+            (400.0, 300.0),
+            (399.0, 300.0),
+            PAN_VIEW_W,
+            PAN_VIEW_H,
+            PAN_SCROLL_RATE,
+        );
+        assert_eq!(plain, 0.0);
+    }
+
+    /// Capture routing: the left button is tested first, so a band box in
+    /// progress keeps the right drag from stealing the camera.
+    #[test]
+    fn left_button_wins_the_per_frame_mouse_block() {
+        let mut mouse = TacticalMouseState::default();
+        mouse.right_held = true;
+        mouse.begin_right_drag((100.0, 100.0));
+        assert!(mouse.right_drag_owns_frame());
+        mouse.left_held = true;
+        assert!(!mouse.right_drag_owns_frame());
+        mouse.left_held = false;
+        mouse.release();
+        assert!(!mouse.captured);
+        assert!(!mouse.right_drag_owns_frame());
     }
 }

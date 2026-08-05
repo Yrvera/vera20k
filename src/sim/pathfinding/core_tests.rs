@@ -750,11 +750,36 @@ fn test_find_path_blocked_start_all_neighbors_blocked_returns_none() {
 }
 
 #[test]
-fn test_find_path_blocked_goal() {
+fn test_find_path_blocked_goal_returns_path_to_adjacent_cell() {
+    // An impassable destination does not abort the search. gamemd runs it, and
+    // the first time a reached cell has the blocked goal as a neighbour it
+    // leaves the loop and returns the path to that adjacent cell.
     let mut grid: PathGrid = PathGrid::new(10, 10);
     grid.set_blocked(5, 5, true);
-    let path: Option<Vec<(u16, u16)>> = find_path(&grid, (0, 0), (5, 5));
-    assert!(path.is_none(), "Blocked goal should return None");
+    let path: Vec<(u16, u16)> = find_path(&grid, (0, 0), (5, 5))
+        .expect("blocked goal must still produce the path to a cell adjacent to it");
+    assert!(path.len() >= 2, "path must contain at least one real step");
+    assert_eq!(path[0], (0, 0));
+    let last = *path.last().unwrap();
+    assert_ne!(last, (5, 5), "the blocked goal itself is never entered");
+    assert!(
+        last.0.abs_diff(5) <= 1 && last.1.abs_diff(5) <= 1,
+        "path must end adjacent to the blocked goal, ended at {last:?}"
+    );
+}
+
+#[test]
+fn test_find_path_blocked_goal_adjacent_to_start_fails() {
+    // The success tail requires the aborting node to be at least one real step
+    // from the start (node depth >= 2). A mover already standing next to the
+    // blocked cell therefore gets no path at all.
+    let mut grid: PathGrid = PathGrid::new(10, 10);
+    grid.set_blocked(5, 5, true);
+    let path: Option<Vec<(u16, u16)>> = find_path(&grid, (4, 4), (5, 5));
+    assert!(
+        path.is_none(),
+        "start-adjacent blocked goal fails the search outright"
+    );
 }
 
 #[test]
@@ -1018,6 +1043,7 @@ fn test_layered_path_transitions_onto_bridge_and_stays_on_deck() {
         None,
         0,
         false,
+        false,
     )
     .expect("bridge path should exist");
 
@@ -1049,6 +1075,7 @@ fn test_layered_path_stays_on_ground_when_bridge_not_needed() {
         None,
         None,
         0,
+        false,
         false,
     )
     .expect("ground path should exist");
@@ -1119,6 +1146,7 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
             None,
             0,
             false,
+            false,
         )
         .is_some(),
         "intact bridge should be traversable"
@@ -1146,6 +1174,7 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
             None,
             None,
             0,
+            false,
             false,
         )
         .is_none(),
@@ -1595,6 +1624,7 @@ fn astar_uses_explicit_nonzero_tube_edge() {
         None,
         0,
         false,
+        false,
     )
     .expect("explicit nonzero tube should bridge blocked intermediate cells");
 
@@ -1628,6 +1658,7 @@ fn astar_rejects_zero_step_auto_shell_tube_edge() {
         Some(&terrain),
         None,
         0,
+        false,
         false,
     );
 
@@ -1663,6 +1694,7 @@ fn astar_walks_stock_low_bridge_cells_without_explicit_tubes() {
         None,
         0,
         false,
+        false,
     )
     .expect("stock auto low-bridge shell cells should remain normal ground-walkable cells");
 
@@ -1689,6 +1721,7 @@ fn test_entity_blocks_routes_around_blocked_cell() {
         None,
         None,
         0,
+        false,
         false,
     );
     assert!(path.is_some(), "Should find a path around the entity block");
@@ -1718,6 +1751,7 @@ fn test_entity_blocks_goal_cell_still_reachable() {
         None,
         0,
         false,
+        false,
     );
     assert!(
         path.is_some(),
@@ -1742,6 +1776,7 @@ fn test_entity_blocks_empty_set_same_as_none() {
         None,
         0,
         false,
+        false,
     );
     let path_empty = find_path_with_costs(
         &grid,
@@ -1753,6 +1788,7 @@ fn test_entity_blocks_empty_set_same_as_none() {
         None,
         None,
         0,
+        false,
         false,
     );
     assert_eq!(path_none, path_empty);
@@ -1782,6 +1818,7 @@ fn test_entity_blocks_fully_surrounded_no_path() {
         None,
         0,
         false,
+        false,
     );
     // Goal itself is reachable, but all approaches blocked → no path.
     assert!(
@@ -1807,6 +1844,7 @@ fn code2_urgency_2_routes_around_blocker() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let path = find_path_with_costs(
@@ -1819,6 +1857,7 @@ fn code2_urgency_2_routes_around_blocker() {
         None,
         Some(&ebm),
         2,
+        false,
         false,
     )
     .expect("urgency=2 should still find a path");
@@ -1842,6 +1881,7 @@ fn code2_urgency_1_picks_alt_when_available() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let path = find_path_with_costs(
@@ -1854,6 +1894,7 @@ fn code2_urgency_1_picks_alt_when_available() {
         None,
         Some(&ebm),
         1,
+        false,
         false,
     )
     .expect("urgency=1 should find a path");
@@ -1878,6 +1919,7 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     ebm.insert(
@@ -1886,6 +1928,7 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
         EntityBlockEntry {
             next_cell: Some((5, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     ebm.insert(
@@ -1894,6 +1937,7 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
         EntityBlockEntry {
             next_cell: Some((6, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     // Block the alt rows so the only route is through the chain.
@@ -1912,6 +1956,7 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
         None,
         Some(&ebm),
         0,
+        false,
         false,
     )
     .expect("urgency=0 clearing chain should not block routing");
@@ -1935,6 +1980,7 @@ fn code2_urgency_0_ten_step_jam_uses_4x() {
             EntityBlockEntry {
                 next_cell: Some((x + 1, 1)),
                 cost_code: 2,
+                blocker_is_infantry: false,
             },
         );
     }
@@ -1955,6 +2001,7 @@ fn code2_urgency_0_ten_step_jam_uses_4x() {
         Some(&ebm),
         0,
         false,
+        false,
     )
     .expect("jam path should still exist — 4x penalty doesn't make it infeasible");
     // Path does go through the chain cells.
@@ -1974,6 +2021,7 @@ fn code2_goal_cell_exempt_from_multiplier() {
         EntityBlockEntry {
             next_cell: Some((6, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let path = find_path_with_costs(
@@ -1986,6 +2034,7 @@ fn code2_goal_cell_exempt_from_multiplier() {
         None,
         Some(&ebm),
         2,
+        false,
         false,
     )
     .expect("goal cell should be reachable even with urgency=2 blocker on it");
@@ -2002,6 +2051,7 @@ fn soft_blocker_cost_uses_selected_ground_object_list_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
 
@@ -2015,6 +2065,7 @@ fn soft_blocker_cost_uses_selected_ground_object_list_layer() {
         None,
         Some(&ebm),
         2,
+        false,
         false,
     )
     .expect("bridge-layer soft blocker must not affect ground path");
@@ -2030,6 +2081,7 @@ fn soft_blocker_cost_uses_selected_ground_object_list_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let ground_path = find_path_with_costs(
@@ -2042,6 +2094,7 @@ fn soft_blocker_cost_uses_selected_ground_object_list_layer() {
         None,
         Some(&ebm),
         2,
+        false,
         false,
     )
     .expect("ground path should still exist by detouring");
@@ -2068,6 +2121,7 @@ fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let ground_only_path = find_layered_path(
@@ -2081,6 +2135,7 @@ fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
         None,
         Some(&ebm),
         2,
+        false,
         false,
     )
     .expect("ground-layer soft blocker must not affect bridge path");
@@ -2098,6 +2153,7 @@ fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     let bridge_path = find_layered_path(
@@ -2111,6 +2167,7 @@ fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
         None,
         Some(&ebm),
         2,
+        false,
         false,
     )
     .expect("bridge path should still exist by detouring");
@@ -2130,6 +2187,7 @@ fn code2_chain_lookup_stays_on_selected_layer() {
         EntityBlockEntry {
             next_cell: Some((4, 1)),
             cost_code: 2,
+            blocker_is_infantry: false,
         },
     );
     for x in 4..15u16 {
@@ -2139,6 +2197,7 @@ fn code2_chain_lookup_stays_on_selected_layer() {
             EntityBlockEntry {
                 next_cell: Some((x + 1, 1)),
                 cost_code: 2,
+                blocker_is_infantry: false,
             },
         );
     }
@@ -2425,6 +2484,7 @@ fn astar_hierarchy_progress_tracks_last_accepted_next_path_zone() {
         None,
         0,
         false,
+        false,
     )
     .expect("marked straight path should succeed");
 
@@ -2705,6 +2765,7 @@ fn test_float_unit_pathfinds_through_water() {
         None,
         0,
         false,
+        false,
     );
     assert!(path.is_some(), "Float unit should pathfind through water");
     let path: Vec<(u16, u16)> = path.unwrap();
@@ -2736,6 +2797,7 @@ fn test_track_unit_cannot_pathfind_through_water() {
         None,
         0,
         false,
+        false,
     );
     assert!(
         path.is_none(),
@@ -2761,6 +2823,7 @@ fn test_amphibious_unit_crosses_land_water_land() {
         None,
         None,
         0,
+        false,
         false,
     );
     assert!(path.is_some(), "Amphibious unit should cross water channel");
@@ -2834,6 +2897,7 @@ fn test_ground_unit_diagonal_clips_water_corner() {
         None,
         None,
         0,
+        false,
         false,
     );
     assert!(path.is_some(), "Foot unit should find a path to (2,1)");
@@ -2991,6 +3055,7 @@ fn test_height_based_bridge_routing_deck_at_4() {
         None,
         0,
         false,
+        false,
     )
     .expect("path across bridge should exist");
 
@@ -3053,6 +3118,7 @@ fn test_cliff_cost_uses_effective_height_not_ground_level() {
         None,
         None,
         0,
+        false,
         false,
     );
     // Should find a path (no false cliff penalty blocking it)
