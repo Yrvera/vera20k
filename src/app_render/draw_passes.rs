@@ -427,10 +427,38 @@ pub(super) fn dispatch_draw_passes(
         bracket_tex,
         "building_radius_rings",
     );
-    // Final selected-building front bracket redraw: gamemd line pixels do not
-    // write Z. The CPU instance builder already samples the tactical ABuffer
-    // for this post-shroud redraw.
-    draw_pooled_passthrough_texture(
+    // Stamp the selected buildings' own art into the depth buffer, colour
+    // masked off, so the bracket redraw below can be clipped by it. gamemd's
+    // building blit writes Z as it paints and its line rasteriser tests every
+    // pixel against that Z, which is why a selected Construction Yard there
+    // shows only the marks that clear its own silhouette. This runs here, after
+    // every colour pass that reads depth, so the stamp cannot disturb anything
+    // but the bracket test that immediately follows.
+    const SELECTED_DEPTH_KEYS: [&str; 4] = [
+        "shp_selected_depth_p0",
+        "shp_selected_depth_p1",
+        "shp_selected_depth_p2",
+        "shp_selected_depth_p3",
+    ];
+    for (i, key) in SELECTED_DEPTH_KEYS.iter().enumerate() {
+        if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
+            if let Some((buf, count)) = pool.get(key) {
+                state.batch_renderer.draw_with_buffer_depth_stamp(
+                    &mut pass,
+                    &page.texture,
+                    buf,
+                    count,
+                );
+            }
+        }
+    }
+    // Final selected-building front bracket redraw: gamemd line pixels test Z
+    // but do not write it — the store back into Z sits behind a caller flag
+    // this path leaves clear. Each pixel carries its ground-footprint corner's
+    // depth, so the marks that fall behind the building art lose the test. The
+    // CPU instance builder already samples the tactical ABuffer for this
+    // post-shroud redraw.
+    draw_pooled_depth_test_texture(
         &mut pass,
         &state.batch_renderer,
         pool,
@@ -739,6 +767,19 @@ fn draw_pooled_passthrough_texture<'a>(
 ) {
     if let (Some(t), Some((buf, count))) = (tex, pool.get(key)) {
         batch.draw_with_buffer_passthrough(pass, t, buf, count);
+    }
+}
+
+/// Draw a pooled buffer that tests the depth buffer and does not write it.
+fn draw_pooled_depth_test_texture<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    batch: &'a BatchRenderer,
+    pool: &'a InstanceBufferPool,
+    tex: Option<&'a BatchTexture>,
+    key: &'static str,
+) {
+    if let (Some(t), Some((buf, count))) = (tex, pool.get(key)) {
+        batch.draw_with_buffer_depth_test(pass, t, buf, count);
     }
 }
 

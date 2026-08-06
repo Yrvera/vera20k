@@ -250,6 +250,20 @@ fn upload_to_gpu(
             pool.upload(&state.gpu, SHP_TOP_KEYS[i], page_inst);
         }
     }
+    // Selected buildings' bodies for the depth-only stamp before the bracket
+    // redraw. Same atlas pages as the bodies themselves, so it needs the same
+    // per-page split.
+    const SHP_SELECTED_DEPTH_KEYS: [&str; 4] = [
+        "shp_selected_depth_p0",
+        "shp_selected_depth_p1",
+        "shp_selected_depth_p2",
+        "shp_selected_depth_p3",
+    ];
+    for (i, page_inst) in world.selected_building_depth_paged.iter().enumerate() {
+        if i < SHP_SELECTED_DEPTH_KEYS.len() {
+            pool.upload(&state.gpu, SHP_SELECTED_DEPTH_KEYS[i], page_inst);
+        }
+    }
     // (No `building_turret` buffer: a building's voxel turret rides the `unit`
     // stream and is drawn inside the sorted ground pass, as gamemd draws it.)
     // PixelFX water/ore sparkles — drawn after the ground object pass.

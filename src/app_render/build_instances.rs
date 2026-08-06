@@ -52,6 +52,10 @@ pub(super) struct WorldInstances {
     pub top_unit_pages: Vec<usize>,
     /// The SHP half of the same band — in stock YR, Rocketeers at hover height.
     pub top_shp_paged: Vec<Vec<SpriteInstance>>,
+    /// Selected buildings' bodies again, for the depth-only stamp that lets a
+    /// building's own art clip its selection-bracket redraw. Empty whenever no
+    /// structure is selected.
+    pub selected_building_depth_paged: Vec<Vec<SpriteInstance>>,
     /// Per-particle SpriteInstances (Layer 3). Drawn at Step 7.5 — above
     /// all ground objects + cliffs, below debug/shroud/UI.
     pub particle_paged: Vec<Vec<SpriteInstance>>,
@@ -227,6 +231,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut bridge_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut top_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut particle_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
+    let mut selected_building_depth_paged: Vec<Vec<SpriteInstance>> =
+        vec![Vec::new(); shp_page_count];
 
     // VXL units (ground + bridge) — sorted by depth descending.
     // shp_paged is passed in so harvest overlays (OREGATH SHP) route to the
@@ -292,6 +298,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut unit,
         &mut unit_pages,
         &mut parachute_body_depths,
+        &mut selected_building_depth_paged,
     );
     sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
     app_instances::build_world_effect_instances(state, &mut shp_paged);
@@ -365,6 +372,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         top_unit,
         top_unit_pages,
         top_shp_paged,
+        selected_building_depth_paged,
         particle_paged,
         cell_sparkles,
     }

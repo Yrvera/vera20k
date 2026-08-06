@@ -210,6 +210,37 @@ pub fn screen_position(entity: &GameEntity) -> (f32, f32) {
     (sx, sy - height_lift_px(entity))
 }
 
+// A HALF-TILE TRAP, measured 2026-08-05. Do not "fix" a building's draw
+// position here on its own — it was tried and it made things worse.
+//
+// gamemd really does give buildings their own answer to "where do I draw": of
+// every class, only `BuildingClass` overrides that virtual, and its override
+// takes half a cell off both coordinate axes, moving the anchor from the centre
+// of the north-west footprint cell to that cell's corner. Equal steps on both
+// axes cancel horizontally and come to exactly half a tile up.
+//
+// That is a true statement about gamemd and applying it here still broke the
+// picture, because the frame underneath it is already wrong by the same amount
+// in the other direction. Measured, relative rows for one cell:
+//
+//     layer            gamemd              VERA
+//     terrain tile     box top             box top          agrees
+//     ore / overlay    diamond centre      diamond centre   agrees
+//     unit / vehicle   diamond centre      HALF A TILE UP   wrong
+//     building         box top             box top          agrees
+//
+// So buildings and terrain were already right relative to each other, and the
+// broken layer is the units — drawn half a tile north of the ground they stand
+// on. Adding the building shift on top double-counted it and left every
+// building floating.
+//
+// The real fix is to move the ENTITY anchor down half a tile to the cell's
+// diamond centre, in `util::lepton::lepton_to_screen` and its `terrain` twin,
+// after which this override becomes correct and necessary. That moves every
+// unit on the map and several constants that bridge the entity and tile frames
+// depend on the current relation, so it is its own piece of work.
+
+
 /// The isometric projection alone, with no height lift applied.
 ///
 /// For callers that place something on the ground under an entity rather than

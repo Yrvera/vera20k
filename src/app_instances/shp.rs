@@ -56,6 +56,12 @@ pub(crate) type ParachuteBodyDepths = std::collections::HashMap<u64, f32>;
 /// type on a Jumpjet locomotor.
 /// `parachute_body_depths` collects the sort key of every body currently under
 /// a parachute, keyed by entity — see [`ParachuteBodyDepths`].
+/// `selected_building_depth_paged` receives a second copy of every selected
+/// building's body, for the depth-only stamp that lets the art clip its own
+/// selection brackets. It is taken here rather than rebuilt later because this
+/// is where the resolved atlas entry, buildup frame and sort depth already
+/// exist together; re-deriving them elsewhere would be a second source of truth
+/// that drifts the moment either side changes.
 pub(crate) fn build_shp_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
@@ -64,6 +70,7 @@ pub(crate) fn build_shp_instances(
     unit_instances: &mut Vec<SpriteInstance>,
     unit_instance_pages: &mut Vec<usize>,
     parachute_body_depths: &mut ParachuteBodyDepths,
+    selected_building_depth_paged: &mut [Vec<SpriteInstance>],
 ) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -318,6 +325,30 @@ pub(crate) fn build_shp_instances(
 
         let mut building_pieces = Vec::new();
         if entity.category == EntityCategory::Structure {
+            // Only the selected building's own art participates in clipping its
+            // brackets, so the stamp bucket stays empty in ordinary play and
+            // costs one extra quad per selected structure otherwise.
+            if entity.selected {
+                if let Some(bucket) = selected_building_depth_paged.get_mut(entry.page as usize) {
+                    // Deliberately NOT the body's sort depth. gamemd anchors a
+                    // shape's Z on the bottom edge of its blit rect, and the
+                    // per-pixel ramp it lays over the sprite cancels the
+                    // walker's own per-row step, so every pixel of a building
+                    // ends up carrying that one bottom-row value. The sort key
+                    // is a different quantity — the NW cell origin, shifted
+                    // half a tile — and using it here would put the stamp
+                    // north of every bracket corner, so nothing would ever
+                    // clip.
+                    bucket.push(SpriteInstance {
+                        depth: compute_sprite_depth(
+                            state,
+                            final_y + entry.pixel_size[1],
+                            interp_z,
+                        ),
+                        ..body
+                    });
+                }
+            }
             building_pieces.push(PlannedBuildingPieceInstance {
                 kind: if is_building_up || is_building_down {
                     BuildingPieceKind::BuildupOrSpecial
