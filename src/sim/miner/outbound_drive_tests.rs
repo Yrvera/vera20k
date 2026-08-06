@@ -23,12 +23,16 @@ use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::passability::LandType;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::rng::SimRngLogicalState;
 use crate::sim::world::Simulation;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, ra2_speed_to_leptons_per_second};
 
 const GRID_SIZE: u16 = 64;
 const START: (u16, u16) = (32, 32);
 const ONE_ORE_LEVEL: u16 = 120;
+
+/// Jitter ceiling of the Harvest dispatch epilogue: `RandomRanged(0, 2)`.
+const RATE_EPILOGUE_JITTER_MAX: u32 = 2;
 
 struct OutboundContractOracle {
     rules: RuleSet,
@@ -473,6 +477,34 @@ fn locomotor_tuple(
     )
 }
 
+/// Mirror the single `RandomRanged(0, 2)` a Harvest dispatch draws when it exits
+/// through the default `[Harvest] Rate` epilogue, and return the scenario-stream
+/// state that draw must leave behind. The base lookup consumes no RNG, so one
+/// epilogue exit is exactly one draw.
+fn scenario_after_one_epilogue_draw(sim: &mut Simulation) -> SimRngLogicalState {
+    let mut probe = sim.miner_jitter_rng().clone();
+    let _ = probe.next_range_u32_inclusive(0, RATE_EPILOGUE_JITTER_MAX);
+    probe.logical_state()
+}
+
+/// Re-anchor the miner's Harvest dispatch timer so the next tick dispatches it.
+///
+/// The scan dispatch installs the Rate epilogue (~14-16 frames), so the ticks
+/// immediately behind it carry no Harvest dispatch at all. A fixture that means
+/// to observe the *next* dispatch has to ask for it rather than assume the
+/// following tick brings one; it is the dispatch's behaviour under test here,
+/// not its frame number, which `state_four_exit_draws_and_applies_resume_jitter`
+/// already pins.
+fn arm_dispatch_now(sim: &mut Simulation, entity_id: u64) {
+    let now = sim.session.binary_frame as i32;
+    sim.substrate
+        .entities
+        .get_mut(entity_id)
+        .expect("miner entity")
+        .mission
+        .write_dispatch_epilogue(now, 0);
+}
+
 #[test]
 fn production_stock_miners_use_drive_command_for_adjacent_ore() {
     let oracle = outbound_contract_oracle();
@@ -485,34 +517,41 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
         let start_position = position_tuple(&sim, entity_id);
         arm_search(&mut sim, entity_id);
         let rng_before_search = sim.rng_state();
+        // The scan sets the destination inside its OWN dispatch and then falls
+        // into the default Rate epilogue, so the drive command and exactly one
+        // RandomRanged(0,2) both belong to the scan dispatch — not to a later one.
+        let scenario_after_scan = scenario_after_one_epilogue_draw(&mut sim);
 
         advance(&mut sim, &oracle, &grid);
-        assert_eq!(sim.rng_state(), rng_before_search, "{type_id} search RNG");
+
+        let rng_after_search = sim.rng_state();
+        assert_eq!(
+            rng_after_search.scenario, scenario_after_scan,
+            "{type_id} scan dispatch draws the Rate epilogue jitter exactly once"
+        );
+        assert_eq!(
+            rng_after_search.main, rng_before_search.main,
+            "{type_id} search main RNG"
+        );
+        assert_eq!(
+            rng_after_search.mapgen, rng_before_search.mapgen,
+            "{type_id} search mapgen RNG"
+        );
         let entity = sim.substrate.entities.get(entity_id).expect("miner");
         let miner = entity.miner.as_ref().expect("miner");
         assert_eq!(entity.miner_state().unwrap(), MinerState::MoveToOre);
         assert_eq!(miner.target_ore_cell, Some(target));
-
-        if type_id == "CMIN" {
-            let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
-            let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
-            assert_eq!(entity.navigation.nav_com, None);
-            assert_eq!(locomotor.kind, LocomotorKind::Teleport);
-            assert_eq!(
-                locomotor.slot,
-                LocomotorSlot::from_kind(LocomotorKind::Teleport)
-            );
-            assert_eq!(locomotor.piggyback, None);
-        }
-
-        let rng_before_issue = sim.rng_state();
-        advance(&mut sim, &oracle, &grid);
-        assert_eq!(sim.rng_state(), rng_before_issue, "{type_id} issue RNG");
+        // The full outbound command is installed by the scan dispatch itself.
         assert_command_state(&sim, &oracle, entity_id, type_id, target);
+
         {
             let entity = sim.substrate.entities.get(entity_id).expect("miner");
             let locomotor = entity.locomotor.as_ref().expect("locomotor");
             if type_id == "CMIN" {
+                // Teleport stays the PRIMARY locomotor and the outbound leg rides
+                // a Drive piggyback on top of it — that is what makes a stock
+                // chrono miner DRIVE to its first ore field instead of warping.
+                assert_eq!(locomotor.kind, LocomotorKind::Drive);
                 assert_eq!(
                     locomotor.slot,
                     LocomotorSlot::from_kind(LocomotorKind::Teleport)
@@ -535,11 +574,24 @@ fn production_stock_miners_use_drive_command_for_adjacent_ore() {
             assert!(entity.teleport_state.is_none());
         }
 
+        // The epilogue paces the next dispatch 14-16 frames out, so the ticks
+        // right behind the scan run no Harvest dispatch at all: they move the
+        // hull only. Every Harvest dispatch except the no-ore miss leaves through
+        // an epilogue that draws, so a still scenario stream is the evidence that
+        // no dispatch ran.
         advance(&mut sim, &oracle, &grid);
+        advance(&mut sim, &oracle, &grid);
+        assert_eq!(
+            sim.rng_state().scenario,
+            rng_after_search.scenario,
+            "{type_id} undispatched ticks must not draw"
+        );
         {
             let entity = sim.substrate.entities.get(entity_id).expect("miner");
             let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
             let movement = entity.movement_target.as_ref().expect("movement");
+            // One cell out is inside `SlowdownDistance=500`, so the ramp opens on
+            // the destination brake floor and holds there for the whole hop.
             assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.3"));
             assert_eq!(
                 movement.current_speed,
@@ -610,38 +662,51 @@ fn production_harv_outbound_drive_uses_rule_profile() {
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
     arm_search(&mut sim, entity_id);
     let rng_before = sim.rng_state();
+    // Scan, Set_Destination and the Rate epilogue are one dispatch: one draw.
+    let scenario_after_scan = scenario_after_one_epilogue_draw(&mut sim);
 
     advance(&mut sim, &oracle, &grid);
-    advance(&mut sim, &oracle, &grid);
-    // Search and issue consume no scenario RNG.
-    assert_eq!(sim.rng_state(), rng_before);
+    let rng_after_scan = sim.rng_state();
+    assert_eq!(rng_after_scan.scenario, scenario_after_scan);
+    assert_eq!(rng_after_scan.main, rng_before.main);
+    assert_eq!(rng_after_scan.mapgen, rng_before.mapgen);
     assert_command_state(&sim, &oracle, entity_id, "HARV", target);
     let harv = oracle.rules.object("HARV").expect("HARV");
+    // Three cells out is farther than `SlowdownDistance=500`, so the rules accel
+    // profile — not the destination brake floor — owns the ramp.
     assert!(3 * 256 > harv.slowdown_distance);
     let acceleration = harv.accel_factor;
 
-    // The next dispatch sees the non-null owner destination and exits through
-    // the default Rate epilogue: exactly one RandomRanged(0,2) draw.
-    let mut probe = sim.miner_jitter_rng().clone();
-    let _ = probe.next_range_u32_inclusive(0, 2);
-    let expected_scenario_after_draw = probe.logical_state();
+    // Dispatch precedes movement, so the issuing tick already took one accel step.
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(entity_id)
+            .expect("HARV")
+            .drive_locomotion
+            .as_ref()
+            .expect("Drive runtime")
+            .current_speed_fraction,
+        acceleration,
+    );
 
+    // The epilogue paces the next dispatch 14-16 frames out, so this tick moves
+    // the hull one more accel step without running a Harvest dispatch at all.
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
     let drive = entity.drive_locomotion.as_ref().expect("Drive runtime");
     let movement = entity.movement_target.as_ref().expect("movement");
-    // Dispatch precedes movement: the issuing tick already accelerated once,
-    // so this (second post-issue) tick sits at two acceleration steps.
     assert_eq!(drive.current_speed_fraction, acceleration + acceleration);
     assert_eq!(
         movement.current_speed,
         movement.speed * (acceleration + acceleration)
     );
     assert!(movement.current_speed > SIM_ZERO);
-    let rng_after = sim.rng_state();
-    assert_eq!(rng_after.scenario, expected_scenario_after_draw);
-    assert_eq!(rng_after.main, rng_before.main);
-    assert_eq!(rng_after.mapgen, rng_before.mapgen);
+    assert_eq!(
+        sim.rng_state().scenario,
+        rng_after_scan.scenario,
+        "a tick with no Harvest dispatch draws no epilogue jitter"
+    );
 }
 
 #[test]
@@ -770,7 +835,7 @@ fn production_stock_harv_far_return_preserves_existing_navcom_owner() {
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
     arm_search(&mut sim, entity_id);
 
-    advance(&mut sim, &oracle, &grid);
+    // One dispatch: the scan acquires `original` and installs the command.
     advance(&mut sim, &oracle, &grid);
     {
         let entity = sim.substrate.entities.get(entity_id).expect("HARV");
@@ -837,6 +902,10 @@ fn production_stock_harv_far_return_preserves_existing_navcom_owner() {
     let sound_count_before = sim.sound_events.len();
     assert!(!sim.production.dock_reservations.is_occupied(refinery_id));
 
+    // The scan dispatch left the Rate epilogue on the dispatch timer, so ask for
+    // the next dispatch explicitly — the gate under test is what that dispatch
+    // does, not when it lands.
+    arm_dispatch_now(&mut sim, entity_id);
     // This oracle covers the state-2 owner gate, not the shared mission-delay RNG tail.
     advance(&mut sim, &oracle, &grid);
 
@@ -898,33 +967,36 @@ fn production_cmin_outbound_drive_keeps_teleport_primary() {
     arm_search(&mut sim, entity_id);
     let rng_before = sim.rng_state();
 
-    advance(&mut sim, &oracle, &grid);
-    {
-        let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
-        let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
-        assert_eq!(entity.navigation.nav_com, None);
-        assert_eq!(locomotor.kind, LocomotorKind::Teleport);
-        assert_eq!(
-            locomotor.slot,
-            LocomotorSlot::from_kind(LocomotorKind::Teleport)
-        );
-        assert_eq!(locomotor.piggyback, None);
-    }
-
+    // The scan dispatch installs the outbound command itself. What must survive
+    // that is the locomotor arrangement: Teleport stays the PRIMARY in its own
+    // slot and Drive is only piggybacked on top, so the first outbound trip is a
+    // drive and never a warp.
     advance(&mut sim, &oracle, &grid);
     assert_command_state(&sim, &oracle, entity_id, "CMIN", target);
     {
-        let locomotor = sim
-            .substrate
-            .entities
-            .get(entity_id)
-            .and_then(|entity| entity.locomotor.as_ref())
-            .expect("CMIN locomotor");
+        let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
+        let locomotor = entity.locomotor.as_ref().expect("CMIN locomotor");
+        assert_eq!(
+            entity.navigation.nav_com,
+            Some(NavTargetRef::cell(target.0, target.1)),
+        );
+        assert_eq!(locomotor.kind, LocomotorKind::Drive);
         assert_eq!(
             locomotor.slot,
             LocomotorSlot::from_kind(LocomotorKind::Teleport)
         );
-        assert!(locomotor.piggyback.is_some());
+        assert_eq!(
+            locomotor
+                .piggyback
+                .as_ref()
+                .expect("CMIN Drive piggyback")
+                .kind,
+            LocomotorKind::Teleport,
+        );
+        assert!(
+            entity.teleport_state.is_none(),
+            "the outbound leg must never start a warp"
+        );
     }
 
     let mut reached_harvest = false;
@@ -978,7 +1050,12 @@ fn production_cmin_failed_outbound_issue_restores_locomotor_exactly() {
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
     arm_search(&mut sim, entity_id);
     let rng_before = sim.rng_state();
+    let scenario_after_scan = scenario_after_one_epilogue_draw(&mut sim);
 
+    // The scan finds the ore and hands the destination to the mover in the same
+    // dispatch; the mover refuses it (nothing between start and target is
+    // passable) and the speculative Drive piggyback must be unwound field for
+    // field, leaving Teleport primary and no owner destination behind.
     advance(&mut sim, &oracle, &grid);
     let before = locomotor_tuple(&sim, entity_id);
     assert_eq!(before.0, LocomotorKind::Teleport);
@@ -993,13 +1070,29 @@ fn production_cmin_failed_outbound_issue_restores_locomotor_exactly() {
             .nav_com,
         None,
     );
+    // RESIDUAL, VERA-internal with the gamemd equivalent UNCHECKED: the scan
+    // dispatch arms the Rate epilogue whether or not the mover accepted the
+    // destination, so a refused command still costs one scenario draw. gamemd's
+    // Set_Destination cannot refuse, so what its epilogue does on a refusal was
+    // never observed. Pinned so that changing the refusal arm is deliberate.
+    let rng_after_scan = sim.rng_state();
+    assert_eq!(rng_after_scan.scenario, scenario_after_scan);
+    assert_eq!(rng_after_scan.main, rng_before.main);
+    assert_eq!(rng_after_scan.mapgen, rng_before.mapgen);
 
+    // A refused command must not strand the miner: the next dispatch retries and
+    // unwinds the piggyback again, leaving exactly the same locomotor state.
+    arm_dispatch_now(&mut sim, entity_id);
+    let scenario_after_retry = scenario_after_one_epilogue_draw(&mut sim);
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("CMIN");
     assert!(entity.movement_target.is_none());
     assert_eq!(entity.navigation.nav_com, None);
     assert_eq!(locomotor_tuple(&sim, entity_id), before);
-    assert_eq!(sim.rng_state(), rng_before);
+    let rng_after_retry = sim.rng_state();
+    assert_eq!(rng_after_retry.scenario, scenario_after_retry);
+    assert_eq!(rng_after_retry.main, rng_before.main);
+    assert_eq!(rng_after_retry.mapgen, rng_before.mapgen);
 }
 
 #[test]
@@ -1015,7 +1108,7 @@ fn production_harv_navcom_without_movement_target_is_not_reissued() {
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
     arm_search(&mut sim, entity_id);
 
-    advance(&mut sim, &oracle, &grid);
+    // One dispatch acquires `original` and takes NavCom ownership.
     advance(&mut sim, &oracle, &grid);
     assert_eq!(
         sim.substrate
@@ -1047,9 +1140,8 @@ fn production_harv_navcom_without_movement_target_is_not_reissued() {
     let rng_before = sim.rng_state();
     // The still-driving dispatch (non-null NavCom) exits through the default
     // Rate epilogue: exactly one scenario RandomRanged(0,2) draw, no scan.
-    let mut probe = sim.miner_jitter_rng().clone();
-    let _ = probe.next_range_u32_inclusive(0, 2);
-    let expected_scenario_after_draw = probe.logical_state();
+    arm_dispatch_now(&mut sim, entity_id);
+    let expected_scenario_after_draw = scenario_after_one_epilogue_draw(&mut sim);
 
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
@@ -1084,7 +1176,7 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
     arm_search(&mut sim, entity_id);
 
-    advance(&mut sim, &oracle, &grid);
+    // One dispatch acquires `original` and takes NavCom ownership.
     advance(&mut sim, &oracle, &grid);
     assert_command_state(&sim, &oracle, entity_id, "HARV", original);
 
@@ -1115,9 +1207,8 @@ fn production_harv_navcom_defers_removed_target_revalidation() {
     let rng_before = sim.rng_state();
     // The still-driving dispatch (non-null NavCom) exits through the default
     // Rate epilogue: exactly one scenario RandomRanged(0,2) draw, no scan.
-    let mut probe = sim.miner_jitter_rng().clone();
-    let _ = probe.next_range_u32_inclusive(0, 2);
-    let expected_scenario_after_draw = probe.logical_state();
+    arm_dispatch_now(&mut sim, entity_id);
+    let expected_scenario_after_draw = scenario_after_one_epilogue_draw(&mut sim);
 
     advance(&mut sim, &oracle, &grid);
     let entity = sim.substrate.entities.get(entity_id).expect("HARV");
@@ -1148,7 +1239,7 @@ fn production_cmin_arrival_clears_navcom_same_tick_and_releases_drive() {
     let entity_id = spawn_stock_miner(&mut sim, &oracle, "CMIN", MinerKind::Chrono);
     arm_search(&mut sim, entity_id);
 
-    advance(&mut sim, &oracle, &grid);
+    // The scan dispatch installs the outbound command.
     advance(&mut sim, &oracle, &grid);
     assert_command_state(&sim, &oracle, entity_id, "CMIN", target);
 

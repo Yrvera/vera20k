@@ -59,6 +59,7 @@ pub use self::war_factory_exit::tick_war_factory_exit_contacts;
 
 // Re-exports for external consumers (files outside production/ that previously
 // imported private submodules directly).
+#[cfg(test)]
 pub(crate) use self::production_economy::pick_best_resource_node;
 pub(in crate::sim) use self::production_queue::credits_entry_for_owner;
 

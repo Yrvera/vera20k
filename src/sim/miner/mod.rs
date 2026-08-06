@@ -78,27 +78,45 @@ pub enum MinerKind {
 /// mission transition writes, so a fresh Harvest assignment lands on the
 /// FSM's initial state without a separate write.
 ///
-/// NOTE: this vocabulary is finer-grained than the native Mission_Harvest
-/// handler states (0..=4); the exact native substate mapping is deferred to
-/// the full handler-body port (recorded residual, UNCHECKED).
+/// The five states gamemd's Harvest handler holds keep gamemd's own cursor
+/// numbering, so the field is directly comparable value-for-value:
+/// `0` looking, `1` cutting ore, `2` finding home, `3` the dock handoff,
+/// `4` going idle — the handler never writes a cursor above `4`. VERA's three
+/// extra states are numbered *above* that ceiling instead of colliding with a
+/// native meaning.
+///
+/// Residual: [`MinerState::MoveToOre`] has no native counterpart at all —
+/// gamemd sets the destination in the same dispatch as the scan and stays on
+/// cursor `0` for the whole outbound drive. So a field-level comparison holds
+/// except while VERA sits in one of the three above-ceiling cursors.
+///
+/// Residual the other way: gamemd reaches cursor `4` from exactly one place,
+/// the bounded scan's miss. VERA also parks there when the miner can reach no
+/// refinery at all, so the cursor is *entered* more often than native's even
+/// though it is never mis-numbered. Both entries take the same re-search exit;
+/// what gamemd does with its own entry, and why VERA does not, is recorded on
+/// `miner_system::handle_wait_no_ore`.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MinerState {
     /// Looking for the nearest ore/gem cell to harvest.
     SearchOre = 0,
-    /// Pathing toward the target ore cell.
-    MoveToOre = 1,
     /// Extracting bales from the current cell.
-    Harvest = 2,
+    Harvest = 1,
     /// Heading back (or teleporting) to the assigned refinery.
-    ReturnToRefinery = 3,
+    ReturnToRefinery = 2,
     /// Waiting in the dock queue outside the refinery.
-    Dock = 4,
-    /// Incrementally unloading cargo bales into credits.
-    Unload = 5,
-    /// No ore found anywhere on the map; idle.
-    WaitNoOre = 6,
-    /// Player issued a manual return order.
+    Dock = 3,
+    /// Parked because the bounded ore scan found nothing — gamemd's only
+    /// entry into this cursor. VERA also parks here when the miner can reach
+    /// no refinery (VERA-internal, gamemd equivalent UNCHECKED).
+    WaitNoOre = 4,
+    /// Pathing toward the target ore cell. VERA-internal: gamemd has no
+    /// "moving to ore" cursor.
+    MoveToOre = 5,
+    /// Incrementally unloading cargo bales into credits. VERA-internal legacy.
+    Unload = 6,
+    /// Player issued a manual return order. VERA-internal.
     ForcedReturn = 7,
 }
 
@@ -116,16 +134,20 @@ impl MinerState {
     pub fn from_cursor(raw: u32) -> Option<Self> {
         Some(match raw {
             0 => Self::SearchOre,
-            1 => Self::MoveToOre,
-            2 => Self::Harvest,
-            3 => Self::ReturnToRefinery,
-            4 => Self::Dock,
-            5 => Self::Unload,
-            6 => Self::WaitNoOre,
+            1 => Self::Harvest,
+            2 => Self::ReturnToRefinery,
+            3 => Self::Dock,
+            4 => Self::WaitNoOre,
+            5 => Self::MoveToOre,
+            6 => Self::Unload,
             7 => Self::ForcedReturn,
             _ => return None,
         })
     }
+
+    /// Highest cursor gamemd's Harvest handler ever writes. Cursors above it
+    /// are VERA-internal states with no native counterpart.
+    pub const NATIVE_CURSOR_CEILING: u32 = 4;
 }
 
 /// Sub-state machine for the refinery docking sequence.
@@ -566,6 +588,50 @@ pub(crate) fn reduce_tiberium(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn harvest_cursor_uses_the_native_numbering_for_the_states_gamemd_holds() {
+        // gamemd's Harvest handler cursor: 0 looking, 1 cutting ore, 2 finding
+        // home, 3 dock handoff, 4 going idle. Pinning the encoding is the whole
+        // point of the field being comparable.
+        assert_eq!(MinerState::SearchOre.cursor(), 0);
+        assert_eq!(MinerState::Harvest.cursor(), 1);
+        assert_eq!(MinerState::ReturnToRefinery.cursor(), 2);
+        assert_eq!(MinerState::Dock.cursor(), 3);
+        assert_eq!(MinerState::WaitNoOre.cursor(), 4);
+    }
+
+    #[test]
+    fn vera_internal_cursors_sit_above_the_native_ceiling() {
+        for state in [
+            MinerState::MoveToOre,
+            MinerState::Unload,
+            MinerState::ForcedReturn,
+        ] {
+            assert!(
+                state.cursor() > MinerState::NATIVE_CURSOR_CEILING,
+                "{state:?} must not collide with a cursor gamemd writes"
+            );
+        }
+    }
+
+    #[test]
+    fn harvest_cursor_round_trips_and_rejects_out_of_vocabulary_values() {
+        for state in [
+            MinerState::SearchOre,
+            MinerState::Harvest,
+            MinerState::ReturnToRefinery,
+            MinerState::Dock,
+            MinerState::WaitNoOre,
+            MinerState::MoveToOre,
+            MinerState::Unload,
+            MinerState::ForcedReturn,
+        ] {
+            assert_eq!(MinerState::from_cursor(state.cursor()), Some(state));
+        }
+        assert_eq!(MinerState::from_cursor(8), None);
+        assert_eq!(MinerState::from_cursor(u32::MAX), None);
+    }
 
     #[test]
     fn default_config_war_miner_ore_payout() {
