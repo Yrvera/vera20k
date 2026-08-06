@@ -406,9 +406,11 @@ fn cell_center_coords_remains_ground_z_for_cell_targets() {
 
     let entities = EntityStore::new();
     assert_eq!(
-        attack_impact_z(TargetKind::Cell(7, 9), &entities),
+        attack_impact_z(TargetKind::Cell(7, 9), &entities, None),
         0,
-        "force-fire cell targets must not inherit bridge/elevation Z from generic center coords"
+        "with no loaded terrain there is no cell floor to read; the cell-centre \
+         helper never invents one. The terrain-backed cases live in \
+         `impact_height_tests`."
     );
 }
 

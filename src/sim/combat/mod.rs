@@ -965,18 +965,93 @@ pub struct UnderAttackEvent {
     pub miner: bool,
 }
 
-/// Resolve an attack's impact z (tile-step level units, signed) for the
-/// bridge state-machine Z-height gate. Entity targets carry their position
-/// z. Cell targets have no entity z; we return 0 and let the orchestrator
-/// clamp against the terrain cell's level (state-machine Z-gate is a
-/// 3-level window centered on the cell).
-fn attack_impact_z(target: TargetKind, entities: &EntityStore) -> i32 {
-    if let TargetKind::Entity(eid) = target {
-        if let Some(e) = entities.get(eid) {
-            return e.position.z as i32;
-        }
+/// The **one** impact height for an attack, in tile-step level units (signed).
+///
+/// The original engine forms a single impact coordinate per detonation and
+/// hands that same coordinate to area damage and to the animation placement —
+/// there is no second Z anywhere on the path. This function is VERA's
+/// equivalent single value, and every consumer reads it rather than deriving
+/// its own: the AoE object-layer selector, the bridge-damage Z gate, the
+/// persistent-projectile impact coordinate, the impact-animation height, and
+/// (through `app_fire_effects`) the pixel the tracer ends on. A second
+/// derivation could only agree with this one by coincidence.
+///
+/// Three native quantities sit close together here and are not the same
+/// thing:
+/// * a cell's **own** coordinate — cell centre on both axes, terrain floor
+///   height for Z;
+/// * the **aim point** for a cell target — that, plus a four-level structural
+///   bridge deck offset when a span crosses the cell;
+/// * the **impact** coordinate — the projectile's own location, whose Z the
+///   flight step clamps to the plain cell ground-height lookup at the moment
+///   of ground contact. The resolution ladder that can substitute a target's
+///   bridge-aware aim point runs only when there is a live *object* target;
+///   for a shot at bare ground it is skipped entirely.
+///
+/// VERA models the impact, so a ground cell contributes its terrain floor
+/// level and nothing else. There is no branch yielding zero: zero is what a
+/// level-0 cell is worth, never a stand-in for a height we failed to look up.
+/// VERA carries this quantity in whole tile-step levels along the entire
+/// impact path; native carries the same step count scaled into leptons.
+///
+/// **Residual DRIFT — the structural-bridge deck term is unmodelled here.**
+/// A force-fire at a bridge cell therefore damages the ground occupant list
+/// and draws its explosion at ground height rather than four levels up on the
+/// deck. It is not a one-line addition, because two VERA consumers want
+/// opposite values: `combat_aoe::select_object_damage_layer` picks the bridge
+/// occupant list only for an impact well above the cell's ground level (it
+/// wants the deck term), while `bridge_state`'s path Z gate accepts only an
+/// impact within one level of the cell's *ground* level (it rejects the deck
+/// term outright). With ground-only Z that gate now admits every cell target:
+/// it is **disabled, not widened** — a gate that can no longer reject
+/// anything is not a modelled gate. That is RNG-visible: a path that newly
+/// matches consumes a bridge-strength draw from the scenario stream, so a
+/// replay containing a `Wall=yes` force-fire at a bridge over ground level ≥ 2
+/// diverges from one recorded before this change. Trigger frequency: needs
+/// deliberate bridge-cutting over raised ground, uncommon per match but a real
+/// tactic on bridge maps.
+/// *Settling step:* walk the bridge block of the native area-damage routine
+/// and establish which reference **its** Z comparisons use — cell ground
+/// height or deck plane — before either the gate or the deck term moves. The
+/// VERA gate's native equivalent is UNCHECKED and is not authority for
+/// dropping a verified native term.
+///
+/// `terrain` is `None` only where combat runs without a loaded map (headless
+/// fixtures). With no map there is no cell to read — a VERA API boundary, not
+/// a game rule.
+pub(crate) fn attack_impact_z(
+    target: TargetKind,
+    entities: &EntityStore,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> i32 {
+    match target {
+        TargetKind::Entity(eid) => entities
+            .get(eid)
+            .map(|entity| i32::from(entity.position.z))
+            .unwrap_or(0),
+        TargetKind::Cell(rx, ry) => terrain
+            .and_then(|grid| grid.cell(rx, ry))
+            .map(|cell| i32::from(cell.level))
+            .unwrap_or(0),
     }
-    0
+}
+
+/// Narrow an impact z into the byte the presentation path carries it in.
+///
+/// The projection that turns that byte into a pixel decodes it with `as i8`
+/// (`util::lepton::lepton_to_screen`), so the byte is a *signed* level count
+/// and the only correct saturation is into `i8` range: clamping into `u8`
+/// range instead would let 200 through, which decodes as -56 levels and throws
+/// the sprite most of a screen away. One definition, so the sim's animation
+/// height and the app's tracer endpoint cannot narrow the same number
+/// differently.
+///
+/// Known mismatch, outside this file: the sprite depth key reads the same byte
+/// as unsigned. The two readings agree over 0..=127, which covers every map
+/// height, so it is latent — but a negative impact z would sort by one rule
+/// and draw by the other.
+pub(crate) fn impact_z_byte(impact_z: i32) -> u8 {
+    impact_z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8 as u8
 }
 
 /// Look up death weapon AoE data from an ObjectType.
@@ -1568,7 +1643,7 @@ fn emit_projectile_detonations(
             impact_ry,
             impact_sub_x,
             impact_sub_y,
-            impact_z.clamp(0, i32::from(u8::MAX)) as u8,
+            impact_z_byte(impact_z),
             interner,
             &mut out.explosion_effects,
             &mut out.smudge_spawn_requests,
@@ -2320,6 +2395,9 @@ pub fn tick_combat_with_fog_and_main_rng(
         for (target_id, damage) in hits {
             damage_events.push((target_id, damage, det.firer_id, wh_iid));
         }
+        // Same single impact coordinate the area damage above consumed — the
+        // missile's detonation animation sits at the impact height, not at
+        // sea level.
         emit_warhead_detonation_effects(
             warhead,
             det.damage,
@@ -2327,7 +2405,7 @@ pub fn tick_combat_with_fog_and_main_rng(
             det.ry,
             crate::util::lepton::CELL_CENTER_LEPTON,
             crate::util::lepton::CELL_CENTER_LEPTON,
-            0,
+            impact_z_byte(impact_z),
             interner,
             &mut explosion_effects,
             &mut smudge_spawn_requests,
@@ -3046,7 +3124,7 @@ pub(crate) fn resolve_attacker_fire(
         let impact = ProjectileCoord::new(
             i32::from(target_rx) * 256 + target_sub_x.to_num::<i32>(),
             i32::from(target_ry) * 256 + target_sub_y.to_num::<i32>(),
-            attack_impact_z(snap.target, entities),
+            attack_impact_z(snap.target, entities, terrain),
         );
         let target = match snap.target {
             TargetKind::Entity(id) => ProjectileTarget::Entity(id),
@@ -3075,7 +3153,7 @@ pub(crate) fn resolve_attacker_fire(
             collision,
         });
     } else {
-        let impact_z = attack_impact_z(snap.target, entities);
+        let impact_z = attack_impact_z(snap.target, entities, terrain);
         if warhead.cell_spread > SIM_ZERO {
             let aoe_hits = self::combat_aoe::apply_aoe_damage(
                 entities,
@@ -3198,12 +3276,13 @@ pub(crate) fn resolve_attacker_fire(
                 });
         }
 
-        // Cell-target force-fire on terrain has no entity z; the dispatcher
-        // re-derives ground_z from terrain.cell(rx,ry).level, so 0 is safe.
-        let impact_z: u8 = match snap.target {
-            TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
-            TargetKind::Cell(_, _) => 0,
-        };
+        // One impact coordinate: the original engine hands the SAME resolved
+        // coord to the area-damage call and to the AnimList placement, so the
+        // animation height is the impact height that fed the damage above,
+        // never a separately derived value. (Only the smudge dispatcher
+        // re-derives a ground reference of its own; the animation is drawn at
+        // this z.)
+        let effect_z: u8 = impact_z_byte(impact_z);
         // BulletClass::Detonate randomizes only the visible CoordStruct for an
         // Inviso projectile. The draw happens before AnimList selection, so this
         // must run even when the warhead has no animation to emit.
@@ -3230,7 +3309,7 @@ pub(crate) fn resolve_attacker_fire(
             effect_ry,
             effect_sub_x,
             effect_sub_y,
-            impact_z,
+            effect_z,
             interner,
             &mut out.explosion_effects,
             &mut out.smudge_spawn_requests,
@@ -3386,3 +3465,274 @@ fn rof_to_cooldown_frames(rof_frames: i32) -> u16 {
 }
 
 pub use self::combat_targeting::{acquire_best_target_for_entity, tick_retaliation};
+
+/// Impact-height tests: a shot that lands on a ground cell must take that
+/// cell's terrain floor height, not a constant. Kept inline because they pin
+/// `attack_impact_z` and the single-impact-coordinate wiring that lives in
+/// this file.
+#[cfg(test)]
+mod impact_height_tests {
+    use super::*;
+    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::intern::test_interner;
+
+    const TEST_GRID: u16 = 16;
+    /// Terrain floor used by every raised-ground case here. Chosen because two
+    /// levels is what the reported screenshot showed: one whole tile of
+    /// vertical error.
+    const RAISED_LEVEL: u8 = 2;
+
+    fn terrain_cell(rx: u16, ry: u16, level: u8) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level,
+            filled_clear: true,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: Default::default(),
+            speed_costs: Default::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            accepts_smudge: true,
+            allows_tiberium: false,
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn terrain_at_level(level: u8) -> ResolvedTerrainGrid {
+        let cells: Vec<ResolvedTerrainCell> = (0..TEST_GRID)
+            .flat_map(|ry| (0..TEST_GRID).map(move |rx| terrain_cell(rx, ry, level)))
+            .collect();
+        ResolvedTerrainGrid::from_cells(TEST_GRID, TEST_GRID, cells)
+    }
+
+    /// Armed tank plus a warhead that emits an impact animation, so a
+    /// force-fire produces an observable `ExplosionEffect`.
+    fn impact_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "\
+[VehicleTypes]\n0=MTNK\n\n\
+[InfantryTypes]\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[Warheads]\n0=AP\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+[105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\n\
+[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\nAnimList=TWLT070\n",
+        );
+        RuleSet::from_ini(&ini).expect("impact rules should parse")
+    }
+
+    #[test]
+    fn cell_target_impact_z_is_the_cells_terrain_floor() {
+        let entities = EntityStore::new();
+        let flat = terrain_at_level(0);
+        let raised = terrain_at_level(RAISED_LEVEL);
+
+        assert_eq!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, Some(&raised)),
+            i32::from(RAISED_LEVEL),
+            "a ground-cell impact takes the cell's terrain floor height; a \
+             constant 0 here renders the impact one whole tile below the ground \
+             it landed on"
+        );
+        assert_eq!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, Some(&flat)),
+            0,
+            "level-0 ground is still zero — that is the value, not the fallback"
+        );
+        assert_eq!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, None),
+            0,
+            "no loaded map means no cell to read"
+        );
+        assert_eq!(
+            attack_impact_z(
+                TargetKind::Cell(TEST_GRID + 5, TEST_GRID + 5),
+                &entities,
+                Some(&raised)
+            ),
+            0,
+            "VERA API boundary, no native equivalent: an off-map cell is not a \
+             targetable cell in the first place, so this pins only that the \
+             helper stays total, not a game rule about off-map heights"
+        );
+    }
+
+    #[test]
+    fn cell_target_impact_z_is_the_ground_floor_not_the_bridge_aim_point() {
+        // A structural bridge cell whose ground floor is RAISED_LEVEL and whose
+        // deck sits a full deck height above it.
+        let mut cells: Vec<ResolvedTerrainCell> = (0..TEST_GRID)
+            .flat_map(|ry| (0..TEST_GRID).map(move |rx| terrain_cell(rx, ry, RAISED_LEVEL)))
+            .collect();
+        let idx = 9 * TEST_GRID as usize + 7;
+        cells[idx].bridge_facts = BridgeCellFacts {
+            raw_flags: BRIDGE_FLAG_STRUCTURAL,
+            ..BridgeCellFacts::default()
+        };
+        cells[idx].has_bridge_deck = true;
+        cells[idx].bridge_walkable = true;
+        cells[idx].bridge_deck_level = RAISED_LEVEL + 4;
+        let terrain = ResolvedTerrainGrid::from_cells(TEST_GRID, TEST_GRID, cells);
+
+        let entities = EntityStore::new();
+        assert_eq!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, Some(&terrain)),
+            i32::from(RAISED_LEVEL),
+            "the impact coordinate is the projectile's own location clamped to \
+             the cell's ground height, not the bridge-aware aim point — the \
+             deck-adding accessor is reached only for a live object target. The \
+             deck term is a recorded residual on `attack_impact_z`, not an \
+             oversight"
+        );
+        assert_ne!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, Some(&terrain)),
+            combat_aoe::bridge_adjusted_impact_z(Some(&terrain), 7, 9),
+            "the aim-point helper is a different quantity; if these two ever \
+             agree, the deck residual was closed and the bridge-damage Z gate \
+             has to be settled in the same change"
+        );
+    }
+
+    /// The impact byte is a signed level count on both sides of the sim/app
+    /// boundary, because the projection decodes it with `as i8`.
+    ///
+    /// Catches the two-narrowings shape error: clamping into `u8` range lets
+    /// 200 through, which the projection reads back as -56 levels and draws
+    /// 840 px away, while clamping into `i8` range saturates at the top of the
+    /// domain the reader actually decodes.
+    #[test]
+    fn impact_z_byte_saturates_in_the_signed_domain_the_projection_decodes() {
+        for level in [0_i32, 1, 2, 14, 127] {
+            assert_eq!(
+                i32::from(impact_z_byte(level) as i8),
+                level,
+                "every reachable map height must survive the round trip"
+            );
+        }
+        assert_eq!(
+            impact_z_byte(200) as i8,
+            i8::MAX,
+            "an over-range height saturates at the top of the signed domain, it \
+             does not wrap to a large negative one"
+        );
+        assert_eq!(impact_z_byte(-40) as i8, -40, "below-ground z stays signed");
+        assert_eq!(impact_z_byte(-9000) as i8, i8::MIN);
+    }
+
+    #[test]
+    fn entity_target_impact_z_still_reads_the_entity_height() {
+        let mut entities = EntityStore::new();
+        let mut on_deck = GameEntity::test_default(1, "MTNK", "Americans", 7, 9);
+        on_deck.position.z = 6;
+        entities.insert(on_deck);
+        let terrain = terrain_at_level(RAISED_LEVEL);
+
+        assert_eq!(
+            attack_impact_z(TargetKind::Entity(1), &entities, Some(&terrain)),
+            6,
+            "an object target still contributes its own height, terrain or not"
+        );
+        assert_eq!(
+            attack_impact_z(TargetKind::Entity(1), &entities, None),
+            6,
+            "entity height does not depend on the terrain grid"
+        );
+        assert_eq!(
+            attack_impact_z(TargetKind::Entity(404), &entities, Some(&terrain)),
+            0,
+            "a vanished target contributes nothing"
+        );
+    }
+
+    #[test]
+    fn force_fire_on_raised_ground_places_the_explosion_at_the_terrain_height() {
+        let rules = impact_rules();
+        let terrain = terrain_at_level(RAISED_LEVEL);
+        let mut store = EntityStore::new();
+        // `test_interner` snapshots the thread-local, so the entity's type and
+        // owner strings must be interned before the snapshot is taken.
+        store.insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        let mut interner = test_interner();
+        assert!(
+            issue_attack_cell_command(&mut store, 1, 5, 6, Some(&rules), &interner),
+            "armed tank should accept a force-fire order on an adjacent cell"
+        );
+
+        let mut scenario_rng = SimRng::new(1);
+        let result = tick_combat_with_fog(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            None,
+            &BTreeMap::<InternedId, PowerState>::new(),
+            None,
+            &mut BTreeMap::new(),
+            None,
+            None,
+            Some(&terrain),
+            0,
+            100,
+            0,
+            &[1],
+            None,
+            &mut scenario_rng,
+        );
+
+        let effect = result
+            .explosion_effects
+            .first()
+            .expect("force-fire should emit the warhead's impact animation");
+        assert_eq!((effect.rx, effect.ry), (5, 6));
+        assert_eq!(
+            effect.z, RAISED_LEVEL,
+            "the impact animation is placed at the impact height; a constant 0 \
+             draws it 15 screen pixels per level below the ground it hit"
+        );
+    }
+}
